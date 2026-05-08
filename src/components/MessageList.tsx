@@ -5,7 +5,7 @@
 // Filters out `stream_event` partials (the final assistant message
 // carries the complete content, so showing both just flickers).
 
-import { useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Markdown } from './Markdown'
 import type { SdkMessage } from '../types'
 
@@ -15,32 +15,75 @@ interface Props {
 
 export function MessageList({ messages }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
+  // `atBottom` is state (not a ref) because the jump-to-bottom button's
+  // visibility needs to re-render when it changes. The ref-mirror keeps
+  // the onScroll handler readable without a re-attachment dance.
+  const [atBottom, setAtBottom] = useState(true)
   const atBottomRef = useRef(true)
+  /** How many new messages have arrived since the user last saw the
+   *  bottom. Badge number on the jump-to-bottom button. */
+  const [unseenCount, setUnseenCount] = useState(0)
 
   const renderable = useMemo(() => messages.filter(isRenderable), [messages])
 
-  // Auto-scroll to bottom unless the user has scrolled up.
+  // Track the last renderable count so we can tell how many landed
+  // during a single render pass. When the user is at bottom we scroll
+  // and reset unseen; otherwise we bump the counter.
+  const lastCountRef = useRef(0)
   useEffect(() => {
-    if (!scrollRef.current || !atBottomRef.current) return
-    scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    const delta = renderable.length - lastCountRef.current
+    lastCountRef.current = renderable.length
+    if (delta <= 0) return
+    if (atBottomRef.current) {
+      if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (unseenCount !== 0) setUnseenCount(0)
+    } else {
+      setUnseenCount((n) => n + delta)
+    }
+    // unseenCount intentionally excluded — we only react to renderable changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [renderable])
 
   const onScroll = () => {
     const el = scrollRef.current
     if (!el) return
-    atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    atBottomRef.current = isAtBottom
+    setAtBottom((prev) => (prev === isAtBottom ? prev : isAtBottom))
+    if (isAtBottom && unseenCount !== 0) setUnseenCount(0)
   }
 
+  const jumpToBottom = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    setUnseenCount(0)
+  }, [])
+
   return (
-    <div className="chat-messages" ref={scrollRef} onScroll={onScroll}>
-      {renderable.length === 0 && (
-        <div style={{ color: 'var(--fg-muted)', textAlign: 'center', margin: 'auto' }}>
-          Type a message below to start the conversation.
-        </div>
+    <div className="chat-messages-wrap">
+      <div className="chat-messages" ref={scrollRef} onScroll={onScroll}>
+        {renderable.length === 0 && (
+          <div style={{ color: 'var(--fg-muted)', textAlign: 'center', margin: 'auto' }}>
+            Type a message below to start the conversation.
+          </div>
+        )}
+        {renderable.map((m, i) => (
+          <MessageView key={(m.uuid as string) ?? i} msg={m} />
+        ))}
+      </div>
+      {!atBottom && (
+        <button
+          type="button"
+          className="chat-jump-to-bottom"
+          onClick={jumpToBottom}
+          aria-label="Scroll to latest messages"
+        >
+          ⬇
+          {unseenCount > 0 && <span className="chat-jump-to-bottom-count">{unseenCount}</span>}
+        </button>
       )}
-      {renderable.map((m, i) => (
-        <MessageView key={(m.uuid as string) ?? i} msg={m} />
-      ))}
     </div>
   )
 }

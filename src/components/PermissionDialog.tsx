@@ -39,9 +39,15 @@ export function PermissionDialog({ request, onDecide }: Props) {
 
   const headline = request.title ?? `Claude wants to use ${request.toolName}`
 
+  // Embedded in the chat panel rather than a full-screen modal: the grid
+  // shows up to three sessions at once, so blocking the entire viewport
+  // to ask about session A's Bash command would freeze the user's work
+  // on session B and C. The dialog still acts as a modal *for its own
+  // panel* (absolutely positioned overlay within .chat-messages-wrap or
+  // the Chat root).
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal" style={{ width: 'min(560px, 92vw)' }}>
+    <div className="perm-overlay" role="dialog" aria-modal="false">
+      <div className="perm-card">
         <div className="modal-header">
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span aria-hidden>🔐</span>

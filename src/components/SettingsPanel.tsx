@@ -23,8 +23,11 @@ export function SettingsPanel({ session, onClose, onSessionUpdate }: Props) {
 
   // Load supported models and MCP status when the panel opens. Parent
   // remounts this component on session switch (via `key={session.id}`),
-  // so there's no need to imperatively reset state here.
+  // so there's no need to imperatively reset state here. All three calls
+  // forward SDK control requests to the subprocess — if the session isn't
+  // running the server returns 410; skip them rather than surface noise.
   useEffect(() => {
+    if (!session.running) return
     ;(async () => {
       try {
         const m = await api.get<{ models: ModelInfo[] }>(`/sessions/${session.id}/models`)
@@ -46,7 +49,7 @@ export function SettingsPanel({ session, onClose, onSessionUpdate }: Props) {
         /* ignore */
       }
     })()
-  }, [session.id])
+  }, [session.id, session.running])
 
   const runAndRefresh = async (fn: () => Promise<{ session: SessionInfo }>) => {
     setBusy(true)

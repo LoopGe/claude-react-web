@@ -1,15 +1,19 @@
-// SSE subscription + user-turn queue counter for one Chat session.
+// Multiplexed SSE subscription for one Chat session.
 //
-// Why this exists: keeping the subscription wiring next to the queue
-// arithmetic makes both things easier to reason about. The `queuedAhead`
-// counter ONLY tracks turns the current tab sent that haven't completed
-// — it's an optimistic local estimate, not authoritative state. The
-// server queues turns FIFO, but doesn't expose "how many are queued",
-// so we count them ourselves and decrement on every `result` message.
+// ONE EventSource drives both SDK messages and permission events — the
+// server multiplexes them onto /api/sessions/:id/stream. This matters
+// because browsers cap HTTP/1.1 connections at 6 per origin; at 2 SSE
+// connections per session the 3-up grid used to saturate the pool and
+// any subsequent POST (including "send message") would silently queue
+// until a stream ended.
+//
+// The queuedAhead counter optimistically tracks turns this tab posted
+// that haven't seen a matching `result` yet — the server FIFO-queues
+// turns but doesn't expose depth, so we count locally.
 
 import { useCallback, useMemo, useState } from 'react'
-import { useSSE } from './useSSE'
-import type { SdkMessage } from '../types'
+import { useNamedEventSource } from './useSSE'
+import type { PermissionRequest, PermissionResolved, SdkMessage } from '../types'
 
 export interface ChatStream {
   messages: SdkMessage[]
@@ -23,25 +27,54 @@ export interface ChatStream {
   clearError: () => void
 }
 
-export function useChatStream(sessionId: string): ChatStream {
+export interface PermissionHandlers {
+  onRequest: (req: PermissionRequest) => void
+  onResolved: (res: PermissionResolved) => void
+}
+
+export function useChatStream(sessionId: string, permissions: PermissionHandlers): ChatStream {
   const [messages, setMessages] = useState<SdkMessage[]>([])
   const [queuedAhead, setQueuedAhead] = useState(0)
   const [error, setError] = useState<string | null>(null)
 
-  useSSE(`/api/sessions/${sessionId}/stream`, {
-    // Replay means we're rebuilding from history on (re)connect — we do NOT
-    // know how many of those user turns were ours in this tab, so leave the
-    // queued counter alone. It only tracks turns sent from this tab that
-    // haven't completed yet.
-    onReplay: (m) => setMessages((prev) => [...prev, m]),
-    onMessage: (m) => {
-      setMessages((prev) => [...prev, m])
-      if (m.type === 'result') {
-        setQueuedAhead((n) => (n > 0 ? n - 1 : 0))
-      }
-    },
-    onError: () => setError('Stream disconnected. Refresh the page to retry.'),
-  })
+  const events = useMemo(
+    () => ({
+      // History replay on connect — we DON'T adjust queuedAhead here because
+      // we can't tell which user turns in history were ours in this tab.
+      replay: (data: unknown) => {
+        const m = data as SdkMessage
+        if (m) setMessages((prev) => [...prev, m])
+      },
+      'replay-done': () => {
+        /* no-op marker; useful for future "loading" UI */
+      },
+      message: (data: unknown) => {
+        const m = data as SdkMessage
+        if (!m) return
+        setMessages((prev) => [...prev, m])
+        if (m.type === 'result') {
+          setQueuedAhead((n) => (n > 0 ? n - 1 : 0))
+        }
+      },
+      // Permission events ride on the same connection — route them out.
+      permission_request: (data: unknown) => {
+        permissions.onRequest(data as PermissionRequest)
+      },
+      permission_resolved: (data: unknown) => {
+        permissions.onResolved(data as PermissionResolved)
+      },
+    }),
+    [permissions],
+  )
+
+  const lifecycle = useMemo(
+    () => ({
+      onError: () => setError('Stream disconnected. Refresh the page to retry.'),
+    }),
+    [],
+  )
+
+  useNamedEventSource(`/api/sessions/${sessionId}/stream`, events, lifecycle)
 
   const trackSentTurn = useCallback(() => {
     setQueuedAhead((n) => n + 1)
@@ -55,8 +88,6 @@ export function useChatStream(sessionId: string): ChatStream {
 
   const clearError = useCallback(() => setError(null), [])
 
-  // Memoise so consumers can put the whole object in a useCallback dep
-  // list without re-creating downstream callbacks on every render.
   return useMemo(
     () => ({ messages, queuedAhead, error, trackSentTurn, reset, clearError }),
     [messages, queuedAhead, error, trackSentTurn, reset, clearError],

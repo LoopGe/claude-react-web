@@ -138,6 +138,31 @@ export interface SessionManagerOptions {
   /** When set, session metadata is persisted here so dormant sessions
    *  survive restarts. See server/persistence.ts. */
   store?: SessionStore
+  /** Absolute path to the `claude` CLI binary, injected into every
+   *  Query's Options.pathToClaudeCodeExecutable. Bypasses the SDK's
+   *  internal platform-native-package resolution, which can pick a
+   *  wrong libc variant on some systems. */
+  claudeBinary?: string
+}
+
+/** Global session-list update event. Broadcast whenever a session's
+ *  info changes (working toggled, turn completed, error set, etc.) so
+ *  the frontend sidebar can replace 5-second polling with a push feed. */
+export type GlobalSessionEvent =
+  | { kind: 'update'; session: SessionInfo }
+  | { kind: 'created'; session: SessionInfo }
+  | { kind: 'removed'; id: string }
+  /** A tool-permission request arrived for a session. Mirrored onto the
+   *  global channel (on top of the per-session /permissions/stream) so
+   *  that App-level code can fire a desktop notification even when the
+   *  session's Chat panel isn't mounted. `sessionId` lets the frontend
+   *  route-to-session on click. */
+  | { kind: 'permission_request'; sessionId: string; request: PermissionRequestSnapshot }
+
+interface GlobalSubscriber {
+  id: string
+  push: (ev: GlobalSessionEvent) => void
+  end: () => void
 }
 
 export class SessionManager {
@@ -146,9 +171,12 @@ export class SessionManager {
   private historyCap: number
   private gcTimer?: NodeJS.Timeout
   private store?: SessionStore
+  private claudeBinary?: string
+  private globalSubscribers = new Map<string, GlobalSubscriber>()
 
   constructor(opts: SessionManagerOptions = {}) {
     this.idleMs = opts.idleMs ?? DEFAULT_IDLE_MS
+    this.claudeBinary = opts.claudeBinary
     this.historyCap = opts.historyCap ?? HISTORY_CAP
     this.store = opts.store
     this.gcTimer = setInterval(() => this.gc(), 60_000)
@@ -157,9 +185,21 @@ export class SessionManager {
   }
 
   /** Write the current in-memory state of a session into the persistence
-   *  store. No-op when no store is configured. Debounced on the store side
-   *  so calling this on every tiny state change is fine. */
+   *  store and broadcast an update to global subscribers. No-op when no
+   *  store is configured. Debounced on the store side so calling this on
+   *  every tiny state change is fine. */
   private persist(s: Session): void {
+    this.writeStore(s)
+    this.broadcastGlobal({ kind: 'update', session: this.info(s) })
+  }
+
+  /** Write a session's metadata to the persistence store without
+   *  broadcasting on the global channel. Use from spawn() so the
+   *  subsequent `created` event is the only thing the frontend sees for
+   *  a brand-new session — if we also sent an `update` the client can't
+   *  tell which arrives first, which races with the optimistic POST
+   *  response and produces duplicate cards. */
+  private writeStore(s: Session): void {
     if (!this.store) return
     this.store.upsert({
       id: s.id,
@@ -174,6 +214,75 @@ export class SessionManager {
       error: s.error,
       lastTurnAt: s.lastTurnAt,
     })
+  }
+
+  private broadcastGlobal(ev: GlobalSessionEvent): void {
+    for (const sub of this.globalSubscribers.values()) sub.push(ev)
+  }
+
+  /** Subscribe to global session list changes. The returned iterable emits
+   *  {kind:update,session} on every persist() call and {kind:removed,id} on
+   *  delete(). Intended for a single SSE fan-out endpoint that replaces
+   *  periodic GET /sessions polling. */
+  subscribeGlobal(): {
+    iterable: AsyncIterable<GlobalSessionEvent>
+    snapshot: SessionInfo[]
+    unsubscribe: () => void
+  } {
+    const subId = randomUUID()
+    const queue: GlobalSessionEvent[] = []
+    let waiter: ((v: IteratorResult<GlobalSessionEvent>) => void) | null = null
+    let closed = false
+
+    const sub: GlobalSubscriber = {
+      id: subId,
+      push: (ev) => {
+        if (closed) return
+        if (waiter) {
+          const w = waiter
+          waiter = null
+          w({ value: ev, done: false })
+        } else {
+          queue.push(ev)
+        }
+      },
+      end: () => {
+        if (closed) return
+        closed = true
+        if (waiter) {
+          const w = waiter
+          waiter = null
+          w({ value: undefined as unknown as GlobalSessionEvent, done: true })
+        }
+      },
+    }
+    this.globalSubscribers.set(subId, sub)
+
+    const iterable: AsyncIterable<GlobalSessionEvent> = {
+      [Symbol.asyncIterator]: () => ({
+        next: (): Promise<IteratorResult<GlobalSessionEvent>> => {
+          if (queue.length) return Promise.resolve({ value: queue.shift()!, done: false })
+          if (closed) return Promise.resolve({ value: undefined as unknown as GlobalSessionEvent, done: true })
+          return new Promise((r) => {
+            waiter = r
+          })
+        },
+        return: (): Promise<IteratorResult<GlobalSessionEvent>> => {
+          sub.end()
+          this.globalSubscribers.delete(subId)
+          return Promise.resolve({ value: undefined as unknown as GlobalSessionEvent, done: true })
+        },
+      }),
+    }
+
+    return {
+      iterable,
+      snapshot: this.list(),
+      unsubscribe: () => {
+        sub.end()
+        this.globalSubscribers.delete(subId)
+      },
+    }
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
@@ -235,6 +344,14 @@ export class SessionManager {
     // can still override to false if they prefer batched messages only.
     if (fullOpts.includePartialMessages === undefined) {
       fullOpts.includePartialMessages = true
+    }
+    // Inject the server-wide `claude` binary path unless the caller has
+    // already specified one. This is the fix for the SDK's musl/glibc
+    // resolution bug on Linux: the native binary subpackage can be
+    // resolved to the wrong libc flavour, and the process would then
+    // fail to exec. Passing an explicit path side-steps the lookup.
+    if (!fullOpts.pathToClaudeCodeExecutable && this.claudeBinary) {
+      fullOpts.pathToClaudeCodeExecutable = this.claudeBinary
     }
 
     // The session struct needs to exist before canUseTool fires (the SDK can
@@ -316,7 +433,13 @@ export class SessionManager {
 
     session.pumpTask = this.pump(session)
     this.sessions.set(id, session)
-    this.persist(session)
+    // Brand-new session (or a resume, which also "creates" as far as the
+    // UI list is concerned): persist to disk, then broadcast `created`
+    // instead of `update`. The frontend `created` handler is the one
+    // that knows how to insert, so there's a single canonical origin
+    // for the row — no races with the POST /sessions response.
+    this.writeStore(session)
+    this.broadcastGlobal({ kind: 'created', session: this.info(session) })
     return this.info(session)
   }
 
@@ -325,6 +448,11 @@ export class SessionManager {
     const s = this.require(id)
     if (s.terminated) {
       throw new HttpError(410, `session ${id} is terminated`)
+    }
+    if (!s.running) {
+      // The Query has been unloaded (idle GC or graceful shutdown). The
+      // caller should POST /resume first rather than retrying send().
+      throw new HttpError(409, `session ${id} is not running; resume it first`)
     }
     const userMsg: SDKUserMessage = {
       type: 'user',
@@ -353,14 +481,14 @@ export class SessionManager {
 
   /** Interrupt the current assistant turn. */
   async interrupt(id: string): Promise<void> {
-    const s = this.require(id)
+    const s = this.requireLive(id)
     await s.query.interrupt()
     s.lastActivityAt = Date.now()
     this.persist(s)
   }
 
   async setModel(id: string, model?: string): Promise<SessionInfo> {
-    const s = this.require(id)
+    const s = this.requireLive(id)
     await s.query.setModel(model)
     s.model = model
     s.lastActivityAt = Date.now()
@@ -368,8 +496,31 @@ export class SessionManager {
     return this.info(s)
   }
 
+  /** Rename a session. Accepts both live and dormant sessions (title is
+   *  pure UI metadata — no SDK call needed). Empty string / whitespace
+   *  clears the title so the UI falls back to the id prefix. */
+  rename(id: string, title: string): SessionInfo {
+    // Look up either a live session or a dormant one.
+    const live = this.sessions.get(id)
+    const trimmed = title.trim() || undefined
+    if (live) {
+      live.title = trimmed
+      live.lastActivityAt = Date.now()
+      this.persist(live)
+      return this.info(live)
+    }
+    if (!this.store) throw new HttpError(404, `session ${id} not found`)
+    const meta = this.store.get(id)
+    if (!meta) throw new HttpError(404, `session ${id} not found`)
+    const nextMeta: SessionMeta = { ...meta, title: trimmed, lastActivityAt: Date.now() }
+    this.store.upsert(nextMeta)
+    const info = this.infoFromMeta(nextMeta)
+    this.broadcastGlobal({ kind: 'update', session: info })
+    return info
+  }
+
   async setPermissionMode(id: string, mode: PermissionMode): Promise<SessionInfo> {
-    const s = this.require(id)
+    const s = this.requireLive(id)
     await s.query.setPermissionMode(mode)
     s.permissionMode = mode
     s.lastActivityAt = Date.now()
@@ -378,34 +529,34 @@ export class SessionManager {
   }
 
   async applySettings(id: string, settings: Settings): Promise<SessionInfo> {
-    const s = this.require(id)
+    const s = this.requireLive(id)
     await s.query.applyFlagSettings(settings)
     s.lastActivityAt = Date.now()
     return this.info(s)
   }
 
   async supportedModels(id: string) {
-    const s = this.require(id)
+    const s = this.requireLive(id)
     return s.query.supportedModels()
   }
 
   async supportedCommands(id: string) {
-    const s = this.require(id)
+    const s = this.requireLive(id)
     return s.query.supportedCommands()
   }
 
   async supportedAgents(id: string) {
-    const s = this.require(id)
+    const s = this.requireLive(id)
     return s.query.supportedAgents()
   }
 
   async mcpServerStatus(id: string) {
-    const s = this.require(id)
+    const s = this.requireLive(id)
     return s.query.mcpServerStatus()
   }
 
   async contextUsage(id: string) {
-    const s = this.require(id)
+    const s = this.requireLive(id)
     return s.query.getContextUsage()
   }
 
@@ -554,6 +705,10 @@ export class SessionManager {
     for (const sub of session.permissionSubscribers.values()) {
       sub.push({ kind: 'request', payload: snapshot })
     }
+    // Also fan out to the global session channel so App-level code can
+    // notify even when the Chat panel isn't mounted (e.g. the session
+    // is dormant or open in a panel the user isn't looking at).
+    this.broadcastGlobal({ kind: 'permission_request', sessionId: session.id, request: snapshot })
   }
 
   private broadcastPermissionResolved(
@@ -643,6 +798,7 @@ export class SessionManager {
   async delete(id: string): Promise<void> {
     await this.unload(id, { terminate: true })
     this.store?.remove(id)
+    this.broadcastGlobal({ kind: 'removed', id })
   }
 
   /** Close the Query and drop the in-memory session, but keep metadata on
@@ -733,6 +889,20 @@ export class SessionManager {
     return s
   }
 
+  /** Like require(), but additionally insists the Query is still live.
+   *  Use for any method that forwards a control request to the SDK — the
+   *  subprocess's stdin is closed once `running` flips to false, so a
+   *  subsequent `supportedModels` / `getContextUsage` / etc. would otherwise
+   *  throw `ProcessTransport is not ready for writing` from deep in the
+   *  SDK and end up as an unhandled error in the Hono router. */
+  private requireLive(id: string): Session {
+    const s = this.require(id)
+    if (!s.running) {
+      throw new HttpError(410, `session ${id} is not running`)
+    }
+    return s
+  }
+
   private info(s: Session): SessionInfo {
     return {
       id: s.id,
@@ -795,6 +965,11 @@ export class SessionManager {
       }
     } catch (err) {
       session.error = err instanceof Error ? err.message : String(err)
+      // Log with full context — the message alone often omits the stack
+      // frame that points at the real culprit (e.g. missing API key,
+      // model name typo, CLI subprocess failed to spawn). Without this
+      // the frontend just shows a generic "err" badge with no clue.
+      console.error(`[session ${session.id}] pump error:`, err)
       // Broadcast a synthetic error message so subscribers know what happened.
       const synthetic: SDKMessage = {
         type: 'system',

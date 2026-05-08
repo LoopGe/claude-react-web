@@ -1,14 +1,15 @@
-// Tool-permission channel for one Chat session.
+// Tool-permission state for one Chat session.
 //
-// Subscribes to /api/sessions/:id/permissions/stream, merges new pending
-// requests with an initial snapshot fetched over REST (covers the race
-// where a request was broadcast before our SSE connected), and exposes
-// `decide()` to resolve them.
+// This hook does NOT open its own SSE connection — permission events are
+// multiplexed onto the main /stream channel (see server/routes.ts). The
+// caller routes `permission_request` / `permission_resolved` frames into
+// `onRequest()` / `onResolved()`. We still keep a one-shot REST fallback
+// to seed the initial pending list, covering the race where a request
+// was broadcast before our SSE opened.
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { api } from './useApi'
-import { useNamedEventSource } from './useSSE'
 import type { PermissionRequest, PermissionResolved } from '../types'
 
 export type PermissionDecision =
@@ -19,6 +20,10 @@ export interface UsePermissionChannel {
   pending: PermissionRequest[]
   error: string | null
   decide: (pid: string, decision: PermissionDecision) => Promise<void>
+  /** Push a permission_request event into the local state. */
+  onRequest: (req: PermissionRequest) => void
+  /** Push a permission_resolved event into the local state. */
+  onResolved: (res: PermissionResolved) => void
   reset: () => void
   clearError: () => void
 }
@@ -27,9 +32,9 @@ export function usePermissionChannel(sessionId: string): UsePermissionChannel {
   const [pending, setPending] = useState<PermissionRequest[]>([])
   const [error, setError] = useState<string | null>(null)
 
-  // Initial snapshot of pending permission requests — covers the case
-  // where the permission SSE subscription hadn't opened yet when the
-  // request was broadcast (e.g. after a hard refresh).
+  // Initial snapshot — the SSE connection will re-broadcast any still-open
+  // request on connect, but grabbing the REST snapshot makes the modal
+  // appear immediately after a hard refresh even before the stream opens.
   useEffect(() => {
     let cancelled = false
     api
@@ -46,23 +51,15 @@ export function usePermissionChannel(sessionId: string): UsePermissionChannel {
     }
   }, [sessionId])
 
-  // Stable handler map so the EventSource isn't torn down on every render.
-  const events = useMemo(
-    () => ({
-      permission_request: (payload: unknown) => {
-        const req = payload as PermissionRequest | null
-        if (!req?.id) return
-        setPending((prev) => mergePending(prev, [req]))
-      },
-      permission_resolved: (payload: unknown) => {
-        const res = payload as PermissionResolved | null
-        if (!res?.id) return
-        setPending((prev) => prev.filter((p) => p.id !== res.id))
-      },
-    }),
-    [],
-  )
-  useNamedEventSource(`/api/sessions/${sessionId}/permissions/stream`, events)
+  const onRequest = useCallback((req: PermissionRequest) => {
+    if (!req?.id) return
+    setPending((prev) => mergePending(prev, [req]))
+  }, [])
+
+  const onResolved = useCallback((res: PermissionResolved) => {
+    if (!res?.id) return
+    setPending((prev) => prev.filter((p) => p.id !== res.id))
+  }, [])
 
   const decide = useCallback(
     async (pid: string, decision: PermissionDecision) => {
@@ -94,8 +91,8 @@ export function usePermissionChannel(sessionId: string): UsePermissionChannel {
   const clearError = useCallback(() => setError(null), [])
 
   return useMemo(
-    () => ({ pending, error, decide, reset, clearError }),
-    [pending, error, decide, reset, clearError],
+    () => ({ pending, error, decide, onRequest, onResolved, reset, clearError }),
+    [pending, error, decide, onRequest, onResolved, reset, clearError],
   )
 }
 

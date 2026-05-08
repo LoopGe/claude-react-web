@@ -30,6 +30,14 @@ interface Props {
   history: InputHistoryApi
   onSend: () => void
   onInterrupt: () => void
+  /** True only while there's an outstanding turn the server can interrupt.
+   *  When no turn is in flight, Interrupt is a no-op, and leaving the
+   *  button active just confuses users. */
+  canInterrupt: boolean
+  /** Bump this number whenever the parent wants the textarea refocused
+   *  (e.g. after a successful send, where the click on the Send button
+   *  would otherwise leave focus on the button). */
+  focusSignal?: number
 }
 
 export function Composer({
@@ -49,6 +57,8 @@ export function Composer({
   history,
   onSend,
   onInterrupt,
+  canInterrupt,
+  focusSignal,
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -74,6 +84,15 @@ export function Composer({
   useEffect(() => {
     textareaRef.current?.focus()
   }, [])
+
+  // Refocus on parent request (e.g. after send, where clicking the Send
+  // button moved focus off the textarea). A number signal instead of a
+  // boolean so repeated identical requests still fire — every increment
+  // is a distinct event even if the previous one hadn't settled.
+  useEffect(() => {
+    if (focusSignal == null) return
+    textareaRef.current?.focus()
+  }, [focusSignal])
 
   const openFilePicker = () => fileInputRef.current?.click()
 
@@ -176,7 +195,12 @@ export function Composer({
         <button className="btn btn-primary" onClick={onSend} disabled={!canSend}>
           {sending ? 'Sending…' : 'Send'}
         </button>
-        <button className="btn btn-danger" onClick={onInterrupt} disabled={disabled}>
+        <button
+          className="btn btn-danger"
+          onClick={onInterrupt}
+          disabled={disabled || !canInterrupt}
+          title={canInterrupt ? 'Interrupt the current turn' : 'Nothing to interrupt'}
+        >
           Interrupt
         </button>
       </div>

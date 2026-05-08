@@ -51,6 +51,18 @@ button { cursor: pointer; }
   border-color: #4a2c2c;
 }
 .btn-danger:hover:not(:disabled) { background: #2a1c1c; }
+/* Square icon button for header toggles (bell, etc.). Same height as
+   regular .btn but fixed-width and bigger glyph. */
+.btn-icon {
+  padding: 4px 8px;
+  min-width: 34px;
+  font-size: 15px;
+  line-height: 1;
+}
+.btn-icon.active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+}
 
 .input, .textarea, .select {
   background: var(--bg-elev);
@@ -68,8 +80,9 @@ button { cursor: pointer; }
 
 /* Layout */
 .app {
+  --sidebar-width: 280px;
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: var(--sidebar-width) 1fr;
   height: 100vh;
   /* Grid items default to min-height: auto (= content size), which lets the
      chat message list push the whole page taller than the viewport. Every
@@ -77,16 +90,43 @@ button { cursor: pointer; }
   overflow: hidden;
 }
 .app:has(.settings-panel) {
-  grid-template-columns: 280px 1fr 380px;
+  grid-template-columns: var(--sidebar-width) 1fr 380px;
 }
 
 .sidebar {
+  position: relative;
   background: var(--bg-elev);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
   min-height: 0;
+}
+
+/* Vertical drag handle sitting on the sidebar's right edge. 4px wide +
+   invisible most of the time, highlights on hover / during drag. The
+   actual resize logic lives in App.tsx via mousedown+mousemove. */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: -2px;
+  width: 4px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 5;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+.sidebar-resizer:hover,
+.sidebar-resizer.dragging {
+  background: var(--accent);
+}
+/* When dragging, lock the cursor globally so it stays col-resize even when
+   the pointer briefly leaves the handle. */
+body.resizing-col,
+body.resizing-col * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 
 .brand {
@@ -123,19 +163,30 @@ button { cursor: pointer; }
 .session-meta { color: var(--fg-muted); font-size: 12px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty-title { color: var(--fg-muted); }
 
-/* main-body holds up to MAX_OPEN chat panels in equal columns. Columns are
-   sized via a data attribute so the grid template doesn't bake the max in. */
+/* main-body holds up to MAX_OPEN chat panels. The grid-template-columns
+   is set inline (App.tsx) so dividers are real grid tracks rather than
+   gaps, giving us a hoverable/draggable bar between panels. */
 .main-body {
   flex: 1;
   min-height: 0;
   display: grid;
   grid-template-columns: 1fr;
-  gap: 1px;
   background: var(--border);
   overflow: hidden;
 }
-.main-body[data-panel-count="2"] { grid-template-columns: 1fr 1fr; }
-.main-body[data-panel-count="3"] { grid-template-columns: 1fr 1fr 1fr; }
+
+/* 4px vertical divider between two open panels — sits exactly on the
+   border, becomes the accent colour while hovered / dragged. */
+.panel-divider {
+  cursor: col-resize;
+  background: var(--border);
+  transition: background 0.15s ease;
+  z-index: 2;
+}
+.panel-divider:hover,
+.panel-divider.dragging {
+  background: var(--accent);
+}
 
 /* One chat column. The gap between columns is faked via grid-gap + bg, so
    each panel is opaque on top of the divider. Focused panel gets a subtle
@@ -150,6 +201,10 @@ button { cursor: pointer; }
   overflow: hidden;
 }
 .chat-panel.focused { border-top-color: var(--accent); }
+.chat-panel.drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+}
 .chat-panel-header {
   display: flex;
   align-items: center;
@@ -158,7 +213,11 @@ button { cursor: pointer; }
   background: var(--bg-elev);
   border-bottom: 1px solid var(--border);
   font-size: 12px;
+  /* The header is the panel's drag handle — hint that visually. */
+  cursor: grab;
+  user-select: none;
 }
+.chat-panel-header:active { cursor: grabbing; }
 .chat-panel-title {
   font-weight: 600;
   overflow: hidden;
@@ -226,7 +285,29 @@ button { cursor: pointer; }
 .session-list-top {
   padding: 12px;
   border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
+.session-filter {
+  position: relative;
+  display: flex;
+}
+.session-filter .input { width: 100%; padding-right: 26px; }
+.session-filter-clear {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+.session-filter-clear:hover { background: var(--bg-elev-2); color: var(--fg); }
 .session-item {
   display: flex;
   flex-direction: column;
@@ -243,15 +324,153 @@ button { cursor: pointer; }
 .session-item.terminated { opacity: 0.6; }
 .session-item.dormant { opacity: 0.75; border-style: dashed; }
 .session-item.resuming { cursor: progress; opacity: 0.5; }
+/* Inline rename input: mimics the title's text styling so the card
+   doesn't visually jump when entering edit mode. */
+.session-item-rename-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  color: var(--fg);
+  font: inherit;
+  font-weight: 600;
+  padding: 1px 4px;
+  outline: none;
+}
+
+/* Error summary line — truncated one-liner under the title, full text
+   available via the badge + this line's own tooltip. */
+.session-item-error {
+  font-size: 11px;
+  color: var(--danger);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+
+/* Per-panel permission overlay. Unlike the full-screen modal it used to
+   be, this one only covers its own chat panel — the other 1-2 panels
+   in the grid stay fully interactive while the user decides. */
+.perm-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--bg) 65%, transparent);
+  backdrop-filter: blur(2px);
+  z-index: 4;
+}
+.perm-card {
+  width: min(520px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+}
+
+/* Custom right-click menu. Positioned absolutely by the parent. */
+.ctx-menu {
+  position: fixed;
+  min-width: 180px;
+  padding: 4px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  font-size: 13px;
+  user-select: none;
+}
+.ctx-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  background: none;
+  border: none;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+  border-radius: 4px;
+  font: inherit;
+}
+.ctx-menu-item:hover:not(:disabled) { background: var(--bg-elev-2); }
+.ctx-menu-item:disabled { color: var(--fg-muted); cursor: not-allowed; }
+.ctx-menu-item.danger { color: var(--danger); }
+.ctx-menu-item.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+}
+.ctx-menu-icon {
+  display: inline-block;
+  width: 14px;
+  text-align: center;
+  opacity: 0.75;
+}
+.ctx-menu-label { flex: 1; }
+.ctx-menu-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 2px;
+}
+/* Drag & drop — visual feedback only. The reorder is driven by React state
+   (sidebarOrder in App.tsx), so the DOM only reshuffles AFTER drop, not
+   during hover. */
+.session-item { cursor: grab; }
+.session-item:active { cursor: grabbing; }
+.session-item.dragging { opacity: 0.35; }
+/* An insertion line painted either above or below the hovered card. We
+   use an outline on a pseudo-element so it doesn't steal pointer events. */
+.session-item.drop-before { box-shadow: 0 -2px 0 var(--accent) inset; }
+.session-item.drop-after { box-shadow: 0 2px 0 var(--accent) inset; }
+.session-item.focused.drop-before,
+.session-item.focused.drop-after { box-shadow: inset 2px 0 0 var(--accent), 0 -2px 0 var(--accent) inset; }
 /* A session whose panel is currently open (but not the one focused) —
-   slightly raised background so users see which ones are in the grid. */
-.session-item.open { background: var(--bg-elev-2); }
-/* The focused panel gets the strongest highlight — matches the accent
-   border on the chat panel itself. */
+   dashed accent border on the left + slightly raised background, so all
+   open sessions are obviously distinct from unopened ones even when none
+   of them is focused. */
+.session-item.open {
+  background: var(--bg-elev-2);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
+}
+/* The focused panel wins the strongest highlight — solid accent stripe
+   + accent border. Matches the accent border on the chat panel itself. */
 .session-item.focused {
   background: var(--bg-elev-2);
   border-color: var(--accent);
-  box-shadow: inset 2px 0 0 var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+/* Slot pill: small square badge to the left of the title that shows
+   which main-area column this session occupies. Hollow for open,
+   filled for focused. */
+.session-item-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  border-radius: 4px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  vertical-align: middle;
+}
+.session-item-slot.focused {
+  background: var(--accent);
+  color: var(--bg);
 }
 /* Unread sessions nudge the title right to make room for the dot. */
 .session-item-unread {
@@ -325,6 +544,18 @@ button { cursor: pointer; }
   flex: 1;
   min-width: 0;
   min-height: 0;
+  /* Establish a containing block for the per-panel permission overlay. */
+  position: relative;
+}
+/* Wraps the scroll container so a jump-to-bottom button can sit on top
+   of it (absolutely positioned). The wrap takes the same flex space the
+   inner scroll used to. */
+.chat-messages-wrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
 }
 .chat-messages {
   flex: 1;
@@ -339,6 +570,41 @@ button { cursor: pointer; }
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+/* Floating "scroll to bottom" button — visible only when the user has
+   scrolled up. Shows a count badge when new messages arrived meanwhile. */
+.chat-jump-to-bottom {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--bg);
+  border: none;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  z-index: 3;
+}
+.chat-jump-to-bottom:hover { filter: brightness(1.08); }
+.chat-jump-to-bottom-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  background: var(--bg);
+  color: var(--accent);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
 }
 /* Context-usage progress bar, sits between the message list and composer.
    The composer below owns the top divider; this component just sits flush

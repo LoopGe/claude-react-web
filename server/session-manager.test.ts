@@ -151,6 +151,36 @@ describe('SessionManager', () => {
     expect(mockHandles[0].options.resume).toBeUndefined()
   })
 
+  it('global stream emits `created` on spawn and `update` on subsequent changes', async () => {
+    const sub = sm.subscribeGlobal()
+    const it = sub.iterable[Symbol.asyncIterator]()
+    const info = sm.create({})
+    const first = await it.next()
+    expect(first.done).toBe(false)
+    expect(first.value).toMatchObject({ kind: 'created', session: { id: info.id } })
+    // Triggering a send → result cycle should emit `update`, never a
+    // second `created` (that would cause the frontend to draw two cards).
+    sm.send(info.id, 'hi')
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    // The pending persist after send() and the persist after result both
+    // emit one `update` event each; poll until we see at least one.
+    const kinds: string[] = []
+    // Drain whatever's queued up in the next two steps.
+    for (let i = 0; i < 4; i++) {
+      const next = await Promise.race([
+        it.next(),
+        new Promise<IteratorResult<unknown>>((r) => setTimeout(() => r({ value: null, done: true }), 50)),
+      ])
+      if (next.done) break
+      const ev = next.value as { kind: string }
+      kinds.push(ev.kind)
+    }
+    expect(kinds.length).toBeGreaterThan(0)
+    for (const k of kinds) expect(k).toBe('update')
+    sub.unsubscribe()
+  })
+
   it('send() marks the session as working; result clears it and stamps lastTurnAt', async () => {
     const info = sm.create({})
     sm.send(info.id, 'hi')
@@ -328,5 +358,27 @@ describe('SessionManager', () => {
     await sm.setModel(info.id, 'new-model')
     expect(mockHandles[0].setModel).toHaveBeenCalledWith('new-model')
     expect(sm.get(info.id).model).toBe('new-model')
+  })
+
+  it('rename() updates title on a live session', () => {
+    const info = sm.create({ title: 'before' })
+    const updated = sm.rename(info.id, 'after')
+    expect(updated.title).toBe('after')
+    expect(sm.get(info.id).title).toBe('after')
+  })
+
+  it('rename() updates title on a dormant session', async () => {
+    const info = sm.create({ title: 'alive' })
+    await sm.unload(info.id)
+    const updated = sm.rename(info.id, 'dormant-renamed')
+    expect(updated.title).toBe('dormant-renamed')
+    await store.flush()
+    expect(store.get(info.id)?.title).toBe('dormant-renamed')
+  })
+
+  it('rename() with blank string clears the title', () => {
+    const info = sm.create({ title: 'keep me' })
+    const updated = sm.rename(info.id, '   ')
+    expect(updated.title).toBeUndefined()
   })
 })

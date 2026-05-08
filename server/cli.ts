@@ -4,6 +4,8 @@
 // --no-open) opens the user's default browser at the served URL.
 
 import { serve } from '@hono/node-server'
+import { execSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import open from 'open'
 import { buildApp } from './app.js'
 import { SessionStore, defaultStateDir } from './persistence.js'
@@ -15,7 +17,48 @@ interface CliArgs {
   cwd?: string
   model?: string
   stateDir?: string
+  claudeBinary?: string
   help: boolean
+}
+
+/** Resolve the absolute path to the `claude` CLI binary.
+ *
+ *  Priority:
+ *   1. Explicit CLI flag (--claude-binary)
+ *   2. CLAUDE_CODE_BINARY env var
+ *   3. `which claude` lookup on the shell PATH
+ *   4. undefined → let the SDK fall back to its own resolution
+ *
+ *  Why this matters: `@anthropic-ai/claude-agent-sdk` bundles platform-
+ *  specific native binary packages (e.g. -linux-x64-musl, -linux-x64).
+ *  npm ought to install only the matching one, but on at least some
+ *  glibc hosts npm installs both AND the SDK picks the musl path first,
+ *  which then fails to exec (no musl linker on glibc systems). Passing
+ *  a real path via Options.pathToClaudeCodeExecutable side-steps the
+ *  whole detection path. */
+function resolveClaudeBinary(explicit: string | undefined): string | undefined {
+  if (explicit) {
+    if (!existsSync(explicit)) {
+      console.warn(`[cli] --claude-binary ${explicit} does not exist; ignoring`)
+    } else {
+      return explicit
+    }
+  }
+  const fromEnv = process.env.CLAUDE_CODE_BINARY
+  if (fromEnv) {
+    if (!existsSync(fromEnv)) {
+      console.warn(`[cli] CLAUDE_CODE_BINARY=${fromEnv} does not exist; ignoring`)
+    } else {
+      return fromEnv
+    }
+  }
+  try {
+    const out = execSync('which claude', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    if (out && existsSync(out)) return out
+  } catch {
+    /* claude not on PATH — fall through */
+  }
+  return undefined
 }
 
 const HELP = `
@@ -32,6 +75,11 @@ Options:
       --cwd <path>     Default cwd advertised to new sessions (informational)
       --model <name>   Default model advertised to new sessions (informational)
       --state-dir <p>  Where to keep session metadata (default: ~/.claude-react-web)
+      --claude-binary <path>
+                       Path to the claude CLI binary. Default: resolved from
+                       CLAUDE_CODE_BINARY env or \`which claude\`. Use this if
+                       the SDK's auto-detection picks a wrong native build
+                       (e.g. musl binary on a glibc host).
   -h, --help           Show this help and exit
 `.trim()
 
@@ -75,6 +123,9 @@ function parseArgs(argv: string[]): CliArgs {
       case '--state-dir':
         args.stateDir = next()
         break
+      case '--claude-binary':
+        args.claudeBinary = next()
+        break
       case '-h':
       case '--help':
         args.help = true
@@ -101,9 +152,19 @@ async function main() {
     console.log(`[cli] loaded ${loaded.length} session(s) from ${stateDir}`)
   }
 
+  const claudeBinary = resolveClaudeBinary(args.claudeBinary)
+  if (claudeBinary) {
+    console.log(`[cli] using claude binary: ${claudeBinary}`)
+  } else {
+    console.log(
+      '[cli] no claude binary explicitly set — relying on SDK auto-detection ' +
+        '(if sessions fail with "Claude Code native binary not found", pass --claude-binary)',
+    )
+  }
+
   const { app, sessionManager } = buildApp({
     sessionStore: store,
-    defaults: { cwd: args.cwd, model: args.model },
+    defaults: { cwd: args.cwd, model: args.model, claudeBinary },
   })
   const url = `http://${args.host}:${args.port}`
 

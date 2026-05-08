@@ -20,8 +20,10 @@ export interface AppOptions {
    *  is constructed wired up to this store. Ignored when `sessionManager`
    *  is supplied (assume the caller already wired it). */
   sessionStore?: SessionStore
-  /** Default values exposed via GET /api/config (used by the "new session" form). */
-  defaults?: { cwd?: string; model?: string }
+  /** Default values exposed via GET /api/config (used by the "new session" form).
+   *  `claudeBinary` is NOT exposed to the UI — it's a server-side concern
+   *  that gets injected into every Query via options.pathToClaudeCodeExecutable. */
+  defaults?: { cwd?: string; model?: string; claudeBinary?: string }
 }
 
 /**
@@ -45,7 +47,9 @@ function resolveClientDir(override?: string): string | null {
 }
 
 export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: SessionManager } {
-  const sessionManager = opts.sessionManager ?? new SessionManager({ store: opts.sessionStore })
+  const sessionManager =
+    opts.sessionManager ??
+    new SessionManager({ store: opts.sessionStore, claudeBinary: opts.defaults?.claudeBinary })
   const app = new Hono()
 
   app.use('*', cors({ origin: (o) => o ?? '*', credentials: false }))

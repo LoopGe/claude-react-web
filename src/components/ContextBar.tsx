@@ -21,15 +21,19 @@ interface Props {
   sessionId: string
   /** Whenever this value changes we refetch usage. */
   refreshKey: number
+  /** Skip the fetch entirely when the session isn't running — its SDK
+   *  subprocess is already closed and /context-usage returns 410. */
+  running: boolean
 }
 
-export function ContextBar({ sessionId, refreshKey }: Props) {
+export function ContextBar({ sessionId, refreshKey, running }: Props) {
   const [used, setUsed] = useState<number | null>(null)
   const [max, setMax] = useState<number | null>(null)
   const [pct, setPct] = useState<number | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
   useEffect(() => {
+    if (!running) return
     let cancelled = false
     api
       .get<UsageResponse>(`/sessions/${sessionId}/context-usage`)
@@ -53,7 +57,7 @@ export function ContextBar({ sessionId, refreshKey }: Props) {
     return () => {
       cancelled = true
     }
-  }, [sessionId, refreshKey])
+  }, [sessionId, refreshKey, running])
 
   if (err && used == null) {
     // First load failed — hide the bar entirely. A subsequent successful

@@ -23,7 +23,7 @@ export function buildApiRouter(sm: SessionManager): Hono {
 
   app.onError((err, c) => {
     if (err instanceof HttpError) {
-      return c.json({ error: err.message }, err.status as 400 | 404 | 410 | 500)
+      return c.json({ error: err.message }, err.status as 400 | 404 | 409 | 410 | 500)
     }
     console.error('[api] unhandled error:', err)
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500)
@@ -32,8 +32,43 @@ export function buildApiRouter(sm: SessionManager): Hono {
   // Health / version
   app.get('/health', (c) => c.json({ ok: true, sessions: sm.list().length }))
 
-  // List sessions
+  // List sessions (snapshot only — for push-based updates subscribe to
+  // /sessions/events instead of polling this).
   app.get('/sessions', (c) => c.json({ sessions: sm.list() }))
+
+  // Global session-list SSE. Emits initial snapshot then live updates
+  // (kind: update | created | removed). Lets the sidebar drop its 5s
+  // poll, which otherwise competed with per-session streams for the
+  // browser's 6-connection budget.
+  app.get('/sessions/events', (c) => {
+    const sub = sm.subscribeGlobal()
+
+    c.header('Content-Type', 'text/event-stream')
+    c.header('Cache-Control', 'no-cache, no-transform')
+    c.header('Connection', 'keep-alive')
+    c.header('X-Accel-Buffering', 'no')
+
+    return stream(c, async (s) => {
+      const heartbeat = setInterval(() => {
+        s.write(': hb\n\n').catch(() => {})
+      }, 15_000)
+      s.onAbort(() => {
+        clearInterval(heartbeat)
+        sub.unsubscribe()
+      })
+      try {
+        // Send initial snapshot so the subscriber doesn't need a separate
+        // GET /sessions round-trip on boot.
+        await s.write(`event: snapshot\ndata: ${JSON.stringify({ sessions: sub.snapshot })}\n\n`)
+        for await (const ev of sub.iterable) {
+          await s.write(`event: ${ev.kind}\ndata: ${JSON.stringify(ev)}\n\n`)
+        }
+      } finally {
+        clearInterval(heartbeat)
+        sub.unsubscribe()
+      }
+    })
+  })
 
   // Create session
   app.post('/sessions', async (c) => {
@@ -52,6 +87,20 @@ export function buildApiRouter(sm: SessionManager): Hono {
   app.delete('/sessions/:id', async (c) => {
     await sm.delete(c.req.param('id'))
     return c.json({ ok: true })
+  })
+
+  // Patch session metadata. Currently the only mutable field is `title`.
+  // Unknown fields are ignored (forward-compatible). Accepts both live
+  // and dormant sessions so the user can rename a terminated session
+  // before deleting it.
+  app.patch('/sessions/:id', async (c) => {
+    const id = c.req.param('id')
+    const body = await c.req.json<{ title?: string }>().catch(() => ({}) as { title?: string })
+    if (typeof body.title !== 'string') {
+      return c.json({ error: 'title is required' }, 400)
+    }
+    const info = sm.rename(id, body.title)
+    return c.json({ session: info })
   })
 
   // Resume a dormant (persisted but unloaded) session. Idempotent — calling
@@ -185,9 +234,17 @@ export function buildApiRouter(sm: SessionManager): Hono {
   })
 
   // SSE live stream. Replays history on connect, then streams live events.
+  //
+  // Multiplexes SDK messages AND permission events onto a single connection,
+  // so a 3-panel grid stays within the browser's 6-connection HTTP/1.1 cap
+  // (otherwise each session burned 2 connections and three-up ran the tab
+  // out of slots — which is what made "sending gets stuck" look like the
+  // app had frozen). The standalone /permissions/stream is kept for
+  // backwards compatibility but the frontend no longer subscribes to it.
   app.get('/sessions/:id/stream', (c) => {
     const id = c.req.param('id')
-    const { iterable, history, unsubscribe } = sm.subscribe(id)
+    const msg = sm.subscribe(id)
+    const perms = sm.subscribePermissions(id)
 
     c.header('Content-Type', 'text/event-stream')
     c.header('Cache-Control', 'no-cache, no-transform')
@@ -195,30 +252,76 @@ export function buildApiRouter(sm: SessionManager): Hono {
     c.header('X-Accel-Buffering', 'no')
 
     return stream(c, async (s) => {
-      // Keep the connection alive with a comment every 15s. EventSource
-      // silently ignores colon-prefixed lines.
       const heartbeat = setInterval(() => {
         s.write(': hb\n\n').catch(() => {})
       }, 15_000)
 
-      s.onAbort(() => {
+      const cleanup = () => {
         clearInterval(heartbeat)
-        unsubscribe()
-      })
+        msg.unsubscribe()
+        perms.unsubscribe()
+      }
+      s.onAbort(cleanup)
 
       try {
-        // Replay history first so a reconnecting client sees past messages.
-        for (const msg of history) {
-          await s.write(`event: replay\ndata: ${JSON.stringify(msg)}\n\n`)
+        // 1) Replay message history.
+        for (const m of msg.history) {
+          await s.write(`event: replay\ndata: ${JSON.stringify(m)}\n\n`)
+        }
+        // 2) Replay still-pending permission requests so a reconnecting
+        //    client re-opens any open modal instead of missing it forever.
+        for (const p of perms.snapshot) {
+          await s.write(`event: permission_request\ndata: ${JSON.stringify(p)}\n\n`)
         }
         await s.write(`event: replay-done\ndata: {}\n\n`)
 
-        for await (const msg of iterable) {
-          await s.write(`event: message\ndata: ${JSON.stringify(msg)}\n\n`)
+        // 3) Race the two live iterables. We can't `for await` two streams
+        //    sequentially; we drive them concurrently and write as events
+        //    arrive. Each iterator's next() returns either {value, done} or
+        //    we treat a rejection as "channel ended" and drop out.
+        const msgIter = msg.iterable[Symbol.asyncIterator]()
+        const permIter = perms.iterable[Symbol.asyncIterator]()
+
+        type Tagged =
+          | { kind: 'msg'; result: IteratorResult<unknown> }
+          | { kind: 'perm'; result: IteratorResult<unknown> }
+
+        const tag = async (
+          kind: 'msg' | 'perm',
+          it: AsyncIterator<unknown>,
+        ): Promise<Tagged> => ({ kind, result: await it.next() })
+
+        let msgP: Promise<Tagged> | null = tag('msg', msgIter)
+        let permP: Promise<Tagged> | null = tag('perm', permIter)
+
+        while (msgP || permP) {
+          const pending: Promise<Tagged>[] = []
+          if (msgP) pending.push(msgP)
+          if (permP) pending.push(permP)
+          const winner = await Promise.race(pending)
+          if (winner.kind === 'msg') {
+            if (winner.result.done) msgP = null
+            else {
+              await s.write(`event: message\ndata: ${JSON.stringify(winner.result.value)}\n\n`)
+              msgP = tag('msg', msgIter)
+            }
+          } else {
+            if (winner.result.done) permP = null
+            else {
+              const ev = winner.result.value as { kind: 'request' | 'resolved' } & Record<string, unknown>
+              if (ev.kind === 'request') {
+                await s.write(`event: permission_request\ndata: ${JSON.stringify(ev.payload)}\n\n`)
+              } else {
+                await s.write(
+                  `event: permission_resolved\ndata: ${JSON.stringify({ id: ev.pid, ...(ev.decision as object) })}\n\n`,
+                )
+              }
+              permP = tag('perm', permIter)
+            }
+          }
         }
       } finally {
-        clearInterval(heartbeat)
-        unsubscribe()
+        cleanup()
       }
     })
   })

@@ -2,9 +2,12 @@
 // The new-session form lives inside a modal (<NewSessionDialog />) so the
 // sidebar can dedicate its vertical space to listing sessions.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { DirectoryPicker } from './DirectoryPicker'
 import { useLocalStorage } from '../hooks/useLocalStorage'
+import { isInAppDrag, readDragPayload, setDragPayload } from '../hooks/useDragPayload'
+import { api } from '../hooks/useApi'
+import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import type { NewSessionForm, PermissionMode, SessionInfo } from '../types'
 
 const PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'plan', 'bypassPermissions', 'dontAsk', 'auto']
@@ -34,6 +37,16 @@ interface Props {
   onSelect: (id: string) => void
   onCreate: (form: NewSessionForm) => void
   onDelete: (id: string) => void
+  /** Close the panel for a session if it's currently open in the main grid.
+   *  No-op when the session isn't open. Used by the right-click menu. */
+  onClosePanel?: (id: string) => void
+  /** Called when the user drops a card onto another one. `position` tells
+   *  the parent whether to insert before or after the target. */
+  onReorder?: (draggedId: string, targetId: string, position: 'before' | 'after') => void
+  /** New-session dialog open state is lifted so App-level shortcuts
+   *  (Alt+N) can open it. Uncontrolled mode falls back to internal state. */
+  newSessionDialogOpen?: boolean
+  onNewSessionDialogChange?: (open: boolean) => void
 }
 
 export function SessionList({
@@ -46,15 +59,106 @@ export function SessionList({
   onSelect,
   onCreate,
   onDelete,
+  onClosePanel,
+  onReorder,
+  newSessionDialogOpen,
+  onNewSessionDialogChange,
 }: Props) {
-  const [showDialog, setShowDialog] = useState(false)
+  const [uncontrolledShow, setUncontrolledShow] = useState(false)
+  const showDialog = newSessionDialogOpen ?? uncontrolledShow
+  const setShowDialog = (v: boolean) => {
+    if (onNewSessionDialogChange) onNewSessionDialogChange(v)
+    else setUncontrolledShow(v)
+  }
+  /** Id of the card currently being dragged, so we can fade it out. */
+  const [draggingId, setDraggingId] = useState<string | null>(null)
+  /** Id of the card currently being hovered over + which half. Used to
+   *  paint a single insertion line without reshuffling the DOM mid-drag. */
+  const [dropHint, setDropHint] = useState<{ id: string; position: 'before' | 'after' } | null>(null)
+  /** Which card is currently in inline-rename mode, and the draft text. */
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
+  const renameInputRef = useRef<HTMLInputElement>(null)
+  /** Active right-click menu. `id` tells us which session it targets. */
+  const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null)
+  /** Sidebar filter text. Case-insensitive substring match against title,
+   *  cwd, and the first 8 chars of the id. Not persisted — a stale filter
+   *  after a reload causes more confusion than it saves typing. */
+  const [filter, setFilter] = useState('')
+  const visibleSessions = useMemo<SessionInfo[]>(() => {
+    const q = filter.trim().toLowerCase()
+    if (!q) return sessions
+    return sessions.filter((s) => {
+      if (s.title && s.title.toLowerCase().includes(q)) return true
+      if (s.cwd && s.cwd.toLowerCase().includes(q)) return true
+      if (s.id.slice(0, 8).toLowerCase().includes(q)) return true
+      return false
+    })
+  }, [sessions, filter])
+
+  // Auto-focus + select the inline rename input on mount so the user can
+  // immediately start typing to replace the existing title.
+  useEffect(() => {
+    if (renamingId && renameInputRef.current) {
+      renameInputRef.current.focus()
+      renameInputRef.current.select()
+    }
+  }, [renamingId])
+
+  const startRename = (s: SessionInfo) => {
+    setRenamingId(s.id)
+    setRenameDraft(s.title ?? '')
+  }
+
+  const commitRename = async (id: string, title: string) => {
+    setRenamingId(null)
+    // The server echoes back the updated session on /sessions/events, so
+    // we don't need to update local state here. If the request fails the
+    // card simply keeps its old title.
+    try {
+      await api.patch<{ session: SessionInfo }>(`/sessions/${id}`, { title })
+    } catch (err) {
+      console.warn('rename failed:', (err as Error).message)
+    }
+  }
+
+  const cancelRename = () => setRenamingId(null)
 
   return (
     <>
       <div className="session-list-top">
-        <button className="btn btn-primary" style={{ width: '100%' }} onClick={() => setShowDialog(true)}>
+        <button
+          className="btn btn-primary"
+          style={{ width: '100%' }}
+          onClick={() => setShowDialog(true)}
+          title="New session (Alt+N)"
+        >
           + New session
         </button>
+        {/* Filter input — visible only when there are at least a handful
+            of sessions. Below that the filter is more friction than help. */}
+        {sessions.length > 3 && (
+          <div className="session-filter">
+            <input
+              className="input"
+              type="text"
+              placeholder="Filter by title / cwd / id…"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+            />
+            {filter && (
+              <button
+                type="button"
+                className="session-filter-clear"
+                onClick={() => setFilter('')}
+                aria-label="Clear filter"
+                title="Clear"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="session-list">
@@ -62,22 +166,34 @@ export function SessionList({
           <div style={{ color: 'var(--fg-muted)', fontSize: 12, textAlign: 'center', padding: 20 }}>
             No sessions yet.
           </div>
+        ) : visibleSessions.length === 0 ? (
+          <div style={{ color: 'var(--fg-muted)', fontSize: 12, textAlign: 'center', padding: 20 }}>
+            No sessions match "{filter}".
+          </div>
         ) : (
-          sessions.map((s) => {
+          visibleSessions.map((s) => {
             const isResuming = resumingIds?.has(s.id) ?? false
             // "dormant" = persisted but not currently loaded in the server.
             // Clicking resumes; the UI shows a greyed-out item until the
             // POST /resume completes and the list is refreshed.
             const dormant = !s.running && !s.terminated
-            const isOpen = openIds.includes(s.id)
+            const slotIdx = openIds.indexOf(s.id)
+            const isOpen = slotIdx >= 0
             const isFocused = s.id === focusedId
             const hasUnread = !!unread?.[s.id]
             // A running session with an outstanding turn shows an extra
             // pulsing dot — gives an at-a-glance "this one is thinking".
             const working = s.running && s.working
+            const isDragging = draggingId === s.id
+            const hint = dropHint && dropHint.id === s.id ? dropHint.position : null
+            const isRenaming = renamingId === s.id
             return (
             <div
               key={s.id}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                setMenu({ x: e.clientX, y: e.clientY, id: s.id })
+              }}
               className={[
                 'session-item',
                 isFocused ? 'focused' : '',
@@ -86,20 +202,115 @@ export function SessionList({
                 dormant ? 'dormant' : '',
                 isResuming ? 'resuming' : '',
                 hasUnread ? 'unread' : '',
+                isDragging ? 'dragging' : '',
+                hint === 'before' ? 'drop-before' : '',
+                hint === 'after' ? 'drop-after' : '',
               ].filter(Boolean).join(' ')}
               role="button"
               tabIndex={0}
               aria-disabled={isResuming}
+              // Whole card is the drag handle. We intentionally don't add a
+              // dedicated grip icon — the card already looks tile-ish, and
+              // any click-to-select path is preserved because HTML5 DnD
+              // only fires on actual drag, not on bare clicks.
+              draggable={!isResuming && !!onReorder}
+              onDragStart={(e) => {
+                if (!onReorder) return
+                setDraggingId(s.id)
+                setDragPayload(e, { kind: 'sidebar-card', id: s.id })
+              }}
+              onDragEnd={() => {
+                setDraggingId(null)
+                setDropHint(null)
+              }}
+              onDragOver={(e) => {
+                if (!onReorder || !isInAppDrag(e)) return
+                e.preventDefault()
+                // Decide before/after from the pointer's vertical position
+                // within the card. Threshold is exactly the midpoint.
+                const rect = e.currentTarget.getBoundingClientRect()
+                const position: 'before' | 'after' = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+                if (!dropHint || dropHint.id !== s.id || dropHint.position !== position) {
+                  setDropHint({ id: s.id, position })
+                }
+              }}
+              onDragLeave={(e) => {
+                // Only clear when we really left the card (not when entering
+                // a child element like the delete button).
+                if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+                if (dropHint?.id === s.id) setDropHint(null)
+              }}
+              onDrop={(e) => {
+                if (!onReorder) return
+                const payload = readDragPayload(e)
+                setDropHint(null)
+                setDraggingId(null)
+                if (!payload || payload.kind !== 'sidebar-card') return
+                e.preventDefault()
+                const rect = e.currentTarget.getBoundingClientRect()
+                const position: 'before' | 'after' = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+                onReorder(payload.id, s.id, position)
+              }}
               onClick={() => !isResuming && onSelect(s.id)}
               onKeyDown={(e) => !isResuming && (e.key === 'Enter' || e.key === ' ') && onSelect(s.id)}
             >
               <div className="session-item-row">
                 <strong style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {hasUnread && <span className="session-item-unread" aria-label="unread" />}
-                  {s.title ?? <span className="session-item-id">{s.id.slice(0, 8)}</span>}
+                  {/* Slot indicator — shows which column in the main grid
+                      this session is rendered in, so the sidebar makes the
+                      open set legible at a glance instead of requiring the
+                      user to cross-reference the panel headers. `focused`
+                      is the stronger of the two states — render that with
+                      a filled pill; plain `open` gets a hollow one. */}
+                  {isOpen && (
+                    <span
+                      className={`session-item-slot ${isFocused ? 'focused' : ''}`}
+                      title={
+                        isFocused
+                          ? `Focused (slot ${slotIdx + 1}) · Ctrl+${slotIdx + 1} to refocus`
+                          : `Open in slot ${slotIdx + 1} · Ctrl+${slotIdx + 1} to focus`
+                      }
+                      aria-label={isFocused ? `focused slot ${slotIdx + 1}` : `open slot ${slotIdx + 1}`}
+                    >
+                      {slotIdx + 1}
+                    </span>
+                  )}
+                  {isRenaming ? (
+                    <input
+                      ref={renameInputRef}
+                      className="session-item-rename-input"
+                      value={renameDraft}
+                      onChange={(e) => setRenameDraft(e.target.value)}
+                      onBlur={() => void commitRename(s.id, renameDraft)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          void commitRename(s.id, renameDraft)
+                        } else if (e.key === 'Escape') {
+                          e.preventDefault()
+                          cancelRename()
+                        }
+                      }}
+                      // Swallow clicks so editing doesn't trigger onSelect.
+                      onClick={(e) => e.stopPropagation()}
+                      onMouseDown={(e) => e.stopPropagation()}
+                    />
+                  ) : (
+                    <span
+                      onDoubleClick={(e) => {
+                        e.stopPropagation()
+                        startRename(s)
+                      }}
+                      title="Double-click to rename"
+                    >
+                      {s.title ?? <span className="session-item-id">{s.id.slice(0, 8)}</span>}
+                    </span>
+                  )}
                 </strong>
                 <span
                   className={`session-item-badge ${s.error ? 'err' : s.running ? 'running' : ''} ${working ? 'working' : ''}`}
+                  title={s.error ?? ''}
                 >
                   {working && <span className="session-item-working-dot" aria-hidden />}
                   {s.error
@@ -115,6 +326,14 @@ export function SessionList({
                     : 'dormant'}
                 </span>
               </div>
+              {/* When the session errored, surface the message in the card
+                  itself. The full text is in the badge tooltip, but a
+                  truncated inline line saves a hover for 80% of cases. */}
+              {s.error && (
+                <div className="session-item-error" title={s.error}>
+                  ⚠ {s.error}
+                </div>
+              )}
               {/* Dedicated cwd line — the most important per-session context.
                   We show a directory glyph + the shortened path, with the full
                   path as a tooltip for overflow cases. */}
@@ -145,6 +364,16 @@ export function SessionList({
           })
         )}
       </div>
+
+      {menu && <SessionContextMenu
+        anchor={menu}
+        session={sessions.find((s) => s.id === menu.id)}
+        isOpen={openIds.includes(menu.id)}
+        onClose={() => setMenu(null)}
+        onRename={(s) => startRename(s)}
+        onClosePanel={(id) => onClosePanel?.(id)}
+        onDelete={(id) => onDelete(id)}
+      />}
 
       {showDialog && (
         <NewSessionDialog
@@ -389,4 +618,72 @@ function NewSessionDialog({ defaults, onSubmit, onCancel }: DialogProps) {
       )}
     </>
   )
+}
+
+// --- right-click menu on a session card --------------------------------------
+
+interface MenuProps {
+  anchor: { x: number; y: number; id: string }
+  session?: SessionInfo
+  isOpen: boolean
+  onClose: () => void
+  onRename: (s: SessionInfo) => void
+  onClosePanel: (id: string) => void
+  onDelete: (id: string) => void
+}
+
+function SessionContextMenu({ anchor, session, isOpen, onClose, onRename, onClosePanel, onDelete }: MenuProps) {
+  if (!session) return null
+  const items: ContextMenuItem[] = [
+    {
+      label: 'Rename',
+      icon: '✎',
+      onClick: () => onRename(session),
+    },
+    {
+      label: 'Copy session ID',
+      icon: '#',
+      onClick: () => {
+        void navigator.clipboard?.writeText(session.id).catch(() => {})
+      },
+    },
+    {
+      label: 'Copy working directory',
+      icon: '📁',
+      disabled: !session.cwd,
+      onClick: () => {
+        if (session.cwd) void navigator.clipboard?.writeText(session.cwd).catch(() => {})
+      },
+    },
+    { label: '' }, // separator
+    ...(isOpen
+      ? [
+          {
+            label: 'Close panel',
+            icon: '✕',
+            onClick: () => onClosePanel(anchor.id),
+          } as ContextMenuItem,
+        ]
+      : []),
+    {
+      label: 'Delete session',
+      icon: '🗑',
+      danger: true,
+      onClick: () => {
+        // Ask for confirmation when there's conversation history at stake.
+        // Sessions with zero messages fall through to an immediate delete
+        // — those are essentially scratch sessions the user created and
+        // abandoned without typing anything.
+        const hasHistory = session.messageCount > 0
+        if (hasHistory) {
+          const title = session.title ?? session.id.slice(0, 8)
+          const msg = `Delete session "${title}"?\n\nThis permanently removes the conversation from disk. The Anthropic SDK's own session log in ~/.claude/projects/ is kept, but the app won't reference it anymore.`
+          if (!window.confirm(msg)) return
+        }
+        onDelete(anchor.id)
+      },
+    },
+  ]
+
+  return <ContextMenu x={anchor.x} y={anchor.y} items={items} onClose={onClose} />
 }
