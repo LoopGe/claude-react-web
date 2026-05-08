@@ -426,8 +426,13 @@ describe('SessionManager', () => {
     expect(store.get(info.id)?.pinned).toBe(true)
   })
 
-  it('fork() spawns a new session with resume=sourceId + forkSession=true', () => {
+  it('fork() spawns a new session with resume=sourceId + forkSession=true', async () => {
     const source = sm.create({ cwd: '/tmp', model: 'm1', permissionMode: 'default', title: 'parent' })
+    // The SDK only writes its conversation log after the first completed
+    // turn. Simulate one so the fork guard allows the call.
+    sm.send(source.id, 'hi')
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
     const forked = sm.fork(source.id)
     expect(forked.id).not.toBe(source.id)
     expect(mockHandles).toHaveLength(2)
@@ -442,24 +447,49 @@ describe('SessionManager', () => {
 
   it('fork() works on dormant (unloaded) sessions too', async () => {
     const source = sm.create({ title: 'dormant-source' })
+    sm.send(source.id, 'hi')
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
     await sm.unload(source.id)
     const forked = sm.fork(source.id)
     expect(forked.id).not.toBe(source.id)
-    // sm now has 2 live sessions: the original was unloaded, fork is new
+    // sm now has 1 live session (the original was unloaded; fork is new).
     expect(mockHandles).toHaveLength(2)
     expect(mockHandles[1].options.resume).toBe(source.id)
   })
 
   it('fork() broadcasts a created event for the new session', async () => {
+    const source = sm.create({})
+    sm.send(source.id, 'hi')
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    // Subscribe *after* the result has been processed — this way the
+    // stream starts fresh and the first fork-triggered event is
+    // unambiguously the new session's `created`, with no leftover
+    // send/result update noise ahead of it.
     const sub = sm.subscribeGlobal()
     const it = sub.iterable[Symbol.asyncIterator]()
-    const source = sm.create({})
-    await it.next() // consume the source's created event
     const forked = sm.fork(source.id)
     const next = await it.next()
     expect(next.done).toBe(false)
     expect(next.value).toMatchObject({ kind: 'created', session: { id: forked.id } })
     sub.unsubscribe()
+  })
+
+  it('fork() refuses a source with no completed turns (avoids SDK "No conversation found" error)', () => {
+    const source = sm.create({ title: 'fresh' })
+    // No send → no result → no jsonl on disk. Fork should throw with a
+    // 400 (user-actionable) rather than letting the SDK blow up later
+    // with a cryptic "No conversation found with session ID: <uuid>".
+    expect(() => sm.fork(source.id)).toThrow(/no completed turns yet/i)
+    // No extra Query was spawned.
+    expect(mockHandles).toHaveLength(1)
+  })
+
+  it('fork() refuses a dormant source that never completed a turn', async () => {
+    const source = sm.create({ title: 'fresh-dormant' })
+    await sm.unload(source.id)
+    expect(() => sm.fork(source.id)).toThrow(/no completed turns yet/i)
   })
 
   it('canUseTool short-circuits when permissionMode is bypassPermissions', async () => {
@@ -479,6 +509,217 @@ describe('SessionManager', () => {
     expect(res.behavior).toBe('allow')
     // No pending permission should be queued — the callback resolved
     // immediately rather than parking for user input.
+    expect(sm.listPending(info.id)).toHaveLength(0)
+  })
+
+  // --- AskUserQuestion interactive flow ---
+  //
+  // The SDK routes AskUserQuestion through canUseTool just like any other
+  // tool. We intercept the 'AskUserQuestion' toolName specifically and
+  // park a pending question instead of a permission. The user's answer
+  // resolves the SDK's promise as `deny` with a JSON `message` — that's
+  // the only way to fully override the SDK's built-in placeholder
+  // handler (verified against SDK 2.1.133 with PreToolUse/PostToolUse;
+  // neither hook path actually short-circuits the built-in handler).
+
+  it('canUseTool parks an AskUserQuestion as a pending question (kind=question)', async () => {
+    const info = sm.create({})
+    const canUseTool = mockHandles[0].options.canUseTool as (
+      tool: string,
+      input: unknown,
+      ctx: { signal: AbortSignal; toolUseID: string },
+    ) => Promise<unknown>
+    const ctrl = new AbortController()
+    void canUseTool(
+      'AskUserQuestion',
+      {
+        questions: [
+          {
+            question: 'Pick a color',
+            header: 'Color',
+            multiSelect: false,
+            options: [
+              { label: 'red', description: 'like fire' },
+              { label: 'blue', description: 'like sky' },
+            ],
+          },
+          {
+            question: 'Pick languages',
+            header: 'Langs',
+            multiSelect: true,
+            options: [
+              { label: 'english' },
+              { label: 'chinese' },
+              { label: 'spanish' },
+            ],
+          },
+        ],
+      },
+      { signal: ctrl.signal, toolUseID: 'tu-question-1' },
+    )
+    await tick()
+    const pending = sm.listPending(info.id)
+    expect(pending).toHaveLength(1)
+    const head = pending[0]
+    if (head.kind !== 'question') throw new Error('expected question kind')
+    expect(head.toolName).toBe('AskUserQuestion')
+    expect(head.questions).toHaveLength(2)
+    expect(head.questions[0].options.map((o) => o.label)).toEqual(['red', 'blue'])
+    expect(head.questions[1].multiSelect).toBe(true)
+  })
+
+  it('answerQuestion resolves the SDK promise with a deny + JSON message payload', async () => {
+    const info = sm.create({})
+    const canUseTool = mockHandles[0].options.canUseTool as (
+      tool: string,
+      input: unknown,
+      ctx: { signal: AbortSignal; toolUseID: string },
+    ) => Promise<{ behavior: string; message?: string; interrupt?: boolean; toolUseID?: string }>
+    const ctrl = new AbortController()
+    const promise = canUseTool(
+      'AskUserQuestion',
+      {
+        questions: [
+          {
+            question: 'Which language?',
+            options: [{ label: 'english' }, { label: 'chinese' }],
+          },
+          {
+            question: 'Which frameworks?',
+            multiSelect: true,
+            options: [{ label: 'react' }, { label: 'vue' }, { label: 'svelte' }],
+          },
+        ],
+      },
+      { signal: ctrl.signal, toolUseID: 'tu-question-2' },
+    )
+    await tick()
+    const pid = sm.listPending(info.id)[0].id
+    sm.answerQuestion(info.id, pid, ['chinese', ['react', 'svelte']])
+    const resolved = await promise
+    expect(resolved.behavior).toBe('deny')
+    expect(resolved.interrupt).toBe(false)
+    expect(resolved.toolUseID).toBe('tu-question-2')
+    // The message body is the JSON the model reads as tool_result.
+    const parsed = JSON.parse(resolved.message!)
+    expect(parsed.answers).toEqual([
+      { question: 'Which language?', answer: 'chinese' },
+      { question: 'Which frameworks?', answer: ['react', 'svelte'] },
+    ])
+    // Pending cleared on answer.
+    expect(sm.listPending(info.id)).toHaveLength(0)
+  })
+
+  it('answerQuestion encodes skipped questions as null', async () => {
+    const info = sm.create({})
+    const canUseTool = mockHandles[0].options.canUseTool as (
+      tool: string,
+      input: unknown,
+      ctx: { signal: AbortSignal; toolUseID: string },
+    ) => Promise<{ behavior: string; message?: string }>
+    const ctrl = new AbortController()
+    const promise = canUseTool(
+      'AskUserQuestion',
+      {
+        questions: [
+          { question: 'Pick a fruit', options: [{ label: 'apple' }, { label: 'banana' }] },
+          { question: 'Pick a number', options: [{ label: '1' }, { label: '2' }] },
+        ],
+      },
+      { signal: ctrl.signal, toolUseID: 'tu-skip' },
+    )
+    await tick()
+    const pid = sm.listPending(info.id)[0].id
+    sm.answerQuestion(info.id, pid, ['apple', null])
+    const resolved = await promise
+    const parsed = JSON.parse(resolved.message!)
+    expect(parsed.answers).toEqual([
+      { question: 'Pick a fruit', answer: 'apple' },
+      { question: 'Pick a number', answer: null },
+    ])
+  })
+
+  it('decide refuses to act on a pending question', async () => {
+    const info = sm.create({})
+    const canUseTool = mockHandles[0].options.canUseTool as (
+      tool: string,
+      input: unknown,
+      ctx: { signal: AbortSignal; toolUseID: string },
+    ) => Promise<unknown>
+    const ctrl = new AbortController()
+    void canUseTool(
+      'AskUserQuestion',
+      { questions: [{ question: 'x', options: [{ label: 'y' }] }] },
+      { signal: ctrl.signal, toolUseID: 'tu-decide-guard' },
+    )
+    await tick()
+    const pid = sm.listPending(info.id)[0].id
+    expect(() => sm.decide(info.id, pid, { behavior: 'deny' })).toThrow(
+      /interactive question/i,
+    )
+  })
+
+  it('answerQuestion refuses to act on a pending permission', async () => {
+    const info = sm.create({})
+    const canUseTool = mockHandles[0].options.canUseTool as (
+      tool: string,
+      input: unknown,
+      ctx: { signal: AbortSignal; toolUseID: string },
+    ) => Promise<unknown>
+    const ctrl = new AbortController()
+    void canUseTool(
+      'Bash',
+      { command: 'ls' },
+      { signal: ctrl.signal, toolUseID: 'tu-answer-guard' },
+    )
+    await tick()
+    const pid = sm.listPending(info.id)[0].id
+    expect(() => sm.answerQuestion(info.id, pid, [null])).toThrow(
+      /not an interactive question/i,
+    )
+  })
+
+  it('AskUserQuestion is never auto-allowed under bypassPermissions (interactive is not bypassable)', async () => {
+    const info = sm.create({})
+    await sm.setPermissionMode(info.id, 'bypassPermissions')
+    const canUseTool = mockHandles[0].options.canUseTool as (
+      tool: string,
+      input: unknown,
+      ctx: { signal: AbortSignal; toolUseID: string },
+    ) => Promise<unknown>
+    const ctrl = new AbortController()
+    void canUseTool(
+      'AskUserQuestion',
+      { questions: [{ question: 'q', options: [{ label: 'a' }] }] },
+      { signal: ctrl.signal, toolUseID: 'tu-bypass-question' },
+    )
+    await tick()
+    // Even in bypass mode, a question is parked — the model is explicitly
+    // asking for human input, and silently auto-allowing it would leave
+    // the CLI's built-in placeholder handler to answer. That's the exact
+    // failure mode the interactive path is here to fix.
+    expect(sm.listPending(info.id)).toHaveLength(1)
+    expect(sm.listPending(info.id)[0].kind).toBe('question')
+  })
+
+  it('aborting a pending question resolves the SDK promise as deny(aborted)', async () => {
+    const info = sm.create({})
+    const canUseTool = mockHandles[0].options.canUseTool as (
+      tool: string,
+      input: unknown,
+      ctx: { signal: AbortSignal; toolUseID: string },
+    ) => Promise<{ behavior: string; message?: string }>
+    const ctrl = new AbortController()
+    const promise = canUseTool(
+      'AskUserQuestion',
+      { questions: [{ question: 'q', options: [{ label: 'a' }] }] },
+      { signal: ctrl.signal, toolUseID: 'tu-abort' },
+    )
+    await tick()
+    ctrl.abort()
+    const resolved = await promise
+    expect(resolved.behavior).toBe('deny')
+    expect(resolved.message).toBe('aborted')
     expect(sm.listPending(info.id)).toHaveLength(0)
   })
 })

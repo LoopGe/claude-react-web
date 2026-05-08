@@ -15,10 +15,19 @@ import { useCallback, useMemo, useState } from 'react'
 import { useNamedEventSource } from './useSSE'
 import type { PermissionRequest, PermissionResolved, SdkMessage } from '../types'
 
+export interface ContextUsage {
+  totalTokens?: number
+  maxTokens?: number
+  percentage?: number
+  model?: string
+}
+
 export interface ChatStream {
   messages: SdkMessage[]
   queuedAhead: number
   error: string | null
+  /** Latest context-usage snapshot pushed by the server mid-stream. */
+  contextUsage: ContextUsage | null
   /** Bump the queued counter by one (call after POST /messages succeeds). */
   trackSentTurn: () => void
   /** Clear all local state — used when switching between sessions. */
@@ -36,6 +45,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   const [messages, setMessages] = useState<SdkMessage[]>([])
   const [queuedAhead, setQueuedAhead] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null)
 
   const events = useMemo(
     () => ({
@@ -63,6 +73,9 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       permission_resolved: (data: unknown) => {
         permissions.onResolved(data as PermissionResolved)
       },
+      context_usage: (data: unknown) => {
+        setContextUsage(data as ContextUsage)
+      },
     }),
     [permissions],
   )
@@ -84,12 +97,13 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     setMessages([])
     setQueuedAhead(0)
     setError(null)
+    setContextUsage(null)
   }, [])
 
   const clearError = useCallback(() => setError(null), [])
 
   return useMemo(
-    () => ({ messages, queuedAhead, error, trackSentTurn, reset, clearError }),
-    [messages, queuedAhead, error, trackSentTurn, reset, clearError],
+    () => ({ messages, queuedAhead, error, contextUsage, trackSentTurn, reset, clearError }),
+    [messages, queuedAhead, error, contextUsage, trackSentTurn, reset, clearError],
   )
 }

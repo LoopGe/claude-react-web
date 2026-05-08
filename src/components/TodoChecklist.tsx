@@ -23,7 +23,7 @@ interface Props {
 }
 
 export function TodoChecklist({ messages, working }: Props) {
-  const todos = useMemo(() => extractLatestTodos(messages), [messages])
+  const todos = useMemo(() => extractLatestTodos(messages, !!working), [messages, working])
 
   // Hide when there's nothing useful to show.
   if (!todos || todos.length === 0) return null
@@ -57,9 +57,29 @@ export function TodoChecklist({ messages, working }: Props) {
 }
 
 /** Walk the message list in reverse and return the todos from the most
- *  recent `TodoWrite` tool_use block. Returns null when none found. */
-function extractLatestTodos(messages: SdkMessage[]): Todo[] | null {
-  for (let i = messages.length - 1; i >= 0; i--) {
+ *  recent `TodoWrite` tool_use block. Returns null when none found.
+ *
+ *  When `working === true`, ignore TodoWrites that appear *before* the
+ *  most recent `result` marker — those belong to a previous completed
+ *  turn and would show stale todos on top of a fresh task until the
+ *  assistant gets around to calling TodoWrite for the new task. (Many
+ *  turns don't call TodoWrite at all; pinning to the last turn's
+ *  todos while the new one runs is worse than showing nothing.)
+ *  `stream_event` partials are skipped — their content lives on
+ *  `event`, not `message.content`. */
+function extractLatestTodos(messages: SdkMessage[], working: boolean): Todo[] | null {
+  // Find the boundary: when working=true, only TodoWrites after the
+  // most recent `result` count as current.
+  let floor = -1
+  if (working) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type === 'result') {
+        floor = i
+        break
+      }
+    }
+  }
+  for (let i = messages.length - 1; i > floor; i--) {
     const msg = messages[i]
     if (msg.type !== 'assistant') continue
     const content = msg.message?.content

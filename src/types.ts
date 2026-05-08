@@ -25,6 +25,23 @@ export interface SessionInfo {
   pinned?: boolean
 }
 
+/** A named collection of sessions for quick group switching. Sessions
+ *  can belong to multiple groups (Tag semantics). Order of sessionIds
+ *  determines activation priority (first MAX_OPEN are opened). */
+export interface SessionGroup {
+  id: string
+  name: string
+  sessionIds: string[]
+  /** Remembered column ratios when the group was last active. */
+  panelRatios?: Record<string, number>
+}
+
+/** Discriminated union for sidebar section rendering. */
+export type SidebarSection =
+  | { kind: 'pinned'; sessions: SessionInfo[] }
+  | { kind: 'group'; group: SessionGroup; sessions: SessionInfo[] }
+  | { kind: 'ungrouped'; sessions: SessionInfo[] }
+
 /** Shape of Options we expose in the "new session" form. */
 export interface NewSessionForm {
   cwd?: string
@@ -58,18 +75,44 @@ export interface ModelInfo {
   description?: string
 }
 
-/** Pending tool-use permission request, mirrored from the server. */
-export interface PermissionRequest {
-  id: string
-  toolName: string
-  input: Record<string, unknown>
-  title?: string
-  displayName?: string
-  description?: string
-  suggestions?: unknown[] // SDK PermissionUpdate[] — opaque to the UI
-  toolUseID: string
-  createdAt: number
+/** One question within an AskUserQuestion tool call. */
+export interface QuestionSpec {
+  question: string
+  header?: string
+  multiSelect?: boolean
+  options: Array<{
+    label: string
+    description?: string
+    preview?: string
+  }>
 }
+
+/** Pending event routed on the permission SSE channel. The server uses a
+ *  `kind` discriminator to send both tool-permission prompts and
+ *  interactive AskUserQuestion calls through the same channel — they
+ *  both mean "SDK paused, waiting on the user" — but each kind renders
+ *  with its own dialog. */
+export type PermissionRequest =
+  | {
+      kind: 'permission'
+      id: string
+      toolName: string
+      input: Record<string, unknown>
+      title?: string
+      displayName?: string
+      description?: string
+      suggestions?: unknown[] // SDK PermissionUpdate[] — opaque to the UI
+      toolUseID: string
+      createdAt: number
+    }
+  | {
+      kind: 'question'
+      id: string
+      toolName: 'AskUserQuestion'
+      questions: QuestionSpec[]
+      toolUseID: string
+      createdAt: number
+    }
 
 /** Broadcast envelope for a resolved permission. */
 export interface PermissionResolved {

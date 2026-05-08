@@ -16,10 +16,15 @@ export type PermissionDecision =
   | { behavior: 'allow'; persistForSession: boolean }
   | { behavior: 'deny'; message?: string }
 
+export type QuestionAnswer = string | string[] | null
+
 export interface UsePermissionChannel {
   pending: PermissionRequest[]
   error: string | null
   decide: (pid: string, decision: PermissionDecision) => Promise<void>
+  /** Submit answers for a pending AskUserQuestion. Answers align
+   *  positionally with the pending request's `questions`. */
+  answerQuestion: (pid: string, answers: QuestionAnswer[]) => Promise<void>
   /** Push a permission_request event into the local state. */
   onRequest: (req: PermissionRequest) => void
   /** Push a permission_resolved event into the local state. */
@@ -83,6 +88,31 @@ export function usePermissionChannel(sessionId: string): UsePermissionChannel {
     [sessionId],
   )
 
+  const answerQuestion = useCallback(
+    async (pid: string, answers: QuestionAnswer[]) => {
+      // Same optimistic pattern as decide(): drop locally first so the
+      // dialog closes immediately; re-fetch on failure to reconcile.
+      setPending((prev) => prev.filter((p) => p.id !== pid))
+      try {
+        await api.post(
+          `/sessions/${sessionId}/permissions/${pid}/answer-question`,
+          { answers },
+        )
+      } catch (e) {
+        setError(`Answer submission failed: ${(e as Error).message}`)
+        try {
+          const r = await api.get<{ pending: PermissionRequest[] }>(
+            `/sessions/${sessionId}/permissions`,
+          )
+          setPending(r.pending)
+        } catch {
+          /* ignore */
+        }
+      }
+    },
+    [sessionId],
+  )
+
   const reset = useCallback(() => {
     setPending([])
     setError(null)
@@ -91,8 +121,8 @@ export function usePermissionChannel(sessionId: string): UsePermissionChannel {
   const clearError = useCallback(() => setError(null), [])
 
   return useMemo(
-    () => ({ pending, error, decide, onRequest, onResolved, reset, clearError }),
-    [pending, error, decide, onRequest, onResolved, reset, clearError],
+    () => ({ pending, error, decide, answerQuestion, onRequest, onResolved, reset, clearError }),
+    [pending, error, decide, answerQuestion, onRequest, onResolved, reset, clearError],
   )
 }
 

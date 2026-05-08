@@ -11,7 +11,7 @@ import { api } from '../hooks/useApi'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { shortenPath } from '../utils/paths'
 import { ACCENT_COLORS } from '../theme'
-import type { NewSessionForm, PermissionMode, SessionInfo } from '../types'
+import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, SidebarSection } from '../types'
 
 const PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'plan', 'bypassPermissions', 'dontAsk', 'auto']
 
@@ -48,6 +48,9 @@ interface Props {
   /** Fork a session — server spawns a new session whose transcript is
    *  seeded from this one. Used by the right-click menu. */
   onFork?: (id: string) => void
+  /** Create a new empty session reusing the source's cwd/model/permissionMode
+   *  but without any conversation history. Used by the right-click menu. */
+  onNewLikeThis?: (id: string) => void
   /** Toggle a session's pinned flag (used by the right-click menu). */
   onTogglePin?: (id: string) => void
   /** Called when the user drops a card onto another one. `position` tells
@@ -61,6 +64,27 @@ interface Props {
   sessionColors?: Record<string, string>
   /** Set or clear a session's accent colour. Pass `undefined` to reset. */
   onSessionColorChange?: (sessionId: string, color: string | undefined) => void
+  // --- Group management ---
+  /** Persisted list of user-created session groups. */
+  groups: SessionGroup[]
+  /** Pre-computed sidebar sections for grouped rendering. Empty when no groups exist. */
+  sidebarSections: SidebarSection[]
+  /** Map of groupId → true when the group is collapsed. */
+  collapsedGroups: Record<string, boolean>
+  /** Replace the main-area panels with this group's sessions. */
+  onActivateGroup: (groupId: string) => void
+  /** Create a new empty group and return its id. */
+  onCreateGroup: (name: string) => string
+  /** Permanently delete a group (sessions stay, just ungrouped). */
+  onDeleteGroup: (groupId: string) => void
+  /** Rename an existing group. */
+  onRenameGroup: (groupId: string, name: string) => void
+  /** Add a session to a group (idempotent / deduped). */
+  onAddToGroup: (sessionId: string, groupId: string) => void
+  /** Remove a session from a group. */
+  onRemoveFromGroup: (sessionId: string, groupId: string) => void
+  /** Toggle a group's collapsed state in the sidebar. */
+  onToggleGroupCollapse: (groupId: string) => void
 }
 
 export function SessionList({
@@ -72,11 +96,22 @@ export function SessionList({
   unread,
   sessionColors,
   onSessionColorChange,
+  groups,
+  sidebarSections,
+  collapsedGroups,
+  onActivateGroup,
+  onCreateGroup,
+  onDeleteGroup,
+  onRenameGroup,
+  onAddToGroup,
+  onRemoveFromGroup,
+  onToggleGroupCollapse,
   onSelect,
   onCreate,
   onDelete,
   onClosePanel,
   onFork,
+  onNewLikeThis,
   onTogglePin,
   onReorder,
   newSessionDialogOpen,
@@ -109,6 +144,10 @@ export function SessionList({
   const [prefilledCwd, setPrefilledCwd] = useState<string | undefined>(undefined)
   /** Visual highlight while a file is being dragged over the button. */
   const [dropZoneActive, setDropZoneActive] = useState(false)
+  // --- Group UI state ---
+  const [showNewGroupInput, setShowNewGroupInput] = useState(false)
+  const [newGroupName, setNewGroupName] = useState('')
+  const newGroupInputRef = useRef<HTMLInputElement>(null)
   const visibleSessions = useMemo<SessionInfo[]>(() => {
     const q = filter.trim().toLowerCase()
     if (!q) return sessions
@@ -120,6 +159,30 @@ export function SessionList({
     })
   }, [sessions, filter])
 
+  /** Filtered version of sidebarSections — applies the same text filter
+   *  to each section's session list so the grouped view respects the
+   *  filter input. Empty sections are dropped. */
+  const filteredSections = useMemo<SidebarSection[]>(() => {
+    if (sidebarSections.length === 0) return []
+    const q = filter.trim().toLowerCase()
+    const match = (s: SessionInfo) => {
+      if (!q) return true
+      if (s.title && s.title.toLowerCase().includes(q)) return true
+      if (s.cwd && s.cwd.toLowerCase().includes(q)) return true
+      if (s.id.slice(0, 8).toLowerCase().includes(q)) return true
+      return false
+    }
+    const result: SidebarSection[] = []
+    for (const sec of sidebarSections) {
+      const filtered = sec.sessions.filter(match)
+      if (filtered.length === 0) continue
+      if (sec.kind === 'pinned') result.push({ kind: 'pinned', sessions: filtered })
+      else if (sec.kind === 'group') result.push({ kind: 'group', group: sec.group, sessions: filtered })
+      else result.push({ kind: 'ungrouped', sessions: filtered })
+    }
+    return result
+  }, [sidebarSections, filter])
+
   // Auto-focus + select the inline rename input on mount so the user can
   // immediately start typing to replace the existing title.
   useEffect(() => {
@@ -128,6 +191,13 @@ export function SessionList({
       renameInputRef.current.select()
     }
   }, [renamingId])
+
+  // Auto-focus the new-group name input when it appears.
+  useEffect(() => {
+    if (showNewGroupInput && newGroupInputRef.current) {
+      newGroupInputRef.current.focus()
+    }
+  }, [showNewGroupInput])
 
   const startRename = (s: SessionInfo) => {
     setRenamingId(s.id)
@@ -195,6 +265,197 @@ export function SessionList({
     }
   }
 
+  /** Render a single session card. Extracted so both the flat and sectioned
+   *  views share the exact same card markup. */
+  const renderSessionCard = (s: SessionInfo) => {
+    const isResuming = resumingIds?.has(s.id) ?? false
+    const dormant = !s.running && !s.terminated
+    const slotIdx = openIds.indexOf(s.id)
+    const isOpen = slotIdx >= 0
+    const isFocused = s.id === focusedId
+    const hasUnread = !!unread?.[s.id]
+    const working = s.running && s.working
+    const isDragging = draggingId === s.id
+    const hint = dropHint && dropHint.id === s.id ? dropHint.position : null
+    const isRenaming = renamingId === s.id
+    return (
+      <div
+        key={s.id}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          setMenu({ x: e.clientX, y: e.clientY, id: s.id })
+        }}
+        className={[
+          'session-item',
+          isFocused ? 'focused' : '',
+          isOpen && !isFocused ? 'open' : '',
+          s.terminated ? 'terminated' : '',
+          dormant ? 'dormant' : '',
+          isResuming ? 'resuming' : '',
+          hasUnread ? 'unread' : '',
+          isDragging ? 'dragging' : '',
+          hint === 'before' ? 'drop-before' : '',
+          hint === 'after' ? 'drop-after' : '',
+          sessionColors?.[s.id] ? 'tinted' : '',
+        ].filter(Boolean).join(' ')}
+        style={
+          sessionColors?.[s.id]
+            ? (() => {
+                const hex = sessionColors[s.id]
+                const preset = ACCENT_COLORS.find((c) => c.accent === hex)
+                return { '--accent': hex, '--accent-strong': preset?.strong ?? hex } as CSSProperties
+              })()
+            : undefined
+        }
+        role="button"
+        tabIndex={0}
+        aria-disabled={isResuming}
+        draggable={!isResuming && !!onReorder}
+        onDragStart={(e) => {
+          if (!onReorder) return
+          setDraggingId(s.id)
+          setDragPayload(e, { kind: 'sidebar-card', id: s.id })
+        }}
+        onDragEnd={() => {
+          setDraggingId(null)
+          setDropHint(null)
+        }}
+        onDragOver={(e) => {
+          if (!onReorder || !isInAppDrag(e)) return
+          e.preventDefault()
+          const rect = e.currentTarget.getBoundingClientRect()
+          const position: 'before' | 'after' = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+          if (!dropHint || dropHint.id !== s.id || dropHint.position !== position) {
+            setDropHint({ id: s.id, position })
+          }
+        }}
+        onDragLeave={(e) => {
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+          if (dropHint?.id === s.id) setDropHint(null)
+        }}
+        onDrop={(e) => {
+          if (!onReorder) return
+          const payload = readDragPayload(e)
+          setDropHint(null)
+          setDraggingId(null)
+          if (!payload || payload.kind !== 'sidebar-card') return
+          e.preventDefault()
+          const rect = e.currentTarget.getBoundingClientRect()
+          const position: 'before' | 'after' = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+          onReorder(payload.id, s.id, position)
+        }}
+        onClick={() => !isResuming && onSelect(s.id)}
+        onKeyDown={(e) => !isResuming && (e.key === 'Enter' || e.key === ' ') && onSelect(s.id)}
+      >
+        <div className="session-item-row">
+          <strong style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {hasUnread && <span className="session-item-unread" aria-label="unread" />}
+            {isOpen && (
+              <span
+                className={`session-item-slot ${isFocused ? 'focused' : ''}`}
+                title={
+                  isFocused
+                    ? `Focused (slot ${slotIdx + 1}) · Ctrl+${slotIdx + 1} to refocus`
+                    : `Open in slot ${slotIdx + 1} · Ctrl+${slotIdx + 1} to focus`
+                }
+                aria-label={isFocused ? `focused slot ${slotIdx + 1}` : `open slot ${slotIdx + 1}`}
+              >
+                {slotIdx + 1}
+              </span>
+            )}
+            {s.pinned && (
+              <span className="session-item-pin" title="Pinned · right-click to unpin" aria-label="pinned">
+                📌
+              </span>
+            )}
+            {isRenaming ? (
+              <input
+                ref={renameInputRef}
+                className="session-item-rename-input"
+                value={renameDraft}
+                onChange={(e) => setRenameDraft(e.target.value)}
+                onBlur={() => void commitRename(s.id, renameDraft)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    void commitRename(s.id, renameDraft)
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault()
+                    cancelRename()
+                  }
+                }}
+                onClick={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+              />
+            ) : (
+              <span
+                onDoubleClick={(e) => {
+                  e.stopPropagation()
+                  startRename(s)
+                }}
+                title="Double-click to rename"
+              >
+                {s.title ?? <span className="session-item-id">{s.id.slice(0, 8)}</span>}
+              </span>
+            )}
+          </strong>
+          <span
+            className={`session-item-badge ${s.error ? 'err' : s.running ? 'running' : ''} ${working ? 'working' : ''}`}
+            title={s.error ?? ''}
+          >
+            {working && <span className="session-item-working-dot" aria-hidden />}
+            {s.error
+              ? 'err'
+              : s.terminated
+              ? 'ended'
+              : isResuming
+              ? 'resuming…'
+              : working
+              ? 'working'
+              : s.running
+              ? 'live'
+              : 'dormant'}
+          </span>
+        </div>
+        {s.error && (
+          <div className="session-item-error" title={s.error}>
+            ⚠ {s.error}
+          </div>
+        )}
+        <div className="session-item-cwd" title={s.cwd ?? ''}>
+          <span aria-hidden>📁</span>
+          <span>{s.cwd ? shortenPath(s.cwd) : '(no cwd)'}</span>
+        </div>
+        <div className="session-item-meta">
+          {s.model ?? 'default'} · {s.permissionMode ?? 'default'}
+        </div>
+        <div className="session-item-row">
+          <span className="session-item-meta">
+            {s.messageCount} msgs · {s.subscribers} viewer{s.subscribers === 1 ? '' : 's'}
+          </span>
+          <button
+            className="session-item-delete"
+            onClick={(e) => {
+              e.stopPropagation()
+              onDelete(s.id)
+            }}
+            title="Delete session"
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  /** Determine whether a group's sessions currently occupy the main-area
+   *  panels (i.e. its sessions match `openIds`). Used for the active highlight. */
+  const isGroupActive = (group: SessionGroup): boolean => {
+    if (openIds.length === 0) return false
+    const set = new Set(group.sessionIds)
+    return openIds.every((id) => set.has(id))
+  }
+
   return (
     <>
       <div className="session-list-top">
@@ -242,6 +503,68 @@ export function SessionList({
             )}
           </div>
         )}
+        {/* Group pills — horizontal row of clickable group chips. */}
+        {(groups.length > 0 || showNewGroupInput) && (
+          <div className="group-pills">
+            {groups.map((g) => (
+              <span
+                key={g.id}
+                className="group-pill"
+                title={`Activate "${g.name}" (${g.sessionIds.length} sessions) · right-click for options`}
+                onClick={() => onActivateGroup(g.id)}
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  const choice = window.prompt(`Group "${g.name}"\n\nType a new name to rename, or leave empty to delete:`, g.name)
+                  if (choice === null) return // cancelled
+                  const trimmed = choice.trim()
+                  if (!trimmed) {
+                    onDeleteGroup(g.id)
+                  } else if (trimmed !== g.name) {
+                    onRenameGroup(g.id, trimmed)
+                  }
+                }}
+              >
+                {g.name}
+                <span className="group-pill-count">{g.sessionIds.length}</span>
+              </span>
+            ))}
+            {showNewGroupInput ? (
+              <input
+                ref={newGroupInputRef}
+                className="group-pill-input"
+                placeholder="Group name…"
+                value={newGroupName}
+                onChange={(e) => setNewGroupName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    const name = newGroupName.trim()
+                    if (name) onCreateGroup(name)
+                    setNewGroupName('')
+                    setShowNewGroupInput(false)
+                  } else if (e.key === 'Escape') {
+                    setNewGroupName('')
+                    setShowNewGroupInput(false)
+                  }
+                }}
+                onBlur={() => {
+                  const name = newGroupName.trim()
+                  if (name) onCreateGroup(name)
+                  setNewGroupName('')
+                  setShowNewGroupInput(false)
+                }}
+              />
+            ) : (
+              <button
+                type="button"
+                className="group-pill group-pill-new"
+                onClick={() => setShowNewGroupInput(true)}
+                title="Create a new session group"
+              >
+                + Group
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="session-list">
@@ -249,224 +572,62 @@ export function SessionList({
           <div style={{ color: 'var(--fg-muted)', fontSize: 12, textAlign: 'center', padding: 20 }}>
             No sessions yet.
           </div>
+        ) : filteredSections.length > 0 ? (
+          // ── Sectioned view (groups exist) ──
+          filteredSections.map((sec) => {
+            if (sec.kind === 'pinned') {
+              return (
+                <div key="pinned" className="session-section">
+                  <div className="session-section-header">📌 Pinned</div>
+                  {sec.sessions.map(renderSessionCard)}
+                </div>
+              )
+            }
+            if (sec.kind === 'group') {
+              const collapsed = !!collapsedGroups[sec.group.id]
+              const active = isGroupActive(sec.group)
+              return (
+                <div key={sec.group.id} className={`session-section ${active ? 'group-active' : ''}`}>
+                  <div
+                    className="session-group-header"
+                    onClick={() => onToggleGroupCollapse(sec.group.id)}
+                    title={`${sec.group.name} · ${sec.sessions.length} session${sec.sessions.length === 1 ? '' : 's'}`}
+                  >
+                    <span className="group-collapse-arrow">{collapsed ? '▶' : '▼'}</span>
+                    <span className="group-header-name">{sec.group.name}</span>
+                    <span className="group-header-count">{sec.sessions.length}</span>
+                    <button
+                      className="group-activate-btn"
+                      onClick={(e) => { e.stopPropagation(); onActivateGroup(sec.group.id) }}
+                      title="Replace main-area panels with this group's sessions"
+                    >
+                      ▶
+                    </button>
+                  </div>
+                  {!collapsed && sec.sessions.length > 0 && (
+                    <div className="group-sessions">{sec.sessions.map(renderSessionCard)}</div>
+                  )}
+                  {!collapsed && sec.sessions.length === 0 && (
+                    <div className="group-empty">No sessions in this group.</div>
+                  )}
+                </div>
+              )
+            }
+            // ungrouped
+            return (
+              <div key="ungrouped" className="session-section">
+                <div className="session-section-divider">── Other ──</div>
+                {sec.sessions.map(renderSessionCard)}
+              </div>
+            )
+          })
         ) : visibleSessions.length === 0 ? (
           <div style={{ color: 'var(--fg-muted)', fontSize: 12, textAlign: 'center', padding: 20 }}>
             No sessions match "{filter}".
           </div>
         ) : (
-          visibleSessions.map((s) => {
-            const isResuming = resumingIds?.has(s.id) ?? false
-            // "dormant" = persisted but not currently loaded in the server.
-            // Clicking resumes; the UI shows a greyed-out item until the
-            // POST /resume completes and the list is refreshed.
-            const dormant = !s.running && !s.terminated
-            const slotIdx = openIds.indexOf(s.id)
-            const isOpen = slotIdx >= 0
-            const isFocused = s.id === focusedId
-            const hasUnread = !!unread?.[s.id]
-            // A running session with an outstanding turn shows an extra
-            // pulsing dot — gives an at-a-glance "this one is thinking".
-            const working = s.running && s.working
-            const isDragging = draggingId === s.id
-            const hint = dropHint && dropHint.id === s.id ? dropHint.position : null
-            const isRenaming = renamingId === s.id
-            return (
-            <div
-              key={s.id}
-              onContextMenu={(e) => {
-                e.preventDefault()
-                setMenu({ x: e.clientX, y: e.clientY, id: s.id })
-              }}
-              className={[
-                'session-item',
-                isFocused ? 'focused' : '',
-                isOpen && !isFocused ? 'open' : '',
-                s.terminated ? 'terminated' : '',
-                dormant ? 'dormant' : '',
-                isResuming ? 'resuming' : '',
-                hasUnread ? 'unread' : '',
-                isDragging ? 'dragging' : '',
-                hint === 'before' ? 'drop-before' : '',
-                hint === 'after' ? 'drop-after' : '',
-                // Marker class for the idle tint — only applied when a
-                // per-session accent was explicitly chosen, so default
-                // cards don't sprout a coloured bar for no reason.
-                sessionColors?.[s.id] ? 'tinted' : '',
-              ].filter(Boolean).join(' ')}
-              style={
-                sessionColors?.[s.id]
-                  ? (() => {
-                      const hex = sessionColors[s.id]
-                      const preset = ACCENT_COLORS.find((c) => c.accent === hex)
-                      return { '--accent': hex, '--accent-strong': preset?.strong ?? hex } as CSSProperties
-                    })()
-                  : undefined
-              }
-              role="button"
-              tabIndex={0}
-              aria-disabled={isResuming}
-              // Whole card is the drag handle. We intentionally don't add a
-              // dedicated grip icon — the card already looks tile-ish, and
-              // any click-to-select path is preserved because HTML5 DnD
-              // only fires on actual drag, not on bare clicks.
-              draggable={!isResuming && !!onReorder}
-              onDragStart={(e) => {
-                if (!onReorder) return
-                setDraggingId(s.id)
-                setDragPayload(e, { kind: 'sidebar-card', id: s.id })
-              }}
-              onDragEnd={() => {
-                setDraggingId(null)
-                setDropHint(null)
-              }}
-              onDragOver={(e) => {
-                if (!onReorder || !isInAppDrag(e)) return
-                e.preventDefault()
-                // Decide before/after from the pointer's vertical position
-                // within the card. Threshold is exactly the midpoint.
-                const rect = e.currentTarget.getBoundingClientRect()
-                const position: 'before' | 'after' = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
-                if (!dropHint || dropHint.id !== s.id || dropHint.position !== position) {
-                  setDropHint({ id: s.id, position })
-                }
-              }}
-              onDragLeave={(e) => {
-                // Only clear when we really left the card (not when entering
-                // a child element like the delete button).
-                if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
-                if (dropHint?.id === s.id) setDropHint(null)
-              }}
-              onDrop={(e) => {
-                if (!onReorder) return
-                const payload = readDragPayload(e)
-                setDropHint(null)
-                setDraggingId(null)
-                if (!payload || payload.kind !== 'sidebar-card') return
-                e.preventDefault()
-                const rect = e.currentTarget.getBoundingClientRect()
-                const position: 'before' | 'after' = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
-                onReorder(payload.id, s.id, position)
-              }}
-              onClick={() => !isResuming && onSelect(s.id)}
-              onKeyDown={(e) => !isResuming && (e.key === 'Enter' || e.key === ' ') && onSelect(s.id)}
-            >
-              <div className="session-item-row">
-                <strong style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {hasUnread && <span className="session-item-unread" aria-label="unread" />}
-                  {/* Slot indicator — shows which column in the main grid
-                      this session is rendered in, so the sidebar makes the
-                      open set legible at a glance instead of requiring the
-                      user to cross-reference the panel headers. `focused`
-                      is the stronger of the two states — render that with
-                      a filled pill; plain `open` gets a hollow one. */}
-                  {isOpen && (
-                    <span
-                      className={`session-item-slot ${isFocused ? 'focused' : ''}`}
-                      title={
-                        isFocused
-                          ? `Focused (slot ${slotIdx + 1}) · Ctrl+${slotIdx + 1} to refocus`
-                          : `Open in slot ${slotIdx + 1} · Ctrl+${slotIdx + 1} to focus`
-                      }
-                      aria-label={isFocused ? `focused slot ${slotIdx + 1}` : `open slot ${slotIdx + 1}`}
-                    >
-                      {slotIdx + 1}
-                    </span>
-                  )}
-                  {s.pinned && (
-                    <span
-                      className="session-item-pin"
-                      title="Pinned · right-click to unpin"
-                      aria-label="pinned"
-                    >
-                      📌
-                    </span>
-                  )}
-                  {isRenaming ? (
-                    <input
-                      ref={renameInputRef}
-                      className="session-item-rename-input"
-                      value={renameDraft}
-                      onChange={(e) => setRenameDraft(e.target.value)}
-                      onBlur={() => void commitRename(s.id, renameDraft)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault()
-                          void commitRename(s.id, renameDraft)
-                        } else if (e.key === 'Escape') {
-                          e.preventDefault()
-                          cancelRename()
-                        }
-                      }}
-                      // Swallow clicks so editing doesn't trigger onSelect.
-                      onClick={(e) => e.stopPropagation()}
-                      onMouseDown={(e) => e.stopPropagation()}
-                    />
-                  ) : (
-                    <span
-                      onDoubleClick={(e) => {
-                        e.stopPropagation()
-                        startRename(s)
-                      }}
-                      title="Double-click to rename"
-                    >
-                      {s.title ?? <span className="session-item-id">{s.id.slice(0, 8)}</span>}
-                    </span>
-                  )}
-                </strong>
-                <span
-                  className={`session-item-badge ${s.error ? 'err' : s.running ? 'running' : ''} ${working ? 'working' : ''}`}
-                  title={s.error ?? ''}
-                >
-                  {working && <span className="session-item-working-dot" aria-hidden />}
-                  {s.error
-                    ? 'err'
-                    : s.terminated
-                    ? 'ended'
-                    : isResuming
-                    ? 'resuming…'
-                    : working
-                    ? 'working'
-                    : s.running
-                    ? 'live'
-                    : 'dormant'}
-                </span>
-              </div>
-              {/* When the session errored, surface the message in the card
-                  itself. The full text is in the badge tooltip, but a
-                  truncated inline line saves a hover for 80% of cases. */}
-              {s.error && (
-                <div className="session-item-error" title={s.error}>
-                  ⚠ {s.error}
-                </div>
-              )}
-              {/* Dedicated cwd line — the most important per-session context.
-                  We show a directory glyph + the shortened path, with the full
-                  path as a tooltip for overflow cases. */}
-              <div className="session-item-cwd" title={s.cwd ?? ''}>
-                <span aria-hidden>📁</span>
-                <span>{s.cwd ? shortenPath(s.cwd) : '(no cwd)'}</span>
-              </div>
-              <div className="session-item-meta">
-                {s.model ?? 'default'} · {s.permissionMode ?? 'default'}
-              </div>
-              <div className="session-item-row">
-                <span className="session-item-meta">
-                  {s.messageCount} msgs · {s.subscribers} viewer{s.subscribers === 1 ? '' : 's'}
-                </span>
-                <button
-                  className="session-item-delete"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onDelete(s.id)
-                  }}
-                  title="Delete session"
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
-            )
-          })
+          // ── Flat view (no groups) ──
+          visibleSessions.map(renderSessionCard)
         )}
       </div>
 
@@ -479,9 +640,14 @@ export function SessionList({
         onClosePanel={(id) => onClosePanel?.(id)}
         onDelete={(id) => onDelete(id)}
         onFork={(id) => onFork?.(id)}
+        onNewLikeThis={(id) => onNewLikeThis?.(id)}
         onTogglePin={(id) => onTogglePin?.(id)}
         sessionColor={sessionColors?.[menu.id]}
         onColorChange={(color) => onSessionColorChange?.(menu.id, color)}
+        groups={groups}
+        onAddToGroup={onAddToGroup}
+        onRemoveFromGroup={onRemoveFromGroup}
+        onCreateGroup={onCreateGroup}
       />}
 
       {showDialog && (
@@ -842,12 +1008,19 @@ interface MenuProps {
    *  spawns a new Query seeded from this session's transcript. The new
    *  session appears in the sidebar via the global created event. */
   onFork: (id: string) => void
+  /** Create a new empty session reusing the source's cwd/model/permissionMode. */
+  onNewLikeThis: (id: string) => void
   /** Toggle pinned flag on the session. */
   onTogglePin: (id: string) => void
   /** Current per-session accent hex, or undefined for global default. */
   sessionColor?: string
   /** Set or clear the session accent. */
   onColorChange?: (color: string | undefined) => void
+  // --- Group actions ---
+  groups: SessionGroup[]
+  onAddToGroup: (sessionId: string, groupId: string) => void
+  onRemoveFromGroup: (sessionId: string, groupId: string) => void
+  onCreateGroup: (name: string) => string
 }
 
 function SessionContextMenu({
@@ -859,9 +1032,14 @@ function SessionContextMenu({
   onClosePanel,
   onDelete,
   onFork,
+  onNewLikeThis,
   onTogglePin,
   sessionColor,
   onColorChange,
+  groups,
+  onAddToGroup,
+  onRemoveFromGroup,
+  onCreateGroup,
 }: MenuProps) {
   if (!session) return null
   const items: ContextMenuItem[] = [
@@ -880,11 +1058,61 @@ function SessionContextMenu({
     {
       label: 'Fork from this point',
       icon: '⑂',
-      // Even errored / terminated sessions are forkable — the SDK
-      // rebuilds the transcript from disk, so the source's Query doesn't
-      // need to be live. Keep enabled unconditionally.
+      // Disabled until the SDK has flushed at least one completed turn to
+      // ~/.claude/projects/<cwd>/<id>.jsonl — the CLI otherwise errors with
+      // "No conversation found with session ID" when we hand it resume:id.
+      // lastTurnAt is set only when a real `result` comes back from the
+      // pump, so it's a reliable ground truth.
+      disabled: !session.lastTurnAt,
       onClick: () => onFork(anchor.id),
     },
+    {
+      label: 'New session like this',
+      icon: '⧉',
+      onClick: () => onNewLikeThis(anchor.id),
+    },
+    { label: '' }, // separator before group actions
+    // --- Group actions ---
+    ...(() => {
+      const sessionGroups = groups.filter((g) => g.sessionIds.includes(anchor.id))
+      const otherGroups = groups.filter((g) => !g.sessionIds.includes(anchor.id))
+      const items: ContextMenuItem[] = []
+      if (groups.length === 0) {
+        // No groups yet — offer to create one with this session.
+        items.push({
+          label: 'Create group with this session',
+          icon: '📁',
+          onClick: () => {
+            const name = window.prompt('Group name:')
+            if (!name?.trim()) return
+            const gid = onCreateGroup(name.trim())
+            onAddToGroup(anchor.id, gid)
+          },
+        })
+      } else {
+        if (otherGroups.length > 0) {
+          items.push({ label: 'Add to group ▸', icon: '＋', disabled: true })
+          for (const g of otherGroups) {
+            items.push({
+              label: `  ${g.name}`,
+              icon: ' ',
+              onClick: () => onAddToGroup(anchor.id, g.id),
+            })
+          }
+        }
+        if (sessionGroups.length > 0) {
+          items.push({ label: 'Remove from group ▸', icon: '－', disabled: true })
+          for (const g of sessionGroups) {
+            items.push({
+              label: `  ${g.name}`,
+              icon: '✕',
+              onClick: () => onRemoveFromGroup(anchor.id, g.id),
+            })
+          }
+        }
+      }
+      return items
+    })(),
     {
       label: 'Copy session ID',
       icon: '#',

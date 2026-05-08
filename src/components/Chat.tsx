@@ -8,7 +8,8 @@
 // new rules flag as a cascading-render hazard. Re-mount is cheap because
 // the sessions themselves are long-lived on the server.
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useState } from 'react'
+import { SettingsPanel } from './SettingsPanel'
 import { api } from '../hooks/useApi'
 import { useAttachments } from '../hooks/useAttachments'
 import { useChatStream } from '../hooks/useChatStream'
@@ -18,6 +19,7 @@ import { Composer } from './Composer'
 import { ContextBar } from './ContextBar'
 import { MessageList } from './MessageList'
 import { PermissionDialog } from './PermissionDialog'
+import { QuestionDialog } from './QuestionDialog'
 import { TodoChecklist } from './TodoChecklist'
 import type { SessionInfo } from '../types'
 
@@ -47,12 +49,15 @@ interface Props {
   session: SessionInfo
   /** Reserved for future push updates — currently unused because session
    *  state is tracked via the SSE stream + top-level session list poll. */
-  onSessionUpdate?: (s: SessionInfo) => void
+  onSessionUpdate: (s: SessionInfo) => void
   /** Forwarded to MessageList. App-level toggle (header bug icon). */
   showSystemEvents?: boolean
+  /** When true, render the Settings overlay on top of this chat panel. */
+  settingsOpen?: boolean
+  onCloseSettings?: () => void
 }
 
-export function Chat({ session, showSystemEvents }: Props) {
+export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings, onSessionUpdate }: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
   // The parent remounts Chat on session switch (<Chat key={session.id}>), so
   // this initializer runs exactly once per mount — the right place to hydrate.
@@ -197,14 +202,6 @@ export function Chat({ session, showSystemEvents }: Props) {
   // session state), and `working` is now derived from the message stream
   // itself (result messages clear it) — so no background poll is needed.
 
-  // Count completed turns → re-fetch context usage whenever it increments.
-  // Using messages.length alone would fire on every partial, which wastes
-  // the control-request round-trip.
-  const resultCount = useMemo(
-    () => stream.messages.reduce((n, m) => (m.type === 'result' ? n + 1 : n), 0),
-    [stream.messages],
-  )
-
   return (
     <div className="chat">
       <MessageList
@@ -229,7 +226,7 @@ export function Chat({ session, showSystemEvents }: Props) {
         </div>
       )}
 
-      <ContextBar sessionId={session.id} refreshKey={resultCount} running={session.running} />
+      <ContextBar usage={stream.contextUsage} />
 
       <Composer
         input={input}
@@ -252,12 +249,54 @@ export function Chat({ session, showSystemEvents }: Props) {
         focusSignal={composerFocusSignal}
       />
 
-      {permissions.pending.length > 0 && (
-        <PermissionDialog
-          key={permissions.pending[0].id}
-          request={permissions.pending[0]}
-          onDecide={(d) => void permissions.decide(permissions.pending[0].id, d)}
-        />
+      {permissions.pending.length > 0 && (() => {
+        // Render the head of the queue with the appropriate dialog. Both
+        // ride on the same `pending` list so one can't hide the other —
+        // the user decides/answers them one at a time. (The SDK rarely
+        // has multiple outstanding canUseTool calls in flight, but if it
+        // does, the second one stays queued.)
+        const head = permissions.pending[0]
+        if (head.kind === 'question') {
+          return (
+            <QuestionDialog
+              key={head.id}
+              request={head}
+              onSubmit={(answers) => void permissions.answerQuestion(head.id, answers)}
+              onSkipAll={() =>
+                void permissions.answerQuestion(
+                  head.id,
+                  head.questions.map(() => null),
+                )
+              }
+            />
+          )
+        }
+        return (
+          <PermissionDialog
+            key={head.id}
+            request={head}
+            onDecide={(d) => void permissions.decide(head.id, d)}
+          />
+        )
+      })()}
+
+      {settingsOpen && (
+        <div
+          className="settings-overlay"
+          role="dialog"
+          aria-modal="false"
+          aria-label="Session settings"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) onCloseSettings?.()
+          }}
+        >
+          <SettingsPanel
+            key={session.id}
+            session={session}
+            onClose={() => onCloseSettings?.()}
+            onSessionUpdate={onSessionUpdate}
+          />
+        </div>
       )}
     </div>
   )

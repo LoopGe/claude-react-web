@@ -12,8 +12,12 @@
 import { useState } from 'react'
 import type { PermissionRequest } from '../types'
 
+/** Narrowed to the permission variant of the union. The question variant
+ *  is rendered by `<QuestionDialog />` instead. */
+type PermissionRequestPermission = Extract<PermissionRequest, { kind: 'permission' }>
+
 interface Props {
-  request: PermissionRequest
+  request: PermissionRequestPermission
   onDecide: (
     decision:
       | { behavior: 'allow'; persistForSession: boolean }

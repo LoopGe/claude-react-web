@@ -294,29 +294,33 @@ export function buildApiRouter(sm: SessionManager): Hono {
         }
         await s.write(`event: replay-done\ndata: {}\n\n`)
 
-        // 3) Race the two live iterables. We can't `for await` two streams
-        //    sequentially; we drive them concurrently and write as events
-        //    arrive. Each iterator's next() returns either {value, done} or
-        //    we treat a rejection as "channel ended" and drop out.
+        // 3) Race three live iterables: SDK messages, permission events,
+        //    and context-usage snapshots. We can't `for await` multiple
+        //    streams sequentially; we drive them concurrently and write
+        //    as events arrive.
         const msgIter = msg.iterable[Symbol.asyncIterator]()
         const permIter = perms.iterable[Symbol.asyncIterator]()
+        const ctxIter = sm.subscribeContextUsage(id)?.[Symbol.asyncIterator]()
 
         type Tagged =
           | { kind: 'msg'; result: IteratorResult<unknown> }
           | { kind: 'perm'; result: IteratorResult<unknown> }
+          | { kind: 'ctx'; result: IteratorResult<unknown> }
 
         const tag = async (
-          kind: 'msg' | 'perm',
+          kind: 'msg' | 'perm' | 'ctx',
           it: AsyncIterator<unknown>,
         ): Promise<Tagged> => ({ kind, result: await it.next() })
 
         let msgP: Promise<Tagged> | null = tag('msg', msgIter)
         let permP: Promise<Tagged> | null = tag('perm', permIter)
+        let ctxP: Promise<Tagged> | null = ctxIter ? tag('ctx', ctxIter) : null
 
-        while (msgP || permP) {
+        while (msgP || permP || ctxP) {
           const pending: Promise<Tagged>[] = []
           if (msgP) pending.push(msgP)
           if (permP) pending.push(permP)
+          if (ctxP) pending.push(ctxP)
           const winner = await Promise.race(pending)
           if (winner.kind === 'msg') {
             if (winner.result.done) msgP = null
@@ -324,7 +328,7 @@ export function buildApiRouter(sm: SessionManager): Hono {
               await s.write(`event: message\ndata: ${JSON.stringify(winner.result.value)}\n\n`)
               msgP = tag('msg', msgIter)
             }
-          } else {
+          } else if (winner.kind === 'perm') {
             if (winner.result.done) permP = null
             else {
               const ev = winner.result.value as { kind: 'request' | 'resolved' } & Record<string, unknown>
@@ -336,6 +340,12 @@ export function buildApiRouter(sm: SessionManager): Hono {
                 )
               }
               permP = tag('perm', permIter)
+            }
+          } else {
+            if (winner.result.done) ctxP = null
+            else {
+              await s.write(`event: context_usage\ndata: ${JSON.stringify(winner.result.value)}\n\n`)
+              ctxP = tag('ctx', ctxIter!)
             }
           }
         }
@@ -419,6 +429,31 @@ export function buildApiRouter(sm: SessionManager): Hono {
       return c.json({ ok: true })
     }
     return c.json({ error: "behavior must be 'allow' or 'deny'" }, 400)
+  })
+
+  // Answer a pending AskUserQuestion. Body shape:
+  //   { answers: Array<string | string[] | null> }
+  // Each answer aligns positionally with the pending request's questions;
+  // strings for single-select, arrays for multi-select, null for skipped.
+  // Anything else falls back to null (same as "skipped") rather than
+  // failing the request — the SDK doesn't care, and the user may have
+  // closed the dialog mid-answer.
+  app.post('/sessions/:id/permissions/:pid/answer-question', async (c) => {
+    const id = c.req.param('id')
+    const pid = c.req.param('pid')
+    const raw = (await c.req.json<{ answers?: unknown }>().catch(() => ({}))) as {
+      answers?: unknown
+    }
+    if (!Array.isArray(raw.answers)) {
+      return c.json({ error: 'answers must be an array' }, 400)
+    }
+    const answers = raw.answers.map((a) => {
+      if (typeof a === 'string') return a
+      if (Array.isArray(a) && a.every((x) => typeof x === 'string')) return a as string[]
+      return null
+    })
+    sm.answerQuestion(id, pid, answers)
+    return c.json({ ok: true })
   })
 
   return app

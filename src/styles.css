@@ -600,6 +600,149 @@ body.resizing-col * {
   font-size: 11px;
 }
 .session-filter-clear:hover { background: var(--bg-elev-2); color: var(--fg); }
+
+/* ── Group pills (horizontal row in sidebar top area) ── */
+.group-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.group-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--bg-elev-2);
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  user-select: none;
+}
+.group-pill:hover {
+  background: var(--bg-elev-3);
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.group-pill-count {
+  font-size: 10px;
+  opacity: 0.7;
+  margin-left: 1px;
+}
+.group-pill-new {
+  border-style: dashed;
+  opacity: 0.8;
+}
+.group-pill-new:hover { opacity: 1; }
+.group-pill-input {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  border: 1px solid var(--accent);
+  background: var(--bg-elev-1);
+  color: var(--fg);
+  outline: none;
+  width: 80px;
+}
+
+/* ── Session section (grouped sidebar view) ── */
+.session-section {
+  display: flex;
+  flex-direction: column;
+}
+.session-section-header {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
+  padding: 8px 12px 4px;
+  user-select: none;
+}
+.session-section-divider {
+  font-size: 11px;
+  color: var(--fg-muted);
+  text-align: center;
+  padding: 6px 12px 2px;
+  opacity: 0.6;
+  user-select: none;
+}
+
+/* ── Group header (collapsible, inside sidebar) ── */
+.session-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+  border-left: 3px solid transparent;
+  transition: background 0.15s;
+}
+.session-group-header:hover {
+  background: var(--bg-elev-2);
+}
+/* Active group highlight — when this group's sessions occupy the main panels. */
+.session-section.group-active .session-group-header {
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.group-collapse-arrow {
+  font-size: 10px;
+  width: 14px;
+  text-align: center;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+.group-header-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.group-header-count {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--fg-muted);
+  background: var(--bg-elev-2);
+  border-radius: 8px;
+  padding: 0 5px;
+  min-width: 16px;
+  text-align: center;
+}
+.group-activate-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.group-activate-btn:hover {
+  background: var(--accent);
+  color: var(--fg-on-accent);
+  border-color: var(--accent);
+}
+.group-sessions {
+  display: flex;
+  flex-direction: column;
+}
+.group-empty {
+  font-size: 11px;
+  color: var(--fg-muted);
+  padding: 4px 12px 8px 32px;
+  font-style: italic;
+}
 .session-item {
   display: flex;
   flex-direction: column;
@@ -1172,6 +1315,15 @@ body.resizing-col * {
 }
 .msg.tool { background: transparent; border-style: dashed; border-color: #374151; }
 .msg.tool-result { background: #14202a; border-color: #1f3240; }
+/* Subagent assistant turns — same silhouette as a regular assistant card
+   but dimmed and with a dotted left rail, so it reads as "nested" rather
+   than as the main thread speaking. */
+.msg.assistant.subagent {
+  opacity: 0.78;
+  border-left: 3px dashed color-mix(in srgb, var(--fg-muted) 55%, transparent);
+  padding-left: 8px;
+}
+.msg.assistant.subagent .msg-header > span:first-child::before { content: '↳ '; }
 .msg.system { background: #1a1a1a; border-color: #2a2a2a; font-family: var(--mono); font-size: 12px; }
 .msg.error { background: #2b1616; border-color: #5a2525; color: #ffb1b1; }
 .msg.result { background: #14221c; border-color: #1f3a2e; }
@@ -1716,3 +1868,132 @@ body.resizing-col * {
 .inline-todo-in_progress .inline-todo-icon { color: var(--accent); }
 .inline-todo-pending { color: var(--fg-muted); }
 .inline-todo-pending .inline-todo-icon { opacity: 0.5; }
+
+/* --- QuestionDialog --------------------------------------------------
+   Interactive dialog shown when the SDK calls AskUserQuestion. Reuses
+   .perm-overlay / .perm-card for the frame; the rest below styles the
+   per-question forms and selectable options. */
+.question-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.question-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.question-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--fg-muted);
+}
+.question-chip {
+  background: var(--bg-elev-2);
+  color: var(--accent);
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+}
+.question-index {
+  font-family: var(--mono);
+}
+.question-mode {
+  color: var(--warn);
+}
+.question-text {
+  font-size: 14px;
+  color: var(--fg);
+  line-height: 1.45;
+  font-weight: 500;
+}
+.question-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.question-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.question-option:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+.question-option.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev));
+}
+.question-option-marker {
+  font-size: 16px;
+  color: var(--fg-muted);
+  line-height: 1.2;
+}
+.question-option.selected .question-option-marker {
+  color: var(--accent);
+}
+.question-option-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.question-option-label {
+  font-weight: 500;
+  font-size: 13.5px;
+}
+.question-option-desc {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  line-height: 1.45;
+}
+.question-option-preview {
+  margin-top: 4px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  max-height: 160px;
+  overflow: auto;
+}
+.question-skip {
+  align-self: flex-start;
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 0;
+  text-decoration: underline dotted;
+}
+.question-skip:disabled {
+  opacity: 0.4;
+  cursor: default;
+  text-decoration: none;
+}
+.question-skip:hover:not(:disabled) {
+  color: var(--fg);
+}

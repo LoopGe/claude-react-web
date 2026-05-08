@@ -67,6 +67,34 @@ export function MessageList({ messages, showSystemEvents = false, working = fals
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
   }, [working])
 
+  // Viewport-shrink trigger: the TodoChecklist panel appears/grows below
+  // the scroll container, which eats vertical space from `.chat-messages`.
+  // Without this effect, the scroll container's content stays where it
+  // was while the viewport shrunk — the bottom messages slide above the
+  // fold and `atBottom` silently flips false, so future auto-scrolls
+  // stop working. ResizeObserver re-pins to bottom whenever the viewport
+  // shrinks *and* the user was already at the bottom.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    let lastClientHeight = el.clientHeight
+    const ro = new ResizeObserver(() => {
+      if (!scrollRef.current) return
+      const now = scrollRef.current.clientHeight
+      const shrunk = now < lastClientHeight
+      lastClientHeight = now
+      // Only re-pin when the user was at the bottom before the resize.
+      // If they had scrolled up, forcing them back to bottom would be
+      // hostile. (The onScroll listener will correct atBottomRef on the
+      // next scroll event anyway.)
+      if (shrunk && atBottomRef.current) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+      }
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
   const onScroll = () => {
     const el = scrollRef.current
     if (!el) return
@@ -144,18 +172,33 @@ function MessageView({ msg }: { msg: SdkMessage }) {
 
   if (type === 'user') {
     const userContent = extractUserText(msg)
+    const blocks = toBlocks(msg.message?.content)
+    const toolBlocks = blocks.filter((b) => b.type === 'tool_result')
 
-    // Synthetic tool-result message from the SDK (e.g. Agent, Bash, etc.).
-    // The SDK marks these with a non-null parent_tool_use_id. Render
-    // tool_result blocks prominently; if the message also carries text
-    // (common for subagent results), show it above the tool blocks.
-    if (isToolResultMessage(msg)) {
-      const blocks = toBlocks(msg.message?.content)
-      const toolBlocks = blocks.filter((b) => b.type === 'tool_result')
+    // A `user` frame is synthetic (i.e. NOT typed by the human) in two
+    // overlapping cases:
+    //   1. It carries at least one `tool_result` block — the SDK uses
+    //      the user role to feed tool output back to the model.
+    //      Notably, top-level tool calls like `Agent` produce a user
+    //      frame with `tool_result` but NO `parent_tool_use_id` (the
+    //      result goes to the *main* thread; parent_tool_use_id is only
+    //      set for subagent-internal tool hops).
+    //   2. It has a non-null `parent_tool_use_id` — this is a subagent
+    //      (Task/Agent worker) internal conversation message,
+    //      forwarded only when `forwardSubagentText: true`.
+    // Real user input always has neither: parent_tool_use_id is null
+    // AND content is either a string or an array of text blocks.
+    const isSubagent = (msg as Record<string, unknown>).parent_tool_use_id != null
+    const isToolResult = toolBlocks.length > 0
+    if (isToolResult || isSubagent) {
+      // Nothing visible? Don't draw an empty card — subagent heartbeat
+      // frames sometimes carry no text and no tool_result.
+      if (toolBlocks.length === 0 && !userContent) return null
+      const label = isToolResult ? 'tool result' : 'subagent'
       return (
-        <div className="msg tool-result">
+        <div className={`msg tool-result${isSubagent && !isToolResult ? ' subagent' : ''}`}>
           <div className="msg-header">
-            <span>tool result</span>
+            <span>{label}</span>
           </div>
           <div className="msg-body">
             {userContent && <div style={{ marginBottom: 6, opacity: 0.8 }}>{userContent}</div>}
@@ -182,10 +225,17 @@ function MessageView({ msg }: { msg: SdkMessage }) {
 
   if (type === 'assistant') {
     const blocks = toBlocks(msg.message?.content)
+    // Subagent assistant turns (from Task tool workers with
+    // forwardSubagentText on) carry the same shape as main-thread
+    // assistant turns but with a non-null parent_tool_use_id. Label
+    // them distinctly so users can tell which model produced which
+    // output — without this, a subagent's `tool_use: Bash` would look
+    // identical to the main model running Bash.
+    const isSubagent = (msg as Record<string, unknown>).parent_tool_use_id != null
     return (
-      <div className="msg assistant">
+      <div className={`msg assistant${isSubagent ? ' subagent' : ''}`}>
         <div className="msg-header">
-          <span>assistant</span>
+          <span>{isSubagent ? 'subagent' : 'assistant'}</span>
           {msg.error && <span style={{ color: 'var(--danger)' }}>{msg.error as string}</span>}
         </div>
         <div className="msg-body">
@@ -330,22 +380,6 @@ function extractUserText(msg: SdkMessage): string | null {
     return text || null
   }
   return null
-}
-
-function hasToolResult(msg: SdkMessage): boolean {
-  const content = msg.message?.content
-  if (!Array.isArray(content)) return false
-  return (content as Block[]).some((b) => b.type === 'tool_result')
-}
-
-/** True when `msg` is a synthetic user message emitted by the SDK to carry
- *  tool results (e.g. Agent/Bash/Read completions). The SDK sets a non-null
- *  `parent_tool_use_id` on these; real user messages always have null. */
-function isToolResultMessage(msg: SdkMessage): boolean {
-  return (
-    (msg as Record<string, unknown>).parent_tool_use_id != null &&
-    hasToolResult(msg)
-  )
 }
 
 function toBlocks(content: unknown): Block[] {

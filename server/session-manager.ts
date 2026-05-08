@@ -37,6 +37,8 @@ import type { SessionMeta, SessionStore } from './persistence.js'
 interface Subscriber {
   id: string
   push: (msg: SDKMessage) => void
+  /** Push a named event that bypasses message history (e.g. context_usage). */
+  pushEvent: (name: string, data: unknown) => void
   end: () => void
   closed: boolean
 }
@@ -52,18 +54,50 @@ interface PermissionSubscriber {
   end: () => void
 }
 
-/** JSON-safe snapshot of a pending permission request. */
-export interface PermissionRequestSnapshot {
-  id: string
-  toolName: string
-  input: Record<string, unknown>
-  title?: string
-  displayName?: string
-  description?: string
-  suggestions?: PermissionUpdate[]
-  toolUseID: string
-  createdAt: number
+/** One question within an AskUserQuestion tool_use. Mirrors the SDK's
+ *  internal shape but narrowed so the frontend can rely on it. */
+export interface QuestionSpec {
+  question: string
+  /** Short header/label for the question, shown as a chip in the UI. */
+  header?: string
+  multiSelect?: boolean
+  options: Array<{
+    label: string
+    description?: string
+    /** Preview body (markdown by default). SDK's toolConfig.askUserQuestion
+     *  can flip this to HTML, but we don't set that option. */
+    preview?: string
+  }>
 }
+
+/** JSON-safe snapshot of a pending permission request OR interactive
+ *  question. Permissions and questions ride on the same SSE channel and
+ *  the same pending map — they're both "SDK waiting on the user" events
+ *  — but the frontend renders them with different components, so the
+ *  `kind` discriminator matters. */
+export type PermissionRequestSnapshot =
+  | {
+      kind: 'permission'
+      id: string
+      toolName: string
+      input: Record<string, unknown>
+      title?: string
+      displayName?: string
+      description?: string
+      suggestions?: PermissionUpdate[]
+      toolUseID: string
+      createdAt: number
+    }
+  | {
+      kind: 'question'
+      id: string
+      toolName: 'AskUserQuestion'
+      /** Raw questions array as handed to the tool. The frontend renders
+       *  one form per element; each is single- or multi-select. */
+      questions: QuestionSpec[]
+      toolUseID: string
+      createdAt: number
+    }
 
 /** Summary of how a pending request was resolved (broadcast to all tabs). */
 export interface PermissionDecisionSummary {
@@ -72,8 +106,16 @@ export interface PermissionDecisionSummary {
   message?: string
 }
 
-/** Internal server-side state per pending request. */
-interface PendingPermission extends PermissionRequestSnapshot {
+/** Answer submitted for a pending AskUserQuestion. Indices align with
+ *  the `questions` array. Each entry is either a single option label
+ *  (single-select) or an array of labels (multi-select), or null when
+ *  the user skipped (we forward a "user skipped" note to the model). */
+export type QuestionAnswer = string | string[] | null
+
+/** Internal server-side state per pending request. Carries the SDK
+ *  resolver + signal alongside the JSON-serializable snapshot so the
+ *  single `pending` map can hold both flavours. */
+type PendingPermission = PermissionRequestSnapshot & {
   resolve: (r: PermissionResult) => void
   signal: AbortSignal
   abortHandler: () => void
@@ -131,6 +173,9 @@ interface Session {
   pendingTurns: number
   /** Timestamp of the last `result` message, used for the unread badge. */
   lastTurnAt?: number
+  /** Pushable for context_usage events — separate from message history
+   *  so reconnects don't replay stale usage snapshots. */
+  contextUsagePushable: Pushable<unknown>
 }
 
 const HISTORY_CAP = 500
@@ -350,11 +395,23 @@ export class SessionManager {
    *
    *  Source can be live OR dormant — we pull metadata from memory first,
    *  persistence second. Terminated sessions can still be forked (their
-   *  transcript lives in ~/.claude/projects/ regardless). */
+   *  transcript lives in ~/.claude/projects/ regardless).
+   *
+   *  Refuses to fork a source whose SDK hasn't completed a turn yet: the
+   *  SDK only writes ~/.claude/projects/<cwd>/<id>.jsonl after the first
+   *  `result` message, so forking earlier fails with `No conversation
+   *  found with session ID: <uuid>` from the CLI. `lastTurnAt` is our
+   *  ground-truth signal (set only by the pump on a real `result`). */
   fork(id: string): SessionInfo {
     const live = this.sessions.get(id)
     const meta = live ?? this.store?.get(id)
     if (!meta) throw new HttpError(404, `session ${id} not found`)
+    if (!meta.lastTurnAt) {
+      throw new HttpError(
+        400,
+        `session ${id} has no completed turns yet — send at least one message and wait for the reply before forking`,
+      )
+    }
     const title = meta.title ? `${meta.title} (fork)` : undefined
     const forkOpts: Options = {
       resume: id,
@@ -396,6 +453,44 @@ export class SessionManager {
     // eslint-disable-next-line prefer-const
     let session: Session
     const canUseTool: CanUseTool = async (toolName, toolInput, ctx) => {
+      // `AskUserQuestion` is an interactive tool (not a permission check)
+      // but it still routes through canUseTool. Intercepting here is the
+      // only reliable way to override its output — PreToolUse.block and
+      // PostToolUse.updatedToolOutput were tested against SDK 2.1.133
+      // and neither actually short-circuits the built-in "no interactive
+      // UI" placeholder handler. canUseTool deny+message DOES short-
+      // circuit it: the model sees our `message` as the tool_result and
+      // proceeds as if it got a real answer. See docs in README.
+      if (toolName === 'AskUserQuestion') {
+        return new Promise<PermissionResult>((resolve) => {
+          const pid = randomUUID()
+          const questions = sanitizeQuestions(toolInput)
+          const abortHandler = () => {
+            if (!session.pending.has(pid)) return
+            session.pending.delete(pid)
+            resolve({ behavior: 'deny', message: 'aborted', interrupt: false, toolUseID: ctx.toolUseID })
+            this.broadcastPermissionResolved(session, pid, {
+              behavior: 'deny',
+              persisted: false,
+              message: 'aborted',
+            })
+          }
+          const pending: PendingPermission = {
+            kind: 'question',
+            id: pid,
+            toolName: 'AskUserQuestion',
+            questions,
+            toolUseID: ctx.toolUseID,
+            createdAt: Date.now(),
+            resolve,
+            signal: ctx.signal,
+            abortHandler,
+          }
+          session.pending.set(pid, pending)
+          ctx.signal.addEventListener('abort', abortHandler, { once: true })
+          this.broadcastPermissionRequest(session, pending)
+        })
+      }
       // `bypassPermissions` is implemented here rather than via the SDK's
       // own permissionMode flag. That flag is set at spawn time and the
       // SDK then refuses to transition into it mid-session, which makes
@@ -425,6 +520,7 @@ export class SessionManager {
           })
         }
         const pending: PendingPermission = {
+          kind: 'permission',
           id: pid,
           toolName,
           input: toolInput,
@@ -483,6 +579,7 @@ export class SessionManager {
       permissionSubscribers: new Map(),
       pending: new Map(),
       history: [],
+      contextUsagePushable: createPushable<unknown>(),
       pumpTask: Promise.resolve(),
       running: true,
       terminated: false,
@@ -695,6 +792,12 @@ export class SessionManager {
     const s = this.require(sid)
     const p = s.pending.get(pid)
     if (!p) throw new HttpError(404, `pending permission ${pid} not found`)
+    if (p.kind === 'question') {
+      throw new HttpError(
+        400,
+        `pending ${pid} is an interactive question, use /answer-question instead`,
+      )
+    }
     // Detach abort handler so aborting an already-resolved promise is a no-op.
     try {
       p.signal.removeEventListener('abort', p.abortHandler)
@@ -738,6 +841,46 @@ export class SessionManager {
         message,
       })
     }
+  }
+
+  /**
+   * Resolve a pending AskUserQuestion with user-selected answers.
+   *
+   * The SDK's built-in AskUserQuestion handler is bypassed via canUseTool
+   * deny+message: the `message` ends up in the tool_result block the model
+   * sees, so it reads the user's answer as if the tool had produced it.
+   *
+   * `answers[i]` aligns with the `questions[i]` of the pending request.
+   * Each entry is a chosen label (single-select), array of labels
+   * (multi-select), or null (skipped).
+   */
+  answerQuestion(sid: string, pid: string, answers: QuestionAnswer[]): void {
+    const s = this.require(sid)
+    const p = s.pending.get(pid)
+    if (!p) throw new HttpError(404, `pending ${pid} not found`)
+    if (p.kind !== 'question') {
+      throw new HttpError(400, `pending ${pid} is not an interactive question`)
+    }
+    try {
+      p.signal.removeEventListener('abort', p.abortHandler)
+    } catch {
+      /* ignore */
+    }
+    s.pending.delete(pid)
+    s.lastActivityAt = Date.now()
+
+    const message = formatQuestionAnswers(p.questions, answers)
+    p.resolve({
+      behavior: 'deny',
+      message,
+      interrupt: false,
+      toolUseID: p.toolUseID,
+    })
+    this.broadcastPermissionResolved(s, pid, {
+      behavior: 'deny',
+      persisted: false,
+      message,
+    })
   }
 
   /** SSE subscription for permission-channel events. */
@@ -809,6 +952,14 @@ export class SessionManager {
     }
   }
 
+  /** AsyncIterable of context-usage snapshots for one session.
+   *  Returns null if the session doesn't exist (caller should treat
+   *  as "no context data available"). */
+  subscribeContextUsage(id: string): AsyncIterable<unknown> | null {
+    const s = this.sessions.get(id)
+    return s?.contextUsagePushable.iterable ?? null
+  }
+
   private broadcastPermissionRequest(session: Session, p: PendingPermission): void {
     const snapshot = toSnapshot(p)
     for (const sub of session.permissionSubscribers.values()) {
@@ -853,6 +1004,12 @@ export class SessionManager {
         } else {
           queue.push(msg)
         }
+      },
+      // Named-event channel (e.g. context_usage) isn't wired into this
+      // iterable-based SSE path yet — the routes layer will want to read
+      // such events directly. Stubbed to satisfy the Subscriber type.
+      pushEvent: () => {
+        /* intentionally empty */
       },
       end: () => {
         if (closed) return
@@ -1057,6 +1214,7 @@ export class SessionManager {
 
   private async pump(session: Session): Promise<void> {
     try {
+      let msgCount = 0
       for await (const msg of session.query) {
         session.lastActivityAt = Date.now()
         session.history.push(msg)
@@ -1064,6 +1222,18 @@ export class SessionManager {
           session.history.splice(0, session.history.length - this.historyCap)
         }
         for (const sub of session.subscribers.values()) sub.push(msg)
+        // Fire a non-blocking context-usage fetch every 10 messages AND
+        // on every `result` so the client always has a fresh snapshot at
+        // turn boundaries (the count may not land on a multiple of 10).
+        if (
+          (++msgCount % 10 === 0 || msg.type === 'result') &&
+          session.subscribers.size > 0
+        ) {
+          void session.query.getContextUsage().then(
+            (usage) => session.contextUsagePushable.push(usage),
+            () => { /* ignore — session may have ended between fire and resolve */ },
+          )
+        }
         // `result` marks a completed turn. Decrement the pending counter
         // and stamp lastTurnAt so the frontend can flag unread. Clamped
         // at 0 in case the SDK emits spurious results (shouldn't happen
@@ -1095,6 +1265,7 @@ export class SessionManager {
       session.terminated = true
       for (const sub of session.subscribers.values()) sub.end()
       session.subscribers.clear()
+      session.contextUsagePushable.end()
       // Persist the terminal state so the UI shows the transcript as
       // "ended" after a reload, and resume() can refuse to re-spawn it.
       this.persist(session)
@@ -1124,7 +1295,18 @@ export class HttpError extends Error {
 
 /** Strip the non-serializable fields (resolve/signal) before JSON. */
 function toSnapshot(p: PendingPermission): PermissionRequestSnapshot {
+  if (p.kind === 'question') {
+    return {
+      kind: 'question',
+      id: p.id,
+      toolName: p.toolName,
+      questions: p.questions,
+      toolUseID: p.toolUseID,
+      createdAt: p.createdAt,
+    }
+  }
   return {
+    kind: 'permission',
     id: p.id,
     toolName: p.toolName,
     input: p.input,
@@ -1135,6 +1317,59 @@ function toSnapshot(p: PendingPermission): PermissionRequestSnapshot {
     toolUseID: p.toolUseID,
     createdAt: p.createdAt,
   }
+}
+
+/** Defensive parse of AskUserQuestion's `input.questions` array. Drops
+ *  malformed entries rather than throwing — we'd rather forward a
+ *  slimmed-down list than abort the tool call. */
+function sanitizeQuestions(input: Record<string, unknown>): QuestionSpec[] {
+  const raw = input?.questions
+  if (!Array.isArray(raw)) return []
+  const out: QuestionSpec[] = []
+  for (const q of raw) {
+    if (!q || typeof q !== 'object') continue
+    const obj = q as Record<string, unknown>
+    if (typeof obj.question !== 'string') continue
+    if (!Array.isArray(obj.options)) continue
+    const options: QuestionSpec['options'] = []
+    for (const opt of obj.options) {
+      if (!opt || typeof opt !== 'object') continue
+      const o = opt as Record<string, unknown>
+      if (typeof o.label !== 'string') continue
+      options.push({
+        label: o.label,
+        description: typeof o.description === 'string' ? o.description : undefined,
+        preview: typeof o.preview === 'string' ? o.preview : undefined,
+      })
+    }
+    if (options.length === 0) continue
+    out.push({
+      question: obj.question,
+      header: typeof obj.header === 'string' ? obj.header : undefined,
+      multiSelect: obj.multiSelect === true,
+      options,
+    })
+  }
+  return out
+}
+
+/** Build the tool_result payload the model will see. We use JSON because
+ *  it's unambiguous and the model parses it reliably; plain text also
+ *  works but is ambiguous when answers contain commas or colons.
+ *
+ *  Null entries in `answers` mean the user skipped that question — we
+ *  encode that as `answer: null` with a note, so the model can decide
+ *  how to proceed (often: continue with a default).
+ */
+function formatQuestionAnswers(questions: QuestionSpec[], answers: QuestionAnswer[]): string {
+  const payload = {
+    note: 'User answers from AskUserQuestion (single-select is a string, multi-select is an array, null means skipped).',
+    answers: questions.map((q, i) => ({
+      question: q.question,
+      answer: answers[i] ?? null,
+    })),
+  }
+  return JSON.stringify(payload)
 }
 
 /**

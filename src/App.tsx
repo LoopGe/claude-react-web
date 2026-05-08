@@ -7,7 +7,6 @@ import type { CSSProperties } from 'react'
 import { SessionList } from './components/SessionList'
 import { Chat } from './components/Chat'
 import { ContextMenu } from './components/ContextMenu'
-import { SettingsPanel } from './components/SettingsPanel'
 import { api } from './hooks/useApi'
 import { shortenPath } from './utils/paths'
 import { isInAppDrag, readDragPayload, setDragPayload } from './hooks/useDragPayload'
@@ -16,7 +15,7 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useLocalStorage } from './hooks/useLocalStorage'
 import { useNotifications } from './hooks/useNotifications'
 import { useNamedEventSource } from './hooks/useSSE'
-import type { NewSessionForm, PermissionMode, SessionInfo } from './types'
+import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, SidebarSection } from './types'
 import { ACCENT_COLORS, ACCENT_COLOR_KEY, SESSION_COLORS_KEY } from './theme'
 
 const PERMISSION_MODES: PermissionMode[] = [
@@ -39,6 +38,8 @@ const SIDEBAR_MAX_PX = 480
 const PANEL_RATIOS_KEY = 'claude-react-web:panel-col-ratios'
 /** Minimum column ratio — keeps a panel from collapsing to nothing. */
 const PANEL_MIN_RATIO = 0.15
+const GROUPS_KEY = 'claude-react-web:session-groups'
+const COLLAPSED_GROUPS_KEY = 'claude-react-web:collapsed-groups'
 
 interface Defaults {
   cwd?: string
@@ -74,6 +75,10 @@ export function App() {
    *  anything not listed; unknown ids (e.g. sessions created after the
    *  order was saved) fall through to the default lastActivityAt sort. */
   const [sidebarOrder, setSidebarOrder] = useLocalStorage<string[]>(SIDEBAR_ORDER_KEY, [])
+  /** Named session groups for quick layout switching. */
+  const [groups, setGroups] = useLocalStorage<SessionGroup[]>(GROUPS_KEY, [])
+  /** Which group headers are collapsed in the sidebar. */
+  const [collapsedGroups, setCollapsedGroups] = useLocalStorage<Record<string, boolean>>(COLLAPSED_GROUPS_KEY, {})
   /** Show SDK bookkeeping messages (system/init, system/status, …) in
    *  the transcript. Off by default — they're noise for normal use,
    *  but invaluable when debugging tool wiring or context compaction. */
@@ -128,29 +133,30 @@ export function App() {
     [sessionColors],
   )
 
-  /** Flex ratios for the three main-grid columns. Length is always
-   *  MAX_OPEN; only the first `openSessions.length` slots actually render. */
-  const [panelRatios, setPanelRatios] = useLocalStorage<number[]>(PANEL_RATIOS_KEY, [1, 1, 1])
-  const [panelRatiosDraft, setPanelRatiosDraft] = useState<number[] | null>(null)
+  /** Per-session column-width ratios for the main grid. Keyed by session
+   *  ID so ratios travel with their session when panels are evicted and
+   *  reordered — no more positional misalignment on open/close. */
+  const [panelRatios, setPanelRatios] = useLocalStorage<Record<string, number>>(PANEL_RATIOS_KEY, {})
+  const [panelRatiosDraft, setPanelRatiosDraft] = useState<Record<string, number> | null>(null)
   const effectiveRatios = panelRatiosDraft ?? panelRatios
   /** Construct the grid-template-columns string for the current layout.
-   *  Inserts 4px divider tracks between visible panels. Also ensures we
-   *  always emit N items even when ratios state is stale (too short). */
+   *  Inserts 4px divider tracks between visible panels. Ratios default
+   *  to 1 (equal width) for sessions that haven't been manually resized. */
   const gridTemplate = useMemo(() => {
     const n = Math.max(1, openIds.length)
     const parts: string[] = []
     for (let i = 0; i < n; i++) {
-      const r = effectiveRatios[i] ?? 1
+      const r = effectiveRatios[openIds[i]] ?? 1
       parts.push(`${r}fr`)
       if (i < n - 1) parts.push('4px')
     }
     return parts.join(' ')
-  }, [openIds.length, effectiveRatios])
+  }, [openIds, effectiveRatios])
 
   /** Drag state for the panel-column dividers. `index` is the divider
    *  between columns i and i+1 (so valid values are 0 and 1). */
   const bodyRef = useRef<HTMLDivElement>(null)
-  const dividerStart = useRef<{ ratios: number[]; bodyWidth: number } | null>(null)
+  const dividerStart = useRef<{ ratios: Record<string, number>; bodyWidth: number } | null>(null)
   const [draggingDivider, setDraggingDivider] = useState<number | null>(null)
 
   const onDividerMouseDown = useCallback(
@@ -160,7 +166,7 @@ export function App() {
       const body = bodyRef.current
       if (!body) return
       dividerStart.current = {
-        ratios: effectiveRatios.slice(),
+        ratios: { ...effectiveRatios },
         bodyWidth: body.getBoundingClientRect().width,
       }
       setDraggingDivider(index)
@@ -170,7 +176,8 @@ export function App() {
       // but we need the divider index + accurate pixel→ratio conversion, so
       // the handlers live inline here instead of in the generic useDragResize.
       const startX = e.clientX
-      const n = openIds.length
+      const leftId = openIds[index]
+      const rightId = openIds[index + 1]
       const onMove = (ev: MouseEvent) => {
         const snap = dividerStart.current
         if (!snap) return
@@ -179,24 +186,24 @@ export function App() {
         // Each column's px width = (ratio / sum) * bodyWidth; moving deltaPx
         // means we want ratio[i] to grow by deltaRatio and ratio[i+1] to
         // shrink by the same amount. deltaRatio = deltaPx / (bodyWidth / sum).
-        const sum = snap.ratios.slice(0, n).reduce((a, b) => a + b, 0) || 1
+        const leftR = snap.ratios[leftId] ?? 1
+        const rightR = snap.ratios[rightId] ?? 1
+        const sum = (leftR + rightR) || 1
         const pxPerRatio = snap.bodyWidth / sum
         const deltaR = deltaPx / pxPerRatio
-        const next = snap.ratios.slice()
-        const left = index
-        const right = index + 1
-        const rawL = next[left] + deltaR
-        const rawR = next[right] - deltaR
+        const next = { ...snap.ratios }
+        const rawL = leftR + deltaR
+        const rawR = rightR - deltaR
         // Enforce minimum ratio on both sides; clamp by stealing back.
         if (rawL < PANEL_MIN_RATIO) {
-          next[right] = next[left] + next[right] - PANEL_MIN_RATIO
-          next[left] = PANEL_MIN_RATIO
+          next[rightId] = leftR + rightR - PANEL_MIN_RATIO
+          next[leftId] = PANEL_MIN_RATIO
         } else if (rawR < PANEL_MIN_RATIO) {
-          next[left] = next[left] + next[right] - PANEL_MIN_RATIO
-          next[right] = PANEL_MIN_RATIO
+          next[leftId] = leftR + rightR - PANEL_MIN_RATIO
+          next[rightId] = PANEL_MIN_RATIO
         } else {
-          next[left] = rawL
-          next[right] = rawR
+          next[leftId] = rawL
+          next[rightId] = rawR
         }
         setPanelRatiosDraft(next)
       }
@@ -209,7 +216,7 @@ export function App() {
       window.addEventListener('mousemove', onMove)
       window.addEventListener('mouseup', onUp)
     },
-    [effectiveRatios, openIds.length],
+    [effectiveRatios, openIds],
   )
 
   // Commit the draft to localStorage after dragging ends. Same shape as
@@ -374,9 +381,18 @@ export function App() {
       // turn-complete notifications. Payload shape matches the server-side
       // GlobalSessionEvent { kind: 'permission_request', sessionId, request }.
       permission_request: (data: unknown) => {
-        const p = data as { sessionId?: string; request?: { toolName?: string; displayName?: string } }
+        const p = data as {
+          sessionId?: string
+          request?: { kind?: string; toolName?: string; displayName?: string }
+        }
         if (!p?.sessionId) return
-        maybePermissionNotify(p.sessionId, p.request?.displayName ?? p.request?.toolName ?? 'a tool')
+        // Questions get a dedicated wording — "Claude is asking a
+        // question" reads better than "Claude wants to use AskUserQuestion".
+        const label =
+          p.request?.kind === 'question'
+            ? 'a question'
+            : p.request?.displayName ?? p.request?.toolName ?? 'a tool'
+        maybePermissionNotify(p.sessionId, label)
       },
     }),
     [maybeNotify, maybePermissionNotify],
@@ -500,6 +516,24 @@ export function App() {
       }
     },
     [openSession],
+  )
+
+  /** Create a brand-new empty session that reuses the source session's
+   *  basic config (cwd, model, permissionMode) without carrying over any
+   *  conversation history. Think "fork the settings, not the transcript". */
+  const handleNewLikeThis = useCallback(
+    async (id: string) => {
+      const source = sessions.find((s) => s.id === id)
+      if (!source) return
+      const form: NewSessionForm = {
+        cwd: source.cwd,
+        model: source.model,
+        permissionMode: source.permissionMode,
+        title: source.title ? `${source.title} (copy)` : undefined,
+      }
+      await handleCreate(form)
+    },
+    [sessions, handleCreate],
   )
 
   const handleTogglePin = useCallback(
@@ -698,6 +732,49 @@ export function App() {
     return [...pinned, ...rest]
   }, [sessions, sidebarOrder])
 
+  /** Grouped sidebar view: pinned → groups → ungrouped. Only meaningful
+   *  when at least one group exists; otherwise the flat orderedSessions
+   *  list is used directly. */
+  const sidebarSections = useMemo((): SidebarSection[] => {
+    if (groups.length === 0) return []
+    const byId = new Map(sessions.map((s) => [s.id, s]))
+    const pinned: SessionInfo[] = []
+
+    // 1. Pinned sessions (always shown at top, independent of groups).
+    for (const s of sessions) {
+      if (s.pinned) {
+        pinned.push(s)
+        // Don't remove from remaining — pinned sessions also appear in their groups.
+      }
+    }
+
+    // 2. Build a set of all grouped session IDs for the "ungrouped" bucket.
+    const groupedIds = new Set<string>()
+    for (const g of groups) for (const id of g.sessionIds) groupedIds.add(id)
+
+    // 3. Group sections.
+    const sections: SidebarSection[] = []
+    if (pinned.length > 0) sections.push({ kind: 'pinned', sessions: pinned })
+
+    for (const g of groups) {
+      const groupSessions: SessionInfo[] = []
+      for (const id of g.sessionIds) {
+        const s = byId.get(id)
+        if (s) groupSessions.push(s)
+      }
+      sections.push({ kind: 'group', group: g, sessions: groupSessions })
+    }
+
+    // 4. Ungrouped sessions (not in any group, not pinned).
+    const ungrouped: SessionInfo[] = []
+    for (const s of sessions) {
+      if (!s.pinned && !groupedIds.has(s.id)) ungrouped.push(s)
+    }
+    if (ungrouped.length > 0) sections.push({ kind: 'ungrouped', sessions: ungrouped })
+
+    return sections
+  }, [sessions, groups])
+
   /** Reorder callback wired to the sidebar's DnD. Moves `draggedId` so it
    *  lands either before or after `targetId`. Dropping on itself is a
    *  no-op. The resulting order is saved so the page survives reloads. */
@@ -713,6 +790,97 @@ export function App() {
       setSidebarOrder(without)
     },
     [orderedSessions, setSidebarOrder],
+  )
+
+  // --- Session group management ----------------------------------------------
+
+  const handleCreateGroup = useCallback(
+    (name: string) => {
+      const id = crypto.randomUUID()
+      setGroups((prev) => [...prev, { id, name, sessionIds: [] }])
+      return id
+    },
+    [setGroups],
+  )
+
+  const handleDeleteGroup = useCallback(
+    (groupId: string) => {
+      setGroups((prev) => prev.filter((g) => g.id !== groupId))
+      setCollapsedGroups((prev) => {
+        if (!(groupId in prev)) return prev
+        const next = { ...prev }
+        delete next[groupId]
+        return next
+      })
+    },
+    [setGroups, setCollapsedGroups],
+  )
+
+  const handleRenameGroup = useCallback(
+    (groupId: string, name: string) => {
+      setGroups((prev) => prev.map((g) => (g.id === groupId ? { ...g, name } : g)))
+    },
+    [setGroups],
+  )
+
+  const handleAddToGroup = useCallback(
+    (sessionId: string, groupId: string) => {
+      setGroups((prev) =>
+        prev.map((g) =>
+          g.id === groupId && !g.sessionIds.includes(sessionId)
+            ? { ...g, sessionIds: [...g.sessionIds, sessionId] }
+            : g,
+        ),
+      )
+    },
+    [setGroups],
+  )
+
+  const handleRemoveFromGroup = useCallback(
+    (sessionId: string, groupId: string) => {
+      setGroups((prev) =>
+        prev.map((g) =>
+          g.id === groupId
+            ? { ...g, sessionIds: g.sessionIds.filter((id) => id !== sessionId) }
+            : g,
+        ),
+      )
+    },
+    [setGroups],
+  )
+
+  /** Activate a group: replace main-area panels with the group's sessions. */
+  const handleActivateGroup = useCallback(
+    (groupId: string) => {
+      const group = groups.find((g) => g.id === groupId)
+      if (!group) return
+      const sessionSet = new Set(sessions.map((s) => s.id))
+      const valid = group.sessionIds.filter((id) => sessionSet.has(id)).slice(0, MAX_OPEN)
+      if (valid.length === 0) return
+      setOpenIds(valid)
+      setFocusedId(valid[0])
+      setLastSeenTurn((prev) => {
+        const next = { ...prev }
+        const now = Date.now()
+        for (const id of valid) next[id] = now
+        return next
+      })
+      // Resume dormant sessions in the background.
+      for (const id of valid) {
+        const s = sessions.find((x) => x.id === id)
+        if (s && !s.running && !s.terminated) {
+          void api.post(`/sessions/${id}/resume`, {}).catch(() => {})
+        }
+      }
+    },
+    [groups, sessions],
+  )
+
+  const toggleGroupCollapse = useCallback(
+    (groupId: string) => {
+      setCollapsedGroups((prev) => ({ ...prev, [groupId]: !prev[groupId] }))
+    },
+    [setCollapsedGroups],
   )
 
   /** Swap two open panels' positions. Focus follows the dragged panel so
@@ -804,10 +972,21 @@ export function App() {
           onDelete={handleDelete}
           onClosePanel={closeSession}
           onFork={handleFork}
+          onNewLikeThis={handleNewLikeThis}
           onTogglePin={handleTogglePin}
           onReorder={handleReorderSidebar}
           newSessionDialogOpen={newSessionDialogOpen}
           onNewSessionDialogChange={setNewSessionDialogOpen}
+          groups={groups}
+          sidebarSections={sidebarSections}
+          collapsedGroups={collapsedGroups}
+          onActivateGroup={handleActivateGroup}
+          onCreateGroup={handleCreateGroup}
+          onDeleteGroup={handleDeleteGroup}
+          onRenameGroup={handleRenameGroup}
+          onAddToGroup={handleAddToGroup}
+          onRemoveFromGroup={handleRemoveFromGroup}
+          onToggleGroupCollapse={toggleGroupCollapse}
         />
         <div
           className={`sidebar-resizer ${sidebarResize.dragging ? 'dragging' : ''}`}
@@ -945,7 +1124,7 @@ export function App() {
                   aria-orientation="vertical"
                   aria-label="Resize panel"
                   onMouseDown={onDividerMouseDown(i)}
-                  onDoubleClick={() => setPanelRatios([1, 1, 1])}
+                  onDoubleClick={() => setPanelRatios(Object.fromEntries(openIds.map((id) => [id, 1])))}
                   title="Drag to resize · double-click to reset"
                 />,
               ]
@@ -1230,6 +1409,8 @@ function ChatPanel({
             session={session}
             onSessionUpdate={onSessionUpdate}
             showSystemEvents={showSystemEvents}
+            settingsOpen={settingsOpen}
+            onCloseSettings={onCloseSettings}
           />
         ) : (
           <div className="empty-state">
@@ -1268,25 +1449,6 @@ function ChatPanel({
           </div>
         )}
       </div>
-      {settingsOpen && (
-        <div
-          className="settings-overlay"
-          role="dialog"
-          aria-modal="false"
-          aria-label="Session settings"
-          // Clicking the backdrop (empty area of the overlay) closes it.
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) onCloseSettings()
-          }}
-        >
-          <SettingsPanel
-            key={session.id}
-            session={session}
-            onClose={onCloseSettings}
-            onSessionUpdate={onSessionUpdate}
-          />
-        </div>
-      )}
     </section>
   )
 }
