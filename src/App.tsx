@@ -14,7 +14,8 @@ import { useDragResize } from './hooks/useDragResize'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useLocalStorage } from './hooks/useLocalStorage'
 import { useNotifications } from './hooks/useNotifications'
-import { useNamedEventSource } from './hooks/useSSE'
+import { useWsHub } from './hooks/useWsHub'
+import type { WsServerFrame } from './ws-types'
 import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, SidebarSection } from './types'
 import { ACCENT_COLORS, ACCENT_COLOR_KEY, SESSION_COLORS_KEY } from './theme'
 
@@ -326,84 +327,91 @@ export function App() {
     })
   }, [])
 
-  // Single push-based subscription to the server's session list. Replaces
-  // the old 5-second `GET /sessions` poll, which — combined with the
-  // per-session message + permission streams — used to saturate the
-  // browser's HTTP/1.1 connection pool under three concurrent chats.
-  const sessionEvents = useMemo(
-    () => ({
-      snapshot: (data: unknown) => {
-        const p = data as { sessions?: SessionInfo[] }
-        setSessions(p.sessions ?? [])
-        // Reconcile open/focused against whatever the server reports.
-        const ids = new Set((p.sessions ?? []).map((s) => s.id))
-        setOpenIds((prev) => prev.filter((id) => ids.has(id)))
-        setFocusedId((prev) => (prev && ids.has(prev) ? prev : null))
-      },
-      update: (data: unknown) => {
-        const p = data as { session: SessionInfo }
-        if (!p?.session) return
-        setSessions((prev) => {
-          const i = prev.findIndex((s) => s.id === p.session.id)
-          // An update for an id we don't know about is almost certainly
-          // a race: a `created` event is on its way too. Ignore it and
-          // let `created` do the insert — handling it here would create
-          // two rows if `created` also arrives (it always does).
-          if (i < 0) return prev
-          const next = prev.slice()
-          next[i] = p.session
-          return next
-        })
-        // Falling-edge trigger for desktop notifications — see maybeNotify.
-        maybeNotify(p.session)
-      },
-      created: (data: unknown) => {
-        const p = data as { session: SessionInfo }
-        if (!p?.session) return
-        setSessions((prev) => {
-          if (prev.some((s) => s.id === p.session.id)) return prev
-          return [p.session, ...prev]
-        })
-        // Seed the edge-detector so a session that spawns already
-        // working doesn't fire a notification on its first true→false
-        // transition when the user is still watching it.
-        prevWorkingRef.current.set(p.session.id, p.session.working)
-      },
-      removed: (data: unknown) => {
-        const p = data as { id: string }
-        if (!p?.id) return
-        setSessions((prev) => prev.filter((s) => s.id !== p.id))
-        setOpenIds((prev) => prev.filter((id) => id !== p.id))
-        setFocusedId((prev) => (prev === p.id ? null : prev))
-      },
-      // Tool-permission request arrived. Fire a desktop notification iff
-      // the user isn't actively looking at that session — same rule as
-      // turn-complete notifications. Payload shape matches the server-side
-      // GlobalSessionEvent { kind: 'permission_request', sessionId, request }.
-      permission_request: (data: unknown) => {
-        const p = data as {
-          sessionId?: string
-          request?: { kind?: string; toolName?: string; displayName?: string }
+  // Single push-based subscription to the server's session list. All
+  // events now ride on the shared WebSocket hub — one connection per
+  // tab, fanned out by kind. This replaces the previous SSE channel
+  // and incidentally eliminates the per-panel HTTP/1.1 connection
+  // exhaustion we used to hit with three concurrent chats.
+  const hub = useWsHub()
+  useEffect(() => {
+    const off = hub.addListener((frame: WsServerFrame) => {
+      switch (frame.kind) {
+        case 'sessions-snapshot': {
+          setSessions(frame.sessions)
+          // Reconcile open/focused against whatever the server reports.
+          const ids = new Set(frame.sessions.map((s) => s.id))
+          setOpenIds((prev) => prev.filter((id) => ids.has(id)))
+          setFocusedId((prev) => (prev && ids.has(prev) ? prev : null))
+          break
         }
-        if (!p?.sessionId) return
-        // Questions get a dedicated wording — "Claude is asking a
-        // question" reads better than "Claude wants to use AskUserQuestion".
-        const label =
-          p.request?.kind === 'question'
-            ? 'a question'
-            : p.request?.displayName ?? p.request?.toolName ?? 'a tool'
-        maybePermissionNotify(p.sessionId, label)
-      },
-    }),
-    [maybeNotify, maybePermissionNotify],
-  )
-  const lifecycle = useMemo(
-    () => ({
-      onError: () => setError('Lost connection to server. Refresh to retry.'),
-    }),
-    [],
-  )
-  useNamedEventSource('/api/sessions/events', sessionEvents, lifecycle)
+        case 'session-update': {
+          setSessions((prev) => {
+            const i = prev.findIndex((s) => s.id === frame.session.id)
+            // An update for an id we don't know about is almost certainly
+            // a race: a `created` event is on its way too. Ignore it and
+            // let `created` do the insert — handling it here would create
+            // two rows if `created` also arrives (it always does).
+            if (i < 0) return prev
+            const next = prev.slice()
+            next[i] = frame.session
+            return next
+          })
+          // Falling-edge trigger for desktop notifications — see maybeNotify.
+          maybeNotify(frame.session)
+          break
+        }
+        case 'session-created': {
+          setSessions((prev) => {
+            if (prev.some((s) => s.id === frame.session.id)) return prev
+            return [frame.session, ...prev]
+          })
+          // Seed the edge-detector so a session that spawns already
+          // working doesn't fire a notification on its first true→false
+          // transition when the user is still watching it.
+          prevWorkingRef.current.set(frame.session.id, frame.session.working)
+          break
+        }
+        case 'session-removed': {
+          setSessions((prev) => prev.filter((s) => s.id !== frame.id))
+          setOpenIds((prev) => prev.filter((id) => id !== frame.id))
+          setFocusedId((prev) => (prev === frame.id ? null : prev))
+          break
+        }
+        case 'global-permission-request': {
+          // Questions get a dedicated wording — "Claude is asking a
+          // question" reads better than "Claude wants to use AskUserQuestion".
+          const r = frame.request
+          const label =
+            r.kind === 'question'
+              ? 'a question'
+              : (('displayName' in r && r.displayName) ||
+                  ('toolName' in r && r.toolName) ||
+                  'a tool')
+          maybePermissionNotify(frame.sessionId, label as string)
+          break
+        }
+        default:
+          // Other frame kinds (per-session replay/message/etc.) are
+          // consumed by useChatStream listeners. App-level code only
+          // cares about the global slice above.
+          break
+      }
+    })
+    return off
+  }, [hub, maybeNotify, maybePermissionNotify])
+
+  // Hub status → reconnecting banner. Short blips (tsx-watch restart,
+  // VPN reconnect, laptop suspend) flash the banner briefly; a real
+  // outage keeps it up until the hub reconnects on its own.
+  useEffect(() => {
+    if (hub.status === 'reconnecting') {
+      setError((prev) =>
+        prev === null || prev === 'Reconnecting to server…' ? 'Reconnecting to server…' : prev,
+      )
+    } else if (hub.status === 'online') {
+      setError((prev) => (prev === 'Reconnecting to server…' ? null : prev))
+    }
+  }, [hub.status])
 
   /** Push a session id onto the open list. Rules:
    *  - Already open → just focus it, no reshuffle.
@@ -849,6 +857,34 @@ export function App() {
     [setGroups],
   )
 
+  /** Drag-drop handler for a card landing on a card inside a group.
+   *  Tag semantics — the dragged session is added to the group (if
+   *  it wasn't already) and its position within `sessionIds` is set
+   *  relative to the target. Other groups the dragged session is in
+   *  remain untouched. */
+  const handleReorderInGroup = useCallback(
+    (draggedId: string, targetId: string, position: 'before' | 'after', groupId: string) => {
+      if (draggedId === targetId) return
+      setGroups((prev) =>
+        prev.map((g) => {
+          if (g.id !== groupId) return g
+          // Splice-insert into a copy of the current sessionIds,
+          // making the operation a single atomic update so a
+          // concurrent render doesn't see an intermediate state.
+          const without = g.sessionIds.filter((id) => id !== draggedId)
+          const targetIdx = without.indexOf(targetId)
+          // If the target isn't in this group (shouldn't happen — the
+          // UI only renders target cards inside their container group),
+          // append to the end rather than losing the drop entirely.
+          const insertAt = targetIdx < 0 ? without.length : position === 'before' ? targetIdx : targetIdx + 1
+          without.splice(insertAt, 0, draggedId)
+          return { ...g, sessionIds: without }
+        }),
+      )
+    },
+    [setGroups],
+  )
+
   /** Activate a group: replace main-area panels with the group's sessions. */
   const handleActivateGroup = useCallback(
     (groupId: string) => {
@@ -975,6 +1011,8 @@ export function App() {
           onNewLikeThis={handleNewLikeThis}
           onTogglePin={handleTogglePin}
           onReorder={handleReorderSidebar}
+          onDropIntoGroup={handleAddToGroup}
+          onReorderInGroup={handleReorderInGroup}
           newSessionDialogOpen={newSessionDialogOpen}
           onNewSessionDialogChange={setNewSessionDialogOpen}
           groups={groups}

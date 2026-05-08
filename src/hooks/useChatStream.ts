@@ -1,18 +1,18 @@
-// Multiplexed SSE subscription for one Chat session.
+// Per-session view onto the shared WebSocket hub.
 //
-// ONE EventSource drives both SDK messages and permission events — the
-// server multiplexes them onto /api/sessions/:id/stream. This matters
-// because browsers cap HTTP/1.1 connections at 6 per origin; at 2 SSE
-// connections per session the 3-up grid used to saturate the pool and
-// any subsequent POST (including "send message") would silently queue
-// until a stream ended.
+// Replaces the old per-session SSE connection. All frames arrive on
+// the single hub connection owned by <WsHubProvider>; this hook
+// filters by sessionId and dispatches to local state + injected
+// permission handlers. One hub connection serves all panels regardless
+// of how many Chat components are mounted.
 //
-// The queuedAhead counter optimistically tracks turns this tab posted
-// that haven't seen a matching `result` yet — the server FIFO-queues
-// turns but doesn't expose depth, so we count locally.
+// The `queuedAhead` counter optimistically tracks turns this tab
+// posted that haven't seen a matching `result` yet — the server FIFO-
+// queues turns but doesn't expose depth, so we count locally.
 
-import { useCallback, useMemo, useState } from 'react'
-import { useNamedEventSource } from './useSSE'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useWsHub } from './useWsHub'
+import type { WsServerFrame } from '../ws-types'
 import type { PermissionRequest, PermissionResolved, SdkMessage } from '../types'
 
 export interface ContextUsage {
@@ -47,47 +47,124 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   const [error, setError] = useState<string | null>(null)
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null)
 
-  const events = useMemo(
-    () => ({
-      // History replay on connect — we DON'T adjust queuedAhead here because
-      // we can't tell which user turns in history were ours in this tab.
-      replay: (data: unknown) => {
-        const m = data as SdkMessage
-        if (m) setMessages((prev) => [...prev, m])
-      },
-      'replay-done': () => {
-        /* no-op marker; useful for future "loading" UI */
-      },
-      message: (data: unknown) => {
-        const m = data as SdkMessage
-        if (!m) return
-        setMessages((prev) => [...prev, m])
-        if (m.type === 'result') {
-          setQueuedAhead((n) => (n > 0 ? n - 1 : 0))
+  const hub = useWsHub()
+
+  // Stash the permission handlers in a ref so changing them doesn't
+  // re-run the subscribe effect (which would briefly unsubscribe and
+  // re-subscribe from the hub, causing the server to resend a full
+  // replay and the UI to blink).
+  const permsRef = useRef(permissions)
+  useEffect(() => {
+    permsRef.current = permissions
+  })
+
+  useEffect(() => {
+    if (!sessionId) return
+    // Reset per-session state when switching to a different session.
+    // (Chat remounts on key={session.id}, so this is also true at
+    // mount — keeping it explicit costs nothing and guards against
+    // hot-reload edge cases.)
+    setMessages([])
+    setContextUsage(null)
+    setQueuedAhead(0)
+
+    // Buffer messages that arrive BEFORE the replay frame completes
+    // into a single commit, so React doesn't re-render N times while
+    // we're walking through a large history.
+    //
+    // The server guarantees: for a given sessionId, the frame order is
+    // {replay, replay-done, (message|permission-request|...)*}. We
+    // accept live frames arriving AFTER replay-done as normal pushes.
+    // If a late frame sneaks in before replay-done (shouldn't happen,
+    // but be defensive) we append it to the pending queue too — it
+    // lands in the right place once we flush.
+    let replayDone = false
+    const pending: SdkMessage[] = []
+
+    const off = hub.addListener((frame: WsServerFrame) => {
+      // Only frames for our session; other panels have their own
+      // listeners and the global App listener handles session-list
+      // frames.
+      if (!('sessionId' in frame) || frame.sessionId !== sessionId) return
+
+      switch (frame.kind) {
+        case 'replay': {
+          // Fresh replay batch — treat as the source of truth for
+          // state. Any previously-buffered permissions in the replay
+          // get forwarded to the injected handler so open modals
+          // re-appear after a reconnect.
+          setMessages(frame.messages as SdkMessage[])
+          for (const p of frame.permissions) {
+            permsRef.current.onRequest(p)
+          }
+          break
         }
-      },
-      // Permission events ride on the same connection — route them out.
-      permission_request: (data: unknown) => {
-        permissions.onRequest(data as PermissionRequest)
-      },
-      permission_resolved: (data: unknown) => {
-        permissions.onResolved(data as PermissionResolved)
-      },
-      context_usage: (data: unknown) => {
-        setContextUsage(data as ContextUsage)
-      },
-    }),
-    [permissions],
-  )
+        case 'replay-done': {
+          replayDone = true
+          if (pending.length) {
+            setMessages((prev) => [...prev, ...pending])
+            pending.length = 0
+          }
+          break
+        }
+        case 'message': {
+          const m = frame.message as SdkMessage
+          if (!replayDone) {
+            pending.push(m)
+            return
+          }
+          setMessages((prev) => [...prev, m])
+          if (m.type === 'result') {
+            setQueuedAhead((n) => (n > 0 ? n - 1 : 0))
+          }
+          break
+        }
+        case 'permission-request': {
+          permsRef.current.onRequest(frame.payload)
+          break
+        }
+        case 'permission-resolved': {
+          permsRef.current.onResolved({
+            id: frame.id,
+            ...frame.decision,
+          })
+          break
+        }
+        case 'context-usage': {
+          setContextUsage(frame.usage as ContextUsage)
+          break
+        }
+        case 'error': {
+          // Session-scoped error from the hub (usually "unknown session").
+          // Surface it in the panel banner but don't tear down state;
+          // the server might still be starting up.
+          setError(frame.message)
+          break
+        }
+        default:
+          break
+      }
+    })
 
-  const lifecycle = useMemo(
-    () => ({
-      onError: () => setError('Stream disconnected. Refresh the page to retry.'),
-    }),
-    [],
-  )
+    const release = hub.subscribe(sessionId)
+    return () => {
+      off()
+      release()
+    }
+  }, [hub, sessionId])
 
-  useNamedEventSource(`/api/sessions/${sessionId}/stream`, events, lifecycle)
+  // Hub status → per-panel banner. Identical wording/semantics to the
+  // App-level banner so the user sees a consistent story whichever one
+  // is attached to their panel.
+  useEffect(() => {
+    if (hub.status === 'reconnecting') {
+      setError((prev) =>
+        prev === null || prev === 'Stream reconnecting…' ? 'Stream reconnecting…' : prev,
+      )
+    } else if (hub.status === 'online') {
+      setError((prev) => (prev === 'Stream reconnecting…' ? null : prev))
+    }
+  }, [hub.status])
 
   const trackSentTurn = useCallback(() => {
     setQueuedAhead((n) => n + 1)

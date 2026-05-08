@@ -11,6 +11,9 @@ export default defineConfig({
       '/api': {
         target: 'http://127.0.0.1:3456',
         changeOrigin: true,
+        // `/api/ws` is a WebSocket upgrade; without ws:true Vite's proxy
+        // treats it as plain HTTP and strips the Upgrade header.
+        ws: true,
       },
     },
   },

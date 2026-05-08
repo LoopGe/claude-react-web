@@ -1,3 +1,9 @@
+// DEPRECATED — kept as a fallback in case the WebSocket hub needs to be
+// rolled back. All live usages moved to useWsHub; the SSE routes on the
+// server (server/routes.ts) are still mounted as a compatible fallback.
+// If you're reading this before deleting, see src/hooks/useWsHub.ts for
+// the current channel.
+//
 // EventSource subscription hooks.
 //
 // Two public helpers:
@@ -6,6 +12,16 @@
 // - useNamedEventSource: a generic dispatcher that takes a map of
 //   `eventName → (parsedJson) => void` handlers. Used for the permission
 //   channel and anywhere else we want arbitrary named events.
+//
+// Both helpers rely on the browser's built-in EventSource auto-reconnect:
+// on any transport error it transitions `readyState` from OPEN to
+// CONNECTING and retries with an increasing backoff (impl-defined, a few
+// seconds). `onOpen` fires on every successful connect (initial AND each
+// reconnect). Callers observing both `onError` and `onOpen` can render a
+// transient "reconnecting" state that clears on its own, without asking
+// the user to refresh. `onReconnect` fires only on post-initial opens so
+// callers who want "first connect vs subsequent recovery" can tell them
+// apart.
 
 import { useEffect, useRef } from 'react'
 import type { SdkMessage } from '../types'
@@ -15,7 +31,12 @@ export interface SseHandlers {
   onReplayDone?: () => void
   onMessage?: (msg: SdkMessage) => void
   onError?: (err: Event) => void
+  /** Fires on every successful open (initial + reconnects). */
   onOpen?: () => void
+  /** Fires only on reconnects (second and subsequent opens). Useful for
+   *  clearing a "disconnected" banner while still letting the initial
+   *  connect handler handle first-connect bookkeeping separately. */
+  onReconnect?: () => void
 }
 
 export function useSSE(url: string | null, handlers: SseHandlers) {
@@ -33,6 +54,7 @@ export function useSSE(url: string | null, handlers: SseHandlers) {
   useEffect(() => {
     if (!url) return
     const es = new EventSource(url)
+    let opensSoFar = 0
 
     const safeParse = (s: string): SdkMessage | null => {
       try {
@@ -52,7 +74,15 @@ export function useSSE(url: string | null, handlers: SseHandlers) {
       if (msg) ref.current.onMessage?.(msg)
     }
     const onError = (ev: Event) => ref.current.onError?.(ev)
-    const onOpen = () => ref.current.onOpen?.()
+    const onOpen = () => {
+      opensSoFar += 1
+      ref.current.onOpen?.()
+      // `open` fires on every successful connect, including post-error
+      // reconnects. Surface the reconnect-only callback on the 2nd+ open
+      // so the consumer's "connected banner clear" logic can distinguish
+      // it from a first-time open.
+      if (opensSoFar > 1) ref.current.onReconnect?.()
+    }
 
     es.addEventListener('replay', onReplay)
     es.addEventListener('replay-done', onReplayDone)
@@ -82,7 +112,12 @@ export function useSSE(url: string | null, handlers: SseHandlers) {
 export function useNamedEventSource(
   url: string | null,
   events: Record<string, (data: unknown) => void>,
-  lifecycle: { onError?: (e: Event) => void; onOpen?: () => void } = {},
+  lifecycle: {
+    onError?: (e: Event) => void
+    onOpen?: () => void
+    /** Fires only on reconnects (second and subsequent opens). */
+    onReconnect?: () => void
+  } = {},
 ) {
   // See the comment in useSSE — refs must be updated in an effect, not at
   // render time, otherwise React 19 may persist a partially-rendered value.
@@ -96,6 +131,7 @@ export function useNamedEventSource(
   useEffect(() => {
     if (!url) return
     const es = new EventSource(url)
+    let opensSoFar = 0
     const boundHandlers: Array<[string, (ev: MessageEvent) => void]> = []
 
     for (const name of Object.keys(events)) {
@@ -112,7 +148,11 @@ export function useNamedEventSource(
       boundHandlers.push([name, fn])
     }
     const onError = (ev: Event) => lifeRef.current.onError?.(ev)
-    const onOpen = () => lifeRef.current.onOpen?.()
+    const onOpen = () => {
+      opensSoFar += 1
+      lifeRef.current.onOpen?.()
+      if (opensSoFar > 1) lifeRef.current.onReconnect?.()
+    }
     es.addEventListener('error', onError)
     es.addEventListener('open', onOpen)
 

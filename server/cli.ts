@@ -4,11 +4,13 @@
 // --no-open) opens the user's default browser at the served URL.
 
 import { serve } from '@hono/node-server'
+import type { Server } from 'node:http'
 import { execSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import open from 'open'
 import { buildApp } from './app.js'
 import { SessionStore, defaultStateDir } from './persistence.js'
+import { attachWebSocket } from './ws.js'
 
 interface CliArgs {
   port: number
@@ -185,8 +187,19 @@ async function main() {
     },
   )
 
+  // Attach the WebSocket multiplexer to the same HTTP server. The
+  // returned shutdown fn closes every live socket during SIGINT.
+  // @hono/node-server returns a Node http.Server (same shape), so cast
+  // is safe.
+  const wsShutdown = attachWebSocket(server as unknown as Server, sessionManager)
+
   const shutdown = async (signal: string) => {
     console.log(`\n[cli] received ${signal}, shutting down...`)
+    try {
+      await wsShutdown()
+    } catch (err) {
+      console.error('[cli] ws shutdown error:', err)
+    }
     try {
       await sessionManager.shutdown()
     } finally {

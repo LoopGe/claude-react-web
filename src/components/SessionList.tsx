@@ -56,6 +56,21 @@ interface Props {
   /** Called when the user drops a card onto another one. `position` tells
    *  the parent whether to insert before or after the target. */
   onReorder?: (draggedId: string, targetId: string, position: 'before' | 'after') => void
+  /** Drop a card onto a group header or its empty body. The session is
+   *  added to the group's `sessionIds` (if not already present). Tag
+   *  semantics — the session stays in any other groups it's in. */
+  onDropIntoGroup?: (sessionId: string, groupId: string) => void
+  /** Drop a card onto another card that lives inside a group. Ensures
+   *  the dragged session is in the group, then reorders within the
+   *  group's sessionIds. Separate from onReorder because the latter
+   *  only touches the global sidebarOrder — never the group tag
+   *  membership. */
+  onReorderInGroup?: (
+    draggedId: string,
+    targetId: string,
+    position: 'before' | 'after',
+    groupId: string,
+  ) => void
   /** New-session dialog open state is lifted so App-level shortcuts
    *  (Alt+N) can open it. Uncontrolled mode falls back to internal state. */
   newSessionDialogOpen?: boolean
@@ -114,6 +129,8 @@ export function SessionList({
   onNewLikeThis,
   onTogglePin,
   onReorder,
+  onDropIntoGroup,
+  onReorderInGroup,
   newSessionDialogOpen,
   onNewSessionDialogChange,
 }: Props) {
@@ -128,6 +145,10 @@ export function SessionList({
   /** Id of the card currently being hovered over + which half. Used to
    *  paint a single insertion line without reshuffling the DOM mid-drag. */
   const [dropHint, setDropHint] = useState<{ id: string; position: 'before' | 'after' } | null>(null)
+  /** Id of the group header/body currently being hovered during a drag.
+   *  Paints the section as a drop target — distinct from `dropHint`
+   *  which targets a specific card. */
+  const [groupDropHint, setGroupDropHint] = useState<string | null>(null)
   /** Which card is currently in inline-rename mode, and the draft text. */
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
@@ -266,8 +287,15 @@ export function SessionList({
   }
 
   /** Render a single session card. Extracted so both the flat and sectioned
-   *  views share the exact same card markup. */
-  const renderSessionCard = (s: SessionInfo) => {
+   *  views share the exact same card markup.
+   *
+   *  `containerGroupId` — when the card is rendered inside a group's
+   *  body, callers pass the group's id so the card's onDrop can use
+   *  the `onReorderInGroup` handler (which preserves tag membership
+   *  and reorders the group's sessionIds). Outside any group (pinned /
+   *  ungrouped / flat view), it's undefined and the card falls back
+   *  to the global `onReorder` path. */
+  const renderSessionCard = (s: SessionInfo, containerGroupId?: string) => {
     const isResuming = resumingIds?.has(s.id) ?? false
     const dormant = !s.running && !s.terminated
     const slotIdx = openIds.indexOf(s.id)
@@ -342,7 +370,15 @@ export function SessionList({
           e.preventDefault()
           const rect = e.currentTarget.getBoundingClientRect()
           const position: 'before' | 'after' = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
-          onReorder(payload.id, s.id, position)
+          // Dropping onto a card inside a group routes through the
+          // intra-group handler so the dragged session gets added to
+          // the group's tag list and positioned inside its sessionIds
+          // — instead of only affecting the global sidebarOrder.
+          if (containerGroupId && onReorderInGroup) {
+            onReorderInGroup(payload.id, s.id, position, containerGroupId)
+          } else {
+            onReorder(payload.id, s.id, position)
+          }
         }}
         onClick={() => !isResuming && onSelect(s.id)}
         onKeyDown={(e) => !isResuming && (e.key === 'Enter' || e.key === ' ') && onSelect(s.id)}
@@ -579,7 +615,7 @@ export function SessionList({
               return (
                 <div key="pinned" className="session-section">
                   <div className="session-section-header">📌 Pinned</div>
-                  {sec.sessions.map(renderSessionCard)}
+                  {sec.sessions.map((s) => renderSessionCard(s))}
                 </div>
               )
             }
@@ -589,9 +625,27 @@ export function SessionList({
               return (
                 <div key={sec.group.id} className={`session-section ${active ? 'group-active' : ''}`}>
                   <div
-                    className="session-group-header"
+                    className={`session-group-header ${groupDropHint === sec.group.id ? 'drop-target' : ''}`}
                     onClick={() => onToggleGroupCollapse(sec.group.id)}
                     title={`${sec.group.name} · ${sec.sessions.length} session${sec.sessions.length === 1 ? '' : 's'}`}
+                    onDragOver={(e) => {
+                      if (!onDropIntoGroup || !isInAppDrag(e)) return
+                      e.preventDefault()
+                      if (groupDropHint !== sec.group.id) setGroupDropHint(sec.group.id)
+                    }}
+                    onDragLeave={(e) => {
+                      if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+                      if (groupDropHint === sec.group.id) setGroupDropHint(null)
+                    }}
+                    onDrop={(e) => {
+                      if (!onDropIntoGroup) return
+                      const payload = readDragPayload(e)
+                      setGroupDropHint(null)
+                      setDraggingId(null)
+                      if (!payload || payload.kind !== 'sidebar-card') return
+                      e.preventDefault()
+                      onDropIntoGroup(payload.id, sec.group.id)
+                    }}
                   >
                     <span className="group-collapse-arrow">{collapsed ? '▶' : '▼'}</span>
                     <span className="group-header-name">{sec.group.name}</span>
@@ -605,10 +659,67 @@ export function SessionList({
                     </button>
                   </div>
                   {!collapsed && sec.sessions.length > 0 && (
-                    <div className="group-sessions">{sec.sessions.map(renderSessionCard)}</div>
+                    <div
+                      className={`group-sessions ${groupDropHint === sec.group.id ? 'drop-target' : ''}`}
+                      onDragOver={(e) => {
+                        if (!onDropIntoGroup || !isInAppDrag(e)) return
+                        // Accept drops anywhere in the group body that
+                        // aren't intercepted by a specific card. The
+                        // event bubbles up from cards, so we only
+                        // highlight when the target is the body itself.
+                        if (e.target !== e.currentTarget) return
+                        e.preventDefault()
+                        if (groupDropHint !== sec.group.id) setGroupDropHint(sec.group.id)
+                      }}
+                      onDragLeave={(e) => {
+                        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+                        if (groupDropHint === sec.group.id) setGroupDropHint(null)
+                      }}
+                      onDrop={(e) => {
+                        if (!onDropIntoGroup) return
+                        // Only act on drops directly on the body, not
+                        // bubbled from a child card (the card has its
+                        // own onDrop and already stopped propagation by
+                        // calling preventDefault). Target check below.
+                        if (e.target !== e.currentTarget) {
+                          setGroupDropHint(null)
+                          return
+                        }
+                        const payload = readDragPayload(e)
+                        setGroupDropHint(null)
+                        setDraggingId(null)
+                        if (!payload || payload.kind !== 'sidebar-card') return
+                        e.preventDefault()
+                        onDropIntoGroup(payload.id, sec.group.id)
+                      }}
+                    >
+                      {sec.sessions.map((s) => renderSessionCard(s, sec.group.id))}
+                    </div>
                   )}
                   {!collapsed && sec.sessions.length === 0 && (
-                    <div className="group-empty">No sessions in this group.</div>
+                    <div
+                      className={`group-empty ${groupDropHint === sec.group.id ? 'drop-target' : ''}`}
+                      onDragOver={(e) => {
+                        if (!onDropIntoGroup || !isInAppDrag(e)) return
+                        e.preventDefault()
+                        if (groupDropHint !== sec.group.id) setGroupDropHint(sec.group.id)
+                      }}
+                      onDragLeave={(e) => {
+                        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+                        if (groupDropHint === sec.group.id) setGroupDropHint(null)
+                      }}
+                      onDrop={(e) => {
+                        if (!onDropIntoGroup) return
+                        const payload = readDragPayload(e)
+                        setGroupDropHint(null)
+                        setDraggingId(null)
+                        if (!payload || payload.kind !== 'sidebar-card') return
+                        e.preventDefault()
+                        onDropIntoGroup(payload.id, sec.group.id)
+                      }}
+                    >
+                      No sessions in this group.
+                    </div>
                   )}
                 </div>
               )
@@ -617,7 +728,7 @@ export function SessionList({
             return (
               <div key="ungrouped" className="session-section">
                 <div className="session-section-divider">── Other ──</div>
-                {sec.sessions.map(renderSessionCard)}
+                {sec.sessions.map((s) => renderSessionCard(s))}
               </div>
             )
           })
@@ -627,7 +738,7 @@ export function SessionList({
           </div>
         ) : (
           // ── Flat view (no groups) ──
-          visibleSessions.map(renderSessionCard)
+          visibleSessions.map((s) => renderSessionCard(s))
         )}
       </div>
 
