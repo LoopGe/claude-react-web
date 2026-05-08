@@ -1093,8 +1093,7 @@ body.resizing-col * {
   background: var(--accent);
   transition: width 0.3s ease;
 }
-.ctx-bar-warn .ctx-bar-fill { background: var(--warn); }
-.ctx-bar-danger .ctx-bar-fill { background: var(--danger); }
+/* All levels use accent — urgency is conveyed by the percentage text. */
 .ctx-bar-empty .ctx-bar-fill { background: var(--border); }
 
 .chat-composer {
@@ -1222,6 +1221,46 @@ body.resizing-col * {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 420px;
+}
+
+/* Compact-summary card — the user-role "summary" frame that the SDK
+   injects right after a compact_boundary. Tinted with the recap accent
+   but card-shaped (not a divider) so it clearly belongs to the recap
+   rather than being a user-authored message. */
+.msg.compact-summary {
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-elev));
+  border: 1px dashed color-mix(in srgb, var(--accent) 40%, var(--border));
+  padding: 8px 12px;
+  border-radius: 6px;
+  color: var(--fg-muted);
+  align-self: stretch;
+}
+.msg.compact-summary .msg-header {
+  color: color-mix(in srgb, var(--accent) 70%, var(--fg-muted));
+}
+.compact-summary-toggle {
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: var(--accent);
+  padding: 1px 8px;
+  font-size: 10px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+.compact-summary-toggle:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.compact-summary-peek {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+  font-style: italic;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 .msg-header {
   font-size: 11px;

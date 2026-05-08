@@ -119,9 +119,25 @@ export function MessageList({ messages, showSystemEvents = false, working = fals
             Type a message below to start the conversation.
           </div>
         )}
-        {renderable.map((m, i) => (
-          <MessageView key={(m.uuid as string) ?? i} msg={m} />
-        ))}
+        {renderable.map((m, i) => {
+          // After an auto-compact, the SDK injects a synthetic user-role
+          // message carrying the conversation summary — it's the next
+          // turn's input, but it wasn't typed by the human. Flag it so
+          // MessageView can render it as a recap continuation rather
+          // than as a 5000-char "YOU" bubble.
+          const prev = i > 0 ? renderable[i - 1] : null
+          const isCompactSummary =
+            m.type === 'user' &&
+            prev?.type === 'system' &&
+            prev?.subtype === 'compact_boundary'
+          return (
+            <MessageView
+              key={(m.uuid as string) ?? i}
+              msg={m}
+              isCompactSummary={isCompactSummary}
+            />
+          )
+        })}
         {working && <WorkingBubble />}
       </div>
       {!atBottom && (
@@ -167,13 +183,21 @@ interface Block {
   [k: string]: unknown
 }
 
-function MessageView({ msg }: { msg: SdkMessage }) {
+function MessageView({ msg, isCompactSummary }: { msg: SdkMessage; isCompactSummary?: boolean }) {
   const type = msg.type
 
   if (type === 'user') {
     const userContent = extractUserText(msg)
     const blocks = toBlocks(msg.message?.content)
     const toolBlocks = blocks.filter((b) => b.type === 'tool_result')
+
+    // Synthetic "conversation summary" frame that the SDK injects right
+    // after compact_boundary. It has role=user because the model will
+    // consume it as the next turn's input, but the human never typed it.
+    // Render it collapsed, wired to the preceding Recap divider.
+    if (isCompactSummary) {
+      return <CompactSummary text={userContent ?? ''} />
+    }
 
     // A `user` frame is synthetic (i.e. NOT typed by the human) in two
     // overlapping cases:
@@ -330,6 +354,48 @@ function CompactBoundary({ msg }: { msg: SdkMessage }) {
 function formatTokens(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k`
   return String(n)
+}
+
+/** The "continuation" half of a compact event.
+ *
+ *  After `system/compact_boundary`, the SDK pushes a synthetic user-role
+ *  frame whose content is a prose summary of the previous conversation
+ *  — it's the next turn's input prompt, but it wasn't typed by the
+ *  human. Rendering it as a "YOU" bubble is the behaviour this
+ *  component exists to prevent: users see a huge wall of AI-authored
+ *  text attributed to themselves and rightly get confused.
+ *
+ *  Collapsed by default (peek + expand) since the body is typically
+ *  thousands of chars and the Recap divider above already told the user
+ *  everything actionable. */
+function CompactSummary({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const charCount = text.length
+  // Grab the first "Summary:" headline as a peek if we can — the SDK
+  // template usually starts with boilerplate, then a Summary header.
+  const peek = text.slice(0, 140).replace(/\s+/g, ' ').trim()
+  return (
+    <div className="msg compact-summary" role="note" aria-label="Conversation recap (context injected by SDK)">
+      <div className="msg-header">
+        <span>recap context · {charCount.toLocaleString()} chars</span>
+        <button
+          type="button"
+          className="compact-summary-toggle"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+        >
+          {expanded ? 'Hide' : 'Show'}
+        </button>
+      </div>
+      <div className="msg-body">
+        {expanded ? (
+          <Markdown text={text} />
+        ) : (
+          <div className="compact-summary-peek">{peek}…</div>
+        )}
+      </div>
+    </div>
+  )
 }
 
 function BlockView({ block }: { block: Block }) {
