@@ -14,7 +14,7 @@
 import { Hono } from 'hono'
 import { readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { isAbsolute, resolve as resolvePath, sep } from 'node:path'
+import { dirname, isAbsolute, resolve as resolvePath, sep } from 'node:path'
 
 interface DirEntry {
   name: string
@@ -68,6 +68,32 @@ export function buildFsRouter(): Hono {
       parent: parentOf(path),
       entries,
     })
+  })
+
+  // Resolve a path to its containing directory. Useful for the
+  // drag-to-new-session UX: the browser's file drop gives us a path
+  // that might be either a directory or a file; the frontend sends
+  // it here and gets back a valid cwd (the file's dirname, if the
+  // path points at a file). Also returns isDirectory so the caller
+  // can tell us if it's already a directory.
+  app.get('/resolve-cwd', async (c) => {
+    const raw = c.req.query('path')
+    if (!raw) return c.json({ error: 'path query param is required' }, 400)
+    if (!isAbsolute(raw)) return c.json({ error: 'path must be absolute' }, 400)
+    const path = resolvePath(raw)
+    try {
+      const st = await stat(path)
+      if (st.isDirectory()) {
+        return c.json({ cwd: path, resolvedFromFile: false })
+      }
+      // It's a regular file / symlink / etc. — walk one level up.
+      return c.json({ cwd: dirname(path), resolvedFromFile: true })
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === 'ENOENT') return c.json({ error: 'no such path' }, 404)
+      if (code === 'EACCES' || code === 'EPERM') return c.json({ error: 'permission denied' }, 403)
+      return c.json({ error: (err as Error).message }, 500)
+    }
   })
 
   return app

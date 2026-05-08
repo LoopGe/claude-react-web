@@ -47,9 +47,11 @@ interface Props {
   /** Reserved for future push updates — currently unused because session
    *  state is tracked via the SSE stream + top-level session list poll. */
   onSessionUpdate?: (s: SessionInfo) => void
+  /** Forwarded to MessageList. App-level toggle (header bug icon). */
+  showSystemEvents?: boolean
 }
 
-export function Chat({ session }: Props) {
+export function Chat({ session, showSystemEvents }: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
   // The parent remounts Chat on session switch (<Chat key={session.id}>), so
   // this initializer runs exactly once per mount — the right place to hydrate.
@@ -204,7 +206,7 @@ export function Chat({ session }: Props) {
 
   return (
     <div className="chat">
-      <MessageList messages={stream.messages} />
+      <MessageList messages={stream.messages} showSystemEvents={showSystemEvents} />
 
       {error && <div className="error-bar">{error}</div>}
 

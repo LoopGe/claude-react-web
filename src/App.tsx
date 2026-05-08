@@ -4,8 +4,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { SessionList } from './components/SessionList'
 import { Chat } from './components/Chat'
+import { ContextMenu } from './components/ContextMenu'
 import { SettingsPanel } from './components/SettingsPanel'
 import { api } from './hooks/useApi'
+import { shortenPath } from './utils/paths'
 import { isInAppDrag, readDragPayload, setDragPayload } from './hooks/useDragPayload'
 import { useDragResize } from './hooks/useDragResize'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
@@ -24,6 +26,7 @@ const PERMISSION_MODES: PermissionMode[] = [
 ]
 
 const SIDEBAR_ORDER_KEY = 'claude-react-web:session-order'
+const SHOW_SYSTEM_EVENTS_KEY = 'claude-react-web:show-system-events'
 const SIDEBAR_WIDTH_KEY = 'claude-react-web:sidebar-width'
 const SIDEBAR_MIN_PX = 180
 const SIDEBAR_MAX_PX = 480
@@ -64,6 +67,10 @@ export function App() {
    *  anything not listed; unknown ids (e.g. sessions created after the
    *  order was saved) fall through to the default lastActivityAt sort. */
   const [sidebarOrder, setSidebarOrder] = useLocalStorage<string[]>(SIDEBAR_ORDER_KEY, [])
+  /** Show SDK bookkeeping messages (system/init, system/status, …) in
+   *  the transcript. Off by default — they're noise for normal use,
+   *  but invaluable when debugging tool wiring or context compaction. */
+  const [showSystemEvents, setShowSystemEvents] = useLocalStorage<boolean>(SHOW_SYSTEM_EVENTS_KEY, false)
   /** Sidebar width in CSS pixels, persisted across reloads. Clamped so
    *  the user can't drag the sidebar to 0 or eat the whole viewport. */
   const [sidebarWidth, setSidebarWidth] = useLocalStorage<number>(SIDEBAR_WIDTH_KEY, 280)
@@ -677,20 +684,26 @@ export function App() {
 
       <main className="main">
         <header className="main-header">
-          <div className="main-title">
-            {focused ? (
-              <>
-                <span className="session-title">{focused.title ?? focused.id.slice(0, 8)}</span>
-                <span className="session-meta">
-                  {focused.model ?? 'default model'} · {focused.permissionMode ?? 'default'} ·{' '}
-                  {focused.cwd ?? '~'}
-                </span>
-              </>
-            ) : (
-              <span className="empty-title">No session selected</span>
-            )}
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          {/* The header used to echo the focused session's title / model /
+              mode / cwd, but with up to three panels open that information
+              is already visible inside each ChatPanel header — duplicating
+              it at the top was both redundant and subtly wrong (it looked
+              like "the active session" when all three are active). Now the
+              row holds only the app-level toolbar. */}
+          <div className="main-toolbar">
+            <button
+              className={`btn btn-icon ${showSystemEvents ? 'active' : ''}`}
+              onClick={() => setShowSystemEvents((v) => !v)}
+              title={
+                showSystemEvents
+                  ? 'Hide SDK system events (init / status / …)'
+                  : 'Show SDK system events (init / status / …) · useful for debugging'
+              }
+              aria-label="Toggle system events"
+              aria-pressed={showSystemEvents}
+            >
+              {showSystemEvents ? '🐞' : '🫥'}
+            </button>
             <button
               className={`btn btn-icon ${notifications.enabled ? 'active' : ''}`}
               onClick={() => void notifications.toggle()}
@@ -742,9 +755,11 @@ export function App() {
                   key={s.id}
                   session={s}
                   focused={s.id === focusedId}
+                  slot={i + 1}
                   onFocus={() => focusPanel(s.id)}
                   onClose={() => closeSession(s.id)}
                   onSessionUpdate={updateSession}
+                  showSystemEvents={showSystemEvents}
                   onSwap={swapPanels}
                   onAcceptSidebarDrop={async (sidebarId) => {
                     const existing = sessions.find((x) => x.id === sidebarId)
@@ -803,6 +818,10 @@ export function App() {
 interface ChatPanelProps {
   session: SessionInfo
   focused: boolean
+  /** Slot number (1-indexed) in the main grid. Shown as a pill in the
+   *  header so the user can tell this panel apart from the sidebar card
+   *  and map it to the Ctrl+<n> shortcut. */
+  slot: number
   onFocus: () => void
   onClose: () => void
   onSessionUpdate: (s: SessionInfo) => void
@@ -810,29 +829,32 @@ interface ChatPanelProps {
   onSwap: (draggedId: string, targetId: string) => void
   /** A sidebar card was dropped onto this panel — replace it. */
   onAcceptSidebarDrop: (sidebarId: string) => void
+  /** Global transcript toggle (forwarded to the inner <Chat>). */
+  showSystemEvents?: boolean
 }
 
 function ChatPanel({
   session,
   focused,
+  slot,
   onFocus,
   onClose,
   onSessionUpdate,
   onSwap,
   onAcceptSidebarDrop,
+  showSystemEvents,
 }: ChatPanelProps) {
   const [dropActive, setDropActive] = useState(false)
-  /** When true, the model chip in the header becomes an inline <input>.
-   *  We render an <input type="text" list="recent-models"> on purpose:
-   *  a plain <select> would need the full supportedModels list (an async
-   *  fetch per session), and also can't autocomplete partial strings
-   *  like "sonnet" → "claude-sonnet-4-5". */
+  /** When true, the model chip in the header becomes an inline <input>. */
   const [editingModel, setEditingModel] = useState(false)
   const [modelDraft, setModelDraft] = useState('')
-  /** Reads the localStorage-backed recent-models ring maintained by the
-   *  New Session dialog so the datalist surfaces suggestions without a
-   *  GET /sessions/:id/models round-trip. */
+  /** Anchor for the permission-mode menu. Non-null = menu visible. A
+   *  custom menu (rather than a native <select>) gives us full control
+   *  over dark-theme styling; the native control's dropdown surface
+   *  can't be restyled across browsers. */
+  const [permMenu, setPermMenu] = useState<{ x: number; y: number } | null>(null)
   const recentModels = readRecentModels()
+  const chipsDisabled = !session.running || session.terminated
 
   const commitModel = (next: string) => {
     const value = next.trim()
@@ -847,6 +869,18 @@ function ChatPanel({
       .catch((err) => {
         window.alert(`Couldn't change model: ${(err as Error).message}`)
         onSessionUpdate({ ...session, model: before })
+      })
+  }
+
+  const commitPermissionMode = (mode: PermissionMode) => {
+    if (mode === (session.permissionMode ?? 'default')) return
+    const before = session.permissionMode
+    void api
+      .post<{ session: SessionInfo }>(`/sessions/${session.id}/permission-mode`, { mode })
+      .then((r) => onSessionUpdate(r.session))
+      .catch((err) => {
+        window.alert(`Couldn't change permission mode: ${(err as Error).message}`)
+        onSessionUpdate({ ...session, permissionMode: before })
       })
   }
 
@@ -893,93 +927,95 @@ function ChatPanel({
           setDragPayload(e, { kind: 'main-panel', id: session.id })
         }}
       >
+        <div className="chat-panel-header-row1">
+        <span
+          className={`chat-panel-slot ${focused ? 'focused' : ''}`}
+          title={`Slot ${slot} · Ctrl+${slot} to focus`}
+          aria-label={`slot ${slot}`}
+        >
+          {slot}
+        </span>
+        <span
+          className={`chat-panel-status ${statusClass(session)}`}
+          title={statusLabel(session)}
+          aria-label={statusLabel(session)}
+        />
         <span className="chat-panel-title" title={session.cwd ?? ''}>
           {session.title ?? session.id.slice(0, 8)}
         </span>
-        {/* Model chip — click to edit in place. A free-text input wins
-            over a <select> here because model names are long and the
-            list of supported ones needs a per-session fetch; the
-            recent-models ring from the New Session dialog is reused as
-            a datalist for autocompletion. */}
-        {editingModel ? (
-          <input
-            className="chat-panel-model-input"
-            list="chat-panel-model-datalist"
-            autoFocus
-            value={modelDraft}
-            placeholder="(default)"
-            disabled={!session.running || session.terminated}
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => e.stopPropagation()}
-            onChange={(e) => setModelDraft(e.target.value)}
-            onBlur={() => commitModel(modelDraft)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                commitModel(modelDraft)
-              } else if (e.key === 'Escape') {
-                e.preventDefault()
-                setEditingModel(false)
-              }
-            }}
-          />
-        ) : (
+        <div className="chat-panel-meta">
+          {editingModel ? (
+            <input
+              className="chat-panel-chip-input"
+              list="chat-panel-model-datalist"
+              autoFocus
+              value={modelDraft}
+              placeholder="model name"
+              disabled={chipsDisabled}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => setModelDraft(e.target.value)}
+              onBlur={() => commitModel(modelDraft)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  commitModel(modelDraft)
+                } else if (e.key === 'Escape') {
+                  e.preventDefault()
+                  setEditingModel(false)
+                }
+              }}
+            />
+          ) : (
+            <button
+              type="button"
+              className="chat-panel-chip"
+              disabled={chipsDisabled}
+              title={`Model: ${session.model ?? 'default'} · click to change`}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation()
+                setModelDraft(session.model ?? '')
+                setEditingModel(true)
+              }}
+            >
+              <span className="chat-panel-chip-label">model</span>
+              <span className="chat-panel-chip-value">{shortenModel(session.model)}</span>
+            </button>
+          )}
+          <datalist id="chat-panel-model-datalist">
+            {recentModels.map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
           <button
             type="button"
-            className="chat-panel-model"
-            disabled={!session.running || session.terminated}
-            title={`Model · click to change (${session.model ?? 'default'})`}
+            className="chat-panel-chip"
+            disabled={chipsDisabled}
+            title={`Permission mode: ${session.permissionMode ?? 'default'} · click to change`}
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation()
-              setModelDraft(session.model ?? '')
-              setEditingModel(true)
+              const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
+              setPermMenu({ x: rect.left, y: rect.bottom + 4 })
             }}
           >
-            {shortenModel(session.model)}
+            <span className="chat-panel-chip-label">mode</span>
+            <span className="chat-panel-chip-value">{session.permissionMode ?? 'default'}</span>
           </button>
+        </div>
+        {permMenu && (
+          <ContextMenu
+            x={permMenu.x}
+            y={permMenu.y}
+            onClose={() => setPermMenu(null)}
+            items={PERMISSION_MODES.map((m) => ({
+              label: m,
+              icon: (session.permissionMode ?? 'default') === m ? '✓' : ' ',
+              onClick: () => commitPermissionMode(m),
+            }))}
+          />
         )}
-        <datalist id="chat-panel-model-datalist">
-          {recentModels.map((m) => (
-            <option key={m} value={m} />
-          ))}
-        </datalist>
-        {/* Quick permission-mode swap. Mirrors the dropdown inside
-            SettingsPanel but saves a click for the common case of
-            toggling between 'default' and 'acceptEdits'. */}
-        <select
-          className="chat-panel-perm"
-          value={session.permissionMode ?? 'default'}
-          disabled={!session.running || session.terminated}
-          title="Permission mode · applies to the next turn"
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => e.stopPropagation()}
-          onChange={(e) => {
-            const mode = e.target.value as PermissionMode
-            const before = session.permissionMode
-            void api
-              .post<{ session: SessionInfo }>(`/sessions/${session.id}/permission-mode`, { mode })
-              .then((r) => onSessionUpdate(r.session))
-              .catch((err) => {
-                // Surface SDK rejections (e.g. bypassPermissions requires
-                // launching with --dangerously-skip-permissions) instead of
-                // silently snapping the select back. We can't reach the App's
-                // error bar from here, so alert() is the 2-line fallback —
-                // users needed to see what went wrong after 0.0.17's report
-                // that the switch appeared to do nothing.
-                window.alert(`Couldn't change permission mode: ${(err as Error).message}`)
-                // Hint React to re-render the select with the old value,
-                // because `session.permissionMode` hasn't changed.
-                onSessionUpdate({ ...session, permissionMode: before })
-              })
-          }}
-        >
-          {PERMISSION_MODES.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-        </select>
         <button
           className="chat-panel-close"
           onClick={(e) => {
@@ -991,10 +1027,41 @@ function ChatPanel({
         >
           ✕
         </button>
+        </div>
+        {session.error && (
+          <div className="chat-panel-error" title={session.error}>
+            ⚠ {session.error}
+          </div>
+        )}
+        {/* Second header row — secondary metadata. Muted colour, smaller
+            font, skipped when there's literally nothing to show. */}
+        {(session.cwd || session.messageCount > 0) && (
+          <div className="chat-panel-header-row2">
+            {session.cwd && (
+              <span className="chat-panel-cwd" title={session.cwd}>
+                📁 {shortenPath(session.cwd)}
+              </span>
+            )}
+            <span className="chat-panel-msgcount" title={`${session.messageCount} messages`}>
+              {session.messageCount} {session.messageCount === 1 ? 'msg' : 'msgs'}
+            </span>
+            {session.working && (
+              <span className="chat-panel-working-indicator" title="Assistant is working on a turn">
+                <span className="chat-panel-working-dot" aria-hidden />
+                working…
+              </span>
+            )}
+          </div>
+        )}
       </div>
       <div className="chat-panel-body">
         {session.running ? (
-          <Chat key={session.id} session={session} onSessionUpdate={onSessionUpdate} />
+          <Chat
+            key={session.id}
+            session={session}
+            onSessionUpdate={onSessionUpdate}
+            showSystemEvents={showSystemEvents}
+          />
         ) : (
           <div className="empty-state">
             <h2>
@@ -1034,6 +1101,24 @@ function ChatPanel({
       </div>
     </section>
   )
+}
+
+/** Distill a session's liveness/health into a single CSS class used by
+ *  the header status dot. Kept separate from the label so colours and
+ *  wording can evolve independently. */
+function statusClass(s: SessionInfo): string {
+  if (s.error) return 'err'
+  if (s.terminated) return 'terminated'
+  if (s.working) return 'working'
+  if (s.running) return 'live'
+  return 'dormant'
+}
+function statusLabel(s: SessionInfo): string {
+  if (s.error) return `Errored: ${s.error}`
+  if (s.terminated) return 'Session ended'
+  if (s.working) return 'Working on a turn'
+  if (s.running) return 'Live'
+  return 'Dormant'
 }
 
 /** Trim namespace prefixes and long version tails so a model name fits

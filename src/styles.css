@@ -184,18 +184,22 @@ body.resizing-col * {
   min-height: 0;
   overflow: hidden;
 }
+/* App-level toolbar row. After removing the focused-session echo it
+   holds only the right-aligned button cluster, so the row can be
+   shorter than before and its only contents flush-right. */
 .main-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 12px 18px;
+  justify-content: flex-end;
+  padding: 6px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev);
 }
-.main-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.session-title { font-weight: 600; }
-.session-meta { color: var(--fg-muted); font-size: 12px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.empty-title { color: var(--fg-muted); }
+.main-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
 
 /* main-body holds up to MAX_OPEN chat panels. The grid-template-columns
    is set inline (App.tsx) so dividers are real grid tracks rather than
@@ -239,51 +243,196 @@ body.resizing-col * {
   outline: 2px dashed var(--accent);
   outline-offset: -4px;
 }
+/* Two-row panel header. Row 1 is the strong signal (slot, status dot,
+   title, chips, close). Row 2 is muted supplementary metadata (cwd,
+   message count, working label). An error band slots in between them
+   when session.error is set. */
 .chat-panel-header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 10px;
+  flex-direction: column;
   background: var(--bg-elev);
   border-bottom: 1px solid var(--border);
   font-size: 12px;
-  /* The header is the panel's drag handle — hint that visually. */
+  /* The whole header is the drag handle for panel swaps. */
   cursor: grab;
   user-select: none;
+  min-width: 0;
 }
 .chat-panel-header:active { cursor: grabbing; }
+.chat-panel-header-row1 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  min-width: 0;
+}
+.chat-panel-header-row2 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 2px 10px 6px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  min-width: 0;
+}
 .chat-panel-title {
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
+  flex-shrink: 1;
 }
-/* Model chip in the panel header — matches the permission-mode select
-   below but for the free-text model field. Button form is the display
-   state; a sibling <input> replaces it in edit mode. */
-.chat-panel-model {
-  background: var(--bg-elev-2);
-  color: var(--fg-muted);
-  border: 1px solid var(--border);
+
+/* Slot pill — same numeric label as the sidebar card, so users can
+   mentally link "card 2 in sidebar" with "panel 2 in grid". Filled when
+   this panel is focused; hollow otherwise. */
+.chat-panel-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
   border-radius: 4px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.chat-panel-slot.focused {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+/* Status dot — one of live/working/terminated/err/dormant. Colour and
+   animation map to statusClass() in App.tsx. */
+.chat-panel-status {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--fg-muted);
+}
+.chat-panel-status.live { background: var(--ok); }
+.chat-panel-status.working {
+  background: var(--accent);
+  animation: session-working-pulse 1s ease-in-out infinite;
+}
+.chat-panel-status.err { background: var(--danger); }
+.chat-panel-status.terminated { background: var(--fg-muted); opacity: 0.5; }
+.chat-panel-status.dormant { background: var(--fg-muted); opacity: 0.5; }
+
+/* Row 2 pieces: cwd (📁 + shortened path), message count, and an
+   inline working… chip echoing the status dot for a stronger hint. */
+.chat-panel-cwd {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex-shrink: 1;
+}
+.chat-panel-msgcount {
+  font-family: var(--mono);
+  flex-shrink: 0;
+}
+.chat-panel-working-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.chat-panel-working-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: session-working-pulse 1s ease-in-out infinite;
+}
+
+/* Session error band — shown between row1 and row2 when session.error
+   is set. Red background, one-line ellipsis, tooltip carries the full
+   message if it overflows. */
+.chat-panel-error {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  color: var(--danger);
+  padding: 3px 10px;
   font-size: 11px;
   font-family: var(--mono);
-  padding: 2px 6px;
-  cursor: pointer;
-  max-width: 160px;
+  border-top: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.chat-panel-model:hover:not(:disabled) {
+/* Meta strip that holds the model + permission-mode chips. Sits between
+   the panel title (left-aligned) and close button (right-aligned). */
+.chat-panel-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 8px 0 auto;
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+/* A header chip: minimal, no border. Two spans inside — a muted "label:"
+   prefix ("model" / "mode") and the value in foreground colour. Hover
+   reveals a subtle background to telegraph clickability without
+   crowding the header when idle. */
+.chat-panel-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  max-width: 180px;
+  padding: 2px 8px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 11px;
+  font-family: var(--mono);
   color: var(--fg);
-  border-color: var(--accent);
+  cursor: pointer;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.chat-panel-model:disabled {
-  opacity: 0.5;
+.chat-panel-chip:hover:not(:disabled) {
+  background: var(--bg-elev-2);
+}
+.chat-panel-chip:disabled {
   cursor: not-allowed;
+  opacity: 0.45;
 }
-.chat-panel-model-input {
+.chat-panel-chip-label {
+  color: var(--fg-muted);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+}
+.chat-panel-chip-value {
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-panel-chip:disabled .chat-panel-chip-value { color: var(--fg-muted); }
+
+/* Inline model editor — replaces the model chip when editing. Width
+   roughly matches the chip so the layout doesn't jump when entering /
+   leaving edit mode. */
+.chat-panel-chip-input {
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--accent);
@@ -291,31 +440,8 @@ body.resizing-col * {
   font-size: 11px;
   font-family: var(--mono);
   padding: 2px 6px;
-  width: 200px;
+  width: 180px;
   outline: none;
-}
-
-/* Small permission-mode dropdown embedded in the panel header. Sits
-   between title and close button; restyled so it doesn't look like a
-   bulky form control. */
-.chat-panel-perm {
-  background: var(--bg-elev-2);
-  color: var(--fg-muted);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  font-size: 11px;
-  font-family: var(--mono);
-  padding: 2px 4px;
-  cursor: pointer;
-  max-width: 110px;
-}
-.chat-panel-perm:hover:not(:disabled) {
-  color: var(--fg);
-  border-color: var(--accent);
-}
-.chat-panel-perm:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 .chat-panel-close {
@@ -382,6 +508,17 @@ body.resizing-col * {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+/* The "New session" button doubles as a drop target for folders dragged
+   from the OS file manager. Dashed outline + slight scale makes the
+   affordance obvious while the drag is in progress. */
+.new-session-btn {
+  transition: outline-color 0.15s ease, background-color 0.15s ease;
+  outline: 2px dashed transparent;
+  outline-offset: 2px;
+}
+.new-session-btn.drop-target {
+  outline-color: var(--accent);
 }
 .session-filter {
   position: relative;

@@ -11,9 +11,13 @@ import type { SdkMessage } from '../types'
 
 interface Props {
   messages: SdkMessage[]
+  /** When true, include `system` messages (init/status/etc.) in the
+   *  rendered list. Errors (`subtype === 'error'`) are always shown
+   *  regardless — those carry actual failure info users need to see. */
+  showSystemEvents?: boolean
 }
 
-export function MessageList({ messages }: Props) {
+export function MessageList({ messages, showSystemEvents = false }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
   // `atBottom` is state (not a ref) because the jump-to-bottom button's
   // visibility needs to re-render when it changes. The ref-mirror keeps
@@ -24,7 +28,10 @@ export function MessageList({ messages }: Props) {
    *  bottom. Badge number on the jump-to-bottom button. */
   const [unseenCount, setUnseenCount] = useState(0)
 
-  const renderable = useMemo(() => messages.filter(isRenderable), [messages])
+  const renderable = useMemo(
+    () => messages.filter((m) => isRenderable(m, showSystemEvents)),
+    [messages, showSystemEvents],
+  )
 
   // Track the last renderable count so we can tell how many landed
   // during a single render pass. When the user is at bottom we scroll
@@ -88,8 +95,14 @@ export function MessageList({ messages }: Props) {
   )
 }
 
-function isRenderable(m: SdkMessage): boolean {
+function isRenderable(m: SdkMessage, showSystemEvents: boolean): boolean {
+  // Streaming-delta partials: the assistant message that follows carries
+  // the complete content, so rendering both just flickers.
   if (m.type === 'stream_event') return false
+  // System notifications (init / status / task_notification / etc.) are
+  // SDK bookkeeping, not conversation content. `error` is the exception —
+  // users need to see those even when the toggle is off.
+  if (m.type === 'system' && m.subtype !== 'error' && !showSystemEvents) return false
   return true
 }
 

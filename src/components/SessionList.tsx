@@ -8,6 +8,7 @@ import { useLocalStorage } from '../hooks/useLocalStorage'
 import { isInAppDrag, readDragPayload, setDragPayload } from '../hooks/useDragPayload'
 import { api } from '../hooks/useApi'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
+import { shortenPath } from '../utils/paths'
 import type { NewSessionForm, PermissionMode, SessionInfo } from '../types'
 
 const PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'plan', 'bypassPermissions', 'dontAsk', 'auto']
@@ -87,6 +88,12 @@ export function SessionList({
    *  cwd, and the first 8 chars of the id. Not persisted — a stale filter
    *  after a reload causes more confusion than it saves typing. */
   const [filter, setFilter] = useState('')
+  /** When the user drags a folder onto the "New session" button we
+   *  pre-fill its cwd here and open the dialog. `undefined` means
+   *  "use defaults" (the dialog behaves as before). */
+  const [prefilledCwd, setPrefilledCwd] = useState<string | undefined>(undefined)
+  /** Visual highlight while a file is being dragged over the button. */
+  const [dropZoneActive, setDropZoneActive] = useState(false)
   const visibleSessions = useMemo<SessionInfo[]>(() => {
     const q = filter.trim().toLowerCase()
     if (!q) return sessions
@@ -126,14 +133,73 @@ export function SessionList({
 
   const cancelRename = () => setRenamingId(null)
 
+  /** Extract an absolute path from a drop event. Browsers don't expose
+   *  file system paths on File objects (unlike Electron), but on Linux /
+   *  macOS desktop file managers populate `text/uri-list` with
+   *  `file:///abs/path\n` — that's what we rely on. Returns null when
+   *  no usable path was carried. */
+  const extractDroppedPath = (e: React.DragEvent): string | null => {
+    const uris = e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain')
+    if (!uris) return null
+    // uri-list lines are the URIs themselves; comments start with '#'.
+    const line = uris
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .find((l) => l && !l.startsWith('#'))
+    if (!line) return null
+    if (!line.startsWith('file://')) return null
+    try {
+      const url = new URL(line)
+      // file:///home/x → /home/x. decodeURI turns %20 etc. back.
+      return decodeURIComponent(url.pathname)
+    } catch {
+      return null
+    }
+  }
+
+  /** Resolve the dropped path to a cwd via the server (file → parent
+   *  directory) and open the dialog pre-filled. Errors become an alert;
+   *  no stored state. */
+  const handleFolderDrop = async (e: React.DragEvent) => {
+    e.preventDefault()
+    setDropZoneActive(false)
+    const path = extractDroppedPath(e)
+    if (!path) {
+      // User might have dragged from another browser window or dropped
+      // a non-file source (selected text). Nothing actionable.
+      return
+    }
+    try {
+      const res = await api.get<{ cwd: string }>(
+        `/fs/resolve-cwd?path=${encodeURIComponent(path)}`,
+      )
+      setPrefilledCwd(res.cwd)
+      setShowDialog(true)
+    } catch (err) {
+      window.alert(`Couldn't use that folder: ${(err as Error).message}`)
+    }
+  }
+
   return (
     <>
       <div className="session-list-top">
         <button
-          className="btn btn-primary"
+          className={`btn btn-primary new-session-btn ${dropZoneActive ? 'drop-target' : ''}`}
           style={{ width: '100%' }}
           onClick={() => setShowDialog(true)}
-          title="New session (Alt+N)"
+          onDragOver={(e) => {
+            // Accept anything that carries a file-uri — that covers folder
+            // drops from native file managers (Nautilus, Finder, Windows
+            // Explorer all write text/uri-list). We *don't* preventDefault
+            // for in-app session-card drags; those are handled elsewhere.
+            if (e.dataTransfer.types.includes('Files') || e.dataTransfer.types.includes('text/uri-list')) {
+              e.preventDefault()
+              setDropZoneActive(true)
+            }
+          }}
+          onDragLeave={() => setDropZoneActive(false)}
+          onDrop={(e) => void handleFolderDrop(e)}
+          title="New session (Alt+N) · drop a folder here to prefill cwd"
         >
           + New session
         </button>
@@ -380,10 +446,15 @@ export function SessionList({
       {showDialog && (
         <NewSessionDialog
           defaults={defaults}
-          onCancel={() => setShowDialog(false)}
+          initialCwd={prefilledCwd}
+          onCancel={() => {
+            setShowDialog(false)
+            setPrefilledCwd(undefined)
+          }}
           onSubmit={(form) => {
             onCreate(form)
             setShowDialog(false)
+            setPrefilledCwd(undefined)
           }}
         />
       )}
@@ -391,23 +462,20 @@ export function SessionList({
   )
 }
 
-function shortenPath(p: string): string {
-  if (p.length <= 36) return p
-  const parts = p.split('/')
-  if (parts.length <= 3) return p
-  return `…/${parts.slice(-2).join('/')}`
-}
-
 // --- new session dialog ------------------------------------------------------
 
 interface DialogProps {
   defaults: { cwd?: string; model?: string }
+  /** Overrides defaults.cwd when set. Used by the drag-to-new-session
+   *  shortcut, which wants to prefill with the dropped folder rather
+   *  than the server-configured default. */
+  initialCwd?: string
   onSubmit: (form: NewSessionForm) => void
   onCancel: () => void
 }
 
-function NewSessionDialog({ defaults, onSubmit, onCancel }: DialogProps) {
-  const [cwd, setCwd] = useState<string>(defaults.cwd ?? '')
+function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel }: DialogProps) {
+  const [cwd, setCwd] = useState<string>(initialCwd ?? defaults.cwd ?? '')
   const [model, setModel] = useState<string>(defaults.model ?? '')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
   const [systemPrompt, setSystemPrompt] = useState('')
