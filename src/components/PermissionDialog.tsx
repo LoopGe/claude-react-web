@@ -1,0 +1,143 @@
+// Tool permission request modal.
+//
+// Rendered by <Chat /> when a session has any pending PermissionRequest.
+// Shows the topmost pending request; if multiple are queued, the dialog
+// re-renders once the user decides the current one.
+//
+// All session-level "always allow" decisions ride on the SDK-provided
+// `suggestions` array — we just forward the request with
+// persistForSession=true and let the server promote every suggestion's
+// destination to 'session'. No suggestions? We hide the always button.
+
+import { useState } from 'react'
+import type { PermissionRequest } from '../types'
+
+interface Props {
+  request: PermissionRequest
+  onDecide: (
+    decision:
+      | { behavior: 'allow'; persistForSession: boolean }
+      | { behavior: 'deny'; message?: string },
+  ) => void
+}
+
+export function PermissionDialog({ request, onDecide }: Props) {
+  const [showRaw, setShowRaw] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  const hasSuggestions = Array.isArray(request.suggestions) && request.suggestions.length > 0
+
+  const click = (
+    d:
+      | { behavior: 'allow'; persistForSession: boolean }
+      | { behavior: 'deny'; message?: string },
+  ) => {
+    if (busy) return
+    setBusy(true)
+    onDecide(d)
+  }
+
+  const headline = request.title ?? `Claude wants to use ${request.toolName}`
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal" style={{ width: 'min(560px, 92vw)' }}>
+        <div className="modal-header">
+          <h3 style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span aria-hidden>🔐</span>
+            Tool permission required
+          </h3>
+        </div>
+
+        <div className="modal-section">
+          <div className="perm-headline">{headline}</div>
+          {request.description && <div className="perm-sub">{request.description}</div>}
+
+          <div className="perm-summary">
+            <span className="perm-badge">{request.displayName ?? request.toolName}</span>
+          </div>
+
+          <InputPreview input={request.input} />
+
+          <button
+            type="button"
+            className="perm-raw-toggle"
+            onClick={() => setShowRaw((v) => !v)}
+          >
+            {showRaw ? 'Hide raw input' : 'Show raw input'}
+          </button>
+          {showRaw && (
+            <pre className="perm-raw">{JSON.stringify(request.input, null, 2)}</pre>
+          )}
+        </div>
+
+        <div className="modal-footer" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              className="btn btn-primary"
+              onClick={() => click({ behavior: 'allow', persistForSession: false })}
+              disabled={busy}
+              style={{ flex: 1 }}
+            >
+              Allow once
+            </button>
+            {hasSuggestions && (
+              <button
+                className="btn"
+                onClick={() => click({ behavior: 'allow', persistForSession: true })}
+                disabled={busy}
+                style={{ flex: 1 }}
+                title="Apply the SDK's suggested allow rule for the rest of this session"
+              >
+                Allow for session
+              </button>
+            )}
+            <button
+              className="btn btn-danger"
+              onClick={() => click({ behavior: 'deny' })}
+              disabled={busy}
+              style={{ flex: 1 }}
+            >
+              Deny
+            </button>
+          </div>
+          <span className="hint" style={{ textAlign: 'center' }}>
+            Deny returns a message to the model — it keeps thinking, but won't execute this tool.
+          </span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Quick preview for common tool shapes. We pick out the obvious fields
+ * (Bash.command, Read.file_path, Edit.file_path, etc.) and fall back to
+ * showing nothing when the input is opaque — the "Show raw input" button
+ * is always available below.
+ */
+function InputPreview({ input }: { input: Record<string, unknown> }) {
+  const rows: { label: string; value: string }[] = []
+  const pick = (key: string, label: string) => {
+    const v = input[key]
+    if (typeof v === 'string' && v.trim()) rows.push({ label, value: v })
+  }
+  pick('command', 'Command')
+  pick('file_path', 'File')
+  pick('path', 'Path')
+  pick('url', 'URL')
+  pick('pattern', 'Pattern')
+  pick('description', 'Why')
+
+  if (!rows.length) return null
+  return (
+    <div className="perm-preview">
+      {rows.map((r) => (
+        <div key={r.label} className="perm-row">
+          <div className="perm-row-label">{r.label}</div>
+          <div className="perm-row-value">{r.value}</div>
+        </div>
+      ))}
+    </div>
+  )
+}

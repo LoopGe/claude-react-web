@@ -1,0 +1,332 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+
+// --- SDK mock ---------------------------------------------------------------
+//
+// The real `query({ prompt, options })` spawns the `claude` CLI. For tests
+// we replace it with a controllable async generator. Each mocked call is
+// captured so tests can inspect what options the SessionManager passed in
+// (e.g. the `resume` field) and drive messages into the generator.
+
+interface MockQueryHandle {
+  options: Record<string, unknown>
+  emit: (msg: unknown) => void
+  finish: () => void
+  throwError: (err: unknown) => void
+  interrupt: ReturnType<typeof vi.fn>
+  setModel: ReturnType<typeof vi.fn>
+  setPermissionMode: ReturnType<typeof vi.fn>
+  applyFlagSettings: ReturnType<typeof vi.fn>
+  supportedModels: ReturnType<typeof vi.fn>
+  supportedCommands: ReturnType<typeof vi.fn>
+  supportedAgents: ReturnType<typeof vi.fn>
+  mcpServerStatus: ReturnType<typeof vi.fn>
+  getContextUsage: ReturnType<typeof vi.fn>
+}
+
+const mockHandles: MockQueryHandle[] = []
+
+vi.mock('@anthropic-ai/claude-agent-sdk', () => {
+  return {
+    query({ options }: { prompt: unknown; options: Record<string, unknown> }) {
+      const queue: unknown[] = []
+      let waiter: ((v: IteratorResult<unknown>) => void) | null = null
+      let done = false
+      let errored: unknown = null
+
+      const pushResolved = (r: IteratorResult<unknown>) => {
+        if (waiter) {
+          const w = waiter
+          waiter = null
+          w(r)
+        }
+      }
+
+      const handle: MockQueryHandle = {
+        options,
+        emit: (msg) => {
+          if (done) return
+          if (waiter) pushResolved({ value: msg, done: false })
+          else queue.push(msg)
+        },
+        finish: () => {
+          done = true
+          pushResolved({ value: undefined, done: true })
+        },
+        throwError: (err) => {
+          errored = err
+          done = true
+          pushResolved({ value: undefined, done: true })
+        },
+        interrupt: vi.fn(async () => {}),
+        setModel: vi.fn(async () => {}),
+        setPermissionMode: vi.fn(async () => {}),
+        applyFlagSettings: vi.fn(async () => {}),
+        supportedModels: vi.fn(async () => []),
+        supportedCommands: vi.fn(async () => []),
+        supportedAgents: vi.fn(async () => []),
+        mcpServerStatus: vi.fn(async () => ({})),
+        getContextUsage: vi.fn(async () => ({})),
+      }
+      mockHandles.push(handle)
+
+      const q = {
+        [Symbol.asyncIterator]() {
+          return {
+            next(): Promise<IteratorResult<unknown>> {
+              if (errored) {
+                const e = errored
+                errored = null
+                return Promise.reject(e)
+              }
+              if (queue.length) {
+                return Promise.resolve({ value: queue.shift(), done: false })
+              }
+              if (done) return Promise.resolve({ value: undefined, done: true })
+              return new Promise((r) => {
+                waiter = r
+              })
+            },
+            return(): Promise<IteratorResult<unknown>> {
+              done = true
+              return Promise.resolve({ value: undefined, done: true })
+            },
+          }
+        },
+        interrupt: handle.interrupt,
+        setModel: handle.setModel,
+        setPermissionMode: handle.setPermissionMode,
+        applyFlagSettings: handle.applyFlagSettings,
+        supportedModels: handle.supportedModels,
+        supportedCommands: handle.supportedCommands,
+        supportedAgents: handle.supportedAgents,
+        mcpServerStatus: handle.mcpServerStatus,
+        getContextUsage: handle.getContextUsage,
+      }
+      return q
+    },
+  }
+})
+
+// Helper: yield to the event loop so the SessionManager's pump() can
+// process whatever the mock just emitted. The pump iterates asynchronously,
+// so a `setImmediate`-tick is enough to drain one message.
+const tick = () => new Promise((r) => setImmediate(r))
+
+// Import AFTER vi.mock so the SessionManager picks up the mocked SDK.
+import { SessionManager } from './session-manager.js'
+import { SessionStore } from './persistence.js'
+
+function makeTmpDir(): string {
+  return mkdtempSync(join(tmpdir(), 'claude-rw-sm-'))
+}
+
+describe('SessionManager', () => {
+  let dir: string
+  let store: SessionStore
+  let sm: SessionManager
+
+  beforeEach(async () => {
+    mockHandles.length = 0
+    dir = makeTmpDir()
+    store = new SessionStore({ stateDir: dir })
+    await store.load()
+    // Short idle window so the GC-related test doesn't wait in real time.
+    sm = new SessionManager({ store, idleMs: 50 })
+  })
+
+  afterEach(async () => {
+    await sm.shutdown()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('create() spawns a Query and returns info with working=false', () => {
+    const info = sm.create({ cwd: '/tmp', model: 'test-model' })
+    expect(info.running).toBe(true)
+    expect(info.working).toBe(false)
+    expect(info.cwd).toBe('/tmp')
+    expect(mockHandles).toHaveLength(1)
+    expect(mockHandles[0].options.resume).toBeUndefined()
+  })
+
+  it('send() marks the session as working; result clears it and stamps lastTurnAt', async () => {
+    const info = sm.create({})
+    sm.send(info.id, 'hi')
+    expect(sm.get(info.id).working).toBe(true)
+
+    const before = Date.now()
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    await tick()
+    const after = sm.get(info.id)
+    expect(after.working).toBe(false)
+    expect(after.lastTurnAt).toBeDefined()
+    expect(after.lastTurnAt!).toBeGreaterThanOrEqual(before)
+  })
+
+  it('pendingTurns tracks multiple sends before any result', async () => {
+    const info = sm.create({})
+    sm.send(info.id, 'first')
+    sm.send(info.id, 'second')
+    expect(sm.get(info.id).working).toBe(true)
+
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    // Still working — one more turn to clear.
+    expect(sm.get(info.id).working).toBe(true)
+
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    expect(sm.get(info.id).working).toBe(false)
+  })
+
+  it('subscribe() replays history and streams live messages', async () => {
+    const info = sm.create({})
+    mockHandles[0].emit({ type: 'assistant', message: { content: 'hello' } })
+    await tick()
+
+    const sub = sm.subscribe(info.id)
+    expect(sub.history).toHaveLength(1)
+    expect(sub.history[0]).toMatchObject({ type: 'assistant' })
+
+    const it = sub.iterable[Symbol.asyncIterator]()
+    const pending = it.next()
+    mockHandles[0].emit({ type: 'assistant', message: { content: 'world' } })
+    const delivered = await pending
+    expect(delivered.value).toMatchObject({ type: 'assistant' })
+    sub.unsubscribe()
+  })
+
+  it('persists metadata on create and on send', async () => {
+    const info = sm.create({ title: 'hello', cwd: '/x' })
+    await store.flush()
+    expect(store.get(info.id)).toMatchObject({ id: info.id, title: 'hello' })
+
+    sm.send(info.id, 'hi')
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    await store.flush()
+    expect(store.get(info.id)?.lastTurnAt).toBeDefined()
+  })
+
+  it('list() merges live sessions with dormant persisted ones', async () => {
+    const live = sm.create({ title: 'live-one' })
+    // Fake a dormant entry by upserting directly into the store.
+    store.upsert({
+      id: 'dormant-id',
+      createdAt: 1,
+      lastActivityAt: 2,
+      messageCount: 5,
+      terminated: false,
+      title: 'dormant-one',
+    })
+
+    const list = sm.list()
+    expect(list).toHaveLength(2)
+    const liveInfo = list.find((s) => s.id === live.id)!
+    const dormantInfo = list.find((s) => s.id === 'dormant-id')!
+    expect(liveInfo.running).toBe(true)
+    expect(dormantInfo.running).toBe(false)
+    expect(dormantInfo.messageCount).toBe(5)
+  })
+
+  it('delete() closes the Query and removes from the persistence index', async () => {
+    const info = sm.create({})
+    sm.send(info.id, 'q')
+    expect(sm.get(info.id).working).toBe(true)
+
+    await sm.delete(info.id)
+    await store.flush()
+    expect(store.get(info.id)).toBeUndefined()
+    expect(() => sm.get(info.id)).toThrow(/not found/)
+  })
+
+  it('delete() resolves pending permissions as deny so SDK awaiters never hang', async () => {
+    const info = sm.create({})
+    const canUseTool = mockHandles[0].options.canUseTool as (
+      tool: string,
+      input: unknown,
+      ctx: { signal: AbortSignal; toolUseID: string; suggestions?: unknown },
+    ) => Promise<{ behavior: string; message?: string }>
+    expect(canUseTool).toBeTypeOf('function')
+    const ctrl = new AbortController()
+    const permissionPromise = canUseTool(
+      'Bash',
+      { command: 'ls' },
+      { signal: ctrl.signal, toolUseID: 'tu-1' },
+    )
+
+    // Give the manager a microtask to park the pending request.
+    await tick()
+    expect(sm.listPending(info.id)).toHaveLength(1)
+
+    await sm.delete(info.id)
+    const resolved = await permissionPromise
+    expect(resolved.behavior).toBe('deny')
+  })
+
+  it('idle GC unloads an inactive session but keeps its metadata', async () => {
+    const info = sm.create({ title: 'persistable' })
+    // Immediately "age" the session by backdating lastActivityAt so the
+    // next GC tick catches it. Reaching into the internal map beats
+    // actually waiting for 50ms + a 60s GC interval.
+    // @ts-expect-error — test-only access to a private field.
+    const internalSessions = sm.sessions as Map<string, { lastActivityAt: number }>
+    const internal = internalSessions.get(info.id)!
+    internal.lastActivityAt = Date.now() - 10_000
+
+    // @ts-expect-error — invoke the private gc() deterministically.
+    sm.gc()
+    await tick()
+    expect(() => sm.get(info.id)).not.toThrow()
+    // Session is still visible in list() as dormant, not deleted.
+    const fromList = sm.list().find((s) => s.id === info.id)!
+    expect(fromList.running).toBe(false)
+    await store.flush()
+    expect(store.get(info.id)).toBeDefined()
+  })
+
+  it('resume() spawns a new Query with options.resume set to the original id', async () => {
+    const info = sm.create({ cwd: '/tmp', model: 'm1' })
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    await sm.unload(info.id)
+
+    // Live map no longer contains it, but persistence does.
+    const resumed = sm.resume(info.id)
+    expect(resumed.id).toBe(info.id)
+    expect(mockHandles).toHaveLength(2)
+    expect(mockHandles[1].options.resume).toBe(info.id)
+    expect(mockHandles[1].options.cwd).toBe('/tmp')
+    expect(mockHandles[1].options.model).toBe('m1')
+  })
+
+  it('resume() is idempotent when the session is already live', () => {
+    const info = sm.create({})
+    const again = sm.resume(info.id)
+    expect(again.id).toBe(info.id)
+    // No extra Query was spawned.
+    expect(mockHandles).toHaveLength(1)
+  })
+
+  it('resume() refuses terminated sessions', async () => {
+    const info = sm.create({})
+    // Simulate the pump finishing naturally — queue a result then close.
+    mockHandles[0].emit({ type: 'result' })
+    mockHandles[0].finish()
+    await tick()
+    // pump's finally block sets terminated=true, persists, and the session
+    // is still in memory until next GC. Force the dormant state for the
+    // assertion by unloading.
+    await sm.unload(info.id)
+    expect(() => sm.resume(info.id)).toThrow(/ended/i)
+  })
+
+  it('setModel() updates the session and forwards to the Query', async () => {
+    const info = sm.create({ model: 'old' })
+    await sm.setModel(info.id, 'new-model')
+    expect(mockHandles[0].setModel).toHaveBeenCalledWith('new-model')
+    expect(sm.get(info.id).model).toBe('new-model')
+  })
+})

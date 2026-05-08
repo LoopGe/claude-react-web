@@ -1,0 +1,82 @@
+{
+  "name": "@mi/claude-react-web",
+  "version": "0.0.16",
+  "description": "Local interactive chat platform powered by @anthropic-ai/claude-agent-sdk",
+  "type": "module",
+  "license": "MIT",
+  "author": "LoopGe",
+  "homepage": "https://github.com/LoopGe/claude-react-web#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LoopGe/claude-react-web.git"
+  },
+  "bugs": {
+    "url": "https://github.com/LoopGe/claude-react-web/issues"
+  },
+  "keywords": [
+    "claude",
+    "claude-agent-sdk",
+    "anthropic",
+    "chat",
+    "react",
+    "cli",
+    "hono",
+    "sse"
+  ],
+  "bin": {
+    "claude-react-web": "dist/cli.mjs"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "dev:server": "tsx watch server/cli.ts --port 3456 --no-open",
+    "dev:client": "vite --port 5174",
+    "dev": "concurrently -n server,client -c blue,magenta \"npm:dev:server\" \"npm:dev:client\"",
+    "build:client": "vite build",
+    "build:server": "node build.mjs",
+    "build": "npm run build:client && npm run build:server",
+    "start": "node dist/cli.mjs",
+    "preview": "npm run build && npm run start",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.123",
+    "@hono/node-server": "^1.13.7",
+    "hono": "^4.7.0",
+    "open": "^10.1.0",
+    "react-markdown": "^9.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "concurrently": "^9.1.0",
+    "esbuild": "^0.25.0",
+    "eslint": "^9.39.4",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "prettier": "^3.8.3",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.59.2",
+    "vite": "^6.0.0",
+    "vitest": "^2.1.9"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

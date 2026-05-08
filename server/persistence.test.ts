@@ -1,0 +1,135 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { SessionStore, type SessionMeta } from './persistence.js'
+
+function tempDir(): string {
+  return mkdtempSync(join(tmpdir(), 'claude-react-web-store-'))
+}
+
+function makeMeta(id: string, overrides: Partial<SessionMeta> = {}): SessionMeta {
+  return {
+    id,
+    createdAt: 1_700_000_000_000,
+    lastActivityAt: 1_700_000_000_000,
+    messageCount: 0,
+    terminated: false,
+    ...overrides,
+  }
+}
+
+describe('SessionStore', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = tempDir()
+  })
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('returns empty list when file does not exist', async () => {
+    const store = new SessionStore({ stateDir: dir })
+    expect(await store.load()).toEqual([])
+    expect(store.list()).toEqual([])
+  })
+
+  it('is tolerant to a corrupt JSON file', async () => {
+    writeFileSync(join(dir, 'sessions.json'), '{not json')
+    const store = new SessionStore({ stateDir: dir })
+    // Should not throw; treats corruption as empty state.
+    expect(await store.load()).toEqual([])
+  })
+
+  it('ignores non-array top-level JSON', async () => {
+    writeFileSync(join(dir, 'sessions.json'), '{"foo":"bar"}')
+    const store = new SessionStore({ stateDir: dir })
+    expect(await store.load()).toEqual([])
+  })
+
+  it('upsert + flush writes atomically and round-trips', async () => {
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    store.upsert(makeMeta('a', { title: 'first' }))
+    store.upsert(makeMeta('b', { title: 'second' }))
+    await store.flush()
+
+    const raw = readFileSync(join(dir, 'sessions.json'), 'utf8')
+    const parsed = JSON.parse(raw) as SessionMeta[]
+    expect(parsed).toHaveLength(2)
+    expect(parsed.map((m) => m.id).sort()).toEqual(['a', 'b'])
+
+    // A fresh store sees what we just wrote.
+    const store2 = new SessionStore({ stateDir: dir })
+    const loaded = await store2.load()
+    expect(loaded).toHaveLength(2)
+    expect(store2.get('a')?.title).toBe('first')
+  })
+
+  it('remove() drops the entry from the next flush', async () => {
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    store.upsert(makeMeta('a'))
+    store.upsert(makeMeta('b'))
+    await store.flush()
+    store.remove('a')
+    await store.flush()
+
+    const store2 = new SessionStore({ stateDir: dir })
+    const loaded = await store2.load()
+    expect(loaded.map((m) => m.id)).toEqual(['b'])
+  })
+
+  it('upsert debounces and coalesces rapid writes', async () => {
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    // 100 upserts in a tight loop before any await — debounce should collapse
+    // these into one disk write that carries the final state.
+    for (let i = 0; i < 100; i++) {
+      store.upsert(makeMeta(`id-${i % 5}`, { messageCount: i }))
+    }
+    await store.flush()
+
+    const parsed = JSON.parse(readFileSync(join(dir, 'sessions.json'), 'utf8')) as SessionMeta[]
+    expect(parsed).toHaveLength(5)
+    // The last write for id-0 was at i=95, so messageCount=95, etc.
+    const byId = Object.fromEntries(parsed.map((m) => [m.id, m.messageCount]))
+    expect(byId['id-0']).toBe(95)
+    expect(byId['id-4']).toBe(99)
+  })
+
+  it('flush() with nothing dirty is a no-op', async () => {
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    await store.flush()
+    // No file should have been created since we never upserted.
+    expect(() => readFileSync(join(dir, 'sessions.json'))).toThrow()
+  })
+
+  it('coerces missing optional fields on load', async () => {
+    // Simulate an older format that lacks messageCount / terminated.
+    writeFileSync(
+      join(dir, 'sessions.json'),
+      JSON.stringify([{ id: 'legacy', createdAt: 1, lastActivityAt: 2 }]),
+    )
+    const store = new SessionStore({ stateDir: dir })
+    const loaded = await store.load()
+    expect(loaded).toHaveLength(1)
+    expect(loaded[0]).toMatchObject({
+      id: 'legacy',
+      messageCount: 0,
+      terminated: false,
+    })
+  })
+
+  it('drops items without an id on load', async () => {
+    writeFileSync(
+      join(dir, 'sessions.json'),
+      JSON.stringify([{ id: 'ok' }, { title: 'no-id' }, null, 'string']),
+    )
+    const store = new SessionStore({ stateDir: dir })
+    const loaded = await store.load()
+    expect(loaded.map((m) => m.id)).toEqual(['ok'])
+  })
+})

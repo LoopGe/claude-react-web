@@ -1,0 +1,209 @@
+// Chat panel — orchestrates the stream, attachments, permissions, and
+// renders the message list + composer. Side-effect hooks live in their
+// own files; this module only wires things together.
+//
+// IMPORTANT: the parent MUST render this with `<Chat key={session.id} />`
+// so React re-mounts the component on session switch. We rely on that
+// instead of explicitly resetting state in an effect, which React 19's
+// new rules flag as a cascading-render hazard. Re-mount is cheap because
+// the sessions themselves are long-lived on the server.
+
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { api } from '../hooks/useApi'
+import { useAttachments } from '../hooks/useAttachments'
+import { useChatStream } from '../hooks/useChatStream'
+import { useInputHistory } from '../hooks/useInputHistory'
+import { usePermissionChannel } from '../hooks/usePermissionChannel'
+import { Composer } from './Composer'
+import { ContextBar } from './ContextBar'
+import { MessageList } from './MessageList'
+import { PermissionDialog } from './PermissionDialog'
+import type { SessionInfo } from '../types'
+
+const INPUT_HISTORY_KEY = 'claude-react-web:input-history'
+
+interface Props {
+  session: SessionInfo
+  onSessionUpdate: (s: SessionInfo) => void
+}
+
+export function Chat({ session, onSessionUpdate }: Props) {
+  const [input, setInput] = useState('')
+  const [sending, setSending] = useState(false)
+  const [localError, setLocalError] = useState<string | null>(null)
+
+  // Shell-style history is stored globally (all sessions share the same
+  // ring) — matches how terminal users expect bash history to behave
+  // across tabs.
+  const history = useInputHistory(INPUT_HISTORY_KEY)
+
+  const stream = useChatStream(session.id)
+  const attachments = useAttachments(session.id, session.cwd)
+  const permissions = usePermissionChannel(session.id)
+
+  // Pull out the specific functions/values we actually use downstream.
+  // Putting the whole hook object in a dep list re-creates callbacks every
+  // render and can churn child re-renders (the composer's onChange in
+  // particular — that's what caused the "can't send / can't type" freeze).
+  const { trackSentTurn, clearError: clearStreamError } = stream
+  const {
+    attachments: attachmentList,
+    setDragOver,
+    uploadFiles,
+    clear: clearAttachments,
+    clearError: clearAttachmentsError,
+  } = attachments
+  const { clearError: clearPermissionsError } = permissions
+
+  // Unified error banner: whichever subsystem reported something.
+  const error = localError ?? stream.error ?? attachments.error ?? permissions.error
+  const clearError = useCallback(() => {
+    setLocalError(null)
+    clearStreamError()
+    clearAttachmentsError()
+    clearPermissionsError()
+  }, [clearStreamError, clearAttachmentsError, clearPermissionsError])
+
+  const onDragOver = useCallback(
+    (e: React.DragEvent) => {
+      // Needed for drop to fire. Only visually highlight when actual files
+      // are being dragged — ignore text selections etc.
+      if (!e.dataTransfer.types.includes('Files')) return
+      e.preventDefault()
+      setDragOver(true)
+    },
+    [setDragOver],
+  )
+
+  const onDragLeave = useCallback(
+    (e: React.DragEvent) => {
+      // relatedTarget is null when the pointer leaves the window entirely;
+      // otherwise it's wherever the pointer went. Only clear the highlight
+      // when we've actually left the drop zone (not moved to a child).
+      if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+      setDragOver(false)
+    },
+    [setDragOver],
+  )
+
+  const onDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault()
+      setDragOver(false)
+      const files = Array.from(e.dataTransfer.files)
+      if (files.length > 0) void uploadFiles(files)
+    },
+    [setDragOver, uploadFiles],
+  )
+
+  const send = useCallback(async () => {
+    const text = input.trim()
+    // Allow sending with just attachments (e.g. "here, look at these files")
+    // — the model sees only the attachments preamble in that case.
+    if (!text && attachmentList.length === 0) return
+    if (sending) return
+    setSending(true)
+    clearError()
+    try {
+      const preamble =
+        attachmentList.length > 0
+          ? `Attached file${attachmentList.length === 1 ? '' : 's'} (absolute path${attachmentList.length === 1 ? '' : 's'} — use the Read tool to open):\n` +
+            attachmentList.map((a) => `- ${a.path}`).join('\n') +
+            '\n\n'
+          : ''
+      const full = preamble + text
+      await api.post(`/sessions/${session.id}/messages`, { text: full })
+      if (text) history.add(text)
+      setInput('')
+      clearAttachments()
+      // Server queues this turn in the SDK input iterable; it will be
+      // consumed as soon as the current turn's `result` arrives. Bump the
+      // counter so the chip reflects "waiting in queue". The corresponding
+      // `result` frame in onMessage will decrement it.
+      trackSentTurn()
+    } catch (e) {
+      setLocalError((e as Error).message)
+    } finally {
+      setSending(false)
+    }
+  }, [input, attachmentList, sending, session.id, history, trackSentTurn, clearAttachments, clearError])
+
+  const interrupt = useCallback(async () => {
+    try {
+      await api.post(`/sessions/${session.id}/interrupt`)
+    } catch (e) {
+      setLocalError((e as Error).message)
+    }
+  }, [session.id])
+
+  // Refresh session metadata shortly after each message arrival — keeps
+  // the header's badges (working / model / permissionMode) in sync.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      api
+        .get<{ session: SessionInfo }>(`/sessions/${session.id}`)
+        .then((r) => onSessionUpdate(r.session))
+        .catch(() => {})
+    }, 500)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stream.messages.length])
+
+  // Count completed turns → re-fetch context usage whenever it increments.
+  // Using messages.length alone would fire on every partial, which wastes
+  // the control-request round-trip.
+  const resultCount = useMemo(
+    () => stream.messages.reduce((n, m) => (m.type === 'result' ? n + 1 : n), 0),
+    [stream.messages],
+  )
+
+  return (
+    <div className="chat">
+      <MessageList messages={stream.messages} />
+
+      {error && <div className="error-bar">{error}</div>}
+
+      {stream.queuedAhead > 0 && (
+        <div className="queue-bar">
+          {stream.queuedAhead === 1 ? (
+            <span>⏳ Assistant is replying…</span>
+          ) : (
+            <span>
+              ⏳ Assistant is replying — {stream.queuedAhead - 1} more message
+              {stream.queuedAhead - 1 === 1 ? '' : 's'} queued, will send automatically.
+            </span>
+          )}
+        </div>
+      )}
+
+      <ContextBar sessionId={session.id} refreshKey={resultCount} />
+
+      <Composer
+        input={input}
+        setInput={setInput}
+        sending={sending}
+        disabled={session.terminated}
+        canAttach={!!session.cwd}
+        attachments={attachments.attachments}
+        uploading={attachments.uploading}
+        dragOver={attachments.dragOver}
+        onUploadFiles={(files) => void attachments.uploadFiles(files)}
+        onRemoveAttachment={attachments.removeAttachment}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+        history={history}
+        onSend={() => void send()}
+        onInterrupt={() => void interrupt()}
+      />
+
+      {permissions.pending.length > 0 && (
+        <PermissionDialog
+          key={permissions.pending[0].id}
+          request={permissions.pending[0]}
+          onDecide={(d) => void permissions.decide(permissions.pending[0].id, d)}
+        />
+      )}
+    </div>
+  )
+}

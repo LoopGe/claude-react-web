@@ -1,0 +1,216 @@
+// Modal directory picker.
+//
+// Browser has no real folder-chooser (File System Access API requires HTTPS
+// and user gesture, and Electron-style dialogs aren't available), so we
+// browse the server's filesystem instead. Click into sub-dirs, use ".." to
+// go up, "Home" / "CWD" shortcuts, or edit the path inline and press Enter.
+
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { api } from '../hooks/useApi'
+
+interface DirEntry {
+  name: string
+  path: string
+  isDir: boolean
+}
+
+interface ListResult {
+  path: string
+  parent: string | null
+  entries: DirEntry[]
+}
+
+interface HomeResult {
+  home: string
+  cwd: string
+  sep: string
+}
+
+interface Props {
+  initialPath?: string
+  onPick: (path: string) => void
+  onClose: () => void
+}
+
+export function DirectoryPicker({ initialPath, onPick, onClose }: Props) {
+  const [path, setPath] = useState<string>(initialPath ?? '')
+  const [draft, setDraft] = useState<string>(initialPath ?? '')
+  const [home, setHome] = useState<HomeResult | null>(null)
+  const [list, setList] = useState<ListResult | null>(null)
+  const [showHidden, setShowHidden] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const listBoxRef = useRef<HTMLDivElement>(null)
+
+  const loadList = useCallback(async (p: string, hidden: boolean) => {
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await api.get<ListResult>(`/fs/list?path=${encodeURIComponent(p)}&hidden=${hidden ? 1 : 0}`)
+      setList(res)
+      setPath(res.path)
+      setDraft(res.path)
+      listBoxRef.current?.scrollTo({ top: 0 })
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  // Bootstrap: load home + initial listing
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const h = await api.get<HomeResult>('/fs/home')
+        setHome(h)
+        await loadList(initialPath || h.cwd, false)
+      } catch (e) {
+        setError((e as Error).message)
+      }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const gotoDraft = () => {
+    if (!draft.trim()) return
+    void loadList(draft.trim(), showHidden)
+  }
+
+  // Close on Escape
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const crumbs = buildCrumbs(path)
+
+  return (
+    <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header">
+          <h3>Pick a working directory</h3>
+          <button className="btn" onClick={onClose} style={{ padding: '2px 10px' }}>
+            ✕
+          </button>
+        </div>
+
+        <div className="modal-toolbar">
+          <button
+            className="btn"
+            onClick={() => home && void loadList(home.home, showHidden)}
+            disabled={!home}
+            title="Home directory"
+          >
+            Home
+          </button>
+          <button
+            className="btn"
+            onClick={() => home && void loadList(home.cwd, showHidden)}
+            disabled={!home}
+            title="Server working directory"
+          >
+            Server CWD
+          </button>
+          <button
+            className="btn"
+            onClick={() => list?.parent && void loadList(list.parent, showHidden)}
+            disabled={!list?.parent}
+          >
+            ↑ Up
+          </button>
+          <label className="toggle">
+            <input type="checkbox" checked={showHidden} onChange={(e) => {
+              setShowHidden(e.target.checked)
+              void loadList(path, e.target.checked)
+            }} />
+            Hidden
+          </label>
+        </div>
+
+        <div className="modal-path">
+          <input
+            className="input"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                gotoDraft()
+              }
+            }}
+            placeholder="/absolute/path"
+            spellCheck={false}
+          />
+          <button className="btn" onClick={gotoDraft} disabled={loading}>
+            Go
+          </button>
+        </div>
+
+        <div className="modal-crumbs">
+          {crumbs.map((c, i) => (
+            <span key={c.path}>
+              <button className="crumb" onClick={() => void loadList(c.path, showHidden)}>
+                {c.label}
+              </button>
+              {i < crumbs.length - 1 && <span className="crumb-sep">/</span>}
+            </span>
+          ))}
+        </div>
+
+        {error && <div className="modal-error">{error}</div>}
+
+        <div className="modal-list" ref={listBoxRef}>
+          {loading ? (
+            <div className="modal-empty">Loading…</div>
+          ) : list && list.entries.length > 0 ? (
+            list.entries.map((e) => (
+              <button
+                key={e.path}
+                className="modal-list-item"
+                onDoubleClick={() => void loadList(e.path, showHidden)}
+                onClick={() => setDraft(e.path)}
+              >
+                <span className="folder-icon">📁</span>
+                <span className="folder-name">{e.name}</span>
+              </button>
+            ))
+          ) : (
+            <div className="modal-empty">{list ? '(empty directory)' : 'Loading…'}</div>
+          )}
+        </div>
+
+        <div className="modal-footer">
+          <span className="hint">Double-click to enter · Click to select path · Enter confirms</span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn" onClick={onClose}>
+              Cancel
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={() => onPick(path)}
+              disabled={!path}
+            >
+              Select this folder
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function buildCrumbs(p: string): { label: string; path: string }[] {
+  if (!p) return []
+  const parts = p.split('/').filter(Boolean)
+  const crumbs: { label: string; path: string }[] = [{ label: '/', path: '/' }]
+  let cur = ''
+  for (const part of parts) {
+    cur += `/${part}`
+    crumbs.push({ label: part, path: cur })
+  }
+  return crumbs
+}
