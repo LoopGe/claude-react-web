@@ -12,7 +12,16 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useLocalStorage } from './hooks/useLocalStorage'
 import { useNotifications } from './hooks/useNotifications'
 import { useNamedEventSource } from './hooks/useSSE'
-import type { NewSessionForm, SessionInfo } from './types'
+import type { NewSessionForm, PermissionMode, SessionInfo } from './types'
+
+const PERMISSION_MODES: PermissionMode[] = [
+  'default',
+  'acceptEdits',
+  'plan',
+  'bypassPermissions',
+  'dontAsk',
+  'auto',
+]
 
 const SIDEBAR_ORDER_KEY = 'claude-react-web:session-order'
 const SIDEBAR_WIDTH_KEY = 'claude-react-web:sidebar-width'
@@ -813,6 +822,34 @@ function ChatPanel({
   onAcceptSidebarDrop,
 }: ChatPanelProps) {
   const [dropActive, setDropActive] = useState(false)
+  /** When true, the model chip in the header becomes an inline <input>.
+   *  We render an <input type="text" list="recent-models"> on purpose:
+   *  a plain <select> would need the full supportedModels list (an async
+   *  fetch per session), and also can't autocomplete partial strings
+   *  like "sonnet" → "claude-sonnet-4-5". */
+  const [editingModel, setEditingModel] = useState(false)
+  const [modelDraft, setModelDraft] = useState('')
+  /** Reads the localStorage-backed recent-models ring maintained by the
+   *  New Session dialog so the datalist surfaces suggestions without a
+   *  GET /sessions/:id/models round-trip. */
+  const recentModels = readRecentModels()
+
+  const commitModel = (next: string) => {
+    const value = next.trim()
+    setEditingModel(false)
+    if (value === (session.model ?? '')) return
+    const before = session.model
+    void api
+      .post<{ session: SessionInfo }>(`/sessions/${session.id}/model`, {
+        model: value || undefined,
+      })
+      .then((r) => onSessionUpdate(r.session))
+      .catch((err) => {
+        window.alert(`Couldn't change model: ${(err as Error).message}`)
+        onSessionUpdate({ ...session, model: before })
+      })
+  }
+
   return (
     <section
       className={`chat-panel ${focused ? 'focused' : ''} ${dropActive ? 'drop-target' : ''}`}
@@ -859,6 +896,90 @@ function ChatPanel({
         <span className="chat-panel-title" title={session.cwd ?? ''}>
           {session.title ?? session.id.slice(0, 8)}
         </span>
+        {/* Model chip — click to edit in place. A free-text input wins
+            over a <select> here because model names are long and the
+            list of supported ones needs a per-session fetch; the
+            recent-models ring from the New Session dialog is reused as
+            a datalist for autocompletion. */}
+        {editingModel ? (
+          <input
+            className="chat-panel-model-input"
+            list="chat-panel-model-datalist"
+            autoFocus
+            value={modelDraft}
+            placeholder="(default)"
+            disabled={!session.running || session.terminated}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => setModelDraft(e.target.value)}
+            onBlur={() => commitModel(modelDraft)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                commitModel(modelDraft)
+              } else if (e.key === 'Escape') {
+                e.preventDefault()
+                setEditingModel(false)
+              }
+            }}
+          />
+        ) : (
+          <button
+            type="button"
+            className="chat-panel-model"
+            disabled={!session.running || session.terminated}
+            title={`Model · click to change (${session.model ?? 'default'})`}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              setModelDraft(session.model ?? '')
+              setEditingModel(true)
+            }}
+          >
+            {shortenModel(session.model)}
+          </button>
+        )}
+        <datalist id="chat-panel-model-datalist">
+          {recentModels.map((m) => (
+            <option key={m} value={m} />
+          ))}
+        </datalist>
+        {/* Quick permission-mode swap. Mirrors the dropdown inside
+            SettingsPanel but saves a click for the common case of
+            toggling between 'default' and 'acceptEdits'. */}
+        <select
+          className="chat-panel-perm"
+          value={session.permissionMode ?? 'default'}
+          disabled={!session.running || session.terminated}
+          title="Permission mode · applies to the next turn"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          onChange={(e) => {
+            const mode = e.target.value as PermissionMode
+            const before = session.permissionMode
+            void api
+              .post<{ session: SessionInfo }>(`/sessions/${session.id}/permission-mode`, { mode })
+              .then((r) => onSessionUpdate(r.session))
+              .catch((err) => {
+                // Surface SDK rejections (e.g. bypassPermissions requires
+                // launching with --dangerously-skip-permissions) instead of
+                // silently snapping the select back. We can't reach the App's
+                // error bar from here, so alert() is the 2-line fallback —
+                // users needed to see what went wrong after 0.0.17's report
+                // that the switch appeared to do nothing.
+                window.alert(`Couldn't change permission mode: ${(err as Error).message}`)
+                // Hint React to re-render the select with the old value,
+                // because `session.permissionMode` hasn't changed.
+                onSessionUpdate({ ...session, permissionMode: before })
+              })
+          }}
+        >
+          {PERMISSION_MODES.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
         <button
           className="chat-panel-close"
           onClick={(e) => {
@@ -913,6 +1034,33 @@ function ChatPanel({
       </div>
     </section>
   )
+}
+
+/** Trim namespace prefixes and long version tails so a model name fits
+ *  in a tight header chip. "claude-sonnet-4-5-20251101" → "sonnet-4-5";
+ *  "xiaomi/mimo-v2.5-pro" → "mimo-v2.5-pro". Undefined → "default". */
+function shortenModel(name: string | undefined): string {
+  if (!name) return 'default'
+  const bare = name.split('/').pop() ?? name
+  const stripped = bare
+    .replace(/^claude-/, '')
+    // Strip trailing YYYYMMDD release dates ("-20251101").
+    .replace(/-\d{8}$/, '')
+  return stripped.length > 22 ? stripped.slice(0, 20) + '…' : stripped
+}
+
+/** Load the recent-models list that the New Session dialog maintains.
+ *  Read-only from the ChatPanel side; we just want autocomplete hints
+ *  for the inline model editor. Returns an empty array on any failure. */
+function readRecentModels(): string[] {
+  try {
+    const raw = window.localStorage.getItem('claude-react-web:recent-models')
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? (parsed as string[]).filter((s) => typeof s === 'string') : []
+  } catch {
+    return []
+  }
 }
 
 function notificationTooltip(

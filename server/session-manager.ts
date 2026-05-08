@@ -340,6 +340,9 @@ export class SessionManager {
   private spawn(id: string, opts: Options): SessionInfo {
     const input = createPushable<SDKUserMessage>()
     const fullOpts: Options = { ...opts }
+    // Remember the user-requested permission mode before we strip it
+    // from the SDK options. The session's own state ends up holding it.
+    const requestedMode = opts.permissionMode
     // includePartialMessages=true so clients can render streaming deltas; callers
     // can still override to false if they prefer batched messages only.
     if (fullOpts.includePartialMessages === undefined) {
@@ -362,9 +365,20 @@ export class SessionManager {
     // eslint-disable-next-line prefer-const
     let session: Session
     const canUseTool: CanUseTool = async (toolName, toolInput, ctx) => {
-      // bypassPermissions shouldn't ever land here (we don't register the
-      // callback in that mode), but guard anyway — the SDK could still invoke
-      // it in some edge cases.
+      // `bypassPermissions` is implemented here rather than via the SDK's
+      // own permissionMode flag. That flag is set at spawn time and the
+      // SDK then refuses to transition into it mid-session, which makes
+      // the UI toggle unreliable. By routing every tool call through our
+      // own callback we can flip the behaviour on the fly — session state
+      // (`permissionMode`) is the single source of truth, no CLI-side
+      // --dangerously-skip-permissions plumbing required.
+      if (session.permissionMode === 'bypassPermissions') {
+        return {
+          behavior: 'allow',
+          updatedInput: toolInput,
+          toolUseID: ctx.toolUseID,
+        } satisfies PermissionResult
+      }
       return new Promise<PermissionResult>((resolve) => {
         const pid = randomUUID()
         const abortHandler = () => {
@@ -399,12 +413,17 @@ export class SessionManager {
       })
     }
 
-    // Only register canUseTool when the session is NOT in bypass mode — bypass
-    // semantics mean "no prompts ever", so plumbing through our own callback
-    // would defeat the user's choice.
-    if (fullOpts.permissionMode !== 'bypassPermissions' && !fullOpts.canUseTool) {
+    // Always register canUseTool. Previously we skipped it for
+    // bypassPermissions, but now the callback itself short-circuits that
+    // mode — meaning mode swaps at runtime (handled in setPermissionMode
+    // below) take effect immediately without needing a session restart.
+    if (!fullOpts.canUseTool) {
       fullOpts.canUseTool = canUseTool
     }
+    // Don't forward permissionMode to the SDK. We enforce it ourselves via
+    // canUseTool, and the SDK's built-in flag would just add a brittle
+    // "can't transition into bypassPermissions" constraint on top.
+    fullOpts.permissionMode = undefined
 
     const q = query({ prompt: input.iterable, options: fullOpts })
 
@@ -419,6 +438,10 @@ export class SessionManager {
       createdAt,
       lastActivityAt: Date.now(),
       ...this.snapshotMeta(fullOpts),
+      // Restore the user-requested mode we stashed before clearing the
+      // SDK-side flag. fullOpts.permissionMode was set to undefined so the
+      // spread above would leave it unset otherwise.
+      permissionMode: requestedMode,
       input,
       query: q,
       subscribers: new Map(),
@@ -520,8 +543,12 @@ export class SessionManager {
   }
 
   async setPermissionMode(id: string, mode: PermissionMode): Promise<SessionInfo> {
+    // Permission mode is entirely client-side state now: we enforce it
+    // in the canUseTool callback (see spawn). That means transitions
+    // never fail, including the previously-blocked "→ bypassPermissions"
+    // case that used to require --dangerously-skip-permissions at
+    // launch. No SDK round-trip needed.
     const s = this.requireLive(id)
-    await s.query.setPermissionMode(mode)
     s.permissionMode = mode
     s.lastActivityAt = Date.now()
     this.persist(s)

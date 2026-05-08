@@ -136,6 +136,11 @@ export function SettingsPanel({ session, onClose, onSessionUpdate }: Props) {
               </option>
             ))}
           </select>
+          <span className="hint">
+            Enforced by the server's own <code>canUseTool</code> callback, so
+            switches take effect on the very next tool call without needing
+            to restart the session.
+          </span>
         </div>
 
         <div className="settings-field">

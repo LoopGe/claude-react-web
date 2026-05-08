@@ -15,6 +15,40 @@
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
+
+/* Scrollbar styling. Two implementations: WebKit (Chrome / Edge / Safari)
+   sees ::-webkit-scrollbar rules; Firefox reads scrollbar-width / -color.
+   Kept thin (8px) so it doesn't eat the reading column, and half-opaque
+   so it recedes unless actively hovered. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--fg-muted) 45%, transparent) transparent;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--fg-muted) 35%, transparent);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+  min-height: 24px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--fg-muted) 70%, transparent);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:active {
+  background: var(--fg-muted);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
 body {
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   background: var(--bg);
@@ -224,6 +258,66 @@ body.resizing-col * {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Model chip in the panel header — matches the permission-mode select
+   below but for the free-text model field. Button form is the display
+   state; a sibling <input> replaces it in edit mode. */
+.chat-panel-model {
+  background: var(--bg-elev-2);
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: var(--mono);
+  padding: 2px 6px;
+  cursor: pointer;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-panel-model:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.chat-panel-model:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.chat-panel-model-input {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: var(--mono);
+  padding: 2px 6px;
+  width: 200px;
+  outline: none;
+}
+
+/* Small permission-mode dropdown embedded in the panel header. Sits
+   between title and close button; restyled so it doesn't look like a
+   bulky form control. */
+.chat-panel-perm {
+  background: var(--bg-elev-2);
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: var(--mono);
+  padding: 2px 4px;
+  cursor: pointer;
+  max-width: 110px;
+}
+.chat-panel-perm:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.chat-panel-perm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .chat-panel-close {
   background: none;
   border: none;

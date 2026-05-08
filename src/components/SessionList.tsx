@@ -14,6 +14,8 @@ const PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'plan', 'b
 
 const RECENT_MODELS_KEY = 'claude-react-web:recent-models'
 const RECENT_MODELS_CAP = 10
+const RECENT_CWDS_KEY = 'claude-react-web:recent-cwds'
+const RECENT_CWDS_CAP = 10
 
 /** Enable the 1M token context window (Sonnet 4 / 4.5 only). */
 const ONE_M_CONTEXT_BETA = 'context-1m-2025-08-07'
@@ -414,33 +416,46 @@ function NewSessionDialog({ defaults, onSubmit, onCancel }: DialogProps) {
   const [showPicker, setShowPicker] = useState(false)
 
   const [recentModels, setRecentModels] = useLocalStorage<string[]>(RECENT_MODELS_KEY, [])
+  const [recentCwds, setRecentCwds] = useLocalStorage<string[]>(RECENT_CWDS_KEY, [])
 
-  const rememberModel = (raw: string) => {
-    const name = raw.trim()
-    if (!name) return
-    // Write to localStorage synchronously — React state updates via the
-    // useLocalStorage hook rely on a follow-up effect to persist, but
-    // submit() unmounts this component on the same tick (onSubmit fires
-    // setShowDialog(false) in the parent), so that effect would never run.
-    // Persist directly, then update React state so the datalist stays in
-    // sync if the dialog is reopened without a full reload.
-    setRecentModels((prev) => {
-      const next = [name, ...prev.filter((m) => m !== name)].slice(0, RECENT_MODELS_CAP)
+  // Shared "remember recent …" helper: MRU-order, de-duped, capped.
+  // We write to localStorage synchronously because submit() causes the
+  // parent to unmount this dialog on the same tick, so the useLocalStorage
+  // hook's effect-based flush would never run.
+  const rememberIn = (
+    storageKey: string,
+    setter: (updater: (prev: string[]) => string[]) => void,
+    cap: number,
+    raw: string,
+  ) => {
+    const v = raw.trim()
+    if (!v) return
+    setter((prev) => {
+      const next = [v, ...prev.filter((x) => x !== v)].slice(0, cap)
       try {
-        window.localStorage.setItem(RECENT_MODELS_KEY, JSON.stringify(next))
+        window.localStorage.setItem(storageKey, JSON.stringify(next))
       } catch {
-        /* ignore quota / SecurityError */
+        /* quota / SecurityError — the in-memory state still wins this session */
       }
       return next
     })
   }
 
+  const rememberModel = (raw: string) =>
+    rememberIn(RECENT_MODELS_KEY, setRecentModels, RECENT_MODELS_CAP, raw)
   const forgetModel = (name: string) => {
     setRecentModels((prev) => prev.filter((m) => m !== name))
   }
 
+  const rememberCwd = (raw: string) =>
+    rememberIn(RECENT_CWDS_KEY, setRecentCwds, RECENT_CWDS_CAP, raw)
+  const forgetCwd = (name: string) => {
+    setRecentCwds((prev) => prev.filter((c) => c !== name))
+  }
+
   const submit = () => {
     rememberModel(model)
+    rememberCwd(cwd)
     onSubmit({
       cwd: cwd.trim() || undefined,
       model: model.trim() || undefined,
@@ -488,6 +503,7 @@ function NewSessionDialog({ defaults, onSubmit, onCancel }: DialogProps) {
                 <input
                   className="input"
                   placeholder="/path/to/project"
+                  list="recent-cwds"
                   value={cwd}
                   onChange={(e) => setCwd(e.target.value)}
                   style={{ flex: 1 }}
@@ -496,6 +512,35 @@ function NewSessionDialog({ defaults, onSubmit, onCancel }: DialogProps) {
                   📁
                 </button>
               </div>
+              <datalist id="recent-cwds">
+                {recentCwds.map((p) => (
+                  <option key={p} value={p} />
+                ))}
+              </datalist>
+              {recentCwds.length > 0 && (
+                <div className="recent-chips">
+                  {recentCwds.slice(0, 5).map((p) => (
+                    <span key={p} className="recent-chip" title={p}>
+                      <button
+                        type="button"
+                        className="recent-chip-use"
+                        onClick={() => setCwd(p)}
+                      >
+                        {shortenPath(p)}
+                      </button>
+                      <button
+                        type="button"
+                        className="recent-chip-forget"
+                        onClick={() => forgetCwd(p)}
+                        title="Forget this path"
+                        aria-label={`Forget ${p}`}
+                      >
+                        ✕
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="settings-field">

@@ -381,4 +381,47 @@ describe('SessionManager', () => {
     const updated = sm.rename(info.id, '   ')
     expect(updated.title).toBeUndefined()
   })
+
+  it('setPermissionMode() only updates local state, does not call the SDK', async () => {
+    const info = sm.create({ permissionMode: 'default' })
+    await sm.setPermissionMode(info.id, 'acceptEdits')
+    expect(sm.get(info.id).permissionMode).toBe('acceptEdits')
+    // The SDK-level setter must NOT be invoked. Previous implementation
+    // forwarded every change, which fell over when switching INTO
+    // bypassPermissions mid-session.
+    expect(mockHandles[0].setPermissionMode).not.toHaveBeenCalled()
+  })
+
+  it('setPermissionMode() allows transitioning into bypassPermissions', async () => {
+    const info = sm.create({ permissionMode: 'default' })
+    await sm.setPermissionMode(info.id, 'bypassPermissions')
+    expect(sm.get(info.id).permissionMode).toBe('bypassPermissions')
+  })
+
+  it('spawn does not forward permissionMode to the SDK options', () => {
+    sm.create({ permissionMode: 'acceptEdits' })
+    // The SDK sees options with permissionMode cleared — the server's own
+    // canUseTool owns the semantics.
+    expect(mockHandles[0].options.permissionMode).toBeUndefined()
+  })
+
+  it('canUseTool short-circuits when permissionMode is bypassPermissions', async () => {
+    const info = sm.create({})
+    await sm.setPermissionMode(info.id, 'bypassPermissions')
+    const canUseTool = mockHandles[0].options.canUseTool as (
+      tool: string,
+      input: unknown,
+      ctx: { signal: AbortSignal; toolUseID: string },
+    ) => Promise<{ behavior: string }>
+    const ctrl = new AbortController()
+    const res = await canUseTool(
+      'Bash',
+      { command: 'echo hi' },
+      { signal: ctrl.signal, toolUseID: 'tu-bypass' },
+    )
+    expect(res.behavior).toBe('allow')
+    // No pending permission should be queued — the callback resolved
+    // immediately rather than parking for user input.
+    expect(sm.listPending(info.id)).toHaveLength(0)
+  })
 })
