@@ -6,12 +6,15 @@
 // and a small nudge to stay within the viewport.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
 
 export interface ContextMenuItem {
   /** Shown in the menu. Falsy = render a separator instead. */
   label?: string
   /** Optional leading glyph / icon character. */
   icon?: string
+  /** Inline style applied to the icon span (e.g. per-item colour). */
+  iconStyle?: CSSProperties
   onClick?: () => void
   /** Render in a "danger" style (red) — e.g. Delete. */
   danger?: boolean
@@ -88,7 +91,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
               onClose()
             }}
           >
-            {item.icon && <span className="ctx-menu-icon" aria-hidden>{item.icon}</span>}
+            {item.icon && <span className="ctx-menu-icon" style={item.iconStyle} aria-hidden>{item.icon}</span>}
             <span className="ctx-menu-label">{item.label}</span>
           </button>
         )

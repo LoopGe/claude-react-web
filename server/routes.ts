@@ -95,11 +95,22 @@ export function buildApiRouter(sm: SessionManager): Hono {
   // before deleting it.
   app.patch('/sessions/:id', async (c) => {
     const id = c.req.param('id')
-    const body = await c.req.json<{ title?: string }>().catch(() => ({}) as { title?: string })
-    if (typeof body.title !== 'string') {
-      return c.json({ error: 'title is required' }, 400)
+    const body = await c.req
+      .json<{ title?: string; pinned?: boolean }>()
+      .catch(() => ({}) as { title?: string; pinned?: boolean })
+    // At least one known field is required. Apply them in a fixed order
+    // so tests and clients can rely on the final state.
+    let info
+    let touched = false
+    if (typeof body.title === 'string') {
+      info = sm.rename(id, body.title)
+      touched = true
     }
-    const info = sm.rename(id, body.title)
+    if (typeof body.pinned === 'boolean') {
+      info = sm.setPinned(id, body.pinned)
+      touched = true
+    }
+    if (!touched) return c.json({ error: 'title or pinned is required' }, 400)
     return c.json({ session: info })
   })
 
@@ -108,6 +119,14 @@ export function buildApiRouter(sm: SessionManager): Hono {
   app.post('/sessions/:id/resume', (c) => {
     const info = sm.resume(c.req.param('id'))
     return c.json({ session: info })
+  })
+
+  // Fork a session. Creates a brand-new session whose starting transcript
+  // is copied from the source, then diverges from there. Sidebar can
+  // show both in parallel and future turns don't collide.
+  app.post('/sessions/:id/fork', (c) => {
+    const info = sm.fork(c.req.param('id'))
+    return c.json({ session: info }, 201)
   })
 
   // Send user message

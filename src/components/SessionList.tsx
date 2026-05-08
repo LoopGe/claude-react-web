@@ -3,12 +3,14 @@
 // sidebar can dedicate its vertical space to listing sessions.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
 import { DirectoryPicker } from './DirectoryPicker'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import { isInAppDrag, readDragPayload, setDragPayload } from '../hooks/useDragPayload'
 import { api } from '../hooks/useApi'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { shortenPath } from '../utils/paths'
+import { ACCENT_COLORS } from '../theme'
 import type { NewSessionForm, PermissionMode, SessionInfo } from '../types'
 
 const PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'plan', 'bypassPermissions', 'dontAsk', 'auto']
@@ -43,6 +45,11 @@ interface Props {
   /** Close the panel for a session if it's currently open in the main grid.
    *  No-op when the session isn't open. Used by the right-click menu. */
   onClosePanel?: (id: string) => void
+  /** Fork a session — server spawns a new session whose transcript is
+   *  seeded from this one. Used by the right-click menu. */
+  onFork?: (id: string) => void
+  /** Toggle a session's pinned flag (used by the right-click menu). */
+  onTogglePin?: (id: string) => void
   /** Called when the user drops a card onto another one. `position` tells
    *  the parent whether to insert before or after the target. */
   onReorder?: (draggedId: string, targetId: string, position: 'before' | 'after') => void
@@ -50,6 +57,10 @@ interface Props {
    *  (Alt+N) can open it. Uncontrolled mode falls back to internal state. */
   newSessionDialogOpen?: boolean
   onNewSessionDialogChange?: (open: boolean) => void
+  /** Per-session accent-colour overrides (sessionId → hex). */
+  sessionColors?: Record<string, string>
+  /** Set or clear a session's accent colour. Pass `undefined` to reset. */
+  onSessionColorChange?: (sessionId: string, color: string | undefined) => void
 }
 
 export function SessionList({
@@ -59,10 +70,14 @@ export function SessionList({
   defaults,
   resumingIds,
   unread,
+  sessionColors,
+  onSessionColorChange,
   onSelect,
   onCreate,
   onDelete,
   onClosePanel,
+  onFork,
+  onTogglePin,
   onReorder,
   newSessionDialogOpen,
   onNewSessionDialogChange,
@@ -273,7 +288,20 @@ export function SessionList({
                 isDragging ? 'dragging' : '',
                 hint === 'before' ? 'drop-before' : '',
                 hint === 'after' ? 'drop-after' : '',
+                // Marker class for the idle tint — only applied when a
+                // per-session accent was explicitly chosen, so default
+                // cards don't sprout a coloured bar for no reason.
+                sessionColors?.[s.id] ? 'tinted' : '',
               ].filter(Boolean).join(' ')}
+              style={
+                sessionColors?.[s.id]
+                  ? (() => {
+                      const hex = sessionColors[s.id]
+                      const preset = ACCENT_COLORS.find((c) => c.accent === hex)
+                      return { '--accent': hex, '--accent-strong': preset?.strong ?? hex } as CSSProperties
+                    })()
+                  : undefined
+              }
               role="button"
               tabIndex={0}
               aria-disabled={isResuming}
@@ -342,6 +370,15 @@ export function SessionList({
                       aria-label={isFocused ? `focused slot ${slotIdx + 1}` : `open slot ${slotIdx + 1}`}
                     >
                       {slotIdx + 1}
+                    </span>
+                  )}
+                  {s.pinned && (
+                    <span
+                      className="session-item-pin"
+                      title="Pinned · right-click to unpin"
+                      aria-label="pinned"
+                    >
+                      📌
                     </span>
                   )}
                   {isRenaming ? (
@@ -441,6 +478,10 @@ export function SessionList({
         onRename={(s) => startRename(s)}
         onClosePanel={(id) => onClosePanel?.(id)}
         onDelete={(id) => onDelete(id)}
+        onFork={(id) => onFork?.(id)}
+        onTogglePin={(id) => onTogglePin?.(id)}
+        sessionColor={sessionColors?.[menu.id]}
+        onColorChange={(color) => onSessionColorChange?.(menu.id, color)}
       />}
 
       {showDialog && (
@@ -480,6 +521,10 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel }: DialogPr
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
   const [systemPrompt, setSystemPrompt] = useState('')
   const [title, setTitle] = useState('')
+  /** Accent colour chosen in the dialog. `undefined` means "use the
+   *  global accent" — we don't write an entry to sessionColors unless
+   *  the user explicitly picks one. */
+  const [accent, setAccent] = useState<string | undefined>(undefined)
   const [contextSize, setContextSize] = useState<ContextSize>('default')
   const [showPicker, setShowPicker] = useState(false)
 
@@ -487,26 +532,45 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel }: DialogPr
   const [recentCwds, setRecentCwds] = useLocalStorage<string[]>(RECENT_CWDS_KEY, [])
 
   // Shared "remember recent …" helper: MRU-order, de-duped, capped.
-  // We write to localStorage synchronously because submit() causes the
-  // parent to unmount this dialog on the same tick, so the useLocalStorage
-  // hook's effect-based flush would never run.
+  //
+  // This dialog unmounts on the same tick as submit() (the parent flips
+  // showDialog=false), so we CAN'T rely on the useLocalStorage hook's
+  // effect to flush. We also can't put the side effect inside the setState
+  // updater: React 19 will skip an updater whose resulting state is
+  // discarded by an imminent unmount, which previously meant our second
+  // call (rememberCwd, right after rememberModel) silently lost its write.
+  //
+  // So we do two independent things:
+  //   1) compute `next` synchronously from the latest disk value and
+  //      write it to localStorage right away — the important, persistent
+  //      side effect.
+  //   2) fire-and-forget the state update so that if the dialog happens
+  //      to stay mounted, the chips list still reflects the new value.
   const rememberIn = (
     storageKey: string,
-    setter: (updater: (prev: string[]) => string[]) => void,
+    setter: (next: string[]) => void,
     cap: number,
     raw: string,
   ) => {
     const v = raw.trim()
     if (!v) return
-    setter((prev) => {
-      const next = [v, ...prev.filter((x) => x !== v)].slice(0, cap)
-      try {
-        window.localStorage.setItem(storageKey, JSON.stringify(next))
-      } catch {
-        /* quota / SecurityError — the in-memory state still wins this session */
+    let prev: string[] = []
+    try {
+      const existing = window.localStorage.getItem(storageKey)
+      if (existing) {
+        const parsed = JSON.parse(existing)
+        if (Array.isArray(parsed)) prev = parsed.filter((x): x is string => typeof x === 'string')
       }
-      return next
-    })
+    } catch {
+      /* fall through with prev=[] */
+    }
+    const next = [v, ...prev.filter((x) => x !== v)].slice(0, cap)
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(next))
+    } catch {
+      /* quota / SecurityError — the in-memory state still wins this session */
+    }
+    setter(next)
   }
 
   const rememberModel = (raw: string) =>
@@ -534,6 +598,7 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel }: DialogPr
       // sending an empty array is fine but an unnecessary over-reach, and
       // this keeps the wire payload clean for the default case.
       betas: contextSize === '1m' ? [ONE_M_CONTEXT_BETA] : undefined,
+      accent,
     })
   }
 
@@ -677,6 +742,36 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel }: DialogPr
             </div>
 
             <div className="settings-field">
+              <label>Accent colour</label>
+              <div className="accent-picker" role="radiogroup" aria-label="Session accent">
+                <button
+                  type="button"
+                  className={`accent-swatch accent-swatch-default ${accent === undefined ? 'active' : ''}`}
+                  onClick={() => setAccent(undefined)}
+                  role="radio"
+                  aria-checked={accent === undefined}
+                  aria-label="Use global accent"
+                  title="Use global accent"
+                >
+                  ↺
+                </button>
+                {ACCENT_COLORS.map((c) => (
+                  <button
+                    key={c.accent}
+                    type="button"
+                    className={`accent-swatch ${accent === c.accent ? 'active' : ''}`}
+                    style={{ ['--swatch' as string]: c.accent }}
+                    onClick={() => setAccent(c.accent)}
+                    role="radio"
+                    aria-checked={accent === c.accent}
+                    aria-label={c.name}
+                    title={c.name}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <div className="settings-field">
               <label>Context size</label>
               <select
                 className="select"
@@ -743,15 +838,52 @@ interface MenuProps {
   onRename: (s: SessionInfo) => void
   onClosePanel: (id: string) => void
   onDelete: (id: string) => void
+  /** Fork the session: POSTs /sessions/:id/fork on the server, which
+   *  spawns a new Query seeded from this session's transcript. The new
+   *  session appears in the sidebar via the global created event. */
+  onFork: (id: string) => void
+  /** Toggle pinned flag on the session. */
+  onTogglePin: (id: string) => void
+  /** Current per-session accent hex, or undefined for global default. */
+  sessionColor?: string
+  /** Set or clear the session accent. */
+  onColorChange?: (color: string | undefined) => void
 }
 
-function SessionContextMenu({ anchor, session, isOpen, onClose, onRename, onClosePanel, onDelete }: MenuProps) {
+function SessionContextMenu({
+  anchor,
+  session,
+  isOpen,
+  onClose,
+  onRename,
+  onClosePanel,
+  onDelete,
+  onFork,
+  onTogglePin,
+  sessionColor,
+  onColorChange,
+}: MenuProps) {
   if (!session) return null
   const items: ContextMenuItem[] = [
     {
       label: 'Rename',
       icon: '✎',
       onClick: () => onRename(session),
+    },
+    {
+      // Toggle rather than separate pin/unpin items — keeps the menu
+      // short and the action reversible from one place.
+      label: session.pinned ? 'Unpin' : 'Pin to top',
+      icon: session.pinned ? '📍' : '📌',
+      onClick: () => onTogglePin(anchor.id),
+    },
+    {
+      label: 'Fork from this point',
+      icon: '⑂',
+      // Even errored / terminated sessions are forkable — the SDK
+      // rebuilds the transcript from disk, so the source's Query doesn't
+      // need to be live. Keep enabled unconditionally.
+      onClick: () => onFork(anchor.id),
     },
     {
       label: 'Copy session ID',
@@ -778,6 +910,26 @@ function SessionContextMenu({ anchor, session, isOpen, onClose, onRename, onClos
           } as ContextMenuItem,
         ]
       : []),
+    { label: '' }, // separator
+    ...ACCENT_COLORS.map(
+      (c) =>
+        ({
+          label: c.name,
+          icon: sessionColor === c.accent ? '◉' : '●',
+          iconStyle: { color: c.accent },
+          onClick: () => onColorChange?.(c.accent),
+        }) as ContextMenuItem,
+    ),
+    ...(sessionColor
+      ? [
+          {
+            label: 'Default colour',
+            icon: '↺',
+            onClick: () => onColorChange?.(undefined),
+          } as ContextMenuItem,
+        ]
+      : []),
+    { label: '' }, // separator
     {
       label: 'Delete session',
       icon: '🗑',

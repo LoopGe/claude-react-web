@@ -100,6 +100,9 @@ export interface SessionInfo {
    *  frontend diffs this against a locally-remembered value to decide
    *  whether to show an unread badge on non-focused sessions. */
   lastTurnAt?: number
+  /** User pinned this session — sticks to the top of the sidebar and
+   *  survives the 3-panel eviction rule. */
+  pinned?: boolean
 }
 
 interface Session {
@@ -110,6 +113,7 @@ interface Session {
   model?: string
   permissionMode?: PermissionMode
   title?: string
+  pinned?: boolean
   input: Pushable<SDKUserMessage>
   query: Query
   subscribers: Map<string, Subscriber>
@@ -213,6 +217,7 @@ export class SessionManager {
       terminated: s.terminated,
       error: s.error,
       lastTurnAt: s.lastTurnAt,
+      pinned: s.pinned,
     })
   }
 
@@ -336,6 +341,32 @@ export class SessionManager {
     return this.spawn(id, resumeOpts)
   }
 
+  /** Fork a session: spawn a new session whose transcript is initialised
+   *  from the source session's on-disk log, but which gets a fresh UUID
+   *  so future turns diverge. Implemented via SDK's `options.resume` +
+   *  `forkSession: true`. Uses the source's cwd/model/permissionMode by
+   *  default; the title is suffixed " (fork)" so sidebars can tell the
+   *  two apart at a glance.
+   *
+   *  Source can be live OR dormant — we pull metadata from memory first,
+   *  persistence second. Terminated sessions can still be forked (their
+   *  transcript lives in ~/.claude/projects/ regardless). */
+  fork(id: string): SessionInfo {
+    const live = this.sessions.get(id)
+    const meta = live ?? this.store?.get(id)
+    if (!meta) throw new HttpError(404, `session ${id} not found`)
+    const title = meta.title ? `${meta.title} (fork)` : undefined
+    const forkOpts: Options = {
+      resume: id,
+      forkSession: true,
+      cwd: meta.cwd,
+      model: meta.model,
+      permissionMode: meta.permissionMode,
+      title,
+    }
+    return this.spawn(randomUUID(), forkOpts)
+  }
+
   /** Shared spawn path for create() and resume(). */
   private spawn(id: string, opts: Options): SessionInfo {
     const input = createPushable<SDKUserMessage>()
@@ -442,6 +473,10 @@ export class SessionManager {
       // SDK-side flag. fullOpts.permissionMode was set to undefined so the
       // spread above would leave it unset otherwise.
       permissionMode: requestedMode,
+      // Carry pinned from the persisted meta on resume — a pinned
+      // dormant session should stay pinned after it wakes up. New
+      // (non-resumed) sessions start unpinned.
+      pinned: existingMeta?.pinned ?? undefined,
       input,
       query: q,
       subscribers: new Map(),
@@ -523,11 +558,46 @@ export class SessionManager {
    *  pure UI metadata — no SDK call needed). Empty string / whitespace
    *  clears the title so the UI falls back to the id prefix. */
   rename(id: string, title: string): SessionInfo {
-    // Look up either a live session or a dormant one.
-    const live = this.sessions.get(id)
     const trimmed = title.trim() || undefined
+    return this.mutateMeta(id, (draft) => ({ ...draft, title: trimmed }))
+  }
+
+  /** Toggle the pinned flag. Pure UI metadata, no SDK call. */
+  setPinned(id: string, pinned: boolean): SessionInfo {
+    return this.mutateMeta(id, (draft) => ({ ...draft, pinned: pinned || undefined }))
+  }
+
+  /** Shared mutator for pure-metadata changes (rename / setPinned). Works
+   *  on both live and dormant sessions — the UI treats the two the same,
+   *  and the transform needs to land in both in-memory state and
+   *  persisted meta regardless. */
+  private mutateMeta(
+    id: string,
+    transform: (draft: {
+      cwd?: string
+      model?: string
+      permissionMode?: PermissionMode
+      title?: string
+      pinned?: boolean
+    }) => {
+      cwd?: string
+      model?: string
+      permissionMode?: PermissionMode
+      title?: string
+      pinned?: boolean
+    },
+  ): SessionInfo {
+    const live = this.sessions.get(id)
     if (live) {
-      live.title = trimmed
+      const draft = transform({
+        cwd: live.cwd,
+        model: live.model,
+        permissionMode: live.permissionMode,
+        title: live.title,
+        pinned: live.pinned,
+      })
+      live.title = draft.title
+      live.pinned = draft.pinned
       live.lastActivityAt = Date.now()
       this.persist(live)
       return this.info(live)
@@ -535,7 +605,19 @@ export class SessionManager {
     if (!this.store) throw new HttpError(404, `session ${id} not found`)
     const meta = this.store.get(id)
     if (!meta) throw new HttpError(404, `session ${id} not found`)
-    const nextMeta: SessionMeta = { ...meta, title: trimmed, lastActivityAt: Date.now() }
+    const draft = transform({
+      cwd: meta.cwd,
+      model: meta.model,
+      permissionMode: meta.permissionMode,
+      title: meta.title,
+      pinned: meta.pinned,
+    })
+    const nextMeta: SessionMeta = {
+      ...meta,
+      title: draft.title,
+      pinned: draft.pinned,
+      lastActivityAt: Date.now(),
+    }
     this.store.upsert(nextMeta)
     const info = this.infoFromMeta(nextMeta)
     this.broadcastGlobal({ kind: 'update', session: info })
@@ -946,6 +1028,7 @@ export class SessionManager {
       error: s.error,
       working: s.running && s.pendingTurns > 0,
       lastTurnAt: s.lastTurnAt,
+      pinned: s.pinned,
     }
   }
 
@@ -968,6 +1051,7 @@ export class SessionManager {
       error: meta.error,
       working: false,
       lastTurnAt: meta.lastTurnAt,
+      pinned: meta.pinned,
     }
   }
 

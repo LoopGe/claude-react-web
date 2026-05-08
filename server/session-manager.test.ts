@@ -405,6 +405,63 @@ describe('SessionManager', () => {
     expect(mockHandles[0].options.permissionMode).toBeUndefined()
   })
 
+  it('setPinned() on a live session toggles pinned and persists it', async () => {
+    const info = sm.create({ title: 'to pin' })
+    const pinned = sm.setPinned(info.id, true)
+    expect(pinned.pinned).toBe(true)
+    await store.flush()
+    expect(store.get(info.id)?.pinned).toBe(true)
+    // Unpin flips it back to undefined (we don't persist false — absence
+    // means not pinned, keeps the JSON compact).
+    const unpinned = sm.setPinned(info.id, false)
+    expect(unpinned.pinned).toBeUndefined()
+  })
+
+  it('setPinned() works on a dormant session too', async () => {
+    const info = sm.create({})
+    await sm.unload(info.id)
+    const pinned = sm.setPinned(info.id, true)
+    expect(pinned.pinned).toBe(true)
+    await store.flush()
+    expect(store.get(info.id)?.pinned).toBe(true)
+  })
+
+  it('fork() spawns a new session with resume=sourceId + forkSession=true', () => {
+    const source = sm.create({ cwd: '/tmp', model: 'm1', permissionMode: 'default', title: 'parent' })
+    const forked = sm.fork(source.id)
+    expect(forked.id).not.toBe(source.id)
+    expect(mockHandles).toHaveLength(2)
+    // The forked Query's options must carry the resume + forkSession combo;
+    // cwd/model should be inherited, and title suffixed to disambiguate.
+    expect(mockHandles[1].options.resume).toBe(source.id)
+    expect(mockHandles[1].options.forkSession).toBe(true)
+    expect(mockHandles[1].options.cwd).toBe('/tmp')
+    expect(mockHandles[1].options.model).toBe('m1')
+    expect(forked.title).toBe('parent (fork)')
+  })
+
+  it('fork() works on dormant (unloaded) sessions too', async () => {
+    const source = sm.create({ title: 'dormant-source' })
+    await sm.unload(source.id)
+    const forked = sm.fork(source.id)
+    expect(forked.id).not.toBe(source.id)
+    // sm now has 2 live sessions: the original was unloaded, fork is new
+    expect(mockHandles).toHaveLength(2)
+    expect(mockHandles[1].options.resume).toBe(source.id)
+  })
+
+  it('fork() broadcasts a created event for the new session', async () => {
+    const sub = sm.subscribeGlobal()
+    const it = sub.iterable[Symbol.asyncIterator]()
+    const source = sm.create({})
+    await it.next() // consume the source's created event
+    const forked = sm.fork(source.id)
+    const next = await it.next()
+    expect(next.done).toBe(false)
+    expect(next.value).toMatchObject({ kind: 'created', session: { id: forked.id } })
+    sub.unsubscribe()
+  })
+
   it('canUseTool short-circuits when permissionMode is bypassPermissions', async () => {
     const info = sm.create({})
     await sm.setPermissionMode(info.id, 'bypassPermissions')

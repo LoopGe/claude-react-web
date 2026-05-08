@@ -1,7 +1,9 @@
 // Top-level layout: left sidebar (sessions), center pane with up to 3
-// Chat panels side-by-side, right drawer (settings for focused chat).
+// Chat panels side-by-side. Session Settings now renders as a per-panel
+// overlay (inside ChatPanel) rather than a right drawer — see below.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
 import { SessionList } from './components/SessionList'
 import { Chat } from './components/Chat'
 import { ContextMenu } from './components/ContextMenu'
@@ -15,6 +17,7 @@ import { useLocalStorage } from './hooks/useLocalStorage'
 import { useNotifications } from './hooks/useNotifications'
 import { useNamedEventSource } from './hooks/useSSE'
 import type { NewSessionForm, PermissionMode, SessionInfo } from './types'
+import { ACCENT_COLORS, ACCENT_COLOR_KEY, SESSION_COLORS_KEY } from './theme'
 
 const PERMISSION_MODES: PermissionMode[] = [
   'default',
@@ -57,7 +60,11 @@ export function App() {
    *  Opening (or focusing) a session bumps the seen timestamp. */
   const [lastSeenTurn, setLastSeenTurn] = useState<Record<string, number>>({})
   const [defaults, setDefaults] = useState<Defaults>({})
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  /** When non-null, the Settings overlay is rendered on top of the chat
+   *  panel with this session id. Previously a single boolean that targeted
+   *  the focused session — making it per-session lets the overlay cover
+   *  just that column instead of the whole viewport. */
+  const [settingsOpenFor, setSettingsOpenFor] = useState<string | null>(null)
   const [newSessionDialogOpen, setNewSessionDialogOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   /** Ids currently being resumed — briefly disables the item so a double-
@@ -70,6 +77,11 @@ export function App() {
   /** Show SDK bookkeeping messages (system/init, system/status, …) in
    *  the transcript. Off by default — they're noise for normal use,
    *  but invaluable when debugging tool wiring or context compaction. */
+  const [accentColor, setAccentColor] = useLocalStorage<string>(ACCENT_COLOR_KEY, ACCENT_COLORS[0].accent)
+  /** Per-session accent overrides. Keys are session ids; values are accent
+   *  hex strings from ACCENT_COLORS. Missing entries fall back to the
+   *  global accentColor. */
+  const [sessionColors, setSessionColors] = useLocalStorage<Record<string, string>>(SESSION_COLORS_KEY, {})
   const [showSystemEvents, setShowSystemEvents] = useLocalStorage<boolean>(SHOW_SYSTEM_EVENTS_KEY, false)
   /** Sidebar width in CSS pixels, persisted across reloads. Clamped so
    *  the user can't drag the sidebar to 0 or eat the whole viewport. */
@@ -94,6 +106,27 @@ export function App() {
     }
   }, [sidebarResize.dragging, sidebarWidthDraft, setSidebarWidth])
   const effectiveSidebarWidth = sidebarWidthDraft ?? sidebarWidth
+
+  // Sync the chosen accent colour into :root CSS custom properties so the
+  // entire stylesheet picks up the change without any further wiring.
+  useEffect(() => {
+    const root = document.documentElement.style
+    root.setProperty('--accent', accentColor)
+    const preset = ACCENT_COLORS.find((c) => c.accent === accentColor)
+    root.setProperty('--accent-strong', preset?.strong ?? accentColor)
+  }, [accentColor])
+
+  /** Return CSS custom-property overrides for a session that has a
+   *  per-session accent, or undefined when it should use the global one. */
+  const sessionAccentStyle = useCallback(
+    (sessionId: string): CSSProperties | undefined => {
+      const hex = sessionColors[sessionId]
+      if (!hex) return undefined
+      const preset = ACCENT_COLORS.find((c) => c.accent === hex)
+      return { '--accent': hex, '--accent-strong': preset?.strong ?? hex } as CSSProperties
+    },
+    [sessionColors],
+  )
 
   /** Flex ratios for the three main-grid columns. Length is always
    *  MAX_OPEN; only the first `openSessions.length` slots actually render. */
@@ -366,20 +399,36 @@ export function App() {
       setOpenIds((prev) => {
         if (prev.includes(id)) return prev
         if (prev.length < MAX_OPEN) return [...prev, id]
-        // Evict the oldest id that isn't currently focused. If the only
-        // candidate to evict IS the focused one, fall through and evict
-        // the front — the newly-opened id becomes focused anyway.
+        // Pick an eviction candidate: not focused, not pinned. Pinned
+        // sessions ARE allowed to be open; we just won't throw them
+        // out on someone else's behalf. Fall through to focused or
+        // the head if that's all we have (pin overflow: user opened
+        // three pinned + tried a fourth — focused one loses to make
+        // room, which matches the earlier behaviour).
         const focusIdx = focusedId ? prev.indexOf(focusedId) : -1
-        const evictIdx = prev.findIndex((_, i) => i !== focusIdx)
+        const pinnedOpenIds = new Set(
+          prev.filter((pid) => sessions.find((s) => s.id === pid)?.pinned),
+        )
+        const evictIdx = prev.findIndex(
+          (pid, i) => i !== focusIdx && !pinnedOpenIds.has(pid),
+        )
+        // Fallbacks in decreasing preference:
+        //   1) non-focused non-pinned (evictIdx above)
+        //   2) any non-focused (ignores pin — rare: 3 pinned open)
+        //   3) index 0 (everything is pinned + focused on it)
+        const fallback =
+          evictIdx === -1
+            ? prev.findIndex((_, i) => i !== focusIdx)
+            : evictIdx
         const next = prev.slice()
-        next.splice(evictIdx === -1 ? 0 : evictIdx, 1)
+        next.splice(fallback === -1 ? 0 : fallback, 1)
         next.push(id)
         return next
       })
       setFocusedId(id)
       setLastSeenTurn((prev) => ({ ...prev, [id]: lastTurnAt ?? Date.now() }))
     },
-    [focusedId],
+    [focusedId, sessions],
   )
 
   const closeSession = useCallback(
@@ -399,19 +448,72 @@ export function App() {
   const handleCreate = useCallback(
     async (form: NewSessionForm) => {
       setError(null)
+      // `accent` is a frontend-only field — don't forward it to the SDK;
+      // we persist it locally keyed by the returned session id.
+      const { accent, ...rest } = form
       try {
-        const res = await api.post<{ session: SessionInfo }>('/sessions', form)
+        const res = await api.post<{ session: SessionInfo }>('/sessions', rest)
         // Don't mutate `sessions` here — the server emits a `created`
         // event on /sessions/events that inserts the row. If we prepend
         // locally too we race with the SSE, end up with two rows, and
         // later state updates (e.g. a subsequent pump error) only hit
         // one of them — leaving an "err" phantom alongside the real card.
         openSession(res.session.id, res.session.lastTurnAt)
+        if (accent) {
+          // Save the chosen accent under the new id. Direct localStorage
+          // write + setState (same pattern as the color-menu handler) so
+          // the write can't be dropped by a pending unmount.
+          const curr: Record<string, string> = (() => {
+            try {
+              const raw = window.localStorage.getItem(SESSION_COLORS_KEY)
+              return raw ? (JSON.parse(raw) ?? {}) : {}
+            } catch {
+              return {}
+            }
+          })()
+          curr[res.session.id] = accent
+          try {
+            window.localStorage.setItem(SESSION_COLORS_KEY, JSON.stringify(curr))
+          } catch {
+            /* ignore storage failure */
+          }
+          setSessionColors(curr)
+        }
       } catch (e) {
         setError((e as Error).message)
       }
     },
+    [openSession, setSessionColors],
+  )
+
+  const handleFork = useCallback(
+    async (id: string) => {
+      setError(null)
+      try {
+        const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/fork`, {})
+        // Open the forked session right away so the user can see the
+        // divergence point. The global `created` event from the server
+        // will add the row to the sidebar.
+        openSession(res.session.id, res.session.lastTurnAt)
+      } catch (e) {
+        setError(`Couldn't fork session: ${(e as Error).message}`)
+      }
+    },
     [openSession],
+  )
+
+  const handleTogglePin = useCallback(
+    async (id: string) => {
+      setError(null)
+      const current = sessions.find((s) => s.id === id)
+      const next = !current?.pinned
+      try {
+        await api.patch<{ session: SessionInfo }>(`/sessions/${id}`, { pinned: next })
+      } catch (e) {
+        setError(`Couldn't ${next ? 'pin' : 'unpin'} session: ${(e as Error).message}`)
+      }
+    },
+    [sessions],
   )
 
   const handleDelete = useCallback(
@@ -420,6 +522,13 @@ export function App() {
       try {
         await api.delete(`/sessions/${id}`)
         closeSession(id)
+        // Clean up per-session accent so it doesn't linger in storage.
+        setSessionColors((prev) => {
+          if (!(id in prev)) return prev
+          const next = { ...prev }
+          delete next[id]
+          return next
+        })
         // Server pushes a `removed` event on the global SSE, which
         // re-prunes session state — no need to GET /sessions here.
       } catch (e) {
@@ -497,7 +606,6 @@ export function App() {
     () => openIds.map((id) => sessions.find((s) => s.id === id)).filter((s): s is SessionInfo => !!s),
     [openIds, sessions],
   )
-  const focused = focusedId ? sessions.find((s) => s.id === focusedId) ?? null : null
 
   const updateSession = useCallback((s: SessionInfo) => {
     setSessions((prev) => prev.map((p) => (p.id === s.id ? s : p)))
@@ -553,15 +661,15 @@ export function App() {
         {
           combo: 'escape',
           handler: () => {
-            // Priority: NewSessionDialog > settings drawer.
+            // Priority: NewSessionDialog > per-panel Settings overlay.
             if (newSessionDialogOpen) setNewSessionDialogOpen(false)
-            else if (settingsOpen) setSettingsOpen(false)
+            else if (settingsOpenFor) setSettingsOpenFor(null)
           },
           allowInInput: true, // Esc inside textarea should still close modals
           description: 'Close overlay',
         },
       ],
-      [openIds, focusedId, newSessionDialogOpen, settingsOpen, closeSession],
+      [openIds, focusedId, newSessionDialogOpen, settingsOpenFor, closeSession],
     ),
   )
 
@@ -579,11 +687,15 @@ export function App() {
         seen.add(id)
       }
     }
-    // Remaining sessions: keep whatever order `sessions` already carries
-    // (the global stream sorts by lastActivityAt). Append at the end so
-    // user-pinned items stay on top.
     for (const s of sessions) if (!seen.has(s.id)) ordered.push(s)
-    return ordered
+    // Pinned sessions always float to the top, preserving their relative
+    // order within the pinned group. This runs AFTER the user-custom
+    // sidebarOrder so pinning doesn't destroy existing reordering —
+    // pinning just says "these come first", not "these are in pin-order".
+    const pinned: SessionInfo[] = []
+    const rest: SessionInfo[] = []
+    for (const s of ordered) (s.pinned ? pinned : rest).push(s)
+    return [...pinned, ...rest]
   }, [sessions, sidebarOrder])
 
   /** Reorder callback wired to the sidebar's DnD. Moves `draggedId` so it
@@ -662,10 +774,37 @@ export function App() {
           defaults={defaults}
           resumingIds={resuming}
           unread={unread}
+          sessionColors={sessionColors}
+          onSessionColorChange={(id, color) => {
+            // Bypass the React state updater. Opening the context menu is
+            // the only way this fires, and clicking a colour unmounts the
+            // menu in the same tick — React 19 may then discard a setState
+            // updater whose resulting state "won't matter" after unmount,
+            // exactly like the rememberIn bug. Write through directly,
+            // then sync React state for the still-mounted SessionList.
+            const curr: Record<string, string> = (() => {
+              try {
+                const raw = window.localStorage.getItem(SESSION_COLORS_KEY)
+                return raw ? (JSON.parse(raw) ?? {}) : {}
+              } catch {
+                return {}
+              }
+            })()
+            if (color) curr[id] = color
+            else delete curr[id]
+            try {
+              window.localStorage.setItem(SESSION_COLORS_KEY, JSON.stringify(curr))
+            } catch {
+              /* storage full / disabled — in-memory state still reflects it */
+            }
+            setSessionColors(curr)
+          }}
           onSelect={handleSelect}
           onCreate={handleCreate}
           onDelete={handleDelete}
           onClosePanel={closeSession}
+          onFork={handleFork}
+          onTogglePin={handleTogglePin}
           onReorder={handleReorderSidebar}
           newSessionDialogOpen={newSessionDialogOpen}
           onNewSessionDialogChange={setNewSessionDialogOpen}
@@ -713,9 +852,20 @@ export function App() {
             >
               {notifications.enabled ? '🔔' : '🔕'}
             </button>
-            <button className="btn" onClick={() => setSettingsOpen((v) => !v)} disabled={!focused}>
-              {settingsOpen ? 'Close settings' : 'Settings'}
-            </button>
+            <div className="accent-picker" role="radiogroup" aria-label="Accent colour">
+              {ACCENT_COLORS.map((c) => (
+                <button
+                  key={c.accent}
+                  className={`accent-swatch${accentColor === c.accent ? ' active' : ''}`}
+                  style={{ '--swatch': c.accent, '--swatch-strong': c.strong } as CSSProperties}
+                  onClick={() => setAccentColor(c.accent)}
+                  role="radio"
+                  aria-checked={accentColor === c.accent}
+                  aria-label={c.name}
+                  title={c.name}
+                />
+              ))}
+            </div>
           </div>
         </header>
 
@@ -756,10 +906,14 @@ export function App() {
                   session={s}
                   focused={s.id === focusedId}
                   slot={i + 1}
+                  accentStyle={sessionAccentStyle(s.id)}
                   onFocus={() => focusPanel(s.id)}
                   onClose={() => closeSession(s.id)}
                   onSessionUpdate={updateSession}
                   showSystemEvents={showSystemEvents}
+                  settingsOpen={settingsOpenFor === s.id}
+                  onOpenSettings={() => setSettingsOpenFor(s.id)}
+                  onCloseSettings={() => setSettingsOpenFor(null)}
                   onSwap={swapPanels}
                   onAcceptSidebarDrop={async (sidebarId) => {
                     const existing = sessions.find((x) => x.id === sidebarId)
@@ -800,14 +954,6 @@ export function App() {
         </div>
       </main>
 
-      {focused && settingsOpen && (
-        <SettingsPanel
-          key={focused.id}
-          session={focused}
-          onClose={() => setSettingsOpen(false)}
-          onSessionUpdate={updateSession}
-        />
-      )}
     </div>
   )
 }
@@ -822,6 +968,9 @@ interface ChatPanelProps {
    *  header so the user can tell this panel apart from the sidebar card
    *  and map it to the Ctrl+<n> shortcut. */
   slot: number
+  /** Per-session accent overrides (sets --accent / --accent-strong on the
+   *  panel root so all child var() references pick up the session colour). */
+  accentStyle?: CSSProperties
   onFocus: () => void
   onClose: () => void
   onSessionUpdate: (s: SessionInfo) => void
@@ -831,18 +980,26 @@ interface ChatPanelProps {
   onAcceptSidebarDrop: (sidebarId: string) => void
   /** Global transcript toggle (forwarded to the inner <Chat>). */
   showSystemEvents?: boolean
+  /** When true, render the Settings overlay on top of this panel. */
+  settingsOpen?: boolean
+  onOpenSettings: () => void
+  onCloseSettings: () => void
 }
 
 function ChatPanel({
   session,
   focused,
   slot,
+  accentStyle,
   onFocus,
   onClose,
   onSessionUpdate,
   onSwap,
   onAcceptSidebarDrop,
   showSystemEvents,
+  settingsOpen,
+  onOpenSettings,
+  onCloseSettings,
 }: ChatPanelProps) {
   const [dropActive, setDropActive] = useState(false)
   /** When true, the model chip in the header becomes an inline <input>. */
@@ -887,6 +1044,7 @@ function ChatPanel({
   return (
     <section
       className={`chat-panel ${focused ? 'focused' : ''} ${dropActive ? 'drop-target' : ''}`}
+      style={accentStyle}
       onMouseDownCapture={(e) => {
         // Focus on any mousedown inside the panel (capture phase so we win
         // against children). Clicking the close button still works because
@@ -1017,6 +1175,17 @@ function ChatPanel({
           />
         )}
         <button
+          className="chat-panel-settings"
+          onClick={(e) => {
+            e.stopPropagation()
+            onOpenSettings()
+          }}
+          title="Session settings"
+          aria-label="Open settings"
+        >
+          ⚙
+        </button>
+        <button
           className="chat-panel-close"
           onClick={(e) => {
             e.stopPropagation()
@@ -1099,6 +1268,25 @@ function ChatPanel({
           </div>
         )}
       </div>
+      {settingsOpen && (
+        <div
+          className="settings-overlay"
+          role="dialog"
+          aria-modal="false"
+          aria-label="Session settings"
+          // Clicking the backdrop (empty area of the overlay) closes it.
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) onCloseSettings()
+          }}
+        >
+          <SettingsPanel
+            key={session.id}
+            session={session}
+            onClose={onCloseSettings}
+            onSessionUpdate={onSessionUpdate}
+          />
+        </div>
+      )}
     </section>
   )
 }

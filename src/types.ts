@@ -21,6 +21,8 @@ export interface SessionInfo {
   working: boolean
   /** Epoch ms of last completed turn. Used to flag unread. */
   lastTurnAt?: number
+  /** User pinned this session — sticks to the top of the sidebar. */
+  pinned?: boolean
 }
 
 /** Shape of Options we expose in the "new session" form. */
@@ -44,6 +46,10 @@ export interface NewSessionForm {
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | number
   skills?: string[] | 'all'
   includePartialMessages?: boolean
+  /** Frontend-only: chosen accent hex (from theme ACCENT_COLORS). Not
+   *  sent to the server — stored in localStorage keyed by the returned
+   *  session id once creation succeeds. */
+  accent?: string
 }
 
 export interface ModelInfo {

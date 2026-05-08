@@ -98,6 +98,31 @@ button { cursor: pointer; }
   border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
 }
 
+/* Accent colour picker — a row of small coloured dots in the toolbar. */
+.accent-picker {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+}
+.accent-swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: var(--swatch);
+  padding: 0;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.accent-swatch:hover {
+  border-color: var(--fg-muted);
+  transform: scale(1.15);
+}
+.accent-swatch.active {
+  border-color: var(--fg);
+  box-shadow: 0 0 0 1px var(--bg);
+}
+
 .input, .textarea, .select {
   background: var(--bg-elev);
   border: 1px solid var(--border);
@@ -444,6 +469,7 @@ body.resizing-col * {
   outline: none;
 }
 
+.chat-panel-settings,
 .chat-panel-close {
   background: none;
   border: none;
@@ -453,7 +479,42 @@ body.resizing-col * {
   padding: 2px 6px;
   border-radius: 4px;
 }
+.chat-panel-settings:hover { background: var(--bg-elev-2); color: var(--fg); }
 .chat-panel-close:hover { background: var(--bg-elev-2); color: var(--danger); }
+
+/* Session-settings overlay. Same pattern as .perm-overlay: absolute-
+   positioned inside a specific chat panel, semi-transparent backdrop,
+   centred card. Only covers the one column instead of the whole app. */
+.settings-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--bg) 65%, transparent);
+  backdrop-filter: blur(2px);
+  z-index: 5;
+  overflow-y: auto;
+}
+.settings-overlay > .settings-panel {
+  width: min(420px, 100%);
+  max-height: 100%;
+  position: static;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+}
+
+/* Pin indicator on pinned session cards. Small inline emoji next to the
+   title; slot pill remains right next to it. Low-contrast so it doesn't
+   yell — the card itself already moves to the top. */
+.session-item-pin {
+  margin-right: 4px;
+  font-size: 11px;
+  opacity: 0.8;
+  vertical-align: middle;
+}
 .chat-panel-body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
 .empty-state {
   margin: auto;
@@ -552,6 +613,27 @@ body.resizing-col * {
 }
 .session-item:hover { background: var(--bg-elev-2); }
 .session-item.active { background: var(--bg-elev-2); border-color: var(--accent); }
+
+/* Idle tint for cards that have a per-session accent chosen. We paint a
+   3px coloured rail on the left edge and wash the card body with a very
+   faint accent tint so the colour is visible even when the card is
+   neither focused nor open. The focused / open / unread states layer on
+   top via their own box-shadow rules — those keep their precedence
+   because the rail uses `border-left` rather than `inset` shadow. */
+.session-item.tinted {
+  border-left: 3px solid var(--accent);
+  padding-left: 9px; /* 12 - 3, so the text baseline stays put */
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+.session-item.tinted:hover {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev-2));
+}
+/* When a tinted card is also focused, keep the inset accent stripe
+   (which normally sits at the left edge) but nudge it off the same
+   pixel row as the border-left so both are visible. */
+.session-item.tinted.focused {
+  box-shadow: inset 3px 0 0 var(--accent-strong);
+}
 .session-item.terminated { opacity: 0.6; }
 .session-item.dormant { opacity: 0.75; border-style: dashed; }
 .session-item.resuming { cursor: progress; opacity: 0.5; }
@@ -962,6 +1044,42 @@ body.resizing-col * {
   width: 100%;
   max-width: 900px;
 }
+
+/* Recap / compact-boundary marker. Not a message bubble — it's a
+   horizontal divider with a pair of labels explaining what the SDK
+   just did ("Recap (auto) · 50k → 8k tokens · saved 84% · 320ms"). */
+.msg.recap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: none;
+  background: none;
+  padding: 2px 0;
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  position: relative;
+}
+.msg.recap::before,
+.msg.recap::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: color-mix(in srgb, var(--accent) 50%, var(--border));
+  min-width: 12px;
+}
+.recap-label {
+  color: var(--accent);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.recap-meta {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 420px;
+}
 .msg-header {
   font-size: 11px;
   text-transform: uppercase;
@@ -1002,6 +1120,56 @@ body.resizing-col * {
 }
 .msg.assistant .msg-header { color: #a9b4d6; font-weight: 600; }
 .msg.assistant .msg-header > span:first-child::before { content: '✦ '; }
+
+/* "Thinking" bubble. Shares the assistant bubble's look but renders
+   just three bouncing dots in the body. The outer bubble also pulses a
+   subtle accent border so it's obvious at a glance that a reply is
+   being produced. */
+.msg.assistant.working {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  animation: working-bubble-pulse 1.8s ease-in-out infinite;
+}
+/* Elapsed-time label sitting in the "assistant" header of the working
+   bubble. Font-variant-numeric: tabular-nums keeps digits from jumping
+   around as seconds tick over — the badge width stays constant. */
+.working-timer {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  padding: 1px 6px;
+  border-radius: 999px;
+  text-transform: none;
+}
+
+.working-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+}
+.working-dots > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.35;
+  animation: working-dot-bounce 1.2s ease-in-out infinite;
+}
+.working-dots > span:nth-child(2) { animation-delay: 0.15s; }
+.working-dots > span:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes working-dot-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+@keyframes working-bubble-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+  50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+}
 .msg.tool { background: transparent; border-style: dashed; border-color: #374151; }
 .msg.tool-result { background: #14202a; border-color: #1f3240; }
 .msg.system { background: #1a1a1a; border-color: #2a2a2a; font-family: var(--mono); font-size: 12px; }
@@ -1076,6 +1244,57 @@ body.resizing-col * {
   padding: 8px 10px;
   border-radius: 4px;
   overflow-x: auto;
+}
+
+/* Diff view for Edit / Write tool_use blocks */
+.diff-block {
+  font-family: var(--mono);
+  font-size: 12px;
+  margin-top: 4px;
+  background: var(--bg);
+  border-radius: 4px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+}
+.diff-file-path {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg-elev-2);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 500;
+}
+.diff-lines { padding: 4px 0; }
+.diff-line {
+  display: flex;
+  padding: 1px 10px;
+  white-space: pre;
+  min-height: 18px;
+}
+.diff-line-del {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+.diff-line-add {
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--ok);
+}
+.diff-line-ctx { color: var(--fg-muted); }
+.diff-line-marker {
+  width: 16px;
+  flex-shrink: 0;
+  text-align: center;
+  user-select: none;
+}
+.diff-line-text { flex: 1; }
+.diff-truncation {
+  padding: 4px 10px;
+  color: var(--fg-muted);
+  font-style: italic;
+  border-top: 1px dashed var(--border);
 }
 
 /* Settings panel */
@@ -1392,3 +1611,108 @@ body.resizing-col * {
   font-size: 12px;
   margin: 0;
 }
+
+/* TodoChecklist — sticky floating panel at the top of the chat area. */
+.todo-panel {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  padding: 10px max(20px, calc((100% - 900px) / 2));
+  font-size: 13px;
+  /* Subtle accent glow so the panel doesn't feel like just another
+     divider — it's actionable context the user should glance at. */
+  border-top: 2px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+.todo-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.todo-panel-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+}
+.todo-panel-count {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: var(--bg);
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+.todo-panel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.todo-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  line-height: 1.4;
+}
+.todo-icon {
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+  font-size: 12px;
+}
+.todo-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Status colours */
+.todo-completed { color: var(--fg-muted); }
+.todo-completed .todo-text { text-decoration: line-through; }
+.todo-completed .todo-icon { color: var(--ok); }
+.todo-in_progress { color: var(--fg); }
+.todo-in_progress .todo-icon { color: var(--accent); }
+.todo-pending { color: var(--fg-muted); }
+.todo-pending .todo-icon { opacity: 0.5; }
+
+/* Inline TodoWrite tool-use rendering (inside the message transcript).
+   Replaces the raw JSON dump with a compact, readable checklist. */
+.inline-todo-list {
+  list-style: none;
+  margin: 6px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12.5px;
+}
+.inline-todo-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  line-height: 1.45;
+}
+.inline-todo-icon {
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+  font-size: 11px;
+}
+.inline-todo-text {
+  flex: 1;
+  min-width: 0;
+}
+.inline-todo-completed { color: var(--fg-muted); }
+.inline-todo-completed .inline-todo-text { text-decoration: line-through; }
+.inline-todo-completed .inline-todo-icon { color: var(--ok); }
+.inline-todo-in_progress { color: var(--fg); }
+.inline-todo-in_progress .inline-todo-icon { color: var(--accent); }
+.inline-todo-pending { color: var(--fg-muted); }
+.inline-todo-pending .inline-todo-icon { opacity: 0.5; }

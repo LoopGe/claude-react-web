@@ -18,6 +18,7 @@ import { Composer } from './Composer'
 import { ContextBar } from './ContextBar'
 import { MessageList } from './MessageList'
 import { PermissionDialog } from './PermissionDialog'
+import { TodoChecklist } from './TodoChecklist'
 import type { SessionInfo } from '../types'
 
 const INPUT_HISTORY_KEY = 'claude-react-web:input-history'
@@ -206,20 +207,25 @@ export function Chat({ session, showSystemEvents }: Props) {
 
   return (
     <div className="chat">
-      <MessageList messages={stream.messages} showSystemEvents={showSystemEvents} />
+      <MessageList
+        messages={stream.messages}
+        showSystemEvents={showSystemEvents}
+        working={session.working}
+      />
+
+      <TodoChecklist messages={stream.messages} working={session.working} />
 
       {error && <div className="error-bar">{error}</div>}
 
-      {stream.queuedAhead > 0 && (
+      {/* The queue bar is only interesting when the user has queued extra
+          turns on top of the one currently running — a single pending
+          turn is already covered by the thinking bubble in the
+          transcript. Show it once queuedAhead > 1. */}
+      {session.working && stream.queuedAhead > 1 && (
         <div className="queue-bar">
-          {stream.queuedAhead === 1 ? (
-            <span>⏳ Assistant is replying…</span>
-          ) : (
-            <span>
-              ⏳ Assistant is replying — {stream.queuedAhead - 1} more message
-              {stream.queuedAhead - 1 === 1 ? '' : 's'} queued, will send automatically.
-            </span>
-          )}
+          <span>
+            ⏳ {stream.queuedAhead - 1} more message{stream.queuedAhead - 1 === 1 ? '' : 's'} queued, will send automatically.
+          </span>
         </div>
       )}
 

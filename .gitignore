@@ -8,3 +8,5 @@ coverage/
 .env.local
 .vscode/
 .idea/
+# Temp artifacts from the Playwright MCP dev harness.
+.playwright-mcp/

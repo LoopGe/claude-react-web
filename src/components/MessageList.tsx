@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Markdown } from './Markdown'
+import { ToolUseBlock } from './ToolUseBlock'
 import type { SdkMessage } from '../types'
 
 interface Props {
@@ -15,9 +16,13 @@ interface Props {
    *  rendered list. Errors (`subtype === 'error'`) are always shown
    *  regardless — those carry actual failure info users need to see. */
   showSystemEvents?: boolean
+  /** When true, show a "thinking" loading bubble at the tail of the
+   *  transcript. Sourced from session.working (server-authoritative) so
+   *  it reflects state even across tabs and after reloads. */
+  working?: boolean
 }
 
-export function MessageList({ messages, showSystemEvents = false }: Props) {
+export function MessageList({ messages, showSystemEvents = false, working = false }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
   // `atBottom` is state (not a ref) because the jump-to-bottom button's
   // visibility needs to re-render when it changes. The ref-mirror keeps
@@ -52,6 +57,16 @@ export function MessageList({ messages, showSystemEvents = false }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [renderable])
 
+  // Additional scroll trigger: when the working state flips on, the new
+  // loading bubble takes some vertical space and users who were at the
+  // bottom should follow it. Unseen count is untouched — a loading
+  // bubble isn't a new "message" worth announcing.
+  useEffect(() => {
+    if (!working) return
+    if (!atBottomRef.current) return
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+  }, [working])
+
   const onScroll = () => {
     const el = scrollRef.current
     if (!el) return
@@ -79,6 +94,7 @@ export function MessageList({ messages, showSystemEvents = false }: Props) {
         {renderable.map((m, i) => (
           <MessageView key={(m.uuid as string) ?? i} msg={m} />
         ))}
+        {working && <WorkingBubble />}
       </div>
       {!atBottom && (
         <button
@@ -100,9 +116,15 @@ function isRenderable(m: SdkMessage, showSystemEvents: boolean): boolean {
   // the complete content, so rendering both just flickers.
   if (m.type === 'stream_event') return false
   // System notifications (init / status / task_notification / etc.) are
-  // SDK bookkeeping, not conversation content. `error` is the exception —
-  // users need to see those even when the toggle is off.
-  if (m.type === 'system' && m.subtype !== 'error' && !showSystemEvents) return false
+  // SDK bookkeeping, not conversation content. Two exceptions:
+  //   - `error` — users need to see failures unconditionally
+  //   - `compact_boundary` — a conversation-level "recap" marker the user
+  //     wants to see (auto-compact happens silently otherwise)
+  if (m.type === 'system' && !showSystemEvents) {
+    if (m.subtype === 'error') return true
+    if (m.subtype === 'compact_boundary') return true
+    return false
+  }
   return true
 }
 
@@ -122,24 +144,30 @@ function MessageView({ msg }: { msg: SdkMessage }) {
 
   if (type === 'user') {
     const userContent = extractUserText(msg)
-    // Tool results land as synthetic "user" messages — render them separately.
-    if (!userContent && hasToolResult(msg)) {
+
+    // Synthetic tool-result message from the SDK (e.g. Agent, Bash, etc.).
+    // The SDK marks these with a non-null parent_tool_use_id. Render
+    // tool_result blocks prominently; if the message also carries text
+    // (common for subagent results), show it above the tool blocks.
+    if (isToolResultMessage(msg)) {
       const blocks = toBlocks(msg.message?.content)
+      const toolBlocks = blocks.filter((b) => b.type === 'tool_result')
       return (
         <div className="msg tool-result">
           <div className="msg-header">
             <span>tool result</span>
           </div>
           <div className="msg-body">
-            {blocks
-              .filter((b) => b.type === 'tool_result')
-              .map((b, i) => (
-                <ToolResultBlock key={i} block={b} />
-              ))}
+            {userContent && <div style={{ marginBottom: 6, opacity: 0.8 }}>{userContent}</div>}
+            {toolBlocks.map((b, i) => (
+              <ToolResultBlock key={i} block={b} />
+            ))}
           </div>
         </div>
       )
     }
+
+    // Real user message
     return (
       <div className="msg user">
         <div className="msg-header">
@@ -194,6 +222,10 @@ function MessageView({ msg }: { msg: SdkMessage }) {
     )
   }
 
+  if (type === 'system' && msg.subtype === 'compact_boundary') {
+    return <CompactBoundary msg={msg} />
+  }
+
   return (
     <div className="msg system">
       <div className="msg-header">
@@ -204,6 +236,50 @@ function MessageView({ msg }: { msg: SdkMessage }) {
       </div>
     </div>
   )
+}
+
+/** Recap / compact-boundary marker.
+ *
+ *  The SDK emits this when it has just summarised a chunk of the
+ *  transcript to keep the context window in bounds. We render it as a
+ *  horizontal rule with a short "Recap" label and token savings; the
+ *  underlying summary string lives on the next SDK turn's system
+ *  prompt, not in this message, but the metadata here is enough to
+ *  give the user a visual cue that the preceding transcript has been
+ *  compressed. */
+function CompactBoundary({ msg }: { msg: SdkMessage }) {
+  const meta = (msg as { compact_metadata?: {
+    trigger?: 'manual' | 'auto'
+    pre_tokens?: number
+    post_tokens?: number
+    duration_ms?: number
+  } }).compact_metadata ?? {}
+  const pre = typeof meta.pre_tokens === 'number' ? meta.pre_tokens : undefined
+  const post = typeof meta.post_tokens === 'number' ? meta.post_tokens : undefined
+  const trigger = meta.trigger === 'manual' ? 'manual' : 'auto'
+  const savings =
+    pre !== undefined && post !== undefined && pre > 0
+      ? ` · saved ${Math.round(((pre - post) / pre) * 100)}%`
+      : ''
+  const duration =
+    typeof meta.duration_ms === 'number' ? ` · ${Math.round(meta.duration_ms)}ms` : ''
+  return (
+    <div className="msg recap" role="separator" aria-label="Conversation recap / compact boundary">
+      <span className="recap-label">
+        <span aria-hidden>✦</span> Recap ({trigger})
+      </span>
+      <span className="recap-meta">
+        {pre !== undefined && post !== undefined
+          ? `${formatTokens(pre)} → ${formatTokens(post)} tokens${savings}${duration}`
+          : 'Conversation compacted to fit the context window.'}
+      </span>
+    </div>
+  )
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k`
+  return String(n)
 }
 
 function BlockView({ block }: { block: Block }) {
@@ -219,14 +295,7 @@ function BlockView({ block }: { block: Block }) {
     )
   }
   if (block.type === 'tool_use') {
-    return (
-      <div style={{ margin: '6px 0' }}>
-        <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
-          → tool: <code>{block.name}</code>
-        </div>
-        <div className="tool-input">{formatJson(block.input)}</div>
-      </div>
-    )
+    return <ToolUseBlock block={block} />
   }
   return (
     <div className="tool-input">
@@ -269,6 +338,16 @@ function hasToolResult(msg: SdkMessage): boolean {
   return (content as Block[]).some((b) => b.type === 'tool_result')
 }
 
+/** True when `msg` is a synthetic user message emitted by the SDK to carry
+ *  tool results (e.g. Agent/Bash/Read completions). The SDK sets a non-null
+ *  `parent_tool_use_id` on these; real user messages always have null. */
+function isToolResultMessage(msg: SdkMessage): boolean {
+  return (
+    (msg as Record<string, unknown>).parent_tool_use_id != null &&
+    hasToolResult(msg)
+  )
+}
+
 function toBlocks(content: unknown): Block[] {
   if (typeof content === 'string') return [{ type: 'text', text: content }]
   if (!Array.isArray(content)) return []
@@ -285,4 +364,60 @@ function formatJson(v: unknown): string {
 
 function truncate(s: string, n: number): string {
   return s.length <= n ? s : `${s.slice(0, n)}…`
+}
+
+/** "Thinking" loading indicator shown at the tail of the transcript
+ *  whenever the SDK is mid-turn. Visually a miniature assistant bubble
+ *  with three bouncing dots + an elapsed-time label, so users can tell
+ *  at a glance how long the turn has been running (helpful for long
+ *  tool-heavy runs where a silent wait can feel broken). */
+function WorkingBubble() {
+  // Capture the start time in the mount effect, not at render — React's
+  // purity lint rule (rightly) flags Date.now() inside render bodies
+  // because it's non-deterministic. The ref stays null until the first
+  // commit; elapsedMs is 0 for that one-frame gap, which is fine.
+  const startedAtRef = useRef<number | null>(null)
+  const [elapsedMs, setElapsedMs] = useState(0)
+  useEffect(() => {
+    startedAtRef.current = Date.now()
+    const tick = () => {
+      const start = startedAtRef.current
+      if (start != null) setElapsedMs(Date.now() - start)
+    }
+    tick()
+    const id = window.setInterval(tick, 1000)
+    return () => window.clearInterval(id)
+  }, [])
+  return (
+    <div className="msg assistant working" aria-live="polite" aria-label="Assistant is working">
+      <div className="msg-header">
+        <span>assistant</span>
+        <span className="working-timer" aria-label={`elapsed ${formatElapsed(elapsedMs)}`}>
+          {formatElapsed(elapsedMs)}
+        </span>
+      </div>
+      <div className="msg-body">
+        <div className="working-dots" aria-hidden>
+          <span />
+          <span />
+          <span />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Format an elapsed duration for the working bubble.
+ *  - <60s  → "12s"
+ *  - <60m  → "02:34"
+ *  - else  → "1:02:34" */
+function formatElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `${s}s`
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const sec = s % 60
+  const pad = (n: number) => n.toString().padStart(2, '0')
+  if (h === 0) return `${pad(m)}:${pad(sec)}`
+  return `${h}:${pad(m)}:${pad(sec)}`
 }
