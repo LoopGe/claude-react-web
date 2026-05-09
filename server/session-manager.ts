@@ -5,7 +5,7 @@
 //     the SDK reads them.
 //   - The Query async generator returned by `query({ prompt, options })` — we
 //     pump it in a background task and fan every message out to subscribers.
-//   - Subscribers (Set<Subscriber>) — each SSE client has its own subscriber
+//   - Subscribers (Set<Subscriber>) — each connected client has its own subscriber
 //     queue so a slow client can't block the SDK pump.
 //   - A small ring buffer of recent messages so a freshly-connected subscriber
 //     can see the state of the world without missing live events.
@@ -32,8 +32,9 @@ import {
 import { randomUUID } from 'node:crypto'
 import { createPushable, type Pushable } from './pushable.js'
 import type { SessionMeta, SessionStore } from './persistence.js'
+import { invalidateRecapCache } from './recap.js'
 
-/** SSE subscriber — each EventSource client gets one of these. */
+/** Subscriber — each connected client gets one of these. */
 interface Subscriber {
   id: string
   push: (msg: SDKMessage) => void
@@ -71,7 +72,7 @@ export interface QuestionSpec {
 }
 
 /** JSON-safe snapshot of a pending permission request OR interactive
- *  question. Permissions and questions ride on the same SSE channel and
+ *  question. Permissions and questions ride on the same channel and
  *  the same pending map — they're both "SDK waiting on the user" events
  *  — but the frontend renders them with different components, so the
  *  `kind` discriminator matters. */
@@ -202,8 +203,8 @@ export type GlobalSessionEvent =
   | { kind: 'created'; session: SessionInfo }
   | { kind: 'removed'; id: string }
   /** A tool-permission request arrived for a session. Mirrored onto the
-   *  global channel (on top of the per-session /permissions/stream) so
-   *  that App-level code can fire a desktop notification even when the
+   *  global channel so that App-level code can fire a desktop notification
+   *  even when the
    *  session's Chat panel isn't mounted. `sessionId` lets the frontend
    *  route-to-session on click. */
   | { kind: 'permission_request'; sessionId: string; request: PermissionRequestSnapshot }
@@ -272,7 +273,7 @@ export class SessionManager {
 
   /** Subscribe to global session list changes. The returned iterable emits
    *  {kind:update,session} on every persist() call and {kind:removed,id} on
-   *  delete(). Intended for a single SSE fan-out endpoint that replaces
+   *  delete(). Intended for a single fan-out endpoint that replaces
    *  periodic GET /sessions polling. */
   subscribeGlobal(): {
     iterable: AsyncIterable<GlobalSessionEvent>
@@ -462,9 +463,22 @@ export class SessionManager {
       // circuit it: the model sees our `message` as the tool_result and
       // proceeds as if it got a real answer. See docs in README.
       if (toolName === 'AskUserQuestion') {
+        const questions = sanitizeQuestions(toolInput)
+        // If the model sent completely malformed input (no valid questions),
+        // resolve immediately instead of showing an empty dialog.
+        if (questions.length === 0) {
+          return {
+            behavior: 'deny',
+            message: JSON.stringify({
+              note: 'AskUserQuestion input was malformed — no valid questions found.',
+              answers: [],
+            }),
+            interrupt: false,
+            toolUseID: ctx.toolUseID,
+          }
+        }
         return new Promise<PermissionResult>((resolve) => {
           const pid = randomUUID()
-          const questions = sanitizeQuestions(toolInput)
           const abortHandler = () => {
             if (!session.pending.has(pid)) return
             session.pending.delete(pid)
@@ -883,7 +897,7 @@ export class SessionManager {
     })
   }
 
-  /** SSE subscription for permission-channel events. */
+  /** Subscription for permission-channel events. */
   subscribePermissions(id: string): {
     iterable: AsyncIterable<PermissionEvent>
     snapshot: PermissionRequestSnapshot[]
@@ -983,7 +997,7 @@ export class SessionManager {
 
   /**
    * Subscribe to live events. Returns (1) an AsyncIterable the caller can
-   * stream to SSE, and (2) a snapshot of history so the caller can replay
+   * stream to clients, and (2) a snapshot of history so the caller can replay
    * past messages before entering the live loop.
    */
   subscribe(id: string): { iterable: AsyncIterable<SDKMessage>; history: SDKMessage[]; unsubscribe: () => void } {
@@ -1006,7 +1020,7 @@ export class SessionManager {
         }
       },
       // Named-event channel (e.g. context_usage) isn't wired into this
-      // iterable-based SSE path yet — the routes layer will want to read
+      // iterable-based path yet — the routes layer will want to read
       // such events directly. Stubbed to satisfy the Subscriber type.
       pushEvent: () => {
         /* intentionally empty */
@@ -1088,7 +1102,7 @@ export class SessionManager {
       } catch {
         /* ignore */
       }
-      p.resolve({ behavior: 'deny', message: 'session closed', interrupt: false })
+      p.resolve({ behavior: 'deny', message: 'session closed', interrupt: false, toolUseID: p.toolUseID })
       this.broadcastPermissionResolved(s, pid, {
         behavior: 'deny',
         persisted: false,
@@ -1103,6 +1117,7 @@ export class SessionManager {
     // Let the pump exit on its own (the iterable is now drained). We don't
     // await it indefinitely — the SDK occasionally holds connections open.
     this.sessions.delete(id)
+    invalidateRecapCache(id)
     // Persist the final state (terminated flag, messageCount, etc.) before
     // dropping the in-memory struct.
     this.persist(s)
@@ -1135,6 +1150,13 @@ export class SessionManager {
     const meta = this.store?.get(id)
     if (meta) return this.infoFromMeta(meta)
     throw new HttpError(404, `session ${id} not found`)
+  }
+
+  /** Snapshot of the in-memory message history for a live session.
+   *  Returns null for dormant (not-in-memory) sessions. */
+  getHistory(id: string): SDKMessage[] | null {
+    const s = this.sessions.get(id)
+    return s ? s.history.slice() : null
   }
 
   async shutdown(): Promise<void> {
@@ -1263,6 +1285,11 @@ export class SessionManager {
     } finally {
       session.running = false
       session.terminated = true
+      // Reset pending turns so the UI doesn't stay stuck in "working"
+      // when the SDK merged queued messages into fewer turns than were
+      // sent, or the session ended before emitting a result for every
+      // queued turn.
+      session.pendingTurns = 0
       for (const sub of session.subscribers.values()) sub.end()
       session.subscribers.clear()
       session.contextUsagePushable.end()

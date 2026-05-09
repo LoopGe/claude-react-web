@@ -12,8 +12,7 @@ import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { shortenPath } from '../utils/paths'
 import { ACCENT_COLORS } from '../theme'
 import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, SidebarSection } from '../types'
-
-const PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'plan', 'bypassPermissions', 'dontAsk', 'auto']
+import { PERMISSION_MODES } from '../types'
 
 const RECENT_MODELS_KEY = 'claude-react-web:recent-models'
 const RECENT_MODELS_CAP = 10
@@ -23,7 +22,17 @@ const RECENT_CWDS_CAP = 10
 /** Enable the 1M token context window (Sonnet 4 / 4.5 only). */
 const ONE_M_CONTEXT_BETA = 'context-1m-2025-08-07'
 
-type ContextSize = 'default' | '1m'
+/** Ordered context-window presets for the new-session slider.
+ *  `beta`, when set, is forwarded to the SDK as `betas: [beta]`. */
+const CONTEXT_STEPS = [
+  { value: 100_000,   label: "100k", beta: undefined },
+  { value: 200_000,   label: "200k", beta: undefined },   // default
+  { value: 256_000,   label: "256k", beta: undefined },
+  { value: 512_000,   label: "512k", beta: undefined },
+  { value: 1_000_000, label: "1M",   beta: ONE_M_CONTEXT_BETA },
+] as const
+
+type ContextStepIdx = number
 
 interface Props {
   sessions: SessionInfo[]
@@ -90,7 +99,7 @@ interface Props {
   onActivateGroup: (groupId: string) => void
   /** Create a new empty group and return its id. */
   onCreateGroup: (name: string) => string
-  /** Permanently delete a group (sessions stay, just ungrouped). */
+  /** Permanently delete a group (orphaned sessions move to "default"). */
   onDeleteGroup: (groupId: string) => void
   /** Rename an existing group. */
   onRenameGroup: (groupId: string, name: string) => void
@@ -199,7 +208,6 @@ export function SessionList({
       if (filtered.length === 0) continue
       if (sec.kind === 'pinned') result.push({ kind: 'pinned', sessions: filtered })
       else if (sec.kind === 'group') result.push({ kind: 'group', group: sec.group, sessions: filtered })
-      else result.push({ kind: 'ungrouped', sessions: filtered })
     }
     return result
   }, [sidebarSections, filter])
@@ -227,8 +235,8 @@ export function SessionList({
 
   const commitRename = async (id: string, title: string) => {
     setRenamingId(null)
-    // The server echoes back the updated session on /sessions/events, so
-    // we don't need to update local state here. If the request fails the
+    // The server broadcasts the updated session via WebSocket, so we
+    // don't need to update local state here. If the request fails the
     // card simply keeps its old title.
     try {
       await api.patch<{ session: SessionInfo }>(`/sessions/${id}`, { title })
@@ -292,9 +300,9 @@ export function SessionList({
    *  `containerGroupId` — when the card is rendered inside a group's
    *  body, callers pass the group's id so the card's onDrop can use
    *  the `onReorderInGroup` handler (which preserves tag membership
-   *  and reorders the group's sessionIds). Outside any group (pinned /
-   *  ungrouped / flat view), it's undefined and the card falls back
-   *  to the global `onReorder` path. */
+   *  and reorders the group's sessionIds). Outside any group (pinned),
+   *  it's undefined and the card falls back to the global `onReorder`
+   *  path. */
   const renderSessionCard = (s: SessionInfo, containerGroupId?: string) => {
     const isResuming = resumingIds?.has(s.id) ?? false
     const dormant = !s.running && !s.terminated
@@ -473,6 +481,10 @@ export function SessionList({
             className="session-item-delete"
             onClick={(e) => {
               e.stopPropagation()
+              if (s.messageCount > 0) {
+                const title = s.title ?? s.id.slice(0, 8)
+                if (!window.confirm(`Delete session "${title}"?`)) return
+              }
               onDelete(s.id)
             }}
             title="Delete session"
@@ -540,75 +552,72 @@ export function SessionList({
           </div>
         )}
         {/* Group pills — horizontal row of clickable group chips. */}
-        {(groups.length > 0 || showNewGroupInput) && (
-          <div className="group-pills">
-            {groups.map((g) => (
-              <span
-                key={g.id}
-                className="group-pill"
-                title={`Activate "${g.name}" (${g.sessionIds.length} sessions) · right-click for options`}
-                onClick={() => onActivateGroup(g.id)}
-                onContextMenu={(e) => {
-                  e.preventDefault()
-                  const choice = window.prompt(`Group "${g.name}"\n\nType a new name to rename, or leave empty to delete:`, g.name)
-                  if (choice === null) return // cancelled
-                  const trimmed = choice.trim()
-                  if (!trimmed) {
-                    onDeleteGroup(g.id)
-                  } else if (trimmed !== g.name) {
-                    onRenameGroup(g.id, trimmed)
-                  }
-                }}
-              >
-                {g.name}
-                <span className="group-pill-count">{g.sessionIds.length}</span>
-              </span>
-            ))}
-            {showNewGroupInput ? (
-              <input
-                ref={newGroupInputRef}
-                className="group-pill-input"
-                placeholder="Group name…"
-                value={newGroupName}
-                onChange={(e) => setNewGroupName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    const name = newGroupName.trim()
-                    if (name) onCreateGroup(name)
-                    setNewGroupName('')
-                    setShowNewGroupInput(false)
-                  } else if (e.key === 'Escape') {
-                    setNewGroupName('')
-                    setShowNewGroupInput(false)
-                  }
-                }}
-                onBlur={() => {
+        <div className="group-pills">
+          {groups.map((g) => (
+            <span
+              key={g.id}
+              className="group-pill"
+              title={`Activate "${g.name}" (${g.sessionIds.length} sessions) · right-click for options`}
+              onClick={() => onActivateGroup(g.id)}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                const choice = window.prompt(`Group "${g.name}"\n\nType a new name to rename, or leave empty to delete:`, g.name)
+                if (choice === null) return // cancelled
+                const trimmed = choice.trim()
+                if (!trimmed) {
+                  onDeleteGroup(g.id)
+                } else if (trimmed !== g.name) {
+                  onRenameGroup(g.id, trimmed)
+                }
+              }}
+            >
+              {g.name}
+              <span className="group-pill-count">{g.sessionIds.length}</span>
+            </span>
+          ))}
+          {showNewGroupInput ? (
+            <input
+              ref={newGroupInputRef}
+              className="group-pill-input"
+              placeholder="Group name…"
+              value={newGroupName}
+              onChange={(e) => setNewGroupName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
                   const name = newGroupName.trim()
                   if (name) onCreateGroup(name)
                   setNewGroupName('')
                   setShowNewGroupInput(false)
-                }}
-              />
-            ) : (
-              <button
-                type="button"
-                className="group-pill group-pill-new"
-                onClick={() => setShowNewGroupInput(true)}
-                title="Create a new session group"
-              >
-                + Group
-              </button>
-            )}
-          </div>
-        )}
+                } else if (e.key === 'Escape') {
+                  setNewGroupName('')
+                  setShowNewGroupInput(false)
+                }
+              }}
+              onBlur={() => {
+                const name = newGroupName.trim()
+                if (name) onCreateGroup(name)
+                setNewGroupName('')
+                setShowNewGroupInput(false)
+              }}
+            />
+          ) : (
+            <button
+              type="button"
+              className="group-pill group-pill-new"
+              onClick={() => setShowNewGroupInput(true)}
+              title="Create a new session group"
+            >
+              + Group
+            </button>
+          )}
+        </div>
       </div>
-
       <div className="session-list">
-        {sessions.length === 0 ? (
-          <div style={{ color: 'var(--fg-muted)', fontSize: 12, textAlign: 'center', padding: 20 }}>
-            No sessions yet.
-          </div>
-        ) : filteredSections.length > 0 ? (
+          {sessions.length === 0 ? (
+            <div style={{ color: 'var(--fg-muted)', fontSize: 12, textAlign: 'center', padding: 20 }}>
+              No sessions yet.
+            </div>
+          ) : filteredSections.length > 0 ? (
           // ── Sectioned view (groups exist) ──
           filteredSections.map((sec) => {
             if (sec.kind === 'pinned') {
@@ -724,22 +733,16 @@ export function SessionList({
                 </div>
               )
             }
-            // ungrouped
-            return (
-              <div key="ungrouped" className="session-section">
-                <div className="session-section-divider">── Other ──</div>
-                {sec.sessions.map((s) => renderSessionCard(s))}
-              </div>
-            )
+            return null
           })
-        ) : visibleSessions.length === 0 ? (
-          <div style={{ color: 'var(--fg-muted)', fontSize: 12, textAlign: 'center', padding: 20 }}>
-            No sessions match "{filter}".
-          </div>
-        ) : (
-          // ── Flat view (no groups) ──
-          visibleSessions.map((s) => renderSessionCard(s))
-        )}
+          ) : visibleSessions.length === 0 ? (
+            <div style={{ color: 'var(--fg-muted)', fontSize: 12, textAlign: 'center', padding: 20 }}>
+              No sessions match "{filter}".
+            </div>
+          ) : (
+            // ── Flat view (no groups) ──
+            visibleSessions.map((s) => renderSessionCard(s))
+          )}
       </div>
 
       {menu && <SessionContextMenu
@@ -758,13 +761,13 @@ export function SessionList({
         groups={groups}
         onAddToGroup={onAddToGroup}
         onRemoveFromGroup={onRemoveFromGroup}
-        onCreateGroup={onCreateGroup}
       />}
 
       {showDialog && (
         <NewSessionDialog
           defaults={defaults}
           initialCwd={prefilledCwd}
+          groups={groups}
           onCancel={() => {
             setShowDialog(false)
             setPrefilledCwd(undefined)
@@ -790,9 +793,11 @@ interface DialogProps {
   initialCwd?: string
   onSubmit: (form: NewSessionForm) => void
   onCancel: () => void
+  /** Available groups for the mandatory group selector. Always ≥ 1. */
+  groups: SessionGroup[]
 }
 
-function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel }: DialogProps) {
+function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups }: DialogProps) {
   const [cwd, setCwd] = useState<string>(initialCwd ?? defaults.cwd ?? '')
   const [model, setModel] = useState<string>(defaults.model ?? '')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
@@ -802,7 +807,8 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel }: DialogPr
    *  global accent" — we don't write an entry to sessionColors unless
    *  the user explicitly picks one. */
   const [accent, setAccent] = useState<string | undefined>(undefined)
-  const [contextSize, setContextSize] = useState<ContextSize>('default')
+  const [contextStepIdx, setContextStepIdx] = useState<ContextStepIdx>(1) // 200k default
+  const [groupId, setGroupId] = useState<string>(groups[0]?.id ?? '')
   const [showPicker, setShowPicker] = useState(false)
 
   const [recentModels, setRecentModels] = useLocalStorage<string[]>(RECENT_MODELS_KEY, [])
@@ -865,17 +871,18 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel }: DialogPr
   const submit = () => {
     rememberModel(model)
     rememberCwd(cwd)
+    const step = CONTEXT_STEPS[contextStepIdx]
     onSubmit({
       cwd: cwd.trim() || undefined,
       model: model.trim() || undefined,
       permissionMode,
       systemPrompt: systemPrompt.trim() || undefined,
       title: title.trim() || undefined,
-      // Only include the beta flag when the user explicitly opts in —
-      // sending an empty array is fine but an unnecessary over-reach, and
-      // this keeps the wire payload clean for the default case.
-      betas: contextSize === '1m' ? [ONE_M_CONTEXT_BETA] : undefined,
+      // Only include the beta flag for steps that require it (currently
+      // just 1M) — keeps the wire payload clean for all other sizes.
+      betas: step.beta ? [step.beta] : undefined,
       accent,
+      groupId: groupId || groups[0]?.id,
     })
   }
 
@@ -1019,6 +1026,21 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel }: DialogPr
             </div>
 
             <div className="settings-field">
+              <label>Group</label>
+              <select
+                className="select"
+                value={groupId}
+                onChange={(e) => setGroupId(e.target.value)}
+              >
+                {groups.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="settings-field">
               <label>Accent colour</label>
               <div className="accent-picker" role="radiogroup" aria-label="Session accent">
                 <button
@@ -1050,18 +1072,15 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel }: DialogPr
 
             <div className="settings-field">
               <label>Context size</label>
-              <select
-                className="select"
-                value={contextSize}
-                onChange={(e) => setContextSize(e.target.value as ContextSize)}
-              >
-                <option value="default">Default (per-model limit)</option>
-                <option value="1m">1M tokens (beta · Sonnet 4 / 4.5 only)</option>
-              </select>
+              <StepSlider
+                steps={CONTEXT_STEPS}
+                value={contextStepIdx}
+                onChange={setContextStepIdx}
+              />
               <span className="hint">
-                Most Claude models cap at 200k tokens. The 1M beta applies to
-                Sonnet 4 and 4.5 — if you pick it with another model the SDK
-                falls back to that model's own limit.
+                {contextStepIdx === 4
+                  ? '1M beta · Sonnet 4 / 4.5 only — other models fall back to their own limit.'
+                  : 'Controls the context window the session is allowed to use.'}
               </span>
             </div>
 
@@ -1131,7 +1150,6 @@ interface MenuProps {
   groups: SessionGroup[]
   onAddToGroup: (sessionId: string, groupId: string) => void
   onRemoveFromGroup: (sessionId: string, groupId: string) => void
-  onCreateGroup: (name: string) => string
 }
 
 function SessionContextMenu({
@@ -1150,7 +1168,6 @@ function SessionContextMenu({
   groups,
   onAddToGroup,
   onRemoveFromGroup,
-  onCreateGroup,
 }: MenuProps) {
   if (!session) return null
   const items: ContextMenuItem[] = [
@@ -1188,38 +1205,26 @@ function SessionContextMenu({
       const sessionGroups = groups.filter((g) => g.sessionIds.includes(anchor.id))
       const otherGroups = groups.filter((g) => !g.sessionIds.includes(anchor.id))
       const items: ContextMenuItem[] = []
-      if (groups.length === 0) {
-        // No groups yet — offer to create one with this session.
-        items.push({
-          label: 'Create group with this session',
-          icon: '📁',
-          onClick: () => {
-            const name = window.prompt('Group name:')
-            if (!name?.trim()) return
-            const gid = onCreateGroup(name.trim())
-            onAddToGroup(anchor.id, gid)
-          },
-        })
-      } else {
-        if (otherGroups.length > 0) {
-          items.push({ label: 'Add to group ▸', icon: '＋', disabled: true })
-          for (const g of otherGroups) {
-            items.push({
-              label: `  ${g.name}`,
-              icon: ' ',
-              onClick: () => onAddToGroup(anchor.id, g.id),
-            })
-          }
+      if (otherGroups.length > 0) {
+        items.push({ label: 'Add to group ▸', icon: '＋', disabled: true })
+        for (const g of otherGroups) {
+          items.push({
+            label: `  ${g.name}`,
+            icon: ' ',
+            onClick: () => onAddToGroup(anchor.id, g.id),
+          })
         }
-        if (sessionGroups.length > 0) {
-          items.push({ label: 'Remove from group ▸', icon: '－', disabled: true })
-          for (const g of sessionGroups) {
-            items.push({
-              label: `  ${g.name}`,
-              icon: '✕',
-              onClick: () => onRemoveFromGroup(anchor.id, g.id),
-            })
-          }
+      }
+      // Only allow removing when the session is in 2+ groups — sessions
+      // must always belong to at least one group.
+      if (sessionGroups.length > 1) {
+        items.push({ label: 'Remove from group ▸', icon: '－', disabled: true })
+        for (const g of sessionGroups) {
+          items.push({
+            label: `  ${g.name}`,
+            icon: '✕',
+            onClick: () => onRemoveFromGroup(anchor.id, g.id),
+          })
         }
       }
       return items
@@ -1290,4 +1295,98 @@ function SessionContextMenu({
   ]
 
   return <ContextMenu x={anchor.x} y={anchor.y} items={items} onClose={onClose} />
+}
+
+// ---------------------------------------------------------------------------
+// StepSlider — horizontal discrete-step selector
+// ---------------------------------------------------------------------------
+
+interface StepDef {
+  value: number
+  label: string
+  beta?: string
+}
+
+function StepSlider({
+  steps,
+  value,
+  onChange,
+}: {
+  steps: readonly StepDef[]
+  value: number
+  onChange: (idx: number) => void
+}) {
+  const trackRef = useRef<HTMLDivElement>(null)
+  const dragIdxRef = useRef<number | null>(null)
+
+  /** Given a pointer X relative to the viewport, find the nearest step. */
+  const nearestStep = (clientX: number): number => {
+    const el = trackRef.current
+    if (!el) return value
+    const rect = el.getBoundingClientRect()
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+    return Math.round(ratio * (steps.length - 1))
+  }
+
+  const handlePointerDown = (e: React.PointerEvent) => {
+    e.preventDefault()
+    const idx = nearestStep(e.clientX)
+    dragIdxRef.current = idx
+    onChange(idx)
+    // Capture so we keep receiving events even if the pointer leaves the track.
+    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+  }
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (dragIdxRef.current === null) return
+    const idx = nearestStep(e.clientX)
+    if (idx !== dragIdxRef.current) {
+      dragIdxRef.current = idx
+      onChange(idx)
+    }
+  }
+
+  const handlePointerUp = () => {
+    dragIdxRef.current = null
+  }
+
+  const pct = steps.length > 1 ? (value / (steps.length - 1)) * 100 : 0
+
+  return (
+    <div className="step-slider">
+      {/* Value readout */}
+      <div className="step-slider-readout">
+        {steps.map((s, i) => (
+          <span key={s.label} className={`step-slider-label${i === value ? ' active' : ''}`}>
+            {s.label}
+          </span>
+        ))}
+      </div>
+      {/* Track */}
+      <div
+        ref={trackRef}
+        className="step-slider-track"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+      >
+        <div className="step-slider-fill" style={{ width: `${pct}%` }} />
+        {steps.map((s, i) => {
+          const leftPct = (i / (steps.length - 1)) * 100
+          return (
+            <div
+              key={s.label}
+              className={`step-slider-dot${i === value ? ' active' : ''}`}
+              style={{ left: `${leftPct}%` }}
+            />
+          )
+        })}
+        <div
+          className="step-slider-thumb"
+          style={{ left: `${pct}%` }}
+        />
+      </div>
+    </div>
+  )
 }

@@ -1,15 +1,14 @@
-// REST + SSE routes for the SessionManager.
+// REST routes for the SessionManager.
 //
-// SSE uses text/event-stream; each SDK message is written as a single
-// `event: message\ndata: <json>\n\n` frame so EventSource on the frontend
-// can distinguish system events if we add named channels later.
+// Real-time streaming (messages, permissions, context usage) is handled
+// by the WebSocket layer in ws.ts, not here.
 
 import { Hono } from 'hono'
-import { stream } from 'hono/streaming'
 import type { Options, PermissionMode, Settings } from '@anthropic-ai/claude-agent-sdk'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { resolve as resolvePath } from 'node:path'
 import { HttpError, SessionManager } from './session-manager.js'
+import { generateRecap } from './recap.js'
 
 /** Where per-session uploads land inside the session's cwd. Kept visible
  *  (not dot-prefixed) so users can see what the UI dropped in. */
@@ -32,43 +31,9 @@ export function buildApiRouter(sm: SessionManager): Hono {
   // Health / version
   app.get('/health', (c) => c.json({ ok: true, sessions: sm.list().length }))
 
-  // List sessions (snapshot only — for push-based updates subscribe to
-  // /sessions/events instead of polling this).
+  // List sessions (snapshot only — for push-based updates the frontend
+  // subscribes to the WebSocket channel in ws.ts).
   app.get('/sessions', (c) => c.json({ sessions: sm.list() }))
-
-  // Global session-list SSE. Emits initial snapshot then live updates
-  // (kind: update | created | removed). Lets the sidebar drop its 5s
-  // poll, which otherwise competed with per-session streams for the
-  // browser's 6-connection budget.
-  app.get('/sessions/events', (c) => {
-    const sub = sm.subscribeGlobal()
-
-    c.header('Content-Type', 'text/event-stream')
-    c.header('Cache-Control', 'no-cache, no-transform')
-    c.header('Connection', 'keep-alive')
-    c.header('X-Accel-Buffering', 'no')
-
-    return stream(c, async (s) => {
-      const heartbeat = setInterval(() => {
-        s.write(': hb\n\n').catch(() => {})
-      }, 15_000)
-      s.onAbort(() => {
-        clearInterval(heartbeat)
-        sub.unsubscribe()
-      })
-      try {
-        // Send initial snapshot so the subscriber doesn't need a separate
-        // GET /sessions round-trip on boot.
-        await s.write(`event: snapshot\ndata: ${JSON.stringify({ sessions: sub.snapshot })}\n\n`)
-        for await (const ev of sub.iterable) {
-          await s.write(`event: ${ev.kind}\ndata: ${JSON.stringify(ev)}\n\n`)
-        }
-      } finally {
-        clearInterval(heartbeat)
-        sub.unsubscribe()
-      }
-    })
-  })
 
   // Create session
   app.post('/sessions', async (c) => {
@@ -252,156 +217,8 @@ export function buildApiRouter(sm: SessionManager): Hono {
     return c.json({ mcp })
   })
 
-  // SSE live stream. Replays history on connect, then streams live events.
-  //
-  // Multiplexes SDK messages AND permission events onto a single connection,
-  // so a 3-panel grid stays within the browser's 6-connection HTTP/1.1 cap
-  // (otherwise each session burned 2 connections and three-up ran the tab
-  // out of slots — which is what made "sending gets stuck" look like the
-  // app had frozen). The standalone /permissions/stream is kept for
-  // backwards compatibility but the frontend no longer subscribes to it.
-  app.get('/sessions/:id/stream', (c) => {
-    const id = c.req.param('id')
-    const msg = sm.subscribe(id)
-    const perms = sm.subscribePermissions(id)
-
-    c.header('Content-Type', 'text/event-stream')
-    c.header('Cache-Control', 'no-cache, no-transform')
-    c.header('Connection', 'keep-alive')
-    c.header('X-Accel-Buffering', 'no')
-
-    return stream(c, async (s) => {
-      const heartbeat = setInterval(() => {
-        s.write(': hb\n\n').catch(() => {})
-      }, 15_000)
-
-      const cleanup = () => {
-        clearInterval(heartbeat)
-        msg.unsubscribe()
-        perms.unsubscribe()
-      }
-      s.onAbort(cleanup)
-
-      try {
-        // 1) Replay message history.
-        for (const m of msg.history) {
-          await s.write(`event: replay\ndata: ${JSON.stringify(m)}\n\n`)
-        }
-        // 2) Replay still-pending permission requests so a reconnecting
-        //    client re-opens any open modal instead of missing it forever.
-        for (const p of perms.snapshot) {
-          await s.write(`event: permission_request\ndata: ${JSON.stringify(p)}\n\n`)
-        }
-        await s.write(`event: replay-done\ndata: {}\n\n`)
-
-        // 3) Race three live iterables: SDK messages, permission events,
-        //    and context-usage snapshots. We can't `for await` multiple
-        //    streams sequentially; we drive them concurrently and write
-        //    as events arrive.
-        const msgIter = msg.iterable[Symbol.asyncIterator]()
-        const permIter = perms.iterable[Symbol.asyncIterator]()
-        const ctxIter = sm.subscribeContextUsage(id)?.[Symbol.asyncIterator]()
-
-        type Tagged =
-          | { kind: 'msg'; result: IteratorResult<unknown> }
-          | { kind: 'perm'; result: IteratorResult<unknown> }
-          | { kind: 'ctx'; result: IteratorResult<unknown> }
-
-        const tag = async (
-          kind: 'msg' | 'perm' | 'ctx',
-          it: AsyncIterator<unknown>,
-        ): Promise<Tagged> => ({ kind, result: await it.next() })
-
-        let msgP: Promise<Tagged> | null = tag('msg', msgIter)
-        let permP: Promise<Tagged> | null = tag('perm', permIter)
-        let ctxP: Promise<Tagged> | null = ctxIter ? tag('ctx', ctxIter) : null
-
-        while (msgP || permP || ctxP) {
-          const pending: Promise<Tagged>[] = []
-          if (msgP) pending.push(msgP)
-          if (permP) pending.push(permP)
-          if (ctxP) pending.push(ctxP)
-          const winner = await Promise.race(pending)
-          if (winner.kind === 'msg') {
-            if (winner.result.done) msgP = null
-            else {
-              await s.write(`event: message\ndata: ${JSON.stringify(winner.result.value)}\n\n`)
-              msgP = tag('msg', msgIter)
-            }
-          } else if (winner.kind === 'perm') {
-            if (winner.result.done) permP = null
-            else {
-              const ev = winner.result.value as { kind: 'request' | 'resolved' } & Record<string, unknown>
-              if (ev.kind === 'request') {
-                await s.write(`event: permission_request\ndata: ${JSON.stringify(ev.payload)}\n\n`)
-              } else {
-                await s.write(
-                  `event: permission_resolved\ndata: ${JSON.stringify({ id: ev.pid, ...(ev.decision as object) })}\n\n`,
-                )
-              }
-              permP = tag('perm', permIter)
-            }
-          } else {
-            if (winner.result.done) ctxP = null
-            else {
-              await s.write(`event: context_usage\ndata: ${JSON.stringify(winner.result.value)}\n\n`)
-              ctxP = tag('ctx', ctxIter!)
-            }
-          }
-        }
-      } finally {
-        cleanup()
-      }
-    })
-  })
-
-  // Permission-channel SSE stream. Kept separate from /stream so we can have
-  // a simple single-loop consumer for each channel. Emits two named events:
-  //   permission_request  — new pending request (also emitted once per
-  //                         still-open pending on connect, for reconnects)
-  //   permission_resolved — a pending was decided (allow/deny) — lets other
-  //                         open tabs dismiss their modals
-  app.get('/sessions/:id/permissions/stream', (c) => {
-    const id = c.req.param('id')
-    const { iterable, snapshot, unsubscribe } = sm.subscribePermissions(id)
-
-    c.header('Content-Type', 'text/event-stream')
-    c.header('Cache-Control', 'no-cache, no-transform')
-    c.header('Connection', 'keep-alive')
-    c.header('X-Accel-Buffering', 'no')
-
-    return stream(c, async (s) => {
-      const heartbeat = setInterval(() => {
-        s.write(': hb\n\n').catch(() => {})
-      }, 15_000)
-      s.onAbort(() => {
-        clearInterval(heartbeat)
-        unsubscribe()
-      })
-      try {
-        // Replay all still-pending requests so a reconnecting tab re-opens
-        // their modals instead of missing them forever.
-        for (const p of snapshot) {
-          await s.write(`event: permission_request\ndata: ${JSON.stringify(p)}\n\n`)
-        }
-        for await (const ev of iterable) {
-          if (ev.kind === 'request') {
-            await s.write(`event: permission_request\ndata: ${JSON.stringify(ev.payload)}\n\n`)
-          } else {
-            await s.write(
-              `event: permission_resolved\ndata: ${JSON.stringify({ id: ev.pid, ...ev.decision })}\n\n`,
-            )
-          }
-        }
-      } finally {
-        clearInterval(heartbeat)
-        unsubscribe()
-      }
-    })
-  })
-
   // List pending requests (used by the frontend on first load to render any
-  // outstanding modal before its SSE subscription is established).
+  // outstanding modal before its WebSocket subscription is established).
   app.get('/sessions/:id/permissions', (c) => {
     const id = c.req.param('id')
     return c.json({ pending: sm.listPending(id) })
@@ -454,6 +271,18 @@ export function buildApiRouter(sm: SessionManager): Hono {
     })
     sm.answerQuestion(id, pid, answers)
     return c.json({ ok: true })
+  })
+
+  // Session recap — AI-generated summary of a session's conversation.
+  app.post('/sessions/:id/recap', async (c) => {
+    const id = c.req.param('id')
+    sm.get(id) // throws 404 if not found
+    const history = sm.getHistory(id)
+    if (!history) {
+      return c.json({ error: 'Session is dormant; resume it to generate a recap.' }, 503)
+    }
+    const result = await generateRecap(history, id)
+    return c.json(result)
   })
 
   return app

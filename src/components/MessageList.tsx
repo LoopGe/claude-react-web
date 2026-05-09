@@ -1,14 +1,18 @@
-// Scrolling message transcript for one session.
+// Virtualised message transcript for one session.
 //
+// Uses react-virtuoso to render only the visible slice of messages,
+// keeping DOM node count bounded regardless of transcript length.
 // Keeps the list pinned to the bottom unless the user scrolls up — once
 // they do, new messages append silently instead of yanking the viewport.
 // Filters out `stream_event` partials (the final assistant message
 // carries the complete content, so showing both just flickers).
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { Markdown } from './Markdown'
 import { ToolUseBlock } from './ToolUseBlock'
 import type { SdkMessage } from '../types'
+import { formatTokens } from '../utils/format'
 
 interface Props {
   messages: SdkMessage[]
@@ -22,123 +26,169 @@ interface Props {
   working?: boolean
 }
 
+/** An item in the Virtuoso data array. Pre-computing isCompactSummary
+ *  here avoids the renderable[i-1] look-back during itemContent. */
+interface RenderableItem {
+  msg: SdkMessage
+  isCompactSummary: boolean
+}
+
 export function MessageList({ messages, showSystemEvents = false, working = false }: Props) {
-  const scrollRef = useRef<HTMLDivElement>(null)
+  const virtuosoRef = useRef<VirtuosoHandle>(null)
+  // Captures Virtuoso's underlying scroll element so a ResizeObserver
+  // can detect viewport shrink (TodoChecklist panel growing).
+  const scrollerRef = useRef<HTMLElement | null>(null)
   // `atBottom` is state (not a ref) because the jump-to-bottom button's
   // visibility needs to re-render when it changes. The ref-mirror keeps
-  // the onScroll handler readable without a re-attachment dance.
+  // callbacks readable without a stale-closure dance.
   const [atBottom, setAtBottom] = useState(true)
   const atBottomRef = useRef(true)
+  // Debounced "should follow" ref — filters out transient isAtBottom=false
+  // spikes that Virtuoso emits during rapid/batch item additions (the
+  // scroll-to-bottom animation hasn't settled yet, so Virtuoso's internal
+  // isAtBottom momentarily flips false). Only after isAtBottom stays false
+  // for FOLLOW_DEBOUNCE_MS do we actually stop following.
+  const shouldFollowRef = useRef(true)
+  const followTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const FOLLOW_DEBOUNCE_MS = 150
   /** How many new messages have arrived since the user last saw the
    *  bottom. Badge number on the jump-to-bottom button. */
   const [unseenCount, setUnseenCount] = useState(0)
+  const unseenCountRef = useRef(0)
 
-  const renderable = useMemo(
-    () => messages.filter((m) => isRenderable(m, showSystemEvents)),
-    [messages, showSystemEvents],
-  )
+  // Pre-compute isCompactSummary for every renderable message so
+  // Virtuoso's itemContent doesn't need the surrounding context.
+  const items: RenderableItem[] = useMemo(() => {
+    const filtered = messages.filter((m) => isRenderable(m, showSystemEvents))
+    return filtered.map((m, i) => {
+      const prev = i > 0 ? filtered[i - 1] : null
+      return {
+        msg: m,
+        isCompactSummary:
+          m.type === 'user' &&
+          prev?.type === 'system' &&
+          prev?.subtype === 'compact_boundary',
+      }
+    })
+  }, [messages, showSystemEvents])
 
-  // Track the last renderable count so we can tell how many landed
-  // during a single render pass. When the user is at bottom we scroll
-  // and reset unseen; otherwise we bump the counter.
+  // Track how many new items arrived so the unseen badge stays accurate.
+  // Virtuoso's followOutput handles the actual scrolling.
   const lastCountRef = useRef(0)
   useEffect(() => {
-    const delta = renderable.length - lastCountRef.current
-    lastCountRef.current = renderable.length
+    const delta = items.length - lastCountRef.current
+    lastCountRef.current = items.length
     if (delta <= 0) return
     if (atBottomRef.current) {
-      if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      if (unseenCount !== 0) setUnseenCount(0)
+      if (unseenCountRef.current !== 0) {
+        unseenCountRef.current = 0
+        setUnseenCount(0)
+      }
     } else {
       setUnseenCount((n) => n + delta)
     }
-    // unseenCount intentionally excluded — we only react to renderable changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [renderable])
-
-  // Additional scroll trigger: when the working state flips on, the new
-  // loading bubble takes some vertical space and users who were at the
-  // bottom should follow it. Unseen count is untouched — a loading
-  // bubble isn't a new "message" worth announcing.
-  useEffect(() => {
-    if (!working) return
-    if (!atBottomRef.current) return
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-  }, [working])
+  }, [items])
 
   // Viewport-shrink trigger: the TodoChecklist panel appears/grows below
-  // the scroll container, which eats vertical space from `.chat-messages`.
-  // Without this effect, the scroll container's content stays where it
-  // was while the viewport shrunk — the bottom messages slide above the
-  // fold and `atBottom` silently flips false, so future auto-scrolls
-  // stop working. ResizeObserver re-pins to bottom whenever the viewport
-  // shrinks *and* the user was already at the bottom.
+  // the scroll container, which eats vertical space. Without this
+  // effect, the bottom messages slide above the fold and `atBottom`
+  // silently flips false, so future followOutput stops working.
+  // ResizeObserver re-pins to bottom whenever the viewport shrinks
+  // *and* the user was already at the bottom.
   useEffect(() => {
-    const el = scrollRef.current
+    const el = scrollerRef.current
     if (!el || typeof ResizeObserver === 'undefined') return
-    let lastClientHeight = el.clientHeight
+    let lastHeight = el.clientHeight
     const ro = new ResizeObserver(() => {
-      if (!scrollRef.current) return
-      const now = scrollRef.current.clientHeight
-      const shrunk = now < lastClientHeight
-      lastClientHeight = now
-      // Only re-pin when the user was at the bottom before the resize.
-      // If they had scrolled up, forcing them back to bottom would be
-      // hostile. (The onScroll listener will correct atBottomRef on the
-      // next scroll event anyway.)
+      if (!scrollerRef.current) return
+      const now = scrollerRef.current.clientHeight
+      const shrunk = now < lastHeight
+      lastHeight = now
       if (shrunk && atBottomRef.current) {
-        scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+        virtuosoRef.current?.scrollToIndex({ index: items.length - 1, behavior: 'auto' })
       }
     })
     ro.observe(el)
     return () => ro.disconnect()
+  }, [items.length])
+
+  // Clean up the follow debounce timer on unmount.
+  useEffect(() => () => {
+    if (followTimerRef.current != null) clearTimeout(followTimerRef.current)
   }, [])
 
-  const onScroll = () => {
-    const el = scrollRef.current
-    if (!el) return
-    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-    atBottomRef.current = isAtBottom
-    setAtBottom((prev) => (prev === isAtBottom ? prev : isAtBottom))
-    if (isAtBottom && unseenCount !== 0) setUnseenCount(0)
-  }
-
   const jumpToBottom = useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'smooth' })
     setUnseenCount(0)
   }, [])
 
+  // Memoised Footer component for the WorkingBubble. Virtuoso
+  // re-renders this via its own measurement pipeline — defining it
+  // outside the render body avoids an inline-function identity change
+  // on every render.
+  const FooterComponent: React.FC = useMemo(
+    () =>
+      function Footer() {
+        return working ? (
+          <div className="virtuoso-item-wrapper">
+            <WorkingBubble />
+          </div>
+        ) : null
+      },
+    [working],
+  )
+
   return (
     <div className="chat-messages-wrap">
-      <div className="chat-messages" ref={scrollRef} onScroll={onScroll}>
-        {renderable.length === 0 && (
-          <div style={{ color: 'var(--fg-muted)', textAlign: 'center', margin: 'auto' }}>
+      <div className="chat-messages">
+        {items.length === 0 ? (
+          <div className="chat-messages-empty">
             Type a message below to start the conversation.
           </div>
+        ) : (
+          <Virtuoso
+            ref={virtuosoRef}
+            scrollerRef={(ref) => { if (ref && ref instanceof HTMLElement) scrollerRef.current = ref }}
+            data={items}
+            initialTopMostItemIndex={items.length > 0 ? items.length - 1 : 0}
+            followOutput={() => (shouldFollowRef.current ? 'auto' : false)}
+            atBottomStateChange={(isAtBottom) => {
+              // UI state: update immediately for jump-to-bottom button.
+              atBottomRef.current = isAtBottom
+              setAtBottom(isAtBottom)
+              if (isAtBottom && unseenCountRef.current !== 0) {
+                unseenCountRef.current = 0
+                setUnseenCount(0)
+              }
+              // Debounced follow state: only stop following after
+              // isAtBottom stays false for FOLLOW_DEBOUNCE_MS. During
+              // batch item additions Virtuoso transiently reports false
+              // while the scroll animation settles — the debounce
+              // filters those out so the follow chain doesn't break.
+              if (isAtBottom) {
+                if (followTimerRef.current != null) {
+                  clearTimeout(followTimerRef.current)
+                  followTimerRef.current = null
+                }
+                shouldFollowRef.current = true
+              } else {
+                if (followTimerRef.current == null) {
+                  followTimerRef.current = setTimeout(() => {
+                    followTimerRef.current = null
+                    shouldFollowRef.current = false
+                  }, FOLLOW_DEBOUNCE_MS)
+                }
+              }
+            }}
+            itemContent={(_index, item) => (
+              <div className="virtuoso-item-wrapper">
+                <MessageView msg={item.msg} isCompactSummary={item.isCompactSummary} />
+              </div>
+            )}
+            components={{ Footer: FooterComponent }}
+            alignToBottom
+          />
         )}
-        {renderable.map((m, i) => {
-          // After an auto-compact, the SDK injects a synthetic user-role
-          // message carrying the conversation summary — it's the next
-          // turn's input, but it wasn't typed by the human. Flag it so
-          // MessageView can render it as a recap continuation rather
-          // than as a 5000-char "YOU" bubble.
-          const prev = i > 0 ? renderable[i - 1] : null
-          const isCompactSummary =
-            m.type === 'user' &&
-            prev?.type === 'system' &&
-            prev?.subtype === 'compact_boundary'
-          return (
-            <MessageView
-              key={(m.uuid as string) ?? i}
-              msg={m}
-              isCompactSummary={isCompactSummary}
-            />
-          )
-        })}
-        {working && <WorkingBubble />}
       </div>
       {!atBottom && (
         <button
@@ -183,7 +233,7 @@ interface Block {
   [k: string]: unknown
 }
 
-function MessageView({ msg, isCompactSummary }: { msg: SdkMessage; isCompactSummary?: boolean }) {
+const MessageView = memo(function MessageView({ msg, isCompactSummary }: { msg: SdkMessage; isCompactSummary?: boolean }) {
   const type = msg.type
 
   if (type === 'user') {
@@ -286,12 +336,20 @@ function MessageView({ msg, isCompactSummary }: { msg: SdkMessage; isCompactSumm
   }
 
   if (type === 'system' && msg.subtype === 'error') {
+    const raw = String(msg.error ?? 'unknown error')
+    const isRateLimit = /429|rate.?limit/i.test(raw)
     return (
-      <div className="msg error">
+      <div className={`msg error${isRateLimit ? ' rate-limit' : ''}`}>
         <div className="msg-header">
-          <span>error</span>
+          <span>{isRateLimit ? 'rate limited' : 'error'}</span>
         </div>
-        <div className="msg-body">{String(msg.error ?? 'unknown error')}</div>
+        <div className="msg-body">
+          {isRateLimit ? (
+            <>Too many requests — the API rate limit was hit. Your message was saved; send it again in a moment.</>
+          ) : (
+            raw
+          )}
+        </div>
       </div>
     )
   }
@@ -310,7 +368,7 @@ function MessageView({ msg, isCompactSummary }: { msg: SdkMessage; isCompactSumm
       </div>
     </div>
   )
-}
+})
 
 /** Recap / compact-boundary marker.
  *
@@ -349,11 +407,6 @@ function CompactBoundary({ msg }: { msg: SdkMessage }) {
       </span>
     </div>
   )
-}
-
-function formatTokens(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k`
-  return String(n)
 }
 
 /** The "continuation" half of a compact event.
@@ -422,17 +475,43 @@ function BlockView({ block }: { block: Block }) {
 
 function ToolResultBlock({ block }: { block: Block }) {
   const content = block.content
+  const preview = toolResultPreview(content)
+  const body =
+    typeof content === 'string'
+      ? truncate(content, 4000)
+      : (() => {
+          const blocks = Array.isArray(content) ? (content as Block[]) : []
+          const texts = blocks
+            .map((b) => {
+              if (b.type === 'text' && typeof b.text === 'string') return b.text
+              return formatJson(b)
+            })
+            .join('\n\n')
+          return truncate(texts || formatJson(content), 4000)
+        })()
+  return (
+    <details className="tool-result-details">
+      <summary className="tool-result-summary">{preview}</summary>
+      <div className="tool-input">{body}</div>
+    </details>
+  )
+}
+
+/** One-line preview for the collapsed <summary>.
+ *  Keeps the transcript scannable when many tool results are present. */
+function toolResultPreview(content: unknown): string {
   if (typeof content === 'string') {
-    return <div className="tool-input">{truncate(content, 4000)}</div>
+    const line = content.split('\n')[0] ?? content
+    return line.length > 120 ? line.slice(0, 120) + '…' : line || '(empty)'
   }
   const blocks = Array.isArray(content) ? (content as Block[]) : []
-  const texts = blocks
-    .map((b) => {
-      if (b.type === 'text' && typeof b.text === 'string') return b.text
-      return formatJson(b)
-    })
-    .join('\n\n')
-  return <div className="tool-input">{truncate(texts || formatJson(content), 4000)}</div>
+  if (blocks.length === 0) return '(empty)'
+  const first = blocks[0]
+  if (first.type === 'text' && typeof first.text === 'string') {
+    const line = first.text.split('\n')[0] ?? first.text
+    return line.length > 120 ? line.slice(0, 120) + '…' : line || '(empty result)'
+  }
+  return `[${first.type}]`
 }
 
 function extractUserText(msg: SdkMessage): string | null {

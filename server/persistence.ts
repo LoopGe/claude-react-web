@@ -12,7 +12,7 @@
 // callers fire-and-forget via upsert/remove; shutdown() flushes.
 
 import { promises as fs } from 'node:fs'
-import { dirname, join, resolve as resolvePath } from 'node:path'
+import { join, resolve as resolvePath } from 'node:path'
 import { homedir } from 'node:os'
 import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
 
@@ -191,6 +191,3 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     pinned: typeof r.pinned === 'boolean' ? r.pinned : undefined,
   }
 }
-
-// Re-export so callers don't need a second import for the path helper.
-export { dirname }

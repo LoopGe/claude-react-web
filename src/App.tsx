@@ -80,6 +80,16 @@ export function App() {
   const [groups, setGroups] = useLocalStorage<SessionGroup[]>(GROUPS_KEY, [])
   /** Which group headers are collapsed in the sidebar. */
   const [collapsedGroups, setCollapsedGroups] = useLocalStorage<Record<string, boolean>>(COLLAPSED_GROUPS_KEY, {})
+
+  // Auto-create a "default" group on first load so every session always
+  // has a group to belong to (mandatory group binding).
+  useEffect(() => {
+    if (groups.length === 0) {
+      setGroups([{ id: crypto.randomUUID(), name: 'default', sessionIds: [] }])
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   /** Show SDK bookkeeping messages (system/init, system/status, …) in
    *  the transcript. Off by default — they're noise for normal use,
    *  but invaluable when debugging tool wiring or context compaction. */
@@ -469,12 +479,24 @@ export function App() {
     [openIds],
   )
 
+  const handleAddToGroup = useCallback(
+    (sessionId: string, groupId: string) => {
+      setGroups((prev) =>
+        prev.map((g) =>
+          g.id === groupId && !g.sessionIds.includes(sessionId)
+            ? { ...g, sessionIds: [...g.sessionIds, sessionId] }
+            : g,
+        ),
+      )
+    },
+    [setGroups],
+  )
+
   const handleCreate = useCallback(
     async (form: NewSessionForm) => {
       setError(null)
-      // `accent` is a frontend-only field — don't forward it to the SDK;
-      // we persist it locally keyed by the returned session id.
-      const { accent, ...rest } = form
+      // `accent` and `groupId` are frontend-only fields — don't forward them to the SDK.
+      const { accent, groupId, ...rest } = form
       try {
         const res = await api.post<{ session: SessionInfo }>('/sessions', rest)
         // Don't mutate `sessions` here — the server emits a `created`
@@ -483,6 +505,8 @@ export function App() {
         // later state updates (e.g. a subsequent pump error) only hit
         // one of them — leaving an "err" phantom alongside the real card.
         openSession(res.session.id, res.session.lastTurnAt)
+        // Assign to group (mandatory group binding).
+        if (groupId) handleAddToGroup(res.session.id, groupId)
         if (accent) {
           // Save the chosen accent under the new id. Direct localStorage
           // write + setState (same pattern as the color-menu handler) so
@@ -507,7 +531,7 @@ export function App() {
         setError((e as Error).message)
       }
     },
-    [openSession, setSessionColors],
+    [openSession, setSessionColors, handleAddToGroup],
   )
 
   const handleFork = useCallback(
@@ -519,11 +543,14 @@ export function App() {
         // divergence point. The global `created` event from the server
         // will add the row to the sidebar.
         openSession(res.session.id, res.session.lastTurnAt)
+        // Inherit group from source session.
+        const sourceGroup = groups.find((g) => g.sessionIds.includes(id))
+        if (sourceGroup) handleAddToGroup(res.session.id, sourceGroup.id)
       } catch (e) {
         setError(`Couldn't fork session: ${(e as Error).message}`)
       }
     },
-    [openSession],
+    [openSession, groups, handleAddToGroup],
   )
 
   /** Create a brand-new empty session that reuses the source session's
@@ -533,15 +560,17 @@ export function App() {
     async (id: string) => {
       const source = sessions.find((s) => s.id === id)
       if (!source) return
+      const sourceGroup = groups.find((g) => g.sessionIds.includes(id))
       const form: NewSessionForm = {
         cwd: source.cwd,
         model: source.model,
         permissionMode: source.permissionMode,
         title: source.title ? `${source.title} (copy)` : undefined,
+        groupId: sourceGroup?.id,
       }
       await handleCreate(form)
     },
-    [sessions, handleCreate],
+    [sessions, groups, handleCreate],
   )
 
   const handleTogglePin = useCallback(
@@ -580,9 +609,45 @@ export function App() {
     [closeSession],
   )
 
+  /** The group whose sessions are currently open in the main grid.
+   *  null when openIds is empty or no group fully owns the open set. */
+  const activeGroupId = useMemo(() => {
+    if (openIds.length === 0) return null
+    return groups.find((g) => openIds.every((id) => g.sessionIds.includes(id)))?.id ?? null
+  }, [openIds, groups])
+
+  /** Activate a group: replace main-area panels with the group's sessions. */
+  const handleActivateGroup = useCallback(
+    (groupId: string) => {
+      const group = groups.find((g) => g.id === groupId)
+      if (!group) return
+      const sessionSet = new Set(sessions.map((s) => s.id))
+      const valid = group.sessionIds.filter((id) => sessionSet.has(id)).slice(0, MAX_OPEN)
+      if (valid.length === 0) return
+      setOpenIds(valid)
+      setFocusedId(valid[0])
+      setLastSeenTurn((prev) => {
+        const next = { ...prev }
+        const now = Date.now()
+        for (const id of valid) next[id] = now
+        return next
+      })
+      // Resume dormant sessions in the background.
+      for (const id of valid) {
+        const s = sessions.find((x) => x.id === id)
+        if (s && !s.running && !s.terminated) {
+          void api.post(`/sessions/${id}/resume`, {}).catch(() => {})
+        }
+      }
+    },
+    [groups, sessions],
+  )
+
   /** Select a session. Dormant (not running, not terminated) sessions are
    *  resumed first — the server spins up a fresh Query with
-   *  `options.resume`, then the SSE replay fills in the transcript. */
+   *  `options.resume`, then the SSE replay fills in the transcript.
+   *  If the session belongs to a different group than the one currently
+   *  active, the entire view switches to that group first. */
   const handleSelect = useCallback(
     async (id: string) => {
       const s = sessions.find((x) => x.id === id)
@@ -590,6 +655,37 @@ export function App() {
         openSession(id, undefined)
         return
       }
+
+      // Group switching: clicking a session in another group activates
+      // that group, replacing all open panels with its sessions.
+      const sessionGroup = groups.find((g) => g.sessionIds.includes(id))
+      if (sessionGroup && sessionGroup.id !== activeGroupId) {
+        handleActivateGroup(sessionGroup.id)
+        // Focus the clicked session (overrides the default first-in-group
+        // focus set by handleActivateGroup). React batches setState so
+        // both calls produce a single render.
+        setFocusedId(id)
+        // Resume if dormant.
+        if (!s.running && !s.terminated && !resuming.has(id)) {
+          setResuming((prev) => new Set(prev).add(id))
+          try {
+            const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/resume`, {})
+            setSessions((prev) => prev.map((p) => (p.id === id ? res.session : p)))
+          } catch (e) {
+            setError((e as Error).message)
+          } finally {
+            setResuming((prev) => {
+              const next = new Set(prev)
+              next.delete(id)
+              return next
+            })
+          }
+        }
+        setLastSeenTurn((prev) => ({ ...prev, [id]: s.lastTurnAt ?? Date.now() }))
+        return
+      }
+
+      // Same group (or no group) — original behaviour.
       if (s.running || s.terminated) {
         openSession(id, s.lastTurnAt)
         return
@@ -610,7 +706,7 @@ export function App() {
         })
       }
     },
-    [sessions, resuming, openSession],
+    [sessions, resuming, openSession, groups, activeGroupId, handleActivateGroup],
   )
 
   /** When focus changes to an open panel, bump its seen-turn so the unread
@@ -740,30 +836,21 @@ export function App() {
     return [...pinned, ...rest]
   }, [sessions, sidebarOrder])
 
-  /** Grouped sidebar view: pinned → groups → ungrouped. Only meaningful
-   *  when at least one group exists; otherwise the flat orderedSessions
-   *  list is used directly. */
+  /** Grouped sidebar view: pinned -> groups. Every session belongs to at
+   *  least one group (the auto-created "default" at minimum), so there
+   *  is no "ungrouped" bucket. */
   const sidebarSections = useMemo((): SidebarSection[] => {
-    if (groups.length === 0) return []
     const byId = new Map(sessions.map((s) => [s.id, s]))
-    const pinned: SessionInfo[] = []
 
     // 1. Pinned sessions (always shown at top, independent of groups).
+    const pinned: SessionInfo[] = []
     for (const s of sessions) {
-      if (s.pinned) {
-        pinned.push(s)
-        // Don't remove from remaining — pinned sessions also appear in their groups.
-      }
+      if (s.pinned) pinned.push(s)
     }
 
-    // 2. Build a set of all grouped session IDs for the "ungrouped" bucket.
-    const groupedIds = new Set<string>()
-    for (const g of groups) for (const id of g.sessionIds) groupedIds.add(id)
-
-    // 3. Group sections.
+    // 2. Group sections.
     const sections: SidebarSection[] = []
     if (pinned.length > 0) sections.push({ kind: 'pinned', sessions: pinned })
-
     for (const g of groups) {
       const groupSessions: SessionInfo[] = []
       for (const id of g.sessionIds) {
@@ -772,14 +859,6 @@ export function App() {
       }
       sections.push({ kind: 'group', group: g, sessions: groupSessions })
     }
-
-    // 4. Ungrouped sessions (not in any group, not pinned).
-    const ungrouped: SessionInfo[] = []
-    for (const s of sessions) {
-      if (!s.pinned && !groupedIds.has(s.id)) ungrouped.push(s)
-    }
-    if (ungrouped.length > 0) sections.push({ kind: 'ungrouped', sessions: ungrouped })
-
     return sections
   }, [sessions, groups])
 
@@ -813,7 +892,26 @@ export function App() {
 
   const handleDeleteGroup = useCallback(
     (groupId: string) => {
-      setGroups((prev) => prev.filter((g) => g.id !== groupId))
+      setGroups((prev) => {
+        const target = prev.find((g) => g.id === groupId)
+        if (!target) return prev.filter((g) => g.id !== groupId)
+        // Find sessions that would become ungrouped (only in the deleted group)
+        // and move them to the "default" group.
+        const remaining = prev.filter((g) => g.id !== groupId)
+        const otherIds = new Set(remaining.flatMap((g) => g.sessionIds))
+        const orphaned = target.sessionIds.filter((id) => !otherIds.has(id))
+        if (orphaned.length > 0) {
+          const defaultGroup = remaining.find((g) => g.name === 'default')
+          if (defaultGroup) {
+            return remaining.map((g) =>
+              g.id === defaultGroup.id
+                ? { ...g, sessionIds: [...g.sessionIds, ...orphaned] }
+                : g,
+            )
+          }
+        }
+        return remaining
+      })
       setCollapsedGroups((prev) => {
         if (!(groupId in prev)) return prev
         const next = { ...prev }
@@ -827,19 +925,6 @@ export function App() {
   const handleRenameGroup = useCallback(
     (groupId: string, name: string) => {
       setGroups((prev) => prev.map((g) => (g.id === groupId ? { ...g, name } : g)))
-    },
-    [setGroups],
-  )
-
-  const handleAddToGroup = useCallback(
-    (sessionId: string, groupId: string) => {
-      setGroups((prev) =>
-        prev.map((g) =>
-          g.id === groupId && !g.sessionIds.includes(sessionId)
-            ? { ...g, sessionIds: [...g.sessionIds, sessionId] }
-            : g,
-        ),
-      )
     },
     [setGroups],
   )
@@ -883,33 +968,6 @@ export function App() {
       )
     },
     [setGroups],
-  )
-
-  /** Activate a group: replace main-area panels with the group's sessions. */
-  const handleActivateGroup = useCallback(
-    (groupId: string) => {
-      const group = groups.find((g) => g.id === groupId)
-      if (!group) return
-      const sessionSet = new Set(sessions.map((s) => s.id))
-      const valid = group.sessionIds.filter((id) => sessionSet.has(id)).slice(0, MAX_OPEN)
-      if (valid.length === 0) return
-      setOpenIds(valid)
-      setFocusedId(valid[0])
-      setLastSeenTurn((prev) => {
-        const next = { ...prev }
-        const now = Date.now()
-        for (const id of valid) next[id] = now
-        return next
-      })
-      // Resume dormant sessions in the background.
-      for (const id of valid) {
-        const s = sessions.find((x) => x.id === id)
-        if (s && !s.running && !s.terminated) {
-          void api.post(`/sessions/${id}/resume`, {}).catch(() => {})
-        }
-      }
-    },
-    [groups, sessions],
   )
 
   const toggleGroupCollapse = useCallback(

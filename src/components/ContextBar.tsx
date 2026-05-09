@@ -1,13 +1,14 @@
 // Tiny progress bar showing how full the context window is.
 //
-// Pure display component — data arrives via the per-session SSE stream
-// (the server pushes a `context_usage` event every 10 SDK messages).
+// Pure display component — data arrives via the WebSocket hub
+// (the server pushes a `context_usage` event periodically).
 // No fetch calls, no timers, no polling.
 
 import type { ContextUsage } from '../hooks/useChatStream'
+import { formatTokens } from '../utils/format'
 
 interface Props {
-  /** Latest usage snapshot from the SSE stream, or null if none yet. */
+  /** Latest usage snapshot from the WebSocket hub, or null if none yet. */
   usage: ContextUsage | null
 }
 
@@ -45,9 +46,4 @@ export function ContextBar({ usage }: Props) {
       </div>
     </div>
   )
-}
-
-function formatTokens(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`
-  return String(n)
 }

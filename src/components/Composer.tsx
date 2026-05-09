@@ -6,9 +6,11 @@
 // history, bare ↑/↓ walks history only at the text edge so multi-line
 // drafts stay editable.
 
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Attachment } from '../hooks/useAttachments'
 import type { InputHistoryApi } from '../hooks/useInputHistory'
+import type { SlashCommand } from '../types'
+import { CommandPicker } from './CommandPicker'
 
 interface Props {
   input: string
@@ -28,6 +30,8 @@ interface Props {
   onDrop: (e: React.DragEvent) => void
 
   history: InputHistoryApi
+  /** Slash commands from the SDK, fetched by the parent. */
+  commands?: SlashCommand[]
   onSend: () => void
   onInterrupt: () => void
   /** True only while there's an outstanding turn the server can interrupt.
@@ -55,6 +59,7 @@ export function Composer({
   onDragLeave,
   onDrop,
   history,
+  commands,
   onSend,
   onInterrupt,
   canInterrupt,
@@ -62,6 +67,43 @@ export function Composer({
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // ---- Slash command picker state ----
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [pickerQuery, setPickerQuery] = useState('')
+  const [pickerIndex, setPickerIndex] = useState(0)
+
+  /** Filter commands by prefix match against name + aliases. */
+  const filteredCommands = useMemo(() => {
+    if (!commands) return []
+    if (!pickerQuery) return commands
+    const q = pickerQuery.toLowerCase()
+    return commands.filter(
+      (c) =>
+        c.name.toLowerCase().startsWith(q) ||
+        c.aliases?.some((a) => a.toLowerCase().startsWith(q)),
+    )
+  }, [commands, pickerQuery])
+
+  /** Replace the current "/xxx" token with the confirmed command name. */
+  const confirmPicker = useCallback(() => {
+    const cmd = filteredCommands[pickerIndex]
+    if (!cmd) return
+    const caret = textareaRef.current?.selectionStart ?? input.length
+    const before = input.slice(0, caret)
+    const wordStart = before.lastIndexOf(' ') + 1
+    const after = input.slice(caret)
+    const newText = input.slice(0, wordStart) + '/' + cmd.name + ' ' + after
+    setInput(newText)
+    setPickerOpen(false)
+    requestAnimationFrame(() => {
+      const el = textareaRef.current
+      if (!el) return
+      const newPos = wordStart + cmd.name.length + 2 // '/' + name + ' '
+      el.focus()
+      el.setSelectionRange(newPos, newPos)
+    })
+  }, [input, setInput, pickerIndex, filteredCommands])
 
   // After a history step the textarea's caret is still where it was,
   // which on a multi-line recall puts you in the middle of the prompt.
@@ -135,10 +177,51 @@ export function Composer({
           }
           value={input}
           onChange={(e) => {
-            setInput(e.target.value)
+            const val = e.target.value
+            setInput(val)
             if (history.isBrowsing()) history.reset()
+
+            // Slash command trigger: detect if the caret is inside a
+            // word that starts with "/" (at a word boundary).
+            const caret = e.target.selectionStart
+            const before = val.slice(0, caret)
+            const wordStart = before.lastIndexOf(' ') + 1
+            const word = before.slice(wordStart)
+            if (word.startsWith('/') && !word.includes(' ') && commands && commands.length > 0) {
+              setPickerOpen(true)
+              setPickerQuery(word.slice(1))
+              setPickerIndex(0)
+            } else if (pickerOpen) {
+              setPickerOpen(false)
+            }
           }}
           onKeyDown={(e) => {
+            // When the slash command picker is open, route arrow/enter/escape
+            // to the picker instead of the existing history/send handlers.
+            if (pickerOpen) {
+              if (e.key === 'ArrowUp') {
+                e.preventDefault()
+                setPickerIndex((i) => Math.max(0, i - 1))
+                return
+              }
+              if (e.key === 'ArrowDown') {
+                e.preventDefault()
+                setPickerIndex((i) => i + 1)
+                return
+              }
+              if (e.key === 'Enter' || e.key === 'Tab') {
+                e.preventDefault()
+                confirmPicker()
+                return
+              }
+              if (e.key === 'Escape') {
+                e.preventDefault()
+                setPickerOpen(false)
+                return
+              }
+              // All other keys (letters, backspace, etc.) fall through to
+              // onChange which will re-filter or close the picker.
+            }
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
               onSend()
@@ -181,6 +264,32 @@ export function Composer({
           }}
           disabled={disabled}
         />
+        {pickerOpen && filteredCommands.length > 0 && (
+          <CommandPicker
+            commands={commands!}
+            query={pickerQuery}
+            selectedIndex={pickerIndex}
+            anchorRef={textareaRef}
+            onSelect={(cmd) => {
+              // Confirm directly with the clicked command.
+              const caret = textareaRef.current?.selectionStart ?? input.length
+              const before = input.slice(0, caret)
+              const wordStart = before.lastIndexOf(' ') + 1
+              const after = input.slice(caret)
+              const newText = input.slice(0, wordStart) + '/' + cmd.name + ' ' + after
+              setInput(newText)
+              setPickerOpen(false)
+              requestAnimationFrame(() => {
+                const el = textareaRef.current
+                if (!el) return
+                const newPos = wordStart + cmd.name.length + 2
+                el.focus()
+                el.setSelectionRange(newPos, newPos)
+              })
+            }}
+            onClose={() => setPickerOpen(false)}
+          />
+        )}
       </div>
       <div className="chat-composer-actions">
         <button

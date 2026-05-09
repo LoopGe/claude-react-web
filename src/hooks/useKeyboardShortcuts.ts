@@ -12,8 +12,13 @@
 // text input (textarea / input / contenteditable), so typing a prompt
 // doesn't accidentally trigger app-level shortcuts. Pass `allowInInput`
 // on a specific shortcut to override (useful for Esc).
+//
+// Listener stability: the keydown listener is registered exactly once
+// (on mount). Changing the `shortcuts` array only updates a ref — no
+// remove/add cycle, no identity churn, no micro-disruptions to the
+// browser's event pipeline.
 
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 
 export type ShortcutHandler = (e: KeyboardEvent) => void
 
@@ -29,11 +34,18 @@ export interface Shortcut {
 }
 
 export function useKeyboardShortcuts(shortcuts: Shortcut[]): void {
+  // Keep the latest shortcuts in a ref so the single keydown listener
+  // always sees up-to-date handlers without being torn down and
+  // re-attached. The listener is registered once (empty dep array);
+  // only this ref is swapped on every render.
+  const shortcutsRef = useRef(shortcuts)
+  shortcutsRef.current = shortcuts
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const combo = eventCombo(e)
       if (!combo) return
-      for (const s of shortcuts) {
+      for (const s of shortcutsRef.current) {
         if (normalise(s.combo) !== combo) continue
         if (!s.allowInInput && isInputTarget(e.target)) return
         // preventDefault: shortcuts like Alt+W / Ctrl+1 shouldn't trigger
@@ -46,7 +58,7 @@ export function useKeyboardShortcuts(shortcuts: Shortcut[]): void {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [shortcuts])
+  }, [])
 }
 
 /** Reduce a KeyboardEvent to its combo string in the same shape the

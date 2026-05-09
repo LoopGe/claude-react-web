@@ -52,7 +52,7 @@ Idle GC runs every minute; sessions whose `lastActivityAt` is older than `idleMs
 
 ### Client: React 19 + Vite
 
-`src/App.tsx` is a three-pane layout: `SessionList` (left), `Chat` (center), `SettingsPanel` (right drawer). Session list polls `/api/sessions` every 5s for metadata freshness (the list endpoint isn't pushed).
+`src/App.tsx` is a two-pane layout: `SessionList` (left sidebar) and `Chat` panels (center). `SettingsPanel` is rendered as a per-panel overlay inside each `Chat` column (absolutely positioned, not a right drawer). A gear button in each panel header opens the overlay; clicking the backdrop or pressing Escape dismisses it. The two most common settings (model, permission mode) also have inline "chip" controls in the panel header that bypass the overlay entirely. Session list polls `/api/sessions` every 5s for metadata freshness (the list endpoint isn't pushed).
 
 - `src/hooks/useSSE.ts` — `useSSE` for the main channel, `useNamedEventSource` for arbitrary named-event channels (used by the permission modal).
 - `src/hooks/useApi.ts` — thin `fetch` wrapper with `/api` base.

@@ -8,7 +8,7 @@
 // new rules flag as a cascading-render hazard. Re-mount is cheap because
 // the sessions themselves are long-lived on the server.
 
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { SettingsPanel } from './SettingsPanel'
 import { api } from '../hooks/useApi'
 import { useAttachments } from '../hooks/useAttachments'
@@ -20,8 +20,10 @@ import { ContextBar } from './ContextBar'
 import { MessageList } from './MessageList'
 import { PermissionDialog } from './PermissionDialog'
 import { QuestionDialog } from './QuestionDialog'
+import { SessionRecapBanner } from './SessionRecapBanner'
 import { TodoChecklist } from './TodoChecklist'
-import type { SessionInfo } from '../types'
+import { useSessionRecap } from '../hooks/useSessionRecap'
+import type { SessionInfo, SlashCommand } from '../types'
 
 const INPUT_HISTORY_KEY = 'claude-react-web:input-history'
 const DRAFT_KEY_PREFIX = 'claude-react-web:draft:'
@@ -48,16 +50,19 @@ function writeDraft(sessionId: string, draft: string): void {
 interface Props {
   session: SessionInfo
   /** Reserved for future push updates — currently unused because session
-   *  state is tracked via the SSE stream + top-level session list poll. */
+   *  state is tracked via the WebSocket hub + top-level session list poll. */
   onSessionUpdate: (s: SessionInfo) => void
   /** Forwarded to MessageList. App-level toggle (header bug icon). */
   showSystemEvents?: boolean
   /** When true, render the Settings overlay on top of this chat panel. */
   settingsOpen?: boolean
   onCloseSettings?: () => void
+  /** Whether this panel is the currently focused (active) one. Used by
+   *  useSessionRecap to track last-viewed timestamps. */
+  focused?: boolean
 }
 
-export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings, onSessionUpdate }: Props) {
+export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings, onSessionUpdate, focused }: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
   // The parent remounts Chat on session switch (<Chat key={session.id}>), so
   // this initializer runs exactly once per mount — the right place to hydrate.
@@ -69,6 +74,24 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
    *  button would leave focus on the button, breaking the
    *  type-enter-type-enter flow. */
   const [composerFocusSignal, setComposerFocusSignal] = useState(0)
+
+  // Slash commands — fetched once per session mount. The SDK subprocess
+  // returns the list via a control request; 410 on dormant sessions is
+  // expected and silently ignored.
+  const [commands, setCommands] = useState<SlashCommand[]>([])
+  useEffect(() => {
+    if (!session.running) return
+    let cancelled = false
+    api
+      .get<{ commands: SlashCommand[] }>(`/sessions/${session.id}/commands`)
+      .then((res) => {
+        if (!cancelled) setCommands(res.commands ?? [])
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [session.id, session.running])
 
   /** Write-through setter: mirror every change to sessionStorage so the
    *  draft survives a tab reload or a session switch-and-back. */
@@ -86,13 +109,16 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
   const history = useInputHistory(INPUT_HISTORY_KEY)
 
   // Permissions first — its onRequest/onResolved are passed into the
-  // stream hook so SDK messages and permission events share one SSE.
+  // stream hook so SDK messages and permission events share one WebSocket.
   const permissions = usePermissionChannel(session.id)
   const stream = useChatStream(session.id, {
     onRequest: permissions.onRequest,
     onResolved: permissions.onResolved,
   })
   const attachments = useAttachments(session.id, session.cwd)
+
+  // Session recap — AI summary banner when returning after inactivity.
+  const recap = useSessionRecap(session.id, focused ?? false)
 
   // Pull out the specific functions/values we actually use downstream.
   // Putting the whole hook object in a dep list re-creates callbacks every
@@ -196,7 +222,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
 
   // Note: we used to poll /sessions/:id 500ms after every SDK message to
   // keep the header badges fresh. That added O(messages × sessions) HTTP
-  // requests on top of the SSE streams, and with three panels open it was
+  // requests on top of the WebSocket streams, and with three panels open it was
   // enough to saturate the browser's HTTP/1.1 connection pool. Model /
   // permissionMode only change via user actions (which already update
   // session state), and `working` is now derived from the message stream
@@ -204,6 +230,15 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
 
   return (
     <div className="chat">
+      {recap.visible && recap.recap && (
+        <SessionRecapBanner
+          recap={recap.recap}
+          loading={recap.loading}
+          onDismiss={recap.dismiss}
+          onRefresh={recap.refresh}
+        />
+      )}
+
       <MessageList
         messages={stream.messages}
         showSystemEvents={showSystemEvents}
@@ -243,6 +278,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
         onDragLeave={onDragLeave}
         onDrop={onDrop}
         history={history}
+        commands={commands}
         onSend={() => void send()}
         onInterrupt={() => void interrupt()}
         canInterrupt={session.working}

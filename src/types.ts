@@ -4,6 +4,15 @@
 
 export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto'
 
+export const PERMISSION_MODES: PermissionMode[] = [
+  'default',
+  'acceptEdits',
+  'plan',
+  'bypassPermissions',
+  'dontAsk',
+  'auto',
+]
+
 export interface SessionInfo {
   id: string
   createdAt: number
@@ -40,7 +49,6 @@ export interface SessionGroup {
 export type SidebarSection =
   | { kind: 'pinned'; sessions: SessionInfo[] }
   | { kind: 'group'; group: SessionGroup; sessions: SessionInfo[] }
-  | { kind: 'ungrouped'; sessions: SessionInfo[] }
 
 /** Shape of Options we expose in the "new session" form. */
 export interface NewSessionForm {
@@ -67,12 +75,22 @@ export interface NewSessionForm {
    *  sent to the server — stored in localStorage keyed by the returned
    *  session id once creation succeeds. */
   accent?: string
+  /** Frontend-only: target group for the new session. Required. */
+  groupId?: string
 }
 
 export interface ModelInfo {
   id: string
   display_name?: string
   description?: string
+}
+
+/** A slash command exposed by the SDK (e.g. /help, /clear). */
+export interface SlashCommand {
+  name: string
+  description: string
+  argumentHint: string
+  aliases?: string[]
 }
 
 /** One question within an AskUserQuestion tool call. */
@@ -87,7 +105,7 @@ export interface QuestionSpec {
   }>
 }
 
-/** Pending event routed on the permission SSE channel. The server uses a
+/** Pending event routed on the permission channel. The server uses a
  *  `kind` discriminator to send both tool-permission prompts and
  *  interactive AskUserQuestion calls through the same channel — they
  *  both mean "SDK paused, waiting on the user" — but each kind renders
@@ -142,4 +160,23 @@ export interface SdkMessage {
   num_turns?: number
   duration_ms?: number
   [k: string]: unknown
+}
+
+// ── Session Recap ─────────────────────────────────────────────────
+
+export interface RecapStats {
+  messageCount: number
+  userTurns: number
+  assistantTurns: number
+  totalCostUsd: number
+  durationMs: number
+  toolsUsed: string[]
+}
+
+export interface RecapResponse {
+  summary: string
+  stats: RecapStats
+  cached: boolean
+  generatedAt: number
+  fallback?: boolean
 }

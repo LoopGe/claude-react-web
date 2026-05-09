@@ -56,8 +56,7 @@ export type WsClientFrame = WsSubscribe | WsUnsubscribe | WsPing
 
 // --- outbound (server → client) ----------------------------------------------
 
-/** Initial session list snapshot + subsequent updates. Mirrors the old
- *  SSE `/sessions/events` channel's event set. */
+/** Initial session list snapshot + subsequent updates. */
 export interface WsSessionsSnapshot {
   kind: 'sessions-snapshot'
   sessions: SessionInfo[]

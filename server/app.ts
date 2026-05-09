@@ -1,4 +1,4 @@
-// Compose the Hono app: CORS for dev, REST+SSE on /api, static client on /.
+// Compose the Hono app: CORS for dev, REST + WebSocket on /api, static client on /.
 
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'

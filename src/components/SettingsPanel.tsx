@@ -4,8 +4,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../hooks/useApi'
 import type { ModelInfo, PermissionMode, SessionInfo } from '../types'
-
-const PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'plan', 'bypassPermissions', 'dontAsk', 'auto']
+import { PERMISSION_MODES } from '../types'
 
 interface Props {
   session: SessionInfo

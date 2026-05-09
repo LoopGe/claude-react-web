@@ -1,11 +1,11 @@
 // Tool-permission state for one Chat session.
 //
-// This hook does NOT open its own SSE connection — permission events are
-// multiplexed onto the main /stream channel (see server/routes.ts). The
+// This hook does NOT open its own connection — permission events are
+// multiplexed onto the WebSocket hub (see src/hooks/useWsHub.ts). The
 // caller routes `permission_request` / `permission_resolved` frames into
-// `onRequest()` / `onResolved()`. We still keep a one-shot REST fallback
-// to seed the initial pending list, covering the race where a request
-// was broadcast before our SSE opened.
+// `onRequest()` / `onResolved()`. A one-shot REST call seeds the initial
+// pending list, covering the race where a request was broadcast before
+// the WebSocket subscription opened.
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
@@ -37,7 +37,7 @@ export function usePermissionChannel(sessionId: string): UsePermissionChannel {
   const [pending, setPending] = useState<PermissionRequest[]>([])
   const [error, setError] = useState<string | null>(null)
 
-  // Initial snapshot — the SSE connection will re-broadcast any still-open
+  // Initial snapshot — the WebSocket connection will re-broadcast any still-open
   // request on connect, but grabbing the REST snapshot makes the modal
   // appear immediately after a hard refresh even before the stream opens.
   useEffect(() => {
@@ -49,7 +49,7 @@ export function usePermissionChannel(sessionId: string): UsePermissionChannel {
         setPending((prev) => mergePending(prev, res.pending))
       })
       .catch(() => {
-        /* non-fatal: the SSE subscription will catch subsequent events */
+        /* non-fatal: the WebSocket subscription will catch subsequent events */
       })
     return () => {
       cancelled = true
