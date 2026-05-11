@@ -19,7 +19,7 @@
 //   we consider the connection "fully up". That's when onReconnect
 //   fires on post-initial opens, so banners can clear themselves.
 
-import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, createElement, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { WS_PATH, type WsClientFrame, type WsServerFrame } from '../ws-types'
 
@@ -34,8 +34,15 @@ export type WsHubListener = (frame: WsServerFrame) => void
 export type WsHubStatus = 'connecting' | 'online' | 'reconnecting'
 
 interface WsHubApi {
-  /** Register a listener. Returns an unregister fn. */
+  /** Register a global listener. Receives ALL frames (including
+   *  session-scoped ones). Returns an unregister fn. */
   addListener: (fn: WsHubListener) => () => void
+  /** Register a session-scoped listener. Only receives frames whose
+   *  `sessionId` field matches. This is O(1) dispatch per frame
+   *  (indexed by sessionId) instead of O(N) global fan-out — use it
+   *  in useChatStream for per-panel message handling. Returns an
+   *  unregister fn. */
+  addSessionListener: (sessionId: string, fn: WsHubListener) => () => void
   /** Idempotently subscribe a session. Safe to call repeatedly; the
    *  hub tracks ref-counts internally so multiple components can
    *  subscribe to the same session without stepping on each other. */
@@ -66,12 +73,16 @@ export function WsHubProvider({ children, url }: ProviderProps) {
   // connection. React state only holds the coarse `status` for banner
   // rendering.
   const listenersRef = useRef<Set<WsHubListener>>(new Set())
+  const sessionListenersRef = useRef<Map<string, Set<WsHubListener>>>(new Map())
   const refCountsRef = useRef<Map<string, number>>(new Map())
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimerRef = useRef<number | null>(null)
   const pingTimerRef = useRef<number | null>(null)
   const attemptsRef = useRef<number>(0)
   const unmountedRef = useRef(false)
+  // Ref to break the circular dependency between connect ↔ scheduleReconnect.
+  // connect is declared first; scheduleReconnect calls connectRef.current().
+  const connectRef = useRef<() => void>(() => {})
   const [status, setStatus] = useState<WsHubStatus>('connecting')
 
   /** Send a frame if the socket is open. Silently drops otherwise —
@@ -85,6 +96,27 @@ export function WsHubProvider({ children, url }: ProviderProps) {
     } catch {
       /* socket may have transitioned to CLOSING; ignore */
     }
+  }, [])
+
+  // Reconnect scheduler — declared before `connect` so it can be
+  // referenced without a forward-declaration lint error. The actual
+  // connect fn is called through connectRef to break the cycle.
+  const scheduleReconnect = useCallback(() => {
+    if (unmountedRef.current) return
+    setStatus('reconnecting')
+    // Exponential backoff, capped. Jitter prevents the "thundering
+    // herd" when the server comes back and 200 tabs all connect at
+    // the same millisecond.
+    const attempt = attemptsRef.current
+    attemptsRef.current = attempt + 1
+    const base = Math.min(500 * 2 ** attempt, 15_000)
+    const jitter = Math.random() * 400
+    const delay = base + jitter
+    if (reconnectTimerRef.current != null) window.clearTimeout(reconnectTimerRef.current)
+    reconnectTimerRef.current = window.setTimeout(() => {
+      reconnectTimerRef.current = null
+      connectRef.current()
+    }, delay)
   }, [])
 
   // Actual connect logic — separated from the main effect so the
@@ -132,13 +164,28 @@ export function WsHubProvider({ children, url }: ProviderProps) {
         return
       }
       if (!frame || typeof frame !== 'object' || typeof frame.kind !== 'string') return
-      // Fan out to every listener. Listeners themselves are responsible
-      // for filtering by kind / sessionId.
+      // Fan out to global listeners (O(N) where N is total listeners).
       for (const fn of listenersRef.current) {
         try {
           fn(frame)
         } catch (err) {
           console.error('[wsHub] listener threw:', err)
+        }
+      }
+      // Fan out to session-scoped listeners (O(1) lookup by sessionId).
+      // This is the fast path used by useChatStream — each panel only
+      // processes frames for its own session without scanning others.
+      const sid = 'sessionId' in frame ? (frame as { sessionId?: string }).sessionId : undefined
+      if (sid) {
+        const sessionSet = sessionListenersRef.current.get(sid)
+        if (sessionSet) {
+          for (const fn of sessionSet) {
+            try {
+              fn(frame)
+            } catch (err) {
+              console.error('[wsHub] session listener threw:', err)
+            }
+          }
         }
       }
     })
@@ -157,25 +204,12 @@ export function WsHubProvider({ children, url }: ProviderProps) {
       // and scheduleReconnect handles the retry. Logging the event
       // itself is noise.
     })
-  }, [safeSend, url])
-
-  const scheduleReconnect = useCallback(() => {
-    if (unmountedRef.current) return
-    setStatus('reconnecting')
-    // Exponential backoff, capped. Jitter prevents the "thundering
-    // herd" when the server comes back and 200 tabs all connect at
-    // the same millisecond.
-    const attempt = attemptsRef.current
-    attemptsRef.current = attempt + 1
-    const base = Math.min(500 * 2 ** attempt, 15_000)
-    const jitter = Math.random() * 400
-    const delay = base + jitter
-    if (reconnectTimerRef.current != null) window.clearTimeout(reconnectTimerRef.current)
-    reconnectTimerRef.current = window.setTimeout(() => {
-      reconnectTimerRef.current = null
-      connect()
-    }, delay)
-  }, [connect])
+  }, [safeSend, url, scheduleReconnect])
+  // Keep the ref in sync so scheduleReconnect (empty-dep) always calls
+  // the latest connect closure. Layout effect avoids react-hooks/refs.
+  useLayoutEffect(() => {
+    connectRef.current = connect
+  })
 
   useEffect(() => {
     unmountedRef.current = false
@@ -210,6 +244,21 @@ export function WsHubProvider({ children, url }: ProviderProps) {
     listenersRef.current.add(fn)
     return () => {
       listenersRef.current.delete(fn)
+    }
+  }, [])
+
+  const addSessionListener = useCallback((sessionId: string, fn: WsHubListener) => {
+    let set = sessionListenersRef.current.get(sessionId)
+    if (!set) {
+      set = new Set()
+      sessionListenersRef.current.set(sessionId, set)
+    }
+    set.add(fn)
+    return () => {
+      const s = sessionListenersRef.current.get(sessionId)
+      if (!s) return
+      s.delete(fn)
+      if (s.size === 0) sessionListenersRef.current.delete(sessionId)
     }
   }, [])
 
@@ -248,9 +297,10 @@ export function WsHubProvider({ children, url }: ProviderProps) {
   // are written to tolerate re-runs cheaply (idempotent subscribe +
   // server replay clobbers local state correctly), so this is fine.
   const api = useMemo<WsHubApi>(
-    () => ({ addListener, subscribe, status }),
-    [addListener, subscribe, status],
+    () => ({ addListener, addSessionListener, subscribe, status }),
+    [addListener, addSessionListener, subscribe, status],
   )
+  // eslint-disable-next-line react-hooks/refs -- api is memoized, not a live ref
   return createElement(WsHubContext.Provider, { value: api }, children)
 }
 

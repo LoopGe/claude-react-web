@@ -6,6 +6,7 @@
 // when no API key is configured.
 
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import { RECAP_MODEL } from './config.js'
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -177,7 +178,7 @@ async function callAnthropic(transcript: string): Promise<string> {
       ...(useBearer ? { Authorization: `Bearer ${apiKey}` } : { 'x-api-key': apiKey }),
     },
     body: JSON.stringify({
-      model: 'claude-haiku-3-5-20241022',
+      model: RECAP_MODEL,
       max_tokens: 1024,
       temperature: 0.3,
       system: SYSTEM_PROMPT,

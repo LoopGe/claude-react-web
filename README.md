@@ -33,6 +33,16 @@ claude-react-web [options]
   -h, --help              Show help
 ```
 
+### Environment variables
+
+| Variable | What it does | Default |
+| --- | --- | --- |
+| `ANTHROPIC_API_KEY` | API key for the Claude SDK (required unless using base URL + auth token) | — |
+| `ANTHROPIC_BASE_URL` | Custom API base URL | — |
+| `ANTHROPIC_AUTH_TOKEN` | Auth token when using a custom base URL | — |
+| `DEFAULT_MODELS` | Comma-separated model list; first entry is the default model | `anthropic/claude-sonnet-4-20250514, claude-opus-4-20250514, claude-haiku-3-5-20241022` |
+| `RECAP_MODEL` | Lightweight model used for session recap generation | `claude-haiku-3-5-20241022` |
+
 ## Develop
 
 ```bash
@@ -52,7 +62,7 @@ Useful scripts:
 | `npm run typecheck` | `tsc --noEmit` for both browser and Node tsconfigs       |
 | `npm run lint`      | ESLint (includes `react-hooks`)                          |
 | `npm run format`    | Prettier write                                           |
-| `npm test`          | Vitest (server-side unit tests)                          |
+| `npm test`          | Vitest (server unit tests + client hook tests)           |
 
 ## Architecture
 
@@ -60,23 +70,26 @@ Useful scripts:
 server/
   cli.ts              # bin entry — parse argv, start server, open browser
   app.ts              # Hono app + static serve + routes
-  routes.ts           # REST + SSE endpoints
-  session-manager.ts  # Multi-session pool, Query pump, SSE fan-out
+  routes.ts           # REST endpoints
+  ws.ts               # WebSocket hub (single connection, multiplexed channels)
+  ws-protocol.ts      # Shared frame types for the WebSocket wire format
+  session-manager.ts  # Multi-session pool, Query pump, WebSocket fan-out
+  config.ts           # Centralised defaults with env-var overrides (MODEL_LIST, RECAP_MODEL, …)
   persistence.ts      # ~/.claude-react-web/sessions.json read/write
   pushable.ts         # Async iterable with push()
   fs-routes.ts        # Directory picker backend
 
 src/
-  App.tsx             # 3-up chat grid, sidebar, settings drawer
-  components/         # Chat, Composer, MessageList, SessionList, …
-  hooks/              # useChatStream, useAttachments, usePermissionChannel, …
+  App.tsx             # 3-up chat grid, sidebar, settings overlay, command palette
+  components/         # Chat, Composer, MessageList, SessionList, CommandPalette, …
+  hooks/              # useWsHub, useChatStream, useAttachments, usePermissionChannel, useKeyboardShortcuts, useInputHistory, …
 ```
 
-The server keeps one live `Query` per session — `session-manager.ts` pumps it and fans each SDK message out to every SSE subscriber. Metadata is persisted in `~/.claude-react-web/sessions.json`, so sessions survive restarts; the SDK itself stores full conversation history in `~/.claude/projects/` and resumes them via `options.resume`.
+The server keeps one live `Query` per session — `session-manager.ts` pumps it and fans each SDK message out to every WebSocket subscriber via a single multiplexed connection per tab. Metadata is persisted in `~/.claude-react-web/sessions.json`, so sessions survive restarts; the SDK itself stores full conversation history in `~/.claude/projects/` and resumes them via `options.resume`. Server-side defaults (model list, recap model, session idle timeout) are centralised in `config.ts` with environment-variable overrides.
 
 ## Contributing
 
-Issues and pull requests welcome. The codebase has ~30 unit tests against the session pool, persistence, and iterable utilities — please keep them green (`npm test`).
+Issues and pull requests welcome. The codebase has ~75 tests covering the session pool, persistence, iterable utilities, WebSocket hub, keyboard shortcuts, and input history — please keep them green (`npm test`).
 
 ## License
 

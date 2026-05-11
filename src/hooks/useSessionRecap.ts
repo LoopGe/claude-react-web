@@ -92,8 +92,6 @@ export function useSessionRecap(sessionId: string, focused: boolean): SessionRec
         }
       })
       .finally(() => setLoading(false))
-    // Only run on mount.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
 
   // Update last-viewed timestamp when focus changes.

@@ -63,6 +63,8 @@ export interface WsReplay {
 export interface WsReplayDone {
   kind: 'replay-done'
   sessionId: string
+  /** Chunked replay: permissions arrive with the final replay-done frame. */
+  permissions?: PermissionRequest[]
 }
 export interface WsMessage {
   kind: 'message'

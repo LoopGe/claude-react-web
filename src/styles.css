@@ -692,11 +692,19 @@ body.resizing-col * {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 .group-collapse-arrow {
+  background: none;
+  border: none;
+  padding: 0;
   font-size: 10px;
   width: 14px;
   text-align: center;
   color: var(--fg-muted);
   flex-shrink: 0;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.group-collapse-arrow:hover {
+  color: var(--accent);
 }
 .group-header-name {
   flex: 1;
@@ -713,21 +721,6 @@ body.resizing-col * {
   padding: 0 5px;
   min-width: 16px;
   text-align: center;
-}
-.group-activate-btn {
-  background: none;
-  border: 1px solid var(--border);
-  color: var(--fg-muted);
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
-}
-.group-activate-btn:hover {
-  background: var(--accent);
-  color: var(--fg-on-accent);
-  border-color: var(--accent);
 }
 .group-sessions {
   display: flex;

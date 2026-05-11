@@ -28,15 +28,19 @@ export interface SessionInfo {
   error?: string
   /** Server-reported: the SDK is mid-turn. Drives the "thinking" dot. */
   working: boolean
+  /** Epoch ms when the current turn started. Only set while `working` is
+   *  true; allows the UI to compute an accurate elapsed timer. */
+  workingSince?: number
   /** Epoch ms of last completed turn. Used to flag unread. */
   lastTurnAt?: number
   /** User pinned this session — sticks to the top of the sidebar. */
   pinned?: boolean
 }
 
-/** A named collection of sessions for quick group switching. Sessions
- *  can belong to multiple groups (Tag semantics). Order of sessionIds
- *  determines activation priority (first MAX_OPEN are opened). */
+/** A named collection of sessions for quick group switching. Each session
+ *  belongs to exactly one group (exclusive membership). Each group holds
+ *  at most 3 sessions. Order of sessionIds determines activation priority
+ *  (first MAX_OPEN are opened). */
 export interface SessionGroup {
   id: string
   name: string
@@ -63,12 +67,18 @@ export interface NewSessionForm {
   /** Anthropic beta flags forwarded verbatim to the SDK. Use this to opt
    *  into extended windows such as the 1M context beta for Sonnet 4/4.5. */
   betas?: string[]
+  // Advanced options
+  additionalDirectories?: string[]
+  fallbackModel?: string
+  maxBudgetUsd?: number
+  thinking?: 'adaptive' | 'enabled' | 'disabled' | { type: 'enabled'; budgetTokens: number }
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  tools?: string[]
+  promptSuggestions?: boolean
   // Advanced (JSON blobs — rendered as <textarea> and parsed on submit)
   mcpServers?: unknown
   plugins?: unknown
   sandbox?: unknown
-  thinking?: unknown
-  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | number
   skills?: string[] | 'all'
   includePartialMessages?: boolean
   /** Frontend-only: chosen accent hex (from theme ACCENT_COLORS). Not
@@ -160,6 +170,24 @@ export interface SdkMessage {
   num_turns?: number
   duration_ms?: number
   [k: string]: unknown
+}
+
+// ── MCP Server Status ─────────────────────────────────────────────
+
+export interface McpServerTool {
+  name: string
+  description?: string
+  annotations?: { readOnly?: boolean; destructive?: boolean; openWorld?: boolean }
+}
+
+export interface McpServerStatus {
+  name: string
+  status: 'connected' | 'failed' | 'needs-auth' | 'pending' | 'disabled'
+  serverInfo?: { name?: string; version?: string }
+  error?: string
+  scope?: string
+  config?: unknown
+  tools?: McpServerTool[]
 }
 
 // ── Session Recap ─────────────────────────────────────────────────

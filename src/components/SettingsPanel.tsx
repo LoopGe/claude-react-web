@@ -3,7 +3,7 @@
 
 import { useEffect, useState } from 'react'
 import { api } from '../hooks/useApi'
-import type { ModelInfo, PermissionMode, SessionInfo } from '../types'
+import type { McpServerStatus, ModelInfo, PermissionMode, SessionInfo } from '../types'
 import { PERMISSION_MODES } from '../types'
 
 interface Props {
@@ -16,7 +16,7 @@ export function SettingsPanel({ session, onClose, onSessionUpdate }: Props) {
   const [models, setModels] = useState<ModelInfo[]>([])
   const [settingsText, setSettingsText] = useState('{}')
   const [usage, setUsage] = useState<unknown>(null)
-  const [mcp, setMcp] = useState<unknown>(null)
+  const [mcp, setMcp] = useState<McpServerStatus[]>([])
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -42,7 +42,7 @@ export function SettingsPanel({ session, onClose, onSessionUpdate }: Props) {
         /* ignore */
       }
       try {
-        const r = await api.get<{ mcp: unknown }>(`/sessions/${session.id}/mcp-status`)
+        const r = await api.get<{ mcp: McpServerStatus[] }>(`/sessions/${session.id}/mcp-status`)
         setMcp(r.mcp)
       } catch {
         /* ignore */
@@ -80,6 +80,43 @@ export function SettingsPanel({ session, onClose, onSessionUpdate }: Props) {
     await runAndRefresh(() =>
       api.post<{ session: SessionInfo }>(`/sessions/${session.id}/settings`, { settings: parsed }),
     )
+  }
+
+  const refreshMcp = async () => {
+    try {
+      const r = await api.get<{ mcp: McpServerStatus[] }>(`/sessions/${session.id}/mcp-status`)
+      setMcp(r.mcp)
+    } catch { /* ignore */ }
+  }
+
+  const reconnectMcp = async (name: string) => {
+    setErr(null)
+    try {
+      await api.post(`/sessions/${session.id}/mcp/${encodeURIComponent(name)}/reconnect`)
+      await refreshMcp()
+    } catch (e) {
+      setErr((e as Error).message)
+    }
+  }
+
+  const toggleMcp = async (name: string, enabled: boolean) => {
+    setErr(null)
+    try {
+      await api.post(`/sessions/${session.id}/mcp/${encodeURIComponent(name)}/toggle`, { enabled })
+      await refreshMcp()
+    } catch (e) {
+      setErr((e as Error).message)
+    }
+  }
+
+  const reloadPlugins = async () => {
+    setErr(null)
+    try {
+      await api.post(`/sessions/${session.id}/plugins/reload`)
+      await refreshMcp()
+    } catch (e) {
+      setErr((e as Error).message)
+    }
   }
 
   return (
@@ -168,10 +205,22 @@ export function SettingsPanel({ session, onClose, onSessionUpdate }: Props) {
       </div>
 
       <div className="settings-section">
-        <h4>MCP servers</h4>
-        <pre className="tool-input" style={{ maxHeight: 220, overflow: 'auto' }}>
-          {mcp ? formatJson(mcp) : '—'}
-        </pre>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h4 style={{ margin: 0 }}>MCP servers</h4>
+          <button className="btn" style={{ padding: '2px 8px', fontSize: 11 }} onClick={reloadPlugins} disabled={busy || session.terminated}>
+            Reload plugins
+          </button>
+        </div>
+        {mcp.length === 0 && <div style={{ color: 'var(--fg-muted)', fontSize: 13, marginTop: 6 }}>No MCP servers</div>}
+        {mcp.map((srv) => (
+          <McpServerCard
+            key={srv.name}
+            server={srv}
+            onReconnect={reconnectMcp}
+            onToggle={toggleMcp}
+            disabled={busy || session.terminated}
+          />
+        ))}
       </div>
     </aside>
   )
@@ -208,4 +257,84 @@ function formatJson(v: unknown): string {
   } catch {
     return String(v)
   }
+}
+
+const STATUS_COLORS: Record<string, string> = {
+  connected: '#4caf50',
+  failed: '#f44336',
+  'needs-auth': '#ff9800',
+  disabled: '#9e9e9e',
+  pending: '#2196f3',
+}
+
+function McpServerCard({
+  server,
+  onReconnect,
+  onToggle,
+  disabled,
+}: {
+  server: McpServerStatus
+  onReconnect: (name: string) => void
+  onToggle: (name: string, enabled: boolean) => void
+  disabled: boolean
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const color = STATUS_COLORS[server.status] ?? '#9e9e9e'
+  const canReconnect = server.status === 'failed' || server.status === 'disabled'
+  const canDisable = server.status !== 'disabled'
+  const canEnable = server.status === 'disabled'
+
+  return (
+    <div style={{ border: '1px solid var(--border)', borderRadius: 6, marginTop: 8, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: 'var(--bg)' }}>
+        <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
+        <span style={{ fontWeight: 500, fontSize: 13, flex: 1 }}>{server.name}</span>
+        {server.tools && (
+          <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>{server.tools.length} tool{server.tools.length !== 1 ? 's' : ''}</span>
+        )}
+        {canReconnect && (
+          <button className="btn" style={{ padding: '1px 6px', fontSize: 11 }} onClick={() => onReconnect(server.name)} disabled={disabled}>
+            Reconnect
+          </button>
+        )}
+        {canDisable && (
+          <button className="btn" style={{ padding: '1px 6px', fontSize: 11 }} onClick={() => onToggle(server.name, false)} disabled={disabled}>
+            Disable
+          </button>
+        )}
+        {canEnable && (
+          <button className="btn" style={{ padding: '1px 6px', fontSize: 11 }} onClick={() => onToggle(server.name, true)} disabled={disabled}>
+            Enable
+          </button>
+        )}
+        {server.tools && server.tools.length > 0 && (
+          <button
+            className="btn"
+            style={{ padding: '1px 6px', fontSize: 11 }}
+            onClick={() => setExpanded(!expanded)}
+          >
+            {expanded ? '▲' : '▼'}
+          </button>
+        )}
+      </div>
+      {server.error && (
+        <div style={{ padding: '4px 10px', fontSize: 12, color: '#f44336', background: 'var(--bg)' }}>
+          {server.error}
+        </div>
+      )}
+      {expanded && server.tools && (
+        <div style={{ padding: '4px 10px 8px', background: 'var(--bg)' }}>
+          {server.tools.map((t) => (
+            <div key={t.name} style={{ fontSize: 12, padding: '2px 0', display: 'flex', gap: 6, alignItems: 'baseline' }}>
+              <code style={{ fontWeight: 500 }}>{t.name}</code>
+              {t.annotations?.readOnly && <span style={{ fontSize: 10, color: '#4caf50' }}>read-only</span>}
+              {t.annotations?.destructive && <span style={{ fontSize: 10, color: '#f44336' }}>destructive</span>}
+              {t.annotations?.openWorld && <span style={{ fontSize: 10, color: '#ff9800' }}>open-world</span>}
+              {t.description && <span style={{ color: 'var(--fg-muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.description}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }

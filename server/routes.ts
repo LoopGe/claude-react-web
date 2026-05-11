@@ -217,6 +217,26 @@ export function buildApiRouter(sm: SessionManager): Hono {
     return c.json({ mcp })
   })
 
+  // Reconnect a failed/disconnected MCP server
+  app.post('/sessions/:id/mcp/:name/reconnect', async (c) => {
+    await sm.reconnectMcpServer(c.req.param('id'), c.req.param('name'))
+    return c.json({ ok: true })
+  })
+
+  // Enable or disable an MCP server
+  app.post('/sessions/:id/mcp/:name/toggle', async (c) => {
+    const body = await c.req.json<{ enabled?: boolean }>().catch(() => ({} as { enabled?: boolean }))
+    if (typeof body.enabled !== 'boolean') return c.json({ error: 'enabled (boolean) is required' }, 400)
+    await sm.toggleMcpServer(c.req.param('id'), c.req.param('name'), body.enabled)
+    return c.json({ ok: true })
+  })
+
+  // Reload plugins from disk and refresh MCP status
+  app.post('/sessions/:id/plugins/reload', async (c) => {
+    const result = await sm.reloadPlugins(c.req.param('id'))
+    return c.json({ result })
+  })
+
   // List pending requests (used by the frontend on first load to render any
   // outstanding modal before its WebSocket subscription is established).
   app.get('/sessions/:id/permissions', (c) => {

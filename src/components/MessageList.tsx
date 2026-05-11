@@ -24,6 +24,9 @@ interface Props {
    *  transcript. Sourced from session.working (server-authoritative) so
    *  it reflects state even across tabs and after reloads. */
   working?: boolean
+  /** Epoch ms when the current turn started. Passed through to
+   *  WorkingBubble so the elapsed timer is accurate across remounts. */
+  workingSince?: number
 }
 
 /** An item in the Virtuoso data array. Pre-computing isCompactSummary
@@ -33,7 +36,7 @@ interface RenderableItem {
   isCompactSummary: boolean
 }
 
-export function MessageList({ messages, showSystemEvents = false, working = false }: Props) {
+export function MessageList({ messages, showSystemEvents = false, working = false, workingSince }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -131,11 +134,11 @@ export function MessageList({ messages, showSystemEvents = false, working = fals
       function Footer() {
         return working ? (
           <div className="virtuoso-item-wrapper">
-            <WorkingBubble />
+            <WorkingBubble startedAt={workingSince} />
           </div>
         ) : null
       },
-    [working],
+    [working, workingSince],
   )
 
   return (
@@ -550,23 +553,24 @@ function truncate(s: string, n: number): string {
  *  with three bouncing dots + an elapsed-time label, so users can tell
  *  at a glance how long the turn has been running (helpful for long
  *  tool-heavy runs where a silent wait can feel broken). */
-function WorkingBubble() {
-  // Capture the start time in the mount effect, not at render — React's
-  // purity lint rule (rightly) flags Date.now() inside render bodies
-  // because it's non-deterministic. The ref stays null until the first
-  // commit; elapsedMs is 0 for that one-frame gap, which is fine.
-  const startedAtRef = useRef<number | null>(null)
-  const [elapsedMs, setElapsedMs] = useState(0)
+function WorkingBubble({ startedAt }: { startedAt?: number }) {
+  // Use the server-provided turn-start timestamp when available — this
+  // survives component remounts (e.g. group switches). Fall back to
+  // Date.now() if the server hasn't provided one yet (first frame).
+  // eslint-disable-next-line react-hooks/purity -- Date.now() in initializer is intentional
+  const startedAtRef = useRef<number>(startedAt ?? Date.now())
+  // eslint-disable-next-line react-hooks/refs -- reading ref in state initializer for initial value
+  const [elapsedMs, setElapsedMs] = useState(() =>
+    startedAtRef.current ? Date.now() - startedAtRef.current : 0,
+  )
   useEffect(() => {
-    startedAtRef.current = Date.now()
-    const tick = () => {
-      const start = startedAtRef.current
-      if (start != null) setElapsedMs(Date.now() - start)
-    }
+    // Update the ref if the server provides a (new) timestamp after mount.
+    if (startedAt) startedAtRef.current = startedAt
+    const tick = () => setElapsedMs(Date.now() - startedAtRef.current)
     tick()
     const id = window.setInterval(tick, 1000)
     return () => window.clearInterval(id)
-  }, [])
+  }, [startedAt])
   return (
     <div className="msg assistant working" aria-live="polite" aria-label="Assistant is working">
       <div className="msg-header">

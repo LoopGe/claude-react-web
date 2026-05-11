@@ -69,13 +69,17 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
     )
   }, [items, query])
 
-  // Reset state when opening.
-  useEffect(() => {
+  // Reset state when opening. The synchronous setState is intentional:
+  // this is a UI-level reset that must happen before the first paint so
+  // the user never sees stale content from a previous invocation.
+  /* eslint-disable react-hooks/set-state-in-effect -- intentional UI reset on open */
+  useLayoutEffect(() => {
     if (open) {
       setQuery('')
       setSelectedIndex(0)
     }
   }, [open])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Auto-focus the input on mount / open.
   useLayoutEffect(() => {

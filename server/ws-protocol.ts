@@ -95,6 +95,10 @@ export interface WsReplay {
 export interface WsReplayDone {
   kind: 'replay-done'
   sessionId: string
+  /** When the server uses chunked replay (>50 messages), permissions
+   *  ride on the final replay-done frame instead of the first replay
+   *  chunk. Older clients ignore unknown fields, so this is safe. */
+  permissions?: PermissionRequestSnapshot[]
 }
 
 /** Live SDK message. */

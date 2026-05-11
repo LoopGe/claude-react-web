@@ -18,7 +18,7 @@
 // remove/add cycle, no identity churn, no micro-disruptions to the
 // browser's event pipeline.
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 
 export type ShortcutHandler = (e: KeyboardEvent) => void
 
@@ -37,9 +37,12 @@ export function useKeyboardShortcuts(shortcuts: Shortcut[]): void {
   // Keep the latest shortcuts in a ref so the single keydown listener
   // always sees up-to-date handlers without being torn down and
   // re-attached. The listener is registered once (empty dep array);
-  // only this ref is swapped on every render.
+  // the ref is updated via useLayoutEffect to avoid writing during
+  // render (react-hooks/refs).
   const shortcutsRef = useRef(shortcuts)
-  shortcutsRef.current = shortcuts
+  useLayoutEffect(() => {
+    shortcutsRef.current = shortcuts
+  })
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {

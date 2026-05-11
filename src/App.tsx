@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { SessionList } from './components/SessionList'
 import { Chat } from './components/Chat'
+import { CommandPalette } from './components/CommandPalette'
 import { ContextMenu } from './components/ContextMenu'
 import { api } from './hooks/useApi'
 import { shortenPath } from './utils/paths'
@@ -47,6 +48,11 @@ interface Defaults {
   model?: string
 }
 
+interface ServerConfig {
+  defaults: Defaults
+  models?: string[]
+}
+
 /** Max number of chat panels shown concurrently. */
 const MAX_OPEN = 3
 
@@ -68,7 +74,8 @@ export function App() {
    *  just that column instead of the whole viewport. */
   const [settingsOpenFor, setSettingsOpenFor] = useState<string | null>(null)
   const [newSessionDialogOpen, setNewSessionDialogOpen] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [opError, setOpError] = useState<string | null>(null)
   /** Ids currently being resumed — briefly disables the item so a double-
    *  click doesn't fire two POSTs. */
   const [resuming, setResuming] = useState<Set<string>>(new Set())
@@ -244,8 +251,10 @@ export function App() {
 
   useEffect(() => {
     void api
-      .get<{ defaults: Defaults }>('/config')
-      .then((r) => setDefaults(r.defaults))
+      .get<ServerConfig>('/config')
+      .then((r) => {
+        setDefaults(r.defaults)
+      })
       .catch(() => {})
   }, [])
 
@@ -265,6 +274,7 @@ export function App() {
   const openIdsRef = useRef(openIds)
   const focusedIdRef = useRef(focusedId)
   const sessionsRef = useRef(sessions)
+  const handleSelectRef = useRef<(id: string) => void>(() => {})
   useEffect(() => {
     openIdsRef.current = openIds
   })
@@ -298,11 +308,7 @@ export function App() {
       body: `Approve or deny: ${toolLabel}`,
       tag: `${sessionId}:perm`,
       onClick: () => {
-        const alreadyOpen = openIdsRef.current.includes(sessionId)
-        if (!alreadyOpen) {
-          setOpenIds((curr) => (curr.includes(sessionId) ? curr : [...curr.slice(-2), sessionId]))
-        }
-        setFocusedId(sessionId)
+        handleSelectRef.current(sessionId)
       },
     })
   }, [])
@@ -325,14 +331,10 @@ export function App() {
       body: s.error ? `Errored: ${s.error}` : 'Turn complete',
       tag: s.id,
       onClick: () => {
-        // Bring the session to the front. `openIds` is read through a ref
-        // because `maybeNotify` lives inside a stable useCallback.
-        const alreadyOpen = openIdsRef.current.includes(s.id)
-        if (!alreadyOpen) {
-          // Treat click-to-open the same way as clicking the sidebar card.
-          setOpenIds((curr) => (curr.includes(s.id) ? curr : [...curr.slice(-2), s.id]))
-        }
-        setFocusedId(s.id)
+        // Delegate to the full sidebar-card navigation logic so notification
+        // clicks get the same behaviour: group switching, dormant resume,
+        // and unread-dot clearing.
+        handleSelectRef.current(s.id)
       },
     })
   }, [])
@@ -343,6 +345,19 @@ export function App() {
   // and incidentally eliminates the per-panel HTTP/1.1 connection
   // exhaustion we used to hit with three concurrent chats.
   const hub = useWsHub()
+
+  // Derive displayed error from operational error + hub status without
+  // calling setState inside an effect (avoids react-hooks/set-state-in-effect).
+  const displayedError = useMemo(() => {
+    const s = hub.status
+    if (s === 'reconnecting')
+      return opError === null || opError === 'Reconnecting to server…'
+        ? 'Reconnecting to server…'
+        : opError
+    if (s === 'online') return opError === 'Reconnecting to server…' ? null : opError
+    return opError
+  }, [opError, hub.status])
+
   useEffect(() => {
     const off = hub.addListener((frame: WsServerFrame) => {
       switch (frame.kind) {
@@ -410,18 +425,8 @@ export function App() {
     return off
   }, [hub, maybeNotify, maybePermissionNotify])
 
-  // Hub status → reconnecting banner. Short blips (tsx-watch restart,
-  // VPN reconnect, laptop suspend) flash the banner briefly; a real
-  // outage keeps it up until the hub reconnects on its own.
-  useEffect(() => {
-    if (hub.status === 'reconnecting') {
-      setError((prev) =>
-        prev === null || prev === 'Reconnecting to server…' ? 'Reconnecting to server…' : prev,
-      )
-    } else if (hub.status === 'online') {
-      setError((prev) => (prev === 'Reconnecting to server…' ? null : prev))
-    }
-  }, [hub.status])
+  // Hub status → reconnecting banner is now derived via `displayedError`
+  // (useMemo above) — no effect needed.
 
   /** Push a session id onto the open list. Rules:
    *  - Already open → just focus it, no reshuffle.
@@ -481,20 +486,30 @@ export function App() {
 
   const handleAddToGroup = useCallback(
     (sessionId: string, groupId: string) => {
-      setGroups((prev) =>
-        prev.map((g) =>
-          g.id === groupId && !g.sessionIds.includes(sessionId)
-            ? { ...g, sessionIds: [...g.sessionIds, sessionId] }
-            : g,
-        ),
-      )
+      setGroups((prev) => {
+        const target = prev.find((g) => g.id === groupId)
+        // Capacity check: max 3 sessions per group (skip if already in target group)
+        if (!target || (target.sessionIds.length >= 3 && !target.sessionIds.includes(sessionId))) {
+          return prev
+        }
+        return prev.map((g) => {
+          if (g.id === groupId) {
+            // Ensure session is in this group
+            return g.sessionIds.includes(sessionId)
+              ? g
+              : { ...g, sessionIds: [...g.sessionIds, sessionId] }
+          }
+          // Exclusive membership: remove from all other groups
+          return { ...g, sessionIds: g.sessionIds.filter((id) => id !== sessionId) }
+        })
+      })
     },
     [setGroups],
   )
 
   const handleCreate = useCallback(
     async (form: NewSessionForm) => {
-      setError(null)
+      setOpError(null)
       // `accent` and `groupId` are frontend-only fields — don't forward them to the SDK.
       const { accent, groupId, ...rest } = form
       try {
@@ -528,7 +543,7 @@ export function App() {
           setSessionColors(curr)
         }
       } catch (e) {
-        setError((e as Error).message)
+        setOpError((e as Error).message)
       }
     },
     [openSession, setSessionColors, handleAddToGroup],
@@ -536,7 +551,7 @@ export function App() {
 
   const handleFork = useCallback(
     async (id: string) => {
-      setError(null)
+      setOpError(null)
       try {
         const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/fork`, {})
         // Open the forked session right away so the user can see the
@@ -547,7 +562,7 @@ export function App() {
         const sourceGroup = groups.find((g) => g.sessionIds.includes(id))
         if (sourceGroup) handleAddToGroup(res.session.id, sourceGroup.id)
       } catch (e) {
-        setError(`Couldn't fork session: ${(e as Error).message}`)
+        setOpError(`Couldn't fork session: ${(e as Error).message}`)
       }
     },
     [openSession, groups, handleAddToGroup],
@@ -575,13 +590,13 @@ export function App() {
 
   const handleTogglePin = useCallback(
     async (id: string) => {
-      setError(null)
+      setOpError(null)
       const current = sessions.find((s) => s.id === id)
       const next = !current?.pinned
       try {
         await api.patch<{ session: SessionInfo }>(`/sessions/${id}`, { pinned: next })
       } catch (e) {
-        setError(`Couldn't ${next ? 'pin' : 'unpin'} session: ${(e as Error).message}`)
+        setOpError(`Couldn't ${next ? 'pin' : 'unpin'} session: ${(e as Error).message}`)
       }
     },
     [sessions],
@@ -589,7 +604,7 @@ export function App() {
 
   const handleDelete = useCallback(
     async (id: string) => {
-      setError(null)
+      setOpError(null)
       try {
         await api.delete(`/sessions/${id}`)
         closeSession(id)
@@ -600,13 +615,22 @@ export function App() {
           delete next[id]
           return next
         })
+        // Remove deleted session from any group it belongs to so the
+        // group's session count stays accurate.
+        setGroups((prev) =>
+          prev.map((g) =>
+            g.sessionIds.includes(id)
+              ? { ...g, sessionIds: g.sessionIds.filter((sid) => sid !== id) }
+              : g,
+          ),
+        )
         // Server pushes a `removed` event on the global SSE, which
         // re-prunes session state — no need to GET /sessions here.
       } catch (e) {
-        setError((e as Error).message)
+        setOpError((e as Error).message)
       }
     },
-    [closeSession],
+    [closeSession, setGroups],
   )
 
   /** The group whose sessions are currently open in the main grid.
@@ -672,7 +696,7 @@ export function App() {
             const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/resume`, {})
             setSessions((prev) => prev.map((p) => (p.id === id ? res.session : p)))
           } catch (e) {
-            setError((e as Error).message)
+            setOpError((e as Error).message)
           } finally {
             setResuming((prev) => {
               const next = new Set(prev)
@@ -697,7 +721,7 @@ export function App() {
         setSessions((prev) => prev.map((p) => (p.id === id ? res.session : p)))
         openSession(id, res.session.lastTurnAt)
       } catch (e) {
-        setError((e as Error).message)
+        setOpError((e as Error).message)
       } finally {
         setResuming((prev) => {
           const next = new Set(prev)
@@ -708,6 +732,12 @@ export function App() {
     },
     [sessions, resuming, openSession, groups, activeGroupId, handleActivateGroup],
   )
+  // Keep a stable ref so notification onClick handlers can call the
+  // full handleSelect logic (group switch, dormant resume, unread clear)
+  // without the useCallback depending on handleSelect directly.
+  useEffect(() => {
+    handleSelectRef.current = handleSelect
+  })
 
   /** When focus changes to an open panel, bump its seen-turn so the unread
    *  dot disappears. Focusing an already-read panel is a no-op. */
@@ -760,9 +790,8 @@ export function App() {
   //     and preventDefault() can't reach them.
   //   - Esc closes whatever overlay is open, highest-priority last (so
   //     the dialog covers the drawer, etc.).
-  useKeyboardShortcuts(
-    useMemo(
-      () => [
+  const shortcuts = useMemo(
+    () => [
         {
           combo: 'mod+1',
           handler: () => {
@@ -797,19 +826,25 @@ export function App() {
           description: 'New session',
         },
         {
+          combo: 'mod+k',
+          handler: () => setPaletteOpen((v) => !v),
+          description: 'Command palette',
+        },
+        {
           combo: 'escape',
           handler: () => {
-            // Priority: NewSessionDialog > per-panel Settings overlay.
-            if (newSessionDialogOpen) setNewSessionDialogOpen(false)
+            // Priority: CommandPalette > NewSessionDialog > per-panel Settings overlay.
+            if (paletteOpen) setPaletteOpen(false)
+            else if (newSessionDialogOpen) setNewSessionDialogOpen(false)
             else if (settingsOpenFor) setSettingsOpenFor(null)
           },
           allowInInput: true, // Esc inside textarea should still close modals
           description: 'Close overlay',
         },
       ],
-      [openIds, focusedId, newSessionDialogOpen, settingsOpenFor, closeSession],
-    ),
-  )
+      [openIds, focusedId, paletteOpen, newSessionDialogOpen, settingsOpenFor, closeSession],
+    )
+  useKeyboardShortcuts(shortcuts)
 
   /** Final sidebar order: sidebarOrder[] wins for ids it contains; anything
    *  not listed falls back to the server's lastActivityAt sort. Ids in the
@@ -895,19 +930,34 @@ export function App() {
       setGroups((prev) => {
         const target = prev.find((g) => g.id === groupId)
         if (!target) return prev.filter((g) => g.id !== groupId)
-        // Find sessions that would become ungrouped (only in the deleted group)
-        // and move them to the "default" group.
         const remaining = prev.filter((g) => g.id !== groupId)
-        const otherIds = new Set(remaining.flatMap((g) => g.sessionIds))
-        const orphaned = target.sessionIds.filter((id) => !otherIds.has(id))
-        if (orphaned.length > 0) {
+        // With exclusive membership, all sessionIds in the deleted group
+        // are orphaned. Move them to "default" first, respecting capacity.
+        if (target.sessionIds.length > 0) {
           const defaultGroup = remaining.find((g) => g.name === 'default')
           if (defaultGroup) {
-            return remaining.map((g) =>
+            const space = Math.max(0, 3 - defaultGroup.sessionIds.length)
+            const canMove = target.sessionIds.slice(0, space)
+            const overflow = target.sessionIds.slice(canMove.length)
+            let result = remaining.map((g) =>
               g.id === defaultGroup.id
-                ? { ...g, sessionIds: [...g.sessionIds, ...orphaned] }
+                ? { ...g, sessionIds: [...g.sessionIds, ...canMove] }
                 : g,
             )
+            // Distribute overflow to other groups with capacity
+            for (const orphanId of overflow) {
+              const available = result.find((g) => g.sessionIds.length < 3)
+              if (available) {
+                result = result.map((g) =>
+                  g.id === available.id
+                    ? { ...g, sessionIds: [...g.sessionIds, orphanId] }
+                    : g,
+                )
+              }
+              // If no group has space, the session stays in the session
+              // list but becomes ungrouped (shown in flat view).
+            }
+            return result
           }
         }
         return remaining
@@ -929,24 +979,10 @@ export function App() {
     [setGroups],
   )
 
-  const handleRemoveFromGroup = useCallback(
-    (sessionId: string, groupId: string) => {
-      setGroups((prev) =>
-        prev.map((g) =>
-          g.id === groupId
-            ? { ...g, sessionIds: g.sessionIds.filter((id) => id !== sessionId) }
-            : g,
-        ),
-      )
-    },
-    [setGroups],
-  )
-
   /** Drag-drop handler for a card landing on a card inside a group.
-   *  Tag semantics — the dragged session is added to the group (if
-   *  it wasn't already) and its position within `sessionIds` is set
-   *  relative to the target. Other groups the dragged session is in
-   *  remain untouched. */
+   *  The dragged session's position within `sessionIds` is set relative
+   *  to the target. With exclusive membership, the session is only in
+   *  one group, so this only reorders within that group. */
   const handleReorderInGroup = useCallback(
     (draggedId: string, targetId: string, position: 'before' | 'after', groupId: string) => {
       if (draggedId === targetId) return
@@ -1081,7 +1117,6 @@ export function App() {
           onDeleteGroup={handleDeleteGroup}
           onRenameGroup={handleRenameGroup}
           onAddToGroup={handleAddToGroup}
-          onRemoveFromGroup={handleRemoveFromGroup}
           onToggleGroupCollapse={toggleGroupCollapse}
         />
         <div
@@ -1144,7 +1179,7 @@ export function App() {
           </div>
         </header>
 
-        {error && <div className="error-bar">{error}</div>}
+        {displayedError && <div className="error-bar">{displayedError}</div>}
 
         <div
           ref={bodyRef}
@@ -1202,7 +1237,7 @@ export function App() {
                         live = res.session
                         updateSession(res.session)
                       } catch (err) {
-                        setError((err as Error).message)
+                        setOpError((err as Error).message)
                         return
                       }
                     }
@@ -1229,6 +1264,20 @@ export function App() {
         </div>
       </main>
 
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        shortcuts={shortcuts}
+        sessions={sessions}
+        onSelectSession={(id) => {
+          const alreadyOpen = openIds.includes(id)
+          if (!alreadyOpen) {
+            setOpenIds((curr) => (curr.includes(id) ? curr : [...curr.slice(-2), id]))
+          }
+          setFocusedId(id)
+          setPaletteOpen(false)
+        }}
+      />
     </div>
   )
 }

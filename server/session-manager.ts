@@ -139,6 +139,10 @@ export interface SessionInfo {
   /** True when the SDK is mid-turn (a user message has been sent and no
    *  matching `result` has arrived yet). Drives the "thinking" animation. */
   working: boolean
+  /** Epoch ms when the current turn started (first pending turn). Only set
+   *  while `working` is true; allows the client to compute an accurate
+   *  elapsed timer that survives component remounts. */
+  workingSince?: number
   /** Epoch ms of the last completed turn (last `result` message). The
    *  frontend diffs this against a locally-remembered value to decide
    *  whether to show an unread badge on non-focused sessions. */
@@ -172,6 +176,9 @@ interface Session {
    *  simple counter rather than a set because we don't need to identify
    *  which specific turn is outstanding — just whether ANY is. */
   pendingTurns: number
+  /** Epoch ms when the first pending turn started. Cleared when all turns
+   *  complete (pendingTurns drops to 0) or the session terminates. */
+  workingSince?: number
   /** Timestamp of the last `result` message, used for the unread badge. */
   lastTurnAt?: number
   /** Pushable for context_usage events — separate from message history
@@ -644,6 +651,7 @@ export class SessionManager {
     // Mark the session as mid-turn. The matching `result` message in the
     // pump will decrement this; we track a count (not a bool) because the
     // UI allows queueing multiple user turns while one is in flight.
+    if (s.pendingTurns === 0) s.workingSince = Date.now()
     s.pendingTurns += 1
     this.persist(s)
   }
@@ -773,6 +781,21 @@ export class SessionManager {
   async mcpServerStatus(id: string) {
     const s = this.requireLive(id)
     return s.query.mcpServerStatus()
+  }
+
+  async reconnectMcpServer(id: string, serverName: string): Promise<void> {
+    const s = this.requireLive(id)
+    await s.query.reconnectMcpServer(serverName)
+  }
+
+  async toggleMcpServer(id: string, serverName: string, enabled: boolean): Promise<void> {
+    const s = this.requireLive(id)
+    await s.query.toggleMcpServer(serverName, enabled)
+  }
+
+  async reloadPlugins(id: string) {
+    const s = this.requireLive(id)
+    return s.query.reloadPlugins()
   }
 
   async contextUsage(id: string) {
@@ -1206,6 +1229,7 @@ export class SessionManager {
       terminated: s.terminated,
       error: s.error,
       working: s.running && s.pendingTurns > 0,
+      workingSince: s.running && s.pendingTurns > 0 ? s.workingSince : undefined,
       lastTurnAt: s.lastTurnAt,
       pinned: s.pinned,
     }
@@ -1229,6 +1253,7 @@ export class SessionManager {
       terminated: meta.terminated,
       error: meta.error,
       working: false,
+      workingSince: undefined,
       lastTurnAt: meta.lastTurnAt,
       pinned: meta.pinned,
     }
@@ -1262,6 +1287,7 @@ export class SessionManager {
         // but cheap insurance).
         if (msg.type === 'result') {
           session.pendingTurns = Math.max(0, session.pendingTurns - 1)
+          if (session.pendingTurns === 0) session.workingSince = undefined
           session.lastTurnAt = Date.now()
           this.persist(session)
         }
@@ -1290,6 +1316,7 @@ export class SessionManager {
       // sent, or the session ended before emitting a result for every
       // queued turn.
       session.pendingTurns = 0
+      session.workingSince = undefined
       for (const sub of session.subscribers.values()) sub.end()
       session.subscribers.clear()
       session.contextUsagePushable.end()

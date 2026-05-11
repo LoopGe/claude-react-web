@@ -10,7 +10,7 @@
 // posted that haven't seen a matching `result` yet — the server FIFO-
 // queues turns but doesn't expose depth, so we count locally.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useWsHub } from './useWsHub'
 import type { WsServerFrame } from '../ws-types'
 import type { PermissionRequest, PermissionResolved, SdkMessage } from '../types'
@@ -44,7 +44,7 @@ export interface PermissionHandlers {
 export function useChatStream(sessionId: string, permissions: PermissionHandlers): ChatStream {
   const [messages, setMessages] = useState<SdkMessage[]>([])
   const [queuedAhead, setQueuedAhead] = useState(0)
-  const [error, setError] = useState<string | null>(null)
+  const [opError, setOpError] = useState<string | null>(null)
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null)
 
   const hub = useWsHub()
@@ -58,52 +58,67 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     permsRef.current = permissions
   })
 
+  // Reset per-session state when sessionId changes. Uses
+  // useLayoutEffect so the reset happens before paint but avoids both
+  // react-hooks/set-state-in-effect and react-hooks/refs.
+  const prevSessionRef = useRef(sessionId)
+  useLayoutEffect(() => {
+    if (prevSessionRef.current !== sessionId) {
+      prevSessionRef.current = sessionId
+      setMessages([])
+      setContextUsage(null)
+      setQueuedAhead(0)
+    }
+  }, [sessionId])
+
   useEffect(() => {
     if (!sessionId) return
-    // Reset per-session state when switching to a different session.
-    // (Chat remounts on key={session.id}, so this is also true at
-    // mount — keeping it explicit costs nothing and guards against
-    // hot-reload edge cases.)
-    setMessages([])
-    setContextUsage(null)
-    setQueuedAhead(0)
 
-    // Buffer messages that arrive BEFORE the replay frame completes
-    // into a single commit, so React doesn't re-render N times while
-    // we're walking through a large history.
-    //
-    // The server guarantees: for a given sessionId, the frame order is
-    // {replay, replay-done, (message|permission-request|...)*}. We
-    // accept live frames arriving AFTER replay-done as normal pushes.
-    // If a late frame sneaks in before replay-done (shouldn't happen,
-    // but be defensive) we append it to the pending queue too — it
-    // lands in the right place once we flush.
+    // Buffer messages that arrive BEFORE the replay completes into a
+    // single commit. The server guarantees per-session frame order:
+    //   {replay*, replay-done, (message|permission-request|...)*}
+    // For small histories (≤50 msgs) this is a single replay + done.
+    // For large histories the server chunks into 50-message replay
+    // batches followed by a replay-done that carries the permissions.
+    // Either way, we append on each replay frame and flush on done.
     let replayDone = false
     const pending: SdkMessage[] = []
 
-    const off = hub.addListener((frame: WsServerFrame) => {
-      // Only frames for our session; other panels have their own
-      // listeners and the global App listener handles session-list
-      // frames.
-      if (!('sessionId' in frame) || frame.sessionId !== sessionId) return
-
+    // Use the session-scoped listener: the hub pre-filters by sessionId
+    // so we avoid the O(N panels) scan that `addListener` would do on
+    // every frame. This is the key change that prevents one panel's
+    // high-traffic session from delaying another panel's updates.
+    const off = hub.addSessionListener(sessionId, (frame: WsServerFrame) => {
       switch (frame.kind) {
         case 'replay': {
-          // Fresh replay batch — treat as the source of truth for
-          // state. Any previously-buffered permissions in the replay
-          // get forwarded to the injected handler so open modals
-          // re-appear after a reconnect.
-          setMessages(frame.messages as SdkMessage[])
-          for (const p of frame.permissions) {
-            permsRef.current.onRequest(p)
+          // Chunked replay: append each batch (small histories arrive
+          // in one frame, large ones in chunks of 50).
+          startTransition(() => {
+            setMessages((prev) => [...prev, ...(frame.messages as SdkMessage[])])
+          })
+          // Permissions are on the first chunk only for small replays;
+          // for chunked replays they arrive on replay-done instead.
+          if (frame.permissions?.length) {
+            for (const p of frame.permissions) {
+              permsRef.current.onRequest(p)
+            }
           }
           break
         }
         case 'replay-done': {
           replayDone = true
-          if (pending.length) {
-            setMessages((prev) => [...prev, ...pending])
-            pending.length = 0
+          // Flush any live messages that queued during replay.
+          startTransition(() => {
+            if (pending.length) {
+              setMessages((prev) => [...prev, ...pending])
+              pending.length = 0
+            }
+          })
+          // Chunked replay: permissions ride on the final replay-done.
+          if (frame.permissions?.length) {
+            for (const p of frame.permissions) {
+              permsRef.current.onRequest(p)
+            }
           }
           break
         }
@@ -113,7 +128,11 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
             pending.push(m)
             return
           }
-          setMessages((prev) => [...prev, m])
+          // startTransition coalesces rapid successive message frames
+          // (e.g. streaming tool-use deltas) into fewer re-renders.
+          startTransition(() => {
+            setMessages((prev) => [...prev, m])
+          })
           if (m.type === 'result') {
             setQueuedAhead((n) => (n > 0 ? n - 1 : 0))
           }
@@ -138,7 +157,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
           // Session-scoped error from the hub (usually "unknown session").
           // Surface it in the panel banner but don't tear down state;
           // the server might still be starting up.
-          setError(frame.message)
+          setOpError(frame.message)
           break
         }
         default:
@@ -153,18 +172,17 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     }
   }, [hub, sessionId])
 
-  // Hub status → per-panel banner. Identical wording/semantics to the
-  // App-level banner so the user sees a consistent story whichever one
-  // is attached to their panel.
-  useEffect(() => {
-    if (hub.status === 'reconnecting') {
-      setError((prev) =>
-        prev === null || prev === 'Stream reconnecting…' ? 'Stream reconnecting…' : prev,
-      )
-    } else if (hub.status === 'online') {
-      setError((prev) => (prev === 'Stream reconnecting…' ? null : prev))
-    }
-  }, [hub.status])
+  // Hub status → per-panel banner. Derived via useMemo to avoid calling
+  // setState inside an effect (react-hooks/set-state-in-effect).
+  const displayedError = useMemo(() => {
+    const s = hub.status
+    if (s === 'reconnecting')
+      return opError === null || opError === 'Stream reconnecting…'
+        ? 'Stream reconnecting…'
+        : opError
+    if (s === 'online') return opError === 'Stream reconnecting…' ? null : opError
+    return opError
+  }, [opError, hub.status])
 
   const trackSentTurn = useCallback(() => {
     setQueuedAhead((n) => n + 1)
@@ -173,14 +191,14 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   const reset = useCallback(() => {
     setMessages([])
     setQueuedAhead(0)
-    setError(null)
+    setOpError(null)
     setContextUsage(null)
   }, [])
 
-  const clearError = useCallback(() => setError(null), [])
+  const clearError = useCallback(() => setOpError(null), [])
 
   return useMemo(
-    () => ({ messages, queuedAhead, error, contextUsage, trackSentTurn, reset, clearError }),
-    [messages, queuedAhead, error, contextUsage, trackSentTurn, reset, clearError],
+    () => ({ messages, queuedAhead, error: displayedError, contextUsage, trackSentTurn, reset, clearError }),
+    [messages, queuedAhead, displayedError, contextUsage, trackSentTurn, reset, clearError],
   )
 }

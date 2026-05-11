@@ -103,10 +103,8 @@ interface Props {
   onDeleteGroup: (groupId: string) => void
   /** Rename an existing group. */
   onRenameGroup: (groupId: string, name: string) => void
-  /** Add a session to a group (idempotent / deduped). */
+  /** Move a session to a group (exclusive — removes from current group). */
   onAddToGroup: (sessionId: string, groupId: string) => void
-  /** Remove a session from a group. */
-  onRemoveFromGroup: (sessionId: string, groupId: string) => void
   /** Toggle a group's collapsed state in the sidebar. */
   onToggleGroupCollapse: (groupId: string) => void
 }
@@ -128,7 +126,6 @@ export function SessionList({
   onDeleteGroup,
   onRenameGroup,
   onAddToGroup,
-  onRemoveFromGroup,
   onToggleGroupCollapse,
   onSelect,
   onCreate,
@@ -635,10 +632,12 @@ export function SessionList({
                 <div key={sec.group.id} className={`session-section ${active ? 'group-active' : ''}`}>
                   <div
                     className={`session-group-header ${groupDropHint === sec.group.id ? 'drop-target' : ''}`}
-                    onClick={() => onToggleGroupCollapse(sec.group.id)}
-                    title={`${sec.group.name} · ${sec.sessions.length} session${sec.sessions.length === 1 ? '' : 's'}`}
+                    onClick={() => onActivateGroup(sec.group.id)}
+                    title={`Activate ${sec.group.name} · ${sec.sessions.length} session${sec.sessions.length === 1 ? '' : 's'}`}
                     onDragOver={(e) => {
                       if (!onDropIntoGroup || !isInAppDrag(e)) return
+                      // Don't accept drops if group is full (unless reordering within same group)
+                      if (sec.group.sessionIds.length >= 3 && !sec.group.sessionIds.includes(draggingId ?? '')) return
                       e.preventDefault()
                       if (groupDropHint !== sec.group.id) setGroupDropHint(sec.group.id)
                     }}
@@ -656,16 +655,15 @@ export function SessionList({
                       onDropIntoGroup(payload.id, sec.group.id)
                     }}
                   >
-                    <span className="group-collapse-arrow">{collapsed ? '▶' : '▼'}</span>
+                    <button
+                      className="group-collapse-arrow"
+                      onClick={(e) => { e.stopPropagation(); onToggleGroupCollapse(sec.group.id) }}
+                      title={collapsed ? 'Expand group' : 'Collapse group'}
+                    >
+                      {collapsed ? '▶' : '▼'}
+                    </button>
                     <span className="group-header-name">{sec.group.name}</span>
                     <span className="group-header-count">{sec.sessions.length}</span>
-                    <button
-                      className="group-activate-btn"
-                      onClick={(e) => { e.stopPropagation(); onActivateGroup(sec.group.id) }}
-                      title="Replace main-area panels with this group's sessions"
-                    >
-                      ▶
-                    </button>
                   </div>
                   {!collapsed && sec.sessions.length > 0 && (
                     <div
@@ -677,6 +675,8 @@ export function SessionList({
                         // event bubbles up from cards, so we only
                         // highlight when the target is the body itself.
                         if (e.target !== e.currentTarget) return
+                        // Don't accept drops if group is full (unless reordering within same group)
+                        if (sec.group.sessionIds.length >= 3 && !sec.group.sessionIds.includes(draggingId ?? '')) return
                         e.preventDefault()
                         if (groupDropHint !== sec.group.id) setGroupDropHint(sec.group.id)
                       }}
@@ -760,7 +760,6 @@ export function SessionList({
         onColorChange={(color) => onSessionColorChange?.(menu.id, color)}
         groups={groups}
         onAddToGroup={onAddToGroup}
-        onRemoveFromGroup={onRemoveFromGroup}
       />}
 
       {showDialog && (
@@ -795,9 +794,12 @@ interface DialogProps {
   onCancel: () => void
   /** Available groups for the mandatory group selector. Always ≥ 1. */
   groups: SessionGroup[]
+  /** Server-configured model list (from /api/config). Shown as chips
+   *  above the recent-models chips so the user always has a baseline. */
+  serverModels?: string[]
 }
 
-function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups }: DialogProps) {
+function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups, serverModels }: DialogProps) {
   const [cwd, setCwd] = useState<string>(initialCwd ?? defaults.cwd ?? '')
   const [model, setModel] = useState<string>(defaults.model ?? '')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
@@ -810,6 +812,19 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups }: 
   const [contextStepIdx, setContextStepIdx] = useState<ContextStepIdx>(1) // 200k default
   const [groupId, setGroupId] = useState<string>(groups[0]?.id ?? '')
   const [showPicker, setShowPicker] = useState(false)
+
+  // Advanced options
+  const [effort, setEffort] = useState('')
+  const [thinkingMode, setThinkingMode] = useState('')
+  const [thinkingBudget, setThinkingBudget] = useState('')
+  const [additionalDirs, setAdditionalDirs] = useState('')
+  const [fallbackModel, setFallbackModel] = useState('')
+  const [maxTurns, setMaxTurns] = useState('')
+  const [maxBudgetUsd, setMaxBudgetUsd] = useState('')
+  const [allowedToolsStr, setAllowedToolsStr] = useState('')
+  const [disallowedToolsStr, setDisallowedToolsStr] = useState('')
+  const [toolsStr, setToolsStr] = useState('')
+  const [mcpServersJson, setMcpServersJson] = useState('')
 
   const [recentModels, setRecentModels] = useLocalStorage<string[]>(RECENT_MODELS_KEY, [])
   const [recentCwds, setRecentCwds] = useLocalStorage<string[]>(RECENT_CWDS_KEY, [])
@@ -872,6 +887,28 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups }: 
     rememberModel(model)
     rememberCwd(cwd)
     const step = CONTEXT_STEPS[contextStepIdx]
+
+    // Parse comma-separated string into trimmed string[], or undefined if empty.
+    const csv = (s: string) => {
+      const arr = s.split(',').map((t) => t.trim()).filter(Boolean)
+      return arr.length > 0 ? arr : undefined
+    }
+
+    // Build thinking config from mode + optional budget
+    let thinking: NewSessionForm['thinking'] = undefined
+    if (thinkingMode === 'adaptive') thinking = 'adaptive'
+    else if (thinkingMode === 'disabled') thinking = 'disabled'
+    else if (thinkingMode === 'enabled') {
+      const budget = parseInt(thinkingBudget, 10)
+      thinking = budget > 0 ? { type: 'enabled', budgetTokens: budget } : 'enabled'
+    }
+
+    // Parse mcpServers JSON if provided
+    let mcpServers: unknown = undefined
+    if (mcpServersJson.trim()) {
+      try { mcpServers = JSON.parse(mcpServersJson) } catch { /* ignore — let server reject */ }
+    }
+
     onSubmit({
       cwd: cwd.trim() || undefined,
       model: model.trim() || undefined,
@@ -883,6 +920,17 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups }: 
       betas: step.beta ? [step.beta] : undefined,
       accent,
       groupId: groupId || groups[0]?.id,
+      // Advanced options — only include when non-empty
+      effort: (effort || undefined) as NewSessionForm['effort'],
+      thinking,
+      additionalDirectories: csv(additionalDirs),
+      fallbackModel: fallbackModel.trim() || undefined,
+      maxTurns: maxTurns ? parseInt(maxTurns, 10) || undefined : undefined,
+      maxBudgetUsd: maxBudgetUsd ? parseFloat(maxBudgetUsd) || undefined : undefined,
+      allowedTools: csv(allowedToolsStr),
+      disallowedTools: csv(disallowedToolsStr),
+      tools: csv(toolsStr),
+      mcpServers,
     })
   }
 
@@ -974,20 +1022,22 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups }: 
               <label>Model</label>
               <input
                 className="input"
-                placeholder="xiaomi/mimo-v2.5-pro"
-                list="recent-models"
+                placeholder={serverModels?.[0] ?? defaults.model ?? ''}
+                list="model-options"
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
               />
-              <datalist id="recent-models">
-                {recentModels.map((m) => (
+              <datalist id="model-options">
+                {(serverModels ?? []).concat(
+                  recentModels.filter((m) => !(serverModels ?? []).includes(m)),
+                ).map((m) => (
                   <option key={m} value={m} />
                 ))}
               </datalist>
-              {recentModels.length > 0 && (
+              {((serverModels && serverModels.length > 0) || recentModels.length > 0) && (
                 <div className="recent-chips">
-                  {recentModels.slice(0, 5).map((m) => (
-                    <span key={m} className="recent-chip" title={`Use ${m}`}>
+                  {(serverModels ?? []).map((m) => (
+                    <span key={`srv:${m}`} className="recent-chip" title={`Use ${m}`}>
                       <button
                         type="button"
                         className="recent-chip-use"
@@ -995,17 +1045,31 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups }: 
                       >
                         {m}
                       </button>
-                      <button
-                        type="button"
-                        className="recent-chip-forget"
-                        onClick={() => forgetModel(m)}
-                        title="Forget this model"
-                        aria-label={`Forget ${m}`}
-                      >
-                        ✕
-                      </button>
                     </span>
                   ))}
+                  {recentModels
+                    .filter((m) => !(serverModels ?? []).includes(m))
+                    .slice(0, 5)
+                    .map((m) => (
+                      <span key={m} className="recent-chip" title={`Use ${m}`}>
+                        <button
+                          type="button"
+                          className="recent-chip-use"
+                          onClick={() => setModel(m)}
+                        >
+                          {m}
+                        </button>
+                        <button
+                          type="button"
+                          className="recent-chip-forget"
+                          onClick={() => forgetModel(m)}
+                          title="Forget this model"
+                          aria-label={`Forget ${m}`}
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    ))}
                 </div>
               )}
             </div>
@@ -1032,11 +1096,14 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups }: 
                 value={groupId}
                 onChange={(e) => setGroupId(e.target.value)}
               >
-                {groups.map((g) => (
-                  <option key={g.id} value={g.id}>
-                    {g.name}
-                  </option>
-                ))}
+                {groups.map((g) => {
+                  const full = g.sessionIds.length >= 3
+                  return (
+                    <option key={g.id} value={g.id} disabled={full}>
+                      {g.name} ({g.sessionIds.length}/3){full ? ' — full' : ''}
+                    </option>
+                  )
+                })}
               </select>
             </div>
 
@@ -1094,6 +1161,128 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups }: 
                 rows={3}
               />
             </div>
+
+            <details style={{ marginTop: 8 }}>
+              <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--fg-muted)', userSelect: 'none' }}>
+                Advanced options
+              </summary>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <div className="settings-field">
+                    <label>Effort</label>
+                    <select className="select" value={effort} onChange={(e) => setEffort(e.target.value)}>
+                      <option value="">(default)</option>
+                      <option value="low">low</option>
+                      <option value="medium">medium</option>
+                      <option value="high">high</option>
+                      <option value="xhigh">xhigh</option>
+                      <option value="max">max</option>
+                    </select>
+                  </div>
+                  <div className="settings-field">
+                    <label>Thinking</label>
+                    <select className="select" value={thinkingMode} onChange={(e) => setThinkingMode(e.target.value)}>
+                      <option value="">(default)</option>
+                      <option value="adaptive">adaptive</option>
+                      <option value="enabled">enabled</option>
+                      <option value="disabled">disabled</option>
+                    </select>
+                  </div>
+                </div>
+                {thinkingMode === 'enabled' && (
+                  <div className="settings-field">
+                    <label>Thinking budget (tokens)</label>
+                    <input
+                      className="input"
+                      type="number"
+                      placeholder="10000"
+                      value={thinkingBudget}
+                      onChange={(e) => setThinkingBudget(e.target.value)}
+                    />
+                  </div>
+                )}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <div className="settings-field">
+                    <label>Max turns</label>
+                    <input
+                      className="input"
+                      type="number"
+                      placeholder="unlimited"
+                      value={maxTurns}
+                      onChange={(e) => setMaxTurns(e.target.value)}
+                    />
+                  </div>
+                  <div className="settings-field">
+                    <label>Max budget (USD)</label>
+                    <input
+                      className="input"
+                      type="number"
+                      step="0.01"
+                      placeholder="unlimited"
+                      value={maxBudgetUsd}
+                      onChange={(e) => setMaxBudgetUsd(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="settings-field">
+                  <label>Fallback model</label>
+                  <input
+                    className="input"
+                    placeholder="model to use if primary fails"
+                    value={fallbackModel}
+                    onChange={(e) => setFallbackModel(e.target.value)}
+                  />
+                </div>
+                <div className="settings-field">
+                  <label>Additional directories (comma-separated)</label>
+                  <input
+                    className="input"
+                    placeholder="/path/a, /path/b"
+                    value={additionalDirs}
+                    onChange={(e) => setAdditionalDirs(e.target.value)}
+                  />
+                  <span className="hint">Extra paths the agent may read/write outside the working directory.</span>
+                </div>
+                <div className="settings-field">
+                  <label>Allowed tools (comma-separated)</label>
+                  <input
+                    className="input"
+                    placeholder="Read, Write, Bash"
+                    value={allowedToolsStr}
+                    onChange={(e) => setAllowedToolsStr(e.target.value)}
+                  />
+                </div>
+                <div className="settings-field">
+                  <label>Disallowed tools (comma-separated)</label>
+                  <input
+                    className="input"
+                    placeholder="WebFetch, Agent"
+                    value={disallowedToolsStr}
+                    onChange={(e) => setDisallowedToolsStr(e.target.value)}
+                  />
+                </div>
+                <div className="settings-field">
+                  <label>Tools (comma-separated)</label>
+                  <input
+                    className="input"
+                    placeholder="leave empty for defaults"
+                    value={toolsStr}
+                    onChange={(e) => setToolsStr(e.target.value)}
+                  />
+                  <span className="hint">Override the built-in tool set. Leave empty to use defaults.</span>
+                </div>
+                <div className="settings-field">
+                  <label>MCP servers (JSON)</label>
+                  <textarea
+                    className="textarea"
+                    rows={3}
+                    placeholder='{"my-server": {"type": "stdio", "command": "...", "args": [...]}}'
+                    value={mcpServersJson}
+                    onChange={(e) => setMcpServersJson(e.target.value)}
+                  />
+                </div>
+              </div>
+            </details>
           </div>
 
           <div className="modal-footer">
@@ -1149,7 +1338,6 @@ interface MenuProps {
   // --- Group actions ---
   groups: SessionGroup[]
   onAddToGroup: (sessionId: string, groupId: string) => void
-  onRemoveFromGroup: (sessionId: string, groupId: string) => void
 }
 
 function SessionContextMenu({
@@ -1167,7 +1355,6 @@ function SessionContextMenu({
   onColorChange,
   groups,
   onAddToGroup,
-  onRemoveFromGroup,
 }: MenuProps) {
   if (!session) return null
   const items: ContextMenuItem[] = [
@@ -1200,30 +1387,21 @@ function SessionContextMenu({
       onClick: () => onNewLikeThis(anchor.id),
     },
     { label: '' }, // separator before group actions
-    // --- Group actions ---
+    // --- Group actions (exclusive membership — session is in exactly one group) ---
     ...(() => {
-      const sessionGroups = groups.filter((g) => g.sessionIds.includes(anchor.id))
-      const otherGroups = groups.filter((g) => !g.sessionIds.includes(anchor.id))
+      const sessionGroup = groups.find((g) => g.sessionIds.includes(anchor.id))
+      // Only show groups with space (and not the current group)
+      const availableGroups = groups.filter(
+        (g) => g.id !== sessionGroup?.id && g.sessionIds.length < 3,
+      )
       const items: ContextMenuItem[] = []
-      if (otherGroups.length > 0) {
-        items.push({ label: 'Add to group ▸', icon: '＋', disabled: true })
-        for (const g of otherGroups) {
+      if (availableGroups.length > 0) {
+        items.push({ label: 'Move to group ▸', icon: '→', disabled: true })
+        for (const g of availableGroups) {
           items.push({
-            label: `  ${g.name}`,
+            label: `  ${g.name} (${g.sessionIds.length}/3)`,
             icon: ' ',
             onClick: () => onAddToGroup(anchor.id, g.id),
-          })
-        }
-      }
-      // Only allow removing when the session is in 2+ groups — sessions
-      // must always belong to at least one group.
-      if (sessionGroups.length > 1) {
-        items.push({ label: 'Remove from group ▸', icon: '－', disabled: true })
-        for (const g of sessionGroups) {
-          items.push({
-            label: `  ${g.name}`,
-            icon: '✕',
-            onClick: () => onRemoveFromGroup(anchor.id, g.id),
           })
         }
       }

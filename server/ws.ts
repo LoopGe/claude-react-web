@@ -39,6 +39,90 @@ interface SessionSub {
   cleanup: () => void
 }
 
+/** Backpressure threshold: pause draining when the kernel socket buffer
+ *  exceeds this many bytes. Prevents unbounded memory growth when the
+ *  client is slow (e.g. rendering a large replay). */
+const BACKPRESSURE_HIGH = 1_000_000
+
+/**
+ * Async write queue with backpressure control for a single WebSocket.
+ *
+ * Replaces the old synchronous `send()` closure. All session drivers
+ * call `enqueue()` which serializes the frame and appends it to an
+ * in-memory buffer; a background drain loop sends frames one-by-one,
+ * yielding via `setImmediate` between each so the event loop stays
+ * responsive. When the kernel socket buffer exceeds
+ * {@link BACKPRESSURE_HIGH} bytes, the drain loop suspends until the
+ * `drain` event fires.
+ *
+ * This prevents a large replay frame from starving every other
+ * session's live messages — the interleaving `setImmediate` gives
+ * other drivers a chance to enqueue their (small) frames before the
+ * next drain iteration.
+ */
+class WsWriteQueue {
+  private queue: string[] = []
+  private draining = false
+  private stopped = false
+  private ws: WebSocket
+
+  constructor(ws: WebSocket) {
+    this.ws = ws
+  }
+
+  /** Enqueue a frame for async delivery. Drops silently if the socket
+   *  has been stopped or is no longer OPEN — callers don't need to
+   *  check readyState themselves. */
+  enqueue(frame: WsServerFrame) {
+    if (this.stopped || this.ws.readyState !== this.ws.OPEN) return
+    this.queue.push(JSON.stringify(frame))
+    if (!this.draining) void this.drain()
+  }
+
+  /** Signal that the socket is closing. Clears the queue and prevents
+   *  any further drains from running. */
+  stop() {
+    this.stopped = true
+    this.queue.length = 0
+  }
+
+  private async drain() {
+    this.draining = true
+    try {
+      while (this.queue.length > 0 && !this.stopped) {
+        const data = this.queue.shift()!
+        // Backpressure: if the kernel socket buffer is full, wait for
+        // the `drain` signal before sending more. This is the key
+        // mechanism that prevents a huge replay from blocking smaller
+        // live frames — while we wait, other drivers can enqueue.
+        if (this.ws.bufferedAmount > BACKPRESSURE_HIGH) {
+          await new Promise<void>((resolve) => {
+            if (this.stopped) { resolve(); return }
+            const onDrain = () => { cleanup(); resolve() }
+            const onClose = () => { cleanup(); resolve() }
+            const cleanup = () => {
+              this.ws.off('drain', onDrain)
+              this.ws.off('close', onClose)
+            }
+            this.ws.on('drain', onDrain)
+            this.ws.on('close', onClose)
+          })
+        }
+        if (this.stopped) return
+        this.ws.send(data)
+        // Yield to the event loop between frames. This is critical:
+        // without it, a burst of N small frames would still block the
+        // loop for the duration of N × ws.send(). setImmediate lets
+        // other session drivers' synchronous enqueue() calls run,
+        // which is what makes cross-session interleaving possible.
+        await new Promise<void>((r) => setImmediate(r))
+      }
+    } finally {
+      this.draining = false
+    }
+  }
+}
+
 /** Attach a WebSocket endpoint to an existing Node HTTP server. Returns
  *  a `shutdown()` function that closes every live socket — callers pass
  *  this into their SIGTERM handler so the process exits cleanly.
@@ -72,15 +156,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionManager): () 
     let globalCleanup: (() => void) | null = null
     let closed = false
 
-    const send = (frame: WsServerFrame) => {
-      if (ws.readyState !== ws.OPEN) return
-      try {
-        ws.send(JSON.stringify(frame))
-      } catch {
-        /* socket may have closed between the readyState check and send;
-         * ignore — the close handler cleans up everything. */
-      }
-    }
+    const queue = new WsWriteQueue(ws)
 
     // --- global channel: sessions list + global permission mirror ----
     // Started immediately on connection so the client receives the
@@ -88,16 +164,16 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionManager): () 
     const startGlobal = () => {
       const global = sm.subscribeGlobal()
       globalCleanup = () => global.unsubscribe()
-      send({ kind: 'sessions-snapshot', sessions: global.snapshot })
+      queue.enqueue({ kind: 'sessions-snapshot', sessions: global.snapshot })
       void (async () => {
         try {
           for await (const ev of global.iterable) {
             if (closed) return
-            if (ev.kind === 'update') send({ kind: 'session-update', session: ev.session })
-            else if (ev.kind === 'created') send({ kind: 'session-created', session: ev.session })
-            else if (ev.kind === 'removed') send({ kind: 'session-removed', id: ev.id })
+            if (ev.kind === 'update') queue.enqueue({ kind: 'session-update', session: ev.session })
+            else if (ev.kind === 'created') queue.enqueue({ kind: 'session-created', session: ev.session })
+            else if (ev.kind === 'removed') queue.enqueue({ kind: 'session-removed', id: ev.id })
             else if (ev.kind === 'permission_request') {
-              send({
+              queue.enqueue({
                 kind: 'global-permission-request',
                 sessionId: ev.sessionId,
                 request: ev.request,
@@ -106,7 +182,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionManager): () 
           }
         } catch (err) {
           if (!closed) {
-            send({ kind: 'error', message: `global channel: ${(err as Error).message}` })
+            queue.enqueue({ kind: 'error', message: `global channel: ${(err as Error).message}` })
           }
         }
       })()
@@ -127,16 +203,37 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionManager): () 
         msgSub = msg
         permSub = perms
 
-        // 1) Send the full replay batch as a single frame. Bundling
-        //    history + pending permissions avoids the client having to
-        //    stitch two streams together during initial paint.
-        send({
-          kind: 'replay',
-          sessionId,
-          messages: msg.history,
-          permissions: perms.snapshot,
-        })
-        send({ kind: 'replay-done', sessionId })
+        // 1) Send the full replay. When history is small (≤50 messages),
+        //    we send one frame for backward compat. For larger histories
+        //    we chunk into 50-message batches so no single frame blocks
+        //    the socket — the WsWriteQueue interleaves with other
+        //    sessions' live frames via setImmediate between each chunk.
+        const REPLAY_CHUNK_SIZE = 50
+        if (msg.history.length <= REPLAY_CHUNK_SIZE) {
+          queue.enqueue({
+            kind: 'replay',
+            sessionId,
+            messages: msg.history,
+            permissions: perms.snapshot,
+          })
+          queue.enqueue({ kind: 'replay-done', sessionId })
+        } else {
+          for (let i = 0; i < msg.history.length; i += REPLAY_CHUNK_SIZE) {
+            queue.enqueue({
+              kind: 'replay',
+              sessionId,
+              messages: msg.history.slice(i, i + REPLAY_CHUNK_SIZE),
+              permissions: [],
+            })
+          }
+          // Permissions arrive with the final replay-done frame. The
+          // client merges them from whichever frame carries them.
+          queue.enqueue({
+            kind: 'replay-done',
+            sessionId,
+            permissions: perms.snapshot,
+          })
+        }
 
         // 2) Drive the three live iterables concurrently. Same Promise.race
         //    pattern as the SSE route — each iterator tagged so the loop
@@ -182,7 +279,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionManager): () 
               if (winner.kind === 'msg') {
                 if (winner.result.done) msgP = null
                 else {
-                  send({
+                  queue.enqueue({
                     kind: 'message',
                     sessionId,
                     message: winner.result.value as never,
@@ -196,9 +293,9 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionManager): () 
                     | { kind: 'request'; payload: never }
                     | { kind: 'resolved'; pid: string; decision: never }
                   if (ev.kind === 'request') {
-                    send({ kind: 'permission-request', sessionId, payload: ev.payload })
+                    queue.enqueue({ kind: 'permission-request', sessionId, payload: ev.payload })
                   } else {
-                    send({
+                    queue.enqueue({
                       kind: 'permission-resolved',
                       sessionId,
                       id: ev.pid,
@@ -210,7 +307,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionManager): () 
               } else {
                 if (winner.result.done) ctxP = null
                 else {
-                  send({
+                  queue.enqueue({
                     kind: 'context-usage',
                     sessionId,
                     usage: winner.result.value,
@@ -221,7 +318,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionManager): () 
             }
           } catch (err) {
             if (!closed && !stopped) {
-              send({
+              queue.enqueue({
                 kind: 'error',
                 sessionId,
                 message: `subscription: ${(err as Error).message}`,
@@ -240,7 +337,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionManager): () 
         // removed on another tab.
         msgSub?.unsubscribe()
         permSub?.unsubscribe()
-        send({ kind: 'error', sessionId, message: (err as Error).message })
+        queue.enqueue({ kind: 'error', sessionId, message: (err as Error).message })
       }
     }
 
@@ -256,11 +353,11 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionManager): () 
       try {
         frame = JSON.parse(typeof raw === 'string' ? raw : raw.toString('utf-8')) as WsClientFrame
       } catch {
-        send({ kind: 'error', message: 'invalid JSON frame' })
+        queue.enqueue({ kind: 'error', message: 'invalid JSON frame' })
         return
       }
       if (!frame || typeof frame !== 'object' || typeof frame.kind !== 'string') {
-        send({ kind: 'error', message: 'frame missing kind' })
+        queue.enqueue({ kind: 'error', message: 'frame missing kind' })
         return
       }
       switch (frame.kind) {
@@ -271,16 +368,17 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionManager): () 
           if (typeof frame.sessionId === 'string' && frame.sessionId) stopSession(frame.sessionId)
           break
         case 'ping':
-          send({ kind: 'pong', nonce: frame.nonce })
+          queue.enqueue({ kind: 'pong', nonce: frame.nonce })
           break
         default:
           // Exhaustiveness check — a new client-side kind we don't know.
-          send({ kind: 'error', message: `unknown kind: ${(frame as { kind: string }).kind}` })
+          queue.enqueue({ kind: 'error', message: `unknown kind: ${(frame as { kind: string }).kind}` })
       }
     })
 
     ws.on('close', () => {
       closed = true
+      queue.stop()
       for (const s of subs.values()) s.cleanup()
       subs.clear()
       globalCleanup?.()

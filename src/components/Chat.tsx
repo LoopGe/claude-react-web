@@ -243,6 +243,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
         messages={stream.messages}
         showSystemEvents={showSystemEvents}
         working={session.working}
+        workingSince={session.workingSince}
       />
 
       <TodoChecklist messages={stream.messages} working={session.working} />
