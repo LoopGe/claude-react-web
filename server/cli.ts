@@ -9,6 +9,7 @@ import { execSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import open from 'open'
 import { buildApp } from './app.js'
+import { loadConfig } from './config.js'
 import { SessionStore, defaultStateDir } from './persistence.js'
 import { attachWebSocket } from './ws.js'
 
@@ -76,7 +77,8 @@ Options:
       --no-open        Do not open a browser window
       --cwd <path>     Default cwd advertised to new sessions (informational)
       --model <name>   Default model advertised to new sessions (informational)
-      --state-dir <p>  Where to keep session metadata (default: ~/.claude-react-web)
+      --state-dir <p>  Where to keep session metadata and config.json
+                       (default: ~/.claude-react-web)
       --claude-binary <path>
                        Path to the claude CLI binary. Default: resolved from
                        CLAUDE_CODE_BINARY env or \`which claude\`. Use this if
@@ -148,6 +150,7 @@ async function main() {
   }
 
   const stateDir = args.stateDir ?? defaultStateDir()
+  await loadConfig(stateDir)
   const store = new SessionStore({ stateDir })
   const loaded = await store.load()
   if (loaded.length) {

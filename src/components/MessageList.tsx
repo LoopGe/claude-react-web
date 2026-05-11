@@ -14,19 +14,20 @@ import { ToolUseBlock } from './ToolUseBlock'
 import type { SdkMessage } from '../types'
 import { formatTokens } from '../utils/format'
 
+/** A currently-running subagent spawned by the Agent or Task tool. */
+export interface ActiveSubagent {
+  /** The tool_use_id of the Agent/Task call. */
+  toolUseId: string
+  /** Human-readable label (from input.description or input.prompt). */
+  label: string
+}
+
 interface Props {
   messages: SdkMessage[]
   /** When true, include `system` messages (init/status/etc.) in the
    *  rendered list. Errors (`subtype === 'error'`) are always shown
    *  regardless — those carry actual failure info users need to see. */
   showSystemEvents?: boolean
-  /** When true, show a "thinking" loading bubble at the tail of the
-   *  transcript. Sourced from session.working (server-authoritative) so
-   *  it reflects state even across tabs and after reloads. */
-  working?: boolean
-  /** Epoch ms when the current turn started. Passed through to
-   *  WorkingBubble so the elapsed timer is accurate across remounts. */
-  workingSince?: number
 }
 
 /** An item in the Virtuoso data array. Pre-computing isCompactSummary
@@ -36,7 +37,7 @@ interface RenderableItem {
   isCompactSummary: boolean
 }
 
-export function MessageList({ messages, showSystemEvents = false, working = false, workingSince }: Props) {
+export function MessageList({ messages, showSystemEvents = false }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -125,22 +126,6 @@ export function MessageList({ messages, showSystemEvents = false, working = fals
     setUnseenCount(0)
   }, [])
 
-  // Memoised Footer component for the WorkingBubble. Virtuoso
-  // re-renders this via its own measurement pipeline — defining it
-  // outside the render body avoids an inline-function identity change
-  // on every render.
-  const FooterComponent: React.FC = useMemo(
-    () =>
-      function Footer() {
-        return working ? (
-          <div className="virtuoso-item-wrapper">
-            <WorkingBubble startedAt={workingSince} />
-          </div>
-        ) : null
-      },
-    [working, workingSince],
-  )
-
   return (
     <div className="chat-messages-wrap">
       <div className="chat-messages">
@@ -188,7 +173,6 @@ export function MessageList({ messages, showSystemEvents = false, working = fals
                 <MessageView msg={item.msg} isCompactSummary={item.isCompactSummary} />
               </div>
             )}
-            components={{ Footer: FooterComponent }}
             alignToBottom
           />
         )}
@@ -548,12 +532,57 @@ function truncate(s: string, n: number): string {
   return s.length <= n ? s : `${s.slice(0, n)}…`
 }
 
-/** "Thinking" loading indicator shown at the tail of the transcript
- *  whenever the SDK is mid-turn. Visually a miniature assistant bubble
- *  with three bouncing dots + an elapsed-time label, so users can tell
- *  at a glance how long the turn has been running (helpful for long
- *  tool-heavy runs where a silent wait can feel broken). */
-function WorkingBubble({ startedAt }: { startedAt?: number }) {
+/** Scan the message list for Agent/Task tool_use calls that have no
+ *  matching tool_result — those subagents are still running.
+ *  Extracts a human-readable label from the tool input. */
+export function extractActiveSubagents(messages: SdkMessage[]): ActiveSubagent[] {
+  // Collect all tool_use IDs that received a result.
+  const resolved = new Set<string>()
+  for (const msg of messages) {
+    if (msg.type !== 'user') continue
+    const content = msg.message?.content
+    if (!Array.isArray(content)) continue
+    for (const raw of content as unknown[]) {
+      const block = raw as Record<string, unknown>
+      if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+        resolved.add(block.tool_use_id)
+      }
+    }
+  }
+
+  // Walk in reverse so we see the most recent spawns first.
+  const active: ActiveSubagent[] = []
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg.type !== 'assistant') continue
+    const content = msg.message?.content
+    if (!Array.isArray(content)) continue
+    const blocks = content as unknown[]
+    for (let j = blocks.length - 1; j >= 0; j--) {
+      const block = blocks[j] as Record<string, unknown>
+      if (block.type !== 'tool_use') continue
+      const name = block.name as string | undefined
+      if (name !== 'Agent' && name !== 'Task') continue
+      const id = block.id as string | undefined
+      if (!id || resolved.has(id)) continue
+      const input = block.input as Record<string, unknown> | undefined
+      const label =
+        (typeof input?.description === 'string' && input.description) ||
+        (typeof input?.prompt === 'string' && truncate(input.prompt, 80)) ||
+        'Subagent'
+      active.push({ toolUseId: id, label })
+    }
+  }
+  return active
+}
+
+export function WorkingBubble({
+  startedAt,
+  activeSubagents,
+}: {
+  startedAt?: number
+  activeSubagents?: ActiveSubagent[]
+}) {
   // Use the server-provided turn-start timestamp when available — this
   // survives component remounts (e.g. group switches). Fall back to
   // Date.now() if the server hasn't provided one yet (first frame).
@@ -571,21 +600,36 @@ function WorkingBubble({ startedAt }: { startedAt?: number }) {
     const id = window.setInterval(tick, 1000)
     return () => window.clearInterval(id)
   }, [startedAt])
+
+  const hasSubagents = activeSubagents && activeSubagents.length > 0
+
   return (
-    <div className="msg assistant working" aria-live="polite" aria-label="Assistant is working">
-      <div className="msg-header">
-        <span>assistant</span>
-        <span className="working-timer" aria-label={`elapsed ${formatElapsed(elapsedMs)}`}>
-          {formatElapsed(elapsedMs)}
+    <div
+      className={`working-bar${hasSubagents ? ' working-bar-with-agents' : ''}`}
+      aria-live="polite"
+      aria-label="Assistant is working"
+    >
+      <div className="working-dots" aria-hidden>
+        <span />
+        <span />
+        <span />
+      </div>
+      <span className="working-bar-label">Working</span>
+      <span className="working-timer" aria-label={`elapsed ${formatElapsed(elapsedMs)}`}>
+        {formatElapsed(elapsedMs)}
+      </span>
+      {hasSubagents && (
+        <span className="working-bar-sep" aria-hidden />
+      )}
+      {activeSubagents?.map((a) => (
+        <span key={a.toolUseId} className="subagent-chip" title={a.label}>
+          <span className="subagent-chip-dots" aria-hidden>
+            <span />
+            <span />
+          </span>
+          <span className="subagent-chip-label">{a.label}</span>
         </span>
-      </div>
-      <div className="msg-body">
-        <div className="working-dots" aria-hidden>
-          <span />
-          <span />
-          <span />
-        </div>
-      </div>
+      ))}
     </div>
   )
 }

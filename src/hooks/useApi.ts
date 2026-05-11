@@ -29,9 +29,10 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
 }
 
 export const api = {
-  get: <T>(path: string) => apiRequest<T>(path),
-  post: <T>(path: string, body?: unknown) =>
-    apiRequest<T>(path, { method: 'POST', body: body == null ? undefined : JSON.stringify(body) }),
+  get: <T>(path: string, opts?: { signal?: AbortSignal }) =>
+    apiRequest<T>(path, { signal: opts?.signal }),
+  post: <T>(path: string, body?: unknown, opts?: { signal?: AbortSignal }) =>
+    apiRequest<T>(path, { method: 'POST', body: body == null ? undefined : JSON.stringify(body), signal: opts?.signal }),
   patch: <T>(path: string, body?: unknown) =>
     apiRequest<T>(path, { method: 'PATCH', body: body == null ? undefined : JSON.stringify(body) }),
   delete: <T>(path: string) => apiRequest<T>(path, { method: 'DELETE' }),

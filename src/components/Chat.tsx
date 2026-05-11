@@ -8,7 +8,7 @@
 // new rules flag as a cascading-render hazard. Re-mount is cheap because
 // the sessions themselves are long-lived on the server.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { SettingsPanel } from './SettingsPanel'
 import { api } from '../hooks/useApi'
 import { useAttachments } from '../hooks/useAttachments'
@@ -17,7 +17,7 @@ import { useInputHistory } from '../hooks/useInputHistory'
 import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { Composer } from './Composer'
 import { ContextBar } from './ContextBar'
-import { MessageList } from './MessageList'
+import { MessageList, WorkingBubble, extractActiveSubagents } from './MessageList'
 import { PermissionDialog } from './PermissionDialog'
 import { QuestionDialog } from './QuestionDialog'
 import { SessionRecapBanner } from './SessionRecapBanner'
@@ -60,9 +60,13 @@ interface Props {
   /** Whether this panel is the currently focused (active) one. Used by
    *  useSessionRecap to track last-viewed timestamps. */
   focused?: boolean
+  /** Called whenever the live stream message count changes, so the parent
+   *  header can display an up-to-date count without waiting for a
+   *  server-pushed session-update (which only fires at turn boundaries). */
+  onLiveMessageCount?: (count: number) => void
 }
 
-export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings, onSessionUpdate, focused }: Props) {
+export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings, onSessionUpdate, focused, onLiveMessageCount }: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
   // The parent remounts Chat on session switch (<Chat key={session.id}>), so
   // this initializer runs exactly once per mount — the right place to hydrate.
@@ -117,8 +121,22 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
   })
   const attachments = useAttachments(session.id, session.cwd)
 
+  // Report live message count to parent so the header stays up-to-date
+  // during streaming (server only pushes session-update at turn boundaries).
+  useEffect(() => {
+    onLiveMessageCount?.(stream.messages.length)
+  }, [stream.messages.length, onLiveMessageCount])
+
   // Session recap — AI summary banner when returning after inactivity.
   const recap = useSessionRecap(session.id, focused ?? false)
+
+  // Active subagents — scan messages for Agent/Task tool_use without a
+  // matching tool_result. Memoised on message count to avoid rescanning
+  // on every render.
+  const activeSubagents = useMemo(
+    () => extractActiveSubagents(stream.messages),
+    [stream.messages],
+  )
 
   // Pull out the specific functions/values we actually use downstream.
   // Putting the whole hook object in a dep list re-creates callbacks every
@@ -242,8 +260,6 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
       <MessageList
         messages={stream.messages}
         showSystemEvents={showSystemEvents}
-        working={session.working}
-        workingSince={session.workingSince}
       />
 
       <TodoChecklist messages={stream.messages} working={session.working} />
@@ -260,6 +276,13 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
             ⏳ {stream.queuedAhead - 1} more message{stream.queuedAhead - 1 === 1 ? '' : 's'} queued, will send automatically.
           </span>
         </div>
+      )}
+
+      {session.working && (
+        <WorkingBubble
+          startedAt={session.workingSince}
+          activeSubagents={activeSubagents}
+        />
       )}
 
       <ContextBar usage={stream.contextUsage} />

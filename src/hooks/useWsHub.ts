@@ -47,12 +47,15 @@ interface WsHubApi {
    *  hub tracks ref-counts internally so multiple components can
    *  subscribe to the same session without stepping on each other. */
   subscribe: (sessionId: string) => () => void
-  /** Current lifecycle status. Mirrored to React state so components
-   *  that want to render a "reconnecting" banner can re-render. */
-  status: WsHubStatus
 }
 
 const WsHubContext = createContext<WsHubApi | null>(null)
+
+// Status lives in its own context so that status changes (connecting →
+// online → reconnecting) don't change the hub object's identity.
+// Components that read hub status use useWsHubStatus() instead of
+// hub.status, keeping the hub referentially stable across flips.
+const WsStatusContext = createContext<WsHubStatus>('connecting')
 
 /** URL the hub connects to — relative to the current origin so it
  *  works in both dev (Vite proxies /api/ws to 3456) and prod (served
@@ -288,26 +291,36 @@ export function WsHubProvider({ children, url }: ProviderProps) {
   )
 
   // Memoize so the controls part (addListener/subscribe) has stable
-  // identity across re-renders. We include `status` in deps because
-  // React Context dispatch compares by Object.is — if we DIDN'T
-  // include it, consumers reading `hub.status` would be pinned to
-  // the initial value. The net effect: consumers with `[hub]` deps
-  // re-run their effects on every status flip (connecting → online
-  // → reconnecting). Per-session subscribe effects in useChatStream
-  // are written to tolerate re-runs cheaply (idempotent subscribe +
-  // server replay clobbers local state correctly), so this is fine.
+  // identity across re-renders. Status is deliberately excluded — it
+  // lives in its own WsStatusContext so status flips (connecting →
+  // online → reconnecting) don't change the hub object's identity.
+  // This prevents effect teardown/rebuild in consumers like
+  // useChatStream that have `[hub]` in their dependency arrays.
   const api = useMemo<WsHubApi>(
-    () => ({ addListener, addSessionListener, subscribe, status }),
-    [addListener, addSessionListener, subscribe, status],
+    () => ({ addListener, addSessionListener, subscribe }),
+    [addListener, addSessionListener, subscribe],
   )
-  // eslint-disable-next-line react-hooks/refs -- api is memoized, not a live ref
-  return createElement(WsHubContext.Provider, { value: api }, children)
+  return createElement(
+    WsHubContext.Provider,
+    // eslint-disable-next-line react-hooks/refs -- api is memoized, not a live ref
+    { value: api },
+    createElement(WsStatusContext.Provider, { value: status }, children),
+  )
 }
 
 /** Imperative hub handle for hooks that need to both subscribe and
- *  listen. Throws if used outside a <WsHubProvider>. */
+ *  listen. Throws if used outside a <WsHubProvider>. The returned
+ *  object is referentially stable across status changes — read
+ *  status via useWsHubStatus() instead. */
 export function useWsHub(): WsHubApi {
   const ctx = useContext(WsHubContext)
   if (!ctx) throw new Error('useWsHub must be used inside <WsHubProvider>')
   return ctx
+}
+
+/** Read the current WebSocket hub lifecycle status. Separated from
+ *  useWsHub so status flips don't change the hub object's identity
+ *  and trigger effect teardown in consumers. */
+export function useWsHubStatus(): WsHubStatus {
+  return useContext(WsStatusContext)
 }

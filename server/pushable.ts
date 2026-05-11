@@ -62,8 +62,13 @@ export function createPushable<T>(): Pushable<T> {
             waiter = resolve
           })
         },
+        // NOTE: intentionally does NOT set `ended = true`. Setting it
+        // would permanently kill the producer — a problem for pushables
+        // whose iterable is shared across multiple sequential consumers
+        // (e.g. contextUsagePushable, where each WS subscriber creates
+        // a new iterator). `end()` is the proper way to terminate the
+        // producer; `return()` only closes the current consumer.
         return(): Promise<IteratorResult<T>> {
-          ended = true
           if (waiter) {
             const w = waiter
             waiter = null

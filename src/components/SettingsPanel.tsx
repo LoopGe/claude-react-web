@@ -27,27 +27,39 @@ export function SettingsPanel({ session, onClose, onSessionUpdate }: Props) {
   // running the server returns 410; skip them rather than surface noise.
   useEffect(() => {
     if (!session.running) return
+    const ac = new AbortController()
     ;(async () => {
       try {
-        const m = await api.get<{ models: ModelInfo[] }>(`/sessions/${session.id}/models`)
+        const m = await api.get<{ models: ModelInfo[] }>(
+          `/sessions/${session.id}/models`,
+          { signal: ac.signal },
+        )
         setModels(m.models)
       } catch (e) {
+        if ((e as Error).name === 'AbortError') return
         // Supported models fails if SDK hasn't initialized yet — retry silently
         console.warn('could not load models:', (e as Error).message)
       }
       try {
-        const u = await api.get<{ usage: unknown }>(`/sessions/${session.id}/context-usage`)
+        const u = await api.get<{ usage: unknown }>(
+          `/sessions/${session.id}/context-usage`,
+          { signal: ac.signal },
+        )
         setUsage(u.usage)
-      } catch {
-        /* ignore */
+      } catch (e) {
+        if ((e as Error).name === 'AbortError') return
       }
       try {
-        const r = await api.get<{ mcp: McpServerStatus[] }>(`/sessions/${session.id}/mcp-status`)
+        const r = await api.get<{ mcp: McpServerStatus[] }>(
+          `/sessions/${session.id}/mcp-status`,
+          { signal: ac.signal },
+        )
         setMcp(r.mcp)
-      } catch {
-        /* ignore */
+      } catch (e) {
+        if ((e as Error).name === 'AbortError') return
       }
     })()
+    return () => { ac.abort() }
   }, [session.id, session.running])
 
   const runAndRefresh = async (fn: () => Promise<{ session: SessionInfo }>) => {

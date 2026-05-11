@@ -67,10 +67,12 @@ export function useSessionRecap(sessionId: string, focused: boolean): SessionRec
     const lastViewed = map[sessionId] ?? 0
     const isStale = Date.now() - lastViewed > STALE_THRESHOLD_MS
 
-    // Always update the timestamp on mount (session is now visible).
-    writeLastViewed(sessionId, Date.now())
-
-    if (!isStale || fetchedRef.current) return
+    if (!isStale) {
+      // Not stale — just bump the view timestamp.
+      writeLastViewed(sessionId, Date.now())
+      return
+    }
+    if (fetchedRef.current) return
     fetchedRef.current = true
     setVisible(true)
     setLoading(true)
@@ -80,12 +82,17 @@ export function useSessionRecap(sessionId: string, focused: boolean): SessionRec
       .post<RecapResponse>(`/sessions/${sessionId}/recap`)
       .then((data) => {
         setRecap(data)
+        // Only update the timestamp AFTER a successful fetch. If the
+        // request fails (e.g. network error, dormant session), leaving
+        // the old timestamp ensures we'll retry on the next mount.
+        writeLastViewed(sessionId, Date.now())
       })
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err)
         // 503 = dormant session — show a muted message instead of hiding.
         if (msg.includes('503') || msg.toLowerCase().includes('dormant')) {
           setRecap({ summary: 'Resume this session to see a recap.', stats: emptyStats, cached: false, generatedAt: Date.now(), fallback: true })
+          writeLastViewed(sessionId, Date.now())
         } else {
           setError(msg)
           setVisible(false)

@@ -15,7 +15,7 @@ import { useDragResize } from './hooks/useDragResize'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useLocalStorage } from './hooks/useLocalStorage'
 import { useNotifications } from './hooks/useNotifications'
-import { useWsHub } from './hooks/useWsHub'
+import { useWsHub, useWsHubStatus } from './hooks/useWsHub'
 import type { WsServerFrame } from './ws-types'
 import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, SidebarSection } from './types'
 import { ACCENT_COLORS, ACCENT_COLOR_KEY, SESSION_COLORS_KEY } from './theme'
@@ -176,6 +176,9 @@ export function App() {
   const bodyRef = useRef<HTMLDivElement>(null)
   const dividerStart = useRef<{ ratios: Record<string, number>; bodyWidth: number } | null>(null)
   const [draggingDivider, setDraggingDivider] = useState<number | null>(null)
+  /** Cleanup fn for the active divider drag — stored so we can remove
+   *  window-level mousemove/mouseup listeners on unmount. */
+  const dividerDragCleanupRef = useRef<(() => void) | null>(null)
 
   const onDividerMouseDown = useCallback(
     (index: number) => (e: React.MouseEvent) => {
@@ -228,9 +231,11 @@ export function App() {
       const onUp = () => {
         setDraggingDivider(null)
         document.body.classList.remove('resizing-col')
+        dividerDragCleanupRef.current = null
         window.removeEventListener('mousemove', onMove)
         window.removeEventListener('mouseup', onUp)
       }
+      dividerDragCleanupRef.current = onUp
       window.addEventListener('mousemove', onMove)
       window.addEventListener('mouseup', onUp)
     },
@@ -248,6 +253,10 @@ export function App() {
       setPanelRatiosDraft(null)
     }
   }, [draggingDivider, panelRatiosDraft, setPanelRatios])
+
+  // Clean up any in-progress divider drag on unmount. Without this,
+  // the window-level mousemove/mouseup listeners would leak.
+  useEffect(() => () => { dividerDragCleanupRef.current?.() }, [])
 
   useEffect(() => {
     void api
@@ -348,15 +357,17 @@ export function App() {
 
   // Derive displayed error from operational error + hub status without
   // calling setState inside an effect (avoids react-hooks/set-state-in-effect).
+  // Status comes from its own context (useWsHubStatus) so hub identity
+  // stays stable across status flips — prevents effect teardown/rebuild.
+  const hubStatus = useWsHubStatus()
   const displayedError = useMemo(() => {
-    const s = hub.status
-    if (s === 'reconnecting')
+    if (hubStatus === 'reconnecting')
       return opError === null || opError === 'Reconnecting to server…'
         ? 'Reconnecting to server…'
         : opError
-    if (s === 'online') return opError === 'Reconnecting to server…' ? null : opError
+    if (hubStatus === 'online') return opError === 'Reconnecting to server…' ? null : opError
     return opError
-  }, [opError, hub.status])
+  }, [opError, hubStatus])
 
   useEffect(() => {
     const off = hub.addListener((frame: WsServerFrame) => {
@@ -444,9 +455,13 @@ export function App() {
         // the head if that's all we have (pin overflow: user opened
         // three pinned + tried a fourth — focused one loses to make
         // room, which matches the earlier behaviour).
-        const focusIdx = focusedId ? prev.indexOf(focusedId) : -1
+        // Use refs instead of closures so we read the latest values
+        // even when called inside a React batch with other setState.
+        const curFocusedId = focusedIdRef.current
+        const curSessions = sessionsRef.current
+        const focusIdx = curFocusedId ? prev.indexOf(curFocusedId) : -1
         const pinnedOpenIds = new Set(
-          prev.filter((pid) => sessions.find((s) => s.id === pid)?.pinned),
+          prev.filter((pid) => curSessions.find((s) => s.id === pid)?.pinned),
         )
         const evictIdx = prev.findIndex(
           (pid, i) => i !== focusIdx && !pinnedOpenIds.has(pid),
@@ -467,21 +482,28 @@ export function App() {
       setFocusedId(id)
       setLastSeenTurn((prev) => ({ ...prev, [id]: lastTurnAt ?? Date.now() }))
     },
-    [focusedId, sessions],
+    [],
   )
 
   const closeSession = useCallback(
     (id: string) => {
-      setOpenIds((prev) => prev.filter((x) => x !== id))
+      // Derive remaining from the functional updater so it reads the
+      // latest `openIds` rather than the closure's stale snapshot.
+      // (setOpenIds and setFocusedId are batched — without this, the
+      // setFocusedId updater would see the pre-update openIds.)
+      let remaining: string[] | undefined
+      setOpenIds((prev) => {
+        remaining = prev.filter((x) => x !== id)
+        return remaining
+      })
       setFocusedId((prev) => {
         if (prev !== id) return prev
         // Focus the right neighbour if we closed the focused one, else
         // the last remaining open panel. Null if nothing's left.
-        const remaining = openIds.filter((x) => x !== id)
-        return remaining[remaining.length - 1] ?? null
+        return remaining![remaining!.length - 1] ?? null
       })
     },
-    [openIds],
+    [],
   )
 
   const handleAddToGroup = useCallback(
@@ -576,12 +598,18 @@ export function App() {
       const source = sessions.find((s) => s.id === id)
       if (!source) return
       const sourceGroup = groups.find((g) => g.sessionIds.includes(id))
+      // Ensure the new session is always assigned to a group. When the
+      // source session is already in one, inherit it. Otherwise pick the
+      // first group with room so the new session is visible in the
+      // sidebar's grouped view (sessions not in any group are invisible
+      // when groups exist).
+      const fallbackGroup = groups.find((g) => g.sessionIds.length < 3)
       const form: NewSessionForm = {
         cwd: source.cwd,
         model: source.model,
         permissionMode: source.permissionMode,
         title: source.title ? `${source.title} (copy)` : undefined,
-        groupId: sourceGroup?.id,
+        groupId: sourceGroup?.id ?? fallbackGroup?.id,
       }
       await handleCreate(form)
     },
@@ -1326,6 +1354,10 @@ function ChatPanel({
   onCloseSettings,
 }: ChatPanelProps) {
   const [dropActive, setDropActive] = useState(false)
+  /** Live message count reported by <Chat> during streaming. Used to
+   *  keep the header "X msgs" label up-to-date without waiting for a
+   *  server-pushed session-update (which only fires at turn end). */
+  const [liveMessageCount, setLiveMessageCount] = useState(0)
   /** When true, the model chip in the header becomes an inline <input>. */
   const [editingModel, setEditingModel] = useState(false)
   const [modelDraft, setModelDraft] = useState('')
@@ -1336,6 +1368,9 @@ function ChatPanel({
   const [permMenu, setPermMenu] = useState<{ x: number; y: number } | null>(null)
   const recentModels = readRecentModels()
   const chipsDisabled = !session.running || session.terminated
+  // Use the live count from the stream when available; fall back to the
+  // server-pushed session.messageCount (updated only at turn boundaries).
+  const effectiveMessageCount = Math.max(session.messageCount, liveMessageCount)
 
   const commitModel = (next: string) => {
     const value = next.trim()
@@ -1528,15 +1563,15 @@ function ChatPanel({
         )}
         {/* Second header row — secondary metadata. Muted colour, smaller
             font, skipped when there's literally nothing to show. */}
-        {(session.cwd || session.messageCount > 0) && (
+        {(session.cwd || effectiveMessageCount > 0) && (
           <div className="chat-panel-header-row2">
             {session.cwd && (
               <span className="chat-panel-cwd" title={session.cwd}>
                 📁 {shortenPath(session.cwd)}
               </span>
             )}
-            <span className="chat-panel-msgcount" title={`${session.messageCount} messages`}>
-              {session.messageCount} {session.messageCount === 1 ? 'msg' : 'msgs'}
+            <span className="chat-panel-msgcount" title={`${effectiveMessageCount} messages`}>
+              {effectiveMessageCount} {effectiveMessageCount === 1 ? 'msg' : 'msgs'}
             </span>
             {session.working && (
               <span className="chat-panel-working-indicator" title="Assistant is working on a turn">
@@ -1556,6 +1591,7 @@ function ChatPanel({
             showSystemEvents={showSystemEvents}
             settingsOpen={settingsOpen}
             onCloseSettings={onCloseSettings}
+            onLiveMessageCount={setLiveMessageCount}
           />
         ) : (
           <div className="empty-state">

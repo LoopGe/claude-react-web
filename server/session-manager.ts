@@ -187,6 +187,7 @@ interface Session {
 }
 
 const HISTORY_CAP = 500
+const SUBSCRIBER_QUEUE_CAP = 500
 const DEFAULT_IDLE_MS = 30 * 60 * 1000 // 30 min
 
 export interface SessionManagerOptions {
@@ -302,6 +303,9 @@ export class SessionManager {
           w({ value: ev, done: false })
         } else {
           queue.push(ev)
+          if (queue.length > SUBSCRIBER_QUEUE_CAP) {
+            queue.splice(0, queue.length - SUBSCRIBER_QUEUE_CAP)
+          }
         }
       },
       end: () => {
@@ -533,7 +537,7 @@ export class SessionManager {
           session.pending.delete(pid)
           // Aborted means the enclosing turn was interrupted — return a deny
           // that does NOT cascade (interrupt: false), SDK will unwind anyway.
-          resolve({ behavior: 'deny', message: 'aborted', interrupt: false })
+          resolve({ behavior: 'deny', message: 'aborted', interrupt: false, toolUseID: ctx.toolUseID })
           this.broadcastPermissionResolved(session, pid, {
             behavior: 'deny',
             persisted: false,
@@ -760,6 +764,7 @@ export class SessionManager {
     const s = this.requireLive(id)
     await s.query.applyFlagSettings(settings)
     s.lastActivityAt = Date.now()
+    this.persist(s)
     return this.info(s)
   }
 
@@ -942,6 +947,9 @@ export class SessionManager {
           w({ value: ev, done: false })
         } else {
           queue.push(ev)
+          if (queue.length > SUBSCRIBER_QUEUE_CAP) {
+            queue.splice(0, queue.length - SUBSCRIBER_QUEUE_CAP)
+          }
         }
       },
       end: () => {
@@ -1040,6 +1048,9 @@ export class SessionManager {
           w({ value: msg, done: false })
         } else {
           queue.push(msg)
+          if (queue.length > SUBSCRIBER_QUEUE_CAP) {
+            queue.splice(0, queue.length - SUBSCRIBER_QUEUE_CAP)
+          }
         }
       },
       // Named-event channel (e.g. context_usage) isn't wired into this
@@ -1096,6 +1107,26 @@ export class SessionManager {
     }
   }
 
+  /** Deny all still-pending tool-permission requests so no SDK awaiter
+   *  stays hanging forever. Called from both unload() (explicit teardown)
+   *  and the pump() finally block (Query ended or crashed). */
+  private denyPendingPermissions(session: Session) {
+    for (const [pid, p] of session.pending) {
+      try {
+        p.signal.removeEventListener('abort', p.abortHandler)
+      } catch {
+        /* ignore */
+      }
+      p.resolve({ behavior: 'deny', message: 'session closed', interrupt: false, toolUseID: p.toolUseID })
+      this.broadcastPermissionResolved(session, pid, {
+        behavior: 'deny',
+        persisted: false,
+        message: 'session closed',
+      })
+    }
+    session.pending.clear()
+  }
+
   /** Delete a session for good: close its Query AND erase its persistence
    *  entry. Use when the user explicitly clicks "delete" in the UI. */
   async delete(id: string): Promise<void> {
@@ -1117,26 +1148,12 @@ export class SessionManager {
     if (opts.terminate) s.terminated = true
     s.running = false
     s.input.end()
-    // Resolve every still-pending permission as a deny so no SDK awaiter
-    // stays hanging forever.
-    for (const [pid, p] of s.pending) {
-      try {
-        p.signal.removeEventListener('abort', p.abortHandler)
-      } catch {
-        /* ignore */
-      }
-      p.resolve({ behavior: 'deny', message: 'session closed', interrupt: false, toolUseID: p.toolUseID })
-      this.broadcastPermissionResolved(s, pid, {
-        behavior: 'deny',
-        persisted: false,
-        message: 'session closed',
-      })
-    }
-    s.pending.clear()
+    this.denyPendingPermissions(s)
     for (const sub of s.subscribers.values()) sub.end()
     s.subscribers.clear()
     for (const sub of s.permissionSubscribers.values()) sub.end()
     s.permissionSubscribers.clear()
+    s.contextUsagePushable.end()
     // Let the pump exit on its own (the iterable is now drained). We don't
     // await it indefinitely — the SDK occasionally holds connections open.
     this.sessions.delete(id)
@@ -1184,6 +1201,10 @@ export class SessionManager {
 
   async shutdown(): Promise<void> {
     if (this.gcTimer) clearInterval(this.gcTimer)
+    // End all global subscribers so their iterators resolve and
+    // don't hang waiting for events that will never arrive.
+    for (const sub of this.globalSubscribers.values()) sub.end()
+    this.globalSubscribers.clear()
     const ids = Array.from(this.sessions.keys())
     // Unload without terminating: the user may have exited cleanly and
     // will want to resume on next launch. Only Query-ended sessions stay
@@ -1309,20 +1330,28 @@ export class SessionManager {
       } as unknown as SDKMessage
       for (const sub of session.subscribers.values()) sub.push(synthetic)
     } finally {
-      session.running = false
-      session.terminated = true
-      // Reset pending turns so the UI doesn't stay stuck in "working"
-      // when the SDK merged queued messages into fewer turns than were
-      // sent, or the session ended before emitting a result for every
-      // queued turn.
-      session.pendingTurns = 0
-      session.workingSince = undefined
-      for (const sub of session.subscribers.values()) sub.end()
-      session.subscribers.clear()
-      session.contextUsagePushable.end()
-      // Persist the terminal state so the UI shows the transcript as
-      // "ended" after a reload, and resume() can refuse to re-spawn it.
-      this.persist(session)
+      // Wrap in its own try/catch so a failure in cleanup (e.g.
+      // subscriber.push() throwing, persist() failing) doesn't escape
+      // as an unhandledRejection from the pumpTask promise.
+      try {
+        session.running = false
+        session.terminated = true
+        // Reset pending turns so the UI doesn't stay stuck in "working"
+        // when the SDK merged queued messages into fewer turns than were
+        // sent, or the session ended before emitting a result for every
+        // queued turn.
+        session.pendingTurns = 0
+        session.workingSince = undefined
+        this.denyPendingPermissions(session)
+        for (const sub of session.subscribers.values()) sub.end()
+        session.subscribers.clear()
+        session.contextUsagePushable.end()
+        // Persist the terminal state so the UI shows the transcript as
+        // "ended" after a reload, and resume() can refuse to re-spawn it.
+        this.persist(session)
+      } catch (cleanupErr) {
+        console.error(`[session ${session.id}] pump cleanup error:`, cleanupErr)
+      }
     }
   }
 

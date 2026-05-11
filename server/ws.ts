@@ -196,10 +196,11 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionManager): () 
       if (subs.has(sessionId)) return
       let msgSub: { unsubscribe: () => void } | null = null
       let permSub: { unsubscribe: () => void } | null = null
+      let ctxIter: AsyncIterator<unknown> | null = null
       try {
         const msg = sm.subscribe(sessionId)
         const perms = sm.subscribePermissions(sessionId)
-        const ctxIter = sm.subscribeContextUsage(sessionId)?.[Symbol.asyncIterator]()
+        ctxIter = sm.subscribeContextUsage(sessionId)?.[Symbol.asyncIterator]() ?? null
         msgSub = msg
         permSub = perms
 
@@ -245,6 +246,9 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionManager): () 
           stopped = true
           msgSub?.unsubscribe()
           permSub?.unsubscribe()
+          // Return the context-usage iterator so its pushable waiter
+          // resolves with done:true instead of hanging forever.
+          if (ctxIter) void ctxIter.return?.()
           for (const cb of cleanupCbs) cb()
         }
         cleanupCbs.push(() => {
@@ -387,9 +391,13 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionManager): () 
     })
 
     ws.on('error', (err) => {
-      // Stock ws surfaces parser errors etc. here. Log and let the close
-      // handler do the cleanup.
+      // Stock ws surfaces parser errors etc. here. Force-close so the
+      // close handler fires and runs full cleanup (queue drain, session
+      // unsubscribe, global listener detach). Without this, an error on
+      // a half-open socket can leave sessions dangling until the next
+      // GC cycle.
       console.error('[ws] socket error:', err.message)
+      try { ws.close() } catch { /* already closing */ }
     })
 
     // Kick the global channel last so all listeners are wired before any
@@ -398,6 +406,9 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionManager): () 
   })
 
   const shutdown = async () => {
+    // Send close frames to all connected clients. Some may never
+    // acknowledge (e.g. backgrounded tabs), so we also set a hard
+    // timeout to forcibly terminate stragglers.
     for (const ws of sockets) {
       try {
         ws.close(1001, 'server shutting down')
@@ -405,7 +416,18 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionManager): () 
         /* ignore */
       }
     }
-    await new Promise<void>((resolve) => wss.close(() => resolve()))
+    const FORCE_CLOSE_MS = 2000
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        for (const ws of sockets) {
+          try { ws.terminate() } catch { /* ignore */ }
+        }
+      }, FORCE_CLOSE_MS)
+      wss.close(() => {
+        clearTimeout(timer)
+        resolve()
+      })
+    })
   }
   return shutdown
 }

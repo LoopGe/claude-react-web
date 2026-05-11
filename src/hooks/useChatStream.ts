@@ -11,7 +11,7 @@
 // queues turns but doesn't expose depth, so we count locally.
 
 import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { useWsHub } from './useWsHub'
+import { useWsHub, useWsHubStatus } from './useWsHub'
 import type { WsServerFrame } from '../ws-types'
 import type { PermissionRequest, PermissionResolved, SdkMessage } from '../types'
 
@@ -174,15 +174,15 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
 
   // Hub status → per-panel banner. Derived via useMemo to avoid calling
   // setState inside an effect (react-hooks/set-state-in-effect).
+  const hubStatus = useWsHubStatus()
   const displayedError = useMemo(() => {
-    const s = hub.status
-    if (s === 'reconnecting')
+    if (hubStatus === 'reconnecting')
       return opError === null || opError === 'Stream reconnecting…'
         ? 'Stream reconnecting…'
         : opError
-    if (s === 'online') return opError === 'Stream reconnecting…' ? null : opError
+    if (hubStatus === 'online') return opError === 'Stream reconnecting…' ? null : opError
     return opError
-  }, [opError, hub.status])
+  }, [opError, hubStatus])
 
   const trackSentTurn = useCallback(() => {
     setQueuedAhead((n) => n + 1)

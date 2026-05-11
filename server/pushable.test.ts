@@ -57,13 +57,20 @@ describe('createPushable', () => {
     expect(p.closed).toBe(true)
   })
 
-  it('iterator return() closes the pushable', async () => {
+  it('iterator return() closes the consumer but not the producer', async () => {
     const p = createPushable<number>()
     const it = p.iterable[Symbol.asyncIterator]()
     await it.return!()
-    expect(p.closed).toBe(true)
-    // Subsequent pushes must not leak past the closed gate.
+    // return() only closes the current consumer iterator, NOT the
+    // pushable as a whole — this is critical for shared iterables
+    // (e.g. contextUsagePushable) that serve multiple sequential consumers.
+    expect(p.closed).toBe(false)
+    // Pushes still succeed for a new consumer.
     p.push(99)
-    expect(await it.next()).toEqual({ value: undefined, done: true })
+    // A new iterator can consume the pushed item.
+    const it2 = p.iterable[Symbol.asyncIterator]()
+    expect(await it2.next()).toEqual({ value: 99, done: false })
+    p.end()
+    expect(p.closed).toBe(true)
   })
 })

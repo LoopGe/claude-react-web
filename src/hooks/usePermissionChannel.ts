@@ -79,7 +79,10 @@ export function usePermissionChannel(sessionId: string): UsePermissionChannel {
           const r = await api.get<{ pending: PermissionRequest[] }>(
             `/sessions/${sessionId}/permissions`,
           )
-          setPending(r.pending)
+          // Merge instead of replace: a new permission-request may have
+          // arrived via WebSocket between the optimistic removal and this
+          // recovery fetch. Full replacement would silently drop it.
+          setPending((prev) => mergePending(prev, r.pending))
         } catch {
           /* ignore */
         }
@@ -104,7 +107,8 @@ export function usePermissionChannel(sessionId: string): UsePermissionChannel {
           const r = await api.get<{ pending: PermissionRequest[] }>(
             `/sessions/${sessionId}/permissions`,
           )
-          setPending(r.pending)
+          // Merge instead of replace (same reason as decide()).
+          setPending((prev) => mergePending(prev, r.pending))
         } catch {
           /* ignore */
         }

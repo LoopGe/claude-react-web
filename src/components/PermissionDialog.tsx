@@ -9,7 +9,7 @@
 // persistForSession=true and let the server promote every suggestion's
 // destination to 'session'. No suggestions? We hide the always button.
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { PermissionRequest } from '../types'
 
 /** Narrowed to the permission variant of the union. The question variant
@@ -28,6 +28,9 @@ interface Props {
 export function PermissionDialog({ request, onDecide }: Props) {
   const [showRaw, setShowRaw] = useState(false)
   const [busy, setBusy] = useState(false)
+  // Ref provides a synchronous guard so that rapid double-clicks
+  // can't slip through before React commits the state update.
+  const busyRef = useRef(false)
 
   const hasSuggestions = Array.isArray(request.suggestions) && request.suggestions.length > 0
 
@@ -36,7 +39,8 @@ export function PermissionDialog({ request, onDecide }: Props) {
       | { behavior: 'allow'; persistForSession: boolean }
       | { behavior: 'deny'; message?: string },
   ) => {
-    if (busy) return
+    if (busyRef.current) return
+    busyRef.current = true
     setBusy(true)
     onDecide(d)
   }
