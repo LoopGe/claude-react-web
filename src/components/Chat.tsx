@@ -18,7 +18,8 @@ import { useInputHistory } from '../hooks/useInputHistory'
 import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { Composer } from './Composer'
 import { ContextBar } from './ContextBar'
-import { MessageList, WorkingBubble, extractActiveSubagents } from './MessageList'
+import { MessageList, WorkingBubble } from './MessageList'
+import { extractActiveSubagents } from './subagents'
 import { PermissionDialog } from './PermissionDialog'
 import { QuestionDialog } from './QuestionDialog'
 import { SessionRecapBanner } from './SessionRecapBanner'
@@ -150,8 +151,11 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
     }
     return out
   }, [stream.messages, searchQuery])
-  // Ctrl+F opens search (only when no modifier like Shift is held for "find in page").
+  // Ctrl+F opens search on the *focused* panel only. Without the
+  // `focused` guard, every mounted Chat would intercept the same
+  // keydown event and all search bars would open simultaneously.
   useEffect(() => {
+    if (!focused) return
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'f' && !e.shiftKey) {
         // Only intercept when the chat panel is focused (not when the
@@ -164,7 +168,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [focused])
 
   const handleSearchNavigate = useCallback(
     (_index: number) => {
@@ -375,6 +379,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
       )}
 
       <MessageSearch
+        key={searchOpen ? 'search-open' : undefined}
         open={searchOpen}
         onClose={() => {
           setSearchOpen(false)

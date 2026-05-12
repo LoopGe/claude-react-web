@@ -306,6 +306,7 @@ export function ChatPanel({
           <Chat
             key={session.id}
             session={session}
+            focused={focused}
             onSessionUpdate={onSessionUpdate}
             showSystemEvents={showSystemEvents}
             settingsOpen={settingsOpen}

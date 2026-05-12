@@ -51,6 +51,16 @@ export let SESSION_IDLE_MS = 30 * 60 * 1000
  *  Overridden by `historyCap` in config.json. */
 export let HISTORY_CAP = 500
 
+/** Default timeout (ms) for pending tool-permission requests. If the user
+ *  doesn't respond within this window, the request is auto-denied so the
+ *  SDK doesn't hang forever. 0 = no timeout (legacy behaviour). */
+export let PERMISSION_TIMEOUT_MS = 5 * 60 * 1000
+
+/** Maximum time (ms) a session can stay in "working" state before the GC
+ *  auto-interrupts it. Prevents the UI from spinning forever when the SDK
+ *  subprocess is stuck. 0 = disabled. */
+export let WORKING_STUCK_MS = 10 * 60 * 1000
+
 /** Context-window size presets for the new-session dialog.
  *  Overridden by `contextSteps` in config.json. */
 export interface ContextStep {

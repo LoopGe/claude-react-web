@@ -141,9 +141,8 @@ export function McpInstaller({ server, onSave, onClose }: Props) {
   }
 
   return (
-    <>
-      <div className="modal-backdrop" onClick={onClose} />
-      <div className="modal" style={{ width: 'min(520px, 92vw)' }}>
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" style={{ width: 'min(520px, 92vw)' }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h3>{isEdit ? `Edit: ${server!.name}` : 'Add MCP Server'}</h3>
           <button className="btn" onClick={onClose} style={{ padding: '2px 10px' }}>✕</button>
@@ -267,7 +266,7 @@ export function McpInstaller({ server, onSave, onClose }: Props) {
           </div>
         </div>
       </div>
-    </>
+    </div>
   )
 }
 

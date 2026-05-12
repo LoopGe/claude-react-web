@@ -19,12 +19,10 @@ export function MessageSearch({ open, onClose, onNavigate, totalResults, onQuery
   const inputRef = useRef<HTMLInputElement>(null)
   const prevQueryRef = useRef(query)
 
-  // Focus input on open and reset state.
+  // Focus input on open. State is already clean because the parent uses a
+  // `key` prop that forces a full remount each time search opens.
   useEffect(() => {
     if (open) {
-      setQuery('')
-      setCurrentIdx(0)
-      prevQueryRef.current = ''
       requestAnimationFrame(() => inputRef.current?.focus())
     }
   }, [open])

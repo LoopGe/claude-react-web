@@ -18,6 +18,10 @@ import type {
   McpSSEServerConfig,
   McpHttpServerConfig,
 } from '@anthropic-ai/claude-agent-sdk'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -270,6 +274,93 @@ export function validateMcpServer(server: Partial<StoredMcpServer>): string[] {
   if (server.env !== undefined && !isStringRecord(server.env)) errors.push('env must be a record of strings')
   if (server.headers !== undefined && !isStringRecord(server.headers)) errors.push('headers must be a record of strings')
   return errors
+}
+
+// ---------------------------------------------------------------------------
+// Connection test
+// ---------------------------------------------------------------------------
+
+export interface TestConnectionResult {
+  success: boolean
+  serverInfo?: { name?: string; version?: string }
+  toolCount?: number
+  error?: string
+}
+
+const CONNECT_TIMEOUT_MS = 10_000
+
+/** Probe an MCP server by opening a real connection, performing the
+ *  initialize handshake, and optionally listing tools. Returns a result
+ *  object (never throws). The spawned child process (stdio) or network
+ *  resources (sse/http) are always cleaned up. */
+export async function testMcpConnection(server: StoredMcpServer): Promise<TestConnectionResult> {
+  const client = new Client(
+    { name: 'claude-react-web-test', version: '1.0.0' },
+    { capabilities: {} },
+  )
+  let transport: Awaited<ReturnType<typeof createTransport>> | null = null
+  try {
+    transport = await createTransport(server)
+    await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS)
+    let toolCount = 0
+    try {
+      const { tools } = await client.listTools()
+      toolCount = tools.length
+    } catch {
+      // listTools is optional — some servers don't support it
+    }
+    const serverInfo = client.getServerVersion()
+    return {
+      success: true,
+      serverInfo: serverInfo ? { name: serverInfo.name, version: serverInfo.version } : undefined,
+      toolCount,
+    }
+  } catch (err) {
+    return { success: false, error: (err as Error).message ?? String(err) }
+  } finally {
+    try { await client.close() } catch { /* best-effort */ }
+    // For stdio, closing the client kills the child process. For network
+    // transports, close() releases the underlying connection.
+  }
+}
+
+function createTransport(server: StoredMcpServer) {
+  const type = server.type ?? 'stdio'
+  if (type === 'stdio') {
+    if (!server.command) throw new Error('command is required for stdio')
+    return new StdioClientTransport({
+      command: server.command,
+      args: server.args,
+      env: server.env
+        ? { ...process.env, ...Object.fromEntries(Object.entries(server.env).filter(([, v]) => v != null)) } as Record<string, string>
+        : undefined,
+    })
+  }
+  if (type === 'sse') {
+    if (!server.url) throw new Error('url is required for sse')
+    const url = new URL(server.url)
+    return new SSEClientTransport(url, {
+      requestInit: server.headers ? { headers: server.headers } : undefined,
+    })
+  }
+  if (type === 'http') {
+    if (!server.url) throw new Error('url is required for http')
+    const url = new URL(server.url)
+    return new StreamableHTTPClientTransport(url, {
+      requestInit: server.headers ? { headers: server.headers } : undefined,
+    })
+  }
+  throw new Error(`unknown transport type: ${type}`)
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Connection timed out after ${ms}ms`)), ms)
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v) },
+      (e) => { clearTimeout(timer); reject(e) },
+    )
+  })
 }
 
 /** Convert a StoredMcpServer to the SDK config shape. */

@@ -28,8 +28,9 @@ export interface PumpDeps {
  * system message so the frontend can surface them.
  */
 export async function pump(session: Session, deps: PumpDeps): Promise<void> {
+  console.log(`[session ${session.id}] pump started`)
+  let msgCount = 0
   try {
-    let msgCount = 0
     for await (const msg of session.query) {
       session.lastActivityAt = Date.now()
       session.history.push(msg)
@@ -54,18 +55,20 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
       // already queued another message via send(), pendingTurns will be
       // bumped back to 1 there.
       if (msg.type === 'result') {
+        console.log(`[session ${session.id}] result received — total msgs: ${msgCount}`)
         session.pendingTurns = 0
         session.workingSince = undefined
         session.lastTurnAt = Date.now()
         deps.persist(session)
       }
     }
+    console.log(`[session ${session.id}] pump ended normally — ${msgCount} messages processed`)
   } catch (err) {
     session.error = err instanceof Error ? err.message : String(err)
     // Log with full context — the message alone often omits the stack
     // frame that points at the real culprit (e.g. missing API key,
     // model name typo, CLI subprocess failed to spawn).
-    console.error(`[session ${session.id}] pump error:`, err)
+    console.error(`[session ${session.id}] pump error after ${msgCount} messages:`, err)
     // Broadcast a synthetic error message so subscribers know what happened.
     const synthetic: SDKMessage = {
       type: 'system',

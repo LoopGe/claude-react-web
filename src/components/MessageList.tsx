@@ -15,13 +15,9 @@ import type { SdkMessage } from '../types'
 import { formatTokens } from '../utils/format'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 
-/** A currently-running subagent spawned by the Agent or Task tool. */
-export interface ActiveSubagent {
-  /** The tool_use_id of the Agent/Task call. */
-  toolUseId: string
-  /** Human-readable label (from input.description or input.prompt). */
-  label: string
-}
+/** Re-export type for backward compatibility (types don't affect Fast Refresh). */
+import type { ActiveSubagent } from './subagents'
+export type { ActiveSubagent }
 
 interface Props {
   messages: SdkMessage[]
@@ -288,14 +284,16 @@ interface Block {
 const MessageView = memo(function MessageView({ msg, isCompactSummary, interruptedRef }: { msg: SdkMessage; isCompactSummary?: boolean; interruptedRef?: React.RefObject<boolean> }) {
   const type = msg.type
 
-  // Read the interrupted flag once at mount (via useState initializer)
-  // and clear it in an effect — never during render. This avoids the
-  // React anti-pattern of mutating refs inside the render body, which
-  // breaks under StrictMode double-render.
-  const [isInterrupted] = useState(() => type === 'result' && !!interruptedRef?.current)
+  // Read the interrupted flag in an effect (never during render) to
+  // avoid the React anti-pattern of accessing refs in render body,
+  // which breaks under StrictMode double-render.
+  const [isInterrupted, setIsInterrupted] = useState(false)
   useEffect(() => {
-    if (isInterrupted && interruptedRef) interruptedRef.current = false
-  }, [isInterrupted, interruptedRef])
+    if (type === 'result' && interruptedRef?.current) {
+      setIsInterrupted(true)
+      interruptedRef.current = false
+    }
+  }, [type, interruptedRef])
 
   if (type === 'user') {
     const userContent = extractUserText(msg)
@@ -629,58 +627,8 @@ function truncate(s: string, n: number): string {
   return s.length <= n ? s : `${s.slice(0, n)}…`
 }
 
-/** Scan the message list for Agent/Task tool_use calls that have no
- *  matching tool_result — those subagents are still running.
- *  Extracts a human-readable label from the tool input. */
 /** Max subagent chips shown before collapsing into "+N more". */
 const MAX_VISIBLE_SUBAGENTS = 5
-
-export function extractActiveSubagents(messages: SdkMessage[]): ActiveSubagent[] {
-  // Collect all tool_use IDs that received a result.
-  const resolved = new Set<string>()
-  for (const msg of messages) {
-    if (msg.type !== 'user') continue
-    const content = msg.message?.content
-    if (!Array.isArray(content)) continue
-    for (const raw of content as unknown[]) {
-      const block = raw as Record<string, unknown>
-      if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
-        resolved.add(block.tool_use_id)
-      }
-    }
-  }
-
-  // Walk in reverse so we see the most recent spawns first.
-  const active: ActiveSubagent[] = []
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i]
-    if (msg.type !== 'assistant') continue
-    const content = msg.message?.content
-    if (!Array.isArray(content)) continue
-    const blocks = content as unknown[]
-    for (let j = blocks.length - 1; j >= 0; j--) {
-      const block = blocks[j] as Record<string, unknown>
-      if (block.type !== 'tool_use') continue
-      const name = block.name as string | undefined
-      if (name !== 'Agent' && name !== 'Task') continue
-      const id = block.id as string | undefined
-      if (!id || resolved.has(id)) continue
-      const input = block.input as Record<string, unknown> | undefined
-      const label =
-        (typeof input?.description === 'string' && input.description) ||
-        (typeof input?.prompt === 'string' && truncate(input.prompt, 80)) ||
-        'Subagent'
-      active.push({ toolUseId: id, label })
-    }
-  }
-  // Deduplicate by toolUseId (safety net for malformed message streams).
-  const seen = new Set<string>()
-  return active.filter((a) => {
-    if (seen.has(a.toolUseId)) return false
-    seen.add(a.toolUseId)
-    return true
-  })
-}
 
 export function WorkingBubble({
   startedAt,

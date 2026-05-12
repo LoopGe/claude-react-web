@@ -7,9 +7,8 @@ import { ACCENT_COLORS } from '../../theme'
 import type { McpServerConfigMeta, NewSessionForm, PermissionMode, SessionGroup } from '../../types'
 import { PERMISSION_MODES } from '../../types'
 import { McpInstaller } from '../McpInstaller'
-import { StepSlider } from './StepSlider'
+import { ONE_M_CONTEXT_BETA } from '../../constants/contextSteps'
 import { RECENT_MODELS_KEY, RECENT_MODELS_CAP_KEY, RECENT_MODELS_CAP_DEFAULT, RECENT_CWDS_KEY, RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT } from '../../constants/recentKeys'
-import { CONTEXT_STEPS, type ContextStepIdx } from '../../constants/contextSteps'
 
 export interface NewSessionDialogProps {
   defaults: { cwd?: string; model?: string }
@@ -30,7 +29,7 @@ export interface NewSessionDialogProps {
   contextSteps?: Array<{ value: number; label: string; beta?: string }>
 }
 
-export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups, serverModels, maxOpen, contextSteps: contextStepsProp }: NewSessionDialogProps) {
+export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups, serverModels, maxOpen }: NewSessionDialogProps) {
   const [cwd, setCwd] = useState<string>(initialCwd ?? defaults.cwd ?? '')
   const [model, setModel] = useState<string>(defaults.model ?? '')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
@@ -40,7 +39,7 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, gro
    *  global accent" — we don't write an entry to sessionColors unless
    *  the user explicitly picks one. */
   const [accent, setAccent] = useState<string | undefined>(undefined)
-  const [contextStepIdx, setContextStepIdx] = useState<ContextStepIdx>(1) // 200k default
+  const [context1m, setContext1m] = useState(false)
   const [groupId, setGroupId] = useState<string>('')
   const [showPicker, setShowPicker] = useState(false)
 
@@ -69,14 +68,6 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, gro
   const [recentCwdsCapRaw] = useLocalStorage<number>(RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT)
   const recentModelsCap = Math.max(3, Math.min(50, Math.round(recentModelsCapRaw)))
   const recentCwdsCap = Math.max(3, Math.min(50, Math.round(recentCwdsCapRaw)))
-
-  // Use server-provided context steps if available; fall back to local defaults.
-  const activeContextSteps = contextStepsProp && contextStepsProp.length > 0
-    ? contextStepsProp
-    : CONTEXT_STEPS
-  // Clamp context step index if the server provides fewer/more steps than
-  // the local defaults (e.g. user had index 3 but server only has 3 steps).
-  const safeContextStepIdx = Math.min(contextStepIdx, activeContextSteps.length - 1)
 
   // Shared "remember recent …" helper: MRU-order, de-duped, capped.
   //
@@ -135,7 +126,6 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, gro
   const submit = () => {
     rememberModel(model)
     rememberCwd(cwd)
-    const step = activeContextSteps[safeContextStepIdx]
 
     // Parse comma-separated string into trimmed string[], or undefined if empty.
     const csv = (s: string) => {
@@ -164,9 +154,7 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, gro
       permissionMode,
       systemPrompt: systemPrompt.trim() || undefined,
       title: title.trim() || undefined,
-      // Only include the beta flag for steps that require it (currently
-      // just 1M) — keeps the wire payload clean for all other sizes.
-      betas: step.beta ? [step.beta] : undefined,
+      betas: context1m ? [ONE_M_CONTEXT_BETA] : undefined,
       accent,
       groupId: groupId || undefined,
       // Advanced options — only include when non-empty
@@ -431,16 +419,18 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, gro
             </div>
 
             <div className="settings-field">
-              <label>Context size</label>
-              <StepSlider
-                steps={activeContextSteps}
-                value={safeContextStepIdx}
-                onChange={setContextStepIdx}
-              />
+              <label
+                style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
+              >
+                <input
+                  type="checkbox"
+                  checked={context1m}
+                  onChange={(e) => setContext1m(e.target.checked)}
+                />
+                1M context window
+              </label>
               <span className="hint">
-                {activeContextSteps[safeContextStepIdx]?.beta
-                  ? '1M beta · Sonnet 4 / 4.5 only — other models fall back to their own limit.'
-                  : 'Controls the context window the session is allowed to use.'}
+                Beta · Sonnet 4 / 4.5 only — other models fall back to their default limit.
               </span>
             </div>
 

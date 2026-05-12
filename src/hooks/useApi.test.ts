@@ -70,22 +70,24 @@ describe('apiRequest', () => {
 })
 
 describe('api helpers', () => {
-  it('api.get sends GET request', async () => {
+  it('api.get sends GET request with timeout signal', async () => {
     mockFetch({ body: {} })
     await api.get('/test')
     expect(fetch).toHaveBeenCalledWith(
       '/api/test',
-      expect.objectContaining({ signal: undefined }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
   })
 
-  it('api.get forwards signal', async () => {
+  it('api.get forwards caller signal (merged with timeout)', async () => {
     mockFetch({ body: {} })
     const ac = new AbortController()
     await api.get('/test', { signal: ac.signal })
+    // The actual signal passed to fetch is our internal timeout
+    // controller's signal; the caller's signal is wired to abort it.
     expect(fetch).toHaveBeenCalledWith(
       '/api/test',
-      expect.objectContaining({ signal: ac.signal }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
   })
 

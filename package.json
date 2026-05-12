@@ -1,6 +1,6 @@
 {
   "name": "@mi/claude-react-web",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Local interactive chat platform powered by @anthropic-ai/claude-agent-sdk",
   "type": "module",
   "license": "MIT",
@@ -49,6 +49,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.137",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@hono/node-server": "^1.13.7",
     "hono": "^4.7.0",
     "open": "^10.1.0",
@@ -68,6 +69,7 @@
     "concurrently": "^9.1.0",
     "esbuild": "^0.25.0",
     "eslint": "^9.39.4",
+    "highlight.js": "^11.11.1",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",

@@ -1,8 +1,12 @@
 // Tiny fetch wrapper. Uses /api as the base path (Vite proxies in dev, same-origin in prod).
+// All requests have a default 30 s timeout to prevent the UI from hanging indefinitely
+// when the backend is unresponsive.
 
 export interface ApiError extends Error {
   status: number
 }
+
+const DEFAULT_TIMEOUT_MS = 30_000
 
 function toApiError(res: Response, body: unknown): ApiError {
   const message =
@@ -15,17 +19,53 @@ function toApiError(res: Response, body: unknown): ApiError {
 }
 
 export async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const res = await fetch(`/api${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init.headers ?? {}),
-    },
-  })
-  const contentType = res.headers.get('content-type') ?? ''
-  const body = contentType.includes('application/json') ? await res.json() : await res.text()
-  if (!res.ok) throw toApiError(res, body)
-  return body as T
+  // Merge caller-supplied signal with our timeout signal. When either
+  // fires the request is aborted.
+  const timeoutController = new AbortController()
+  const timeoutId = setTimeout(() => timeoutController.abort(), DEFAULT_TIMEOUT_MS)
+
+  // If the caller already provided a signal, propagate its abort to our
+  // controller so either source can cancel the fetch.
+  const callerSignal = init.signal
+  let callerAbort: (() => void) | undefined
+  if (callerSignal) {
+    if (callerSignal.aborted) {
+      timeoutController.abort(callerSignal.reason)
+    } else {
+      callerAbort = () => timeoutController.abort(callerSignal.reason)
+      callerSignal.addEventListener('abort', callerAbort, { once: true })
+    }
+  }
+
+  try {
+    const res = await fetch(`/api${path}`, {
+      ...init,
+      signal: timeoutController.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init.headers ?? {}),
+      },
+    })
+    const contentType = res.headers.get('content-type') ?? ''
+    const body = contentType.includes('application/json') ? await res.json() : await res.text()
+    if (!res.ok) throw toApiError(res, body)
+    return body as T
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      const reason = callerSignal?.aborted
+        ? 'Request cancelled'
+        : `Request timed out after ${DEFAULT_TIMEOUT_MS / 1000}s`
+      const timeoutErr = new Error(reason) as ApiError
+      timeoutErr.status = 0
+      throw timeoutErr
+    }
+    throw err
+  } finally {
+    clearTimeout(timeoutId)
+    if (callerSignal && callerAbort) {
+      callerSignal.removeEventListener('abort', callerAbort)
+    }
+  }
 }
 
 export const api = {

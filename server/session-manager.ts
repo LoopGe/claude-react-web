@@ -32,7 +32,7 @@ import { createPushable } from './pushable.js'
 import type { SessionMeta, SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
 import { invalidateRecapCache } from './recap.js'
-import { HISTORY_CAP, SESSION_IDLE_MS } from './config.js'
+import { HISTORY_CAP, SESSION_IDLE_MS, PERMISSION_TIMEOUT_MS, WORKING_STUCK_MS } from './config.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import { pump as pumpSession } from './session-pump.js'
 import {
@@ -70,6 +70,8 @@ export class SessionManager {
   private sessions = new Map<string, Session>()
   private idleMs: number
   private historyCap: number
+  private permissionTimeoutMs: number
+  private workingStuckMs: number
   private gcTimer?: NodeJS.Timeout
   private store?: SessionStore
   private mcpStore?: McpConfigStore
@@ -80,11 +82,14 @@ export class SessionManager {
     this.idleMs = opts.idleMs ?? SESSION_IDLE_MS
     this.claudeBinary = opts.claudeBinary
     this.historyCap = opts.historyCap ?? HISTORY_CAP
+    this.permissionTimeoutMs = opts.permissionTimeoutMs ?? PERMISSION_TIMEOUT_MS
+    this.workingStuckMs = opts.workingStuckMs ?? WORKING_STUCK_MS
     this.store = opts.store
     this.mcpStore = opts.mcpConfigStore
     this.gcTimer = setInterval(() => this.gc(), 60_000)
     // Don't keep the Node process alive just for GC
     this.gcTimer.unref?.()
+    console.log(`[session-manager] initialized — idleMs=${this.idleMs}, permissionTimeoutMs=${this.permissionTimeoutMs}, workingStuckMs=${this.workingStuckMs}`)
   }
 
   /** Write the current in-memory state of a session into the persistence
@@ -293,15 +298,35 @@ export class SessionManager {
         }
         return new Promise<PermissionResult>((resolve) => {
           const pid = randomUUID()
+          console.log(`[session ${session.id}] AskUserQuestion permission request ${pid} — ${questions.length} question(s)`)
           const abortHandler = () => {
             if (!session.pending.has(pid)) return
             session.pending.delete(pid)
+            console.log(`[session ${session.id}] permission ${pid} aborted (interrupt)`)
             resolve({ behavior: 'deny', message: 'aborted', interrupt: false, toolUseID: ctx.toolUseID })
             this.broadcastPermissionResolved(session, pid, {
               behavior: 'deny',
               persisted: false,
               message: 'aborted',
             })
+          }
+          const timeoutTimer = this.permissionTimeoutMs > 0
+            ? setTimeout(() => {
+                if (!session.pending.has(pid)) return
+                session.pending.delete(pid)
+                try { ctx.signal.removeEventListener('abort', abortHandler) } catch { /* */ }
+                console.warn(`[session ${session.id}] permission ${pid} timed out after ${this.permissionTimeoutMs}ms — auto-denying`)
+                resolve({ behavior: 'deny', message: 'Permission request timed out — no user response.', interrupt: false, toolUseID: ctx.toolUseID })
+                this.broadcastPermissionResolved(session, pid, {
+                  behavior: 'deny',
+                  persisted: false,
+                  message: 'Permission request timed out.',
+                })
+              }, this.permissionTimeoutMs)
+            : null
+          const wrappedResolve = (result: PermissionResult) => {
+            if (timeoutTimer) clearTimeout(timeoutTimer)
+            resolve(result)
           }
           const pending: PendingPermission = {
             kind: 'question',
@@ -310,7 +335,7 @@ export class SessionManager {
             questions,
             toolUseID: ctx.toolUseID,
             createdAt: Date.now(),
-            resolve,
+            resolve: wrappedResolve,
             signal: ctx.signal,
             abortHandler,
           }
@@ -335,9 +360,11 @@ export class SessionManager {
       }
       return new Promise<PermissionResult>((resolve) => {
         const pid = randomUUID()
+        console.log(`[session ${session.id}] tool permission request ${pid} — ${toolName}`)
         const abortHandler = () => {
           if (!session.pending.has(pid)) return
           session.pending.delete(pid)
+          console.log(`[session ${session.id}] permission ${pid} aborted (interrupt)`)
           // Aborted means the enclosing turn was interrupted — return a deny
           // that does NOT cascade (interrupt: false), SDK will unwind anyway.
           resolve({ behavior: 'deny', message: 'aborted', interrupt: false, toolUseID: ctx.toolUseID })
@@ -346,6 +373,24 @@ export class SessionManager {
             persisted: false,
             message: 'aborted',
           })
+        }
+        const timeoutTimer = this.permissionTimeoutMs > 0
+          ? setTimeout(() => {
+              if (!session.pending.has(pid)) return
+              session.pending.delete(pid)
+              try { ctx.signal.removeEventListener('abort', abortHandler) } catch { /* */ }
+              console.warn(`[session ${session.id}] permission ${pid} (${toolName}) timed out after ${this.permissionTimeoutMs}ms — auto-denying`)
+              resolve({ behavior: 'deny', message: 'Permission request timed out — no user response.', interrupt: false, toolUseID: ctx.toolUseID })
+              this.broadcastPermissionResolved(session, pid, {
+                behavior: 'deny',
+                persisted: false,
+                message: 'Permission request timed out.',
+              })
+            }, this.permissionTimeoutMs)
+          : null
+        const wrappedResolve = (result: PermissionResult) => {
+          if (timeoutTimer) clearTimeout(timeoutTimer)
+          resolve(result)
         }
         const pending: PendingPermission = {
           kind: 'permission',
@@ -358,7 +403,7 @@ export class SessionManager {
           suggestions: ctx.suggestions,
           toolUseID: ctx.toolUseID,
           createdAt: Date.now(),
-          resolve,
+          resolve: wrappedResolve,
           signal: ctx.signal,
           abortHandler,
         }
@@ -416,6 +461,7 @@ export class SessionManager {
 
     session.pumpTask = this.pump(session)
     this.sessions.set(id, session)
+    console.log(`[session ${id}] spawned — model=${fullOpts.model ?? 'default'}, permissionMode=${requestedMode ?? 'default'}, resume=${!!fullOpts.resume}`)
     // Brand-new session (or a resume, which also "creates" as far as the
     // UI list is concerned): persist to disk, then broadcast `created`
     // instead of `update`. The frontend `created` handler is the one
@@ -430,13 +476,16 @@ export class SessionManager {
   send(id: string, text: string): void {
     const s = this.require(id)
     if (s.terminated) {
+      console.warn(`[session ${id}] send rejected — session is terminated`)
       throw new HttpError(410, `session ${id} is terminated`)
     }
     if (!s.running) {
+      console.warn(`[session ${id}] send rejected — session is not running`)
       // The Query has been unloaded (idle GC or graceful shutdown). The
       // caller should POST /resume first rather than retrying send().
       throw new HttpError(409, `session ${id} is not running; resume it first`)
     }
+    console.log(`[session ${id}] send — ${text.length} chars, pendingTurns before: ${s.pendingTurns}`)
     const userMsg: SDKUserMessage = {
       type: 'user',
       message: { role: 'user', content: text },
@@ -673,6 +722,7 @@ export class SessionManager {
     const s = this.require(sid)
     const p = s.pending.get(pid)
     if (!p) throw new HttpError(404, `pending permission ${pid} not found`)
+    console.log(`[session ${sid}] decide ${pid} — ${decision.behavior} (${p.toolName})`)
     if (p.kind === 'question') {
       throw new HttpError(
         400,
@@ -860,12 +910,16 @@ export class SessionManager {
       } catch {
         /* ignore */
       }
-      p.resolve({ behavior: 'deny', message: 'session closed', interrupt: false, toolUseID: p.toolUseID })
-      this.broadcastPermissionResolved(session, pid, {
-        behavior: 'deny',
-        persisted: false,
-        message: 'session closed',
-      })
+      try {
+        p.resolve({ behavior: 'deny', message: 'session closed', interrupt: false, toolUseID: p.toolUseID })
+        this.broadcastPermissionResolved(session, pid, {
+          behavior: 'deny',
+          persisted: false,
+          message: 'session closed',
+        })
+      } catch (err) {
+        console.error(`[session ${session.id}] failed to deny permission ${pid}:`, err)
+      }
     }
     session.pending.clear()
   }
@@ -1064,12 +1118,33 @@ export class SessionManager {
    *  evicted from memory the same way. */
   private gc() {
     const now = Date.now()
+    // Collect IDs first, then unload in a separate pass. unload()
+    // deletes from `this.sessions` synchronously (no await hit on the
+    // idle-GC path), which would mutate the Map during for...of
+    // iteration — the ECMAScript spec says iteration results are
+    // undefined when entries are deleted mid-iteration.
+    const toUnload: string[] = []
     for (const [id, s] of this.sessions) {
-      const idle = now - s.lastActivityAt > this.idleMs
-      if (idle && s.subscribers.size === 0) {
-        void this.unload(id)
+      if (now - s.lastActivityAt > this.idleMs && s.subscribers.size === 0) {
+        toUnload.push(id)
+      }
+      // Detect stuck sessions: working for too long with no progress.
+      // Auto-interrupt so the UI doesn't spin forever.
+      if (
+        this.workingStuckMs > 0 &&
+        s.running &&
+        !s.terminated &&
+        s.pendingTurns > 0 &&
+        s.workingSince &&
+        now - s.workingSince > this.workingStuckMs
+      ) {
+        console.warn(`[session ${id}] stuck in working state for ${now - s.workingSince}ms — auto-interrupting`)
+        s.query.interrupt().catch((err) => {
+          console.error(`[session ${id}] auto-interrupt failed:`, err)
+        })
       }
     }
+    for (const id of toUnload) void this.unload(id)
   }
 }
 

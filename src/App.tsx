@@ -397,20 +397,18 @@ export function App() {
 
   const closeSession = useCallback(
     (id: string) => {
-      // Derive remaining from the functional updater so it reads the
-      // latest `openIds` rather than the closure's stale snapshot.
-      // (setOpenIds and setFocusedId are batched — without this, the
-      // setFocusedId updater would see the pre-update openIds.)
-      let remaining: string[] | undefined
+      // Both state updates are derived from the fresh openIds snapshot
+      // inside a single updater, avoiding the fragile cross-updater
+      // side-effect pattern. The setFocusedId call is issued from
+      // inside setOpenIds's updater so `next` is guaranteed to be the
+      // post-filter result regardless of batching order.
       setOpenIds((prev) => {
-        remaining = prev.filter((x) => x !== id)
-        return remaining
-      })
-      setFocusedId((prev) => {
-        if (prev !== id) return prev
-        // Focus the right neighbour if we closed the focused one, else
-        // the last remaining open panel. Null if nothing's left.
-        return remaining![remaining!.length - 1] ?? null
+        const next = prev.filter((x) => x !== id)
+        // Schedule the focusedId update inside this updater where
+        // `next` is in scope — safe because React runs functional
+        // updaters synchronously within a single batch.
+        setFocusedId((f) => (f === id ? (next[next.length - 1] ?? null) : f))
+        return next
       })
     },
     [],
@@ -578,7 +576,7 @@ export function App() {
         setOpError((e as Error).message)
       }
     },
-    [closeSession, setGroups],
+    [closeSession, setGroups, setSessionColors],
   )
 
   /** The group whose sessions are currently open in the main grid.
