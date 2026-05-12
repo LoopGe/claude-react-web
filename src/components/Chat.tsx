@@ -9,6 +9,7 @@
 // the sessions themselves are long-lived on the server.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { SettingsPanel } from './SettingsPanel'
 import { api } from '../hooks/useApi'
 import { useAttachments } from '../hooks/useAttachments'
@@ -24,7 +25,8 @@ import { SessionRecapBanner } from './SessionRecapBanner'
 import { TodoChecklist } from './TodoChecklist'
 import { useSessionRecap } from '../hooks/useSessionRecap'
 import { MessageSearch } from './MessageSearch'
-import { exportConversation } from '../utils/exportConversation'
+import { ContextMenu } from './ContextMenu'
+import { exportConversation, exportConversationJson } from '../utils/exportConversation'
 import type { SessionInfo, SlashCommand } from '../types'
 
 const INPUT_HISTORY_KEY = 'claude-react-web:input-history'
@@ -66,9 +68,18 @@ interface Props {
    *  header can display an up-to-date count without waiting for a
    *  server-pushed session-update (which only fires at turn boundaries). */
   onLiveMessageCount?: (count: number) => void
+  /** Called once on mount so the parent can store a reference to this
+   *  panel's interrupt() function. Enables the ESC shortcut in App to
+   *  trigger the same code-path as the Composer's interrupt button (which
+   *  sets pendingInterruptRef for the "interrupted" label). */
+  onRegisterInterrupt?: (sessionId: string, fn: () => void) => void
+  /** Portal target element in ChatPanel's header — set via callback ref.
+   *  When non-null, Chat portals its toolbar buttons here so they appear
+   *  in the panel header row instead of occupying a separate line. */
+  headerButtonsRef?: HTMLDivElement | null
 }
 
-export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings, onSessionUpdate, focused, onLiveMessageCount }: Props) {
+export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings, onSessionUpdate, focused, onLiveMessageCount, onRegisterInterrupt, headerButtonsRef }: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
   // The parent remounts Chat on session switch (<Chat key={session.id}>), so
   // this initializer runs exactly once per mount — the right place to hydrate.
@@ -125,6 +136,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
 
   // ── In-chat search ──────────────────────────────────────────
   const [searchOpen, setSearchOpen] = useState(false)
+  const [exportMenuPos, setExportMenuPos] = useState<{ x: number; y: number } | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   /** Indices into stream.messages that match the current search query. */
   const searchMatches = useMemo(() => {
@@ -287,6 +299,13 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
     }
   }, [session.id])
 
+  // Expose the interrupt callback to the parent so the ESC shortcut in
+  // App.tsx can trigger the same code-path (which sets
+  // pendingInterruptRef for the "interrupted" label).
+  useEffect(() => {
+    onRegisterInterrupt?.(session.id, interrupt)
+  }, [session.id, interrupt, onRegisterInterrupt])
+
   // Note: we used to poll /sessions/:id 500ms after every SDK message to
   // keep the header badges fresh. That added O(messages × sessions) HTTP
   // requests on top of the WebSocket streams, and with three panels open it was
@@ -307,24 +326,53 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
         />
       )}
 
-      <div className="chat-toolbar">
-        <button
-          className="btn"
-          onClick={() => setSearchOpen(true)}
-          title="Search messages (Ctrl+F)"
-          aria-label="Search messages"
-        >
-          🔍
-        </button>
-        <button
-          className="btn"
-          onClick={() => exportConversation(stream.messages, session.title ?? session.id.slice(0, 8))}
-          title="Export conversation as Markdown"
-          aria-label="Export conversation"
-        >
-          📥
-        </button>
-      </div>
+      {headerButtonsRef && createPortal(
+        <>
+          <button
+            className="chat-panel-header-btn"
+            onClick={(e) => { e.stopPropagation(); setSearchOpen(true) }}
+            onMouseDown={(e) => e.stopPropagation()}
+            title="Search messages (Ctrl+F)"
+            aria-label="Search messages"
+          >
+            🔍
+          </button>
+          <button
+            className="chat-panel-header-btn"
+            onClick={(e) => {
+              e.stopPropagation()
+              const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
+              setExportMenuPos({ x: rect.left, y: rect.bottom + 4 })
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            title="Export conversation"
+            aria-label="Export conversation"
+          >
+            📥
+          </button>
+        </>,
+        headerButtonsRef,
+      )}
+
+      {exportMenuPos && (
+        <ContextMenu
+          x={exportMenuPos.x}
+          y={exportMenuPos.y}
+          onClose={() => setExportMenuPos(null)}
+          items={[
+            {
+              label: 'Export as Markdown',
+              icon: '📄',
+              onClick: () => exportConversation(stream.messages, session.title ?? session.id.slice(0, 8)),
+            },
+            {
+              label: 'Export as JSON',
+              icon: '{}',
+              onClick: () => exportConversationJson(stream.messages, session.title ?? session.id.slice(0, 8)),
+            },
+          ]}
+        />
+      )}
 
       <MessageSearch
         open={searchOpen}
@@ -341,6 +389,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
         messages={stream.messages}
         showSystemEvents={showSystemEvents}
         pendingInterruptRef={pendingInterruptRef}
+        replayReady={stream.replayReady}
       />
 
       <TodoChecklist messages={stream.messages} working={session.working} />

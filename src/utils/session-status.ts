@@ -1,0 +1,33 @@
+import type { SessionInfo } from '../types'
+
+/** Distill a session's liveness/health into a single CSS class used by
+ *  the header status dot. Kept separate from the label so colours and
+ *  wording can evolve independently. */
+export function statusClass(s: SessionInfo): string {
+  if (s.error) return 'err'
+  if (s.terminated) return 'terminated'
+  if (s.working) return 'working'
+  if (s.running) return 'live'
+  return 'dormant'
+}
+
+export function statusLabel(s: SessionInfo): string {
+  if (s.error) return `Errored: ${s.error}`
+  if (s.terminated) return 'Session ended'
+  if (s.working) return 'Working on a turn'
+  if (s.running) return 'Live'
+  return 'Dormant'
+}
+
+/** Trim namespace prefixes and long version tails so a model name fits
+ *  in a tight header chip. "claude-sonnet-4-5-20251101" → "sonnet-4-5";
+ *  "xiaomi/mimo-v2.5-pro" → "mimo-v2.5-pro". Undefined → "default". */
+export function shortenModel(name: string | undefined): string {
+  if (!name) return 'default'
+  const bare = name.split('/').pop() ?? name
+  const stripped = bare
+    .replace(/^claude-/, '')
+    // Strip trailing YYYYMMDD release dates ("-20251101").
+    .replace(/-\d{8}$/, '')
+  return stripped.length > 22 ? stripped.slice(0, 20) + '…' : stripped
+}

@@ -9,8 +9,10 @@ import { fileURLToPath } from 'node:url'
 import { SessionManager } from './session-manager.js'
 import { buildApiRouter } from './routes.js'
 import { buildFsRouter } from './fs-routes.js'
+import { buildMcpConfigRouter } from './mcp-routes.js'
 import { DEFAULT_MODEL, MODEL_LIST, CONTEXT_STEPS } from './config.js'
 import type { SessionStore } from './persistence.js'
+import type { McpConfigStore } from './mcp-config.js'
 
 export interface AppOptions {
   /** Directory containing the built frontend (dist/client). */
@@ -21,6 +23,9 @@ export interface AppOptions {
    *  is constructed wired up to this store. Ignored when `sessionManager`
    *  is supplied (assume the caller already wired it). */
   sessionStore?: SessionStore
+  /** Global MCP server config store. Mounted as /api/mcp-config and
+   *  passed to SessionManager for merging into new sessions. */
+  mcpConfigStore?: McpConfigStore
   /** Default values exposed via GET /api/config (used by the "new session" form).
    *  `claudeBinary` is NOT exposed to the UI — it's a server-side concern
    *  that gets injected into every Query via options.pathToClaudeCodeExecutable. */
@@ -50,7 +55,11 @@ function resolveClientDir(override?: string): string | null {
 export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: SessionManager } {
   const sessionManager =
     opts.sessionManager ??
-    new SessionManager({ store: opts.sessionStore, claudeBinary: opts.defaults?.claudeBinary })
+    new SessionManager({
+      store: opts.sessionStore,
+      mcpConfigStore: opts.mcpConfigStore,
+      claudeBinary: opts.defaults?.claudeBinary,
+    })
   const app = new Hono()
 
   app.use('*', cors({ origin: (o) => o ?? '*', credentials: false }))
@@ -80,6 +89,9 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
   )
   app.route('/api', apiRouter)
   app.route('/api/fs', buildFsRouter())
+  if (opts.mcpConfigStore) {
+    app.route('/api/mcp-config', buildMcpConfigRouter(opts.mcpConfigStore))
+  }
 
   const clientDir = resolveClientDir(opts.clientDir)
   if (clientDir) {

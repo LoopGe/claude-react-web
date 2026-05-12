@@ -83,3 +83,19 @@ function extractText(msg: SdkMessage): string | null {
 function sanitizeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9_\-. ]/g, '').slice(0, 80) || 'conversation'
 }
+
+/** Export the full message array as JSON — useful for debugging and agent
+ *  replay. Filters out stream_event partials (same as Markdown export). */
+export function exportConversationJson(messages: SdkMessage[], title?: string): void {
+  const filtered = messages.filter((m) => m.type !== 'stream_event')
+  const json = JSON.stringify(filtered, null, 2)
+  const blob = new Blob([json], { type: 'application/json;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = sanitizeFilename(title || 'conversation') + '.json'
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}

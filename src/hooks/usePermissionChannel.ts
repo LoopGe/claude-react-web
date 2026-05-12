@@ -130,14 +130,18 @@ export function usePermissionChannel(sessionId: string): UsePermissionChannel {
   )
 }
 
-/** Merge a fresh pending array into an existing one, de-duping by id. */
+/** Merge a fresh pending array into an existing one.
+ *  - Existing entries are updated-in-place when `incoming` has the same id.
+ *  - New entries are appended at the end.
+ *  - Ordering of existing entries is preserved. */
 function mergePending(prev: PermissionRequest[], incoming: PermissionRequest[]): PermissionRequest[] {
-  const seen = new Set(prev.map((p) => p.id))
-  const merged = [...prev]
+  const incomingById = new Map(incoming.map((p) => [p.id, p]))
+  // Walk prev: swap to incoming version if present, else keep original.
+  const merged = prev.map((p) => incomingById.get(p.id) ?? p)
+  // Append any entries in incoming that weren't in prev.
   for (const p of incoming) {
-    if (!seen.has(p.id)) {
+    if (!prev.some((p2) => p2.id === p.id)) {
       merged.push(p)
-      seen.add(p.id)
     }
   }
   return merged

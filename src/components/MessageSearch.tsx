@@ -17,12 +17,14 @@ export function MessageSearch({ open, onClose, onNavigate, totalResults, onQuery
   const [query, setQuery] = useState('')
   const [currentIdx, setCurrentIdx] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
+  const prevQueryRef = useRef(query)
 
-  // Focus input on open.
+  // Focus input on open and reset state.
   useEffect(() => {
     if (open) {
       setQuery('')
       setCurrentIdx(0)
+      prevQueryRef.current = ''
       requestAnimationFrame(() => inputRef.current?.focus())
     }
   }, [open])
@@ -41,10 +43,14 @@ export function MessageSearch({ open, onClose, onNavigate, totalResults, onQuery
     return () => window.removeEventListener('keydown', onKey, true)
   }, [open, onClose])
 
-  // Push query changes up.
+  // Push query changes up. Only reset currentIdx when the query actually
+  // changes (not on parent re-renders that change onQueryChange).
   useEffect(() => {
+    if (prevQueryRef.current !== query) {
+      prevQueryRef.current = query
+      setCurrentIdx(0)
+    }
     onQueryChange(query)
-    setCurrentIdx(0)
   }, [query, onQueryChange])
 
   // Navigate results.
@@ -76,7 +82,7 @@ export function MessageSearch({ open, onClose, onNavigate, totalResults, onQuery
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
             e.preventDefault()
-            e.shiftKey ? goPrev() : goNext()
+            if (e.shiftKey) { goPrev() } else { goNext() }
           }
         }}
       />

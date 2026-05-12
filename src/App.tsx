@@ -5,76 +5,43 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { SessionList } from './components/SessionList'
-import { Chat } from './components/Chat'
 import { CommandPalette } from './components/CommandPalette'
-import { ContextMenu } from './components/ContextMenu'
+import { ChatPanel } from './components/ChatPanel'
 import { api } from './hooks/useApi'
-import { shortenPath } from './utils/paths'
-import { isInAppDrag, readDragPayload, setDragPayload } from './hooks/useDragPayload'
-import { useDragResize } from './hooks/useDragResize'
+import { isInAppDrag, readDragPayload } from './hooks/useDragPayload'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useLocalStorage } from './hooks/useLocalStorage'
+import { usePanelColumnResize } from './hooks/usePanelColumnResize'
+import { useSidebarResize } from './hooks/useSidebarResize'
 import { useNotifications } from './hooks/useNotifications'
 import { useWsHub, useWsHubStatus } from './hooks/useWsHub'
 import type { WsServerFrame } from './ws-types'
-import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, SidebarSection } from './types'
+import type { NewSessionForm, SessionGroup, SessionInfo, SidebarSection } from './types'
 import { ACCENT_COLORS, ACCENT_COLOR_KEY, SESSION_COLORS_KEY } from './theme'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { ThemeToggle } from './components/ThemeToggle'
-import { getStoredTheme, toggleTheme, type Theme } from './utils/theme'
+import { ShortcutHelp } from './components/ShortcutHelp'
+import { applyTheme, getStoredTheme, onSystemThemeChange, toggleTheme, type Theme } from './utils/theme'
 
-const PERMISSION_MODES: PermissionMode[] = [
-  'default',
-  'acceptEdits',
-  'plan',
-  'bypassPermissions',
-  'dontAsk',
-  'auto',
-]
-
-const SIDEBAR_ORDER_KEY = 'claude-react-web:session-order'
-const SHOW_SYSTEM_EVENTS_KEY = 'claude-react-web:show-system-events'
-const SIDEBAR_WIDTH_KEY = 'claude-react-web:sidebar-width'
-const SIDEBAR_MIN_KEY = 'claude-react-web:sidebar-min-px'
-const SIDEBAR_MAX_KEY = 'claude-react-web:sidebar-max-px'
-const SIDEBAR_MIN_DEFAULT = 180
-const SIDEBAR_MAX_DEFAULT = 480
-/** Column-flex weights for the main grid (length === maxOpen). Ratios
- *  are normalised on use so values like [1, 0.5, 0.5] render correctly
- *  no matter how many panels are currently open. */
-const PANEL_RATIOS_KEY = 'claude-react-web:panel-col-ratios'
-/** Minimum column ratio — keeps a panel from collapsing to nothing. */
-const PANEL_MIN_RATIO_KEY = 'claude-react-web:panel-min-ratio'
-const PANEL_MIN_RATIO_DEFAULT = 0.15
-const GROUPS_KEY = 'claude-react-web:session-groups'
-const COLLAPSED_GROUPS_KEY = 'claude-react-web:collapsed-groups'
-const MAX_OPEN_KEY = 'claude-react-web:max-open-panels'
-
-interface Defaults {
-  cwd?: string
-  model?: string
-}
-
-interface ContextStep {
-  value: number
-  label: string
-  beta?: string
-}
-
-interface ServerConfig {
-  defaults: Defaults
-  models?: string[]
-  contextSteps?: ContextStep[]
-}
-
-/** Allowed range for the max-panels / max-sessions-per-group setting. */
-const MAX_OPEN_MIN = 2
-const MAX_OPEN_MAX = 5
-const MAX_OPEN_DEFAULT = 3
-/** Clamp a user-supplied max-open value to the allowed range. */
-function clampMaxOpen(v: number): number {
-  return Math.max(MAX_OPEN_MIN, Math.min(MAX_OPEN_MAX, Math.round(v)))
-}
+import {
+  SIDEBAR_ORDER_KEY,
+  SHOW_SYSTEM_EVENTS_KEY,
+  SIDEBAR_MIN_KEY,
+  SIDEBAR_MAX_KEY,
+  SIDEBAR_MIN_DEFAULT,
+  SIDEBAR_MAX_DEFAULT,
+  PANEL_MIN_RATIO_KEY,
+  PANEL_MIN_RATIO_DEFAULT,
+  GROUPS_KEY,
+  COLLAPSED_GROUPS_KEY,
+  MAX_OPEN_KEY,
+  MAX_OPEN_MIN,
+  MAX_OPEN_MAX,
+  MAX_OPEN_DEFAULT,
+  clampMaxOpen,
+} from './constants/storageKeys'
+import type { Defaults, ContextStep, ServerConfig } from './types/config'
+import { notificationTooltip } from './utils/notifications'
 
 export function App() {
   const [sessions, setSessions] = useState<SessionInfo[]>([])
@@ -97,11 +64,24 @@ export function App() {
   const [settingsOpenFor, setSettingsOpenFor] = useState<string | null>(null)
   const [newSessionDialogOpen, setNewSessionDialogOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [helpOpen, setHelpOpen] = useState(false)
   const [opError, setOpError] = useState<string | null>(null)
   // Theme state — persisted in localStorage, applied via data-theme on <html>.
   const [theme, setTheme] = useState<Theme>(getStoredTheme)
+  // Apply theme on mount and whenever it changes. applyTheme() resolves
+  // 'system' to 'dark'/'light' before writing the data-theme attribute.
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme)
+    applyTheme(theme)
+  }, [theme])
+  // Subscribe to OS theme changes so 'system' mode stays in sync when
+  // the user switches their OS preference.
+  useEffect(() => {
+    if (theme !== 'system') return
+    return onSystemThemeChange(() => {
+      applyTheme('system')
+      // Force a re-render so children pick up the resolved value.
+      setTheme('system')
+    })
   }, [theme])
   const handleToggleTheme = useCallback(() => {
     setTheme((prev) => toggleTheme(prev))
@@ -145,29 +125,7 @@ export function App() {
    *  global accentColor. */
   const [sessionColors, setSessionColors] = useLocalStorage<Record<string, string>>(SESSION_COLORS_KEY, {})
   const [showSystemEvents, setShowSystemEvents] = useLocalStorage<boolean>(SHOW_SYSTEM_EVENTS_KEY, false)
-  /** Sidebar width in CSS pixels, persisted across reloads. Clamped so
-   *  the user can't drag the sidebar to 0 or eat the whole viewport. */
-  const [sidebarWidth, setSidebarWidth] = useLocalStorage<number>(SIDEBAR_WIDTH_KEY, 280)
-  /** Live-editable width during a resize drag — we update this on every
-   *  mousemove but only flush to localStorage on mouseup. */
-  const [sidebarWidthDraft, setSidebarWidthDraft] = useState<number | null>(null)
-  const sidebarResize = useDragResize((delta) => {
-    const w = Math.max(sidebarMinPx, Math.min(sidebarMaxPx, sidebarWidth + delta))
-    setSidebarWidthDraft(w)
-  })
-  // When the drag ends, commit the draft to localStorage. The synchronous
-  // setState inside this effect is intentional: the draft is transient,
-  // and once the gesture is over we want the persisted value to catch up
-  // and the draft to clear exactly once. The lint rule can't see that.
-  useEffect(() => {
-    if (sidebarResize.dragging) return
-    if (sidebarWidthDraft != null) {
-      setSidebarWidth(sidebarWidthDraft)
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setSidebarWidthDraft(null)
-    }
-  }, [sidebarResize.dragging, sidebarWidthDraft, setSidebarWidth])
-  const effectiveSidebarWidth = sidebarWidthDraft ?? sidebarWidth
+  const { sidebarWidth: effectiveSidebarWidth, sidebarResize, setSidebarWidth } = useSidebarResize({ minPx: sidebarMinPx, maxPx: sidebarMaxPx })
 
   // Sync the chosen accent colour into :root CSS custom properties so the
   // entire stylesheet picks up the change without any further wiring.
@@ -190,112 +148,7 @@ export function App() {
     [sessionColors],
   )
 
-  /** Per-session column-width ratios for the main grid. Keyed by session
-   *  ID so ratios travel with their session when panels are evicted and
-   *  reordered — no more positional misalignment on open/close. */
-  const [panelRatios, setPanelRatios] = useLocalStorage<Record<string, number>>(PANEL_RATIOS_KEY, {})
-  const [panelRatiosDraft, setPanelRatiosDraft] = useState<Record<string, number> | null>(null)
-  const effectiveRatios = panelRatiosDraft ?? panelRatios
-  /** Construct the grid-template-columns string for the current layout.
-   *  Inserts 4px divider tracks between visible panels. Ratios default
-   *  to 1 (equal width) for sessions that haven't been manually resized. */
-  const gridTemplate = useMemo(() => {
-    const n = Math.max(1, openIds.length)
-    const parts: string[] = []
-    for (let i = 0; i < n; i++) {
-      const r = effectiveRatios[openIds[i]] ?? 1
-      parts.push(`${r}fr`)
-      if (i < n - 1) parts.push('4px')
-    }
-    return parts.join(' ')
-  }, [openIds, effectiveRatios])
-
-  /** Drag state for the panel-column dividers. `index` is the divider
-   *  between columns i and i+1 (so valid values are 0 and 1). */
-  const bodyRef = useRef<HTMLDivElement>(null)
-  const dividerStart = useRef<{ ratios: Record<string, number>; bodyWidth: number } | null>(null)
-  const [draggingDivider, setDraggingDivider] = useState<number | null>(null)
-  /** Cleanup fn for the active divider drag — stored so we can remove
-   *  window-level mousemove/mouseup listeners on unmount. */
-  const dividerDragCleanupRef = useRef<(() => void) | null>(null)
-
-  const onDividerMouseDown = useCallback(
-    (index: number) => (e: React.MouseEvent) => {
-      if (e.button !== 0) return
-      e.preventDefault()
-      const body = bodyRef.current
-      if (!body) return
-      dividerStart.current = {
-        ratios: { ...effectiveRatios },
-        bodyWidth: body.getBoundingClientRect().width,
-      }
-      setDraggingDivider(index)
-      document.body.classList.add('resizing-col')
-
-      // Drag uses the same window-level listeners pattern as sidebar resize,
-      // but we need the divider index + accurate pixel→ratio conversion, so
-      // the handlers live inline here instead of in the generic useDragResize.
-      const startX = e.clientX
-      const leftId = openIds[index]
-      const rightId = openIds[index + 1]
-      const onMove = (ev: MouseEvent) => {
-        const snap = dividerStart.current
-        if (!snap) return
-        const deltaPx = ev.clientX - startX
-        // Convert pixel delta to fractional change of the TOTAL fr-weight sum.
-        // Each column's px width = (ratio / sum) * bodyWidth; moving deltaPx
-        // means we want ratio[i] to grow by deltaRatio and ratio[i+1] to
-        // shrink by the same amount. deltaRatio = deltaPx / (bodyWidth / sum).
-        const leftR = snap.ratios[leftId] ?? 1
-        const rightR = snap.ratios[rightId] ?? 1
-        const sum = (leftR + rightR) || 1
-        const pxPerRatio = snap.bodyWidth / sum
-        const deltaR = deltaPx / pxPerRatio
-        const next = { ...snap.ratios }
-        const rawL = leftR + deltaR
-        const rawR = rightR - deltaR
-        // Enforce minimum ratio on both sides; clamp by stealing back.
-        if (rawL < panelMinRatio) {
-          next[rightId] = leftR + rightR - panelMinRatio
-          next[leftId] = panelMinRatio
-        } else if (rawR < panelMinRatio) {
-          next[leftId] = leftR + rightR - panelMinRatio
-          next[rightId] = panelMinRatio
-        } else {
-          next[leftId] = rawL
-          next[rightId] = rawR
-        }
-        setPanelRatiosDraft(next)
-      }
-      const onUp = () => {
-        setDraggingDivider(null)
-        document.body.classList.remove('resizing-col')
-        dividerDragCleanupRef.current = null
-        window.removeEventListener('mousemove', onMove)
-        window.removeEventListener('mouseup', onUp)
-      }
-      dividerDragCleanupRef.current = onUp
-      window.addEventListener('mousemove', onMove)
-      window.addEventListener('mouseup', onUp)
-    },
-    [effectiveRatios, openIds, panelMinRatio],
-  )
-
-  // Commit the draft to localStorage after dragging ends. Same shape as
-  // the sidebar commit effect above; lint false-positive suppressed for
-  // the same reason.
-  useEffect(() => {
-    if (draggingDivider != null) return
-    if (panelRatiosDraft != null) {
-      setPanelRatios(panelRatiosDraft)
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setPanelRatiosDraft(null)
-    }
-  }, [draggingDivider, panelRatiosDraft, setPanelRatios])
-
-  // Clean up any in-progress divider drag on unmount. Without this,
-  // the window-level mousemove/mouseup listeners would leak.
-  useEffect(() => () => { dividerDragCleanupRef.current?.() }, [])
+  const { gridTemplate, onDividerMouseDown, draggingDivider, bodyRef, setPanelRatios } = usePanelColumnResize({ openIds, panelMinRatio })
 
   useEffect(() => {
     void api
@@ -326,6 +179,14 @@ export function App() {
   const sessionsRef = useRef(sessions)
   const maxOpenRef = useRef(maxOpen)
   const handleSelectRef = useRef<(id: string) => void>(() => {})
+  // Per-session interrupt callbacks registered by <Chat> components.
+  // The ESC shortcut in the keyboard handler uses this to trigger the
+  // same code-path as the Composer's interrupt button (which sets
+  // pendingInterruptRef for the "interrupted" label).
+  const interruptFnsRef = useRef<Map<string, () => void>>(new Map())
+  const registerInterrupt = useCallback((sessionId: string, fn: () => void) => {
+    interruptFnsRef.current.set(sessionId, fn)
+  }, [])
   useEffect(() => {
     openIdsRef.current = openIds
   })
@@ -772,14 +633,22 @@ export function App() {
 
       // Ungrouped session → single-panel mode (replace all open panels).
       if (!sessionGroup) {
-        setOpenIds([id])
-        setFocusedId(id)
         setLastSeenTurn((prev) => ({ ...prev, [id]: s.lastTurnAt ?? Date.now() }))
         if (!s.running && !s.terminated && !resuming.has(id)) {
+          // Resume FIRST, then open the panel — this ensures Chat mounts
+          // with the session already running on the server, so the hub
+          // subscribe → replay flow is fully ready. Without this, the
+          // panel shows a dormant placeholder that flashes to "loading"
+          // when resume completes, and the replay may arrive before the
+          // hub subscribe fires, losing messages.
           setResuming((prev) => new Set(prev).add(id))
           try {
             const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/resume`, {})
             setSessions((prev) => prev.map((p) => (p.id === id ? res.session : p)))
+            // React batches these with the setSessions above so Chat
+            // mounts with the fresh (running=true) session immediately.
+            setOpenIds([id])
+            setFocusedId(id)
           } catch (e) {
             setOpError((e as Error).message)
           } finally {
@@ -789,6 +658,10 @@ export function App() {
               return next
             })
           }
+        } else {
+          // Already running or terminated — open immediately.
+          setOpenIds([id])
+          setFocusedId(id)
         }
         return
       }
@@ -797,16 +670,14 @@ export function App() {
       // that group, replacing all open panels with its sessions.
       if (sessionGroup.id !== activeGroupId) {
         handleActivateGroup(sessionGroup.id)
-        // Focus the clicked session (overrides the default first-in-group
-        // focus set by handleActivateGroup). React batches setState so
-        // both calls produce a single render.
-        setFocusedId(id)
-        // Resume if dormant.
+        setLastSeenTurn((prev) => ({ ...prev, [id]: s.lastTurnAt ?? Date.now() }))
+        // Resume FIRST, then focus — same rationale as ungrouped path.
         if (!s.running && !s.terminated && !resuming.has(id)) {
           setResuming((prev) => new Set(prev).add(id))
           try {
             const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/resume`, {})
             setSessions((prev) => prev.map((p) => (p.id === id ? res.session : p)))
+            setFocusedId(id)
           } catch (e) {
             setOpError((e as Error).message)
           } finally {
@@ -816,8 +687,9 @@ export function App() {
               return next
             })
           }
+        } else {
+          setFocusedId(id)
         }
-        setLastSeenTurn((prev) => ({ ...prev, [id]: s.lastTurnAt ?? Date.now() }))
         return
       }
 
@@ -949,16 +821,32 @@ export function App() {
           description: 'Command palette',
         },
         {
+          combo: 'shift+/',
+          handler: () => setHelpOpen((v) => !v),
+          description: 'Keyboard shortcuts',
+        },
+        {
           combo: 'escape',
           handler: () => {
-            // Priority: CommandPalette > NewSessionDialog > per-panel Settings overlay > Interrupt.
+            // Priority: CommandPalette > ShortcutHelp > NewSessionDialog > per-panel Settings overlay > Interrupt.
             if (paletteOpen) setPaletteOpen(false)
+            else if (helpOpen) setHelpOpen(false)
             else if (newSessionDialogOpen) setNewSessionDialogOpen(false)
             else if (settingsOpenFor) setSettingsOpenFor(null)
             else if (focusedId) {
               const focused = sessions.find((s) => s.id === focusedId)
               if (focused?.working) {
-                void api.post(`/sessions/${focusedId}/interrupt`)
+                // Use the registered interrupt callback (set by <Chat>)
+                // so pendingInterruptRef is set and the result message
+                // shows the "interrupted" label.
+                const fn = interruptFnsRef.current.get(focusedId)
+                if (fn) {
+                  void fn()
+                } else {
+                  // Fallback: Chat hasn't registered yet (e.g. still
+                  // mounting). Direct POST still interrupts the turn.
+                  void api.post(`/sessions/${focusedId}/interrupt`)
+                }
               }
             }
           },
@@ -966,7 +854,7 @@ export function App() {
           description: 'Close overlay / Interrupt',
         },
       ],
-      [openIds, focusedId, paletteOpen, newSessionDialogOpen, settingsOpenFor, closeSession, sessions],
+      [openIds, focusedId, paletteOpen, helpOpen, newSessionDialogOpen, settingsOpenFor, closeSession, sessions],
     )
   useKeyboardShortcuts(shortcuts)
 
@@ -1350,6 +1238,7 @@ export function App() {
                   onOpenSettings={() => setSettingsOpenFor(s.id)}
                   onCloseSettings={() => setSettingsOpenFor(null)}
                   onSwap={swapPanels}
+                  onRegisterInterrupt={registerInterrupt}
                   onAcceptSidebarDrop={async (sidebarId) => {
                     const existing = sessions.find((x) => x.id === sidebarId)
                     let live = existing
@@ -1395,404 +1284,22 @@ export function App() {
         shortcuts={shortcuts}
         sessions={sessions}
         onSelectSession={(id) => {
-          const alreadyOpen = openIds.includes(id)
-          if (!alreadyOpen) {
-            setOpenIds((curr) => (curr.includes(id) ? curr : [...curr.slice(-2), id]))
+          if (openIds.includes(id)) {
+            setFocusedId(id)
+          } else {
+            const s = sessions.find((s) => s.id === id)
+            openSession(id, s?.lastTurnAt)
           }
-          setFocusedId(id)
           setPaletteOpen(false)
         }}
+      />
+
+      <ShortcutHelp
+        open={helpOpen}
+        onClose={() => setHelpOpen(false)}
+        shortcuts={shortcuts}
       />
     </div>
     </ErrorBoundary>
   )
-}
-
-/** One column in the 3-up chat grid. Wraps <Chat> with a header bar that
- *  carries the close button, focus click-target, and a dormant/terminated
- *  placeholder when the session's Query isn't live. */
-interface ChatPanelProps {
-  session: SessionInfo
-  focused: boolean
-  /** Slot number (1-indexed) in the main grid. Shown as a pill in the
-   *  header so the user can tell this panel apart from the sidebar card
-   *  and map it to the Ctrl+<n> shortcut. */
-  slot: number
-  /** Per-session accent overrides (sets --accent / --accent-strong on the
-   *  panel root so all child var() references pick up the session colour). */
-  accentStyle?: CSSProperties
-  onFocus: () => void
-  onClose: () => void
-  onSessionUpdate: (s: SessionInfo) => void
-  /** Swap this panel with another open panel (called with the dragged id). */
-  onSwap: (draggedId: string, targetId: string) => void
-  /** A sidebar card was dropped onto this panel — replace it. */
-  onAcceptSidebarDrop: (sidebarId: string) => void
-  /** Global transcript toggle (forwarded to the inner <Chat>). */
-  showSystemEvents?: boolean
-  /** When true, render the Settings overlay on top of this panel. */
-  settingsOpen?: boolean
-  onOpenSettings: () => void
-  onCloseSettings: () => void
-}
-
-function ChatPanel({
-  session,
-  focused,
-  slot,
-  accentStyle,
-  onFocus,
-  onClose,
-  onSessionUpdate,
-  onSwap,
-  onAcceptSidebarDrop,
-  showSystemEvents,
-  settingsOpen,
-  onOpenSettings,
-  onCloseSettings,
-}: ChatPanelProps) {
-  const [dropActive, setDropActive] = useState(false)
-  /** Live message count reported by <Chat> during streaming. Used to
-   *  keep the header "X msgs" label up-to-date without waiting for a
-   *  server-pushed session-update (which only fires at turn end). */
-  const [liveMessageCount, setLiveMessageCount] = useState(0)
-  /** When true, the model chip in the header becomes an inline <input>. */
-  const [editingModel, setEditingModel] = useState(false)
-  const [modelDraft, setModelDraft] = useState('')
-  /** Anchor for the permission-mode menu. Non-null = menu visible. A
-   *  custom menu (rather than a native <select>) gives us full control
-   *  over dark-theme styling; the native control's dropdown surface
-   *  can't be restyled across browsers. */
-  const [permMenu, setPermMenu] = useState<{ x: number; y: number } | null>(null)
-  /** Inline error toast replacing window.alert for model/permission failures. */
-  const [panelError, setPanelError] = useState<string | null>(null)
-  const recentModels = readRecentModels()
-  const chipsDisabled = !session.running || session.terminated
-  // Use the live count from the stream when available; fall back to the
-  // server-pushed session.messageCount (updated only at turn boundaries).
-  const effectiveMessageCount = Math.max(session.messageCount, liveMessageCount)
-
-  const commitModel = (next: string) => {
-    const value = next.trim()
-    setEditingModel(false)
-    if (value === (session.model ?? '')) return
-    const before = session.model
-    void api
-      .post<{ session: SessionInfo }>(`/sessions/${session.id}/model`, {
-        model: value || undefined,
-      })
-      .then((r) => onSessionUpdate(r.session))
-      .catch((err) => {
-        setPanelError(`Couldn't change model: ${(err as Error).message}`)
-        setTimeout(() => setPanelError(null), 5000)
-        onSessionUpdate({ ...session, model: before })
-      })
-  }
-
-  const commitPermissionMode = (mode: PermissionMode) => {
-    if (mode === (session.permissionMode ?? 'default')) return
-    const before = session.permissionMode
-    void api
-      .post<{ session: SessionInfo }>(`/sessions/${session.id}/permission-mode`, { mode })
-      .then((r) => onSessionUpdate(r.session))
-      .catch((err) => {
-        setPanelError(`Couldn't change permission mode: ${(err as Error).message}`)
-        setTimeout(() => setPanelError(null), 5000)
-        onSessionUpdate({ ...session, permissionMode: before })
-      })
-  }
-
-  return (
-    <section
-      className={`chat-panel ${focused ? 'focused' : ''} ${dropActive ? 'drop-target' : ''}`}
-      style={accentStyle}
-      onMouseDownCapture={(e) => {
-        // Focus on any mousedown inside the panel (capture phase so we win
-        // against children). Clicking the close button still works because
-        // onClose stops propagation, but focusing on the way down is harmless.
-        if (!focused) onFocus()
-        void e
-      }}
-      onDragOver={(e) => {
-        if (!isInAppDrag(e)) return
-        e.preventDefault()
-        setDropActive(true)
-      }}
-      onDragLeave={(e) => {
-        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
-        setDropActive(false)
-      }}
-      onDrop={(e) => {
-        setDropActive(false)
-        const payload = readDragPayload(e)
-        if (!payload) return
-        e.preventDefault()
-        // Stop bubbling so the outer `.main-body` doesn't ALSO act on this
-        // drop (which would open the sidebar card a second time).
-        e.stopPropagation()
-        if (payload.kind === 'main-panel') {
-          onSwap(payload.id, session.id)
-        } else if (payload.kind === 'sidebar-card') {
-          onAcceptSidebarDrop(payload.id)
-        }
-      }}
-    >
-      <div
-        className="chat-panel-header"
-        // The header is the drag handle for panel swaps — the body stays
-        // non-draggable so textarea text selection and scrolling work.
-        draggable
-        onDragStart={(e) => {
-          setDragPayload(e, { kind: 'main-panel', id: session.id })
-        }}
-      >
-        <div className="chat-panel-header-row1">
-        <span
-          className={`chat-panel-slot ${focused ? 'focused' : ''}`}
-          title={`Slot ${slot} · Ctrl+${slot} to focus`}
-          aria-label={`slot ${slot}`}
-        >
-          {slot}
-        </span>
-        <span
-          className={`chat-panel-status ${statusClass(session)}`}
-          title={statusLabel(session)}
-          aria-label={statusLabel(session)}
-        />
-        <span className="chat-panel-title" title={session.cwd ?? ''}>
-          {session.title ?? session.id.slice(0, 8)}
-        </span>
-        <div className="chat-panel-meta">
-          {editingModel ? (
-            <input
-              className="chat-panel-chip-input"
-              list="chat-panel-model-datalist"
-              autoFocus
-              value={modelDraft}
-              placeholder="model name"
-              disabled={chipsDisabled}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => setModelDraft(e.target.value)}
-              onBlur={() => commitModel(modelDraft)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault()
-                  commitModel(modelDraft)
-                } else if (e.key === 'Escape') {
-                  e.preventDefault()
-                  setEditingModel(false)
-                }
-              }}
-            />
-          ) : (
-            <button
-              type="button"
-              className="chat-panel-chip"
-              disabled={chipsDisabled}
-              title={`Model: ${session.model ?? 'default'} · click to change`}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation()
-                setModelDraft(session.model ?? '')
-                setEditingModel(true)
-              }}
-            >
-              <span className="chat-panel-chip-label">model</span>
-              <span className="chat-panel-chip-value">{shortenModel(session.model)}</span>
-            </button>
-          )}
-          <datalist id="chat-panel-model-datalist">
-            {recentModels.map((m) => (
-              <option key={m} value={m} />
-            ))}
-          </datalist>
-          <button
-            type="button"
-            className="chat-panel-chip"
-            disabled={chipsDisabled}
-            title={`Permission mode: ${session.permissionMode ?? 'default'} · click to change`}
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation()
-              const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
-              setPermMenu({ x: rect.left, y: rect.bottom + 4 })
-            }}
-          >
-            <span className="chat-panel-chip-label">mode</span>
-            <span className="chat-panel-chip-value">{session.permissionMode ?? 'default'}</span>
-          </button>
-        </div>
-        {permMenu && (
-          <ContextMenu
-            x={permMenu.x}
-            y={permMenu.y}
-            onClose={() => setPermMenu(null)}
-            items={PERMISSION_MODES.map((m) => ({
-              label: m,
-              icon: (session.permissionMode ?? 'default') === m ? '✓' : ' ',
-              onClick: () => commitPermissionMode(m),
-            }))}
-          />
-        )}
-        <button
-          className="chat-panel-settings"
-          onClick={(e) => {
-            e.stopPropagation()
-            onOpenSettings()
-          }}
-          title="Session settings"
-          aria-label="Open settings"
-        >
-          ⚙
-        </button>
-        <button
-          className="chat-panel-close"
-          onClick={(e) => {
-            e.stopPropagation()
-            onClose()
-          }}
-          title="Close this panel (Alt+W) · session stays alive"
-          aria-label="Close panel"
-        >
-          ✕
-        </button>
-        </div>
-        {session.error && (
-          <div className="chat-panel-error" title={session.error}>
-            ⚠ {session.error}
-          </div>
-        )}
-        {/* Second header row — secondary metadata. Muted colour, smaller
-            font, skipped when there's literally nothing to show. */}
-        {(session.cwd || effectiveMessageCount > 0) && (
-          <div className="chat-panel-header-row2">
-            {session.cwd && (
-              <span className="chat-panel-cwd" title={session.cwd}>
-                📁 {shortenPath(session.cwd)}
-              </span>
-            )}
-            <span className="chat-panel-msgcount" title={`${effectiveMessageCount} messages`}>
-              {effectiveMessageCount} {effectiveMessageCount === 1 ? 'msg' : 'msgs'}
-            </span>
-            {session.working && (
-              <span className="chat-panel-working-indicator" title="Assistant is working on a turn">
-                <span className="chat-panel-working-dot" aria-hidden />
-                working…
-              </span>
-            )}
-          </div>
-        )}
-      </div>
-      {panelError && (
-        <div className="error-toast">
-          {panelError}
-          <button className="error-toast-dismiss" onClick={() => setPanelError(null)}>✕</button>
-        </div>
-      )}
-      <div className="chat-panel-body">
-        {session.running ? (
-          <Chat
-            key={session.id}
-            session={session}
-            onSessionUpdate={onSessionUpdate}
-            showSystemEvents={showSystemEvents}
-            settingsOpen={settingsOpen}
-            onCloseSettings={onCloseSettings}
-            onLiveMessageCount={setLiveMessageCount}
-          />
-        ) : (
-          <div className="empty-state">
-            <h2>
-              {session.error
-                ? 'This session errored'
-                : session.terminated
-                  ? 'This session has ended'
-                  : 'Session is dormant'}
-            </h2>
-            {session.error ? (
-              <>
-                <p>The underlying SDK Query threw an error and the session was shut down:</p>
-                <pre
-                  style={{
-                    textAlign: 'left',
-                    background: 'var(--bg-elev-2)',
-                    padding: 10,
-                    borderRadius: 4,
-                    whiteSpace: 'pre-wrap',
-                    color: 'var(--danger)',
-                    fontSize: 12,
-                  }}
-                >
-                  {session.error}
-                </pre>
-                <p>Check the server logs for a full stack trace.</p>
-              </>
-            ) : (
-              <p>
-                {session.terminated
-                  ? 'The underlying Query has finished. Create a new session to continue.'
-                  : 'Click the session again in the sidebar to resume it.'}
-              </p>
-            )}
-          </div>
-        )}
-      </div>
-    </section>
-  )
-}
-
-/** Distill a session's liveness/health into a single CSS class used by
- *  the header status dot. Kept separate from the label so colours and
- *  wording can evolve independently. */
-function statusClass(s: SessionInfo): string {
-  if (s.error) return 'err'
-  if (s.terminated) return 'terminated'
-  if (s.working) return 'working'
-  if (s.running) return 'live'
-  return 'dormant'
-}
-function statusLabel(s: SessionInfo): string {
-  if (s.error) return `Errored: ${s.error}`
-  if (s.terminated) return 'Session ended'
-  if (s.working) return 'Working on a turn'
-  if (s.running) return 'Live'
-  return 'Dormant'
-}
-
-/** Trim namespace prefixes and long version tails so a model name fits
- *  in a tight header chip. "claude-sonnet-4-5-20251101" → "sonnet-4-5";
- *  "xiaomi/mimo-v2.5-pro" → "mimo-v2.5-pro". Undefined → "default". */
-function shortenModel(name: string | undefined): string {
-  if (!name) return 'default'
-  const bare = name.split('/').pop() ?? name
-  const stripped = bare
-    .replace(/^claude-/, '')
-    // Strip trailing YYYYMMDD release dates ("-20251101").
-    .replace(/-\d{8}$/, '')
-  return stripped.length > 22 ? stripped.slice(0, 20) + '…' : stripped
-}
-
-/** Load the recent-models list that the New Session dialog maintains.
- *  Read-only from the ChatPanel side; we just want autocomplete hints
- *  for the inline model editor. Returns an empty array on any failure. */
-function readRecentModels(): string[] {
-  try {
-    const raw = window.localStorage.getItem('claude-react-web:recent-models')
-    if (!raw) return []
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? (parsed as string[]).filter((s) => typeof s === 'string') : []
-  } catch {
-    return []
-  }
-}
-
-function notificationTooltip(
-  permission: 'granted' | 'denied' | 'default' | 'unsupported',
-  enabled: boolean,
-): string {
-  if (permission === 'unsupported') return 'Browser does not support desktop notifications'
-  if (permission === 'denied') return 'Notifications blocked in browser settings'
-  if (enabled) return 'Desktop notifications: on · click to disable'
-  return 'Desktop notifications: off · click to enable'
 }

@@ -160,6 +160,7 @@ export function WsHubProvider({ children, url }: ProviderProps) {
     })
 
     ws.addEventListener('message', (ev) => {
+      if (unmountedRef.current) return
       let frame: WsServerFrame
       try {
         frame = JSON.parse(ev.data) as WsServerFrame

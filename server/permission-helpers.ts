@@ -1,0 +1,104 @@
+// Utility functions for permission request handling.
+// Extracted from session-manager.ts for modularity and testability.
+
+import type { PermissionUpdate } from '@anthropic-ai/claude-agent-sdk'
+import type {
+  PendingPermission,
+  PermissionRequestSnapshot,
+  QuestionAnswer,
+  QuestionSpec,
+} from './session-types.js'
+
+/** Strip the non-serializable fields (resolve/signal) before JSON. */
+export function toSnapshot(p: PendingPermission): PermissionRequestSnapshot {
+  if (p.kind === 'question') {
+    return {
+      kind: 'question',
+      id: p.id,
+      toolName: p.toolName,
+      questions: p.questions,
+      toolUseID: p.toolUseID,
+      createdAt: p.createdAt,
+    }
+  }
+  return {
+    kind: 'permission',
+    id: p.id,
+    toolName: p.toolName,
+    input: p.input,
+    title: p.title,
+    displayName: p.displayName,
+    description: p.description,
+    suggestions: p.suggestions,
+    toolUseID: p.toolUseID,
+    createdAt: p.createdAt,
+  }
+}
+
+/** Defensive parse of AskUserQuestion's `input.questions` array. Drops
+ *  malformed entries rather than throwing — we'd rather forward a
+ *  slimmed-down list than abort the tool call. */
+export function sanitizeQuestions(input: Record<string, unknown>): QuestionSpec[] {
+  const raw = input?.questions
+  if (!Array.isArray(raw)) return []
+  const out: QuestionSpec[] = []
+  for (const q of raw) {
+    if (!q || typeof q !== 'object') continue
+    const obj = q as Record<string, unknown>
+    if (typeof obj.question !== 'string') continue
+    if (!Array.isArray(obj.options)) continue
+    const options: QuestionSpec['options'] = []
+    for (const opt of obj.options) {
+      if (!opt || typeof opt !== 'object') continue
+      const o = opt as Record<string, unknown>
+      if (typeof o.label !== 'string') continue
+      options.push({
+        label: o.label,
+        description: typeof o.description === 'string' ? o.description : undefined,
+        preview: typeof o.preview === 'string' ? o.preview : undefined,
+      })
+    }
+    if (options.length === 0) continue
+    out.push({
+      question: obj.question,
+      header: typeof obj.header === 'string' ? obj.header : undefined,
+      multiSelect: obj.multiSelect === true,
+      options,
+    })
+  }
+  return out
+}
+
+/** Build the tool_result payload the model will see. We use JSON because
+ *  it's unambiguous and the model parses it reliably; plain text also
+ *  works but is ambiguous when answers contain commas or colons.
+ *
+ *  Null entries in `answers` mean the user skipped that question — we
+ *  encode that as `answer: null` with a note, so the model can decide
+ *  how to proceed (often: continue with a default).
+ */
+export function formatQuestionAnswers(questions: QuestionSpec[], answers: QuestionAnswer[]): string {
+  const payload = {
+    note: 'User answers from AskUserQuestion (single-select is a string, multi-select is an array, null means skipped).',
+    answers: questions.map((q, i) => ({
+      question: q.question,
+      answer: answers[i] ?? null,
+    })),
+  }
+  return JSON.stringify(payload)
+}
+
+/**
+ * Rewrite SDK-provided suggestions to target the current session scope.
+ *
+ * The SDK hands us `suggestions: PermissionUpdate[]` with whatever destination
+ * it picked (often 'userSettings' or 'projectSettings'). For session-scoped
+ * allow-always, we force every addRules/setMode/addDirectories update to
+ * `destination: 'session'`, so the change only lives as long as this Query.
+ */
+export function promoteToSession(
+  suggestions: PermissionUpdate[] | undefined,
+): PermissionUpdate[] | undefined {
+  if (!suggestions?.length) return undefined
+  return suggestions.map((s) => ({ ...s, destination: 'session' as const }))
+}

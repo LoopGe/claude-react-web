@@ -35,8 +35,17 @@ export function buildApiRouter(sm: SessionManager): Hono {
 
   // Create session
   app.post('/sessions', async (c) => {
-    const body = await c.req.json<Partial<Options> & { cwd?: string }>().catch(() => ({}) as Partial<Options>)
-    const info = sm.create(body as Options)
+    const body = await c.req.json<Partial<Options> & { cwd?: string; enabledMcpServers?: string[] }>().catch(
+      () => ({}) as Partial<Options> & { enabledMcpServers?: string[] },
+    )
+    // Merge global MCP configs with session-specific overrides
+    const { enabledMcpServers, mcpServers, ...rest } = body as Record<string, unknown> & {
+      enabledMcpServers?: string[]
+      mcpServers?: Record<string, unknown>
+    }
+    const mergedMcp = sm.mergeMcpServers(enabledMcpServers, mcpServers)
+    if (mergedMcp) rest.mcpServers = mergedMcp
+    const info = sm.create(rest as Options)
     return c.json({ session: info }, 201)
   })
 
@@ -257,6 +266,16 @@ export function buildApiRouter(sm: SessionManager): Hono {
   // Reload plugins from disk and refresh MCP status
   app.post('/sessions/:id/plugins/reload', async (c) => {
     const result = await sm.reloadPlugins(c.req.param('id'))
+    return c.json({ result })
+  })
+
+  // Add/remove MCP servers on a live session via SDK setMcpServers
+  app.post('/sessions/:id/mcp/servers', async (c) => {
+    const body = await c.req.json<{ servers?: Record<string, unknown> }>().catch(() => ({} as Record<string, unknown>))
+    if (!body.servers || typeof body.servers !== 'object') {
+      return c.json({ error: 'servers (object) is required' }, 400)
+    }
+    const result = await sm.setMcpServers(c.req.param('id'), body.servers as Record<string, unknown>)
     return c.json({ result })
   })
 

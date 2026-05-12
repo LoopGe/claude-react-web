@@ -32,6 +32,10 @@ interface Props {
   /** Ref set to `true` when the user fires interrupt; the next `result`
    *  message renders as "interrupted" and resets it to `false`. */
   pendingInterruptRef?: React.RefObject<boolean>
+  /** False while the initial replay from the server is still buffering.
+   *  When false, shows a loading skeleton instead of the empty-state
+   *  message, preventing a flash of "no messages" on session switch. */
+  replayReady?: boolean
 }
 
 /** An item in the Virtuoso data array. Pre-computing isCompactSummary
@@ -41,7 +45,7 @@ interface RenderableItem {
   isCompactSummary: boolean
 }
 
-export function MessageList({ messages, showSystemEvents = false, pendingInterruptRef }: Props) {
+export function MessageList({ messages, showSystemEvents = false, pendingInterruptRef, replayReady = true }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -130,6 +134,36 @@ export function MessageList({ messages, showSystemEvents = false, pendingInterru
     return () => ro.disconnect()
   }, [items.length])
 
+  // Clear the unseen count when the user scrolls close to the bottom.
+  // atBottomStateChange only fires when Virtuoso's internal at-bottom
+  // state flips — if the user scrolls most of the way down but doesn't
+  // reach the absolute bottom (e.g. a very tall last message), the
+  // callback never fires and the badge stays stuck.  This listener
+  // uses a generous 200 px threshold so the badge clears well before
+  // the pixel-perfect bottom boundary that Virtuoso requires.
+  useEffect(() => {
+    const el = scrollerRef.current
+    if (!el) return
+    const NEAR_BOTTOM_PX = 200
+    const handler = () => {
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+      if (distanceFromBottom < NEAR_BOTTOM_PX && unseenCountRef.current !== 0) {
+        unseenCountRef.current = 0
+        setUnseenCount(0)
+        // Re-enable follow mode so future messages auto-scroll.
+        if (followTimerRef.current != null) {
+          clearTimeout(followTimerRef.current)
+          followTimerRef.current = null
+        }
+        shouldFollowRef.current = true
+        atBottomRef.current = true
+        setAtBottom(true)
+      }
+    }
+    el.addEventListener('scroll', handler, { passive: true })
+    return () => el.removeEventListener('scroll', handler)
+  }, [items.length])
+
   // Clean up the follow debounce timer on unmount.
   useEffect(() => () => {
     if (followTimerRef.current != null) clearTimeout(followTimerRef.current)
@@ -145,7 +179,9 @@ export function MessageList({ messages, showSystemEvents = false, pendingInterru
       <div className="chat-messages">
         {items.length === 0 ? (
           <div className="chat-messages-empty">
-            Type a message below to start the conversation.
+            {replayReady
+              ? 'Type a message below to start the conversation.'
+              : 'Loading messages…'}
           </div>
         ) : (
           <Virtuoso
@@ -251,6 +287,15 @@ interface Block {
 
 const MessageView = memo(function MessageView({ msg, isCompactSummary, interruptedRef }: { msg: SdkMessage; isCompactSummary?: boolean; interruptedRef?: React.RefObject<boolean> }) {
   const type = msg.type
+
+  // Read the interrupted flag once at mount (via useState initializer)
+  // and clear it in an effect — never during render. This avoids the
+  // React anti-pattern of mutating refs inside the render body, which
+  // breaks under StrictMode double-render.
+  const [isInterrupted] = useState(() => type === 'result' && !!interruptedRef?.current)
+  useEffect(() => {
+    if (isInterrupted && interruptedRef) interruptedRef.current = false
+  }, [isInterrupted, interruptedRef])
 
   if (type === 'user') {
     const userContent = extractUserText(msg)
@@ -360,8 +405,6 @@ const MessageView = memo(function MessageView({ msg, isCompactSummary, interrupt
   }
 
   if (type === 'result') {
-    const isInterrupted = !!interruptedRef?.current
-    if (isInterrupted) interruptedRef!.current = false
     const label = isInterrupted ? 'interrupted' : 'result'
     const cost = typeof msg.total_cost_usd === 'number' ? ` · $${msg.total_cost_usd.toFixed(4)}` : ''
     const dur = typeof msg.duration_ms === 'number' ? ` · ${Math.round(msg.duration_ms)}ms` : ''

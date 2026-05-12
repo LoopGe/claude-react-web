@@ -3,8 +3,12 @@
 
 import { useEffect, useState } from 'react'
 import { api } from '../hooks/useApi'
-import type { McpServerStatus, ModelInfo, PermissionMode, SessionInfo } from '../types'
+import type { McpServerConfigMeta, McpServerStatus, ModelInfo, PermissionMode, SessionInfo } from '../types'
 import { PERMISSION_MODES } from '../types'
+import { McpInstaller } from './McpInstaller'
+import { FlagSettingsEditor } from './FlagSettingsEditor'
+import { ContextBar } from './ContextBar'
+import type { ContextUsage } from '../hooks/useChatStream'
 
 interface Props {
   session: SessionInfo
@@ -15,8 +19,11 @@ interface Props {
 export function SettingsPanel({ session, onClose, onSessionUpdate }: Props) {
   const [models, setModels] = useState<ModelInfo[]>([])
   const [settingsText, setSettingsText] = useState('{}')
-  const [usage, setUsage] = useState<unknown>(null)
+  const [usage, setUsage] = useState<ContextUsage | null>(null)
   const [mcp, setMcp] = useState<McpServerStatus[]>([])
+  const [globalMcpNames, setGlobalMcpNames] = useState<Set<string>>(new Set())
+  const [showMcpInstaller, setShowMcpInstaller] = useState(false)
+  const [mcpInstallerEdit, setMcpInstallerEdit] = useState<McpServerConfigMeta | undefined>(undefined)
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -72,7 +79,7 @@ export function SettingsPanel({ session, onClose, onSessionUpdate }: Props) {
           `/sessions/${session.id}/context-usage`,
           { signal: ac.signal },
         )
-        setUsage(u.usage)
+        setUsage(u.usage as ContextUsage)
       } catch (e) {
         if ((e as Error).name === 'AbortError') return
       }
@@ -84,6 +91,15 @@ export function SettingsPanel({ session, onClose, onSessionUpdate }: Props) {
         setMcp(r.mcp)
       } catch (e) {
         if ((e as Error).name === 'AbortError') return
+      }
+      try {
+        const gc = await api.get<{ servers: McpServerConfigMeta[] }>(
+          '/mcp-config',
+          { signal: ac.signal },
+        )
+        setGlobalMcpNames(new Set(gc.servers.map((s) => s.name)))
+      } catch {
+        /* ignore — no global config is fine */
       }
     })()
     return () => { ac.abort() }
@@ -158,6 +174,16 @@ export function SettingsPanel({ session, onClose, onSessionUpdate }: Props) {
     }
   }
 
+  const handleMcpInstallerSave = () => {
+    setShowMcpInstaller(false)
+    setMcpInstallerEdit(undefined)
+    // Refresh both global names and MCP status
+    api.get<{ servers: McpServerConfigMeta[] }>('/mcp-config')
+      .then((r) => setGlobalMcpNames(new Set(r.servers.map((s) => s.name))))
+      .catch(() => { /* ignore */ })
+    void refreshMcp()
+  }
+
   return (
     <aside className="settings-panel">
       <h3>
@@ -218,49 +244,63 @@ export function SettingsPanel({ session, onClose, onSessionUpdate }: Props) {
           </span>
         </div>
 
-        <div className="settings-field">
-          <label>Merge flag settings (JSON)</label>
-          <textarea
-            className="textarea"
-            rows={6}
-            value={settingsText}
-            onChange={(e) => setSettingsText(e.target.value)}
-            placeholder='{"permissions": {...}, "env": {...}}'
-          />
-          <span className="hint">
-            Calls <code>Query.applyFlagSettings()</code>. Top-level keys are shallow-merged across calls.
-          </span>
-          <button className="btn btn-primary" onClick={applySettings} disabled={busy || session.terminated}>
-            Apply settings
-          </button>
-        </div>
+        <FlagSettingsEditor
+          value={settingsText}
+          onChange={setSettingsText}
+          disabled={busy || session.terminated}
+        />
+        <button className="btn btn-primary" onClick={applySettings} disabled={busy || session.terminated} style={{ alignSelf: 'flex-start' }}>
+          Apply settings
+        </button>
       </div>
 
       <div className="settings-section">
         <h4>Context usage</h4>
-        <pre className="tool-input" style={{ maxHeight: 220, overflow: 'auto' }}>
-          {usage ? formatJson(usage) : '—'}
-        </pre>
+        <ContextBar usage={usage} />
+        <details style={{ marginTop: 6 }}>
+          <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--fg-muted)' }}>Raw data</summary>
+          <pre className="tool-input" style={{ maxHeight: 200, overflow: 'auto', marginTop: 6 }}>
+            {usage ? formatJson(usage) : '—'}
+          </pre>
+        </details>
       </div>
 
       <div className="settings-section">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h4 style={{ margin: 0 }}>MCP servers</h4>
-          <button className="btn" style={{ padding: '2px 8px', fontSize: 11 }} onClick={reloadPlugins} disabled={busy || session.terminated}>
-            Reload plugins
-          </button>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              className="btn"
+              style={{ padding: '2px 8px', fontSize: 11 }}
+              onClick={() => { setMcpInstallerEdit(undefined); setShowMcpInstaller(true) }}
+            >
+              Manage
+            </button>
+            <button className="btn" style={{ padding: '2px 8px', fontSize: 11 }} onClick={reloadPlugins} disabled={busy || session.terminated}>
+              Reload plugins
+            </button>
+          </div>
         </div>
         {mcp.length === 0 && <div style={{ color: 'var(--fg-muted)', fontSize: 13, marginTop: 6 }}>No MCP servers</div>}
         {mcp.map((srv) => (
           <McpServerCard
             key={srv.name}
             server={srv}
+            isGlobal={globalMcpNames.has(srv.name)}
             onReconnect={reconnectMcp}
             onToggle={toggleMcp}
             disabled={busy || session.terminated}
           />
         ))}
       </div>
+
+      {showMcpInstaller && (
+        <McpInstaller
+          server={mcpInstallerEdit}
+          onSave={handleMcpInstallerSave}
+          onClose={() => { setShowMcpInstaller(false); setMcpInstallerEdit(undefined) }}
+        />
+      )}
     </aside>
   )
 }
@@ -308,11 +348,13 @@ const STATUS_COLORS: Record<string, string> = {
 
 function McpServerCard({
   server,
+  isGlobal,
   onReconnect,
   onToggle,
   disabled,
 }: {
   server: McpServerStatus
+  isGlobal: boolean
   onReconnect: (name: string) => void
   onToggle: (name: string, enabled: boolean) => void
   disabled: boolean
@@ -327,7 +369,14 @@ function McpServerCard({
     <div style={{ border: '1px solid var(--border)', borderRadius: 6, marginTop: 8, overflow: 'hidden' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: 'var(--bg)' }}>
         <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
-        <span style={{ fontWeight: 500, fontSize: 13, flex: 1 }}>{server.name}</span>
+        <span style={{ fontWeight: 500, fontSize: 13, flex: 1 }}>
+          {server.name}
+          {isGlobal && (
+            <span style={{ fontSize: 10, color: '#2196f3', marginLeft: 6, fontWeight: 400, padding: '1px 4px', border: '1px solid #2196f3', borderRadius: 3 }}>
+              global
+            </span>
+          )}
+        </span>
         {server.tools && (
           <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>{server.tools.length} tool{server.tools.length !== 1 ? 's' : ''}</span>
         )}

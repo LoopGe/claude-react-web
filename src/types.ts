@@ -76,6 +76,8 @@ export interface NewSessionForm {
   thinking?: 'adaptive' | 'enabled' | 'disabled' | { type: 'enabled'; budgetTokens: number }
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   tools?: string[]
+  /** Names of global MCP servers to enable for this session. */
+  enabledMcpServers?: string[]
   // Advanced (JSON blobs — rendered as <textarea> and parsed on submit)
   mcpServers?: unknown
   /** Frontend-only: chosen accent hex (from theme ACCENT_COLORS). Not
@@ -185,6 +187,36 @@ export interface McpServerStatus {
   scope?: string
   config?: unknown
   tools?: McpServerTool[]
+}
+
+// ── Global MCP Config ─────────────────────────────────────────────
+
+/** API-safe representation of a stored global MCP server (secrets masked). */
+export interface McpServerConfigMeta {
+  name: string
+  type: 'stdio' | 'sse' | 'http'
+  command?: string
+  args?: string[]
+  url?: string
+  alwaysLoad?: boolean
+  enabled?: boolean
+  createdAt: number
+  updatedAt: number
+  envKeys?: string[]
+  headerKeys?: string[]
+}
+
+/** Input shape for creating/updating a global MCP server. */
+export interface McpServerInput {
+  name: string
+  type?: 'stdio' | 'sse' | 'http'
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  url?: string
+  headers?: Record<string, string>
+  alwaysLoad?: boolean
+  enabled?: boolean
 }
 
 // ── Session Recap ─────────────────────────────────────────────────

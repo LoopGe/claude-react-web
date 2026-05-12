@@ -11,6 +11,7 @@ import open from 'open'
 import { buildApp } from './app.js'
 import { loadConfig } from './config.js'
 import { SessionStore, defaultStateDir } from './persistence.js'
+import { McpConfigStore } from './mcp-config.js'
 import { attachWebSocket } from './ws.js'
 
 interface CliArgs {
@@ -157,6 +158,12 @@ async function main() {
     console.log(`[cli] loaded ${loaded.length} session(s) from ${stateDir}`)
   }
 
+  const mcpStore = new McpConfigStore({ stateDir })
+  const mcpServers = await mcpStore.load()
+  if (mcpServers.length) {
+    console.log(`[cli] loaded ${mcpServers.length} MCP server(s) from ${stateDir}`)
+  }
+
   const claudeBinary = resolveClaudeBinary(args.claudeBinary)
   if (claudeBinary) {
     console.log(`[cli] using claude binary: ${claudeBinary}`)
@@ -169,6 +176,7 @@ async function main() {
 
   const { app, sessionManager } = buildApp({
     sessionStore: store,
+    mcpConfigStore: mcpStore,
     defaults: { cwd: args.cwd, model: args.model, claudeBinary },
   })
   const url = `http://${args.host}:${args.port}`

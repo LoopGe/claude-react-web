@@ -319,7 +319,7 @@ describe('SessionManager', () => {
     const info = sm.create({ title: 'resumable' })
     await tick()
     // Age the session.
-    // @ts-expect-error
+    // @ts-expect-error — accessing internal sessions map for test manipulation
     const internalSessions = sm.sessions as Map<string, { lastActivityAt: number }>
     const internal = internalSessions.get(info.id)!
     internal.lastActivityAt = Date.now() - 10_000

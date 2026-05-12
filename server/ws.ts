@@ -91,25 +91,22 @@ class WsWriteQueue {
     try {
       while (this.queue.length > 0 && !this.stopped) {
         const data = this.queue.shift()!
-        // Backpressure: if the kernel socket buffer is full, wait for
-        // the `drain` signal before sending more. This is the key
-        // mechanism that prevents a huge replay from blocking smaller
-        // live frames — while we wait, other drivers can enqueue.
+        // Backpressure: if the kernel socket buffer is full, send the
+        // frame with a callback that fires when it has been flushed.
+        // This is the idiomatic ws backpressure mechanism — the library
+        // does NOT emit `drain` events, so we rely on the send callback.
         if (this.ws.bufferedAmount > BACKPRESSURE_HIGH) {
           await new Promise<void>((resolve) => {
             if (this.stopped) { resolve(); return }
-            const onDrain = () => { cleanup(); resolve() }
             const onClose = () => { cleanup(); resolve() }
-            const cleanup = () => {
-              this.ws.off('drain', onDrain)
-              this.ws.off('close', onClose)
-            }
-            this.ws.on('drain', onDrain)
+            const cleanup = () => { this.ws.off('close', onClose) }
             this.ws.on('close', onClose)
+            this.ws.send(data, () => { cleanup(); resolve() })
           })
+        } else {
+          if (this.stopped) return
+          this.ws.send(data)
         }
-        if (this.stopped) return
-        this.ws.send(data)
         // Yield to the event loop between frames. This is critical:
         // without it, a burst of N small frames would still block the
         // loop for the duration of N × ws.send(). setImmediate lets
@@ -199,10 +196,10 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionManager): () 
       let ctxIter: AsyncIterator<unknown> | null = null
       try {
         const msg = sm.subscribe(sessionId)
-        const perms = sm.subscribePermissions(sessionId)
-        ctxIter = sm.subscribeContextUsage(sessionId)?.[Symbol.asyncIterator]() ?? null
         msgSub = msg
+        const perms = sm.subscribePermissions(sessionId)
         permSub = perms
+        ctxIter = sm.subscribeContextUsage(sessionId)?.[Symbol.asyncIterator]() ?? null
 
         // 1) Send the full replay. When history is small (≤50 messages),
         //    we send one frame for backward compat. For larger histories

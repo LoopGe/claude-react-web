@@ -30,6 +30,10 @@ export interface ChatStream {
   contextUsage: ContextUsage | null
   /** Live output token rate (tok/s) computed from streaming deltas. Null when not streaming. */
   tokenRate: number | null
+  /** False while the initial replay from the server is still buffering.
+   *  Consumers can use this to show a loading skeleton instead of an
+   *  empty "no messages" state when switching sessions. */
+  replayReady: boolean
   /** Bump the queued counter by one (call after POST /messages succeeds). */
   trackSentTurn: () => void
   /** Clear all local state — used when switching between sessions. */
@@ -50,6 +54,14 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null)
   const [tokenRate, setTokenRate] = useState<number | null>(null)
   const tokenSampleRef = useRef<{ tokens: number; ts: number } | null>(null)
+  /** Ref-based buffer for replay frames. Accumulates all replay chunks
+   *  and flushes to state once on `replay-done`, avoiding the O(n²)
+   *  `setMessages(prev => [...prev, ...chunk])` pattern that caused
+   *  stutter when switching to sessions with large histories. */
+  const replayBufRef = useRef<SdkMessage[]>([])
+  /** Set to true once the first replay-done arrives. Used to drive
+   *  loading indicators — `false` means we're still buffering. */
+  const [replayReady, setReplayReady] = useState(false)
 
   const hub = useWsHub()
 
@@ -74,6 +86,8 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       setQueuedAhead(0)
       setTokenRate(null)
       tokenSampleRef.current = null
+      replayBufRef.current = []
+      setReplayReady(false)
     }
   }, [sessionId])
 
@@ -97,15 +111,21 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     const off = hub.addSessionListener(sessionId, (frame: WsServerFrame) => {
       switch (frame.kind) {
         case 'replay': {
-          // Chunked replay: append each batch (small histories arrive
-          // in one frame, large ones in chunks of 50).
-          startTransition(() => {
-            setMessages((prev) => [...prev, ...(frame.messages as SdkMessage[])])
-          })
+          // If replayDone is already true, the server re-broadcasts the
+          // full replay after a reconnect — reset buffer to avoid duplicating.
+          if (replayDone) {
+            replayDone = false
+            pending.length = 0
+            replayBufRef.current = [...(frame.messages as SdkMessage[])]
+          } else {
+            // Chunked replay: accumulate into ref buffer. We only flush
+            // to React state once on replay-done, avoiding O(n²) spread.
+            replayBufRef.current.push(...(frame.messages as SdkMessage[]))
+          }
           // Permissions are on the first chunk only for small replays;
           // for chunked replays they arrive on replay-done instead.
           if (frame.permissions?.length) {
-            for (const p of frame.permissions) {
+            for (const p of frame.permissions ?? []) {
               permsRef.current.onRequest(p)
             }
           }
@@ -113,16 +133,18 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
         }
         case 'replay-done': {
           replayDone = true
-          // Flush any live messages that queued during replay.
+          // Single flush: accumulated replay + any live messages that
+          // arrived during the replay window. One setState call instead
+          // of N chunk-appends — eliminates the O(n²) re-render cascade.
           startTransition(() => {
-            if (pending.length) {
-              setMessages((prev) => [...prev, ...pending])
-              pending.length = 0
-            }
+            setMessages([...replayBufRef.current, ...pending])
+            replayBufRef.current = []
+            pending.length = 0
+            setReplayReady(true)
           })
           // Chunked replay: permissions ride on the final replay-done.
           if (frame.permissions?.length) {
-            for (const p of frame.permissions) {
+            for (const p of frame.permissions ?? []) {
               permsRef.current.onRequest(p)
             }
           }
@@ -236,12 +258,14 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     setContextUsage(null)
     setTokenRate(null)
     tokenSampleRef.current = null
+    replayBufRef.current = []
+    setReplayReady(false)
   }, [])
 
   const clearError = useCallback(() => setOpError(null), [])
 
   return useMemo(
-    () => ({ messages, queuedAhead, error: displayedError, contextUsage, tokenRate, trackSentTurn, reset, clearError }),
-    [messages, queuedAhead, displayedError, contextUsage, tokenRate, trackSentTurn, reset, clearError],
+    () => ({ messages, queuedAhead, error: displayedError, contextUsage, tokenRate, replayReady, trackSentTurn, reset, clearError }),
+    [messages, queuedAhead, displayedError, contextUsage, tokenRate, replayReady, trackSentTurn, reset, clearError],
   )
 }

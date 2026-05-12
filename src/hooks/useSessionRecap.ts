@@ -104,7 +104,12 @@ export function useSessionRecap(sessionId: string, focused: boolean): SessionRec
         if (!controller.signal.aborted) setLoading(false)
       })
 
-    return () => controller.abort()
+    return () => {
+      controller.abort()
+      // Reset so a StrictMode re-mount (or genuine remount) retries
+      // the fetch instead of being permanently blocked by the stale flag.
+      fetchedRef.current = false
+    }
   }, [sessionId])
 
   // Update last-viewed timestamp when focus changes.

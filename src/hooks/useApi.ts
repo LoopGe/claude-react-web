@@ -33,6 +33,8 @@ export const api = {
     apiRequest<T>(path, { signal: opts?.signal }),
   post: <T>(path: string, body?: unknown, opts?: { signal?: AbortSignal }) =>
     apiRequest<T>(path, { method: 'POST', body: body == null ? undefined : JSON.stringify(body), signal: opts?.signal }),
+  put: <T>(path: string, body?: unknown) =>
+    apiRequest<T>(path, { method: 'PUT', body: body == null ? undefined : JSON.stringify(body) }),
   patch: <T>(path: string, body?: unknown) =>
     apiRequest<T>(path, { method: 'PATCH', body: body == null ? undefined : JSON.stringify(body) }),
   delete: <T>(path: string) => apiRequest<T>(path, { method: 'DELETE' }),

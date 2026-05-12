@@ -23,205 +23,48 @@ import {
   type Options,
   type PermissionMode,
   type PermissionResult,
-  type PermissionUpdate,
-  type Query,
   type SDKMessage,
   type SDKUserMessage,
   type Settings,
 } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
-import { createPushable, type Pushable } from './pushable.js'
+import { createPushable } from './pushable.js'
 import type { SessionMeta, SessionStore } from './persistence.js'
+import type { McpConfigStore } from './mcp-config.js'
 import { invalidateRecapCache } from './recap.js'
-
-/** Subscriber — each connected client gets one of these. */
-interface Subscriber {
-  id: string
-  push: (msg: SDKMessage) => void
-  /** Push a named event that bypasses message history (e.g. context_usage). */
-  pushEvent: (name: string, data: unknown) => void
-  end: () => void
-  closed: boolean
-}
-
-/** Permission-channel subscriber — separate from the SDK message channel so
- *  we don't have to widen the Subscriber type into a union. */
-export type PermissionEvent =
-  | { kind: 'request'; payload: PermissionRequestSnapshot }
-  | { kind: 'resolved'; pid: string; decision: PermissionDecisionSummary }
-interface PermissionSubscriber {
-  id: string
-  push: (ev: PermissionEvent) => void
-  end: () => void
-}
-
-/** One question within an AskUserQuestion tool_use. Mirrors the SDK's
- *  internal shape but narrowed so the frontend can rely on it. */
-export interface QuestionSpec {
-  question: string
-  /** Short header/label for the question, shown as a chip in the UI. */
-  header?: string
-  multiSelect?: boolean
-  options: Array<{
-    label: string
-    description?: string
-    /** Preview body (markdown by default). SDK's toolConfig.askUserQuestion
-     *  can flip this to HTML, but we don't set that option. */
-    preview?: string
-  }>
-}
-
-/** JSON-safe snapshot of a pending permission request OR interactive
- *  question. Permissions and questions ride on the same channel and
- *  the same pending map — they're both "SDK waiting on the user" events
- *  — but the frontend renders them with different components, so the
- *  `kind` discriminator matters. */
-export type PermissionRequestSnapshot =
-  | {
-      kind: 'permission'
-      id: string
-      toolName: string
-      input: Record<string, unknown>
-      title?: string
-      displayName?: string
-      description?: string
-      suggestions?: PermissionUpdate[]
-      toolUseID: string
-      createdAt: number
-    }
-  | {
-      kind: 'question'
-      id: string
-      toolName: 'AskUserQuestion'
-      /** Raw questions array as handed to the tool. The frontend renders
-       *  one form per element; each is single- or multi-select. */
-      questions: QuestionSpec[]
-      toolUseID: string
-      createdAt: number
-    }
-
-/** Summary of how a pending request was resolved (broadcast to all tabs). */
-export interface PermissionDecisionSummary {
-  behavior: 'allow' | 'deny'
-  persisted: boolean
-  message?: string
-}
-
-/** Answer submitted for a pending AskUserQuestion. Indices align with
- *  the `questions` array. Each entry is either a single option label
- *  (single-select) or an array of labels (multi-select), or null when
- *  the user skipped (we forward a "user skipped" note to the model). */
-export type QuestionAnswer = string | string[] | null
-
-/** Internal server-side state per pending request. Carries the SDK
- *  resolver + signal alongside the JSON-serializable snapshot so the
- *  single `pending` map can hold both flavours. */
-type PendingPermission = PermissionRequestSnapshot & {
-  resolve: (r: PermissionResult) => void
-  signal: AbortSignal
-  abortHandler: () => void
-}
-
-/** Metadata returned by list() / get(). */
-export interface SessionInfo {
-  id: string
-  createdAt: number
-  lastActivityAt: number
-  subscribers: number
-  messageCount: number
-  cwd?: string
-  model?: string
-  permissionMode?: PermissionMode
-  title?: string
-  running: boolean
-  terminated: boolean
-  error?: string
-  /** True when the SDK is mid-turn (a user message has been sent and no
-   *  matching `result` has arrived yet). Drives the "thinking" animation. */
-  working: boolean
-  /** Epoch ms when the current turn started (first pending turn). Only set
-   *  while `working` is true; allows the client to compute an accurate
-   *  elapsed timer that survives component remounts. */
-  workingSince?: number
-  /** Epoch ms of the last completed turn (last `result` message). The
-   *  frontend diffs this against a locally-remembered value to decide
-   *  whether to show an unread badge on non-focused sessions. */
-  lastTurnAt?: number
-  /** User pinned this session — sticks to the top of the sidebar and
-   *  survives the 3-panel eviction rule. */
-  pinned?: boolean
-}
-
-interface Session {
-  id: string
-  createdAt: number
-  lastActivityAt: number
-  cwd?: string
-  model?: string
-  permissionMode?: PermissionMode
-  title?: string
-  pinned?: boolean
-  input: Pushable<SDKUserMessage>
-  query: Query
-  subscribers: Map<string, Subscriber>
-  permissionSubscribers: Map<string, PermissionSubscriber>
-  /** Pending tool-use permission requests awaiting a user decision. */
-  pending: Map<string, PendingPermission>
-  history: SDKMessage[]
-  pumpTask: Promise<void>
-  running: boolean
-  terminated: boolean
-  error?: string
-  /** Pending turns (user messages sent but no matching `result` yet). A
-   *  simple counter rather than a set because we don't need to identify
-   *  which specific turn is outstanding — just whether ANY is. */
-  pendingTurns: number
-  /** Epoch ms when the first pending turn started. Cleared when all turns
-   *  complete (pendingTurns drops to 0) or the session terminates. */
-  workingSince?: number
-  /** Timestamp of the last `result` message, used for the unread badge. */
-  lastTurnAt?: number
-  /** Pushable for context_usage events — separate from message history
-   *  so reconnects don't replay stale usage snapshots. */
-  contextUsagePushable: Pushable<unknown>
-}
-
 import { HISTORY_CAP, SESSION_IDLE_MS } from './config.js'
+import { createAsyncSubscription } from './async-subscription.js'
+import { pump as pumpSession } from './session-pump.js'
+import {
+  type Subscriber,
+  type PermissionEvent,
+  type PermissionSubscriber,
+  type PermissionRequestSnapshot,
+  type PermissionDecisionSummary,
+  type QuestionAnswer,
+  type PendingPermission,
+  type SessionInfo,
+  type Session,
+  type SessionManagerOptions,
+  type GlobalSessionEvent,
+  type GlobalSubscriber,
+  HttpError,
+} from './session-types.js'
+import { toSnapshot, sanitizeQuestions, formatQuestionAnswers, promoteToSession } from './permission-helpers.js'
 
-const SUBSCRIBER_QUEUE_CAP = 500
+// Re-export all types so existing importers (ws-protocol.ts, routes.ts, etc.) continue to work.
+export {
+  type PermissionEvent,
+  type QuestionSpec,
+  type PermissionRequestSnapshot,
+  type PermissionDecisionSummary,
+  type QuestionAnswer,
+  type SessionInfo,
+  type SessionManagerOptions,
+  type GlobalSessionEvent,
+  HttpError,
+} from './session-types.js'
 
-export interface SessionManagerOptions {
-  idleMs?: number
-  historyCap?: number
-  /** When set, session metadata is persisted here so dormant sessions
-   *  survive restarts. See server/persistence.ts. */
-  store?: SessionStore
-  /** Absolute path to the `claude` CLI binary, injected into every
-   *  Query's Options.pathToClaudeCodeExecutable. Bypasses the SDK's
-   *  internal platform-native-package resolution, which can pick a
-   *  wrong libc variant on some systems. */
-  claudeBinary?: string
-}
-
-/** Global session-list update event. Broadcast whenever a session's
- *  info changes (working toggled, turn completed, error set, etc.) so
- *  the frontend sidebar can replace 5-second polling with a push feed. */
-export type GlobalSessionEvent =
-  | { kind: 'update'; session: SessionInfo }
-  | { kind: 'created'; session: SessionInfo }
-  | { kind: 'removed'; id: string }
-  /** A tool-permission request arrived for a session. Mirrored onto the
-   *  global channel so that App-level code can fire a desktop notification
-   *  even when the
-   *  session's Chat panel isn't mounted. `sessionId` lets the frontend
-   *  route-to-session on click. */
-  | { kind: 'permission_request'; sessionId: string; request: PermissionRequestSnapshot }
-
-interface GlobalSubscriber {
-  id: string
-  push: (ev: GlobalSessionEvent) => void
-  end: () => void
-}
 
 export class SessionManager {
   private sessions = new Map<string, Session>()
@@ -229,6 +72,7 @@ export class SessionManager {
   private historyCap: number
   private gcTimer?: NodeJS.Timeout
   private store?: SessionStore
+  private mcpStore?: McpConfigStore
   private claudeBinary?: string
   private globalSubscribers = new Map<string, GlobalSubscriber>()
 
@@ -237,6 +81,7 @@ export class SessionManager {
     this.claudeBinary = opts.claudeBinary
     this.historyCap = opts.historyCap ?? HISTORY_CAP
     this.store = opts.store
+    this.mcpStore = opts.mcpConfigStore
     this.gcTimer = setInterval(() => this.gc(), 60_000)
     // Don't keep the Node process alive just for GC
     this.gcTimer.unref?.()
@@ -289,56 +134,14 @@ export class SessionManager {
     unsubscribe: () => void
   } {
     const subId = randomUUID()
-    const queue: GlobalSessionEvent[] = []
-    let waiter: ((v: IteratorResult<GlobalSessionEvent>) => void) | null = null
-    let closed = false
-
-    const sub: GlobalSubscriber = {
-      id: subId,
-      push: (ev) => {
-        if (closed) return
-        if (waiter) {
-          const w = waiter
-          waiter = null
-          w({ value: ev, done: false })
-        } else {
-          queue.push(ev)
-          if (queue.length > SUBSCRIBER_QUEUE_CAP) {
-            queue.splice(0, queue.length - SUBSCRIBER_QUEUE_CAP)
-          }
-        }
-      },
-      end: () => {
-        if (closed) return
-        closed = true
-        if (waiter) {
-          const w = waiter
-          waiter = null
-          w({ value: undefined as unknown as GlobalSessionEvent, done: true })
-        }
-      },
-    }
-    this.globalSubscribers.set(subId, sub)
-
-    const iterable: AsyncIterable<GlobalSessionEvent> = {
-      [Symbol.asyncIterator]: () => ({
-        next: (): Promise<IteratorResult<GlobalSessionEvent>> => {
-          if (queue.length) return Promise.resolve({ value: queue.shift()!, done: false })
-          if (closed) return Promise.resolve({ value: undefined as unknown as GlobalSessionEvent, done: true })
-          return new Promise((r) => {
-            waiter = r
-          })
-        },
-        return: (): Promise<IteratorResult<GlobalSessionEvent>> => {
-          sub.end()
-          this.globalSubscribers.delete(subId)
-          return Promise.resolve({ value: undefined as unknown as GlobalSessionEvent, done: true })
-        },
-      }),
-    }
+    const sub = createAsyncSubscription<GlobalSessionEvent>(() => {
+      this.globalSubscribers.delete(subId)
+    })
+    const globalSub: GlobalSubscriber = { id: subId, push: sub.push, end: sub.end }
+    this.globalSubscribers.set(subId, globalSub)
 
     return {
-      iterable,
+      iterable: sub.iterable,
       snapshot: this.list(),
       unsubscribe: () => {
         sub.end()
@@ -802,6 +605,38 @@ export class SessionManager {
     await s.query.toggleMcpServer(serverName, enabled)
   }
 
+  /** Add/remove MCP servers on a live session via the SDK's setMcpServers API. */
+  async setMcpServers(id: string, servers: Record<string, unknown>) {
+    const s = this.requireLive(id)
+    return s.query.setMcpServers(servers as Parameters<typeof s.query.setMcpServers>[0])
+  }
+
+  /** Merge global MCP configs with session-specific overrides.
+   *  enabledGlobal: names of global servers the user selected.
+   *  sessionMcp: session-specific overrides (win on name collision).
+   *  Returns undefined if the merged result is empty. */
+  mergeMcpServers(
+    enabledGlobal?: string[],
+    sessionMcp?: Record<string, unknown>,
+  ): Record<string, unknown> | undefined {
+    const global = this.mcpStore?.toSdkConfig() ?? {}
+    const result: Record<string, unknown> = {}
+
+    // Add enabled global servers
+    if (enabledGlobal) {
+      for (const name of enabledGlobal) {
+        if (global[name]) result[name] = global[name]
+      }
+    }
+
+    // Session overrides replace or add
+    if (sessionMcp) {
+      Object.assign(result, sessionMcp)
+    }
+
+    return Object.keys(result).length > 0 ? result : undefined
+  }
+
   async reloadPlugins(id: string) {
     const s = this.requireLive(id)
     return s.query.reloadPlugins()
@@ -937,62 +772,14 @@ export class SessionManager {
   } {
     const s = this.require(id)
     const subId = randomUUID()
-    const queue: PermissionEvent[] = []
-    let waiter: ((v: IteratorResult<PermissionEvent>) => void) | null = null
-    let closed = false
-
-    const sub: PermissionSubscriber = {
-      id: subId,
-      push: (ev) => {
-        if (closed) return
-        if (waiter) {
-          const w = waiter
-          waiter = null
-          w({ value: ev, done: false })
-        } else {
-          queue.push(ev)
-          if (queue.length > SUBSCRIBER_QUEUE_CAP) {
-            queue.splice(0, queue.length - SUBSCRIBER_QUEUE_CAP)
-          }
-        }
-      },
-      end: () => {
-        if (closed) return
-        closed = true
-        if (waiter) {
-          const w = waiter
-          waiter = null
-          w({ value: undefined as unknown as PermissionEvent, done: true })
-        }
-      },
-    }
-    s.permissionSubscribers.set(subId, sub)
-
-    const iterable: AsyncIterable<PermissionEvent> = {
-      [Symbol.asyncIterator]() {
-        return {
-          next(): Promise<IteratorResult<PermissionEvent>> {
-            if (queue.length) {
-              return Promise.resolve({ value: queue.shift()!, done: false })
-            }
-            if (closed) {
-              return Promise.resolve({ value: undefined as unknown as PermissionEvent, done: true })
-            }
-            return new Promise((r) => {
-              waiter = r
-            })
-          },
-          return: (): Promise<IteratorResult<PermissionEvent>> => {
-            sub.end()
-            s.permissionSubscribers.delete(subId)
-            return Promise.resolve({ value: undefined as unknown as PermissionEvent, done: true })
-          },
-        }
-      },
-    }
+    const sub = createAsyncSubscription<PermissionEvent>(() => {
+      s.permissionSubscribers.delete(subId)
+    })
+    const permSub: PermissionSubscriber = { id: subId, push: sub.push, end: sub.end }
+    s.permissionSubscribers.set(subId, permSub)
 
     return {
-      iterable,
+      iterable: sub.iterable,
       snapshot: Array.from(s.pending.values()).map(toSnapshot),
       unsubscribe: () => {
         sub.end()
@@ -1038,71 +825,23 @@ export class SessionManager {
   subscribe(id: string): { iterable: AsyncIterable<SDKMessage>; history: SDKMessage[]; unsubscribe: () => void } {
     const s = this.require(id)
     const subId = randomUUID()
-    const queue: SDKMessage[] = []
-    let waiter: ((v: IteratorResult<SDKMessage>) => void) | null = null
-    let closed = false
-
-    const sub: Subscriber = {
+    const sub = createAsyncSubscription<SDKMessage>(() => {
+      s.subscribers.delete(subId)
+    })
+    const sdkSub: Subscriber = {
       id: subId,
-      push: (msg) => {
-        if (closed) return
-        if (waiter) {
-          const w = waiter
-          waiter = null
-          w({ value: msg, done: false })
-        } else {
-          queue.push(msg)
-          if (queue.length > SUBSCRIBER_QUEUE_CAP) {
-            queue.splice(0, queue.length - SUBSCRIBER_QUEUE_CAP)
-          }
-        }
-      },
+      push: sub.push,
       // Named-event channel (e.g. context_usage) isn't wired into this
       // iterable-based path yet — the routes layer will want to read
       // such events directly. Stubbed to satisfy the Subscriber type.
-      pushEvent: () => {
-        /* intentionally empty */
-      },
-      end: () => {
-        if (closed) return
-        closed = true
-        if (waiter) {
-          const w = waiter
-          waiter = null
-          w({ value: undefined as unknown as SDKMessage, done: true })
-        }
-      },
-      get closed() {
-        return closed
-      },
+      pushEvent: () => { /* intentionally empty */ },
+      end: sub.end,
+      get closed() { return sub.closed },
     }
-    s.subscribers.set(subId, sub)
-
-    const iterable: AsyncIterable<SDKMessage> = {
-      [Symbol.asyncIterator]() {
-        return {
-          next(): Promise<IteratorResult<SDKMessage>> {
-            if (queue.length) {
-              return Promise.resolve({ value: queue.shift()!, done: false })
-            }
-            if (closed) {
-              return Promise.resolve({ value: undefined as unknown as SDKMessage, done: true })
-            }
-            return new Promise((r) => {
-              waiter = r
-            })
-          },
-          return: (): Promise<IteratorResult<SDKMessage>> => {
-            sub.end()
-            s.subscribers.delete(subId)
-            return Promise.resolve({ value: undefined as unknown as SDKMessage, done: true })
-          },
-        }
-      },
-    }
+    s.subscribers.set(subId, sdkSub)
 
     return {
-      iterable,
+      iterable: sub.iterable,
       history: s.history.slice(),
       unsubscribe: () => {
         sub.end()
@@ -1152,19 +891,32 @@ export class SessionManager {
     if (opts.terminate) s.terminated = true
     s.running = false
     s.input.end()
+    // When terminating (explicit delete or graceful shutdown), await the
+    // pump so the SDK subprocess has time to exit cleanly. On idle GC we
+    // skip the await — the pump will finish on its own and the session
+    // map entry is removed immediately to free memory.
+    if (opts.terminate) {
+      try {
+        await Promise.race([
+          s.pumpTask,
+          new Promise<void>((r) => setTimeout(r, 1000)),
+        ])
+      } catch { /* pump swallows errors internally */ }
+    }
     this.denyPendingPermissions(s)
     for (const sub of s.subscribers.values()) sub.end()
     s.subscribers.clear()
     for (const sub of s.permissionSubscribers.values()) sub.end()
     s.permissionSubscribers.clear()
     s.contextUsagePushable.end()
-    // Let the pump exit on its own (the iterable is now drained). We don't
-    // await it indefinitely — the SDK occasionally holds connections open.
     this.sessions.delete(id)
     invalidateRecapCache(id)
-    // Persist the final state (terminated flag, messageCount, etc.) before
-    // dropping the in-memory struct.
-    this.persist(s)
+    // Persist the final state (terminated flag, messageCount, etc.) to
+    // disk without broadcasting an `update` — the session is already
+    // removed from the live map, so an update event would be misleading.
+    // For idle GC the client sees the dormant entry on next list();
+    // for delete() the caller broadcasts 'removed' separately.
+    this.writeStore(s)
   }
 
   /** List sessions: everything currently live + everything in the store
@@ -1210,10 +962,23 @@ export class SessionManager {
     for (const sub of this.globalSubscribers.values()) sub.end()
     this.globalSubscribers.clear()
     const ids = Array.from(this.sessions.keys())
+    // Collect pump tasks before unload removes sessions from the map.
+    const pumpTasks = ids
+      .map((id) => this.sessions.get(id)?.pumpTask)
+      .filter(Boolean) as Promise<void>[]
     // Unload without terminating: the user may have exited cleanly and
     // will want to resume on next launch. Only Query-ended sessions stay
     // terminated (that flag was already set by the pump's finally block).
     await Promise.all(ids.map((id) => this.unload(id)))
+    // Await remaining pump tasks so SDK subprocesses exit cleanly.
+    // unload() without terminate doesn't await the pump (GC speed), but
+    // on shutdown we want a clean exit — give each pump up to 5 s.
+    if (pumpTasks.length > 0) {
+      await Promise.race([
+        Promise.allSettled(pumpTasks),
+        new Promise((r) => setTimeout(r, 5000)),
+      ])
+    }
     await this.store?.flush()
   }
 
@@ -1285,86 +1050,12 @@ export class SessionManager {
   }
 
   private async pump(session: Session): Promise<void> {
-    try {
-      let msgCount = 0
-      for await (const msg of session.query) {
-        session.lastActivityAt = Date.now()
-        session.history.push(msg)
-        if (session.history.length > this.historyCap) {
-          session.history.splice(0, session.history.length - this.historyCap)
-        }
-        for (const sub of session.subscribers.values()) sub.push(msg)
-        // Fire a non-blocking context-usage fetch every 10 messages AND
-        // on every `result` so the client always has a fresh snapshot at
-        // turn boundaries (the count may not land on a multiple of 10).
-        if (
-          (++msgCount % 10 === 0 || msg.type === 'result') &&
-          session.subscribers.size > 0
-        ) {
-          void session.query.getContextUsage().then(
-            (usage) => session.contextUsagePushable.push(usage),
-            () => { /* ignore — session may have ended between fire and resolve */ },
-          )
-        }
-        // `result` marks a completed turn. Reset pendingTurns to 0 (each
-        // result represents exactly one completed turn). If the user has
-        // already queued another message via send(), pendingTurns will be
-        // bumped back to 1 there. We don't inflate the counter to match
-        // the number of queued sends — the SDK may merge them — so a
-        // simple 0/1 flag prevents the "stuck working" bug.
-        if (msg.type === 'result') {
-          session.pendingTurns = 0
-          session.workingSince = undefined
-          session.lastTurnAt = Date.now()
-          this.persist(session)
-        }
-      }
-    } catch (err) {
-      session.error = err instanceof Error ? err.message : String(err)
-      // Log with full context — the message alone often omits the stack
-      // frame that points at the real culprit (e.g. missing API key,
-      // model name typo, CLI subprocess failed to spawn). Without this
-      // the frontend just shows a generic "err" badge with no clue.
-      console.error(`[session ${session.id}] pump error:`, err)
-      // Broadcast a synthetic error message so subscribers know what happened.
-      const synthetic: SDKMessage = {
-        type: 'system',
-        subtype: 'error',
-        error: session.error,
-        uuid: randomUUID(),
-        session_id: session.id,
-      } as unknown as SDKMessage
-      for (const sub of session.subscribers.values()) sub.push(synthetic)
-    } finally {
-      // Wrap in its own try/catch so a failure in cleanup (e.g.
-      // subscriber.push() throwing, persist() failing) doesn't escape
-      // as an unhandledRejection from the pumpTask promise.
-      try {
-        // If unload() already removed this session from the map (idle GC
-        // or graceful shutdown), it has already persisted the correct
-        // state. Overwriting here would stamp terminated=true, which
-        // prevents the user from resuming the session later. Skip.
-        if (!this.sessions.has(session.id)) return
-
-        session.running = false
-        session.terminated = true
-        // Reset pending turns so the UI doesn't stay stuck in "working"
-        // when the SDK merged queued messages into fewer turns than were
-        // sent, or the session ended before emitting a result for every
-        // queued turn.
-        session.pendingTurns = 0
-        session.workingSince = undefined
-        this.denyPendingPermissions(session)
-        for (const sub of session.subscribers.values()) sub.end()
-        session.subscribers.clear()
-        session.contextUsagePushable.end()
-        // Persist the terminal state so the UI shows the transcript as
-        // "ended" after a reload, and resume() can refuse to re-spawn it.
-        this.persist(session)
-      } catch (cleanupErr) {
-        console.error(`[session ${session.id}] pump cleanup error:`, cleanupErr)
-      }
-    }
+    return pumpSession(session, {
+      historyCap: this.historyCap,
+      persist: (s) => this.persist(s),
+      denyPendingPermissions: (s) => this.denyPendingPermissions(s),
+      isLive: (id) => this.sessions.has(id),
+    })
   }
 
   /** Idle GC: drop in-memory Query for sessions nobody is watching and
@@ -1382,102 +1073,3 @@ export class SessionManager {
   }
 }
 
-export class HttpError extends Error {
-  constructor(public status: number, message: string) {
-    super(message)
-  }
-}
-
-/** Strip the non-serializable fields (resolve/signal) before JSON. */
-function toSnapshot(p: PendingPermission): PermissionRequestSnapshot {
-  if (p.kind === 'question') {
-    return {
-      kind: 'question',
-      id: p.id,
-      toolName: p.toolName,
-      questions: p.questions,
-      toolUseID: p.toolUseID,
-      createdAt: p.createdAt,
-    }
-  }
-  return {
-    kind: 'permission',
-    id: p.id,
-    toolName: p.toolName,
-    input: p.input,
-    title: p.title,
-    displayName: p.displayName,
-    description: p.description,
-    suggestions: p.suggestions,
-    toolUseID: p.toolUseID,
-    createdAt: p.createdAt,
-  }
-}
-
-/** Defensive parse of AskUserQuestion's `input.questions` array. Drops
- *  malformed entries rather than throwing — we'd rather forward a
- *  slimmed-down list than abort the tool call. */
-function sanitizeQuestions(input: Record<string, unknown>): QuestionSpec[] {
-  const raw = input?.questions
-  if (!Array.isArray(raw)) return []
-  const out: QuestionSpec[] = []
-  for (const q of raw) {
-    if (!q || typeof q !== 'object') continue
-    const obj = q as Record<string, unknown>
-    if (typeof obj.question !== 'string') continue
-    if (!Array.isArray(obj.options)) continue
-    const options: QuestionSpec['options'] = []
-    for (const opt of obj.options) {
-      if (!opt || typeof opt !== 'object') continue
-      const o = opt as Record<string, unknown>
-      if (typeof o.label !== 'string') continue
-      options.push({
-        label: o.label,
-        description: typeof o.description === 'string' ? o.description : undefined,
-        preview: typeof o.preview === 'string' ? o.preview : undefined,
-      })
-    }
-    if (options.length === 0) continue
-    out.push({
-      question: obj.question,
-      header: typeof obj.header === 'string' ? obj.header : undefined,
-      multiSelect: obj.multiSelect === true,
-      options,
-    })
-  }
-  return out
-}
-
-/** Build the tool_result payload the model will see. We use JSON because
- *  it's unambiguous and the model parses it reliably; plain text also
- *  works but is ambiguous when answers contain commas or colons.
- *
- *  Null entries in `answers` mean the user skipped that question — we
- *  encode that as `answer: null` with a note, so the model can decide
- *  how to proceed (often: continue with a default).
- */
-function formatQuestionAnswers(questions: QuestionSpec[], answers: QuestionAnswer[]): string {
-  const payload = {
-    note: 'User answers from AskUserQuestion (single-select is a string, multi-select is an array, null means skipped).',
-    answers: questions.map((q, i) => ({
-      question: q.question,
-      answer: answers[i] ?? null,
-    })),
-  }
-  return JSON.stringify(payload)
-}
-
-/**
- * Rewrite SDK-provided suggestions to target the current session scope.
- *
- * The SDK hands us `suggestions: PermissionUpdate[]` with whatever destination
- * it picked (often 'userSettings' or 'projectSettings'). For session-scoped
- * allow-always, we force every addRules/setMode/addDirectories update to
- * `destination: 'session'`, so the change only lives as long as this Query.
- */
-function promoteToSession(
-  suggestions: PermissionUpdate[] | undefined,
-): PermissionUpdate[] | undefined {
-  if (!suggestions?.length) return undefined
-  return suggestions.map((s) => ({ ...s, destination: 'session' as const }))
-}
