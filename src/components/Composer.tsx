@@ -17,6 +17,9 @@ interface Props {
   setInput: (v: string) => void
   sending: boolean
   disabled: boolean
+  /** True when the session has permanently ended (terminated). Shows a
+   *  "session ended" message instead of the disabled textarea. */
+  terminated?: boolean
   /** True when the session has no cwd — attach button greyed with a tooltip. */
   canAttach: boolean
 
@@ -49,6 +52,7 @@ export function Composer({
   setInput,
   sending,
   disabled,
+  terminated,
   canAttach,
   attachments,
   uploading,
@@ -139,6 +143,14 @@ export function Composer({
   const openFilePicker = () => fileInputRef.current?.click()
 
   const canSend = !disabled && !sending && (input.trim() !== '' || attachments.length > 0)
+
+  if (terminated) {
+    return (
+      <div className="session-ended">
+        This session has ended. Create a new session to continue.
+      </div>
+    )
+  }
 
   return (
     <div

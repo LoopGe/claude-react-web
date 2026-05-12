@@ -118,12 +118,16 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
       e.preventDefault()
       filtered[selectedIndex]?.action()
       onClose()
+    } else if (e.key === 'Tab') {
+      // Focus trap: keep Tab inside the palette.
+      e.preventDefault()
+      inputRef.current?.focus()
     }
   }
 
   return (
     <div className="palette-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
-      <div className="palette" role="dialog" aria-label="Command palette" onKeyDown={handleKeyDown}>
+      <div className="palette" role="dialog" aria-modal="true" aria-label="Command palette" onKeyDown={handleKeyDown}>
         <input
           ref={inputRef}
           className="palette-input"

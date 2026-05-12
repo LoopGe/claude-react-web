@@ -79,11 +79,14 @@ function CodeBlock({ lang, children, ...props }: { lang?: string } & ComponentPr
 
   const handleCopy = () => {
     const text = preRef.current?.textContent ?? ''
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true)
-      clearTimeout(timerRef.current)
-      timerRef.current = setTimeout(() => setCopied(false), 2000)
-    })
+    navigator.clipboard?.writeText(text).then(
+      () => {
+        setCopied(true)
+        clearTimeout(timerRef.current)
+        timerRef.current = setTimeout(() => setCopied(false), 2000)
+      },
+      (err: unknown) => { console.warn('clipboard write failed:', err) },
+    )
   }
 
   return (

@@ -10,7 +10,8 @@
  *  meaningfully shorter than "/a/b". */
 export function shortenPath(p: string): string {
   if (p.length <= 36) return p
-  const parts = p.split('/')
+  const parts = p.split(/[/\\]/)
   if (parts.length <= 3) return p
-  return `…/${parts.slice(-2).join('/')}`
+  const sep = p.includes('\\') ? '\\' : '/'
+  return `…${sep}${parts.slice(-2).join(sep)}`
 }

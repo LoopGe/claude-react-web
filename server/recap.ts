@@ -39,6 +39,11 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>()
 const CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
+const CACHE_MAX_ENTRIES = 200
+
+/** In-flight dedup map: if two requests for the same session arrive
+ *  concurrently, the second one reuses the first one's promise. */
+const inflight = new Map<string, Promise<RecapResult>>()
 
 export function invalidateRecapCache(sessionId: string): void {
   cache.delete(sessionId)
@@ -80,8 +85,7 @@ function extractHistory(messages: SDKMessage[]): { lines: ExtractedLine[]; stats
   let userTurns = 0
   let assistantTurns = 0
   let totalCost = 0
-  let firstTimestamp: number | undefined
-  let lastTimestamp: number | undefined
+  let totalDuration = 0
 
   for (const msg of messages) {
     const m = msg as Record<string, unknown>
@@ -110,15 +114,16 @@ function extractHistory(messages: SDKMessage[]): { lines: ExtractedLine[]; stats
         lines.push({ role: 'Assistant', text: truncate(text.trim(), 500) })
       }
     } else if (type === 'result') {
+      // SDK's total_cost_usd is a *cumulative* value, not per-turn.
+      // Always overwrite instead of adding — the last result carries
+      // the final running total.
       const cost = (m as { total_cost_usd?: number }).total_cost_usd
-      if (typeof cost === 'number') totalCost += cost
-    }
+      if (typeof cost === 'number') totalCost = cost
 
-    // Track timestamps if available.
-    const ts = (m as { timestamp?: number }).timestamp
-    if (typeof ts === 'number') {
-      if (firstTimestamp === undefined) firstTimestamp = ts
-      lastTimestamp = ts
+      // SDK result messages carry a duration_ms field indicating how
+      // long the turn took. Accumulate across all turns.
+      const dur = (m as { duration_ms?: number }).duration_ms
+      if (typeof dur === 'number') totalDuration += dur
     }
   }
 
@@ -127,7 +132,7 @@ function extractHistory(messages: SDKMessage[]): { lines: ExtractedLine[]; stats
     userTurns,
     assistantTurns,
     totalCostUsd: Math.round(totalCost * 10000) / 10000,
-    durationMs: firstTimestamp !== undefined && lastTimestamp !== undefined ? lastTimestamp - firstTimestamp : 0,
+    durationMs: Math.round(totalDuration),
     toolsUsed: [...toolSet].sort(),
   }
   return { lines, stats }
@@ -179,7 +184,7 @@ async function callAnthropic(transcript: string): Promise<string> {
     },
     body: JSON.stringify({
       model: RECAP_MODEL,
-      max_tokens: 1024,
+      max_tokens: 300,
       temperature: 0.3,
       system: SYSTEM_PROMPT,
       messages: [{ role: 'user', content: transcript }],
@@ -215,6 +220,22 @@ function buildFallbackSummary(lines: ExtractedLine[], stats: RecapStats): string
 // ── Public API ─────────────────────────────────────────────────────
 
 export async function generateRecap(messages: SDKMessage[], sessionId: string): Promise<RecapResult> {
+  // Concurrent dedup: if the same session is already generating a recap
+  // (e.g. user double-clicks refresh, or two tabs hit simultaneously),
+  // reuse the in-flight promise.
+  const existing = inflight.get(sessionId)
+  if (existing) return existing
+
+  const promise = doGenerateRecap(messages, sessionId)
+  inflight.set(sessionId, promise)
+  try {
+    return await promise
+  } finally {
+    inflight.delete(sessionId)
+  }
+}
+
+async function doGenerateRecap(messages: SDKMessage[], sessionId: string): Promise<RecapResult> {
   const { lines, stats } = extractHistory(messages)
 
   // Empty session — no work to do.
@@ -225,8 +246,13 @@ export async function generateRecap(messages: SDKMessage[], sessionId: string): 
   // Check cache.
   const lastMsg = messages[messages.length - 1] as Record<string, unknown> | undefined
   const lastUuid = (lastMsg?.uuid as string) ?? ''
+  // If the last message has no UUID (SDK didn't provide one), we can't
+  // trust the cache to be valid — any two messages of the same length
+  // would look identical. Skip the cache in that case.
+  const canTrustCache = !!lastUuid
   const cached = cache.get(sessionId)
   if (
+    canTrustCache &&
     cached &&
     cached.messageCount === messages.length &&
     cached.lastMessageUuid === lastUuid &&
@@ -244,8 +270,9 @@ export async function generateRecap(messages: SDKMessage[], sessionId: string): 
     try {
       const transcript = buildTranscript(lines)
       summary = await callAnthropic(transcript)
-    } catch {
-      // API call failed — degrade to fallback.
+    } catch (err) {
+      // API call failed — degrade to fallback, but log so we can debug.
+      console.warn('[recap] Anthropic API call failed, using fallback:', (err as Error).message)
       summary = buildFallbackSummary(lines, stats)
       fallback = true
     }
@@ -256,5 +283,10 @@ export async function generateRecap(messages: SDKMessage[], sessionId: string): 
 
   const generatedAt = Date.now()
   cache.set(sessionId, { summary, stats, messageCount: messages.length, lastMessageUuid: lastUuid, generatedAt })
+  // LRU eviction: drop oldest entries when the cache exceeds the cap.
+  if (cache.size > CACHE_MAX_ENTRIES) {
+    const oldest = cache.keys().next().value
+    if (oldest) cache.delete(oldest)
+  }
   return { summary, stats, cached: false, generatedAt, fallback }
 }

@@ -60,45 +60,51 @@ export function useSessionRecap(sessionId: string, focused: boolean): SessionRec
   const [error, setError] = useState<string | null>(null)
   const [visible, setVisible] = useState(false)
   const fetchedRef = useRef(false)
+  const refreshAbortRef = useRef<AbortController | null>(null)
 
   // Auto-fetch on mount if the session is stale.
   useEffect(() => {
     const map = readLastViewed()
     const lastViewed = map[sessionId] ?? 0
-    const isStale = Date.now() - lastViewed > STALE_THRESHOLD_MS
+    const neverViewed = lastViewed === 0
+    const isStale = !neverViewed && (Date.now() - lastViewed > STALE_THRESHOLD_MS)
 
     if (!isStale) {
-      // Not stale — just bump the view timestamp.
+      // First visit (neverViewed) or recently viewed — just record
+      // the visit timestamp. Only trigger a fetch when we've seen
+      // this session before AND enough time has passed.
       writeLastViewed(sessionId, Date.now())
       return
     }
     if (fetchedRef.current) return
     fetchedRef.current = true
+
+    const controller = new AbortController()
     setVisible(true)
     setLoading(true)
     setError(null)
 
     api
-      .post<RecapResponse>(`/sessions/${sessionId}/recap`)
+      .post<RecapResponse>(`/sessions/${sessionId}/recap`, undefined, { signal: controller.signal })
       .then((data) => {
         setRecap(data)
         // Only update the timestamp AFTER a successful fetch. If the
-        // request fails (e.g. network error, dormant session), leaving
-        // the old timestamp ensures we'll retry on the next mount.
+        // request fails (e.g. network error), leaving the old
+        // timestamp ensures we'll retry on the next mount.
         writeLastViewed(sessionId, Date.now())
       })
       .catch((err: unknown) => {
+        if (controller.signal.aborted) return // unmounted — ignore
         const msg = err instanceof Error ? err.message : String(err)
-        // 503 = dormant session — show a muted message instead of hiding.
-        if (msg.includes('503') || msg.toLowerCase().includes('dormant')) {
-          setRecap({ summary: 'Resume this session to see a recap.', stats: emptyStats, cached: false, generatedAt: Date.now(), fallback: true })
-          writeLastViewed(sessionId, Date.now())
-        } else {
-          setError(msg)
-          setVisible(false)
-        }
+        console.warn('[recap] fetch failed:', msg)
+        // Keep banner visible with error state — don't silently hide.
+        setError(msg)
       })
-      .finally(() => setLoading(false))
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false)
+      })
+
+    return () => controller.abort()
   }, [sessionId])
 
   // Update last-viewed timestamp when focus changes.
@@ -109,24 +115,26 @@ export function useSessionRecap(sessionId: string, focused: boolean): SessionRec
   const dismiss = useCallback(() => setVisible(false), [])
 
   const refresh = useCallback(() => {
+    // Abort any in-flight refresh so rapid clicks don't stack.
+    refreshAbortRef.current?.abort()
+    const controller = new AbortController()
+    refreshAbortRef.current = controller
     setVisible(true)
     setLoading(true)
     setError(null)
     api
-      .post<RecapResponse>(`/sessions/${sessionId}/recap`)
+      .post<RecapResponse>(`/sessions/${sessionId}/recap`, undefined, { signal: controller.signal })
       .then((data) => setRecap(data))
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setLoading(false))
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return
+        const msg = err instanceof Error ? err.message : String(err)
+        console.warn('[recap] refresh failed:', msg)
+        setError(msg)
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false)
+      })
   }, [sessionId])
 
   return { recap, loading, error, visible, dismiss, refresh }
-}
-
-const emptyStats: RecapStats = {
-  messageCount: 0,
-  userTurns: 0,
-  assistantTurns: 0,
-  totalCostUsd: 0,
-  durationMs: 0,
-  toolsUsed: [],
 }

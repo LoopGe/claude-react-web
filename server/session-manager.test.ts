@@ -195,17 +195,15 @@ describe('SessionManager', () => {
     expect(after.lastTurnAt!).toBeGreaterThanOrEqual(before)
   })
 
-  it('pendingTurns tracks multiple sends before any result', async () => {
+  it('pendingTurns caps at 1 — result always clears working', async () => {
     const info = sm.create({})
     sm.send(info.id, 'first')
     sm.send(info.id, 'second')
+    // pendingTurns is capped at 1, not inflated to 2.
     expect(sm.get(info.id).working).toBe(true)
 
-    mockHandles[0].emit({ type: 'result' })
-    await tick()
-    // Still working — one more turn to clear.
-    expect(sm.get(info.id).working).toBe(true)
-
+    // One result clears working — the SDK may merge queued messages into
+    // a single turn, so we can't assume one result per send.
     mockHandles[0].emit({ type: 'result' })
     await tick()
     expect(sm.get(info.id).working).toBe(false)
@@ -315,6 +313,35 @@ describe('SessionManager', () => {
     expect(fromList.running).toBe(false)
     await store.flush()
     expect(store.get(info.id)).toBeDefined()
+  })
+
+  it('GC unload preserves terminated=false so session can be resumed', async () => {
+    const info = sm.create({ title: 'resumable' })
+    await tick()
+    // Age the session.
+    // @ts-expect-error
+    const internalSessions = sm.sessions as Map<string, { lastActivityAt: number }>
+    const internal = internalSessions.get(info.id)!
+    internal.lastActivityAt = Date.now() - 10_000
+
+    // @ts-expect-error — invoke gc() directly.
+    sm.gc()
+    // Let the pump (which sees input ended) run its finally block.
+    await tick()
+    await tick()
+
+    // The key assertion: persisted state should NOT be terminated,
+    // so resume() can re-spawn the session.
+    await store.flush()
+    const meta = store.get(info.id)
+    expect(meta).toBeDefined()
+    expect(meta!.terminated).toBe(false)
+
+    // resume() should succeed and create a new Query for the same id.
+    const resumed = sm.resume(info.id)
+    expect(resumed.id).toBe(info.id)
+    expect(mockHandles).toHaveLength(2)
+    expect(mockHandles[1].options.resume).toBe(info.id)
   })
 
   it('resume() spawns a new Query with options.resume set to the original id', async () => {

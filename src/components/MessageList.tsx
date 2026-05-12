@@ -13,6 +13,7 @@ import { Markdown } from './Markdown'
 import { ToolUseBlock } from './ToolUseBlock'
 import type { SdkMessage } from '../types'
 import { formatTokens } from '../utils/format'
+import { useLocalStorage } from '../hooks/useLocalStorage'
 
 /** A currently-running subagent spawned by the Agent or Task tool. */
 export interface ActiveSubagent {
@@ -28,6 +29,9 @@ interface Props {
    *  rendered list. Errors (`subtype === 'error'`) are always shown
    *  regardless — those carry actual failure info users need to see. */
   showSystemEvents?: boolean
+  /** Ref set to `true` when the user fires interrupt; the next `result`
+   *  message renders as "interrupted" and resets it to `false`. */
+  pendingInterruptRef?: React.RefObject<boolean>
 }
 
 /** An item in the Virtuoso data array. Pre-computing isCompactSummary
@@ -37,7 +41,7 @@ interface RenderableItem {
   isCompactSummary: boolean
 }
 
-export function MessageList({ messages, showSystemEvents = false }: Props) {
+export function MessageList({ messages, showSystemEvents = false, pendingInterruptRef }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -54,7 +58,11 @@ export function MessageList({ messages, showSystemEvents = false }: Props) {
   // for FOLLOW_DEBOUNCE_MS do we actually stop following.
   const shouldFollowRef = useRef(true)
   const followTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const FOLLOW_DEBOUNCE_MS = 150
+  const [followDebounceRaw] = useLocalStorage<number>(
+    'claude-react-web:follow-debounce-ms',
+    150,
+  )
+  const FOLLOW_DEBOUNCE_MS = Math.max(50, Math.min(500, Math.round(followDebounceRaw)))
   /** How many new messages have arrived since the user last saw the
    *  bottom. Badge number on the jump-to-bottom button. */
   const [unseenCount, setUnseenCount] = useState(0)
@@ -76,12 +84,18 @@ export function MessageList({ messages, showSystemEvents = false }: Props) {
     })
   }, [messages, showSystemEvents])
 
-  // Track how many new items arrived so the unseen badge stays accurate.
+  // Track how many new messages arrived so the unseen badge stays accurate.
   // Virtuoso's followOutput handles the actual scrolling.
+  //
+  // IMPORTANT: we track `messages.length` (the raw SDK array) rather than
+  // `items.length` (the filtered/virtuoso-rendered list). Toggling
+  // `showSystemEvents` or a compact-boundary rearranging the filtered
+  // output changes `items.length` without any new messages arriving,
+  // which would create a spurious delta and inflate the unseen count.
   const lastCountRef = useRef(0)
   useEffect(() => {
-    const delta = items.length - lastCountRef.current
-    lastCountRef.current = items.length
+    const delta = messages.length - lastCountRef.current
+    lastCountRef.current = messages.length
     if (delta <= 0) return
     if (atBottomRef.current) {
       if (unseenCountRef.current !== 0) {
@@ -91,7 +105,7 @@ export function MessageList({ messages, showSystemEvents = false }: Props) {
     } else {
       setUnseenCount((n) => n + delta)
     }
-  }, [items])
+  }, [messages.length])
 
   // Viewport-shrink trigger: the TodoChecklist panel appears/grows below
   // the scroll container, which eats vertical space. Without this
@@ -170,7 +184,7 @@ export function MessageList({ messages, showSystemEvents = false }: Props) {
             }}
             itemContent={(_index, item) => (
               <div className="virtuoso-item-wrapper">
-                <MessageView msg={item.msg} isCompactSummary={item.isCompactSummary} />
+                <MessageView msg={item.msg} isCompactSummary={item.isCompactSummary} interruptedRef={pendingInterruptRef} />
               </div>
             )}
             alignToBottom
@@ -190,6 +204,21 @@ export function MessageList({ messages, showSystemEvents = false }: Props) {
       )}
     </div>
   )
+}
+
+async function copyToClipboard(text: string): Promise<void> {
+  try {
+    await navigator.clipboard?.writeText(text)
+  } catch {
+    // Fallback: select from a hidden textarea (Safari / HTTP).
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.cssText = 'position:fixed;opacity:0'
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+  }
 }
 
 function isRenderable(m: SdkMessage, showSystemEvents: boolean): boolean {
@@ -220,7 +249,7 @@ interface Block {
   [k: string]: unknown
 }
 
-const MessageView = memo(function MessageView({ msg, isCompactSummary }: { msg: SdkMessage; isCompactSummary?: boolean }) {
+const MessageView = memo(function MessageView({ msg, isCompactSummary, interruptedRef }: { msg: SdkMessage; isCompactSummary?: boolean; interruptedRef?: React.RefObject<boolean> }) {
   const type = msg.type
 
   if (type === 'user') {
@@ -274,6 +303,14 @@ const MessageView = memo(function MessageView({ msg, isCompactSummary }: { msg: 
     // Real user message
     return (
       <div className="msg user">
+        <button
+          className="msg-copy-btn"
+          onClick={() => void copyToClipboard(userContent ?? '')}
+          title="Copy message"
+          aria-label="Copy message"
+        >
+          📋
+        </button>
         <div className="msg-header">
           <span>you</span>
         </div>
@@ -293,8 +330,22 @@ const MessageView = memo(function MessageView({ msg, isCompactSummary }: { msg: 
     // output — without this, a subagent's `tool_use: Bash` would look
     // identical to the main model running Bash.
     const isSubagent = (msg as Record<string, unknown>).parent_tool_use_id != null
+    const assistantText = blocks
+      .filter((b) => b.type === 'text' && typeof b.text === 'string')
+      .map((b) => b.text as string)
+      .join('\n\n')
     return (
       <div className={`msg assistant${isSubagent ? ' subagent' : ''}`}>
+        {assistantText && (
+          <button
+            className="msg-copy-btn"
+            onClick={() => void copyToClipboard(assistantText)}
+            title="Copy message"
+            aria-label="Copy message"
+          >
+            📋
+          </button>
+        )}
         <div className="msg-header">
           <span>{isSubagent ? 'subagent' : 'assistant'}</span>
           {msg.error && <span style={{ color: 'var(--danger)' }}>{msg.error as string}</span>}
@@ -309,14 +360,17 @@ const MessageView = memo(function MessageView({ msg, isCompactSummary }: { msg: 
   }
 
   if (type === 'result') {
+    const isInterrupted = !!interruptedRef?.current
+    if (isInterrupted) interruptedRef!.current = false
+    const label = isInterrupted ? 'interrupted' : 'result'
     const cost = typeof msg.total_cost_usd === 'number' ? ` · $${msg.total_cost_usd.toFixed(4)}` : ''
     const dur = typeof msg.duration_ms === 'number' ? ` · ${Math.round(msg.duration_ms)}ms` : ''
     const turns =
       typeof msg.num_turns === 'number' ? ` · ${msg.num_turns} turn${msg.num_turns === 1 ? '' : 's'}` : ''
     return (
-      <div className="msg result">
+      <div className={`msg result${isInterrupted ? ' interrupted' : ''}`}>
         <div className="msg-header">
-          <span>result{turns}{dur}{cost}</span>
+          <span>{label}{turns}{dur}{cost}</span>
         </div>
       </div>
     )
@@ -535,6 +589,9 @@ function truncate(s: string, n: number): string {
 /** Scan the message list for Agent/Task tool_use calls that have no
  *  matching tool_result — those subagents are still running.
  *  Extracts a human-readable label from the tool input. */
+/** Max subagent chips shown before collapsing into "+N more". */
+const MAX_VISIBLE_SUBAGENTS = 5
+
 export function extractActiveSubagents(messages: SdkMessage[]): ActiveSubagent[] {
   // Collect all tool_use IDs that received a result.
   const resolved = new Set<string>()
@@ -573,15 +630,23 @@ export function extractActiveSubagents(messages: SdkMessage[]): ActiveSubagent[]
       active.push({ toolUseId: id, label })
     }
   }
-  return active
+  // Deduplicate by toolUseId (safety net for malformed message streams).
+  const seen = new Set<string>()
+  return active.filter((a) => {
+    if (seen.has(a.toolUseId)) return false
+    seen.add(a.toolUseId)
+    return true
+  })
 }
 
 export function WorkingBubble({
   startedAt,
   activeSubagents,
+  tokenRate,
 }: {
   startedAt?: number
   activeSubagents?: ActiveSubagent[]
+  tokenRate?: number | null
 }) {
   // Use the server-provided turn-start timestamp when available — this
   // survives component remounts (e.g. group switches). Fall back to
@@ -618,10 +683,17 @@ export function WorkingBubble({
       <span className="working-timer" aria-label={`elapsed ${formatElapsed(elapsedMs)}`}>
         {formatElapsed(elapsedMs)}
       </span>
+      {tokenRate != null && tokenRate > 0 && (
+        <span className="working-rate">
+          ⚡ {tokenRate} tok/s
+        </span>
+      )}
       {hasSubagents && (
         <span className="working-bar-sep" aria-hidden />
       )}
-      {activeSubagents?.map((a) => (
+      {/* Show at most MAX_VISIBLE_SUBAGENTS chips to avoid overcrowding;
+          a "+N more" badge shows the remainder count. */}
+      {activeSubagents?.slice(0, MAX_VISIBLE_SUBAGENTS).map((a) => (
         <span key={a.toolUseId} className="subagent-chip" title={a.label}>
           <span className="subagent-chip-dots" aria-hidden>
             <span />
@@ -630,6 +702,11 @@ export function WorkingBubble({
           <span className="subagent-chip-label">{a.label}</span>
         </span>
       ))}
+      {activeSubagents && activeSubagents.length > MAX_VISIBLE_SUBAGENTS && (
+        <span className="subagent-overflow">
+          +{activeSubagents.length - MAX_VISIBLE_SUBAGENTS} more
+        </span>
+      )}
     </div>
   )
 }

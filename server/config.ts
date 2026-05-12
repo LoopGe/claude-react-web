@@ -13,6 +13,15 @@ interface ConfigFile {
   modelList?: string[]
   /** Lightweight model used for session recap generation. */
   recapModel?: string
+  /** Maximum file upload size in bytes (default 25 MB). */
+  maxUploadBytes?: number
+  /** Session idle timeout in milliseconds (default 30 min). */
+  sessionIdleMs?: number
+  /** History ring cap — max messages kept in memory per session. */
+  historyCap?: number
+  /** Context-window size presets shown in the new-session dialog.
+   *  Each entry is { value: number, label: string, beta?: string }. */
+  contextSteps?: Array<{ value: number; label: string; beta?: string }>
 }
 
 /** Available models for new sessions. The first entry is the default.
@@ -30,14 +39,32 @@ export let DEFAULT_MODEL = MODEL_LIST[0]
  *  Overridden by `recapModel` in config.json. */
 export let RECAP_MODEL = 'claude-haiku-3-5-20241022'
 
-/** Maximum file upload size in bytes (default 25 MB). */
-export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+/** Maximum file upload size in bytes (default 25 MB).
+ *  Overridden by `maxUploadBytes` in config.json. */
+export let MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
-/** Session idle timeout in milliseconds (default 30 min). */
-export const SESSION_IDLE_MS = 30 * 60 * 1000
+/** Session idle timeout in milliseconds (default 30 min).
+ *  Overridden by `sessionIdleMs` in config.json. */
+export let SESSION_IDLE_MS = 30 * 60 * 1000
 
-/** History ring cap — max messages kept in memory per session. */
-export const HISTORY_CAP = 500
+/** History ring cap — max messages kept in memory per session.
+ *  Overridden by `historyCap` in config.json. */
+export let HISTORY_CAP = 500
+
+/** Context-window size presets for the new-session dialog.
+ *  Overridden by `contextSteps` in config.json. */
+export interface ContextStep {
+  value: number
+  label: string
+  beta?: string
+}
+export let CONTEXT_STEPS: ContextStep[] = [
+  { value: 100_000,   label: '100k' },
+  { value: 200_000,   label: '200k' },
+  { value: 256_000,   label: '256k' },
+  { value: 512_000,   label: '512k' },
+  { value: 1_000_000, label: '1M', beta: 'context-1m-2025-08-07' },
+]
 
 /**
  * Load config from `<stateDir>/config.json`, updating the exported
@@ -79,5 +106,40 @@ export async function loadConfig(stateDir: string): Promise<void> {
 
   if (typeof cfg.recapModel === 'string' && cfg.recapModel.trim()) {
     RECAP_MODEL = cfg.recapModel.trim()
+  }
+
+  if (typeof cfg.maxUploadBytes === 'number' && cfg.maxUploadBytes > 0) {
+    MAX_UPLOAD_BYTES = Math.round(cfg.maxUploadBytes)
+    console.log(`[config] maxUploadBytes: ${MAX_UPLOAD_BYTES}`)
+  }
+
+  if (typeof cfg.sessionIdleMs === 'number' && cfg.sessionIdleMs > 0) {
+    SESSION_IDLE_MS = Math.round(cfg.sessionIdleMs)
+    console.log(`[config] sessionIdleMs: ${SESSION_IDLE_MS}`)
+  }
+
+  if (typeof cfg.historyCap === 'number' && cfg.historyCap > 0) {
+    HISTORY_CAP = Math.round(cfg.historyCap)
+    console.log(`[config] historyCap: ${HISTORY_CAP}`)
+  }
+
+  if (Array.isArray(cfg.contextSteps) && cfg.contextSteps.length > 0) {
+    const valid = cfg.contextSteps.filter(
+      (s) =>
+        typeof s === 'object' &&
+        s !== null &&
+        typeof s.value === 'number' &&
+        s.value > 0 &&
+        typeof s.label === 'string' &&
+        s.label.trim(),
+    )
+    if (valid.length > 0) {
+      CONTEXT_STEPS = valid.map((s) => ({
+        value: Math.round(s.value),
+        label: s.label.trim(),
+        beta: typeof s.beta === 'string' && s.beta.trim() ? s.beta.trim() : undefined,
+      }))
+      console.log(`[config] loaded ${CONTEXT_STEPS.length} context step(s) from ${file}`)
+    }
   }
 }

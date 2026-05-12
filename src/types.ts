@@ -38,9 +38,10 @@ export interface SessionInfo {
 }
 
 /** A named collection of sessions for quick group switching. Each session
- *  belongs to exactly one group (exclusive membership). Each group holds
- *  at most 3 sessions. Order of sessionIds determines activation priority
- *  (first MAX_OPEN are opened). */
+ *  belongs to at most one group (exclusive membership). Sessions not in any
+ *  group are "ungrouped" and appear in a separate sidebar section. Each
+ *  group holds at most `maxOpen` sessions. Order of sessionIds determines
+ *  activation priority (first MAX_OPEN are opened). */
 export interface SessionGroup {
   id: string
   name: string
@@ -53,6 +54,7 @@ export interface SessionGroup {
 export type SidebarSection =
   | { kind: 'pinned'; sessions: SessionInfo[] }
   | { kind: 'group'; group: SessionGroup; sessions: SessionInfo[] }
+  | { kind: 'ungrouped'; sessions: SessionInfo[] }
 
 /** Shape of Options we expose in the "new session" form. */
 export interface NewSessionForm {
@@ -74,13 +76,8 @@ export interface NewSessionForm {
   thinking?: 'adaptive' | 'enabled' | 'disabled' | { type: 'enabled'; budgetTokens: number }
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   tools?: string[]
-  promptSuggestions?: boolean
   // Advanced (JSON blobs — rendered as <textarea> and parsed on submit)
   mcpServers?: unknown
-  plugins?: unknown
-  sandbox?: unknown
-  skills?: string[] | 'all'
-  includePartialMessages?: boolean
   /** Frontend-only: chosen accent hex (from theme ACCENT_COLORS). Not
    *  sent to the server — stored in localStorage keyed by the returned
    *  session id once creation succeeds. */

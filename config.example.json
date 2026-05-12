@@ -1,0 +1,18 @@
+{
+  "modelList": [
+    "anthropic/claude-sonnet-4-20250514",
+    "claude-opus-4-20250514",
+    "claude-haiku-3-5-20241022"
+  ],
+  "recapModel": "claude-haiku-3-5-20241022",
+  "maxUploadBytes": 26214400,
+  "sessionIdleMs": 1800000,
+  "historyCap": 500,
+  "contextSteps": [
+    { "value": 100000,   "label": "100k" },
+    { "value": 200000,   "label": "200k" },
+    { "value": 256000,   "label": "256k" },
+    { "value": 512000,   "label": "512k" },
+    { "value": 1000000,  "label": "1M", "beta": "context-1m-2025-08-07" }
+  ]
+}

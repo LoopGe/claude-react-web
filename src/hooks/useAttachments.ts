@@ -67,8 +67,17 @@ export function useAttachments(sessionId: string, sessionCwd: string | undefined
   )
 
   const removeAttachment = useCallback((path: string) => {
-    setAttachments((prev) => prev.filter((a) => a.path !== path))
-  }, [])
+    setAttachments((prev) => {
+      const target = prev.find((a) => a.path === path)
+      if (target) {
+        // Fire-and-forget: delete the file from disk (best-effort).
+        fetch(`/api/sessions/${sessionId}/uploads/${encodeURIComponent(target.name)}`, {
+          method: 'DELETE',
+        }).catch(() => {})
+      }
+      return prev.filter((a) => a.path !== path)
+    })
+  }, [sessionId])
 
   const clear = useCallback(() => {
     setAttachments([])

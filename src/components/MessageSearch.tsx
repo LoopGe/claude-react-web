@@ -1,0 +1,107 @@
+// In-chat message search bar. Ctrl+F opens, Escape closes. Highlights
+// matches and provides prev/next navigation. Wired at the Chat-panel level.
+
+import { useCallback, useEffect, useRef, useState } from 'react'
+
+interface Props {
+  open: boolean
+  onClose: () => void
+  /** Called when the user navigates to a result. Receives the 0-based
+   *  match index so the parent can scroll MessageList to it. */
+  onNavigate: (index: number) => void
+  totalResults: number
+  onQueryChange: (query: string) => void
+}
+
+export function MessageSearch({ open, onClose, onNavigate, totalResults, onQueryChange }: Props) {
+  const [query, setQuery] = useState('')
+  const [currentIdx, setCurrentIdx] = useState(0)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  // Focus input on open.
+  useEffect(() => {
+    if (open) {
+      setQuery('')
+      setCurrentIdx(0)
+      requestAnimationFrame(() => inputRef.current?.focus())
+    }
+  }, [open])
+
+  // Escape closes.
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        onClose()
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [open, onClose])
+
+  // Push query changes up.
+  useEffect(() => {
+    onQueryChange(query)
+    setCurrentIdx(0)
+  }, [query, onQueryChange])
+
+  // Navigate results.
+  const goPrev = useCallback(() => {
+    if (totalResults === 0) return
+    const next = (currentIdx - 1 + totalResults) % totalResults
+    setCurrentIdx(next)
+    onNavigate(next)
+  }, [currentIdx, totalResults, onNavigate])
+
+  const goNext = useCallback(() => {
+    if (totalResults === 0) return
+    const next = (currentIdx + 1) % totalResults
+    setCurrentIdx(next)
+    onNavigate(next)
+  }, [currentIdx, totalResults, onNavigate])
+
+  if (!open) return null
+
+  return (
+    <div className="message-search-bar">
+      <input
+        ref={inputRef}
+        className="message-search-input"
+        type="text"
+        placeholder="Search messages…"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            e.shiftKey ? goPrev() : goNext()
+          }
+        }}
+      />
+      <span className="message-search-count">
+        {totalResults > 0 ? `${currentIdx + 1}/${totalResults}` : query ? '0 results' : ''}
+      </span>
+      <button
+        className="btn message-search-nav"
+        onClick={goPrev}
+        disabled={totalResults === 0}
+        title="Previous result (Shift+Enter)"
+      >
+        ↑
+      </button>
+      <button
+        className="btn message-search-nav"
+        onClick={goNext}
+        disabled={totalResults === 0}
+        title="Next result (Enter)"
+      >
+        ↓
+      </button>
+      <button className="btn message-search-close" onClick={onClose} title="Close (Esc)">
+        ✕
+      </button>
+    </div>
+  )
+}

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { SessionManager } from './session-manager.js'
 import { buildApiRouter } from './routes.js'
 import { buildFsRouter } from './fs-routes.js'
-import { DEFAULT_MODEL, MODEL_LIST } from './config.js'
+import { DEFAULT_MODEL, MODEL_LIST, CONTEXT_STEPS } from './config.js'
 import type { SessionStore } from './persistence.js'
 
 export interface AppOptions {
@@ -75,6 +75,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
         model: opts.defaults?.model ?? DEFAULT_MODEL,
       },
       models: MODEL_LIST,
+      contextSteps: CONTEXT_STEPS,
     }),
   )
   app.route('/api', apiRouter)

@@ -8,7 +8,7 @@
 // new rules flag as a cascading-render hazard. Re-mount is cheap because
 // the sessions themselves are long-lived on the server.
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { SettingsPanel } from './SettingsPanel'
 import { api } from '../hooks/useApi'
 import { useAttachments } from '../hooks/useAttachments'
@@ -23,6 +23,8 @@ import { QuestionDialog } from './QuestionDialog'
 import { SessionRecapBanner } from './SessionRecapBanner'
 import { TodoChecklist } from './TodoChecklist'
 import { useSessionRecap } from '../hooks/useSessionRecap'
+import { MessageSearch } from './MessageSearch'
+import { exportConversation } from '../utils/exportConversation'
 import type { SessionInfo, SlashCommand } from '../types'
 
 const INPUT_HISTORY_KEY = 'claude-react-web:input-history'
@@ -120,6 +122,47 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
     onResolved: permissions.onResolved,
   })
   const attachments = useAttachments(session.id, session.cwd)
+
+  // ── In-chat search ──────────────────────────────────────────
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  /** Indices into stream.messages that match the current search query. */
+  const searchMatches = useMemo(() => {
+    if (!searchQuery) return [] as number[]
+    const q = searchQuery.toLowerCase()
+    const out: number[] = []
+    for (let i = 0; i < stream.messages.length; i++) {
+      const m = stream.messages[i]
+      const text = extractSearchableText(m)
+      if (text && text.toLowerCase().includes(q)) out.push(i)
+    }
+    return out
+  }, [stream.messages, searchQuery])
+  // Ctrl+F opens search (only when no modifier like Shift is held for "find in page").
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f' && !e.shiftKey) {
+        // Only intercept when the chat panel is focused (not when the
+        // browser's own find bar is more appropriate).
+        const target = e.target as HTMLElement
+        if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') return
+        e.preventDefault()
+        setSearchOpen(true)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  const handleSearchNavigate = useCallback(
+    (_index: number) => {
+      // _index is the match index (0-based) within searchMatches.
+      // Scroll to the corresponding message via the ref we'll wire up.
+      // For now the MessageList handles its own scrolling; we'll use
+      // a data attribute on messages for future highlighting.
+    },
+    [],
+  )
 
   // Report live message count to parent so the header stays up-to-date
   // during streaming (server only pushes session-update at turn boundaries).
@@ -230,10 +273,16 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
     }
   }, [input, attachmentList, sending, session.id, history, trackSentTurn, clearAttachments, clearError, setInput])
 
+  // Set to true when interrupt() fires; the next `result` message renders
+  // as "interrupted" and resets this to false.
+  const pendingInterruptRef = useRef(false)
+
   const interrupt = useCallback(async () => {
     try {
+      pendingInterruptRef.current = true
       await api.post(`/sessions/${session.id}/interrupt`)
     } catch (e) {
+      pendingInterruptRef.current = false
       setLocalError((e as Error).message)
     }
   }, [session.id])
@@ -248,18 +297,50 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
 
   return (
     <div className="chat">
-      {recap.visible && recap.recap && (
+      {recap.visible && (recap.loading || recap.recap || recap.error) && (
         <SessionRecapBanner
           recap={recap.recap}
           loading={recap.loading}
+          error={recap.error}
           onDismiss={recap.dismiss}
           onRefresh={recap.refresh}
         />
       )}
 
+      <div className="chat-toolbar">
+        <button
+          className="btn"
+          onClick={() => setSearchOpen(true)}
+          title="Search messages (Ctrl+F)"
+          aria-label="Search messages"
+        >
+          🔍
+        </button>
+        <button
+          className="btn"
+          onClick={() => exportConversation(stream.messages, session.title ?? session.id.slice(0, 8))}
+          title="Export conversation as Markdown"
+          aria-label="Export conversation"
+        >
+          📥
+        </button>
+      </div>
+
+      <MessageSearch
+        open={searchOpen}
+        onClose={() => {
+          setSearchOpen(false)
+          setSearchQuery('')
+        }}
+        onNavigate={handleSearchNavigate}
+        totalResults={searchMatches.length}
+        onQueryChange={setSearchQuery}
+      />
+
       <MessageList
         messages={stream.messages}
         showSystemEvents={showSystemEvents}
+        pendingInterruptRef={pendingInterruptRef}
       />
 
       <TodoChecklist messages={stream.messages} working={session.working} />
@@ -282,6 +363,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
         <WorkingBubble
           startedAt={session.workingSince}
           activeSubagents={activeSubagents}
+          tokenRate={stream.tokenRate}
         />
       )}
 
@@ -292,6 +374,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
         setInput={setInput}
         sending={sending}
         disabled={session.terminated}
+        terminated={session.terminated}
         canAttach={!!session.cwd}
         attachments={attachments.attachments}
         uploading={attachments.uploading}
@@ -360,4 +443,18 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
       )}
     </div>
   )
+}
+
+/** Extract searchable text from an SDK message for in-chat search. */
+function extractSearchableText(m: { type?: string; message?: { content?: unknown }; error?: string; subtype?: string }): string | null {
+  const content = m.message?.content
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return (content as Array<{ type?: string; text?: string }>)
+      .filter((b) => b.type === 'text' && typeof b.text === 'string')
+      .map((b) => b.text as string)
+      .join('\n')
+  }
+  if (m.type === 'system' && m.error) return m.error
+  return null
 }

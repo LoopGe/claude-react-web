@@ -186,9 +186,9 @@ interface Session {
   contextUsagePushable: Pushable<unknown>
 }
 
-const HISTORY_CAP = 500
+import { HISTORY_CAP, SESSION_IDLE_MS } from './config.js'
+
 const SUBSCRIBER_QUEUE_CAP = 500
-const DEFAULT_IDLE_MS = 30 * 60 * 1000 // 30 min
 
 export interface SessionManagerOptions {
   idleMs?: number
@@ -233,7 +233,7 @@ export class SessionManager {
   private globalSubscribers = new Map<string, GlobalSubscriber>()
 
   constructor(opts: SessionManagerOptions = {}) {
-    this.idleMs = opts.idleMs ?? DEFAULT_IDLE_MS
+    this.idleMs = opts.idleMs ?? SESSION_IDLE_MS
     this.claudeBinary = opts.claudeBinary
     this.historyCap = opts.historyCap ?? HISTORY_CAP
     this.store = opts.store
@@ -652,11 +652,15 @@ export class SessionManager {
     }
     for (const sub of s.subscribers.values()) sub.push(userMsg)
     s.lastActivityAt = Date.now()
-    // Mark the session as mid-turn. The matching `result` message in the
-    // pump will decrement this; we track a count (not a bool) because the
-    // UI allows queueing multiple user turns while one is in flight.
+    // Mark the session as mid-turn. We cap at 1 (not a true counter)
+    // because the SDK may merge multiple queued user messages into fewer
+    // assistant turns — a true count would inflate permanently. The pump
+    // resets to 1 after each result if more items are still queued.
     if (s.pendingTurns === 0) s.workingSince = Date.now()
-    s.pendingTurns += 1
+    if (s.pendingTurns < 1) s.pendingTurns = 1
+    // Invalidate the recap cache — a new message means the cached
+    // summary is stale.
+    invalidateRecapCache(s.id)
     this.persist(s)
   }
 
@@ -1302,13 +1306,15 @@ export class SessionManager {
             () => { /* ignore — session may have ended between fire and resolve */ },
           )
         }
-        // `result` marks a completed turn. Decrement the pending counter
-        // and stamp lastTurnAt so the frontend can flag unread. Clamped
-        // at 0 in case the SDK emits spurious results (shouldn't happen
-        // but cheap insurance).
+        // `result` marks a completed turn. Reset pendingTurns to 0 (each
+        // result represents exactly one completed turn). If the user has
+        // already queued another message via send(), pendingTurns will be
+        // bumped back to 1 there. We don't inflate the counter to match
+        // the number of queued sends — the SDK may merge them — so a
+        // simple 0/1 flag prevents the "stuck working" bug.
         if (msg.type === 'result') {
-          session.pendingTurns = Math.max(0, session.pendingTurns - 1)
-          if (session.pendingTurns === 0) session.workingSince = undefined
+          session.pendingTurns = 0
+          session.workingSince = undefined
           session.lastTurnAt = Date.now()
           this.persist(session)
         }
@@ -1334,6 +1340,12 @@ export class SessionManager {
       // subscriber.push() throwing, persist() failing) doesn't escape
       // as an unhandledRejection from the pumpTask promise.
       try {
+        // If unload() already removed this session from the map (idle GC
+        // or graceful shutdown), it has already persisted the correct
+        // state. Overwriting here would stamp terminated=true, which
+        // prevents the user from resuming the session later. Skip.
+        if (!this.sessions.has(session.id)) return
+
         session.running = false
         session.terminated = true
         // Reset pending turns so the UI doesn't stay stuck in "working"

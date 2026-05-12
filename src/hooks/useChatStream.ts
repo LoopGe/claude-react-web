@@ -28,6 +28,8 @@ export interface ChatStream {
   error: string | null
   /** Latest context-usage snapshot pushed by the server mid-stream. */
   contextUsage: ContextUsage | null
+  /** Live output token rate (tok/s) computed from streaming deltas. Null when not streaming. */
+  tokenRate: number | null
   /** Bump the queued counter by one (call after POST /messages succeeds). */
   trackSentTurn: () => void
   /** Clear all local state — used when switching between sessions. */
@@ -46,6 +48,8 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   const [queuedAhead, setQueuedAhead] = useState(0)
   const [opError, setOpError] = useState<string | null>(null)
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null)
+  const [tokenRate, setTokenRate] = useState<number | null>(null)
+  const tokenSampleRef = useRef<{ tokens: number; ts: number } | null>(null)
 
   const hub = useWsHub()
 
@@ -68,6 +72,8 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       setMessages([])
       setContextUsage(null)
       setQueuedAhead(0)
+      setTokenRate(null)
+      tokenSampleRef.current = null
     }
   }, [sessionId])
 
@@ -133,8 +139,39 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
           startTransition(() => {
             setMessages((prev) => [...prev, m])
           })
+          // Compute live token rate from stream_event message_delta
+          // events. The SDK's message_delta carries cumulative
+          // output_tokens for the current response, so we diff against
+          // the previous sample to get instantaneous throughput.
+          if (m.type === 'stream_event') {
+            const event = m.event as Record<string, unknown> | undefined
+            if (event?.type === 'message_delta') {
+              const usage = (event as { usage?: Record<string, unknown> }).usage
+              const outputTokens = usage?.output_tokens as number | undefined
+              if (outputTokens != null) {
+                const now = performance.now()
+                const prev = tokenSampleRef.current
+                if (prev) {
+                  const dt = (now - prev.ts) / 1000
+                  const dTokens = outputTokens - prev.tokens
+                  if (dt >= 0.3 && dTokens >= 0) {
+                    setTokenRate(Math.round(dTokens / dt))
+                    tokenSampleRef.current = { tokens: outputTokens, ts: now }
+                  }
+                } else {
+                  tokenSampleRef.current = { tokens: outputTokens, ts: now }
+                }
+              }
+            } else if (event?.type === 'message_stop') {
+              tokenSampleRef.current = null
+            }
+          }
           if (m.type === 'result') {
-            setQueuedAhead((n) => (n > 0 ? n - 1 : 0))
+            // Reset to 0 — the server's `working` flag (session-update)
+            // will re-show the queue bar if more turns are pending.
+            setQueuedAhead(0)
+            setTokenRate(null)
+            tokenSampleRef.current = null
           }
           break
         }
@@ -184,8 +221,12 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     return opError
   }, [opError, hubStatus])
 
+  // Cap at 1 — we don't know how many turns the SDK will emit for queued
+  // messages (it may merge them), so a true count would inflate. The
+  // server's `working` flag drives the real "Working" indicator; this
+  // counter only controls the "N more messages queued" bar.
   const trackSentTurn = useCallback(() => {
-    setQueuedAhead((n) => n + 1)
+    setQueuedAhead((n) => Math.max(n, 1))
   }, [])
 
   const reset = useCallback(() => {
@@ -193,12 +234,14 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     setQueuedAhead(0)
     setOpError(null)
     setContextUsage(null)
+    setTokenRate(null)
+    tokenSampleRef.current = null
   }, [])
 
   const clearError = useCallback(() => setOpError(null), [])
 
   return useMemo(
-    () => ({ messages, queuedAhead, error: displayedError, contextUsage, trackSentTurn, reset, clearError }),
-    [messages, queuedAhead, displayedError, contextUsage, trackSentTurn, reset, clearError],
+    () => ({ messages, queuedAhead, error: displayedError, contextUsage, tokenRate, trackSentTurn, reset, clearError }),
+    [messages, queuedAhead, displayedError, contextUsage, tokenRate, trackSentTurn, reset, clearError],
   )
 }

@@ -7,8 +7,9 @@ import { useState } from 'react'
 import type { RecapData } from '../hooks/useSessionRecap'
 
 interface Props {
-  recap: RecapData
+  recap: RecapData | null
   loading: boolean
+  error: string | null
   onDismiss: () => void
   onRefresh: () => void
 }
@@ -29,7 +30,7 @@ function formatDuration(ms: number): string {
   return `${hr}h ${min % 60}m`
 }
 
-export function SessionRecapBanner({ recap, loading, onDismiss, onRefresh }: Props) {
+export function SessionRecapBanner({ recap, loading, error, onDismiss, onRefresh }: Props) {
   const [expanded, setExpanded] = useState(false)
 
   if (loading) {
@@ -40,6 +41,24 @@ export function SessionRecapBanner({ recap, loading, onDismiss, onRefresh }: Pro
       </div>
     )
   }
+
+  if (error) {
+    return (
+      <div className="session-recap session-recap--error">
+        <span className="session-recap-error-text">⚠️ Recap unavailable: {error}</span>
+        <div className="session-recap-actions">
+          <button className="session-recap-btn" onClick={onRefresh} title="Retry" aria-label="Retry recap">
+            ↻
+          </button>
+          <button className="session-recap-btn session-recap-btn--dismiss" onClick={onDismiss} title="Dismiss" aria-label="Dismiss recap">
+            ✕
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (!recap) return null
 
   const { summary, stats, fallback } = recap
   const truncated = !expanded && summary.length > 120
@@ -58,6 +77,7 @@ export function SessionRecapBanner({ recap, loading, onDismiss, onRefresh }: Pro
           <button
             className="session-recap-btn"
             onClick={onRefresh}
+            disabled={loading}
             title="Regenerate recap"
             aria-label="Regenerate recap"
           >

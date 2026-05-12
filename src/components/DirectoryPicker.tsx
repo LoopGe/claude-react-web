@@ -205,11 +205,13 @@ export function DirectoryPicker({ initialPath, onPick, onClose }: Props) {
 
 function buildCrumbs(p: string): { label: string; path: string }[] {
   if (!p) return []
-  const parts = p.split('/').filter(Boolean)
-  const crumbs: { label: string; path: string }[] = [{ label: '/', path: '/' }]
-  let cur = ''
+  const sep = p.includes('\\') ? '\\' : '/'
+  const parts = p.split(/[/\\]/).filter(Boolean)
+  const root = sep === '\\' ? (p.match(/^[A-Za-z]:\\/)?.[0] ?? sep) : sep
+  const crumbs: { label: string; path: string }[] = [{ label: root, path: root }]
+  let cur = root.endsWith(sep) ? root.slice(0, -1) : ''
   for (const part of parts) {
-    cur += `/${part}`
+    cur += `${sep}${part}`
     crumbs.push({ label: part, path: cur })
   }
   return crumbs

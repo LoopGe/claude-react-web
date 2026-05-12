@@ -13,6 +13,20 @@
   --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
+[data-theme="light"] {
+  --bg: #ffffff;
+  --bg-elev: #f5f6f8;
+  --bg-elev-2: #ebedf0;
+  --border: #d0d4db;
+  --fg: #1a1d24;
+  --fg-muted: #5e6774;
+  --accent: #4f62c8;
+  --accent-strong: #3b4ea8;
+  --danger: #d93b3b;
+  --ok: #2e9e56;
+  --warn: #c79518;
+}
+
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
 
@@ -121,6 +135,30 @@ button { cursor: pointer; }
 .accent-swatch.active {
   border-color: var(--fg);
   box-shadow: 0 0 0 1px var(--bg);
+}
+
+/* Max-panels dropdown in the toolbar — compact inline label + select. */
+.max-panels-control {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 4px;
+}
+.max-panels-label {
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  user-select: none;
+}
+.max-panels-select {
+  width: auto;
+  padding: 2px 6px;
+  font-size: 12px;
+  border-radius: 4px;
+  background: var(--bg-elev);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  cursor: pointer;
 }
 
 .input, .textarea, .select {
@@ -759,6 +797,20 @@ body.resizing-col * {
   border-color: var(--accent);
   color: var(--accent);
   font-style: normal;
+}
+
+/* Ungrouped section — slightly muted header to distinguish from groups. */
+.session-section-ungrouped .session-section-header {
+  color: var(--fg-muted);
+  opacity: 0.8;
+}
+.ungrouped-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ungrouped-header-icon {
+  font-size: 12px;
 }
 .session-item {
   display: flex;
@@ -1408,6 +1460,7 @@ body.resizing-col * {
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   font-size: 11px;
@@ -1415,6 +1468,12 @@ body.resizing-col * {
   color: var(--fg-muted);
   animation: working-bubble-pulse 1.8s ease-in-out infinite;
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  overflow: hidden;
+  max-height: 120px;
+}
+/* Slightly tighter spacing when subagent chips are present. */
+.working-bar-with-agents {
+  row-gap: 6px;
 }
 /* When immediately followed by ctx-bar, collapse the double border. */
 .working-bar + .ctx-bar { border-top: none; }
@@ -1437,6 +1496,20 @@ body.resizing-col * {
   padding: 1px 6px;
   border-radius: 999px;
   text-transform: none;
+}
+/* Live output token rate badge, shown next to the working timer.
+   Uses a muted style to avoid competing with the timer's accent colour. */
+.working-rate {
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  background: color-mix(in srgb, var(--fg-muted) 8%, transparent);
+  padding: 1px 6px;
+  border-radius: 999px;
+  white-space: nowrap;
 }
 
 .working-dots {
@@ -1507,6 +1580,16 @@ body.resizing-col * {
   font-weight: 500;
   letter-spacing: 0.01em;
 }
+/* "+N more" badge when subagents overflow the max-chip limit. */
+.subagent-overflow {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  background: color-mix(in srgb, var(--fg-muted) 8%, transparent);
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
 
 .msg.tool { background: transparent; border-style: dashed; border-color: #374151; }
 .msg.tool-result { background: #14202a; border-color: #1f3240; }
@@ -1523,6 +1606,7 @@ body.resizing-col * {
 .msg.error { background: #2b1616; border-color: #5a2525; color: #ffb1b1; }
 .msg.error.rate-limit { background: #2b2416; border-color: #5a4a25; color: #ffe0a0; }
 .msg.result { background: #14221c; border-color: #1f3a2e; }
+.msg.result.interrupted { background: #2b2416; border-color: #5a4a25; color: #ffe0a0; }
 
 .msg-body { word-wrap: break-word; }
 .msg-body code {
@@ -2501,6 +2585,21 @@ body.resizing-col * {
   border-color: var(--border);
   background: var(--bg-elev);
 }
+.session-recap--error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+.session-recap-error-text {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .session-recap--loading {
   display: flex;
   align-items: center;
@@ -2566,6 +2665,10 @@ body.resizing-col * {
   background: var(--bg-elev-2);
   color: var(--fg);
 }
+.session-recap-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 .session-recap-btn--dismiss:hover {
   color: var(--danger);
 }
@@ -2608,4 +2711,141 @@ body.resizing-col * {
   color: var(--accent);
   font-family: var(--mono);
   font-size: 11px;
+}
+
+/* ── Message search bar ────────────────────────────────────────── */
+
+.message-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.message-search-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  padding: 4px 8px;
+  font-size: 13px;
+  font-family: var(--mono);
+  outline: none;
+}
+.message-search-input:focus {
+  border-color: var(--accent);
+}
+.message-search-count {
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  min-width: 48px;
+  text-align: center;
+}
+.message-search-nav {
+  padding: 2px 8px;
+  font-size: 14px;
+  line-height: 1;
+}
+.message-search-close {
+  padding: 2px 8px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* ── Chat toolbar (search + export) ────────────────────────────── */
+
+.chat-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 4px 8px;
+  flex-shrink: 0;
+}
+.chat-toolbar .btn {
+  padding: 2px 6px;
+  font-size: 13px;
+  opacity: 0.6;
+}
+.chat-toolbar .btn:hover {
+  opacity: 1;
+}
+
+/* ── Per-message copy button ───────────────────────────────────── */
+
+.msg-copy-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  padding: 2px 6px;
+  font-size: 12px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  z-index: 1;
+}
+.msg-copy-btn:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.msg:hover .msg-copy-btn,
+.msg-copy-btn:focus-visible {
+  opacity: 0.7;
+}
+.msg-copy-btn:focus-visible {
+  opacity: 1;
+}
+.msg {
+  position: relative;
+}
+
+/* ── Session ended banner in composer ──────────────────────────── */
+
+.session-ended {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* ── Error toast (replaces window.alert) ───────────────────────── */
+
+.error-toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: color-mix(in srgb, var(--danger) 15%, var(--bg-elev));
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--border));
+  border-radius: 6px;
+  color: var(--danger);
+  font-size: 12px;
+  margin: 4px 8px;
+  flex-shrink: 0;
+}
+.error-toast-dismiss {
+  margin-left: auto;
+  padding: 0 4px;
+  background: none;
+  border: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 14px;
+  opacity: 0.7;
+}
+.error-toast-dismiss:hover {
+  opacity: 1;
 }

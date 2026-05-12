@@ -9,7 +9,7 @@
 // persistForSession=true and let the server promote every suggestion's
 // destination to 'session'. No suggestions? We hide the always button.
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { PermissionRequest } from '../types'
 
 /** Narrowed to the permission variant of the union. The question variant
@@ -31,6 +31,32 @@ export function PermissionDialog({ request, onDecide }: Props) {
   // Ref provides a synchronous guard so that rapid double-clicks
   // can't slip through before React commits the state update.
   const busyRef = useRef(false)
+  const dialogRef = useRef<HTMLDivElement>(null)
+
+  // Focus trap: keep Tab inside the dialog.
+  useEffect(() => {
+    const el = dialogRef.current
+    if (!el) return
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab') return
+      const focusable = el.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      )
+      if (!focusable.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (e.shiftKey ? document.activeElement === first : document.activeElement === last) {
+        e.preventDefault()
+        ;(e.shiftKey ? last : first).focus()
+      }
+    }
+    el.addEventListener('keydown', handleKey)
+    const firstFocusable = el.querySelector<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    )
+    firstFocusable?.focus()
+    return () => el.removeEventListener('keydown', handleKey)
+  }, [])
 
   const hasSuggestions = Array.isArray(request.suggestions) && request.suggestions.length > 0
 
@@ -54,7 +80,7 @@ export function PermissionDialog({ request, onDecide }: Props) {
   // panel* (absolutely positioned overlay within .chat-messages-wrap or
   // the Chat root).
   return (
-    <div className="perm-overlay" role="dialog" aria-modal="false">
+    <div className="perm-overlay" role="dialog" aria-modal="true" ref={dialogRef}>
       <div className="perm-card">
         <div className="modal-header">
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 10 }}>

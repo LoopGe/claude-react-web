@@ -19,6 +19,9 @@ import { useWsHub, useWsHubStatus } from './hooks/useWsHub'
 import type { WsServerFrame } from './ws-types'
 import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, SidebarSection } from './types'
 import { ACCENT_COLORS, ACCENT_COLOR_KEY, SESSION_COLORS_KEY } from './theme'
+import { ErrorBoundary } from './components/ErrorBoundary'
+import { ThemeToggle } from './components/ThemeToggle'
+import { getStoredTheme, toggleTheme, type Theme } from './utils/theme'
 
 const PERMISSION_MODES: PermissionMode[] = [
   'default',
@@ -32,33 +35,50 @@ const PERMISSION_MODES: PermissionMode[] = [
 const SIDEBAR_ORDER_KEY = 'claude-react-web:session-order'
 const SHOW_SYSTEM_EVENTS_KEY = 'claude-react-web:show-system-events'
 const SIDEBAR_WIDTH_KEY = 'claude-react-web:sidebar-width'
-const SIDEBAR_MIN_PX = 180
-const SIDEBAR_MAX_PX = 480
-/** Column-flex weights for the main grid (length === MAX_OPEN). Ratios
+const SIDEBAR_MIN_KEY = 'claude-react-web:sidebar-min-px'
+const SIDEBAR_MAX_KEY = 'claude-react-web:sidebar-max-px'
+const SIDEBAR_MIN_DEFAULT = 180
+const SIDEBAR_MAX_DEFAULT = 480
+/** Column-flex weights for the main grid (length === maxOpen). Ratios
  *  are normalised on use so values like [1, 0.5, 0.5] render correctly
  *  no matter how many panels are currently open. */
 const PANEL_RATIOS_KEY = 'claude-react-web:panel-col-ratios'
 /** Minimum column ratio — keeps a panel from collapsing to nothing. */
-const PANEL_MIN_RATIO = 0.15
+const PANEL_MIN_RATIO_KEY = 'claude-react-web:panel-min-ratio'
+const PANEL_MIN_RATIO_DEFAULT = 0.15
 const GROUPS_KEY = 'claude-react-web:session-groups'
 const COLLAPSED_GROUPS_KEY = 'claude-react-web:collapsed-groups'
+const MAX_OPEN_KEY = 'claude-react-web:max-open-panels'
 
 interface Defaults {
   cwd?: string
   model?: string
 }
 
+interface ContextStep {
+  value: number
+  label: string
+  beta?: string
+}
+
 interface ServerConfig {
   defaults: Defaults
   models?: string[]
+  contextSteps?: ContextStep[]
 }
 
-/** Max number of chat panels shown concurrently. */
-const MAX_OPEN = 3
+/** Allowed range for the max-panels / max-sessions-per-group setting. */
+const MAX_OPEN_MIN = 2
+const MAX_OPEN_MAX = 5
+const MAX_OPEN_DEFAULT = 3
+/** Clamp a user-supplied max-open value to the allowed range. */
+function clampMaxOpen(v: number): number {
+  return Math.max(MAX_OPEN_MIN, Math.min(MAX_OPEN_MAX, Math.round(v)))
+}
 
 export function App() {
   const [sessions, setSessions] = useState<SessionInfo[]>([])
-  /** Ordered list of open session ids (oldest first). Length ≤ MAX_OPEN. */
+  /** Ordered list of open session ids (oldest first). Length ≤ maxOpen. */
   const [openIds, setOpenIds] = useState<string[]>([])
   /** Which of the open panels is currently focused (controls settings
    *  panel target + clears unread when selected). */
@@ -68,6 +88,8 @@ export function App() {
    *  Opening (or focusing) a session bumps the seen timestamp. */
   const [lastSeenTurn, setLastSeenTurn] = useState<Record<string, number>>({})
   const [defaults, setDefaults] = useState<Defaults>({})
+  const [serverModels, setServerModels] = useState<string[]>([])
+  const [contextSteps, setContextSteps] = useState<ContextStep[]>([])
   /** When non-null, the Settings overlay is rendered on top of the chat
    *  panel with this session id. Previously a single boolean that targeted
    *  the focused session — making it per-session lets the overlay cover
@@ -76,6 +98,14 @@ export function App() {
   const [newSessionDialogOpen, setNewSessionDialogOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [opError, setOpError] = useState<string | null>(null)
+  // Theme state — persisted in localStorage, applied via data-theme on <html>.
+  const [theme, setTheme] = useState<Theme>(getStoredTheme)
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+  }, [theme])
+  const handleToggleTheme = useCallback(() => {
+    setTheme((prev) => toggleTheme(prev))
+  }, [])
   /** Ids currently being resumed — briefly disables the item so a double-
    *  click doesn't fire two POSTs. */
   const [resuming, setResuming] = useState<Set<string>>(new Set())
@@ -87,15 +117,24 @@ export function App() {
   const [groups, setGroups] = useLocalStorage<SessionGroup[]>(GROUPS_KEY, [])
   /** Which group headers are collapsed in the sidebar. */
   const [collapsedGroups, setCollapsedGroups] = useLocalStorage<Record<string, boolean>>(COLLAPSED_GROUPS_KEY, {})
+  /** Max number of chat panels open at once, and max sessions per group.
+   *  Shared setting because the main grid and groups should agree on
+   *  capacity. Clamped to [MAX_OPEN_MIN, MAX_OPEN_MAX]. */
+  const [maxOpenPanels, setMaxOpenPanelsRaw] = useLocalStorage<number>(MAX_OPEN_KEY, MAX_OPEN_DEFAULT)
+  const maxOpen = clampMaxOpen(maxOpenPanels)
+  const setMaxOpenPanels = useCallback((v: number) => setMaxOpenPanelsRaw(clampMaxOpen(v)), [setMaxOpenPanelsRaw])
 
-  // Auto-create a "default" group on first load so every session always
-  // has a group to belong to (mandatory group binding).
-  useEffect(() => {
-    if (groups.length === 0) {
-      setGroups([{ id: crypto.randomUUID(), name: 'default', sessionIds: [] }])
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  // Configurable layout constraints — persisted in localStorage so
+  // power users can tune sidebar limits and panel minimum ratio.
+  const [sidebarMinPxRaw] = useLocalStorage<number>(SIDEBAR_MIN_KEY, SIDEBAR_MIN_DEFAULT)
+  const [sidebarMaxPxRaw] = useLocalStorage<number>(SIDEBAR_MAX_KEY, SIDEBAR_MAX_DEFAULT)
+  const sidebarMinPx = Math.max(100, Math.min(400, Math.round(sidebarMinPxRaw)))
+  const sidebarMaxPx = Math.max(sidebarMinPx + 100, Math.min(1200, Math.round(sidebarMaxPxRaw)))
+  const [panelMinRatioRaw] = useLocalStorage<number>(PANEL_MIN_RATIO_KEY, PANEL_MIN_RATIO_DEFAULT)
+  const panelMinRatio = Math.max(0.05, Math.min(0.4, panelMinRatioRaw))
+
+  // Groups are optional — sessions without a group appear in the
+  // "Ungrouped" sidebar section. No default group is auto-created.
 
   /** Show SDK bookkeeping messages (system/init, system/status, …) in
    *  the transcript. Off by default — they're noise for normal use,
@@ -113,7 +152,7 @@ export function App() {
    *  mousemove but only flush to localStorage on mouseup. */
   const [sidebarWidthDraft, setSidebarWidthDraft] = useState<number | null>(null)
   const sidebarResize = useDragResize((delta) => {
-    const w = Math.max(SIDEBAR_MIN_PX, Math.min(SIDEBAR_MAX_PX, sidebarWidth + delta))
+    const w = Math.max(sidebarMinPx, Math.min(sidebarMaxPx, sidebarWidth + delta))
     setSidebarWidthDraft(w)
   })
   // When the drag ends, commit the draft to localStorage. The synchronous
@@ -216,12 +255,12 @@ export function App() {
         const rawL = leftR + deltaR
         const rawR = rightR - deltaR
         // Enforce minimum ratio on both sides; clamp by stealing back.
-        if (rawL < PANEL_MIN_RATIO) {
-          next[rightId] = leftR + rightR - PANEL_MIN_RATIO
-          next[leftId] = PANEL_MIN_RATIO
-        } else if (rawR < PANEL_MIN_RATIO) {
-          next[leftId] = leftR + rightR - PANEL_MIN_RATIO
-          next[rightId] = PANEL_MIN_RATIO
+        if (rawL < panelMinRatio) {
+          next[rightId] = leftR + rightR - panelMinRatio
+          next[leftId] = panelMinRatio
+        } else if (rawR < panelMinRatio) {
+          next[leftId] = leftR + rightR - panelMinRatio
+          next[rightId] = panelMinRatio
         } else {
           next[leftId] = rawL
           next[rightId] = rawR
@@ -239,7 +278,7 @@ export function App() {
       window.addEventListener('mousemove', onMove)
       window.addEventListener('mouseup', onUp)
     },
-    [effectiveRatios, openIds],
+    [effectiveRatios, openIds, panelMinRatio],
   )
 
   // Commit the draft to localStorage after dragging ends. Same shape as
@@ -263,6 +302,8 @@ export function App() {
       .get<ServerConfig>('/config')
       .then((r) => {
         setDefaults(r.defaults)
+        if (r.models?.length) setServerModels(r.models)
+        if (r.contextSteps?.length) setContextSteps(r.contextSteps)
       })
       .catch(() => {})
   }, [])
@@ -283,6 +324,7 @@ export function App() {
   const openIdsRef = useRef(openIds)
   const focusedIdRef = useRef(focusedId)
   const sessionsRef = useRef(sessions)
+  const maxOpenRef = useRef(maxOpen)
   const handleSelectRef = useRef<(id: string) => void>(() => {})
   useEffect(() => {
     openIdsRef.current = openIds
@@ -293,6 +335,9 @@ export function App() {
   useEffect(() => {
     sessionsRef.current = sessions
   })
+  useEffect(() => {
+    maxOpenRef.current = maxOpen
+  })
 
   /** Fire a notification when Claude is waiting on a tool-permission
    *  approval in a session the user isn't actively watching. Same
@@ -301,9 +346,13 @@ export function App() {
    *  interruption. `tag` ends in ':perm' so it doesn't collide with the
    *  session's turn-complete notification. */
   const maybePermissionNotify = useCallback((sessionId: string, toolLabel: string) => {
-    const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden'
+    // Use hasFocus() rather than visibilityState: the tab can be "visible"
+    // (foreground tab) while the browser window itself is minimized, behind
+    // another app (Alt-Tab), or the screen is locked. In all those cases
+    // hasFocus() correctly returns false, so we still fire the notification.
+    const windowFocused = typeof document !== 'undefined' && document.hasFocus()
     const isFocused = focusedIdRef.current === sessionId
-    if (!hidden && isFocused) return
+    if (windowFocused && isFocused) return
 
     // Look up a friendly title — fall back to id prefix when we haven't
     // seen the session in the list yet (unlikely but possible during
@@ -324,15 +373,15 @@ export function App() {
 
   /** Called from the SSE update handler with the server's latest session
    *  snapshot. Fires a notification iff: working flipped true→false AND
-   *  (tab is hidden OR session is not the current focused panel). */
+   *  (window is not focused OR session is not the current focused panel). */
   const maybeNotify = useCallback((s: SessionInfo) => {
     const prev = prevWorkingRef.current.get(s.id) ?? false
     prevWorkingRef.current.set(s.id, s.working)
     if (!(prev && !s.working)) return // only trigger on the falling edge
 
-    const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden'
+    const windowFocused = typeof document !== 'undefined' && document.hasFocus()
     const isFocused = focusedIdRef.current === s.id
-    if (!hidden && isFocused) return // user is watching it — no need
+    if (windowFocused && isFocused) return // user is watching it — no need
 
     const title = s.title ?? s.id.slice(0, 8)
     notifyRef.current({
@@ -441,14 +490,14 @@ export function App() {
 
   /** Push a session id onto the open list. Rules:
    *  - Already open → just focus it, no reshuffle.
-   *  - Not open but ≥ MAX_OPEN already → evict the oldest non-focused id.
+   *  - Not open but ≥ maxOpen already → evict the oldest non-focused id.
    *  - Append to the end and focus it.
    *  Also bumps the session's lastSeenTurn so opening clears unread. */
   const openSession = useCallback(
     (id: string, lastTurnAt: number | undefined) => {
       setOpenIds((prev) => {
         if (prev.includes(id)) return prev
-        if (prev.length < MAX_OPEN) return [...prev, id]
+        if (prev.length < maxOpenRef.current) return [...prev, id]
         // Pick an eviction candidate: not focused, not pinned. Pinned
         // sessions ARE allowed to be open; we just won't throw them
         // out on someone else's behalf. Fall through to focused or
@@ -506,27 +555,39 @@ export function App() {
     [],
   )
 
+  /** Move a session into a group (or out of all groups when groupId is
+   *  empty). If the target group is full, the oldest (first) session in
+   *  it is evicted — it becomes ungrouped automatically. */
   const handleAddToGroup = useCallback(
     (sessionId: string, groupId: string) => {
       setGroups((prev) => {
-        const target = prev.find((g) => g.id === groupId)
-        // Capacity check: max 3 sessions per group (skip if already in target group)
-        if (!target || (target.sessionIds.length >= 3 && !target.sessionIds.includes(sessionId))) {
-          return prev
+        // Empty groupId → just remove from all groups (ungroup).
+        if (!groupId) {
+          return prev.map((g) => ({
+            ...g,
+            sessionIds: g.sessionIds.filter((id) => id !== sessionId),
+          }))
         }
+        const target = prev.find((g) => g.id === groupId)
+        if (!target) return prev
+        // Already in this group — no-op.
+        if (target.sessionIds.includes(sessionId)) return prev
+        // Remove from old group, then add to target.  If the target is
+        // full, evict its first (oldest) session so the new one fits.
         return prev.map((g) => {
-          if (g.id === groupId) {
-            // Ensure session is in this group
-            return g.sessionIds.includes(sessionId)
-              ? g
-              : { ...g, sessionIds: [...g.sessionIds, sessionId] }
+          // Remove from old group
+          const without = { ...g, sessionIds: g.sessionIds.filter((id) => id !== sessionId) }
+          if (g.id !== groupId) return without
+          // Add to target (evict oldest if full)
+          const ids = without.sessionIds
+          if (ids.length >= maxOpen) {
+            return { ...without, sessionIds: [...ids.slice(1), sessionId] }
           }
-          // Exclusive membership: remove from all other groups
-          return { ...g, sessionIds: g.sessionIds.filter((id) => id !== sessionId) }
+          return { ...without, sessionIds: [...ids, sessionId] }
         })
       })
     },
-    [setGroups],
+    [setGroups, maxOpen],
   )
 
   const handleCreate = useCallback(
@@ -542,7 +603,7 @@ export function App() {
         // later state updates (e.g. a subsequent pump error) only hit
         // one of them — leaving an "err" phantom alongside the real card.
         openSession(res.session.id, res.session.lastTurnAt)
-        // Assign to group (mandatory group binding).
+        // Assign to group (optional — ungrouped sessions are allowed).
         if (groupId) handleAddToGroup(res.session.id, groupId)
         if (accent) {
           // Save the chosen accent under the new id. Direct localStorage
@@ -598,12 +659,10 @@ export function App() {
       const source = sessions.find((s) => s.id === id)
       if (!source) return
       const sourceGroup = groups.find((g) => g.sessionIds.includes(id))
-      // Ensure the new session is always assigned to a group. When the
-      // source session is already in one, inherit it. Otherwise pick the
-      // first group with room so the new session is visible in the
-      // sidebar's grouped view (sessions not in any group are invisible
-      // when groups exist).
-      const fallbackGroup = groups.find((g) => g.sessionIds.length < 3)
+      // Inherit the source's group. If the source is ungrouped, fall
+      // back to the first group with room. groupId may be undefined
+      // (the new session will be ungrouped).
+      const fallbackGroup = groups.find((g) => g.sessionIds.length < maxOpen)
       const form: NewSessionForm = {
         cwd: source.cwd,
         model: source.model,
@@ -613,7 +672,7 @@ export function App() {
       }
       await handleCreate(form)
     },
-    [sessions, groups, handleCreate],
+    [sessions, groups, maxOpen, handleCreate],
   )
 
   const handleTogglePin = useCallback(
@@ -674,7 +733,7 @@ export function App() {
       const group = groups.find((g) => g.id === groupId)
       if (!group) return
       const sessionSet = new Set(sessions.map((s) => s.id))
-      const valid = group.sessionIds.filter((id) => sessionSet.has(id)).slice(0, MAX_OPEN)
+      const valid = group.sessionIds.filter((id) => sessionSet.has(id)).slice(0, maxOpen)
       if (valid.length === 0) return
       setOpenIds(valid)
       setFocusedId(valid[0])
@@ -692,14 +751,15 @@ export function App() {
         }
       }
     },
-    [groups, sessions],
+    [groups, sessions, maxOpen],
   )
 
   /** Select a session. Dormant (not running, not terminated) sessions are
    *  resumed first — the server spins up a fresh Query with
    *  `options.resume`, then the SSE replay fills in the transcript.
    *  If the session belongs to a different group than the one currently
-   *  active, the entire view switches to that group first. */
+   *  active, the entire view switches to that group first.  Ungrouped
+   *  sessions open in single-panel mode (replace the current panels). */
   const handleSelect = useCallback(
     async (id: string) => {
       const s = sessions.find((x) => x.id === id)
@@ -708,10 +768,34 @@ export function App() {
         return
       }
 
+      const sessionGroup = groups.find((g) => g.sessionIds.includes(id))
+
+      // Ungrouped session → single-panel mode (replace all open panels).
+      if (!sessionGroup) {
+        setOpenIds([id])
+        setFocusedId(id)
+        setLastSeenTurn((prev) => ({ ...prev, [id]: s.lastTurnAt ?? Date.now() }))
+        if (!s.running && !s.terminated && !resuming.has(id)) {
+          setResuming((prev) => new Set(prev).add(id))
+          try {
+            const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/resume`, {})
+            setSessions((prev) => prev.map((p) => (p.id === id ? res.session : p)))
+          } catch (e) {
+            setOpError((e as Error).message)
+          } finally {
+            setResuming((prev) => {
+              const next = new Set(prev)
+              next.delete(id)
+              return next
+            })
+          }
+        }
+        return
+      }
+
       // Group switching: clicking a session in another group activates
       // that group, replacing all open panels with its sessions.
-      const sessionGroup = groups.find((g) => g.sessionIds.includes(id))
-      if (sessionGroup && sessionGroup.id !== activeGroupId) {
+      if (sessionGroup.id !== activeGroupId) {
         handleActivateGroup(sessionGroup.id)
         // Focus the clicked session (overrides the default first-in-group
         // focus set by handleActivateGroup). React batches setState so
@@ -737,7 +821,7 @@ export function App() {
         return
       }
 
-      // Same group (or no group) — original behaviour.
+      // Same group — original behaviour.
       if (s.running || s.terminated) {
         openSession(id, s.lastTurnAt)
         return
@@ -794,6 +878,12 @@ export function App() {
     }
     return out
   }, [sessions, openIds, lastSeenTurn])
+
+  // Update the window title when unread count changes.
+  useEffect(() => {
+    const count = Object.values(unread).filter(Boolean).length
+    document.title = count > 0 ? `(${count}) claude-react-web` : 'claude-react-web'
+  }, [unread])
 
   /** Open sessions, rendered in the order they were opened. Filter by
    *  what the server currently reports so a deleted-on-server session
@@ -861,16 +951,22 @@ export function App() {
         {
           combo: 'escape',
           handler: () => {
-            // Priority: CommandPalette > NewSessionDialog > per-panel Settings overlay.
+            // Priority: CommandPalette > NewSessionDialog > per-panel Settings overlay > Interrupt.
             if (paletteOpen) setPaletteOpen(false)
             else if (newSessionDialogOpen) setNewSessionDialogOpen(false)
             else if (settingsOpenFor) setSettingsOpenFor(null)
+            else if (focusedId) {
+              const focused = sessions.find((s) => s.id === focusedId)
+              if (focused?.working) {
+                void api.post(`/sessions/${focusedId}/interrupt`)
+              }
+            }
           },
-          allowInInput: true, // Esc inside textarea should still close modals
-          description: 'Close overlay',
+          allowInInput: true, // Esc inside textarea should still close modals / interrupt
+          description: 'Close overlay / Interrupt',
         },
       ],
-      [openIds, focusedId, paletteOpen, newSessionDialogOpen, settingsOpenFor, closeSession],
+      [openIds, focusedId, paletteOpen, newSessionDialogOpen, settingsOpenFor, closeSession, sessions],
     )
   useKeyboardShortcuts(shortcuts)
 
@@ -899,9 +995,8 @@ export function App() {
     return [...pinned, ...rest]
   }, [sessions, sidebarOrder])
 
-  /** Grouped sidebar view: pinned -> groups. Every session belongs to at
-   *  least one group (the auto-created "default" at minimum), so there
-   *  is no "ungrouped" bucket. */
+  /** Grouped sidebar view: pinned -> groups -> ungrouped. Sessions not in
+   *  any group appear in the "Ungrouped" section at the bottom. */
   const sidebarSections = useMemo((): SidebarSection[] => {
     const byId = new Map(sessions.map((s) => [s.id, s]))
 
@@ -914,14 +1009,28 @@ export function App() {
     // 2. Group sections.
     const sections: SidebarSection[] = []
     if (pinned.length > 0) sections.push({ kind: 'pinned', sessions: pinned })
+    const groupedIds = new Set<string>()
     for (const g of groups) {
       const groupSessions: SessionInfo[] = []
       for (const id of g.sessionIds) {
         const s = byId.get(id)
-        if (s) groupSessions.push(s)
+        if (s) {
+          groupSessions.push(s)
+          groupedIds.add(id)
+        }
       }
       sections.push({ kind: 'group', group: g, sessions: groupSessions })
     }
+
+    // 3. Ungrouped sessions (not in any group and not pinned).
+    const ungrouped: SessionInfo[] = []
+    for (const s of sessions) {
+      if (!s.pinned && !groupedIds.has(s.id)) ungrouped.push(s)
+    }
+    if (ungrouped.length > 0) {
+      sections.push({ kind: 'ungrouped', sessions: ungrouped })
+    }
+
     return sections
   }, [sessions, groups])
 
@@ -953,43 +1062,11 @@ export function App() {
     [setGroups],
   )
 
+  /** Delete a group. Orphaned sessions automatically become ungrouped
+   *  (they'll appear in the sidebar's "Ungrouped" section). */
   const handleDeleteGroup = useCallback(
     (groupId: string) => {
-      setGroups((prev) => {
-        const target = prev.find((g) => g.id === groupId)
-        if (!target) return prev.filter((g) => g.id !== groupId)
-        const remaining = prev.filter((g) => g.id !== groupId)
-        // With exclusive membership, all sessionIds in the deleted group
-        // are orphaned. Move them to "default" first, respecting capacity.
-        if (target.sessionIds.length > 0) {
-          const defaultGroup = remaining.find((g) => g.name === 'default')
-          if (defaultGroup) {
-            const space = Math.max(0, 3 - defaultGroup.sessionIds.length)
-            const canMove = target.sessionIds.slice(0, space)
-            const overflow = target.sessionIds.slice(canMove.length)
-            let result = remaining.map((g) =>
-              g.id === defaultGroup.id
-                ? { ...g, sessionIds: [...g.sessionIds, ...canMove] }
-                : g,
-            )
-            // Distribute overflow to other groups with capacity
-            for (const orphanId of overflow) {
-              const available = result.find((g) => g.sessionIds.length < 3)
-              if (available) {
-                result = result.map((g) =>
-                  g.id === available.id
-                    ? { ...g, sessionIds: [...g.sessionIds, orphanId] }
-                    : g,
-                )
-              }
-              // If no group has space, the session stays in the session
-              // list but becomes ungrouped (shown in flat view).
-            }
-            return result
-          }
-        }
-        return remaining
-      })
+      setGroups((prev) => prev.filter((g) => g.id !== groupId))
       setCollapsedGroups((prev) => {
         if (!(groupId in prev)) return prev
         const next = { ...prev }
@@ -1085,6 +1162,7 @@ export function App() {
   )
 
   return (
+    <ErrorBoundary>
     <div
       className="app"
       style={{ ['--sidebar-width' as string]: `${effectiveSidebarWidth}px` }}
@@ -1098,6 +1176,7 @@ export function App() {
           openIds={openIds}
           focusedId={focusedId}
           defaults={defaults}
+          serverModels={serverModels}
           resumingIds={resuming}
           unread={unread}
           sessionColors={sessionColors}
@@ -1146,6 +1225,8 @@ export function App() {
           onRenameGroup={handleRenameGroup}
           onAddToGroup={handleAddToGroup}
           onToggleGroupCollapse={toggleGroupCollapse}
+          maxOpen={maxOpen}
+          contextSteps={contextSteps}
         />
         <div
           className={`sidebar-resizer ${sidebarResize.dragging ? 'dragging' : ''}`}
@@ -1204,6 +1285,22 @@ export function App() {
                 />
               ))}
             </div>
+            <label className="max-panels-control" title="Max open panels & group size (2–5)">
+              <span className="max-panels-label">Panels</span>
+              <select
+                className="select max-panels-select"
+                value={maxOpen}
+                onChange={(e) => setMaxOpenPanels(Number(e.target.value))}
+                aria-label="Max open panels"
+              >
+                {Array.from({ length: MAX_OPEN_MAX - MAX_OPEN_MIN + 1 }, (_, i) => MAX_OPEN_MIN + i).map(
+                  (n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ),
+                )}
+              </select>
+            </label>
+            <ThemeToggle theme={theme} onToggle={handleToggleTheme} />
           </div>
         </header>
 
@@ -1230,7 +1327,7 @@ export function App() {
               <h2>Start a new session</h2>
               <p>
                 Use the left sidebar to create a chat session. Each session is a live Claude Agent SDK{' '}
-                <code>Query</code>. Up to {MAX_OPEN} can be open at once.
+                <code>Query</code>. Up to {maxOpen} can be open at once.
               </p>
             </div>
           ) : (
@@ -1307,6 +1404,7 @@ export function App() {
         }}
       />
     </div>
+    </ErrorBoundary>
   )
 }
 
@@ -1366,6 +1464,8 @@ function ChatPanel({
    *  over dark-theme styling; the native control's dropdown surface
    *  can't be restyled across browsers. */
   const [permMenu, setPermMenu] = useState<{ x: number; y: number } | null>(null)
+  /** Inline error toast replacing window.alert for model/permission failures. */
+  const [panelError, setPanelError] = useState<string | null>(null)
   const recentModels = readRecentModels()
   const chipsDisabled = !session.running || session.terminated
   // Use the live count from the stream when available; fall back to the
@@ -1383,7 +1483,8 @@ function ChatPanel({
       })
       .then((r) => onSessionUpdate(r.session))
       .catch((err) => {
-        window.alert(`Couldn't change model: ${(err as Error).message}`)
+        setPanelError(`Couldn't change model: ${(err as Error).message}`)
+        setTimeout(() => setPanelError(null), 5000)
         onSessionUpdate({ ...session, model: before })
       })
   }
@@ -1395,7 +1496,8 @@ function ChatPanel({
       .post<{ session: SessionInfo }>(`/sessions/${session.id}/permission-mode`, { mode })
       .then((r) => onSessionUpdate(r.session))
       .catch((err) => {
-        window.alert(`Couldn't change permission mode: ${(err as Error).message}`)
+        setPanelError(`Couldn't change permission mode: ${(err as Error).message}`)
+        setTimeout(() => setPanelError(null), 5000)
         onSessionUpdate({ ...session, permissionMode: before })
       })
   }
@@ -1582,6 +1684,12 @@ function ChatPanel({
           </div>
         )}
       </div>
+      {panelError && (
+        <div className="error-toast">
+          {panelError}
+          <button className="error-toast-dismiss" onClick={() => setPanelError(null)}>✕</button>
+        </div>
+      )}
       <div className="chat-panel-body">
         {session.running ? (
           <Chat

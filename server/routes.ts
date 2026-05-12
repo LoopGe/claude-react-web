@@ -5,7 +5,7 @@
 
 import { Hono } from 'hono'
 import type { Options, PermissionMode, Settings } from '@anthropic-ai/claude-agent-sdk'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, writeFile, unlink } from 'node:fs/promises'
 import { resolve as resolvePath } from 'node:path'
 import { HttpError, SessionManager } from './session-manager.js'
 import { generateRecap } from './recap.js'
@@ -13,9 +13,7 @@ import { generateRecap } from './recap.js'
 /** Where per-session uploads land inside the session's cwd. Kept visible
  *  (not dot-prefixed) so users can see what the UI dropped in. */
 const UPLOAD_SUBDIR = 'claude-web-uploads'
-/** 25 MB per-file cap. Generous for text/logs; too small for large binaries
- *  — but those shouldn't flow through this UI anyway. */
-const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+import { MAX_UPLOAD_BYTES } from './config.js'
 
 export function buildApiRouter(sm: SessionManager): Hono {
   const app = new Hono()
@@ -211,6 +209,31 @@ export function buildApiRouter(sm: SessionManager): Hono {
     return c.json({ uploads: saved })
   })
 
+  // Delete a previously uploaded file.
+  app.delete('/sessions/:id/uploads/:filename', async (c) => {
+    const id = c.req.param('id')
+    const filename = c.req.param('filename')
+    const info = sm.get(id)
+    if (!info.cwd) {
+      return c.json({ error: 'session has no cwd' }, 400)
+    }
+    const target = resolvePath(info.cwd, UPLOAD_SUBDIR, filename)
+    // Ensure the resolved path is still inside the upload dir (no path traversal).
+    const uploadDir = resolvePath(info.cwd, UPLOAD_SUBDIR)
+    if (!target.startsWith(uploadDir + '/') && target !== uploadDir) {
+      return c.json({ error: 'invalid filename' }, 400)
+    }
+    try {
+      await unlink(target)
+      return c.json({ ok: true })
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+        return c.json({ error: 'file not found' }, 404)
+      }
+      return c.json({ error: (e as Error).message }, 500)
+    }
+  })
+
   // MCP server status
   app.get('/sessions/:id/mcp-status', async (c) => {
     const mcp = await sm.mcpServerStatus(c.req.param('id'))
@@ -294,12 +317,33 @@ export function buildApiRouter(sm: SessionManager): Hono {
   })
 
   // Session recap — AI-generated summary of a session's conversation.
+  // Returns a fallback summary for dormant sessions (their in-memory
+  // history has been unloaded by the idle GC) so the UI can show
+  // something useful without needing a full resume.
   app.post('/sessions/:id/recap', async (c) => {
     const id = c.req.param('id')
-    sm.get(id) // throws 404 if not found
+    const info = sm.get(id) // throws 404 if not found
     const history = sm.getHistory(id)
     if (!history) {
-      return c.json({ error: 'Session is dormant; resume it to generate a recap.' }, 503)
+      // Dormant session — history is gone but metadata persists.
+      // Return a lightweight fallback so the banner has content.
+      const msgCount = info.messageCount
+      if (msgCount > 0) {
+        return c.json({
+          summary: `Session with ${msgCount} message${msgCount === 1 ? '' : 's'} (dormant — resume to generate full recap).`,
+          stats: { messageCount: msgCount, userTurns: 0, assistantTurns: 0, totalCostUsd: 0, durationMs: 0, toolsUsed: [] },
+          cached: false,
+          generatedAt: Date.now(),
+          fallback: true,
+        })
+      }
+      return c.json({
+        summary: 'No messages yet.',
+        stats: { messageCount: 0, userTurns: 0, assistantTurns: 0, totalCostUsd: 0, durationMs: 0, toolsUsed: [] },
+        cached: false,
+        generatedAt: Date.now(),
+        fallback: true,
+      })
     }
     const result = await generateRecap(history, id)
     return c.json(result)

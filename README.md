@@ -40,8 +40,15 @@ claude-react-web [options]
 | `ANTHROPIC_API_KEY` | API key for the Claude SDK (required unless using base URL + auth token) | — |
 | `ANTHROPIC_BASE_URL` | Custom API base URL | — |
 | `ANTHROPIC_AUTH_TOKEN` | Auth token when using a custom base URL | — |
-| `DEFAULT_MODELS` | Comma-separated model list; first entry is the default model | `anthropic/claude-sonnet-4-20250514, claude-opus-4-20250514, claude-haiku-3-5-20241022` |
-| `RECAP_MODEL` | Lightweight model used for session recap generation | `claude-haiku-3-5-20241022` |
+
+### Configuration file
+
+Most server-side defaults (model list, recap model, session idle timeout, upload limits, context window presets, etc.) are configured via `~/.claude-react-web/config.json`. See [CONFIG.md](./CONFIG.md) for the full field reference, or copy [`config.example.json`](./config.example.json) to get started:
+
+```bash
+mkdir -p ~/.claude-react-web
+cp config.example.json ~/.claude-react-web/config.json
+```
 
 ## Develop
 
@@ -85,7 +92,7 @@ src/
   hooks/              # useWsHub, useChatStream, useAttachments, usePermissionChannel, useKeyboardShortcuts, useInputHistory, …
 ```
 
-The server keeps one live `Query` per session — `session-manager.ts` pumps it and fans each SDK message out to every WebSocket subscriber via a single multiplexed connection per tab. Metadata is persisted in `~/.claude-react-web/sessions.json`, so sessions survive restarts; the SDK itself stores full conversation history in `~/.claude/projects/` and resumes them via `options.resume`. Server-side defaults (model list, recap model, session idle timeout) are centralised in `config.ts` with environment-variable overrides.
+The server keeps one live `Query` per session — `session-manager.ts` pumps it and fans each SDK message out to every WebSocket subscriber via a single multiplexed connection per tab. Metadata is persisted in `~/.claude-react-web/sessions.json`, so sessions survive restarts; the SDK itself stores full conversation history in `~/.claude/projects/` and resumes them via `options.resume`. Server-side defaults (model list, recap model, session idle timeout, context window presets, etc.) are centralised in `config.ts` and configurable via `~/.claude-react-web/config.json` — see [CONFIG.md](./CONFIG.md).
 
 ## Contributing
 

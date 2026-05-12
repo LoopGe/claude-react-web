@@ -15,9 +15,11 @@ import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, Sidebar
 import { PERMISSION_MODES } from '../types'
 
 const RECENT_MODELS_KEY = 'claude-react-web:recent-models'
-const RECENT_MODELS_CAP = 10
+const RECENT_MODELS_CAP_KEY = 'claude-react-web:recent-models-cap'
+const RECENT_MODELS_CAP_DEFAULT = 10
 const RECENT_CWDS_KEY = 'claude-react-web:recent-cwds'
-const RECENT_CWDS_CAP = 10
+const RECENT_CWDS_CAP_KEY = 'claude-react-web:recent-cwds-cap'
+const RECENT_CWDS_CAP_DEFAULT = 10
 
 /** Enable the 1M token context window (Sonnet 4 / 4.5 only). */
 const ONE_M_CONTEXT_BETA = 'context-1m-2025-08-07'
@@ -36,13 +38,16 @@ type ContextStepIdx = number
 
 interface Props {
   sessions: SessionInfo[]
-  /** All sessions currently open in the chat grid (0-3). Any item whose
+  /** All sessions currently open in the chat grid (0-maxOpen). Any item whose
    *  id is in here is rendered as "open" in the sidebar (distinct from
    *  "focused" — the single panel receiving keyboard input). */
   openIds: string[]
   /** The id of the focused panel, or null. Gets the strongest highlight. */
   focusedId: string | null
   defaults: { cwd?: string; model?: string }
+  /** Server-configured model list (from /api/config). Shown as chips
+   *  in the new-session dialog so the user always has a baseline. */
+  serverModels?: string[]
   /** Ids currently being resumed — item is disabled while the POST is in flight. */
   resumingIds?: Set<string>
   /** Map of sessionId → true when the session has a newer lastTurnAt than
@@ -107,6 +112,10 @@ interface Props {
   onAddToGroup: (sessionId: string, groupId: string) => void
   /** Toggle a group's collapsed state in the sidebar. */
   onToggleGroupCollapse: (groupId: string) => void
+  /** Max sessions per group / max open panels. Shared with App. */
+  maxOpen: number
+  /** Context-window size presets from server config. */
+  contextSteps?: Array<{ value: number; label: string; beta?: string }>
 }
 
 export function SessionList({
@@ -114,6 +123,7 @@ export function SessionList({
   openIds,
   focusedId,
   defaults,
+  serverModels,
   resumingIds,
   unread,
   sessionColors,
@@ -139,6 +149,8 @@ export function SessionList({
   onReorderInGroup,
   newSessionDialogOpen,
   onNewSessionDialogChange,
+  maxOpen,
+  contextSteps,
 }: Props) {
   const [uncontrolledShow, setUncontrolledShow] = useState(false)
   const showDialog = newSessionDialogOpen ?? uncontrolledShow
@@ -171,6 +183,9 @@ export function SessionList({
   const [prefilledCwd, setPrefilledCwd] = useState<string | undefined>(undefined)
   /** Visual highlight while a file is being dragged over the button. */
   const [dropZoneActive, setDropZoneActive] = useState(false)
+  /** Error message from a failed folder-drop resolution. Shown inline
+   *  below the "New session" button and auto-clears after 5 seconds. */
+  const [folderDropError, setFolderDropError] = useState<string | null>(null)
   // --- Group UI state ---
   const [showNewGroupInput, setShowNewGroupInput] = useState(false)
   const [newGroupName, setNewGroupName] = useState('')
@@ -205,6 +220,7 @@ export function SessionList({
       if (filtered.length === 0) continue
       if (sec.kind === 'pinned') result.push({ kind: 'pinned', sessions: filtered })
       else if (sec.kind === 'group') result.push({ kind: 'group', group: sec.group, sessions: filtered })
+      else if (sec.kind === 'ungrouped') result.push({ kind: 'ungrouped', sessions: filtered })
     }
     return result
   }, [sidebarSections, filter])
@@ -287,7 +303,8 @@ export function SessionList({
       setPrefilledCwd(res.cwd)
       setShowDialog(true)
     } catch (err) {
-      window.alert(`Couldn't use that folder: ${(err as Error).message}`)
+      setFolderDropError(`Couldn't use that folder: ${(err as Error).message}`)
+      setTimeout(() => setFolderDropError(null), 5000)
     }
   }
 
@@ -524,6 +541,12 @@ export function SessionList({
         >
           + New session
         </button>
+        {folderDropError && (
+          <div className="error-toast">
+            {folderDropError}
+            <button className="error-toast-dismiss" onClick={() => setFolderDropError(null)}>✕</button>
+          </div>
+        )}
         {/* Filter input — visible only when there are at least a handful
             of sessions. Below that the filter is more friction than help. */}
         {sessions.length > 3 && (
@@ -637,7 +660,7 @@ export function SessionList({
                     onDragOver={(e) => {
                       if (!onDropIntoGroup || !isInAppDrag(e)) return
                       // Don't accept drops if group is full (unless reordering within same group)
-                      if (sec.group.sessionIds.length >= 3 && !sec.group.sessionIds.includes(draggingId ?? '')) return
+                      if (sec.group.sessionIds.length >= maxOpen && !sec.group.sessionIds.includes(draggingId ?? '')) return
                       e.preventDefault()
                       if (groupDropHint !== sec.group.id) setGroupDropHint(sec.group.id)
                     }}
@@ -676,7 +699,7 @@ export function SessionList({
                         // highlight when the target is the body itself.
                         if (e.target !== e.currentTarget) return
                         // Don't accept drops if group is full (unless reordering within same group)
-                        if (sec.group.sessionIds.length >= 3 && !sec.group.sessionIds.includes(draggingId ?? '')) return
+                        if (sec.group.sessionIds.length >= maxOpen && !sec.group.sessionIds.includes(draggingId ?? '')) return
                         e.preventDefault()
                         if (groupDropHint !== sec.group.id) setGroupDropHint(sec.group.id)
                       }}
@@ -733,6 +756,20 @@ export function SessionList({
                 </div>
               )
             }
+            if (sec.kind === 'ungrouped') {
+              return (
+                <div key="ungrouped" className="session-section session-section-ungrouped">
+                  <div className="session-section-header ungrouped-header">
+                    <span className="ungrouped-header-icon">☐</span>
+                    <span className="group-header-name">Ungrouped</span>
+                    <span className="group-header-count">{sec.sessions.length}</span>
+                  </div>
+                  <div className="group-sessions">
+                    {sec.sessions.map((s) => renderSessionCard(s))}
+                  </div>
+                </div>
+              )
+            }
             return null
           })
           ) : visibleSessions.length === 0 ? (
@@ -760,13 +797,17 @@ export function SessionList({
         onColorChange={(color) => onSessionColorChange?.(menu.id, color)}
         groups={groups}
         onAddToGroup={onAddToGroup}
+        maxOpen={maxOpen}
       />}
 
       {showDialog && (
         <NewSessionDialog
           defaults={defaults}
+          serverModels={serverModels}
           initialCwd={prefilledCwd}
           groups={groups}
+          maxOpen={maxOpen}
+          contextSteps={contextSteps}
           onCancel={() => {
             setShowDialog(false)
             setPrefilledCwd(undefined)
@@ -792,14 +833,18 @@ interface DialogProps {
   initialCwd?: string
   onSubmit: (form: NewSessionForm) => void
   onCancel: () => void
-  /** Available groups for the mandatory group selector. Always ≥ 1. */
+  /** Available groups for the group selector. May be empty. */
   groups: SessionGroup[]
   /** Server-configured model list (from /api/config). Shown as chips
    *  above the recent-models chips so the user always has a baseline. */
   serverModels?: string[]
+  /** Max sessions per group. */
+  maxOpen: number
+  /** Context-window size presets from server config. */
+  contextSteps?: Array<{ value: number; label: string; beta?: string }>
 }
 
-function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups, serverModels }: DialogProps) {
+function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups, serverModels, maxOpen, contextSteps: contextStepsProp }: DialogProps) {
   const [cwd, setCwd] = useState<string>(initialCwd ?? defaults.cwd ?? '')
   const [model, setModel] = useState<string>(defaults.model ?? '')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
@@ -810,7 +855,7 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups, se
    *  the user explicitly picks one. */
   const [accent, setAccent] = useState<string | undefined>(undefined)
   const [contextStepIdx, setContextStepIdx] = useState<ContextStepIdx>(1) // 200k default
-  const [groupId, setGroupId] = useState<string>(groups[0]?.id ?? '')
+  const [groupId, setGroupId] = useState<string>('')
   const [showPicker, setShowPicker] = useState(false)
 
   // Advanced options
@@ -828,6 +873,18 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups, se
 
   const [recentModels, setRecentModels] = useLocalStorage<string[]>(RECENT_MODELS_KEY, [])
   const [recentCwds, setRecentCwds] = useLocalStorage<string[]>(RECENT_CWDS_KEY, [])
+  const [recentModelsCapRaw] = useLocalStorage<number>(RECENT_MODELS_CAP_KEY, RECENT_MODELS_CAP_DEFAULT)
+  const [recentCwdsCapRaw] = useLocalStorage<number>(RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT)
+  const recentModelsCap = Math.max(3, Math.min(50, Math.round(recentModelsCapRaw)))
+  const recentCwdsCap = Math.max(3, Math.min(50, Math.round(recentCwdsCapRaw)))
+
+  // Use server-provided context steps if available; fall back to local defaults.
+  const activeContextSteps = contextStepsProp && contextStepsProp.length > 0
+    ? contextStepsProp
+    : CONTEXT_STEPS
+  // Clamp context step index if the server provides fewer/more steps than
+  // the local defaults (e.g. user had index 3 but server only has 3 steps).
+  const safeContextStepIdx = Math.min(contextStepIdx, activeContextSteps.length - 1)
 
   // Shared "remember recent …" helper: MRU-order, de-duped, capped.
   //
@@ -872,13 +929,13 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups, se
   }
 
   const rememberModel = (raw: string) =>
-    rememberIn(RECENT_MODELS_KEY, setRecentModels, RECENT_MODELS_CAP, raw)
+    rememberIn(RECENT_MODELS_KEY, setRecentModels, recentModelsCap, raw)
   const forgetModel = (name: string) => {
     setRecentModels((prev) => prev.filter((m) => m !== name))
   }
 
   const rememberCwd = (raw: string) =>
-    rememberIn(RECENT_CWDS_KEY, setRecentCwds, RECENT_CWDS_CAP, raw)
+    rememberIn(RECENT_CWDS_KEY, setRecentCwds, recentCwdsCap, raw)
   const forgetCwd = (name: string) => {
     setRecentCwds((prev) => prev.filter((c) => c !== name))
   }
@@ -886,7 +943,7 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups, se
   const submit = () => {
     rememberModel(model)
     rememberCwd(cwd)
-    const step = CONTEXT_STEPS[contextStepIdx]
+    const step = activeContextSteps[safeContextStepIdx]
 
     // Parse comma-separated string into trimmed string[], or undefined if empty.
     const csv = (s: string) => {
@@ -919,7 +976,7 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups, se
       // just 1M) — keeps the wire payload clean for all other sizes.
       betas: step.beta ? [step.beta] : undefined,
       accent,
-      groupId: groupId || groups[0]?.id,
+      groupId: groupId || undefined,
       // Advanced options — only include when non-empty
       effort: (effort || undefined) as NewSessionForm['effort'],
       thinking,
@@ -1096,11 +1153,12 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups, se
                 value={groupId}
                 onChange={(e) => setGroupId(e.target.value)}
               >
+                <option value="">None (Ungrouped)</option>
                 {groups.map((g) => {
-                  const full = g.sessionIds.length >= 3
+                  const full = g.sessionIds.length >= maxOpen
                   return (
                     <option key={g.id} value={g.id} disabled={full}>
-                      {g.name} ({g.sessionIds.length}/3){full ? ' — full' : ''}
+                      {g.name} ({g.sessionIds.length}/{maxOpen}){full ? ' — full' : ''}
                     </option>
                   )
                 })}
@@ -1140,12 +1198,12 @@ function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups, se
             <div className="settings-field">
               <label>Context size</label>
               <StepSlider
-                steps={CONTEXT_STEPS}
-                value={contextStepIdx}
+                steps={activeContextSteps}
+                value={safeContextStepIdx}
                 onChange={setContextStepIdx}
               />
               <span className="hint">
-                {contextStepIdx === 4
+                {activeContextSteps[safeContextStepIdx]?.beta
                   ? '1M beta · Sonnet 4 / 4.5 only — other models fall back to their own limit.'
                   : 'Controls the context window the session is allowed to use.'}
               </span>
@@ -1338,6 +1396,8 @@ interface MenuProps {
   // --- Group actions ---
   groups: SessionGroup[]
   onAddToGroup: (sessionId: string, groupId: string) => void
+  /** Max sessions per group. */
+  maxOpen: number
 }
 
 function SessionContextMenu({
@@ -1355,6 +1415,7 @@ function SessionContextMenu({
   onColorChange,
   groups,
   onAddToGroup,
+  maxOpen,
 }: MenuProps) {
   if (!session) return null
   const items: ContextMenuItem[] = [
@@ -1387,19 +1448,27 @@ function SessionContextMenu({
       onClick: () => onNewLikeThis(anchor.id),
     },
     { label: '' }, // separator before group actions
-    // --- Group actions (exclusive membership — session is in exactly one group) ---
+    // --- Group actions (exclusive membership — session is in at most one group) ---
     ...(() => {
       const sessionGroup = groups.find((g) => g.sessionIds.includes(anchor.id))
       // Only show groups with space (and not the current group)
       const availableGroups = groups.filter(
-        (g) => g.id !== sessionGroup?.id && g.sessionIds.length < 3,
+        (g) => g.id !== sessionGroup?.id && g.sessionIds.length < maxOpen,
       )
       const items: ContextMenuItem[] = []
+      // "Remove from group" — only if session is currently in a group
+      if (sessionGroup) {
+        items.push({
+          label: 'Remove from group',
+          icon: '✕',
+          onClick: () => onAddToGroup(anchor.id, ''),
+        })
+      }
       if (availableGroups.length > 0) {
         items.push({ label: 'Move to group ▸', icon: '→', disabled: true })
         for (const g of availableGroups) {
           items.push({
-            label: `  ${g.name} (${g.sessionIds.length}/3)`,
+            label: `  ${g.name} (${g.sessionIds.length}/${maxOpen})`,
             icon: ' ',
             onClick: () => onAddToGroup(anchor.id, g.id),
           })

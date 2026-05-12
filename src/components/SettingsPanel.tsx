@@ -25,20 +25,47 @@ export function SettingsPanel({ session, onClose, onSessionUpdate }: Props) {
   // so there's no need to imperatively reset state here. All three calls
   // forward SDK control requests to the subprocess — if the session isn't
   // running the server returns 410; skip them rather than surface noise.
+  //
+  // We also fetch server-configured models from /api/config and merge
+  // them in so that custom models (e.g. xiaomi/mimo-*) always appear
+  // even if the SDK subprocess doesn't list them.
   useEffect(() => {
     if (!session.running) return
     const ac = new AbortController()
     ;(async () => {
+      // Fetch server-configured models (non-blocking, best-effort)
+      let serverModelIds: string[] = []
+      try {
+        const cfg = await api.get<{ models?: string[] }>('/config', {
+          signal: ac.signal,
+        })
+        serverModelIds = cfg.models ?? []
+      } catch {
+        /* ignore — we'll still have SDK models */
+      }
       try {
         const m = await api.get<{ models: ModelInfo[] }>(
           `/sessions/${session.id}/models`,
           { signal: ac.signal },
         )
-        setModels(m.models)
+        // Merge: SDK models first, then append any server-configured
+        // models that the SDK didn't already include.
+        const sdkIds = new Set(m.models.map((x) => x.id))
+        const merged = [
+          ...m.models,
+          ...serverModelIds
+            .filter((id) => !sdkIds.has(id))
+            .map((id): ModelInfo => ({ id })),
+        ]
+        setModels(merged)
       } catch (e) {
         if ((e as Error).name === 'AbortError') return
-        // Supported models fails if SDK hasn't initialized yet — retry silently
+        // Supported models fails if SDK hasn't initialized yet — fall
+        // back to server-configured models so the dropdown isn't empty.
         console.warn('could not load models:', (e as Error).message)
+        if (serverModelIds.length) {
+          setModels(serverModelIds.map((id): ModelInfo => ({ id })))
+        }
       }
       try {
         const u = await api.get<{ usage: unknown }>(

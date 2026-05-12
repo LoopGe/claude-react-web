@@ -14,7 +14,7 @@
 // result. See server/session-manager.ts `answerQuestion` for the wire
 // format.
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Markdown } from './Markdown'
 import type { PermissionRequest, QuestionSpec } from '../types'
 
@@ -40,6 +40,32 @@ export function QuestionDialog({ request, onSubmit, onSkipAll }: Props) {
     request.questions.map(() => null),
   )
   const [busy, setBusy] = useState(false)
+  const dialogRef = useRef<HTMLDivElement>(null)
+
+  // Focus trap: keep Tab inside the dialog.
+  useEffect(() => {
+    const el = dialogRef.current
+    if (!el) return
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab') return
+      const focusable = el.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      )
+      if (!focusable.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (e.shiftKey ? document.activeElement === first : document.activeElement === last) {
+        e.preventDefault()
+        ;(e.shiftKey ? last : first).focus()
+      }
+    }
+    el.addEventListener('keydown', handleKey)
+    const firstFocusable = el.querySelector<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    )
+    firstFocusable?.focus()
+    return () => el.removeEventListener('keydown', handleKey)
+  }, [])
 
   const setSingle = (qIdx: number, label: string) => {
     setChoices((prev) => {
@@ -90,7 +116,7 @@ export function QuestionDialog({ request, onSubmit, onSkipAll }: Props) {
   const hasAnyAnswer = choices.some((c) => c != null)
 
   return (
-    <div className="perm-overlay" role="dialog" aria-modal="false">
+    <div className="perm-overlay" role="dialog" aria-modal="true" ref={dialogRef}>
       <div className="perm-card">
         <div className="modal-header">
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
