@@ -96,3 +96,4 @@ Vite dev server on 5174 proxies `/api` to 3456. Production: `vite build` → `di
 - `Shift+Tab` cycles through permission modes (default → auto-accept → bypass).
 - `api_retry` system messages are rendered as rate-limit/overload/retry indicators in the message list.
 - `src/components/subagents.ts` tracks `Agent`, `Task`, and `Explore` tool_use calls for active subagent display.
+- CSS: never hardcode color hex values — always use theme CSS variables (e.g. `var(--btn-hover-bg)` not `#242a35`). Every new color must be defined in both `:root` (dark) and `[data-theme="light"]` blocks. This prevents light/dark theme regressions.

@@ -615,6 +615,25 @@ export function App() {
     [closeSession, setGroups, setSessionColors],
   )
 
+  /** Delete the session and create a fresh one with the same config. */
+  const handleRestart = useCallback(
+    async (id: string) => {
+      const source = sessions.find((s) => s.id === id)
+      if (!source) return
+      const sourceGroup = groups.find((g) => g.sessionIds.includes(id))
+      const fallbackGroup = groups.find((g) => g.sessionIds.length < maxOpen)
+      await handleDelete(id)
+      const form: NewSessionForm = {
+        cwd: source.cwd,
+        model: source.model,
+        permissionMode: source.permissionMode,
+        groupId: sourceGroup?.id ?? fallbackGroup?.id,
+      }
+      await handleCreate(form)
+    },
+    [sessions, groups, maxOpen, handleDelete, handleCreate],
+  )
+
   /** Activate a group: replace main-area panels with the group's sessions. */
   const handleActivateGroup = useCallback(
     (groupId: string) => {
@@ -1122,6 +1141,7 @@ export function App() {
           onClosePanel={closeSession}
           onFork={handleFork}
           onNewLikeThis={handleNewLikeThis}
+          onRestart={handleRestart}
           onReorder={handleReorderSidebar}
           onDropIntoGroup={handleAddToGroup}
           onReorderInGroup={handleReorderInGroup}
@@ -1182,7 +1202,7 @@ export function App() {
             >
               {notifications.enabled ? '🔔' : '🔕'}
             </button>
-            <div className="accent-picker" role="radiogroup" aria-label="Accent colour">
+            <div className="btn btn-icon accent-picker" role="radiogroup" aria-label="Accent colour">
               {ACCENT_COLORS.map((c) => (
                 <button
                   key={c.accent}

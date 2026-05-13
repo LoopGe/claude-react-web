@@ -201,19 +201,11 @@ button { cursor: pointer; }
   border-style: solid;
 }
 
-/* Toolbar instance: wrap the swatches in a btn-icon-shaped container
-   so it visually matches the adjacent toolbar buttons. */
+/* Toolbar accent picker inherits .btn.btn-icon base styles.
+   Only needs layout override for the swatch row. */
 .main-toolbar .accent-picker {
   gap: 3px;
-  padding: 4px 6px;
-  background: var(--bg-elev-2);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  transition: background 0.1s, border-color 0.1s;
-}
-.main-toolbar .accent-picker:hover {
-  background: #242a35;
-  border-color: #3a4150;
+  min-width: unset;
 }
 .main-toolbar .accent-swatch {
   width: 14px;
@@ -295,8 +287,8 @@ body.resizing-col * {
 }
 .brand-dot {
   width: 10px; height: 10px; border-radius: 50%;
-  background: radial-gradient(circle at 30% 30%, #a3b2ff, var(--accent));
-  box-shadow: 0 0 10px rgba(123, 140, 222, 0.6);
+  background: radial-gradient(circle at 30% 30%, color-mix(in srgb, var(--accent) 60%, white), var(--accent));
+  box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 60%, transparent);
 }
 
 .main {
@@ -461,19 +453,24 @@ body.resizing-col * {
   box-shadow: 0 0 0 2px var(--bg);
 }
 
-/* Plan-mode visual cue. Two layers:
-   1. .chat-panel.plan-mode tints the header background + adds a left
+/* Non-default permission mode visual cue. Two layers:
+   1. .chat-panel.mode-active tints the header background + adds a left
       border so the panel as a whole reads as "different from default".
-   2. .chat-panel-plan-badge is a small pill near the title — the user's
+   2. .chat-panel-mode-badge is a small pill near the title — the user's
       eye lands on the title first, so the cue should be there too.
-   Tinted with --warn (amber) rather than --accent so it doesn't compete
-   with the focused-panel accent border. */
-.chat-panel.plan-mode .chat-panel-header {
-  background: color-mix(in srgb, var(--warn) 8%, var(--bg-elev));
-  border-bottom-color: color-mix(in srgb, var(--warn) 35%, var(--border));
-  box-shadow: inset 3px 0 0 var(--warn);
+   Tinted with --warn (amber) for plan, --danger for bypass/dontAsk,
+   --accent for acceptEdits/auto. */
+.chat-panel.mode-active .chat-panel-header {
+  background: color-mix(in srgb, var(--mode-color, var(--warn)) 8%, var(--bg-elev));
+  border-bottom-color: color-mix(in srgb, var(--mode-color, var(--warn)) 35%, var(--border));
+  box-shadow: inset 3px 0 0 var(--mode-color, var(--warn));
 }
-.chat-panel-plan-badge {
+.chat-panel.mode-plan { --mode-color: var(--warn); }
+.chat-panel.mode-bypassPermissions { --mode-color: var(--danger); }
+.chat-panel.mode-dontAsk { --mode-color: var(--danger); }
+.chat-panel.mode-acceptEdits { --mode-color: var(--accent); }
+.chat-panel.mode-auto { --mode-color: var(--accent); }
+.chat-panel-mode-badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -481,12 +478,13 @@ body.resizing-col * {
   font-size: 11px;
   font-weight: 600;
   font-family: var(--mono);
-  color: var(--warn);
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
-  border-radius: 999px;
+  color: var(--mode-color, var(--warn));
+  background: color-mix(in srgb, var(--mode-color, var(--warn)) 12%, transparent);
+  border: none;
+  border-radius: 4px;
   flex-shrink: 0;
   user-select: none;
+  line-height: 1.35;
 }
 
 /* Row 2 pieces: cwd (📁 + shortened path), message count, and an
@@ -661,22 +659,27 @@ body.resizing-col * {
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
 }
 
-/* Sidebar plan-mode marker: same size/spacing as the pin so it lines up
-   with other inline title icons. The amber-tinted left border on the
-   card itself is the more prominent cue — see .session-item.plan-mode. */
-.session-item-plan {
+/* Sidebar mode marker: same size/spacing as the pin so it lines up
+   with other inline title icons. The tinted left border on the
+   card itself is the more prominent cue — see .session-item.mode-active. */
+.session-item-mode-badge {
   margin-right: 4px;
   font-size: 11px;
   vertical-align: middle;
 }
-.session-item.plan-mode {
-  box-shadow: inset 3px 0 0 var(--warn);
+.session-item.mode-active {
+  box-shadow: inset 3px 0 0 var(--mode-color, var(--warn));
 }
-.session-item.plan-mode.focused {
-  /* When a plan-mode session is the focused panel, keep the warn stripe
+.session-item.mode-plan { --mode-color: var(--warn); }
+.session-item.mode-bypassPermissions { --mode-color: var(--danger); }
+.session-item.mode-dontAsk { --mode-color: var(--danger); }
+.session-item.mode-acceptEdits { --mode-color: var(--accent); }
+.session-item.mode-auto { --mode-color: var(--accent); }
+.session-item.mode-active.focused {
+  /* When a non-default-mode session is the focused panel, keep the stripe
      (it's the higher-information signal) but stack the focused outline
      beside it so the user still sees which row is active. */
-  box-shadow: inset 3px 0 0 var(--warn), 0 0 0 1px var(--accent) inset;
+  box-shadow: inset 3px 0 0 var(--mode-color, var(--warn)), 0 0 0 1px var(--accent) inset;
 }
 .chat-panel-body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
 .empty-state {
