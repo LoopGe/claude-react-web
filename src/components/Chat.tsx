@@ -27,7 +27,7 @@ import { useSessionRecap } from '../hooks/useSessionRecap'
 import { MessageSearch } from './MessageSearch'
 import { ContextMenu } from './ContextMenu'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
-import type { SessionInfo, SlashCommand } from '../types'
+import type { QuestionSpec, SessionInfo, SlashCommand } from '../types'
 
 const INPUT_HISTORY_KEY = 'claude-react-web:input-history'
 const DRAFT_KEY_PREFIX = 'claude-react-web:draft:'
@@ -92,17 +92,26 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
    *  type-enter-type-enter flow. */
   const [composerFocusSignal, setComposerFocusSignal] = useState(0)
 
-  // Slash commands — fetched once per session mount. The SDK subprocess
-  // returns the list via a control request; 410 on dormant sessions is
-  // expected and silently ignored.
+  // Slash commands — cached per session so switching away and back
+  // doesn't re-fetch. The SDK subprocess returns the list via a
+  // control request; 410 on dormant sessions is expected and ignored.
   const [commands, setCommands] = useState<SlashCommand[]>([])
+  const commandsCacheRef = useRef<Map<string, SlashCommand[]>>(new Map())
   useEffect(() => {
     if (!session.running) return
+    const cached = commandsCacheRef.current.get(session.id)
+    if (cached) {
+      setCommands(cached)
+      return
+    }
     let cancelled = false
     api
       .get<{ commands: SlashCommand[] }>(`/sessions/${session.id}/commands`)
       .then((res) => {
-        if (!cancelled) setCommands(res.commands ?? [])
+        if (cancelled) return
+        const cmds = res.commands ?? []
+        commandsCacheRef.current.set(session.id, cmds)
+        setCommands(cmds)
       })
       .catch(() => {})
     return () => {
@@ -190,14 +199,33 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
   // as part of the conversation rather than a floating overlay. The hook
   // resets whenever lastTurnAt advances (i.e. user sent a new message).
   const recap = useSessionRecap(session.id, session.lastTurnAt)
-  // Compose stream messages + recap message. Append the recap at the
-  // end since it summarises everything up to the latest turn — putting
-  // it elsewhere would require knowing the assistant message boundary
-  // and would also fight with virtualisation's "follow latest".
+
+  // Record answered questions so the user's choices stay visible in the
+  // transcript after the dialog closes. Each entry becomes a synthetic
+  // message rendered inline by MessageList.
+  const [answeredQuestions, setAnsweredQuestions] = useState<Array<{
+    id: string
+    questions: QuestionSpec[]
+    answers: Array<string | string[] | null>
+  }>>([])
+
+  // Compose stream messages + recap + answered questions. Append recap
+  // at the end since it summarises everything up to the latest turn.
   const messagesWithRecap = useMemo(() => {
-    if (!recap.message) return stream.messages
-    return [...stream.messages, recap.message]
-  }, [stream.messages, recap.message])
+    let msgs = stream.messages
+    if (recap.message) msgs = [...msgs, recap.message]
+    if (answeredQuestions.length > 0) {
+      const qMsgs = answeredQuestions.map((aq) => ({
+        type: 'question_answer' as const,
+        uuid: `qa:${aq.id}`,
+        session_id: session.id,
+        questions: aq.questions,
+        answers: aq.answers,
+      }))
+      msgs = [...msgs, ...qMsgs]
+    }
+    return msgs
+  }, [stream.messages, recap.message, answeredQuestions, session.id])
 
   // Active subagents — scan messages for Agent/Task tool_use without a
   // matching tool_result. Memoised on message count to avoid rescanning
@@ -395,6 +423,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
         showSystemEvents={showSystemEvents}
         pendingInterruptRef={pendingInterruptRef}
         replayReady={stream.replayReady}
+        streamingContent={stream.streamingContent}
         onRefreshRecap={recap.refresh}
       />
 
@@ -459,7 +488,13 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
             <QuestionDialog
               key={head.id}
               request={head}
-              onSubmit={(answers) => void permissions.answerQuestion(head.id, answers)}
+              onSubmit={(answers) => {
+                setAnsweredQuestions((prev) => [
+                  ...prev,
+                  { id: head.id, questions: head.questions, answers },
+                ])
+                void permissions.answerQuestion(head.id, answers)
+              }}
               onSkipAll={() =>
                 void permissions.answerQuestion(
                   head.id,

@@ -11,32 +11,48 @@
 //   { value: undefined, done: true }.
 // - Only one consumer is expected per iterable (matches Query's usage).
 
+let pushableSeq = 0
+
 export interface Pushable<T> {
   iterable: AsyncIterable<T>
   push: (item: T) => void
   end: () => void
   closed: boolean
+  /** Diagnostic: true when a consumer is blocked on next() waiting for data. */
+  readonly hasWaiter: boolean
+  /** Diagnostic: number of items sitting in the queue. */
+  readonly queueDepth: number
 }
 
-export function createPushable<T>(): Pushable<T> {
+export function createPushable<T>(label = 'pushable'): Pushable<T> {
+  const id = `${label}#${++pushableSeq}`
   const queue: T[] = []
   let waiter: ((value: IteratorResult<T>) => void) | null = null
   let ended = false
+  let nextCallCount = 0
+  let pushCallCount = 0
 
   const state = {
     push(item: T) {
-      if (ended) return
+      pushCallCount++
+      if (ended) {
+        console.warn(`[${id}] push #${pushCallCount} DROPPED — ended=true`)
+        return
+      }
       if (waiter) {
         const w = waiter
         waiter = null
+        console.log(`[${id}] push #${pushCallCount} → resolved waiter directly (queue was empty, consumer was waiting)`)
         w({ value: item, done: false })
       } else {
         queue.push(item)
+        console.log(`[${id}] push #${pushCallCount} → queued (no waiter, queue depth now: ${queue.length})`)
       }
     },
     end() {
       if (ended) return
       ended = true
+      console.log(`[${id}] end() called — queue depth: ${queue.length}, waiter: ${!!waiter}`)
       if (waiter) {
         const w = waiter
         waiter = null
@@ -50,14 +66,20 @@ export function createPushable<T>(): Pushable<T> {
 
   const iterable: AsyncIterable<T> = {
     [Symbol.asyncIterator]() {
+      console.log(`[${id}] [Symbol.asyncIterator]() called — new iterator created`)
       return {
         next(): Promise<IteratorResult<T>> {
+          nextCallCount++
           if (queue.length) {
-            return Promise.resolve({ value: queue.shift()!, done: false })
+            const item = queue.shift()!
+            console.log(`[${id}] next #${nextCallCount} → resolved from queue (queue depth now: ${queue.length})`)
+            return Promise.resolve({ value: item, done: false })
           }
           if (ended) {
+            console.log(`[${id}] next #${nextCallCount} → done (ended=true)`)
             return Promise.resolve({ value: undefined as unknown as T, done: true })
           }
+          console.log(`[${id}] next #${nextCallCount} → waiting (setting waiter, no items in queue)`)
           return new Promise<IteratorResult<T>>((resolve) => {
             waiter = resolve
           })
@@ -69,6 +91,7 @@ export function createPushable<T>(): Pushable<T> {
         // a new iterator). `end()` is the proper way to terminate the
         // producer; `return()` only closes the current consumer.
         return(): Promise<IteratorResult<T>> {
+          console.warn(`[${id}] return() called on iterator — waiter: ${!!waiter}, queue: ${queue.length}, ended: ${ended}`)
           if (waiter) {
             const w = waiter
             waiter = null
@@ -86,6 +109,12 @@ export function createPushable<T>(): Pushable<T> {
     end: () => state.end(),
     get closed() {
       return state.closed
+    },
+    get hasWaiter() {
+      return waiter !== null
+    },
+    get queueDepth() {
+      return queue.length
     },
   }
 }

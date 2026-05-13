@@ -81,7 +81,14 @@ export function useSessionRecap(
   sessionId: string,
   lastTurnAt: number | undefined,
 ): SessionRecap {
-  const [message, setMessage] = useState<RecapMessage | null>(null)
+  // Cache recap messages across unmount/remount so switching sessions
+  // doesn't lose an already-fetched recap. The localStorage lastViewed
+  // check prevents re-fetch, but useState gets wiped on unmount — the
+  // ref fills the gap.
+  const recapCacheRef = useRef<Map<string, RecapMessage>>(new Map())
+  const [message, setMessage] = useState<RecapMessage | null>(
+    () => recapCacheRef.current.get(sessionId) ?? null,
+  )
   const fetchAbortRef = useRef<AbortController | null>(null)
 
   /** Fire the recap fetch for `turnAt`. Manages loading/error state by
@@ -106,11 +113,13 @@ export function useSessionRecap(
         .post<RecapResponse>(`/sessions/${sessionId}/recap`, undefined, { signal: controller.signal })
         .then((data) => {
           if (controller.signal.aborted) return
-          setMessage({
+          const ready: RecapMessage = {
             ...baseMsg,
             state: 'ready',
             recap: data,
-          })
+          }
+          recapCacheRef.current.set(sessionId, ready)
+          setMessage(ready)
           writeLastViewed(sessionId, turnAt)
         })
         .catch((err: unknown) => {
@@ -143,7 +152,16 @@ export function useSessionRecap(
     // both StrictMode double-mount (in-memory message has same lastTurnAt)
     // and hot reload (localStorage records the persisted view).
     const persistedSeen = readLastViewed()[sessionId] ?? 0
-    if (persistedSeen >= lastTurnAt) return
+    if (persistedSeen >= lastTurnAt) {
+      // The message may have been lost on unmount but the cache still
+      // has it — restore so the user sees the recap without a re-fetch.
+      const cached = recapCacheRef.current.get(sessionId)
+      if (cached && cached.lastTurnAt === lastTurnAt) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setMessage(cached)
+      }
+      return
+    }
 
     const elapsed = Date.now() - lastTurnAt
     const remaining = IDLE_THRESHOLD_MS - elapsed

@@ -476,6 +476,13 @@ export function App() {
     [setGroups, maxOpen],
   )
 
+  /** The group whose sessions are currently open in the main grid.
+   *  null when openIds is empty or no group fully owns the open set. */
+  const activeGroupId = useMemo(() => {
+    if (openIds.length === 0) return null
+    return groups.find((g) => openIds.every((id) => g.sessionIds.includes(id)))?.id ?? null
+  }, [openIds, groups])
+
   const handleCreate = useCallback(
     async (form: NewSessionForm) => {
       setOpError(null)
@@ -488,9 +495,26 @@ export function App() {
         // locally too we race with the SSE, end up with two rows, and
         // later state updates (e.g. a subsequent pump error) only hit
         // one of them — leaving an "err" phantom alongside the real card.
-        openSession(res.session.id, res.session.lastTurnAt)
+
         // Assign to group (optional — ungrouped sessions are allowed).
         if (groupId) handleAddToGroup(res.session.id, groupId)
+
+        // When viewing a group, only open the new session in the grid
+        // if it belongs to that group. Otherwise leave it in the sidebar
+        // so it doesn't intrude on the group view.
+        const effectiveGroupId = groupId || null
+        if (activeGroupId && effectiveGroupId !== activeGroupId) {
+          setLastSeenTurn((prev) => ({ ...prev, [res.session.id]: res.session.lastTurnAt ?? Date.now() }))
+        } else if (activeGroupId && effectiveGroupId === activeGroupId) {
+          // Same group — append to existing group grid (matches handleSelect
+          // behaviour for same-group sessions).
+          openSession(res.session.id, res.session.lastTurnAt)
+        } else {
+          // Ungrouped session, no group view — replace grid with single panel.
+          setFocusedId(res.session.id)
+          setOpenIds([res.session.id])
+          setLastSeenTurn((prev) => ({ ...prev, [res.session.id]: res.session.lastTurnAt ?? Date.now() }))
+        }
         if (accent) {
           // Save the chosen accent under the new id. Direct localStorage
           // write + setState (same pattern as the color-menu handler) so
@@ -515,7 +539,7 @@ export function App() {
         setOpError((e as Error).message)
       }
     },
-    [openSession, setSessionColors, handleAddToGroup],
+    [setSessionColors, handleAddToGroup, activeGroupId, openSession, setLastSeenTurn],
   )
 
   const handleFork = useCallback(
@@ -591,13 +615,6 @@ export function App() {
     },
     [closeSession, setGroups, setSessionColors],
   )
-
-  /** The group whose sessions are currently open in the main grid.
-   *  null when openIds is empty or no group fully owns the open set. */
-  const activeGroupId = useMemo(() => {
-    if (openIds.length === 0) return null
-    return groups.find((g) => openIds.every((id) => g.sessionIds.includes(id)))?.id ?? null
-  }, [openIds, groups])
 
   /** Activate a group: replace main-area panels with the group's sessions. */
   const handleActivateGroup = useCallback(
@@ -1107,6 +1124,7 @@ export function App() {
           onRenameGroup={handleRenameGroup}
           onAddToGroup={handleAddToGroup}
           onToggleGroupCollapse={toggleGroupCollapse}
+          activeGroupId={activeGroupId}
           maxOpen={maxOpen}
           contextSteps={contextSteps}
         />

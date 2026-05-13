@@ -250,7 +250,7 @@ export class SessionManager {
 
   /** Shared spawn path for create() and resume(). */
   private spawn(id: string, opts: Options): SessionInfo {
-    const input = createPushable<SDKUserMessage>()
+    const input = createPushable<SDKUserMessage>(`input-${id.slice(0, 8)}`)
     const fullOpts: Options = { ...opts }
     // Remember the user-requested permission mode before we strip it
     // from the SDK options. The session's own state ends up holding it.
@@ -466,7 +466,8 @@ export class SessionManager {
       permissionSubscribers: new Map(),
       pending: new Map(),
       history: [],
-      contextUsagePushable: createPushable<unknown>(),
+      contextUsagePushable: createPushable<unknown>(`ctx-${id.slice(0, 8)}`),
+      abortController: new AbortController(),
       pumpTask: Promise.resolve(),
       running: true,
       terminated: false,
@@ -499,7 +500,6 @@ export class SessionManager {
       // caller should POST /resume first rather than retrying send().
       throw new HttpError(409, `session ${id} is not running; resume it first`)
     }
-    console.log(`[session ${id}] send — ${text.length} chars, pendingTurns before: ${s.pendingTurns}`)
     const userMsg: SDKUserMessage = {
       type: 'user',
       message: { role: 'user', content: text },
@@ -508,7 +508,18 @@ export class SessionManager {
       session_id: s.id,
     }
     // 1. Feed the SDK so it triggers an assistant turn.
+    const pushableClosed = s.input.closed
+    console.log(
+      `[session ${id}] send PRE-PUSH — ${text.length} chars, uuid=${userMsg.uuid}, ` +
+      `pendingTurns=${s.pendingTurns}, input.closed=${pushableClosed}, ` +
+      `input.hasWaiter=${s.input.hasWaiter}, input.queueDepth=${s.input.queueDepth}, ` +
+      `running=${s.running}, terminated=${s.terminated}`,
+    )
     s.input.push(userMsg)
+    console.log(
+      `[session ${id}] send POST-PUSH — pushable.closed=${s.input.closed}, ` +
+      `hasWaiter=${s.input.hasWaiter}, queueDepth=${s.input.queueDepth}`,
+    )
     // 2. Also broadcast + record locally — the SDK's output stream doesn't
     //    echo user messages back, so without this step the client would
     //    never see its own sent text.
@@ -963,6 +974,10 @@ export class SessionManager {
     if (!s) return
     if (opts.terminate) s.terminated = true
     s.running = false
+    // Signal the pump to stop waiting on iter.next(). Without this,
+    // a wedged SDK generator keeps the pump's 60s idle watchdog firing
+    // indefinitely even after the session has been removed.
+    s.abortController.abort()
     s.input.end()
     // When terminating (explicit delete or graceful shutdown), await the
     // pump so the SDK subprocess has time to exit cleanly. On idle GC we
@@ -982,13 +997,16 @@ export class SessionManager {
     for (const sub of s.permissionSubscribers.values()) sub.end()
     s.permissionSubscribers.clear()
     s.contextUsagePushable.end()
+    // Broadcast the running=false / terminated state BEFORE removing
+    // from the map. Without this, the client's copy stays stale at
+    // `running: true` — handleSelect then skips resume, and the user
+    // hits a 409 on their next send. The session is still in the live
+    // map at this point so info(s) works correctly.
+    if (!opts.terminate) {
+      this.broadcastGlobal({ kind: 'update', session: this.info(s) })
+    }
     this.sessions.delete(id)
     invalidateRecapCache(id)
-    // Persist the final state (terminated flag, messageCount, etc.) to
-    // disk without broadcasting an `update` — the session is already
-    // removed from the live map, so an update event would be misleading.
-    // For idle GC the client sees the dormant entry on next list();
-    // for delete() the caller broadcasts 'removed' separately.
     this.writeStore(s)
   }
 

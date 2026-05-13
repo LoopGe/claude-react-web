@@ -34,6 +34,9 @@ interface Props {
    *  When false, shows a loading skeleton instead of the empty-state
    *  message, preventing a flash of "no messages" on session switch. */
   replayReady?: boolean
+  /** Accumulated text from streaming deltas. When non-null, a live
+   *  "typing" bubble is rendered at the bottom of the transcript. */
+  streamingContent?: string | null
   /** Forwarded to the inline recap message's ↻ button. Caller (Chat)
    *  passes useSessionRecap().refresh; without it the button is hidden. */
   onRefreshRecap?: () => void
@@ -46,7 +49,7 @@ interface RenderableItem {
   isCompactSummary: boolean
 }
 
-export function MessageList({ messages, showSystemEvents = false, pendingInterruptRef, replayReady = true, onRefreshRecap }: Props) {
+export function MessageList({ messages, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, onRefreshRecap }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -236,6 +239,18 @@ export function MessageList({ messages, showSystemEvents = false, pendingInterru
                 />
               </div>
             )}
+            components={{
+              Footer: streamingContent != null
+                ? () => (
+                    <div className="msg msg-assistant streaming-msg">
+                      <div className="msg-body assistant-body">
+                        <Markdown text={streamingContent} />
+                        <span className="streaming-cursor" />
+                      </div>
+                    </div>
+                  )
+                : undefined,
+            }}
             alignToBottom
           />
         )}
@@ -328,6 +343,39 @@ const MessageView = memo(function MessageView({
   // real assistant turn.
   if (type === 'recap') {
     return <RecapMessageView msg={msg} onRefresh={onRefreshRecap} />
+  }
+
+  // Synthetic question-answer message — records the user's choices from
+  // AskUserQuestion so they stay visible after the dialog closes.
+  if (type === 'question_answer') {
+    const qa = msg as unknown as {
+      questions: Array<{ question: string; header?: string; options: Array<{ label: string }> }>
+      answers: Array<string | string[] | null>
+    }
+    return (
+      <div className="msg msg-system qa-message">
+        <div className="msg-header">
+          <span className="msg-role">Your answers</span>
+        </div>
+        <div className="msg-body">
+          {qa.questions.map((q, i) => {
+            const ans = qa.answers[i]
+            const answerText =
+              ans == null
+                ? '(skipped)'
+                : Array.isArray(ans)
+                  ? ans.join(', ')
+                  : ans
+            return (
+              <div key={i} className="qa-item">
+                <div className="qa-question">{q.header ? `${q.header}: ` : ''}{q.question}</div>
+                <div className="qa-answer">{answerText}</div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
   }
 
   if (type === 'user') {

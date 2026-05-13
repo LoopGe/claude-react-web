@@ -18,6 +18,9 @@ export interface NewSessionDialogProps {
   initialCwd?: string
   onSubmit: (form: NewSessionForm) => void
   onCancel: () => void
+  /** The id of the group currently active in the main grid, if any.
+   *  Pre-selects the group dropdown so new sessions inherit the view. */
+  activeGroupId?: string | null
   /** Available groups for the group selector. May be empty. */
   groups: SessionGroup[]
   /** Server-configured model list (from /api/config). Shown as chips
@@ -29,7 +32,7 @@ export interface NewSessionDialogProps {
   contextSteps?: Array<{ value: number; label: string; beta?: string }>
 }
 
-export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, groups, serverModels, maxOpen }: NewSessionDialogProps) {
+export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, activeGroupId, groups, serverModels, maxOpen }: NewSessionDialogProps) {
   const [cwd, setCwd] = useState<string>(initialCwd ?? defaults.cwd ?? '')
   const [model, setModel] = useState<string>(defaults.model ?? '')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
@@ -40,7 +43,7 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, gro
    *  the user explicitly picks one. */
   const [accent, setAccent] = useState<string | undefined>(undefined)
   const [context1m, setContext1m] = useState(false)
-  const [groupId, setGroupId] = useState<string>('')
+  const [groupId, setGroupId] = useState<string>(activeGroupId ?? '')
   const [showPicker, setShowPicker] = useState(false)
 
   // Advanced options

@@ -38,6 +38,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
     // debugging stuck sessions.
     while (true) {
       const nextStartedAt = Date.now()
+      console.log(`[session ${session.id}] pump awaiting iter.next() for msg #${msgCount + 1}`)
       let idleWarnCount = 0
       const idleTimer = setInterval(() => {
         idleWarnCount++
@@ -46,10 +47,21 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           `(waiting for msg #${msgCount + 1}, warn #${idleWarnCount}, ` +
           `pendingTurns=${session.pendingTurns}, pending perms=${session.pending.size})`,
         )
-      }, 60_000)
+      }, 10_000)
       let step: IteratorResult<SDKMessage>
       try {
-        step = await iter.next()
+        // Race iter.next() against the session's abort signal so
+        // unload() can break a wedged generator immediately instead
+        // of waiting for the SDK subprocess to exit on its own.
+        const signal = session.abortController.signal
+        step = await (signal.aborted
+          ? Promise.resolve({ done: true, value: undefined } as IteratorResult<SDKMessage>)
+          : Promise.race([
+              iter.next(),
+              new Promise<IteratorResult<SDKMessage>>((resolve) =>
+                signal.addEventListener('abort', () => resolve({ done: true, value: undefined }), { once: true }),
+              ),
+            ]))
       } finally {
         clearInterval(idleTimer)
       }

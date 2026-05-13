@@ -104,6 +104,7 @@ export function buildApiRouter(sm: SessionManager): Hono {
     const body = await safeJson<{ text?: string }>(c.req)
     const text = typeof body.text === 'string' ? body.text : ''
     if (!text.trim()) return c.json({ error: 'text is required' }, 400)
+    console.log(`[http] POST /sessions/${id}/messages — ${text.length} chars`)
     sm.send(id, text)
     return c.json({ ok: true })
   })

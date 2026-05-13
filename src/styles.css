@@ -1255,7 +1255,7 @@ body.resizing-col * {
      uses align-self (flex-start / flex-end) to sit left or right inside
      that column. This keeps the 900px column centered AND lets individual
      bubbles right-align, which `align-items: center` would prevent. */
-  padding: 20px max(20px, calc((100% - 900px) / 2));
+  padding: 0 max(20px, calc((100% - 900px) / 2));
 }
 /* Each virtualised item is wrapped in this div so that .msg.user's
    align-self: flex-end still works (the old flex column on
@@ -1554,6 +1554,30 @@ body.resizing-col * {
 }
 .msg.assistant .msg-header { color: #a9b4d6; font-weight: 600; }
 .msg.assistant .msg-header > span:first-child::before { content: '✦ '; }
+
+/* Live streaming bubble — rendered outside Virtuoso while a turn is
+   in progress. Matches assistant card styling but without the header. */
+.streaming-msg {
+  width: auto;
+  max-width: min(900px, 100%);
+  background: var(--bg-elev);
+  border-bottom-left-radius: 3px;
+  margin: 4px 0;
+  opacity: 0.9;
+}
+.streaming-msg .assistant-body { position: relative; }
+.streaming-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1.1em;
+  background: var(--fg);
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  animation: cursor-blink 0.8s step-end infinite;
+}
+@keyframes cursor-blink {
+  50% { opacity: 0; }
+}
 
 /* "Thinking" bar — compact status strip shown above the context bar
    when the SDK is mid-turn. Pulses a subtle accent border and shows
@@ -2558,6 +2582,24 @@ details.plan-card-collapsible > summary > .plan-card-header {
   border-bottom: none;
   padding: 0;
 }
+/* Override .msg-body pre styles that leak into code blocks inside plan
+   cards. Without these, the <pre> gets a duplicate background, border,
+   and border-radius that conflict with the .code-block wrapper design. */
+.plan-card-body .code-block {
+  overflow: hidden;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.plan-card-body .code-block-bar {
+  border: none;
+  border-radius: 0;
+}
+.plan-card-body .code-block > pre {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
 
 /* --- QuestionDialog --------------------------------------------------
    Interactive dialog shown when the SDK calls AskUserQuestion. Reuses
@@ -2869,6 +2911,28 @@ details.plan-card-collapsible > summary > .plan-card-header {
   font-size: 11.5px;
   color: var(--fg-muted);
   white-space: nowrap;
+}
+
+/* ── Question-answer inline message ──────────────────────────────
+   Records the user's AskUserQuestion choices so they stay visible
+   in the transcript after the dialog closes. */
+.qa-message {
+  border: 1px dashed color-mix(in srgb, var(--ok) 40%, transparent);
+  background: color-mix(in srgb, var(--ok) 6%, transparent);
+}
+.qa-item {
+  margin-top: 6px;
+}
+.qa-item:first-child {
+  margin-top: 0;
+}
+.qa-question {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+.qa-answer {
+  font-weight: 500;
+  margin-top: 2px;
 }
 
 /* ── Message search bar ────────────────────────────────────────── */

@@ -86,6 +86,10 @@ interface Props {
   onAddToGroup: (sessionId: string, groupId: string) => void
   /** Toggle a group's collapsed state in the sidebar. */
   onToggleGroupCollapse: (groupId: string) => void
+  /** The id of the group whose sessions are currently open in the main
+   *  grid, or null when no group is active. Used to pre-select the group
+   *  in the new-session dialog. */
+  activeGroupId?: string | null
   /** Max sessions per group / max open panels. Shared with App. */
   maxOpen: number
   /** Context-window size presets from server config. */
@@ -122,6 +126,7 @@ export function SessionList({
   onReorderInGroup,
   newSessionDialogOpen,
   onNewSessionDialogChange,
+  activeGroupId,
   maxOpen,
   contextSteps,
 }: Props) {
@@ -773,6 +778,7 @@ export function SessionList({
           defaults={defaults}
           serverModels={serverModels}
           initialCwd={prefilledCwd}
+          activeGroupId={activeGroupId}
           groups={groups}
           maxOpen={maxOpen}
           contextSteps={contextSteps}

@@ -163,6 +163,10 @@ export interface Session {
   /** Pushable for context_usage events — separate from message history
    *  so reconnects don't replay stale usage snapshots. */
   contextUsagePushable: Pushable<unknown>
+  /** AbortController whose signal races the pump's `iter.next()` so
+   *  unload() can break a wedged generator without waiting for the SDK
+   *  subprocess to exit. */
+  abortController: AbortController
 }
 
 export interface SessionManagerOptions {

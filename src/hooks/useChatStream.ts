@@ -30,6 +30,10 @@ export interface ChatStream {
   contextUsage: ContextUsage | null
   /** Live output token rate (tok/s) computed from streaming deltas. Null when not streaming. */
   tokenRate: number | null
+  /** Accumulated text from content_block_delta events during an active
+   *  assistant turn. Null when not streaming. Enables character-by-
+   *  character rendering instead of waiting for the final message. */
+  streamingContent: string | null
   /** False while the initial replay from the server is still buffering.
    *  Consumers can use this to show a loading skeleton instead of an
    *  empty "no messages" state when switching sessions. */
@@ -54,6 +58,8 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null)
   const [tokenRate, setTokenRate] = useState<number | null>(null)
   const tokenSampleRef = useRef<{ tokens: number; ts: number } | null>(null)
+  const [streamingContent, setStreamingContent] = useState<string | null>(null)
+  const streamBufRef = useRef<string[]>([])
   /** Ref-based buffer for replay frames. Accumulates all replay chunks
    *  and flushes to state once on `replay-done`, avoiding the O(n²)
    *  `setMessages(prev => [...prev, ...chunk])` pattern that caused
@@ -86,6 +92,8 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       setQueuedAhead(0)
       setTokenRate(null)
       tokenSampleRef.current = null
+      streamBufRef.current = []
+      setStreamingContent(null)
       replayBufRef.current = []
       setReplayReady(false)
     }
@@ -187,6 +195,21 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
             } else if (event?.type === 'message_stop') {
               tokenSampleRef.current = null
             }
+            // Accumulate text deltas for live streaming render.
+            if (event?.type === 'content_block_delta') {
+              const delta = (event as { delta?: Record<string, unknown> }).delta
+              const text = delta?.text
+              if (typeof text === 'string') {
+                streamBufRef.current.push(text)
+                setStreamingContent(streamBufRef.current.join(''))
+              }
+            }
+            if (event?.type === 'message_stop') {
+              // Flush: the final assistant message will arrive shortly
+              // and replace this intermediate state.
+              streamBufRef.current = []
+              setStreamingContent(null)
+            }
           }
           if (m.type === 'result') {
             // Reset to 0 — the server's `working` flag (session-update)
@@ -194,6 +217,8 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
             setQueuedAhead(0)
             setTokenRate(null)
             tokenSampleRef.current = null
+            streamBufRef.current = []
+            setStreamingContent(null)
           }
           break
         }
@@ -260,12 +285,14 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     tokenSampleRef.current = null
     replayBufRef.current = []
     setReplayReady(false)
+    streamBufRef.current = []
+    setStreamingContent(null)
   }, [])
 
   const clearError = useCallback(() => setOpError(null), [])
 
   return useMemo(
-    () => ({ messages, queuedAhead, error: displayedError, contextUsage, tokenRate, replayReady, trackSentTurn, reset, clearError }),
-    [messages, queuedAhead, displayedError, contextUsage, tokenRate, replayReady, trackSentTurn, reset, clearError],
+    () => ({ messages, queuedAhead, error: displayedError, contextUsage, tokenRate, streamingContent, replayReady, trackSentTurn, reset, clearError }),
+    [messages, queuedAhead, displayedError, contextUsage, tokenRate, streamingContent, replayReady, trackSentTurn, reset, clearError],
   )
 }

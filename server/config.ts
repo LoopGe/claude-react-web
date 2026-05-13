@@ -19,6 +19,9 @@ interface ConfigFile {
   historyCap?: number
   contextSteps?: Array<{ value: number; label: string; beta?: string }>
   maxOpenPanels?: number
+  /** Milliseconds of SDK silence before the session is considered stuck
+   *  and auto-interrupted. Set to 0 to disable. Default: 1 hour. */
+  workingStuckMs?: number
   /** Bearer token sent as `Authorization: Bearer <token>` to the API
    *  (works for both the official endpoint and Anthropic-compatible proxies).
    *  Required — server refuses to start without it. */
@@ -66,7 +69,7 @@ export let config: ServerConfig = Object.freeze<ServerConfig>({
   sessionIdleMs: 30 * 60 * 1000,
   historyCap: 500,
   permissionTimeoutMs: 5 * 60 * 1000,
-  workingStuckMs: 10 * 60 * 1000,
+  workingStuckMs: 60 * 60 * 1000,
   maxOpenPanels: 3,
   contextSteps: Object.freeze([
     { value: 100_000,   label: '100k' },
@@ -179,6 +182,11 @@ export async function loadConfig(stateDir: string): Promise<void> {
   if (typeof file_.maxOpenPanels === 'number' && file_.maxOpenPanels !== 0) {
     ;(merged as { maxOpenPanels: number }).maxOpenPanels = Math.max(2, Math.min(5, Math.round(file_.maxOpenPanels)))
     console.log(`[config] maxOpenPanels: ${merged.maxOpenPanels}`)
+  }
+
+  if (typeof file_.workingStuckMs === 'number' && file_.workingStuckMs >= 0) {
+    ;(merged as { workingStuckMs: number }).workingStuckMs = Math.round(file_.workingStuckMs)
+    console.log(`[config] workingStuckMs: ${merged.workingStuckMs}`)
   }
 
   if (typeof file_.authToken === 'string' && file_.authToken.trim()) {

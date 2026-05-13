@@ -181,7 +181,7 @@ const SYSTEM_PROMPT = `You are a session recap assistant. Summarize the followin
 1. What task or problem the user was working on
 2. What files, tools, or code were involved
 3. The current status (completed, in-progress, blocked, errored)
-Be concise and specific. Use plain language. Do not include a greeting or sign-off. Start directly with the summary.`
+Be concise and specific. Use plain language. Do not include a greeting or sign-off. Start directly with the summary. Always respond in the same language the user writes in.`
 
 async function callAnthropic(transcript: string): Promise<string> {
   // Throws if authToken is not configured — loadConfig() is supposed to
