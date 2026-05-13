@@ -84,7 +84,6 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
         model: opts.defaults?.model ?? serverConfig.defaultModel,
       },
       models: serverConfig.modelList,
-      contextSteps: serverConfig.contextSteps,
       maxOpenPanels: serverConfig.maxOpenPanels,
     }),
   )

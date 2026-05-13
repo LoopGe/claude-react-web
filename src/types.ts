@@ -25,6 +25,7 @@ export interface SessionInfo {
   title?: string
   running: boolean
   terminated: boolean
+  terminatedReason?: string
   error?: string
   /** Server-reported: the SDK is mid-turn. Drives the "thinking" dot. */
   working: boolean
@@ -167,6 +168,22 @@ export interface SdkMessage {
   duration_ms?: number
   [k: string]: unknown
 }
+
+// ── Image Paste ──────────────────────────────────────────────────
+
+export interface PastedImage {
+  id: string
+  data: string
+  mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'
+  width: number
+  height: number
+  size: number
+  previewUrl: string
+}
+
+export type MessageContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; data: string; media_type: string } }
 
 // ── MCP Server Status ─────────────────────────────────────────────
 

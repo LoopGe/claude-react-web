@@ -142,6 +142,7 @@ async function cleanupPump(session: Session, deps: PumpDeps): Promise<void> {
 
     session.running = false
     session.terminated = true
+    session.terminatedReason = session.error ? 'query_error' : 'query_ended'
     // Reset pending turns so the UI doesn't stay stuck in "working"
     // when the SDK merged queued messages into fewer turns than were
     // sent, or the session ended before emitting a result for every

@@ -124,6 +124,7 @@ export class SessionManager {
       title: s.title,
       messageCount: s.history.length,
       terminated: s.terminated,
+      terminatedReason: s.terminatedReason,
       error: s.error,
       lastTurnAt: s.lastTurnAt,
     })
@@ -541,6 +542,40 @@ export class SessionManager {
     this.persist(s)
   }
 
+  /** Send a user turn with a content array (text + image blocks). */
+  sendContent(id: string, content: Array<{ type: string; [k: string]: unknown }>): void {
+    const s = this.require(id)
+    if (s.terminated) {
+      throw new HttpError(410, `session ${id} is terminated`)
+    }
+    if (!s.running) {
+      throw new HttpError(409, `session ${id} is not running; resume it first`)
+    }
+    const userMsg: SDKUserMessage = {
+      type: 'user',
+      message: { role: 'user', content } as unknown as SDKUserMessage['message'],
+      parent_tool_use_id: null,
+      uuid: randomUUID(),
+      session_id: s.id,
+    }
+    const blockSummary = content.map((b) => b.type).join('+')
+    console.log(
+      `[session ${id}] sendContent PRE-PUSH — blocks=[${blockSummary}], uuid=${userMsg.uuid}, ` +
+      `pendingTurns=${s.pendingTurns}, input.closed=${s.input.closed}`,
+    )
+    s.input.push(userMsg)
+    s.history.push(userMsg)
+    if (s.history.length > this.historyCap) {
+      s.history.splice(0, s.history.length - this.historyCap)
+    }
+    for (const sub of s.subscribers.values()) sub.push(userMsg)
+    s.lastActivityAt = Date.now()
+    if (s.pendingTurns === 0) s.workingSince = Date.now()
+    if (s.pendingTurns < 1) s.pendingTurns = 1
+    invalidateRecapCache(s.id)
+    this.persist(s)
+  }
+
   /** Interrupt the current assistant turn. */
   async interrupt(id: string): Promise<void> {
     const s = this.requireLive(id)
@@ -953,7 +988,7 @@ export class SessionManager {
   /** Delete a session for good: close its Query AND erase its persistence
    *  entry. Use when the user explicitly clicks "delete" in the UI. */
   async delete(id: string): Promise<void> {
-    await this.unload(id, { terminate: true })
+    await this.unload(id, { terminate: true, reason: 'deleted' })
     this.store?.remove(id)
     // Drop any cached recap — otherwise a new session that happens to
     // reuse this id (rare, but possible under --state-dir swaps) would
@@ -969,10 +1004,13 @@ export class SessionManager {
    *  `terminate`: when true, the session is marked terminated in the
    *  persistence store (prevents future resume) — used on explicit delete
    *  and when the Query itself has ended. Default false. */
-  async unload(id: string, opts: { terminate?: boolean } = {}): Promise<void> {
+  async unload(id: string, opts: { terminate?: boolean; reason?: string } = {}): Promise<void> {
     const s = this.sessions.get(id)
     if (!s) return
-    if (opts.terminate) s.terminated = true
+    if (opts.terminate) {
+      s.terminated = true
+      if (opts.reason) s.terminatedReason = opts.reason
+    }
     s.running = false
     // Signal the pump to stop waiting on iter.next(). Without this,
     // a wedged SDK generator keeps the pump's 60s idle watchdog firing
@@ -1108,6 +1146,7 @@ export class SessionManager {
       title: s.title,
       running: s.running,
       terminated: s.terminated,
+      terminatedReason: s.terminatedReason,
       error: s.error,
       working: s.running && s.pendingTurns > 0,
       workingSince: s.running && s.pendingTurns > 0 ? s.workingSince : undefined,
@@ -1131,6 +1170,7 @@ export class SessionManager {
       title: meta.title,
       running: false,
       terminated: meta.terminated,
+      terminatedReason: meta.terminatedReason,
       error: meta.error,
       working: false,
       workingSince: undefined,
@@ -1200,7 +1240,7 @@ export class SessionManager {
         `[session ${id}] init never completed — no messages after ${idleSince}ms ` +
         `(pendingTurns=${s.pendingTurns}, subscribers=${s.subscribers.size}). Force-unloading.`,
       )
-      void this.unload(id, { terminate: true })
+      void this.unload(id, { terminate: true, reason: 'init_stuck' })
       return
     }
 
@@ -1218,7 +1258,7 @@ export class SessionManager {
       console.error(
         `[session ${id}] still silent ${now - s.autoInterruptedAt}ms after auto-interrupt — escalating to unload`,
       )
-      void this.unload(id, { terminate: true })
+      void this.unload(id, { terminate: true, reason: 'stuck' })
       return
     }
 

@@ -13,7 +13,15 @@ export function statusClass(s: SessionInfo): string {
 
 export function statusLabel(s: SessionInfo): string {
   if (s.error) return `Errored: ${s.error}`
-  if (s.terminated) return 'Session ended'
+  if (s.terminated) {
+    const reason = s.terminatedReason
+    if (reason === 'query_error') return 'Session ended: upstream error'
+    if (reason === 'query_ended') return 'Session ended: connection closed'
+    if (reason === 'init_stuck') return 'Session ended: init timed out'
+    if (reason === 'stuck') return 'Session ended: unresponsive'
+    if (reason === 'deleted') return 'Session deleted'
+    return 'Session ended'
+  }
   if (s.working) return 'Working on a turn'
   if (s.running) return 'Live'
   return 'Dormant'

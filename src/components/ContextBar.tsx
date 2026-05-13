@@ -35,7 +35,10 @@ export function ContextBar({ usage }: Props) {
   return (
     <div className={`ctx-bar ctx-bar-${level}`}>
       <div className="ctx-bar-label">
-        <span>Context</span>
+        <span>
+          Context
+          {usage.model && <span className="ctx-bar-model" title={usage.model}>{usage.model}</span>}
+        </span>
         <span className="ctx-bar-nums">
           {formatTokens(used)} / {formatTokens(max)}
           <span className="ctx-bar-pct"> · {bounded.toFixed(1)}%</span>

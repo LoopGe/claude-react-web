@@ -28,8 +28,6 @@ export interface NewSessionDialogProps {
   serverModels?: string[]
   /** Max sessions per group. */
   maxOpen: number
-  /** Context-window size presets from server config. */
-  contextSteps?: Array<{ value: number; label: string; beta?: string }>
 }
 
 export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, activeGroupId, groups, serverModels, maxOpen }: NewSessionDialogProps) {
@@ -402,9 +400,7 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
                   aria-checked={accent === undefined}
                   aria-label="Use global accent"
                   title="Use global accent"
-                >
-                  ↺
-                </button>
+                />
                 {ACCENT_COLORS.map((c) => (
                   <button
                     key={c.accent}

@@ -40,6 +40,10 @@ interface Props {
   /** Forwarded to the inline recap message's ↻ button. Caller (Chat)
    *  passes useSessionRecap().refresh; without it the button is hidden. */
   onRefreshRecap?: () => void
+  /** Permission decisions from the WebSocket stream. Merged into plan
+   *  status so ExitPlanMode cards flip from pending even when the SDK
+   *  doesn't emit a tool_result after approval. */
+  permissionDecisions?: ReadonlyMap<string, 'allow' | 'deny'>
 }
 
 /** An item in the Virtuoso data array. Pre-computing isCompactSummary
@@ -49,7 +53,7 @@ interface RenderableItem {
   isCompactSummary: boolean
 }
 
-export function MessageList({ messages, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, onRefreshRecap }: Props) {
+export function MessageList({ messages, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, onRefreshRecap, permissionDecisions }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -80,7 +84,19 @@ export function MessageList({ messages, showSystemEvents = false, pendingInterru
   // small (≤ a handful of plan tool_use_ids per session) so re-running on
   // every messages change is fine — micro-optimising with a streaming
   // accumulator would complicate the code for no measurable win.
-  const planStatus = useMemo(() => computePlanStatus(messages), [messages])
+  const planStatus = useMemo(() => {
+    const base = computePlanStatus(messages)
+    if (!permissionDecisions || permissionDecisions.size === 0) return base
+    // Merge permission decisions: 'allow' → 'approved', 'deny' → 'rejected'.
+    // This covers ExitPlanMode where the SDK doesn't emit a tool_result.
+    const merged = new Map(base)
+    for (const [toolUseId, behavior] of permissionDecisions) {
+      if (merged.has(toolUseId)) {
+        merged.set(toolUseId, behavior === 'allow' ? 'approved' : 'rejected')
+      }
+    }
+    return merged
+  }, [messages, permissionDecisions])
 
   // Pre-compute isCompactSummary for every renderable message so
   // Virtuoso's itemContent doesn't need the surrounding context.
@@ -298,6 +314,7 @@ function isRenderable(m: SdkMessage, showSystemEvents: boolean): boolean {
   if (m.type === 'system' && !showSystemEvents) {
     if (m.subtype === 'error') return true
     if (m.subtype === 'compact_boundary') return true
+    if (m.subtype === 'api_retry') return true
     return false
   }
   return true
@@ -343,39 +360,6 @@ const MessageView = memo(function MessageView({
   // real assistant turn.
   if (type === 'recap') {
     return <RecapMessageView msg={msg} onRefresh={onRefreshRecap} />
-  }
-
-  // Synthetic question-answer message — records the user's choices from
-  // AskUserQuestion so they stay visible after the dialog closes.
-  if (type === 'question_answer') {
-    const qa = msg as unknown as {
-      questions: Array<{ question: string; header?: string; options: Array<{ label: string }> }>
-      answers: Array<string | string[] | null>
-    }
-    return (
-      <div className="msg msg-system qa-message">
-        <div className="msg-header">
-          <span className="msg-role">Your answers</span>
-        </div>
-        <div className="msg-body">
-          {qa.questions.map((q, i) => {
-            const ans = qa.answers[i]
-            const answerText =
-              ans == null
-                ? '(skipped)'
-                : Array.isArray(ans)
-                  ? ans.join(', ')
-                  : ans
-            return (
-              <div key={i} className="qa-item">
-                <div className="qa-question">{q.header ? `${q.header}: ` : ''}{q.question}</div>
-                <div className="qa-answer">{answerText}</div>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-    )
   }
 
   if (type === 'user') {
@@ -427,6 +411,7 @@ const MessageView = memo(function MessageView({
     }
 
     // Real user message
+    const imageBlocks = blocks.filter((b) => b.type === 'image')
     return (
       <div className="msg user">
         <button
@@ -441,7 +426,14 @@ const MessageView = memo(function MessageView({
           <span>you</span>
         </div>
         <div className="msg-body">
-          <Markdown text={userContent ?? ''} />
+          {imageBlocks.length > 0 && (
+            <div className="msg-image-row">
+              {imageBlocks.map((b, i) => (
+                <BlockView key={`img-${i}`} block={b} />
+              ))}
+            </div>
+          )}
+          {userContent && <Markdown text={userContent} />}
         </div>
       </div>
     )
@@ -521,6 +513,29 @@ const MessageView = memo(function MessageView({
 
   if (type === 'system' && msg.subtype === 'compact_boundary') {
     return <CompactBoundary msg={msg} />
+  }
+
+  if (type === 'system' && msg.subtype === 'api_retry') {
+    const attempt = (msg as { attempt?: number }).attempt ?? 0
+    const maxRetries = (msg as { max_retries?: number }).max_retries ?? 0
+    const delayMs = (msg as { retry_delay_ms?: number }).retry_delay_ms ?? 0
+    const errorStatus = (msg as { error_status?: number | null }).error_status
+    const errorKind = (msg as { error?: string }).error ?? 'unknown'
+    const seconds = Math.ceil(delayMs / 1000)
+    const label = errorStatus === 429
+      ? 'Rate limited'
+      : errorStatus === 529
+        ? 'Overloaded'
+        : errorKind === 'server_error'
+          ? 'Server error'
+          : 'Retrying'
+    return (
+      <div className="msg api-retry">
+        <div className="msg-header">
+          <span>{label} — retrying in {seconds}s (attempt {attempt}/{maxRetries})</span>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -728,6 +743,19 @@ function BlockView({ block }: { block: Block }) {
   if (block.type === 'text' && typeof block.text === 'string') {
     return <Markdown text={block.text} />
   }
+  if (block.type === 'image') {
+    const source = block.source as { type: string; data?: string; media_type?: string } | undefined
+    if (source?.type === 'base64' && source.data && source.media_type) {
+      return (
+        <img
+          className="msg-image"
+          src={`data:${source.media_type};base64,${source.data}`}
+          alt="pasted image"
+        />
+      )
+    }
+    return <div className="tool-input">[image: invalid]</div>
+  }
   if (block.type === 'thinking' && typeof block.thinking === 'string') {
     return (
       <details style={{ color: 'var(--fg-muted)', margin: '4px 0' }}>
@@ -825,10 +853,12 @@ export function WorkingBubble({
   startedAt,
   activeSubagents,
   tokenRate,
+  activePhase,
 }: {
   startedAt?: number
   activeSubagents?: ActiveSubagent[]
   tokenRate?: number | null
+  activePhase?: import('../hooks/useChatStream').ActivePhase
 }) {
   // Use the server-provided turn-start timestamp when available — this
   // survives component remounts (e.g. group switches). Fall back to
@@ -861,7 +891,15 @@ export function WorkingBubble({
         <span />
         <span />
       </div>
-      <span className="working-bar-label">Working</span>
+      <span className="working-bar-label">
+        {activePhase === 'thinking'
+          ? 'Thinking…'
+          : activePhase === 'writing'
+          ? 'Writing…'
+          : activePhase
+          ? `Calling ${activePhase.name}…`
+          : 'Working'}
+      </span>
       <span className="working-timer" aria-label={`elapsed ${formatElapsed(elapsedMs)}`}>
         {formatElapsed(elapsedMs)}
       </span>

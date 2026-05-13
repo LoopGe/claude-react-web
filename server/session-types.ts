@@ -113,6 +113,7 @@ export interface SessionInfo {
   title?: string
   running: boolean
   terminated: boolean
+  terminatedReason?: string
   error?: string
   /** True when the SDK is mid-turn (a user message has been sent and no
    *  matching `result` has arrived yet). Drives the "thinking" animation. */
@@ -145,6 +146,7 @@ export interface Session {
   pumpTask: Promise<void>
   running: boolean
   terminated: boolean
+  terminatedReason?: string
   error?: string
   /** Pending turns (user messages sent but no matching `result` yet). A
    *  simple counter rather than a set because we don't need to identify

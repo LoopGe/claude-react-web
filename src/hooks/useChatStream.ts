@@ -22,6 +22,12 @@ export interface ContextUsage {
   model?: string
 }
 
+export type ActivePhase =
+  | 'thinking'
+  | 'writing'
+  | { type: 'tool_use'; name: string }
+  | null
+
 export interface ChatStream {
   messages: SdkMessage[]
   queuedAhead: number
@@ -34,6 +40,13 @@ export interface ChatStream {
    *  assistant turn. Null when not streaming. Enables character-by-
    *  character rendering instead of waiting for the final message. */
   streamingContent: string | null
+  /** Current phase of the active assistant turn: thinking, writing text,
+   *  or calling a specific tool. Null when not working. */
+  activePhase: ActivePhase
+  /** Permission decisions keyed by toolUseId. Fed from permission-resolved
+   *  frames so plan cards can flip from pending to approved/rejected even
+   *  when the SDK doesn't emit a tool_result (e.g. ExitPlanMode). */
+  permissionDecisions: ReadonlyMap<string, 'allow' | 'deny'>
   /** False while the initial replay from the server is still buffering.
    *  Consumers can use this to show a loading skeleton instead of an
    *  empty "no messages" state when switching sessions. */
@@ -59,6 +72,11 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   const [tokenRate, setTokenRate] = useState<number | null>(null)
   const tokenSampleRef = useRef<{ tokens: number; ts: number } | null>(null)
   const [streamingContent, setStreamingContent] = useState<string | null>(null)
+  const [activePhase, setActivePhase] = useState<ActivePhase>(null)
+  const [permissionDecisions, setPermissionDecisions] = useState<Map<string, 'allow' | 'deny'>>(() => new Map())
+  /** pid → toolUseId mapping so we can resolve permission decisions to the
+   *  correct tool_use block when permission-resolved fires. */
+  const pidToToolUseRef = useRef(new Map<string, string>())
   const streamBufRef = useRef<string[]>([])
   /** Ref-based buffer for replay frames. Accumulates all replay chunks
    *  and flushes to state once on `replay-done`, avoiding the O(n²)
@@ -94,6 +112,9 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       tokenSampleRef.current = null
       streamBufRef.current = []
       setStreamingContent(null)
+      setActivePhase(null)
+      setPermissionDecisions(new Map())
+      pidToToolUseRef.current.clear()
       replayBufRef.current = []
       setReplayReady(false)
     }
@@ -195,6 +216,17 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
             } else if (event?.type === 'message_stop') {
               tokenSampleRef.current = null
             }
+            // Track content block boundaries for phase indicator.
+            if (event?.type === 'content_block_start') {
+              const cb = (event as { content_block?: Record<string, unknown> }).content_block
+              if (cb?.type === 'thinking') {
+                setActivePhase('thinking')
+              } else if (cb?.type === 'text') {
+                setActivePhase('writing')
+              } else if (cb?.type === 'tool_use') {
+                setActivePhase({ type: 'tool_use', name: String(cb.name ?? 'tool') })
+              }
+            }
             // Accumulate text deltas for live streaming render.
             if (event?.type === 'content_block_delta') {
               const delta = (event as { delta?: Record<string, unknown> }).delta
@@ -219,11 +251,17 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
             tokenSampleRef.current = null
             streamBufRef.current = []
             setStreamingContent(null)
+            setActivePhase(null)
           }
           break
         }
         case 'permission-request': {
           permsRef.current.onRequest(frame.payload)
+          // Track pid → toolUseId so we can resolve decisions later.
+          const req = frame.payload as PermissionRequest
+          if (req.id && req.toolUseID) {
+            pidToToolUseRef.current.set(req.id, req.toolUseID)
+          }
           break
         }
         case 'permission-resolved': {
@@ -231,6 +269,16 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
             id: frame.id,
             ...frame.decision,
           })
+          // Map the resolved pid back to toolUseId and record the decision.
+          const toolUseId = pidToToolUseRef.current.get(frame.id)
+          if (toolUseId) {
+            pidToToolUseRef.current.delete(frame.id)
+            setPermissionDecisions((prev) => {
+              const next = new Map(prev)
+              next.set(toolUseId, frame.decision.behavior)
+              return next
+            })
+          }
           break
         }
         case 'context-usage': {
@@ -287,12 +335,15 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     setReplayReady(false)
     streamBufRef.current = []
     setStreamingContent(null)
+    setActivePhase(null)
+    setPermissionDecisions(new Map())
+    pidToToolUseRef.current.clear()
   }, [])
 
   const clearError = useCallback(() => setOpError(null), [])
 
   return useMemo(
-    () => ({ messages, queuedAhead, error: displayedError, contextUsage, tokenRate, streamingContent, replayReady, trackSentTurn, reset, clearError }),
-    [messages, queuedAhead, displayedError, contextUsage, tokenRate, streamingContent, replayReady, trackSentTurn, reset, clearError],
+    () => ({ messages, queuedAhead, error: displayedError, contextUsage, tokenRate, streamingContent, activePhase, permissionDecisions, replayReady, trackSentTurn, reset, clearError }),
+    [messages, queuedAhead, displayedError, contextUsage, tokenRate, streamingContent, activePhase, permissionDecisions, replayReady, trackSentTurn, reset, clearError],
   )
 }

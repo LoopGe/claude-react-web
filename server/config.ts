@@ -17,7 +17,6 @@ interface ConfigFile {
   maxUploadBytes?: number
   sessionIdleMs?: number
   historyCap?: number
-  contextSteps?: Array<{ value: number; label: string; beta?: string }>
   maxOpenPanels?: number
   /** Milliseconds of SDK silence before the session is considered stuck
    *  and auto-interrupted. Set to 0 to disable. Default: 1 hour. */
@@ -31,13 +30,6 @@ interface ConfigFile {
   baseUrl?: string
 }
 
-/** Context-window size presets for the new-session dialog. */
-export interface ContextStep {
-  value: number
-  label: string
-  beta?: string
-}
-
 export interface ServerConfig {
   readonly modelList: readonly string[]
   readonly defaultModel: string
@@ -48,7 +40,6 @@ export interface ServerConfig {
   readonly permissionTimeoutMs: number
   readonly workingStuckMs: number
   readonly maxOpenPanels: number
-  readonly contextSteps: readonly ContextStep[]
   /** Undefined until config.json is loaded and `authToken` is populated.
    *  `requireAuthToken()` throws if accessed before that. */
   readonly authToken?: string
@@ -71,13 +62,6 @@ export let config: ServerConfig = Object.freeze<ServerConfig>({
   permissionTimeoutMs: 5 * 60 * 1000,
   workingStuckMs: 60 * 60 * 1000,
   maxOpenPanels: 3,
-  contextSteps: Object.freeze([
-    { value: 100_000,   label: '100k' },
-    { value: 200_000,   label: '200k' },
-    { value: 256_000,   label: '256k' },
-    { value: 512_000,   label: '512k' },
-    { value: 1_000_000, label: '1M', beta: 'context-1m-2025-08-07' },
-  ]),
   authToken: undefined,
   baseUrl: 'https://api.anthropic.com',
 })
@@ -157,26 +141,6 @@ export async function loadConfig(stateDir: string): Promise<void> {
   if (typeof file_.historyCap === 'number' && file_.historyCap > 0) {
     ;(merged as { historyCap: number }).historyCap = Math.round(file_.historyCap)
     console.log(`[config] historyCap: ${merged.historyCap}`)
-  }
-
-  if (Array.isArray(file_.contextSteps) && file_.contextSteps.length > 0) {
-    const valid = file_.contextSteps.filter(
-      (s) =>
-        typeof s === 'object' &&
-        s !== null &&
-        typeof s.value === 'number' &&
-        s.value > 0 &&
-        typeof s.label === 'string' &&
-        s.label.trim(),
-    )
-    if (valid.length > 0) {
-      ;(merged as { contextSteps: readonly ContextStep[] }).contextSteps = Object.freeze(valid.map((s) => ({
-        value: Math.round(s.value),
-        label: s.label.trim(),
-        beta: typeof s.beta === 'string' && s.beta.trim() ? s.beta.trim() : undefined,
-      })))
-      console.log(`[config] loaded ${merged.contextSteps.length} context step(s) from ${file}`)
-    }
   }
 
   if (typeof file_.maxOpenPanels === 'number' && file_.maxOpenPanels !== 0) {

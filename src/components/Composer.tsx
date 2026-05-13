@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Attachment } from '../hooks/useAttachments'
 import type { InputHistoryApi } from '../hooks/useInputHistory'
-import type { SlashCommand } from '../types'
+import type { PastedImage, SlashCommand } from '../types'
 import { CommandPicker } from './CommandPicker'
 
 interface Props {
@@ -35,6 +35,10 @@ interface Props {
   history: InputHistoryApi
   /** Slash commands from the SDK, fetched by the parent. */
   commands?: SlashCommand[]
+  /** Pending pasted images to send inline. */
+  pastedImages: PastedImage[]
+  onPasteImage: (file: File) => Promise<void>
+  onRemovePastedImage: (id: string) => void
   onSend: () => void
   onInterrupt: () => void
   /** True only while there's an outstanding turn the server can interrupt.
@@ -64,6 +68,9 @@ export function Composer({
   onDrop,
   history,
   commands,
+  pastedImages,
+  onPasteImage,
+  onRemovePastedImage,
   onSend,
   onInterrupt,
   canInterrupt,
@@ -142,7 +149,7 @@ export function Composer({
 
   const openFilePicker = () => fileInputRef.current?.click()
 
-  const canSend = !disabled && !sending && (input.trim() !== '' || attachments.length > 0)
+  const canSend = !disabled && !sending && (input.trim() !== '' || attachments.length > 0 || pastedImages.length > 0)
 
   if (terminated) {
     return (
@@ -179,6 +186,23 @@ export function Composer({
             {uploading && <span className="attachment-chip attachment-chip-ghost">uploading…</span>}
           </div>
         )}
+        {pastedImages.length > 0 && (
+          <div className="image-previews">
+            {pastedImages.map((img) => (
+              <div key={img.id} className="image-preview-card">
+                <img src={img.previewUrl} alt={img.mediaType} />
+                <button
+                  type="button"
+                  className="image-preview-remove"
+                  onClick={() => onRemovePastedImage(img.id)}
+                  aria-label="Remove image"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <textarea
           ref={textareaRef}
           className="textarea"
@@ -188,6 +212,18 @@ export function Composer({
               : 'Send a message (Enter = send, Shift+Enter = newline, ↑/↓ history, 📎 to attach)'
           }
           value={input}
+          onPaste={(e) => {
+            const items = e.clipboardData?.items
+            if (!items) return
+            for (const item of items) {
+              if (item.type.startsWith('image/') && item.type !== 'image/svg+xml') {
+                e.preventDefault()
+                const file = item.getAsFile()
+                if (file) void onPasteImage(file)
+                return
+              }
+            }
+          }}
           onChange={(e) => {
             const val = e.target.value
             setInput(val)

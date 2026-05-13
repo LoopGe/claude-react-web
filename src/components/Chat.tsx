@@ -14,6 +14,7 @@ import { SettingsPanel } from './SettingsPanel'
 import { api } from '../hooks/useApi'
 import { useAttachments } from '../hooks/useAttachments'
 import { useChatStream } from '../hooks/useChatStream'
+import { usePastedImages } from '../hooks/usePastedImages'
 import { useInputHistory } from '../hooks/useInputHistory'
 import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { Composer } from './Composer'
@@ -27,7 +28,7 @@ import { useSessionRecap } from '../hooks/useSessionRecap'
 import { MessageSearch } from './MessageSearch'
 import { ContextMenu } from './ContextMenu'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
-import type { QuestionSpec, SessionInfo, SlashCommand } from '../types'
+import type { PermissionRequest, SessionInfo, SlashCommand } from '../types'
 
 const INPUT_HISTORY_KEY = 'claude-react-web:input-history'
 const DRAFT_KEY_PREFIX = 'claude-react-web:draft:'
@@ -142,6 +143,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
     onResolved: permissions.onResolved,
   })
   const attachments = useAttachments(session.id, session.cwd)
+  const pastedImages = usePastedImages()
 
   // ── In-chat search ──────────────────────────────────────────
   const [searchOpen, setSearchOpen] = useState(false)
@@ -200,32 +202,28 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
   // resets whenever lastTurnAt advances (i.e. user sent a new message).
   const recap = useSessionRecap(session.id, session.lastTurnAt)
 
-  // Record answered questions so the user's choices stay visible in the
-  // transcript after the dialog closes. Each entry becomes a synthetic
-  // message rendered inline by MessageList.
-  const [answeredQuestions, setAnsweredQuestions] = useState<Array<{
-    id: string
-    questions: QuestionSpec[]
-    answers: Array<string | string[] | null>
-  }>>([])
+  // Track questions that have been answered but whose dialog should stay
+  // visible (showing the answer inline) for a few seconds before closing.
+  // The permission is already resolved server-side; this just controls
+  // how long the "answer sent" card remains on screen.
+  const answeredQuestionsRef = useRef<Map<string, { request: Extract<PermissionRequest, { kind: 'question' }>; answers: Array<string | string[] | null> }>>(new Map())
+  const [answeredTick, setAnsweredTick] = useState(0)
+  const addAnsweredQuestion = useCallback((id: string, request: Extract<PermissionRequest, { kind: 'question' }>, answers: Array<string | string[] | null>) => {
+    answeredQuestionsRef.current.set(id, { request, answers })
+    setAnsweredTick((n) => n + 1)
+    setTimeout(() => {
+      answeredQuestionsRef.current.delete(id)
+      setAnsweredTick((n) => n + 1)
+    }, 3000)
+  }, [])
 
-  // Compose stream messages + recap + answered questions. Append recap
-  // at the end since it summarises everything up to the latest turn.
+  // Compose stream messages + recap. Answered questions now display
+  // inline inside the QuestionDialog card, so no synthetic messages needed.
   const messagesWithRecap = useMemo(() => {
     let msgs = stream.messages
     if (recap.message) msgs = [...msgs, recap.message]
-    if (answeredQuestions.length > 0) {
-      const qMsgs = answeredQuestions.map((aq) => ({
-        type: 'question_answer' as const,
-        uuid: `qa:${aq.id}`,
-        session_id: session.id,
-        questions: aq.questions,
-        answers: aq.answers,
-      }))
-      msgs = [...msgs, ...qMsgs]
-    }
     return msgs
-  }, [stream.messages, recap.message, answeredQuestions, session.id])
+  }, [stream.messages, recap.message])
 
   // Active subagents — scan messages for Agent/Task tool_use without a
   // matching tool_result. Memoised on message count to avoid rescanning
@@ -294,7 +292,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
     const text = input.trim()
     // Allow sending with just attachments (e.g. "here, look at these files")
     // — the model sees only the attachments preamble in that case.
-    if (!text && attachmentList.length === 0) return
+    if (!text && attachmentList.length === 0 && pastedImages.images.length === 0) return
     if (sending) return
     setSending(true)
     clearError()
@@ -306,10 +304,22 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
             '\n\n'
           : ''
       const full = preamble + text
-      await api.post(`/sessions/${session.id}/messages`, { text: full })
+
+      if (pastedImages.images.length > 0) {
+        // Build content array with text + image blocks
+        const content: Array<{ type: string; text?: string; source?: { type: string; data: string; media_type: string } }> = []
+        if (full.trim()) content.push({ type: 'text', text: full })
+        for (const img of pastedImages.images) {
+          content.push({ type: 'image', source: { type: 'base64', data: img.data, media_type: img.mediaType } })
+        }
+        await api.post(`/sessions/${session.id}/messages`, { content })
+      } else {
+        await api.post(`/sessions/${session.id}/messages`, { text: full })
+      }
       if (text) history.add(text)
       setInput('')
       clearAttachments()
+      pastedImages.clear()
       // Server queues this turn in the SDK input iterable; it will be
       // consumed as soon as the current turn's `result` arrives. Bump the
       // counter so the chip reflects "waiting in queue". The corresponding
@@ -325,7 +335,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
     } finally {
       setSending(false)
     }
-  }, [input, attachmentList, sending, session.id, history, trackSentTurn, clearAttachments, clearError, setInput])
+  }, [input, attachmentList, sending, session.id, history, trackSentTurn, clearAttachments, clearError, setInput, pastedImages])
 
   // Set to true when interrupt() fires; the next `result` message renders
   // as "interrupted" and resets this to false.
@@ -425,6 +435,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
         replayReady={stream.replayReady}
         streamingContent={stream.streamingContent}
         onRefreshRecap={recap.refresh}
+        permissionDecisions={stream.permissionDecisions}
       />
 
       <TodoChecklist messages={stream.messages} working={session.working} />
@@ -448,6 +459,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
           startedAt={session.workingSince}
           activeSubagents={activeSubagents}
           tokenRate={stream.tokenRate}
+          activePhase={stream.activePhase}
         />
       )}
 
@@ -470,47 +482,74 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
         onDrop={onDrop}
         history={history}
         commands={commands}
+        pastedImages={pastedImages.images}
+        onPasteImage={pastedImages.addImage}
+        onRemovePastedImage={pastedImages.removeImage}
         onSend={() => void send()}
         onInterrupt={() => void interrupt()}
         canInterrupt={session.working}
         focusSignal={composerFocusSignal}
       />
 
-      {permissions.pending.length > 0 && (() => {
-        // Render the head of the queue with the appropriate dialog. Both
-        // ride on the same `pending` list so one can't hide the other —
-        // the user decides/answers them one at a time. (The SDK rarely
-        // has multiple outstanding canUseTool calls in flight, but if it
-        // does, the second one stays queued.)
-        const head = permissions.pending[0]
-        if (head.kind === 'question') {
+      {/* Pending permission dialogs + recently-answered question cards
+          that linger for a few seconds so the user sees their answer. */}
+      {(() => {
+        // Active pending question — show the interactive dialog.
+        const pendingHead = permissions.pending[0]
+        if (pendingHead?.kind === 'question') {
           return (
             <QuestionDialog
-              key={head.id}
-              request={head}
+              key={pendingHead.id}
+              request={pendingHead}
               onSubmit={(answers) => {
-                setAnsweredQuestions((prev) => [
-                  ...prev,
-                  { id: head.id, questions: head.questions, answers },
-                ])
-                void permissions.answerQuestion(head.id, answers)
+                addAnsweredQuestion(pendingHead.id, pendingHead, answers)
+                void permissions.answerQuestion(pendingHead.id, answers)
               }}
-              onSkipAll={() =>
-                void permissions.answerQuestion(
-                  head.id,
-                  head.questions.map(() => null),
+              onSkipAll={() => {
+                addAnsweredQuestion(
+                  pendingHead.id,
+                  pendingHead,
+                  pendingHead.questions.map(() => null),
                 )
-              }
+                void permissions.answerQuestion(
+                  pendingHead.id,
+                  pendingHead.questions.map(() => null),
+                )
+              }}
             />
           )
         }
-        return (
-          <PermissionDialog
-            key={head.id}
-            request={head}
-            onDecide={(d) => void permissions.decide(head.id, d)}
-          />
-        )
+
+        // Recently-answered question card (stays for 3s showing the answer).
+        // answeredTick is unused directly — it just forces a re-render when
+        // the map changes.
+        void answeredTick
+        const answeredEntries = Array.from(answeredQuestionsRef.current.values())
+        if (answeredEntries.length > 0) {
+          const entry = answeredEntries[answeredEntries.length - 1]
+          return (
+            <QuestionDialog
+              key={`answered:${entry.request.id}`}
+              request={entry.request}
+              onSubmit={() => {}}
+              onSkipAll={() => {}}
+              initialAnswers={entry.answers}
+            />
+          )
+        }
+
+        // Pending tool permission (not a question).
+        if (pendingHead?.kind === 'permission') {
+          return (
+            <PermissionDialog
+              key={pendingHead.id}
+              request={pendingHead}
+              onDecide={(d) => void permissions.decide(pendingHead.id, d)}
+            />
+          )
+        }
+
+        return null
       })()}
 
       {settingsOpen && (

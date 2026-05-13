@@ -34,6 +34,7 @@ export interface SessionMeta {
    *  sessions stay in the index (so the user can read the transcript), but
    *  resume() refuses to re-spawn them. */
   terminated: boolean
+  terminatedReason?: string
   error?: string
   /** Epoch ms of the last completed turn. Used by the frontend to flag
    *  unread badges when a turn completes while the user is looking at

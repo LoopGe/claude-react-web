@@ -14,7 +14,7 @@
 // result. See server/session-manager.ts `answerQuestion` for the wire
 // format.
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Markdown } from './Markdown'
 import type { PermissionRequest, QuestionSpec } from '../types'
 
@@ -30,17 +30,33 @@ interface Props {
   /** Cancelling skips all questions (each becomes null). Lets the model
    *  continue with no guidance rather than blocking forever. */
   onSkipAll: () => void
+  /** Called after the answer has been shown inline for a moment. The
+   *  parent removes the dialog from the pending queue on this signal. */
+  onSubmitted?: () => void
+  /** When set, the dialog immediately renders in the "answered" state
+   *  showing these pre-filled answers. Used for the linger card that
+   *  stays visible after the user submits. */
+  initialAnswers?: Array<string | string[] | null>
 }
 
-export function QuestionDialog({ request, onSubmit, onSkipAll }: Props) {
+export function QuestionDialog({ request, onSubmit, onSkipAll, onSubmitted, initialAnswers }: Props) {
   // Map question index → chosen label (or array for multi-select).
   // `null` means the user hasn't chosen anything for this question yet —
   // treated as "skip" on submit.
   const [choices, setChoices] = useState<Array<string | string[] | null>>(() =>
-    request.questions.map(() => null),
+    initialAnswers ?? request.questions.map(() => null),
+  )
+  // Track which questions have "Other" mode active and the custom text.
+  const [otherActive, setOtherActive] = useState<boolean[]>(() =>
+    request.questions.map(() => false),
+  )
+  const [otherTexts, setOtherTexts] = useState<string[]>(() =>
+    request.questions.map(() => ''),
   )
   const [busy, setBusy] = useState(false)
+  const [submitted, setSubmitted] = useState(!!initialAnswers)
   const dialogRef = useRef<HTMLDivElement>(null)
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   // Focus trap: keep Tab inside the dialog.
   useEffect(() => {
@@ -74,6 +90,19 @@ export function QuestionDialog({ request, onSubmit, onSkipAll }: Props) {
       next[qIdx] = prev[qIdx] === label ? null : label
       return next
     })
+    // Deactivate "Other" when a preset option is chosen (single-select).
+    setOtherActive((prev) => {
+      if (!prev[qIdx]) return prev
+      const next = prev.slice()
+      next[qIdx] = false
+      return next
+    })
+    setOtherTexts((prev) => {
+      if (!prev[qIdx]) return prev
+      const next = prev.slice()
+      next[qIdx] = ''
+      return next
+    })
   }
 
   const toggleMulti = (qIdx: number, label: string) => {
@@ -98,17 +127,93 @@ export function QuestionDialog({ request, onSubmit, onSkipAll }: Props) {
     })
   }
 
-  const submit = () => {
-    if (busy) return
-    setBusy(true)
-    onSubmit(choices)
+  const toggleOther = (qIdx: number) => {
+    setOtherActive((prev) => {
+      const next = prev.slice()
+      const activating = !prev[qIdx]
+      next[qIdx] = activating
+      if (!activating) {
+        // Turning off "Other" — clear the text and remove custom answer from choices.
+        setOtherTexts((t) => {
+          const nt = t.slice()
+          nt[qIdx] = ''
+          return nt
+        })
+        setChoices((c) => {
+          const nc = c.slice()
+          const cur = nc[qIdx]
+          if (typeof cur === 'string') {
+            nc[qIdx] = null
+          } else if (Array.isArray(cur)) {
+            // Remove any entries that aren't preset labels.
+            const presetLabels = new Set(
+              request.questions[qIdx].options.map((o) => o.label),
+            )
+            const filtered = cur.filter((v) => presetLabels.has(v))
+            nc[qIdx] = filtered.length > 0 ? filtered : null
+          }
+          return nc
+        })
+      } else {
+        // Activating "Other" for single-select — deselect preset options.
+        if (!request.questions[qIdx].multiSelect) {
+          setChoices((c) => {
+            const nc = c.slice()
+            nc[qIdx] = null
+            return nc
+          })
+        }
+      }
+      return next
+    })
   }
 
-  const cancel = () => {
-    if (busy) return
-    setBusy(true)
-    onSkipAll()
+  const setOtherText = (qIdx: number, text: string) => {
+    setOtherTexts((prev) => {
+      const next = prev.slice()
+      next[qIdx] = text
+      return next
+    })
+    // Update choices with the custom text.
+    setChoices((prev) => {
+      const nc = prev.slice()
+      const isMulti = request.questions[qIdx].multiSelect === true
+      if (!isMulti) {
+        nc[qIdx] = text || null
+      } else {
+        // For multi-select, replace previous custom text in the array.
+        const presetLabels = new Set(
+          request.questions[qIdx].options.map((o) => o.label),
+        )
+        const existing = Array.isArray(nc[qIdx]) ? (nc[qIdx] as string[]) : []
+        const presetPicks = existing.filter((v) => presetLabels.has(v))
+        if (text) {
+          presetPicks.push(text)
+        }
+        nc[qIdx] = presetPicks.length > 0 ? presetPicks : null
+      }
+      return nc
+    })
   }
+
+  // Cleanup the auto-close timer on unmount.
+  useEffect(() => () => { clearTimeout(timerRef.current) }, [])
+
+  const submit = useCallback(() => {
+    if (busy || submitted) return
+    setBusy(true)
+    setSubmitted(true)
+    onSubmit(choices)
+    timerRef.current = setTimeout(() => onSubmitted?.(), 3000)
+  }, [busy, submitted, choices, onSubmit, onSubmitted])
+
+  const cancel = useCallback(() => {
+    if (busy || submitted) return
+    setBusy(true)
+    setSubmitted(true)
+    onSkipAll()
+    timerRef.current = setTimeout(() => onSubmitted?.(), 3000)
+  }, [busy, submitted, onSkipAll, onSubmitted])
 
   // Require at least one question to have a non-null answer, otherwise
   // "Submit" is equivalent to "Cancel" and we'd rather the user hit the
@@ -127,42 +232,57 @@ export function QuestionDialog({ request, onSubmit, onSkipAll }: Props) {
 
         <div className="modal-section question-body">
           {request.questions.map((q, qIdx) => (
-            <QuestionBlock
-              key={qIdx}
-              index={qIdx}
-              question={q}
-              value={choices[qIdx]}
-              onSingle={(label) => setSingle(qIdx, label)}
-              onMulti={(label) => toggleMulti(qIdx, label)}
-              onSkip={() => skipQuestion(qIdx)}
-            />
+            submitted ? (
+              <AnsweredBlock key={qIdx} question={q} answer={choices[qIdx]} />
+            ) : (
+              <QuestionBlock
+                key={qIdx}
+                index={qIdx}
+                question={q}
+                value={choices[qIdx]}
+                onSingle={(label) => setSingle(qIdx, label)}
+                onMulti={(label) => toggleMulti(qIdx, label)}
+                onSkip={() => skipQuestion(qIdx)}
+                otherActive={otherActive[qIdx]}
+                otherText={otherTexts[qIdx]}
+                onOtherToggle={() => toggleOther(qIdx)}
+                onOtherTextChange={(text) => setOtherText(qIdx, text)}
+              />
+            )
           ))}
         </div>
 
-        <div className="modal-footer" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button
-              className="btn"
-              onClick={cancel}
-              disabled={busy}
-              style={{ flex: 1 }}
-              title="Skip every question — the model will continue with no guidance"
-            >
-              Skip all
-            </button>
-            <button
-              className="btn btn-primary"
-              onClick={submit}
-              disabled={busy || !hasAnyAnswer}
-              style={{ flex: 2 }}
-            >
-              Send answers
-            </button>
+        {!submitted && (
+          <div className="modal-footer" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                className="btn"
+                onClick={cancel}
+                disabled={busy}
+                style={{ flex: 1 }}
+                title="Skip every question — the model will continue with no guidance"
+              >
+                Skip all
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={submit}
+                disabled={busy || !hasAnyAnswer}
+                style={{ flex: 2 }}
+              >
+                Send answers
+              </button>
+            </div>
+            <span className="hint" style={{ textAlign: 'center' }}>
+              Your answers are sent back to the model as the tool result.
+            </span>
           </div>
-          <span className="hint" style={{ textAlign: 'center' }}>
-            Your answers are sent back to the model as the tool result.
-          </span>
-        </div>
+        )}
+        {submitted && (
+          <div className="modal-footer" style={{ justifyContent: 'center' }}>
+            <span className="hint">Answer sent — waiting for Claude to respond…</span>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -175,9 +295,13 @@ interface BlockProps {
   onSingle: (label: string) => void
   onMulti: (label: string) => void
   onSkip: () => void
+  otherActive: boolean
+  otherText: string
+  onOtherToggle: () => void
+  onOtherTextChange: (text: string) => void
 }
 
-function QuestionBlock({ index, question, value, onSingle, onMulti, onSkip }: BlockProps) {
+function QuestionBlock({ index, question, value, onSingle, onMulti, onSkip, otherActive, otherText, onOtherToggle, onOtherTextChange }: BlockProps) {
   const isMulti = question.multiSelect === true
   const selectedSet =
     value == null ? new Set<string>() : Array.isArray(value) ? new Set(value) : new Set([value])
@@ -222,6 +346,34 @@ function QuestionBlock({ index, question, value, onSingle, onMulti, onSkip }: Bl
             </button>
           )
         })}
+        {/* Other — free-text option */}
+        <button
+          type="button"
+          className={`question-option ${otherActive ? 'selected' : ''}`}
+          onClick={onOtherToggle}
+          aria-pressed={otherActive}
+        >
+          <span className="question-option-marker" aria-hidden>
+            {isMulti ? (otherActive ? '☑' : '☐') : otherActive ? '●' : '○'}
+          </span>
+          <div className="question-option-body">
+            <div className="question-option-label">Other</div>
+            {otherActive && (
+              <input
+                type="text"
+                className="question-other-input"
+                placeholder="Type your answer..."
+                value={otherText}
+                onChange={(e) => onOtherTextChange(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') e.preventDefault()
+                }}
+                autoFocus
+                onClick={(e) => e.stopPropagation()}
+              />
+            )}
+          </div>
+        </button>
       </div>
       <button
         type="button"
@@ -232,6 +384,26 @@ function QuestionBlock({ index, question, value, onSingle, onMulti, onSkip }: Bl
       >
         Skip this question
       </button>
+    </div>
+  )
+}
+
+/** Read-only block shown after the user submits their answer. */
+function AnsweredBlock({ question, answer }: { question: QuestionSpec; answer: string | string[] | null }) {
+  const answerText =
+    answer == null
+      ? '(skipped)'
+      : Array.isArray(answer)
+        ? answer.join(', ')
+        : answer
+  return (
+    <div className="question-block question-block-answered">
+      <div className="question-header">
+        {question.header && <span className="question-chip">{question.header}</span>}
+        <span className="question-answered-badge">✓ answered</span>
+      </div>
+      <div className="question-text">{question.question}</div>
+      <div className="question-answer-display">{answerText}</div>
     </div>
   )
 }

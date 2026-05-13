@@ -15,7 +15,7 @@ function truncate(s: string, n: number): string {
   return s.length <= n ? s : `${s.slice(0, n)}…`
 }
 
-/** Scan the message list for Agent/Task tool_use calls that have no
+/** Scan the message list for Agent/Task/Explore tool_use calls that have no
  *  matching tool_result — those subagents are still running.
  *  Extracts a human-readable label from the tool input. */
 export function extractActiveSubagents(messages: SdkMessage[]): ActiveSubagent[] {
@@ -45,7 +45,7 @@ export function extractActiveSubagents(messages: SdkMessage[]): ActiveSubagent[]
       const block = blocks[j] as Record<string, unknown>
       if (block.type !== 'tool_use') continue
       const name = block.name as string | undefined
-      if (name !== 'Agent' && name !== 'Task') continue
+      if (name !== 'Agent' && name !== 'Task' && name !== 'Explore') continue
       const id = block.id as string | undefined
       if (!id || resolved.has(id)) continue
       const input = block.input as Record<string, unknown> | undefined

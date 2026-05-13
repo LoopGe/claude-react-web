@@ -98,14 +98,42 @@ export function buildApiRouter(sm: SessionManager): Hono {
     return c.json({ session: info }, 201)
   })
 
-  // Send user message
+  // Send user message — accepts either legacy `text` string or `content` array
+  // (text + image blocks for multimodal input).
   app.post('/sessions/:id/messages', async (c) => {
     const id = c.req.param('id')
-    const body = await safeJson<{ text?: string }>(c.req)
-    const text = typeof body.text === 'string' ? body.text : ''
-    if (!text.trim()) return c.json({ error: 'text is required' }, 400)
-    console.log(`[http] POST /sessions/${id}/messages — ${text.length} chars`)
-    sm.send(id, text)
+    const body = await safeJson<{ text?: string; content?: unknown[] }>(c.req)
+
+    if (Array.isArray(body.content) && body.content.length > 0) {
+      // Validate content blocks
+      const VALID_IMG_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+      let totalBase64 = 0
+      for (const block of body.content) {
+        const b = block as Record<string, unknown>
+        if (b.type === 'image') {
+          const source = b.source as Record<string, unknown> | undefined
+          if (!source || source.type !== 'base64' || typeof source.data !== 'string' || typeof source.media_type !== 'string') {
+            return c.json({ error: 'invalid image block: missing base64 source' }, 400)
+          }
+          if (!VALID_IMG_TYPES.includes(source.media_type as string)) {
+            return c.json({ error: `unsupported image type: ${source.media_type}` }, 400)
+          }
+          totalBase64 += (source.data as string).length
+        } else if (b.type !== 'text') {
+          return c.json({ error: `unsupported content block type: ${b.type}` }, 400)
+        }
+      }
+      if (totalBase64 > 28_000_000) {
+        return c.json({ error: 'total image payload too large' }, 413)
+      }
+      console.log(`[http] POST /sessions/${id}/messages — content array with ${body.content.length} blocks`)
+      sm.sendContent(id, body.content as Array<{ type: string; [k: string]: unknown }>)
+    } else {
+      const text = typeof body.text === 'string' ? body.text : ''
+      if (!text.trim()) return c.json({ error: 'text is required' }, 400)
+      console.log(`[http] POST /sessions/${id}/messages — ${text.length} chars`)
+      sm.send(id, text)
+    }
     return c.json({ ok: true })
   })
 

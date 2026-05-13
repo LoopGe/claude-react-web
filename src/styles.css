@@ -36,6 +36,13 @@
   --msg-user-code-bg: color-mix(in srgb, var(--accent) 18%, transparent);
   --msg-user-pre-bg: color-mix(in srgb, var(--bg) 80%, var(--accent));
   --msg-user-pre-border: color-mix(in srgb, var(--accent) 25%, transparent);
+  --bg-elev-3: #232830;
+  --btn-hover-bg: #242a35;
+  --btn-hover-border: #3a4150;
+  --drag-over-bg: #1a2030;
+  --assistant-header-fg: #a9b4d6;
+  --code-bg: #0f1115;
+  --bg-elev-1: #181c24;
 }
 
 [data-theme="light"] {
@@ -67,6 +74,13 @@
   /* --msg-user-* is defined once in :root using color-mix() against the
      theme variables, so the light theme inherits a re-mixed palette
      automatically — no per-theme overrides needed. */
+  --bg-elev-3: #dde0e5;
+  --btn-hover-bg: #d8dbe2;
+  --btn-hover-border: #b0b6c1;
+  --drag-over-bg: #e8ecf2;
+  --assistant-header-fg: #5a6a8a;
+  --code-bg: #282c34;
+  --bg-elev-1: #f0f1f4;
 }
 
 * { box-sizing: border-box; }
@@ -128,7 +142,7 @@ button { cursor: pointer; }
   border-radius: 6px;
   transition: background 0.1s, border-color 0.1s;
 }
-.btn:hover:not(:disabled) { background: #242a35; border-color: #3a4150; }
+.btn:hover:not(:disabled) { background: var(--btn-hover-bg); border-color: var(--btn-hover-border); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-primary {
   background: var(--accent-strong);
@@ -177,6 +191,37 @@ button { cursor: pointer; }
 .accent-swatch.active {
   border-color: var(--fg);
   box-shadow: 0 0 0 1px var(--bg);
+}
+.accent-swatch-default {
+  --swatch: #8c94a3;
+  border: 2px dashed var(--fg-muted);
+}
+.accent-swatch-default.active {
+  border-color: var(--fg);
+  border-style: solid;
+}
+
+/* Toolbar instance: wrap the swatches in a btn-icon-shaped container
+   so it visually matches the adjacent toolbar buttons. */
+.main-toolbar .accent-picker {
+  gap: 3px;
+  padding: 4px 6px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  transition: background 0.1s, border-color 0.1s;
+}
+.main-toolbar .accent-picker:hover {
+  background: #242a35;
+  border-color: #3a4150;
+}
+.main-toolbar .accent-swatch {
+  width: 14px;
+  height: 14px;
+}
+.main-toolbar .accent-swatch.active {
+  border-color: var(--swatch-strong);
+  box-shadow: 0 0 0 1px var(--bg-elev-2);
 }
 
 .input, .textarea, .select {
@@ -651,9 +696,9 @@ body.resizing-col * {
 
 .error-bar {
   padding: 8px 18px;
-  background: #3a1d1d;
-  border-bottom: 1px solid #5a2525;
-  color: #ffb1b1;
+  background: var(--msg-error-bg);
+  border-bottom: 1px solid var(--msg-error-border);
+  color: var(--msg-error-fg);
   font-size: 13px;
 }
 
@@ -1251,19 +1296,20 @@ body.resizing-col * {
      Setting overflow-y: hidden prevents a double-scrollbar. */
   overflow-y: hidden;
   overflow-x: hidden;
-  /* Inline padding centers the reading column on wide screens. Each .msg
-     uses align-self (flex-start / flex-end) to sit left or right inside
-     that column. This keeps the 900px column centered AND lets individual
-     bubbles right-align, which `align-items: center` would prevent. */
-  padding: 0 max(20px, calc((100% - 900px) / 2));
+  /* Vertical padding only — horizontal padding is on .virtuoso-item-wrapper
+     so the scrollbar sits flush against the right edge of the viewport. */
+  padding: 10px 0;
 }
 /* Each virtualised item is wrapped in this div so that .msg.user's
    align-self: flex-end still works (the old flex column on
-   .chat-messages is gone; each item is its own flex column now). */
+   .chat-messages is gone; each item is its own flex column now).
+   Horizontal padding centers the reading column on wide screens. */
 .virtuoso-item-wrapper {
   display: flex;
   flex-direction: column;
   padding-bottom: 14px;  /* replaces the old gap: 14px on .chat-messages */
+  padding-left: max(20px, calc((100% - 900px) / 2));
+  padding-right: max(20px, calc((100% - 900px) / 2));
 }
 /* Empty state — shown when there are zero messages. Needs explicit
    centering since .chat-messages is no longer a flex container. */
@@ -1330,6 +1376,17 @@ body.resizing-col * {
 }
 .ctx-bar-nums { letter-spacing: 0.02em; }
 .ctx-bar-pct { color: var(--fg-muted); }
+.ctx-bar-model {
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--fg-muted);
+  opacity: 0.7;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: baseline;
+}
 .ctx-bar-track {
   height: 4px;
   background: var(--bg);
@@ -1362,7 +1419,7 @@ body.resizing-col * {
 /* Drag-over state — outline in-set so it frames the composer without
    shifting any layout. */
 .chat-composer-drag {
-  background: #1a2030;
+  background: var(--drag-over-bg);
   outline-color: var(--accent);
 }
 /* When a ContextBar is present just above, it owns the divider. */
@@ -1552,7 +1609,7 @@ body.resizing-col * {
   background: var(--bg-elev);
   border-bottom-left-radius: 3px;
 }
-.msg.assistant .msg-header { color: #a9b4d6; font-weight: 600; }
+.msg.assistant .msg-header { color: var(--assistant-header-fg); font-weight: 600; }
 .msg.assistant .msg-header > span:first-child::before { content: '✦ '; }
 
 /* Live streaming bubble — rendered outside Virtuoso while a turn is
@@ -1577,6 +1634,64 @@ body.resizing-col * {
 }
 @keyframes cursor-blink {
   50% { opacity: 0; }
+}
+
+/* Image preview thumbnails in the composer */
+.image-previews {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 0;
+}
+.image-preview-card {
+  position: relative;
+  width: 80px;
+  height: 80px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.image-preview-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.image-preview-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  background: rgba(0, 0, 0, 0.6);
+  border: none;
+  color: white;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-size: 11px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 1;
+}
+.image-preview-remove:hover {
+  background: rgba(0, 0, 0, 0.85);
+}
+
+/* Rendered images in message history */
+.msg-image {
+  max-width: min(100%, 600px);
+  max-height: 400px;
+  border-radius: 4px;
+  margin: 4px 0;
+  object-fit: contain;
+}
+.msg-image-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 4px;
 }
 
 /* "Thinking" bar — compact status strip shown above the context bar
@@ -1733,6 +1848,7 @@ body.resizing-col * {
 .msg.system { background: var(--msg-system-bg); border-color: var(--msg-system-border); font-family: var(--mono); font-size: 12px; }
 .msg.error { background: var(--msg-error-bg); border-color: var(--msg-error-border); color: var(--msg-error-fg); }
 .msg.error.rate-limit { background: var(--msg-rate-limit-bg); border-color: var(--msg-rate-limit-border); color: var(--msg-rate-limit-fg); }
+.msg.api-retry { background: var(--msg-rate-limit-bg); border-color: var(--msg-rate-limit-border); color: var(--msg-rate-limit-fg); font-family: var(--mono); font-size: 12px; }
 .msg.result { background: var(--msg-result-bg); border-color: var(--msg-result-border); }
 .msg.result.interrupted { background: var(--msg-rate-limit-bg); border-color: var(--msg-rate-limit-border); color: var(--msg-rate-limit-fg); }
 
@@ -1744,7 +1860,7 @@ body.resizing-col * {
   border-radius: 3px;
 }
 .msg-body pre {
-  background: var(--bg);
+  background: var(--code-bg);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 10px 12px;
@@ -1767,7 +1883,7 @@ body.resizing-col * {
   align-items: center;
   justify-content: space-between;
   padding: 4px 10px;
-  background: color-mix(in srgb, var(--bg) 85%, var(--border));
+  background: color-mix(in srgb, var(--code-bg) 85%, var(--border));
   border: 1px solid var(--border);
   border-bottom: none;
   border-radius: 6px 6px 0 0;
@@ -2193,10 +2309,10 @@ body.resizing-col * {
 .crumb-sep { color: var(--fg-muted); }
 .modal-error {
   padding: 8px 16px;
-  background: #3a1d1d;
-  color: #ffb1b1;
+  background: var(--msg-error-bg);
+  color: var(--msg-error-fg);
   font-size: 13px;
-  border-bottom: 1px solid #5a2525;
+  border-bottom: 1px solid var(--msg-error-border);
 }
 .modal-list {
   flex: 1;
@@ -2729,6 +2845,39 @@ details.plan-card-collapsible > summary > .plan-card-header {
 .question-skip:hover:not(:disabled) {
   color: var(--fg);
 }
+.question-other-input {
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.question-other-input:focus {
+  border-color: var(--accent);
+}
+/* Answered state — question block after the user submits. */
+.question-block-answered {
+  opacity: 0.85;
+}
+.question-answered-badge {
+  color: var(--ok);
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.question-answer-display {
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--fg);
+}
 
 /* ── Command Palette ─────────────────────────────────────────────── */
 
@@ -2911,28 +3060,6 @@ details.plan-card-collapsible > summary > .plan-card-header {
   font-size: 11.5px;
   color: var(--fg-muted);
   white-space: nowrap;
-}
-
-/* ── Question-answer inline message ──────────────────────────────
-   Records the user's AskUserQuestion choices so they stay visible
-   in the transcript after the dialog closes. */
-.qa-message {
-  border: 1px dashed color-mix(in srgb, var(--ok) 40%, transparent);
-  background: color-mix(in srgb, var(--ok) 6%, transparent);
-}
-.qa-item {
-  margin-top: 6px;
-}
-.qa-item:first-child {
-  margin-top: 0;
-}
-.qa-question {
-  font-size: 12.5px;
-  color: var(--fg-muted);
-}
-.qa-answer {
-  font-weight: 500;
-  margin-top: 2px;
 }
 
 /* ── Message search bar ────────────────────────────────────────── */

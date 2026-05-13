@@ -16,7 +16,8 @@ import { useSidebarResize } from './hooks/useSidebarResize'
 import { useNotifications } from './hooks/useNotifications'
 import { useWsHub, useWsHubStatus } from './hooks/useWsHub'
 import type { WsServerFrame } from './ws-types'
-import type { NewSessionForm, SessionGroup, SessionInfo, SidebarSection } from './types'
+import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, SidebarSection } from './types'
+import { PERMISSION_MODES } from './types'
 import { ACCENT_COLORS, ACCENT_COLOR_KEY, SESSION_COLORS_KEY } from './theme'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { ThemeToggle } from './components/ThemeToggle'
@@ -37,7 +38,7 @@ import {
   LAST_SEEN_TURN_KEY,
   clampMaxOpen,
 } from './constants/storageKeys'
-import type { Defaults, ContextStep, ServerConfig } from './types/config'
+import type { Defaults, ServerConfig } from './types/config'
 import { notificationTooltip } from './utils/notifications'
 import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
 
@@ -60,7 +61,6 @@ export function App() {
   )
   const [defaults, setDefaults] = useState<Defaults>({})
   const [serverModels, setServerModels] = useState<string[]>([])
-  const [contextSteps, setContextSteps] = useState<ContextStep[]>([])
   /** When non-null, the Settings overlay is rendered on top of the chat
    *  panel with this session id. Previously a single boolean that targeted
    *  the focused session — making it per-session lets the overlay cover
@@ -159,7 +159,6 @@ export function App() {
       .then((r) => {
         setDefaults(r.defaults)
         if (r.models?.length) setServerModels(r.models)
-        if (r.contextSteps?.length) setContextSteps(r.contextSteps)
         if (r.maxOpenPanels != null) setServerMaxOpen(r.maxOpenPanels)
       })
       .catch(() => {})
@@ -852,6 +851,19 @@ export function App() {
           description: 'Keyboard shortcuts',
         },
         {
+          combo: 'shift+tab',
+          handler: () => {
+            if (!focusedId) return
+            const s = sessions.find((x) => x.id === focusedId)
+            if (!s) return
+            const cur = (s.permissionMode ?? 'default') as PermissionMode
+            const idx = PERMISSION_MODES.indexOf(cur)
+            const next = PERMISSION_MODES[(idx + 1) % PERMISSION_MODES.length]
+            void api.post(`/sessions/${focusedId}/permission-mode`, { mode: next })
+          },
+          description: 'Cycle permission mode',
+        },
+        {
           combo: 'escape',
           handler: () => {
             // Priority: CommandPalette > ShortcutHelp > NewSessionDialog > per-panel Settings overlay > Interrupt.
@@ -1126,7 +1138,6 @@ export function App() {
           onToggleGroupCollapse={toggleGroupCollapse}
           activeGroupId={activeGroupId}
           maxOpen={maxOpen}
-          contextSteps={contextSteps}
         />
         <div
           className={`sidebar-resizer ${sidebarResize.dragging ? 'dragging' : ''}`}

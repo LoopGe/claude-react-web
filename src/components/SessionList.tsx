@@ -7,6 +7,7 @@ import type { CSSProperties } from 'react'
 import { isInAppDrag, readDragPayload, setDragPayload } from '../hooks/useDragPayload'
 import { api } from '../hooks/useApi'
 import { shortenPath } from '../utils/paths'
+import { statusLabel } from '../utils/session-status'
 import { ACCENT_COLORS } from '../theme'
 import type { NewSessionForm, SessionGroup, SessionInfo, SidebarSection } from '../types'
 import { NewSessionDialog } from './session-list/NewSessionDialog'
@@ -92,8 +93,6 @@ interface Props {
   activeGroupId?: string | null
   /** Max sessions per group / max open panels. Shared with App. */
   maxOpen: number
-  /** Context-window size presets from server config. */
-  contextSteps?: Array<{ value: number; label: string; beta?: string }>
 }
 
 export function SessionList({
@@ -128,7 +127,6 @@ export function SessionList({
   onNewSessionDialogChange,
   activeGroupId,
   maxOpen,
-  contextSteps,
 }: Props) {
   const [uncontrolledShow, setUncontrolledShow] = useState(false)
   const showDialog = newSessionDialogOpen ?? uncontrolledShow
@@ -441,7 +439,7 @@ export function SessionList({
           </strong>
           <span
             className={`session-item-badge ${s.error ? 'err' : s.running ? 'running' : ''} ${working ? 'working' : ''}`}
-            title={s.error ?? ''}
+            title={s.error ?? (s.terminated && s.terminatedReason ? statusLabel(s) : '')}
           >
             {working && <span className="session-item-working-dot" aria-hidden />}
             {s.error
@@ -781,7 +779,6 @@ export function SessionList({
           activeGroupId={activeGroupId}
           groups={groups}
           maxOpen={maxOpen}
-          contextSteps={contextSteps}
           onCancel={() => {
             setShowDialog(false)
             setPrefilledCwd(undefined)
