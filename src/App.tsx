@@ -407,33 +407,12 @@ export function App() {
       setOpenIds((prev) => {
         if (prev.includes(id)) return prev
         if (prev.length < maxOpenRef.current) return [...prev, id]
-        // Pick an eviction candidate: not focused, not pinned. Pinned
-        // sessions ARE allowed to be open; we just won't throw them
-        // out on someone else's behalf. Fall through to focused or
-        // the head if that's all we have (pin overflow: user opened
-        // three pinned + tried a fourth — focused one loses to make
-        // room, which matches the earlier behaviour).
-        // Use refs instead of closures so we read the latest values
-        // even when called inside a React batch with other setState.
+        // Pick an eviction candidate: the oldest non-focused session.
         const curFocusedId = focusedIdRef.current
-        const curSessions = sessionsRef.current
         const focusIdx = curFocusedId ? prev.indexOf(curFocusedId) : -1
-        const pinnedOpenIds = new Set(
-          prev.filter((pid) => curSessions.find((s) => s.id === pid)?.pinned),
-        )
-        const evictIdx = prev.findIndex(
-          (pid, i) => i !== focusIdx && !pinnedOpenIds.has(pid),
-        )
-        // Fallbacks in decreasing preference:
-        //   1) non-focused non-pinned (evictIdx above)
-        //   2) any non-focused (ignores pin — rare: 3 pinned open)
-        //   3) index 0 (everything is pinned + focused on it)
-        const fallback =
-          evictIdx === -1
-            ? prev.findIndex((_, i) => i !== focusIdx)
-            : evictIdx
+        const evictIdx = prev.findIndex((_, i) => i !== focusIdx)
         const next = prev.slice()
-        next.splice(fallback === -1 ? 0 : fallback, 1)
+        next.splice(evictIdx === -1 ? 0 : evictIdx, 1)
         next.push(id)
         return next
       })
@@ -580,20 +559,6 @@ export function App() {
       await handleCreate(form)
     },
     [sessions, groups, maxOpen, handleCreate],
-  )
-
-  const handleTogglePin = useCallback(
-    async (id: string) => {
-      setOpError(null)
-      const current = sessions.find((s) => s.id === id)
-      const next = !current?.pinned
-      try {
-        await api.patch<{ session: SessionInfo }>(`/sessions/${id}`, { pinned: next })
-      } catch (e) {
-        setOpError(`Couldn't ${next ? 'pin' : 'unpin'} session: ${(e as Error).message}`)
-      }
-    },
-    [sessions],
   )
 
   const handleDelete = useCallback(
@@ -917,30 +882,16 @@ export function App() {
       }
     }
     for (const s of sessions) if (!seen.has(s.id)) ordered.push(s)
-    // Pinned sessions always float to the top, preserving their relative
-    // order within the pinned group. This runs AFTER the user-custom
-    // sidebarOrder so pinning doesn't destroy existing reordering —
-    // pinning just says "these come first", not "these are in pin-order".
-    const pinned: SessionInfo[] = []
-    const rest: SessionInfo[] = []
-    for (const s of ordered) (s.pinned ? pinned : rest).push(s)
-    return [...pinned, ...rest]
+    return ordered
   }, [sessions, sidebarOrder])
 
-  /** Grouped sidebar view: pinned -> groups -> ungrouped. Sessions not in
-   *  any group appear in the "Ungrouped" section at the bottom. */
+  /** Grouped sidebar view: groups -> ungrouped. Sessions not in any group
+   *  appear in the "Ungrouped" section at the bottom. */
   const sidebarSections = useMemo((): SidebarSection[] => {
     const byId = new Map(sessions.map((s) => [s.id, s]))
 
-    // 1. Pinned sessions (always shown at top, independent of groups).
-    const pinned: SessionInfo[] = []
-    for (const s of sessions) {
-      if (s.pinned) pinned.push(s)
-    }
-
-    // 2. Group sections.
+    // 1. Group sections.
     const sections: SidebarSection[] = []
-    if (pinned.length > 0) sections.push({ kind: 'pinned', sessions: pinned })
     const groupedIds = new Set<string>()
     for (const g of groups) {
       const groupSessions: SessionInfo[] = []
@@ -954,10 +905,10 @@ export function App() {
       sections.push({ kind: 'group', group: g, sessions: groupSessions })
     }
 
-    // 3. Ungrouped sessions (not in any group and not pinned).
+    // 2. Ungrouped sessions (not in any group).
     const ungrouped: SessionInfo[] = []
     for (const s of sessions) {
-      if (!s.pinned && !groupedIds.has(s.id)) ungrouped.push(s)
+      if (!groupedIds.has(s.id)) ungrouped.push(s)
     }
     if (ungrouped.length > 0) {
       sections.push({ kind: 'ungrouped', sessions: ungrouped })
@@ -1142,7 +1093,6 @@ export function App() {
           onClosePanel={closeSession}
           onFork={handleFork}
           onNewLikeThis={handleNewLikeThis}
-          onTogglePin={handleTogglePin}
           onReorder={handleReorderSidebar}
           onDropIntoGroup={handleAddToGroup}
           onReorderInGroup={handleReorderInGroup}

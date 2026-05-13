@@ -36,9 +36,24 @@ interface CacheEntry {
 }
 
 // ── Cache ──────────────────────────────────────────────────────────
+//
+// Cache lifetime rules (NO time-based TTL):
+//   1. `invalidateRecapCache(id)` — called on every send() and delete()
+//      in SessionManager. New user turn = stale summary, full stop.
+//   2. Message-count + last-message-uuid fingerprint mismatch — covers
+//      compaction, history truncation, or any other path that mutates
+//      the transcript without going through send() (rare, but possible
+//      under future SDK features).
+//   3. LRU eviction when the map exceeds `CACHE_MAX_ENTRIES`.
+//   4. Process restart — the Map is in-memory only.
+//
+// We deliberately do NOT expire by wall-clock age. A summary stays valid
+// as long as the underlying conversation is unchanged: a 6-hour-old
+// summary of a conversation that hasn't grown in 6 hours is still 100%
+// accurate, and re-running the LLM would burn money + tokens for an
+// identical result.
 
 const cache = new Map<string, CacheEntry>()
-const CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
 const CACHE_MAX_ENTRIES = 200
 
 /** In-flight dedup map: if two requests for the same session arrive
@@ -241,7 +256,8 @@ async function doGenerateRecap(messages: SDKMessage[], sessionId: string): Promi
     return { summary: 'No messages yet.', stats, cached: false, generatedAt: Date.now(), fallback: true }
   }
 
-  // Check cache.
+  // Check cache. No wall-clock TTL — see the cache section header for the
+  // full set of invalidation rules.
   const lastMsg = messages[messages.length - 1] as Record<string, unknown> | undefined
   const lastUuid = (lastMsg?.uuid as string) ?? ''
   // If the last message has no UUID (SDK didn't provide one), we can't
@@ -253,8 +269,7 @@ async function doGenerateRecap(messages: SDKMessage[], sessionId: string): Promi
     canTrustCache &&
     cached &&
     cached.messageCount === messages.length &&
-    cached.lastMessageUuid === lastUuid &&
-    Date.now() - cached.generatedAt < CACHE_TTL_MS
+    cached.lastMessageUuid === lastUuid
   ) {
     return { summary: cached.summary, stats: cached.stats, cached: true, generatedAt: cached.generatedAt }
   }
@@ -281,9 +296,10 @@ async function doGenerateRecap(messages: SDKMessage[], sessionId: string): Promi
   }
 
   const generatedAt = Date.now()
-  // Only cache real AI summaries — fallbacks are a degraded result, and
-  // caching them would prevent retry on the next refresh until TTL expiry
-  // or a new message arrives. Retries are cheap; keep them available.
+  // Only cache real AI summaries — fallbacks are a degraded result. With
+  // no wall-clock TTL, caching a fallback would freeze the bad summary
+  // in place until the next user turn invalidates it. Retries are cheap
+  // (network or UI refresh button); keep them available.
   if (!fallback) {
     cache.set(sessionId, { summary, stats, messageCount: messages.length, lastMessageUuid: lastUuid, generatedAt })
     // LRU eviction: drop oldest entries when the cache exceeds the cap.

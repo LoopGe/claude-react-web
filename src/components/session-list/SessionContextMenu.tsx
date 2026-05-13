@@ -16,8 +16,6 @@ export interface SessionContextMenuProps {
   onFork: (id: string) => void
   /** Create a new empty session reusing the source's cwd/model/permissionMode. */
   onNewLikeThis: (id: string) => void
-  /** Toggle pinned flag on the session. */
-  onTogglePin: (id: string) => void
   /** Current per-session accent hex, or undefined for global default. */
   sessionColor?: string
   /** Set or clear the session accent. */
@@ -39,7 +37,6 @@ export function SessionContextMenu({
   onDelete,
   onFork,
   onNewLikeThis,
-  onTogglePin,
   sessionColor,
   onColorChange,
   groups,
@@ -52,13 +49,6 @@ export function SessionContextMenu({
       label: 'Rename',
       icon: '✎',
       onClick: () => onRename(session),
-    },
-    {
-      // Toggle rather than separate pin/unpin items — keeps the menu
-      // short and the action reversible from one place.
-      label: session.pinned ? 'Unpin' : 'Pin to top',
-      icon: session.pinned ? '📍' : '📌',
-      onClick: () => onTogglePin(anchor.id),
     },
     {
       label: 'Fork from this point',

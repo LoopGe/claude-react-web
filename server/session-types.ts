@@ -125,9 +125,6 @@ export interface SessionInfo {
    *  frontend diffs this against a locally-remembered value to decide
    *  whether to show an unread badge on non-focused sessions. */
   lastTurnAt?: number
-  /** User pinned this session — sticks to the top of the sidebar and
-   *  survives the 3-panel eviction rule. */
-  pinned?: boolean
 }
 
 export interface Session {
@@ -138,7 +135,6 @@ export interface Session {
   model?: string
   permissionMode?: PermissionMode
   title?: string
-  pinned?: boolean
   input: Pushable<SDKUserMessage>
   query: Query
   subscribers: Map<string, Subscriber>
@@ -157,6 +153,11 @@ export interface Session {
   /** Epoch ms when the first pending turn started. Cleared when all turns
    *  complete (pendingTurns drops to 0) or the session terminates. */
   workingSince?: number
+  /** Epoch ms of the last auto-interrupt the GC fired against this session.
+   *  Used to throttle: we don't re-fire interrupt on every tick. Cleared
+   *  when state actually progresses (lastActivityAt moves) or the turn
+   *  completes. */
+  autoInterruptedAt?: number
   /** Timestamp of the last `result` message, used for the unread badge. */
   lastTurnAt?: number
   /** Pushable for context_usage events — separate from message history

@@ -41,8 +41,6 @@ interface Props {
   /** Create a new empty session reusing the source's cwd/model/permissionMode
    *  but without any conversation history. Used by the right-click menu. */
   onNewLikeThis?: (id: string) => void
-  /** Toggle a session's pinned flag (used by the right-click menu). */
-  onTogglePin?: (id: string) => void
   /** Called when the user drops a card onto another one. `position` tells
    *  the parent whether to insert before or after the target. */
   onReorder?: (draggedId: string, targetId: string, position: 'before' | 'after') => void
@@ -119,7 +117,6 @@ export function SessionList({
   onClosePanel,
   onFork,
   onNewLikeThis,
-  onTogglePin,
   onReorder,
   onDropIntoGroup,
   onReorderInGroup,
@@ -194,8 +191,7 @@ export function SessionList({
     for (const sec of sidebarSections) {
       const filtered = sec.sessions.filter(match)
       if (filtered.length === 0) continue
-      if (sec.kind === 'pinned') result.push({ kind: 'pinned', sessions: filtered })
-      else if (sec.kind === 'group') result.push({ kind: 'group', group: sec.group, sessions: filtered })
+      if (sec.kind === 'group') result.push({ kind: 'group', group: sec.group, sessions: filtered })
       else if (sec.kind === 'ungrouped') result.push({ kind: 'ungrouped', sessions: filtered })
     }
     return result
@@ -323,6 +319,7 @@ export function SessionList({
           hint === 'before' ? 'drop-before' : '',
           hint === 'after' ? 'drop-after' : '',
           sessionColors?.[s.id] ? 'tinted' : '',
+          (s.permissionMode ?? 'default') === 'plan' ? 'plan-mode' : '',
         ].filter(Boolean).join(' ')}
         style={
           sessionColors?.[s.id]
@@ -397,9 +394,13 @@ export function SessionList({
                 {slotIdx + 1}
               </span>
             )}
-            {s.pinned && (
-              <span className="session-item-pin" title="Pinned · right-click to unpin" aria-label="pinned">
-                📌
+            {(s.permissionMode ?? 'default') === 'plan' && (
+              <span
+                className="session-item-plan"
+                title="Plan mode (read-only)"
+                aria-label="plan mode"
+              >
+                🗒
               </span>
             )}
             {isRenaming ? (
@@ -616,14 +617,6 @@ export function SessionList({
           ) : filteredSections.length > 0 ? (
           // ── Sectioned view (groups exist) ──
           filteredSections.map((sec) => {
-            if (sec.kind === 'pinned') {
-              return (
-                <div key="pinned" className="session-section">
-                  <div className="session-section-header">📌 Pinned</div>
-                  {sec.sessions.map((s) => renderSessionCard(s))}
-                </div>
-              )
-            }
             if (sec.kind === 'group') {
               const collapsed = !!collapsedGroups[sec.group.id]
               const active = isGroupActive(sec.group)
@@ -768,7 +761,6 @@ export function SessionList({
         onDelete={(id) => onDelete(id)}
         onFork={(id) => onFork?.(id)}
         onNewLikeThis={(id) => onNewLikeThis?.(id)}
-        onTogglePin={(id) => onTogglePin?.(id)}
         sessionColor={sessionColors?.[menu.id]}
         onColorChange={(color) => onSessionColorChange?.(menu.id, color)}
         groups={groups}

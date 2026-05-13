@@ -4,6 +4,9 @@
 // (diff preview, file-path header, etc.) while falling back to raw JSON
 // for unknown tools.
 
+import { Markdown } from './Markdown'
+import { usePlanStatus } from '../hooks/usePlanStatus'
+
 interface Block {
   type: string
   text?: string
@@ -25,6 +28,20 @@ export function ToolUseBlock({ block }: { block: Block }) {
   const name = block.name
   const input = block.input as Record<string, unknown> | undefined
 
+  // ExitPlanMode and (legacy/alt) EnterPlanMode get their own card —
+  // see PlanCard. Skip the generic "→ tool: …" header so the card stands
+  // on its own as the dominant element of the assistant message.
+  if (name === 'ExitPlanMode' || name === 'EnterPlanMode') {
+    const blockAny = block as { id?: unknown }
+    const id =
+      typeof block.tool_use_id === 'string'
+        ? block.tool_use_id
+        : typeof blockAny.id === 'string'
+          ? blockAny.id
+          : undefined
+    return <PlanCard input={input} toolUseId={id} />
+  }
+
   return (
     <div style={{ margin: '6px 0' }}>
       <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
@@ -39,6 +56,96 @@ export function ToolUseBlock({ block }: { block: Block }) {
             : <div className="tool-input">{formatJson(block.input)}</div>
       }
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ExitPlanMode / EnterPlanMode
+// ---------------------------------------------------------------------------
+
+/**
+ * Plan card. Renders the proposed plan as markdown so headings, lists,
+ * and code blocks come through readably — it's almost always
+ * multi-paragraph prose with bullets, and the default tool_use JSON dump
+ * is unreadable for that. `allowedPrompts` (the prompt-permission
+ * rules the SDK proposes when approving) gets a small chip row.
+ *
+ * Both `ExitPlanMode` (current SDK name) and the legacy `EnterPlanMode`
+ * route here — the input shape is the same in practice.
+ *
+ * Wrapped in <details> so long plans (the common case) collapse by
+ * default once they've been resolved. Pending plans auto-expand —
+ * that's the moment the user most wants to read them.
+ */
+function PlanCard({
+  input,
+  toolUseId,
+}: {
+  input?: Record<string, unknown>
+  toolUseId?: string
+}) {
+  const plan = typeof input?.plan === 'string' ? input.plan : null
+  const fallback =
+    typeof input?.content === 'string'
+      ? input.content
+      : typeof input?.markdown === 'string'
+        ? (input.markdown as string)
+        : null
+  const body = plan ?? fallback
+  const allowedPrompts = Array.isArray(input?.allowedPrompts)
+    ? (input.allowedPrompts as Array<{ tool?: string; prompt?: string }>)
+    : []
+
+  const status = usePlanStatus(toolUseId)
+  const statusLabel =
+    status === 'approved' ? 'approved' : status === 'rejected' ? 'rejected' : 'pending'
+  const statusTitle =
+    status === 'approved'
+      ? 'You approved this plan — Claude exited plan mode and started executing.'
+      : status === 'rejected'
+        ? 'You chose to keep planning — Claude received feedback and is revising.'
+        : 'Pending your decision.'
+  // Pending plans auto-expand (the user wants to read them right now);
+  // resolved plans collapse to a one-line summary by default to keep
+  // the transcript scannable. `key` forces a remount when status flips
+  // so the <details> open attribute re-applies.
+  const defaultOpen = status === 'pending'
+
+  return (
+    <details
+      key={status}
+      className={`plan-card-collapsible plan-card-status-${status}`}
+      open={defaultOpen}
+    >
+      <summary>
+        <div className="plan-card-header">
+          <span className="plan-card-icon" aria-hidden>🗒</span>
+          <span className="plan-card-title">Plan proposal</span>
+          <span className={`plan-card-status ${status}`} title={statusTitle}>
+            {statusLabel}
+          </span>
+        </div>
+      </summary>
+      <div className="plan-card-body">
+        {body ? <Markdown text={body} /> : (
+          <div className="plan-card-empty">(empty plan — Claude sent no body)</div>
+        )}
+      </div>
+      {allowedPrompts.length > 0 && (
+        <div className="plan-card-allowed">
+          <div className="plan-card-allowed-label">
+            On approval, allow:
+          </div>
+          <ul className="plan-card-allowed-list">
+            {allowedPrompts.map((p, i) => (
+              <li key={i} className="plan-card-allowed-item">
+                <code>{p.tool ?? 'tool'}</code> · {p.prompt ?? '(no description)'}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </details>
   )
 }
 

@@ -59,41 +59,36 @@ describe('useSessionRecap', () => {
     vi.restoreAllMocks()
   })
 
-  // ── Staleness gate ────────────────────────────────────────────
+  // ── Idle-trigger gate ─────────────────────────────────────────
 
-  it('does NOT fetch when session was viewed recently (< 5 min ago)', () => {
-    const now = Date.now()
-    vi.setSystemTime(now)
-    setLastViewed('s1', now - 60_000) // 1 minute ago
-
-    const { result } = renderHook(() => useSessionRecap('s1', true))
-
-    // Should not have called the API.
+  it('does NOT fetch when the session has no completed turn yet', () => {
+    const { result } = renderHook(() => useSessionRecap('s1', undefined))
     expect(mockPost).not.toHaveBeenCalled()
-    expect(result.current.visible).toBe(false)
-    expect(result.current.recap).toBeNull()
+    expect(result.current.message).toBeNull()
   })
 
-  it('does NOT fetch on first-ever view (never viewed)', () => {
-    const { result } = renderHook(() => useSessionRecap('s1', true))
-
-    // First visit — just records the timestamp, no fetch.
-    expect(mockPost).not.toHaveBeenCalled()
-    expect(result.current.visible).toBe(false)
-  })
-
-  it('fetches recap when session is stale (> 5 min since last view)', async () => {
+  it('does NOT fetch when the session is still under 5 minutes idle', () => {
     const now = Date.now()
     vi.setSystemTime(now)
-    setLastViewed('s1', now - 10 * 60_000) // 10 minutes ago
 
-    const { result } = renderHook(() => useSessionRecap('s1', true))
+    // Last turn 1 minute ago — far from idle.
+    const { result } = renderHook(() => useSessionRecap('s1', now - 60_000))
 
-    expect(result.current.visible).toBe(true)
-    expect(result.current.loading).toBe(true)
+    expect(mockPost).not.toHaveBeenCalled()
+    expect(result.current.message).toBeNull()
+  })
+
+  it('fetches immediately on mount when already idle ≥ 5 minutes', async () => {
+    const now = Date.now()
+    vi.setSystemTime(now)
+
+    const lastTurn = now - 10 * 60_000 // 10 minutes ago
+    const { result } = renderHook(() => useSessionRecap('s1', lastTurn))
+
+    // Loading state appears synchronously.
+    expect(result.current.message?.state).toBe('loading')
 
     await act(async () => {
-      // Flush the promise.
       await vi.advanceTimersByTimeAsync(0)
     })
 
@@ -102,119 +97,165 @@ describe('useSessionRecap', () => {
       undefined,
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
-    expect(result.current.recap).not.toBeNull()
-    expect(result.current.recap!.summary).toBe('Test recap')
-    expect(result.current.loading).toBe(false)
+    expect(result.current.message?.state).toBe('ready')
+    expect(result.current.message?.recap?.summary).toBe('Test recap')
+  })
+
+  it('schedules a timer and fires once the 5-minute idle threshold is reached', async () => {
+    const now = Date.now()
+    vi.setSystemTime(now)
+
+    // Last turn 2 minutes ago — 3 more minutes to wait.
+    const lastTurn = now - 2 * 60_000
+    const { result } = renderHook(() => useSessionRecap('s1', lastTurn))
+
+    expect(mockPost).not.toHaveBeenCalled()
+    expect(result.current.message).toBeNull()
+
+    // Advance to just before the threshold — still nothing.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3 * 60_000 - 1)
+    })
+    expect(mockPost).not.toHaveBeenCalled()
+
+    // Cross the threshold.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2)
+    })
+    expect(mockPost).toHaveBeenCalledTimes(1)
+    expect(result.current.message?.state).toBe('ready')
+  })
+
+  it('resets the timer when a newer lastTurnAt arrives (e.g. user sent a message)', async () => {
+    const now = Date.now()
+    vi.setSystemTime(now)
+
+    // Initial mount: 4 min idle, would fire in 1 min.
+    const lastTurn1 = now - 4 * 60_000
+    const { rerender } = renderHook(
+      ({ ts }: { ts: number }) => useSessionRecap('s1', ts),
+      { initialProps: { ts: lastTurn1 } },
+    )
+
+    // Advance 30 seconds — about to fire.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+    expect(mockPost).not.toHaveBeenCalled()
+
+    // User sends a new message → lastTurnAt jumps to now.
+    vi.setSystemTime(now + 30_000)
+    rerender({ ts: now + 30_000 })
+
+    // Advance another minute. The OLD timer would have fired by now,
+    // but it should have been cancelled by the rerender.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(mockPost).not.toHaveBeenCalled()
+
+    // Now wait the full 5 minutes from the new turn.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5 * 60_000)
+    })
+    expect(mockPost).toHaveBeenCalledTimes(1)
+  })
+
+  it('does NOT re-fire for a turn already viewed in localStorage', () => {
+    const now = Date.now()
+    vi.setSystemTime(now)
+
+    const lastTurn = now - 10 * 60_000
+    setLastViewed('s1', lastTurn)
+
+    const { result } = renderHook(() => useSessionRecap('s1', lastTurn))
+    expect(mockPost).not.toHaveBeenCalled()
+    expect(result.current.message).toBeNull()
+  })
+
+  it('does fire for a newer turn even if an older turn was already viewed', async () => {
+    const now = Date.now()
+    vi.setSystemTime(now)
+
+    // Old turn was viewed.
+    setLastViewed('s1', now - 30 * 60_000)
+
+    // But there's a more recent turn that's also past the idle threshold.
+    const lastTurn = now - 10 * 60_000
+    renderHook(() => useSessionRecap('s1', lastTurn))
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(mockPost).toHaveBeenCalledTimes(1)
   })
 
   // ── Error handling ────────────────────────────────────────────
 
-  it('shows error when recap fetch fails', async () => {
+  it('exposes an error message when the recap fetch fails', async () => {
     const now = Date.now()
     vi.setSystemTime(now)
-    setLastViewed('s1', now - 10 * 60_000)
-
     mockPost.mockRejectedValueOnce(new Error('network error'))
 
-    const { result } = renderHook(() => useSessionRecap('s1', true))
+    const { result } = renderHook(() => useSessionRecap('s1', now - 10 * 60_000))
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0)
     })
 
-    expect(result.current.error).toBe('network error')
-    expect(result.current.loading).toBe(false)
-    expect(result.current.visible).toBe(true) // Banner stays visible with error
-    expect(result.current.recap).toBeNull()
+    expect(result.current.message?.state).toBe('error')
+    expect(result.current.message?.error).toBe('network error')
   })
 
-  // ── Timestamp update behavior ─────────────────────────────────
+  // ── localStorage bookkeeping ──────────────────────────────────
 
-  it('updates last-viewed timestamp on successful fetch', async () => {
+  it('records the lastTurnAt as viewed after a successful fetch', async () => {
     const now = Date.now()
     vi.setSystemTime(now)
-    setLastViewed('s1', now - 10 * 60_000)
+    const lastTurn = now - 10 * 60_000
 
-    mockPost.mockResolvedValueOnce(makeRecapResponse())
-
-    renderHook(() => useSessionRecap('s1', true))
+    renderHook(() => useSessionRecap('s1', lastTurn))
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0)
     })
 
-    // After successful fetch, timestamp should be updated to `now`.
     const raw = localStorage.getItem(LAST_VIEWED_KEY)
     const map = JSON.parse(raw!)
-    expect(map.s1).toBe(now)
+    // We persist the *turn* timestamp, not the wall-clock time of the fetch.
+    // That way, a fresh turn that arrives at exactly the same wall-clock
+    // moment still counts as a different "view" target.
+    expect(map.s1).toBe(lastTurn)
   })
 
-  it('does NOT update timestamp on failed fetch (enables retry)', async () => {
+  it('does NOT record the turn as viewed when the fetch fails', async () => {
     const now = Date.now()
     vi.setSystemTime(now)
-    const staleTs = now - 10 * 60_000
-    setLastViewed('s1', staleTs)
+    mockPost.mockRejectedValueOnce(new Error('network error'))
 
-    // Make the fetch hang so we can control the abort timing.
-    let rejectFetch!: (err: Error) => void
-    mockPost.mockReturnValueOnce(new Promise((_r, rej) => { rejectFetch = rej }))
+    const lastTurn = now - 10 * 60_000
+    renderHook(() => useSessionRecap('s1', lastTurn))
 
-    // Use focused: false so the focus effect does NOT call writeLastViewed.
-    // With focused: true, the focus effect would overwrite the timestamp
-    // regardless of fetch outcome.
-    const { unmount } = renderHook(() => useSessionRecap('s1', false))
-
-    // Let the effect run and start the fetch.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0)
     })
 
-    // Unmount triggers the cleanup which aborts the controller.
-    unmount()
-
-    // Now reject — the catch block will see signal.aborted === true
-    // and skip the writeLastViewed call.
-    rejectFetch(new DOMException('aborted', 'AbortError'))
-
-    // Let the rejection propagate.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0)
-    })
-
-    // Timestamp should still be the old value, not `now`.
     const raw = localStorage.getItem(LAST_VIEWED_KEY)
-    const map = JSON.parse(raw!)
-    expect(map.s1).toBe(staleTs)
-  })
-
-  // ── dismiss ──────────────────────────────────────────────────
-
-  it('dismiss hides the banner', async () => {
-    const now = Date.now()
-    vi.setSystemTime(now)
-    setLastViewed('s1', now - 10 * 60_000)
-
-    const { result } = renderHook(() => useSessionRecap('s1', true))
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0)
-    })
-    expect(result.current.visible).toBe(true)
-
-    act(() => {
-      result.current.dismiss()
-    })
-    expect(result.current.visible).toBe(false)
+    const map = raw ? JSON.parse(raw) : {}
+    expect(map.s1).toBeUndefined()
   })
 
   // ── refresh ──────────────────────────────────────────────────
 
-  it('refresh fetches a new recap regardless of staleness', async () => {
-    // First visit — no fetch.
-    const { result } = renderHook(() => useSessionRecap('s1', true))
+  it('refresh fetches a new recap on demand', async () => {
+    const now = Date.now()
+    vi.setSystemTime(now)
+
+    const lastTurn = now - 60_000 // 1 min idle — would not auto-fire
+    const { result } = renderHook(() => useSessionRecap('s1', lastTurn))
+
     expect(mockPost).not.toHaveBeenCalled()
 
-    // Manual refresh should fetch.
     mockPost.mockResolvedValueOnce(makeRecapResponse('Refreshed recap'))
 
     await act(async () => {
@@ -227,45 +268,51 @@ describe('useSessionRecap', () => {
       undefined,
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
-    expect(result.current.recap!.summary).toBe('Refreshed recap')
-    expect(result.current.visible).toBe(true)
+    expect(result.current.message?.recap?.summary).toBe('Refreshed recap')
   })
 
-  it('refresh aborts previous in-flight request', async () => {
-    const now = Date.now()
-    vi.setSystemTime(now)
-    setLastViewed('s1', now - 10 * 60_000)
-
-    // Make the first request hang.
-    mockPost.mockReturnValueOnce(new Promise(() => {}))
-
-    const { result } = renderHook(() => useSessionRecap('s1', true))
-
-    // Trigger the stale fetch.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0)
-    })
-    expect(result.current.loading).toBe(true)
-
-    // Now trigger a refresh — should abort the first.
-    mockPost.mockResolvedValueOnce(makeRecapResponse('Second'))
+  it('refresh is a no-op when the session has no completed turn', async () => {
+    const { result } = renderHook(() => useSessionRecap('s1', undefined))
 
     await act(async () => {
       result.current.refresh()
       await vi.advanceTimersByTimeAsync(0)
     })
 
-    expect(result.current.recap!.summary).toBe('Second')
-    expect(result.current.loading).toBe(false)
+    expect(mockPost).not.toHaveBeenCalled()
+  })
+
+  it('refresh aborts a previous in-flight request', async () => {
+    const now = Date.now()
+    vi.setSystemTime(now)
+
+    // Use a not-yet-idle session so no auto-fetch fires.
+    const lastTurn = now - 60_000 // 1 min idle
+    const { result } = renderHook(() => useSessionRecap('s1', lastTurn))
+
+    // First refresh: hangs forever.
+    mockPost.mockReturnValueOnce(new Promise(() => {}))
+    await act(async () => {
+      result.current.refresh()
+    })
+    expect(result.current.message?.state).toBe('loading')
+
+    // Trigger another refresh — should abort the first.
+    mockPost.mockResolvedValueOnce(makeRecapResponse('Second refresh'))
+    await act(async () => {
+      result.current.refresh()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(result.current.message?.recap?.summary).toBe('Second refresh')
+    expect(result.current.message?.state).toBe('ready')
   })
 
   // ── 7-day prune ──────────────────────────────────────────────
 
-  it('prunes entries older than 7 days when writing', () => {
+  it('prunes entries older than 7 days when writing', async () => {
     const now = Date.now()
     vi.setSystemTime(now)
 
-    // Seed localStorage with old and recent entries.
     const old = now - 8 * 24 * 60 * 60 * 1000 // 8 days ago
     const recent = now - 1 * 24 * 60 * 60 * 1000 // 1 day ago
     localStorage.setItem(
@@ -273,37 +320,18 @@ describe('useSessionRecap', () => {
       JSON.stringify({ old_session: old, recent_session: recent }),
     )
 
-    // Trigger a write by focusing a session.
-    renderHook(() => useSessionRecap('s1', true))
+    const lastTurn = now - 10 * 60_000
+    renderHook(() => useSessionRecap('s1', lastTurn))
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
 
     const raw = localStorage.getItem(LAST_VIEWED_KEY)
     const map = JSON.parse(raw!)
 
-    // old_session should be pruned (8 days > 7 day cutoff).
     expect(map.old_session).toBeUndefined()
-    // recent_session should survive.
     expect(map.recent_session).toBe(recent)
-    // s1 should be recorded.
-    expect(map.s1).toBe(now)
-  })
-
-  // ── Focus updates timestamp ──────────────────────────────────
-
-  it('updates last-viewed when focus changes to true', () => {
-    const now = Date.now()
-    vi.setSystemTime(now)
-
-    const { rerender } = renderHook(
-      ({ focused }) => useSessionRecap('s1', focused),
-      { initialProps: { focused: false } },
-    )
-
-    // Switch to focused.
-    vi.setSystemTime(now + 1000)
-    rerender({ focused: true })
-
-    const raw = localStorage.getItem(LAST_VIEWED_KEY)
-    const map = JSON.parse(raw!)
-    expect(map.s1).toBe(now + 1000)
+    expect(map.s1).toBe(lastTurn)
   })
 })

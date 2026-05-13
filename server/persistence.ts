@@ -39,10 +39,6 @@ export interface SessionMeta {
    *  unread badges when a turn completes while the user is looking at
    *  another session. */
   lastTurnAt?: number
-  /** Pinned sessions always sort to the top of the sidebar and are
-   *  exempt from the "evict oldest non-focused panel" rule when a 4th
-   *  session is opened. Pure UI metadata — the SDK doesn't see it. */
-  pinned?: boolean
 }
 
 const DEFAULT_DIR_NAME = '.claude-react-web'
@@ -188,6 +184,5 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     terminated: typeof r.terminated === 'boolean' ? r.terminated : false,
     error: typeof r.error === 'string' ? r.error : undefined,
     lastTurnAt: typeof r.lastTurnAt === 'number' ? r.lastTurnAt : undefined,
-    pinned: typeof r.pinned === 'boolean' ? r.pinned : undefined,
   }
 }

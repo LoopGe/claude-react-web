@@ -65,6 +65,11 @@ export {
   HttpError,
 } from './session-types.js'
 
+/** How long after firing an auto-interrupt we give the SDK subprocess to
+ *  respond before either (a) skipping the next GC tick or (b) escalating
+ *  to a force-unload. Sized to be longer than typical interrupt round-trip
+ *  but short enough that escalation kicks in within a couple of GC ticks. */
+const AUTO_INTERRUPT_DEDUP_MS = 2 * 60 * 1000
 
 export class SessionManager {
   private sessions = new Map<string, Session>()
@@ -121,7 +126,6 @@ export class SessionManager {
       terminated: s.terminated,
       error: s.error,
       lastTurnAt: s.lastTurnAt,
-      pinned: s.pinned,
     })
   }
 
@@ -456,10 +460,6 @@ export class SessionManager {
       // SDK-side flag. fullOpts.permissionMode was set to undefined so the
       // spread above would leave it unset otherwise.
       permissionMode: requestedMode,
-      // Carry pinned from the persisted meta on resume — a pinned
-      // dormant session should stay pinned after it wakes up. New
-      // (non-resumed) sessions start unpinned.
-      pinned: existingMeta?.pinned ?? undefined,
       input,
       query: q,
       subscribers: new Map(),
@@ -567,15 +567,10 @@ export class SessionManager {
     return this.mutateMeta(id, (draft) => ({ ...draft, title: trimmed }))
   }
 
-  /** Toggle the pinned flag. Pure UI metadata, no SDK call. */
-  setPinned(id: string, pinned: boolean): SessionInfo {
-    return this.mutateMeta(id, (draft) => ({ ...draft, pinned: pinned || undefined }))
-  }
-
-  /** Shared mutator for pure-metadata changes (rename / setPinned). Works
-   *  on both live and dormant sessions — the UI treats the two the same,
-   *  and the transform needs to land in both in-memory state and
-   *  persisted meta regardless. */
+  /** Shared mutator for pure-metadata changes (rename). Works on both
+   *  live and dormant sessions — the UI treats the two the same, and
+   *  the transform needs to land in both in-memory state and persisted
+   *  meta regardless. */
   private mutateMeta(
     id: string,
     transform: (draft: {
@@ -583,13 +578,11 @@ export class SessionManager {
       model?: string
       permissionMode?: PermissionMode
       title?: string
-      pinned?: boolean
     }) => {
       cwd?: string
       model?: string
       permissionMode?: PermissionMode
       title?: string
-      pinned?: boolean
     },
   ): SessionInfo {
     const live = this.sessions.get(id)
@@ -599,10 +592,8 @@ export class SessionManager {
         model: live.model,
         permissionMode: live.permissionMode,
         title: live.title,
-        pinned: live.pinned,
       })
       live.title = draft.title
-      live.pinned = draft.pinned
       live.lastActivityAt = Date.now()
       this.persist(live)
       return this.info(live)
@@ -615,12 +606,10 @@ export class SessionManager {
       model: meta.model,
       permissionMode: meta.permissionMode,
       title: meta.title,
-      pinned: meta.pinned,
     })
     const nextMeta: SessionMeta = {
       ...meta,
       title: draft.title,
-      pinned: draft.pinned,
       lastActivityAt: Date.now(),
     }
     this.store.upsert(nextMeta)
@@ -1105,7 +1094,6 @@ export class SessionManager {
       working: s.running && s.pendingTurns > 0,
       workingSince: s.running && s.pendingTurns > 0 ? s.workingSince : undefined,
       lastTurnAt: s.lastTurnAt,
-      pinned: s.pinned,
     }
   }
 
@@ -1129,7 +1117,6 @@ export class SessionManager {
       working: false,
       workingSince: undefined,
       lastTurnAt: meta.lastTurnAt,
-      pinned: meta.pinned,
     }
   }
 
@@ -1158,29 +1145,76 @@ export class SessionManager {
       if (now - s.lastActivityAt > this.idleMs && s.subscribers.size === 0) {
         toUnload.push(id)
       }
-      // Detect stuck sessions: working for too long with no progress.
-      // Auto-interrupt so the UI doesn't spin forever.
-      if (
-        this.workingStuckMs > 0 &&
-        s.running &&
-        !s.terminated &&
-        s.pendingTurns > 0 &&
-        s.workingSince &&
-        now - s.workingSince > this.workingStuckMs
-      ) {
-        const startedAt = Date.now()
-        console.warn(
-          `[session ${id}] stuck in working state for ${now - s.workingSince}ms — auto-interrupting ` +
-          `(pendingTurns=${s.pendingTurns}, pending perms=${s.pending.size}, ` +
-          `subscribers=${s.subscribers.size}, history=${s.history.length})`,
-        )
-        s.query.interrupt().then(
-          () => console.warn(`[session ${id}] auto-interrupt() resolved in ${Date.now() - startedAt}ms`),
-          (err) => console.error(`[session ${id}] auto-interrupt() rejected after ${Date.now() - startedAt}ms:`, err),
-        )
-      }
+      this.checkStuck(id, s, now)
     }
     for (const id of toUnload) void this.unload(id)
+  }
+
+  /** Detect sessions that have made no progress for too long and try to
+   *  shake them loose. Three flavours:
+   *
+   *  1. Mid-turn silence: pump received SOME messages but none recently.
+   *     Measured by `lastActivityAt` — moves on every SDK message of any
+   *     type (assistant, stream_event, task_progress, etc), so a session
+   *     legitimately producing a long stream of progress events resets
+   *     the clock and is never falsely classified as stuck. Only sessions
+   *     that have actually gone silent get caught.
+   *
+   *  2. Init silence: session was spawned but NO messages have arrived
+   *     yet. Common with proxy backends whose init handshake hangs. We
+   *     can't interrupt() these usefully (the SDK subprocess hasn't
+   *     wired up control yet), so we force-unload instead.
+   *
+   *  3. Already-interrupted: don't re-fire auto-interrupt every 60s.
+   *     Once we've kicked a session, give it AUTO_INTERRUPT_DEDUP_MS to
+   *     respond before kicking again. After that escalate to unload. */
+  private checkStuck(id: string, s: Session, now: number): void {
+    if (this.workingStuckMs <= 0) return
+    if (!s.running || s.terminated) return
+
+    const idleSince = now - s.lastActivityAt
+    if (idleSince <= this.workingStuckMs) return
+
+    // Init never landed: no point sending interrupt control frames into a
+    // half-spawned subprocess. Schedule unload directly.
+    if (s.history.length === 0) {
+      console.warn(
+        `[session ${id}] init never completed — no messages after ${idleSince}ms ` +
+        `(pendingTurns=${s.pendingTurns}, subscribers=${s.subscribers.size}). Force-unloading.`,
+      )
+      void this.unload(id, { terminate: true })
+      return
+    }
+
+    // Mid-turn but truly stuck (lastActivityAt is older than threshold).
+    // De-dup repeated kicks: if we already fired an interrupt recently,
+    // wait it out before deciding what to do next.
+    if (s.autoInterruptedAt && now - s.autoInterruptedAt < AUTO_INTERRUPT_DEDUP_MS) {
+      return
+    }
+
+    // If we ALREADY tried interrupt once and it didn't break the silence
+    // (autoInterruptedAt was set, dedup window has now passed, AND we're
+    // still stuck), the SDK subprocess is wedged. Escalate to unload.
+    if (s.autoInterruptedAt) {
+      console.error(
+        `[session ${id}] still silent ${now - s.autoInterruptedAt}ms after auto-interrupt — escalating to unload`,
+      )
+      void this.unload(id, { terminate: true })
+      return
+    }
+
+    const startedAt = Date.now()
+    console.warn(
+      `[session ${id}] no SDK message for ${idleSince}ms — auto-interrupting ` +
+      `(pendingTurns=${s.pendingTurns}, pending perms=${s.pending.size}, ` +
+      `subscribers=${s.subscribers.size}, history=${s.history.length})`,
+    )
+    s.autoInterruptedAt = now
+    s.query.interrupt().then(
+      () => console.warn(`[session ${id}] auto-interrupt() resolved in ${Date.now() - startedAt}ms`),
+      (err) => console.error(`[session ${id}] auto-interrupt() rejected after ${Date.now() - startedAt}ms:`, err),
+    )
   }
 }
 

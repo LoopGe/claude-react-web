@@ -22,7 +22,6 @@ import { MessageList, WorkingBubble } from './MessageList'
 import { extractActiveSubagents } from './subagents'
 import { PermissionDialog } from './PermissionDialog'
 import { QuestionDialog } from './QuestionDialog'
-import { SessionRecapBanner } from './SessionRecapBanner'
 import { TodoChecklist } from './TodoChecklist'
 import { useSessionRecap } from '../hooks/useSessionRecap'
 import { MessageSearch } from './MessageSearch'
@@ -186,8 +185,19 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
     onLiveMessageCount?.(stream.messages.length)
   }, [stream.messages.length, onLiveMessageCount])
 
-  // Session recap — AI summary banner when returning after inactivity.
-  const recap = useSessionRecap(session.id, focused ?? false)
+  // Session recap — auto-fired after 5 minutes of session idle. Returns
+  // a synthetic message we splice into the transcript so the recap reads
+  // as part of the conversation rather than a floating overlay. The hook
+  // resets whenever lastTurnAt advances (i.e. user sent a new message).
+  const recap = useSessionRecap(session.id, session.lastTurnAt)
+  // Compose stream messages + recap message. Append the recap at the
+  // end since it summarises everything up to the latest turn — putting
+  // it elsewhere would require knowing the assistant message boundary
+  // and would also fight with virtualisation's "follow latest".
+  const messagesWithRecap = useMemo(() => {
+    if (!recap.message) return stream.messages
+    return [...stream.messages, recap.message]
+  }, [stream.messages, recap.message])
 
   // Active subagents — scan messages for Agent/Task tool_use without a
   // matching tool_result. Memoised on message count to avoid rescanning
@@ -320,16 +330,6 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
 
   return (
     <div className="chat">
-      {recap.visible && (recap.loading || recap.recap || recap.error) && (
-        <SessionRecapBanner
-          recap={recap.recap}
-          loading={recap.loading}
-          error={recap.error}
-          onDismiss={recap.dismiss}
-          onRefresh={recap.refresh}
-        />
-      )}
-
       {headerButtonsRef && createPortal(
         <>
           <button
@@ -391,10 +391,11 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
       />
 
       <MessageList
-        messages={stream.messages}
+        messages={messagesWithRecap}
         showSystemEvents={showSystemEvents}
         pendingInterruptRef={pendingInterruptRef}
         replayReady={stream.replayReady}
+        onRefreshRecap={recap.refresh}
       />
 
       <TodoChecklist messages={stream.messages} working={session.working} />

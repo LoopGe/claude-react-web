@@ -77,20 +77,9 @@ export function buildApiRouter(sm: SessionManager): Hono {
   // before deleting it.
   app.patch('/sessions/:id', async (c) => {
     const id = c.req.param('id')
-    const body = await safeJson<{ title?: string; pinned?: boolean }>(c.req)
-    // At least one known field is required. Apply them in a fixed order
-    // so tests and clients can rely on the final state.
-    let info
-    let touched = false
-    if (typeof body.title === 'string') {
-      info = sm.rename(id, body.title)
-      touched = true
-    }
-    if (typeof body.pinned === 'boolean') {
-      info = sm.setPinned(id, body.pinned)
-      touched = true
-    }
-    if (!touched) return c.json({ error: 'title or pinned is required' }, 400)
+    const body = await safeJson<{ title?: string }>(c.req)
+    if (typeof body.title !== 'string') return c.json({ error: 'title is required' }, 400)
+    const info = sm.rename(id, body.title)
     return c.json({ session: info })
   })
 

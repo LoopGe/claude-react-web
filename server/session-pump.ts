@@ -62,6 +62,11 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         `(next() took ${Date.now() - nextStartedAt}ms)`,
       )
       session.lastActivityAt = Date.now()
+      // The session has produced something since the last GC kick, so any
+      // pending auto-interrupt mark is no longer relevant — clear it so a
+      // future silence triggers fresh detection rather than immediately
+      // escalating to unload.
+      session.autoInterruptedAt = undefined
       session.history.push(msg)
       if (session.history.length > deps.historyCap) {
         session.history.splice(0, session.history.length - deps.historyCap)

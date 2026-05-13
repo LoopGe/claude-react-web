@@ -33,8 +33,6 @@ export interface SessionInfo {
   workingSince?: number
   /** Epoch ms of last completed turn. Used to flag unread. */
   lastTurnAt?: number
-  /** User pinned this session — sticks to the top of the sidebar. */
-  pinned?: boolean
 }
 
 /** A named collection of sessions for quick group switching. Each session
@@ -52,7 +50,6 @@ export interface SessionGroup {
 
 /** Discriminated union for sidebar section rendering. */
 export type SidebarSection =
-  | { kind: 'pinned'; sessions: SessionInfo[] }
   | { kind: 'group'; group: SessionGroup; sessions: SessionInfo[] }
   | { kind: 'ungrouped'; sessions: SessionInfo[] }
 

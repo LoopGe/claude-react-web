@@ -190,15 +190,13 @@ describe('recap', () => {
   // ── Caching ─────────────────────────────────────────────────────
 
   describe('caching', () => {
-    it('returns cached result on second call within TTL', async () => {
+    it('returns cached result on a second call with the same conversation', async () => {
       const fetchMock = mockFetchSuccess('AI summary')
       const messages = [userMsg('test', 'u1'), assistantMsg('reply', 'a1')]
 
       const first = await generateRecap(messages, 'cache-hit')
       expect(first.cached).toBe(false)
 
-      // Invalidate so we can test the explicit cache behavior.
-      // Actually, just call again with the same inputs.
       const second = await generateRecap(messages, 'cache-hit')
       expect(second.cached).toBe(true)
       expect(second.summary).toBe('AI summary')
@@ -217,17 +215,38 @@ describe('recap', () => {
       expect(fetchMock).toHaveBeenCalledTimes(2)
     })
 
-    it('bypasses cache when TTL expires', async () => {
+    it('stays cached indefinitely when the conversation has not changed', async () => {
+      // No wall-clock TTL: a summary is valid as long as the underlying
+      // messages are unchanged. Invalidation is driven by send() / delete()
+      // on the session manager (see invalidateRecapCache).
       const now = Date.now()
       vi.setSystemTime(now)
 
       const fetchMock = mockFetchSuccess('summary')
       const messages = [userMsg('a', 'u1'), assistantMsg('b', 'a1')]
-      await generateRecap(messages, 'cache-ttl')
+      await generateRecap(messages, 'cache-no-ttl')
 
-      // Advance past the 5-minute TTL.
-      vi.setSystemTime(now + 6 * 60 * 1000)
-      const r = await generateRecap(messages, 'cache-ttl')
+      // Jump 24 hours forward — same conversation, must still hit cache.
+      vi.setSystemTime(now + 24 * 60 * 60 * 1000)
+      const r = await generateRecap(messages, 'cache-no-ttl')
+      expect(r.cached).toBe(true)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('still bypasses cache on fingerprint mismatch even after a long delay', async () => {
+      // Ensures dropping the TTL did not also drop the fingerprint guard:
+      // changing the message set should still force a fresh LLM call no
+      // matter how recent (or stale) the cache entry is.
+      const now = Date.now()
+      vi.setSystemTime(now)
+
+      const fetchMock = mockFetchSuccess('summary')
+      const messages = [userMsg('a', 'u1'), assistantMsg('b', 'a1')]
+      await generateRecap(messages, 'cache-fingerprint-late')
+
+      vi.setSystemTime(now + 7 * 24 * 60 * 60 * 1000) // 1 week later
+      const grown = [...messages, userMsg('c', 'u2'), assistantMsg('d', 'a2')]
+      const r = await generateRecap(grown, 'cache-fingerprint-late')
       expect(r.cached).toBe(false)
       expect(fetchMock).toHaveBeenCalledTimes(2)
     })

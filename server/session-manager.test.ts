@@ -432,27 +432,6 @@ describe('SessionManager', () => {
     expect(mockHandles[0].options.permissionMode).toBeUndefined()
   })
 
-  it('setPinned() on a live session toggles pinned and persists it', async () => {
-    const info = sm.create({ title: 'to pin' })
-    const pinned = sm.setPinned(info.id, true)
-    expect(pinned.pinned).toBe(true)
-    await store.flush()
-    expect(store.get(info.id)?.pinned).toBe(true)
-    // Unpin flips it back to undefined (we don't persist false — absence
-    // means not pinned, keeps the JSON compact).
-    const unpinned = sm.setPinned(info.id, false)
-    expect(unpinned.pinned).toBeUndefined()
-  })
-
-  it('setPinned() works on a dormant session too', async () => {
-    const info = sm.create({})
-    await sm.unload(info.id)
-    const pinned = sm.setPinned(info.id, true)
-    expect(pinned.pinned).toBe(true)
-    await store.flush()
-    expect(store.get(info.id)?.pinned).toBe(true)
-  })
-
   it('fork() spawns a new session with resume=sourceId + forkSession=true', async () => {
     const source = sm.create({ cwd: '/tmp', model: 'm1', permissionMode: 'default', title: 'parent' })
     // The SDK only writes its conversation log after the first completed

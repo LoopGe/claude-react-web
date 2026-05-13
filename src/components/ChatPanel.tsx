@@ -119,9 +119,19 @@ export function ChatPanel({
       })
   }
 
+  // `plan` is a read-only mode in the SDK — Claude can plan but can't
+  // execute write tools. Surface it visually so the user remembers why
+  // edits aren't happening; the mode chip alone is too easy to miss.
+  const isPlanMode = (session.permissionMode ?? 'default') === 'plan'
+
   return (
     <section
-      className={`chat-panel ${focused ? 'focused' : ''} ${dropActive ? 'drop-target' : ''}`}
+      className={[
+        'chat-panel',
+        focused ? 'focused' : '',
+        dropActive ? 'drop-target' : '',
+        isPlanMode ? 'plan-mode' : '',
+      ].filter(Boolean).join(' ')}
       style={accentStyle}
       onMouseDownCapture={(e) => {
         // Focus on any mousedown inside the panel (capture phase so we win
@@ -186,6 +196,15 @@ export function ChatPanel({
         <span className="chat-panel-title" title={session.cwd ?? ''}>
           {session.title ?? session.id.slice(0, 8)}
         </span>
+        {isPlanMode && (
+          <span
+            className="chat-panel-plan-badge"
+            title="Plan mode: Claude can plan but won't execute write tools (Edit/Write/Bash). Switch via the mode chip on the right."
+            aria-label="Plan mode (read-only)"
+          >
+            🗒 plan mode
+          </span>
+        )}
         <div className="chat-panel-meta">
           {editingModel ? (
             <input

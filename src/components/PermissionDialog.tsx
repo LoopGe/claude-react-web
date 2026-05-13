@@ -11,6 +11,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { PermissionRequest } from '../types'
+import { Markdown } from './Markdown'
 
 /** Narrowed to the permission variant of the union. The question variant
  *  is rendered by `<QuestionDialog />` instead. */
@@ -71,7 +72,30 @@ export function PermissionDialog({ request, onDecide }: Props) {
     onDecide(d)
   }
 
-  const headline = request.title ?? `Claude wants to use ${request.toolName}`
+  // Plan-mode approval is its own UX: the request is "I'm done planning,
+  // here's the plan — should I start executing?" The dialog renders the
+  // plan as markdown and the Allow/Deny buttons re-label so they read
+  // like a code-review approval rather than a tool gate.
+  const isPlanRequest =
+    request.toolName === 'ExitPlanMode' || request.toolName === 'EnterPlanMode'
+  const planInput = isPlanRequest ? (request.input as Record<string, unknown> | undefined) : undefined
+  const planText =
+    typeof planInput?.plan === 'string'
+      ? planInput.plan
+      : typeof planInput?.content === 'string'
+        ? planInput.content
+        : typeof planInput?.markdown === 'string'
+          ? (planInput.markdown as string)
+          : null
+  const planAllowedPrompts = Array.isArray(planInput?.allowedPrompts)
+    ? (planInput.allowedPrompts as Array<{ tool?: string; prompt?: string }>)
+    : []
+
+  const headline = request.title ?? (
+    isPlanRequest
+      ? 'Claude has a plan ready'
+      : `Claude wants to use ${request.toolName}`
+  )
 
   // Embedded in the chat panel rather than a full-screen modal: the grid
   // shows up to three sessions at once, so blocking the entire viewport
@@ -81,11 +105,11 @@ export function PermissionDialog({ request, onDecide }: Props) {
   // the Chat root).
   return (
     <div className="perm-overlay" role="dialog" aria-modal="true" ref={dialogRef}>
-      <div className="perm-card">
+      <div className={`perm-card ${isPlanRequest ? 'perm-card-plan' : ''}`}>
         <div className="modal-header">
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span aria-hidden>🔐</span>
-            Tool permission required
+            <span aria-hidden>{isPlanRequest ? '🗒' : '🔐'}</span>
+            {isPlanRequest ? 'Plan ready for review' : 'Tool permission required'}
           </h3>
         </div>
 
@@ -93,11 +117,34 @@ export function PermissionDialog({ request, onDecide }: Props) {
           <div className="perm-headline">{headline}</div>
           {request.description && <div className="perm-sub">{request.description}</div>}
 
-          <div className="perm-summary">
-            <span className="perm-badge">{request.displayName ?? request.toolName}</span>
-          </div>
-
-          <InputPreview input={request.input} />
+          {isPlanRequest ? (
+            <div className="plan-card" style={{ marginTop: 10 }}>
+              <div className="plan-card-body">
+                {planText
+                  ? <Markdown text={planText} />
+                  : <div className="plan-card-empty">(empty plan — Claude sent no body)</div>}
+              </div>
+              {planAllowedPrompts.length > 0 && (
+                <div className="plan-card-allowed">
+                  <div className="plan-card-allowed-label">On approval, allow:</div>
+                  <ul className="plan-card-allowed-list">
+                    {planAllowedPrompts.map((p, i) => (
+                      <li key={i} className="plan-card-allowed-item">
+                        <code>{p.tool ?? 'tool'}</code> · {p.prompt ?? '(no description)'}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          ) : (
+            <>
+              <div className="perm-summary">
+                <span className="perm-badge">{request.displayName ?? request.toolName}</span>
+              </div>
+              <InputPreview input={request.input} />
+            </>
+          )}
 
           <button
             type="button"
@@ -119,9 +166,9 @@ export function PermissionDialog({ request, onDecide }: Props) {
               disabled={busy}
               style={{ flex: 1 }}
             >
-              Allow once
+              {isPlanRequest ? 'Approve plan' : 'Allow once'}
             </button>
-            {hasSuggestions && (
+            {hasSuggestions && !isPlanRequest && (
               <button
                 className="btn"
                 onClick={() => click({ behavior: 'allow', persistForSession: true })}
@@ -138,11 +185,13 @@ export function PermissionDialog({ request, onDecide }: Props) {
               disabled={busy}
               style={{ flex: 1 }}
             >
-              Deny
+              {isPlanRequest ? 'Keep planning' : 'Deny'}
             </button>
           </div>
           <span className="hint" style={{ textAlign: 'center' }}>
-            Deny returns a message to the model — it keeps thinking, but won't execute this tool.
+            {isPlanRequest
+              ? 'Approving exits plan mode and lets Claude execute. "Keep planning" returns control to Claude with feedback so it can revise.'
+              : 'Deny returns a message to the model — it keeps thinking, but won\'t execute this tool.'}
           </span>
         </div>
       </div>

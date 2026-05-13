@@ -11,9 +11,11 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { Markdown } from './Markdown'
 import { ToolUseBlock } from './ToolUseBlock'
+import { PlanStatusProvider } from '../hooks/usePlanStatus'
 import type { SdkMessage } from '../types'
 import { formatTokens } from '../utils/format'
 import { useLocalStorage } from '../hooks/useLocalStorage'
+import { computePlanStatus } from '../utils/plan-status'
 
 /** Re-export type for backward compatibility (types don't affect Fast Refresh). */
 import type { ActiveSubagent } from './subagents'
@@ -32,6 +34,9 @@ interface Props {
    *  When false, shows a loading skeleton instead of the empty-state
    *  message, preventing a flash of "no messages" on session switch. */
   replayReady?: boolean
+  /** Forwarded to the inline recap message's ↻ button. Caller (Chat)
+   *  passes useSessionRecap().refresh; without it the button is hidden. */
+  onRefreshRecap?: () => void
 }
 
 /** An item in the Virtuoso data array. Pre-computing isCompactSummary
@@ -41,7 +46,7 @@ interface RenderableItem {
   isCompactSummary: boolean
 }
 
-export function MessageList({ messages, showSystemEvents = false, pendingInterruptRef, replayReady = true }: Props) {
+export function MessageList({ messages, showSystemEvents = false, pendingInterruptRef, replayReady = true, onRefreshRecap }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -67,6 +72,12 @@ export function MessageList({ messages, showSystemEvents = false, pendingInterru
    *  bottom. Badge number on the jump-to-bottom button. */
   const [unseenCount, setUnseenCount] = useState(0)
   const unseenCountRef = useRef(0)
+
+  // Pre-compute the plan-mode status lookup once per render. The map is
+  // small (≤ a handful of plan tool_use_ids per session) so re-running on
+  // every messages change is fine — micro-optimising with a streaming
+  // accumulator would complicate the code for no measurable win.
+  const planStatus = useMemo(() => computePlanStatus(messages), [messages])
 
   // Pre-compute isCompactSummary for every renderable message so
   // Virtuoso's itemContent doesn't need the surrounding context.
@@ -171,6 +182,7 @@ export function MessageList({ messages, showSystemEvents = false, pendingInterru
   }, [])
 
   return (
+    <PlanStatusProvider value={planStatus}>
     <div className="chat-messages-wrap">
       <div className="chat-messages">
         {items.length === 0 ? (
@@ -216,7 +228,12 @@ export function MessageList({ messages, showSystemEvents = false, pendingInterru
             }}
             itemContent={(_index, item) => (
               <div className="virtuoso-item-wrapper">
-                <MessageView msg={item.msg} isCompactSummary={item.isCompactSummary} interruptedRef={pendingInterruptRef} />
+                <MessageView
+                  msg={item.msg}
+                  isCompactSummary={item.isCompactSummary}
+                  interruptedRef={pendingInterruptRef}
+                  onRefreshRecap={onRefreshRecap}
+                />
               </div>
             )}
             alignToBottom
@@ -235,6 +252,7 @@ export function MessageList({ messages, showSystemEvents = false, pendingInterru
         </button>
       )}
     </div>
+    </PlanStatusProvider>
   )
 }
 
@@ -281,7 +299,17 @@ interface Block {
   [k: string]: unknown
 }
 
-const MessageView = memo(function MessageView({ msg, isCompactSummary, interruptedRef }: { msg: SdkMessage; isCompactSummary?: boolean; interruptedRef?: React.RefObject<boolean> }) {
+const MessageView = memo(function MessageView({
+  msg,
+  isCompactSummary,
+  interruptedRef,
+  onRefreshRecap,
+}: {
+  msg: SdkMessage
+  isCompactSummary?: boolean
+  interruptedRef?: React.RefObject<boolean>
+  onRefreshRecap?: () => void
+}) {
   const type = msg.type
 
   // Read the interrupted flag in an effect (never during render) to
@@ -294,6 +322,13 @@ const MessageView = memo(function MessageView({ msg, isCompactSummary, interrupt
       interruptedRef.current = false
     }
   }, [type, interruptedRef])
+
+  // Synthetic recap message — see useSessionRecap. Rendered as its own
+  // chrome-distinct card so the user can tell it's an AI summary, not a
+  // real assistant turn.
+  if (type === 'recap') {
+    return <RecapMessageView msg={msg} onRefresh={onRefreshRecap} />
+  }
 
   if (type === 'user') {
     const userContent = extractUserText(msg)
@@ -531,6 +566,114 @@ function CompactSummary({ text }: { text: string }) {
       </div>
     </div>
   )
+}
+
+/** Inline rendering for the synthetic recap message produced by
+ *  useSessionRecap. Three states (loading / ready / error) drive the
+ *  chrome; ready state shows the AI summary plus stats. The structure
+ *  mirrors the previous SessionRecapBanner, but lives inside the
+ *  transcript so it scrolls with the conversation instead of floating. */
+function RecapMessageView({ msg, onRefresh }: { msg: SdkMessage; onRefresh?: () => void }) {
+  const m = msg as {
+    state?: 'loading' | 'ready' | 'error'
+    error?: string
+    recap?: {
+      summary: string
+      stats: {
+        userTurns: number
+        assistantTurns: number
+        totalCostUsd: number
+        durationMs: number
+        toolsUsed: string[]
+      }
+      fallback?: boolean
+    }
+  }
+  const state = m.state ?? 'loading'
+
+  if (state === 'loading') {
+    return (
+      <div className="msg recap-msg recap-msg--loading" role="note" aria-label="Generating session recap">
+        <div className="msg-header">
+          <span>✨ Session recap</span>
+        </div>
+        <div className="msg-body recap-msg-loading-body">
+          <span className="recap-msg-loading-bar" aria-hidden />
+          <span>Summarising the last few minutes…</span>
+        </div>
+      </div>
+    )
+  }
+
+  if (state === 'error') {
+    return (
+      <div className="msg recap-msg recap-msg--error" role="note">
+        <div className="msg-header">
+          <span>⚠️ Recap unavailable</span>
+          {onRefresh && (
+            <button
+              type="button"
+              className="recap-msg-btn"
+              onClick={onRefresh}
+              title="Retry"
+              aria-label="Retry recap"
+            >
+              ↻
+            </button>
+          )}
+        </div>
+        <div className="msg-body">{m.error ?? 'Unknown error'}</div>
+      </div>
+    )
+  }
+
+  const recap = m.recap
+  if (!recap) return null
+  const { summary, stats, fallback } = recap
+
+  return (
+    <div className={`msg recap-msg ${fallback ? 'recap-msg--fallback' : ''}`} role="note" aria-label="Session recap">
+      <div className="msg-header">
+        <span>{fallback ? '📋 Session recap' : '✨ Session recap'}</span>
+        {onRefresh && (
+          <button
+            type="button"
+            className="recap-msg-btn"
+            onClick={onRefresh}
+            title="Regenerate recap"
+            aria-label="Regenerate recap"
+          >
+            ↻
+          </button>
+        )}
+      </div>
+      <div className="msg-body">
+        <Markdown text={summary} />
+        <div className="recap-msg-stats">
+          {stats.userTurns > 0 && (
+            <span className="recap-msg-stat">
+              💬 {stats.userTurns} turn{stats.userTurns === 1 ? '' : 's'}
+            </span>
+          )}
+          {stats.totalCostUsd > 0 && (
+            <span className="recap-msg-stat">💰 {formatCost(stats.totalCostUsd)}</span>
+          )}
+          {stats.durationMs > 0 && (
+            <span className="recap-msg-stat">⏱ {formatElapsed(stats.durationMs)}</span>
+          )}
+          {stats.toolsUsed.length > 0 && (
+            <span className="recap-msg-stat">🔧 {stats.toolsUsed.length} tool{stats.toolsUsed.length === 1 ? '' : 's'}</span>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function formatCost(usd: number): string {
+  if (usd === 0) return '$0'
+  if (usd < 0.01) return '<$0.01'
+  return `$${usd.toFixed(2)}`
 }
 
 function BlockView({ block }: { block: Block }) {
