@@ -15,14 +15,13 @@ import { PlanStatusProvider } from '../hooks/usePlanStatus'
 import type { SdkMessage } from '../types'
 import { formatTokens } from '../utils/format'
 import { useLocalStorage } from '../hooks/useLocalStorage'
-import { computePlanStatus } from '../utils/plan-status'
+import type { ActiveSubagent, PlanStatus, TranscriptItem } from '../session-store/types'
 
 /** Re-export type for backward compatibility (types don't affect Fast Refresh). */
-import type { ActiveSubagent } from './subagents'
-export type { ActiveSubagent }
+export type { ActiveSubagent } from '../session-store/types'
 
 interface Props {
-  messages: SdkMessage[]
+  items: TranscriptItem[]
   /** When true, include `system` messages (init/status/etc.) in the
    *  rendered list. Errors (`subtype === 'error'`) are always shown
    *  regardless — those carry actual failure info users need to see. */
@@ -40,10 +39,8 @@ interface Props {
   /** Forwarded to the inline recap message's ↻ button. Caller (Chat)
    *  passes useSessionRecap().refresh; without it the button is hidden. */
   onRefreshRecap?: () => void
-  /** Permission decisions from the WebSocket stream. Merged into plan
-   *  status so ExitPlanMode cards flip from pending even when the SDK
-   *  doesn't emit a tool_result after approval. */
-  permissionDecisions?: ReadonlyMap<string, 'allow' | 'deny'>
+  /** Precomputed plan status keyed by toolUseId. */
+  planStatus?: ReadonlyMap<string, PlanStatus>
 }
 
 /** An item in the Virtuoso data array. Pre-computing isCompactSummary
@@ -53,7 +50,7 @@ interface RenderableItem {
   isCompactSummary: boolean
 }
 
-export function MessageList({ messages, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, onRefreshRecap, permissionDecisions }: Props) {
+export function MessageList({ items, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, onRefreshRecap, planStatus = new Map() }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -80,67 +77,26 @@ export function MessageList({ messages, showSystemEvents = false, pendingInterru
   const [unseenCount, setUnseenCount] = useState(0)
   const unseenCountRef = useRef(0)
 
-  // Pre-compute the plan-mode status lookup once per render. The map is
-  // small (≤ a handful of plan tool_use_ids per session) so re-running on
-  // every messages change is fine — micro-optimising with a streaming
-  // accumulator would complicate the code for no measurable win.
-  const planStatus = useMemo(() => {
-    const base = computePlanStatus(messages)
-    if (!permissionDecisions || permissionDecisions.size === 0) return base
-    // Merge permission decisions: 'allow' → 'approved', 'deny' → 'rejected'.
-    // This covers ExitPlanMode where the SDK doesn't emit a tool_result.
-    const merged = new Map(base)
-    for (const [toolUseId, behavior] of permissionDecisions) {
-      if (merged.has(toolUseId)) {
-        merged.set(toolUseId, behavior === 'allow' ? 'approved' : 'rejected')
-      }
-    }
-    return merged
-  }, [messages, permissionDecisions])
-
-  // Pre-compute isCompactSummary for every renderable message so
-  // Virtuoso's itemContent doesn't need the surrounding context.
-  const items: RenderableItem[] = useMemo(() => {
-    const filtered = messages.filter((m) => isRenderable(m, showSystemEvents))
-    // Merge consecutive api_retry messages into one — keep the last
-    // attempt's data (highest attempt number, latest delay) so the UI
-    // shows a single evolving retry indicator instead of a wall of cards.
-    const merged: SdkMessage[] = []
-    for (const m of filtered) {
-      if (m.type === 'system' && m.subtype === 'api_retry') {
-        const last = merged[merged.length - 1]
-        if (last?.type === 'system' && last?.subtype === 'api_retry') {
-          // Replace with the newer retry — it carries the latest attempt/delay.
-          merged[merged.length - 1] = m
-          continue
-        }
-      }
-      merged.push(m)
-    }
-    return merged.map((m, i) => {
-      const prev = i > 0 ? merged[i - 1] : null
-      return {
-        msg: m,
-        isCompactSummary:
-          m.type === 'user' &&
-          prev?.type === 'system' &&
-          prev?.subtype === 'compact_boundary',
-      }
-    })
-  }, [messages, showSystemEvents])
+  const renderableItems: RenderableItem[] = useMemo(
+    () =>
+      items
+        .filter((item) => showSystemEvents || !item.hiddenByDefault)
+        .map((item) => ({ msg: item.msg, isCompactSummary: item.isCompactSummary })),
+    [items, showSystemEvents],
+  )
 
   // Track how many new messages arrived so the unseen badge stays accurate.
   // Virtuoso's followOutput handles the actual scrolling.
   //
-  // IMPORTANT: we track `messages.length` (the raw SDK array) rather than
-  // `items.length` (the filtered/virtuoso-rendered list). Toggling
+  // IMPORTANT: we track `items.length` from the normalized transcript rather than
+  // `renderableItems.length` (the filtered/virtuoso-rendered list). Toggling
   // `showSystemEvents` or a compact-boundary rearranging the filtered
-  // output changes `items.length` without any new messages arriving,
+  // output changes `renderableItems.length` without any new messages arriving,
   // which would create a spurious delta and inflate the unseen count.
   const lastCountRef = useRef(0)
   useEffect(() => {
-    const delta = messages.length - lastCountRef.current
-    lastCountRef.current = messages.length
+    const delta = items.length - lastCountRef.current
+    lastCountRef.current = items.length
     if (delta <= 0) return
     if (atBottomRef.current) {
       if (unseenCountRef.current !== 0) {
@@ -150,7 +106,7 @@ export function MessageList({ messages, showSystemEvents = false, pendingInterru
     } else {
       setUnseenCount((n) => n + delta)
     }
-  }, [messages.length])
+  }, [items.length])
 
   // Viewport-shrink trigger: the TodoChecklist panel appears/grows below
   // the scroll container, which eats vertical space. Without this
@@ -168,12 +124,12 @@ export function MessageList({ messages, showSystemEvents = false, pendingInterru
       const shrunk = now < lastHeight
       lastHeight = now
       if (shrunk && atBottomRef.current) {
-        virtuosoRef.current?.scrollToIndex({ index: items.length - 1, behavior: 'auto' })
+        virtuosoRef.current?.scrollToIndex({ index: renderableItems.length - 1, behavior: 'auto' })
       }
     })
     ro.observe(el)
     return () => ro.disconnect()
-  }, [items.length])
+  }, [renderableItems.length])
 
   // Clear the unseen count when the user scrolls close to the bottom.
   // atBottomStateChange only fires when Virtuoso's internal at-bottom
@@ -203,7 +159,7 @@ export function MessageList({ messages, showSystemEvents = false, pendingInterru
     }
     el.addEventListener('scroll', handler, { passive: true })
     return () => el.removeEventListener('scroll', handler)
-  }, [items.length])
+  }, [renderableItems.length])
 
   // Clean up the follow debounce timer on unmount.
   useEffect(() => () => {
@@ -219,7 +175,7 @@ export function MessageList({ messages, showSystemEvents = false, pendingInterru
     <PlanStatusProvider value={planStatus}>
     <div className="chat-messages-wrap">
       <div className="chat-messages">
-        {items.length === 0 ? (
+        {renderableItems.length === 0 ? (
           <div className="chat-messages-empty">
             {replayReady
               ? 'Type a message below to start the conversation.'
@@ -229,8 +185,8 @@ export function MessageList({ messages, showSystemEvents = false, pendingInterru
           <Virtuoso
             ref={virtuosoRef}
             scrollerRef={(ref) => { if (ref && ref instanceof HTMLElement) scrollerRef.current = ref }}
-            data={items}
-            initialTopMostItemIndex={items.length > 0 ? items.length - 1 : 0}
+            data={renderableItems}
+            initialTopMostItemIndex={renderableItems.length > 0 ? renderableItems.length - 1 : 0}
             followOutput={() => (shouldFollowRef.current ? 'auto' : false)}
             atBottomStateChange={(isAtBottom) => {
               // UI state: update immediately for jump-to-bottom button.
@@ -317,24 +273,6 @@ async function copyToClipboard(text: string): Promise<void> {
     document.execCommand('copy')
     document.body.removeChild(ta)
   }
-}
-
-function isRenderable(m: SdkMessage, showSystemEvents: boolean): boolean {
-  // Streaming-delta partials: the assistant message that follows carries
-  // the complete content, so rendering both just flickers.
-  if (m.type === 'stream_event') return false
-  // System notifications (init / status / task_notification / etc.) are
-  // SDK bookkeeping, not conversation content. Two exceptions:
-  //   - `error` — users need to see failures unconditionally
-  //   - `compact_boundary` — a conversation-level "recap" marker the user
-  //     wants to see (auto-compact happens silently otherwise)
-  if (m.type === 'system' && !showSystemEvents) {
-    if (m.subtype === 'error') return true
-    if (m.subtype === 'compact_boundary') return true
-    if (m.subtype === 'api_retry') return true
-    return false
-  }
-  return true
 }
 
 interface Block {

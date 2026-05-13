@@ -20,7 +20,6 @@ import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { Composer } from './Composer'
 import { ContextBar } from './ContextBar'
 import { MessageList, WorkingBubble } from './MessageList'
-import { extractActiveSubagents } from './subagents'
 import { PermissionDialog } from './PermissionDialog'
 import { QuestionDialog } from './QuestionDialog'
 import { TodoChecklist } from './TodoChecklist'
@@ -29,6 +28,7 @@ import { MessageSearch } from './MessageSearch'
 import { ContextMenu } from './ContextMenu'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
 import type { PermissionRequest, SessionInfo, SlashCommand } from '../types'
+import type { TranscriptItem } from '../session-store/types'
 
 const INPUT_HISTORY_KEY = 'claude-react-web:input-history'
 const DRAFT_KEY_PREFIX = 'claude-react-web:draft:'
@@ -152,18 +152,17 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
   const [searchOpen, setSearchOpen] = useState(false)
   const [exportMenuPos, setExportMenuPos] = useState<{ x: number; y: number } | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
-  /** Indices into stream.messages that match the current search query. */
+  /** Indices into transcript items that match the current search query. */
   const searchMatches = useMemo(() => {
     if (!searchQuery) return [] as number[]
     const q = searchQuery.toLowerCase()
     const out: number[] = []
-    for (let i = 0; i < stream.messages.length; i++) {
-      const m = stream.messages[i]
-      const text = extractSearchableText(m)
+    for (let i = 0; i < stream.items.length; i++) {
+      const text = stream.items[i]?.searchableText
       if (text && text.toLowerCase().includes(q)) out.push(i)
     }
     return out
-  }, [stream.messages, searchQuery])
+  }, [stream.items, searchQuery])
   // Ctrl+F opens search on the *focused* panel only. Without the
   // `focused` guard, every mounted Chat would intercept the same
   // keydown event and all search bars would open simultaneously.
@@ -220,21 +219,19 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
     }, 3000)
   }, [])
 
-  // Compose stream messages + recap. Answered questions now display
+  // Compose transcript items + recap. Answered questions now display
   // inline inside the QuestionDialog card, so no synthetic messages needed.
-  const messagesWithRecap = useMemo(() => {
-    let msgs = stream.messages
-    if (recap.message) msgs = [...msgs, recap.message]
-    return msgs
-  }, [stream.messages, recap.message])
-
-  // Active subagents — scan messages for Agent/Task tool_use without a
-  // matching tool_result. Memoised on message count to avoid rescanning
-  // on every render.
-  const activeSubagents = useMemo(
-    () => extractActiveSubagents(stream.messages),
-    [stream.messages],
-  )
+  const itemsWithRecap = useMemo(() => {
+    if (!recap.message) return stream.items
+    const item: TranscriptItem = {
+      id: recap.message.uuid ?? `recap:${session.id}`,
+      msg: recap.message,
+      searchableText: recap.message.recap?.summary ?? recap.message.error ?? null,
+      isCompactSummary: false,
+      hiddenByDefault: false,
+    }
+    return [...stream.items, item]
+  }, [stream.items, recap.message, session.id])
 
   // Pull out the specific functions/values we actually use downstream.
   // Putting the whole hook object in a dep list re-creates callbacks every
@@ -437,14 +434,14 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
         onQueryChange={setSearchQuery}
       />
 
-      <MessageList
-        messages={messagesWithRecap}
+        <MessageList
+        items={itemsWithRecap}
         showSystemEvents={showSystemEvents}
         pendingInterruptRef={pendingInterruptRef}
         replayReady={stream.replayReady}
         streamingContent={stream.streamingContent}
         onRefreshRecap={recap.refresh}
-        permissionDecisions={stream.permissionDecisions}
+        planStatus={stream.planStatus}
       />
 
       <TodoChecklist messages={stream.messages} working={session.working} />
@@ -466,7 +463,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
       {session.working && (
         <WorkingBubble
           startedAt={session.workingSince}
-          activeSubagents={activeSubagents}
+          activeSubagents={stream.activeSubagents}
           tokenRate={stream.tokenRate}
           activePhase={stream.activePhase}
         />
@@ -581,18 +578,4 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
       )}
     </div>
   )
-}
-
-/** Extract searchable text from an SDK message for in-chat search. */
-function extractSearchableText(m: { type?: string; message?: { content?: unknown }; error?: string; subtype?: string }): string | null {
-  const content = m.message?.content
-  if (typeof content === 'string') return content
-  if (Array.isArray(content)) {
-    return (content as Array<{ type?: string; text?: string }>)
-      .filter((b) => b.type === 'text' && typeof b.text === 'string')
-      .map((b) => b.text as string)
-      .join('\n')
-  }
-  if (m.type === 'system' && m.error) return m.error
-  return null
 }
