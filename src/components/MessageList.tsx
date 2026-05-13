@@ -102,8 +102,23 @@ export function MessageList({ messages, showSystemEvents = false, pendingInterru
   // Virtuoso's itemContent doesn't need the surrounding context.
   const items: RenderableItem[] = useMemo(() => {
     const filtered = messages.filter((m) => isRenderable(m, showSystemEvents))
-    return filtered.map((m, i) => {
-      const prev = i > 0 ? filtered[i - 1] : null
+    // Merge consecutive api_retry messages into one — keep the last
+    // attempt's data (highest attempt number, latest delay) so the UI
+    // shows a single evolving retry indicator instead of a wall of cards.
+    const merged: SdkMessage[] = []
+    for (const m of filtered) {
+      if (m.type === 'system' && m.subtype === 'api_retry') {
+        const last = merged[merged.length - 1]
+        if (last?.type === 'system' && last?.subtype === 'api_retry') {
+          // Replace with the newer retry — it carries the latest attempt/delay.
+          merged[merged.length - 1] = m
+          continue
+        }
+      }
+      merged.push(m)
+    }
+    return merged.map((m, i) => {
+      const prev = i > 0 ? merged[i - 1] : null
       return {
         msg: m,
         isCompactSummary:
@@ -258,10 +273,12 @@ export function MessageList({ messages, showSystemEvents = false, pendingInterru
             components={{
               Footer: streamingContent != null
                 ? () => (
-                    <div className="msg msg-assistant streaming-msg">
-                      <div className="msg-body assistant-body">
-                        <Markdown text={streamingContent} />
-                        <span className="streaming-cursor" />
+                    <div className="virtuoso-footer-wrapper">
+                      <div className="msg msg-assistant streaming-msg">
+                        <div className="msg-body assistant-body">
+                          <Markdown text={streamingContent} />
+                          <span className="streaming-cursor" />
+                        </div>
                       </div>
                     </div>
                   )
@@ -760,7 +777,7 @@ function BlockView({ block }: { block: Block }) {
     return (
       <details style={{ color: 'var(--fg-muted)', margin: '4px 0' }}>
         <summary style={{ cursor: 'pointer' }}>thinking ({block.thinking.length} chars)</summary>
-        <pre style={{ marginTop: 6 }}>{block.thinking}</pre>
+        <pre style={{ marginTop: 6, color: 'var(--code-fg)' }}>{block.thinking}</pre>
       </details>
     )
   }

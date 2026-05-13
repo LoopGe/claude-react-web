@@ -97,3 +97,4 @@ Vite dev server on 5174 proxies `/api` to 3456. Production: `vite build` → `di
 - `api_retry` system messages are rendered as rate-limit/overload/retry indicators in the message list.
 - `src/components/subagents.ts` tracks `Agent`, `Task`, and `Explore` tool_use calls for active subagent display.
 - CSS: never hardcode color hex values — always use theme CSS variables (e.g. `var(--btn-hover-bg)` not `#242a35`). Every new color must be defined in both `:root` (dark) and `[data-theme="light"]` blocks. This prevents light/dark theme regressions.
+- **先搞清楚问题再动手。** 任何修改（CSS、逻辑、API、架构）都必须先理解问题的全貌再改。不要看到一个"看起来不对"的东西就直接改 — 先追踪上下文、理解设计意图、定位根因，然后再动手。没搞清楚就改是治标，还可能引入新问题。

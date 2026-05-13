@@ -133,8 +133,7 @@ describe('SessionManager', () => {
     dir = makeTmpDir()
     store = new SessionStore({ stateDir: dir })
     await store.load()
-    // Short idle window so the GC-related test doesn't wait in real time.
-    sm = new SessionManager({ store, idleMs: 50 })
+    sm = new SessionManager({ store })
   })
 
   afterEach(async () => {
@@ -294,56 +293,6 @@ describe('SessionManager', () => {
     expect(resolved.behavior).toBe('deny')
   })
 
-  it('idle GC unloads an inactive session but keeps its metadata', async () => {
-    const info = sm.create({ title: 'persistable' })
-    // Immediately "age" the session by backdating lastActivityAt so the
-    // next GC tick catches it. Reaching into the internal map beats
-    // actually waiting for 50ms + a 60s GC interval.
-    // @ts-expect-error — test-only access to a private field.
-    const internalSessions = sm.sessions as Map<string, { lastActivityAt: number }>
-    const internal = internalSessions.get(info.id)!
-    internal.lastActivityAt = Date.now() - 10_000
-
-    // @ts-expect-error — invoke the private gc() deterministically.
-    sm.gc()
-    await tick()
-    expect(() => sm.get(info.id)).not.toThrow()
-    // Session is still visible in list() as dormant, not deleted.
-    const fromList = sm.list().find((s) => s.id === info.id)!
-    expect(fromList.running).toBe(false)
-    await store.flush()
-    expect(store.get(info.id)).toBeDefined()
-  })
-
-  it('GC unload preserves terminated=false so session can be resumed', async () => {
-    const info = sm.create({ title: 'resumable' })
-    await tick()
-    // Age the session.
-    // @ts-expect-error — accessing internal sessions map for test manipulation
-    const internalSessions = sm.sessions as Map<string, { lastActivityAt: number }>
-    const internal = internalSessions.get(info.id)!
-    internal.lastActivityAt = Date.now() - 10_000
-
-    // @ts-expect-error — invoke gc() directly.
-    sm.gc()
-    // Let the pump (which sees input ended) run its finally block.
-    await tick()
-    await tick()
-
-    // The key assertion: persisted state should NOT be terminated,
-    // so resume() can re-spawn the session.
-    await store.flush()
-    const meta = store.get(info.id)
-    expect(meta).toBeDefined()
-    expect(meta!.terminated).toBe(false)
-
-    // resume() should succeed and create a new Query for the same id.
-    const resumed = sm.resume(info.id)
-    expect(resumed.id).toBe(info.id)
-    expect(mockHandles).toHaveLength(2)
-    expect(mockHandles[1].options.resume).toBe(info.id)
-  })
-
   it('resume() spawns a new Query with options.resume set to the original id', async () => {
     const info = sm.create({ cwd: '/tmp', model: 'm1' })
     mockHandles[0].emit({ type: 'result' })
@@ -374,8 +323,7 @@ describe('SessionManager', () => {
     mockHandles[0].finish()
     await tick()
     // pump's finally block sets terminated=true, persists, and the session
-    // is still in memory until next GC. Force the dormant state for the
-    // assertion by unloading.
+    // is still in memory. Unload to persist the terminal state.
     await sm.unload(info.id)
     expect(() => sm.resume(info.id)).toThrow(/ended/i)
   })

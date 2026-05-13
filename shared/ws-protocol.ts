@@ -14,10 +14,17 @@
 
 /** Ask the server to start streaming events for `sessionId` on this
  *  connection. The server responds with a `replay` frame (possibly empty)
- *  followed by a `replay-done`, then live frames as they arrive. */
+ *  followed by a `replay-done`, then live frames as they arrive.
+ *
+ *  When `sinceUuid` is set, the server sends only messages after the one
+ *  with that UUID (incremental sync). If the UUID is not found in the
+ *  session's history ring (too old / evicted), the server falls back to
+ *  a full replay. Clients should omit `sinceUuid` on reconnects where
+ *  they cannot guarantee cache continuity. */
 export interface WsSubscribe {
   kind: 'subscribe'
   sessionId: string
+  sinceUuid?: string
 }
 
 /** Stop streaming events for `sessionId`. Safe to call even if not

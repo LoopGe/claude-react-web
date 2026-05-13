@@ -172,7 +172,6 @@ export interface Session {
 }
 
 export interface SessionManagerOptions {
-  idleMs?: number
   historyCap?: number
   /** When set, session metadata is persisted here so dormant sessions
    *  survive restarts. See server/persistence.ts. */

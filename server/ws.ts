@@ -186,7 +186,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
     }
 
     // --- per-session channel (subscribe/unsubscribe) -----------------
-    const startSession = (sessionId: string) => {
+    const startSession = (sessionId: string, sinceUuid?: string) => {
       // Idempotent: re-subscribing is a no-op. The client can safely
       // emit duplicate subscribe frames (e.g. after a tab refresh sees a
       // panel already open).
@@ -201,13 +201,30 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
         permSub = perms
         ctxIter = sm.subscribeContextUsage(sessionId)?.[Symbol.asyncIterator]() ?? null
 
-        // 1) Send the full replay. When history is small (≤50 messages),
-        //    we send one frame for backward compat. For larger histories
-        //    we chunk into 50-message batches so no single frame blocks
-        //    the socket — the WsWriteQueue interleaves with other
-        //    sessions' live frames via setImmediate between each chunk.
+        // 1) Send replay. If the client supplied `sinceUuid`, try to
+        //    send only messages after that point (incremental sync).
+        //    Fall back to full replay if the UUID isn't in the ring
+        //    (evicted by historyCap or client cache is stale).
+        let replayHistory = msg.history
+        if (sinceUuid) {
+          const idx = msg.history.findIndex(
+            (m) => (m as { uuid?: string }).uuid === sinceUuid,
+          )
+          if (idx >= 0) {
+            replayHistory = msg.history.slice(idx + 1)
+            console.log(
+              `[ws] incremental sync for ${sessionId}: ` +
+              `skipped ${idx + 1} msgs, sending ${replayHistory.length} new`,
+            )
+          } else {
+            console.log(
+              `[ws] sinceUuid ${sinceUuid} not found in ${sessionId} history ` +
+              `(${msg.history.length} msgs) — full replay`,
+            )
+          }
+        }
         const REPLAY_CHUNK_SIZE = 50
-        if (msg.history.length <= REPLAY_CHUNK_SIZE) {
+        if (replayHistory.length <= REPLAY_CHUNK_SIZE) {
           queue.enqueue({
             kind: 'replay',
             sessionId,
@@ -363,7 +380,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
       }
       switch (frame.kind) {
         case 'subscribe':
-          if (typeof frame.sessionId === 'string' && frame.sessionId) startSession(frame.sessionId)
+          if (typeof frame.sessionId === 'string' && frame.sessionId) startSession(frame.sessionId, frame.sinceUuid)
           break
         case 'unsubscribe':
           if (typeof frame.sessionId === 'string' && frame.sessionId) stopSession(frame.sessionId)

@@ -41,6 +41,10 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
       console.log(`[session ${session.id}] pump awaiting iter.next() for msg #${msgCount + 1}`)
       let idleWarnCount = 0
       const idleTimer = setInterval(() => {
+        // Only warn when there's pending work that should have produced
+        // a message. Idle with pendingTurns=0 and no pending permissions
+        // is normal — the session is waiting for user input.
+        if (session.pendingTurns === 0 && session.pending.size === 0) return
         idleWarnCount++
         console.warn(
           `[session ${session.id}] query.next() idle for ${Date.now() - nextStartedAt}ms ` +

@@ -74,13 +74,16 @@ interface Props {
    *  trigger the same code-path as the Composer's interrupt button (which
    *  sets pendingInterruptRef for the "interrupted" label). */
   onRegisterInterrupt?: (sessionId: string, fn: () => void) => void
+  /** Called once on mount so the parent can store a reference to this
+   *  panel's recap.refresh() function. Enables the Alt+R shortcut in App. */
+  onRegisterRecap?: (sessionId: string, fn: () => void) => void
   /** Portal target element in ChatPanel's header — set via callback ref.
    *  When non-null, Chat portals its toolbar buttons here so they appear
    *  in the panel header row instead of occupying a separate line. */
   headerButtonsRef?: HTMLDivElement | null
 }
 
-export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings, onSessionUpdate, focused, onLiveMessageCount, onRegisterInterrupt, headerButtonsRef }: Props) {
+export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings, onSessionUpdate, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, headerButtonsRef }: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
   // The parent remounts Chat on session switch (<Chat key={session.id}>), so
   // this initializer runs exactly once per mount — the right place to hydrate.
@@ -357,6 +360,12 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
   useEffect(() => {
     onRegisterInterrupt?.(session.id, interrupt)
   }, [session.id, interrupt, onRegisterInterrupt])
+
+  // Expose the recap.refresh callback to the parent so the Alt+R shortcut
+  // can trigger a recap fetch for the focused session.
+  useEffect(() => {
+    onRegisterRecap?.(session.id, recap.refresh)
+  }, [session.id, recap.refresh, onRegisterRecap])
 
   // Note: we used to poll /sessions/:id 500ms after every SDK message to
   // keep the header badges fresh. That added O(messages × sessions) HTTP

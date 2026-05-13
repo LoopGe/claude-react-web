@@ -42,6 +42,8 @@ interface Props {
   /** Create a new empty session reusing the source's cwd/model/permissionMode
    *  but without any conversation history. Used by the right-click menu. */
   onNewLikeThis?: (id: string) => void
+  /** Delete the session and create a fresh one with the same config. */
+  onRestart?: (id: string) => void
   /** Called when the user drops a card onto another one. `position` tells
    *  the parent whether to insert before or after the target. */
   onReorder?: (draggedId: string, targetId: string, position: 'before' | 'after') => void
@@ -120,6 +122,7 @@ export function SessionList({
   onClosePanel,
   onFork,
   onNewLikeThis,
+  onRestart,
   onReorder,
   onDropIntoGroup,
   onReorderInGroup,
@@ -322,7 +325,8 @@ export function SessionList({
           hint === 'before' ? 'drop-before' : '',
           hint === 'after' ? 'drop-after' : '',
           sessionColors?.[s.id] ? 'tinted' : '',
-          (s.permissionMode ?? 'default') === 'plan' ? 'plan-mode' : '',
+          (s.permissionMode ?? 'default') !== 'default' ? 'mode-active' : '',
+          (s.permissionMode ?? 'default') !== 'default' ? `mode-${s.permissionMode}` : '',
         ].filter(Boolean).join(' ')}
         style={
           sessionColors?.[s.id]
@@ -397,13 +401,17 @@ export function SessionList({
                 {slotIdx + 1}
               </span>
             )}
-            {(s.permissionMode ?? 'default') === 'plan' && (
+            {(s.permissionMode ?? 'default') !== 'default' && (
               <span
-                className="session-item-plan"
-                title="Plan mode (read-only)"
-                aria-label="plan mode"
+                className={`session-item-mode-badge mode-${s.permissionMode}`}
+                title={s.permissionMode}
+                aria-label={s.permissionMode}
               >
-                🗒
+                {s.permissionMode === 'plan' && '🗒'}
+                {s.permissionMode === 'bypassPermissions' && '⚡'}
+                {s.permissionMode === 'dontAsk' && '⚡'}
+                {s.permissionMode === 'acceptEdits' && '✏️'}
+                {s.permissionMode === 'auto' && '🤖'}
               </span>
             )}
             {isRenaming ? (
@@ -764,6 +772,7 @@ export function SessionList({
         onDelete={(id) => onDelete(id)}
         onFork={(id) => onFork?.(id)}
         onNewLikeThis={(id) => onNewLikeThis?.(id)}
+        onRestart={(id) => onRestart?.(id)}
         sessionColor={sessionColors?.[menu.id]}
         onColorChange={(color) => onSessionColorChange?.(menu.id, color)}
         groups={groups}

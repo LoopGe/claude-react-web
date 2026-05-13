@@ -40,7 +40,6 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
    *  global accent" — we don't write an entry to sessionColors unless
    *  the user explicitly picks one. */
   const [accent, setAccent] = useState<string | undefined>(undefined)
-  const [context1m, setContext1m] = useState(false)
   const [groupId, setGroupId] = useState<string>(activeGroupId ?? '')
   const [showPicker, setShowPicker] = useState(false)
 
@@ -155,7 +154,7 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
       permissionMode,
       systemPrompt: systemPrompt.trim() || undefined,
       title: title.trim() || undefined,
-      betas: context1m ? [ONE_M_CONTEXT_BETA] : undefined,
+      betas: [ONE_M_CONTEXT_BETA],
       accent,
       groupId: groupId || undefined,
       // Advanced options — only include when non-empty
@@ -415,22 +414,6 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
                   />
                 ))}
               </div>
-            </div>
-
-            <div className="settings-field">
-              <label
-                style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
-              >
-                <input
-                  type="checkbox"
-                  checked={context1m}
-                  onChange={(e) => setContext1m(e.target.checked)}
-                />
-                1M context window
-              </label>
-              <span className="hint">
-                Beta · Sonnet 4 / 4.5 only — other models fall back to their default limit.
-              </span>
             </div>
 
             <div className="settings-field">

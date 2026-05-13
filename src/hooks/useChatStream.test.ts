@@ -7,30 +7,36 @@ type WsHubListener = (frame: Record<string, unknown>) => void
 
 let currentSessionListeners: Map<string, Set<WsHubListener>>
 let currentGlobalListeners: Set<WsHubListener>
-const mockSubscribe = vi.fn((_sessionId: string) => vi.fn())
+const mockSubscribe = vi.fn((_sessionId: string, _sinceUuid?: string) => vi.fn())
+const mockSetLastMessageUuid = vi.fn()
+
+// Stable hub object — returned on every useWsHub() call so the hook's
+// useEffect (which depends on `[hub]`) doesn't re-run on every render.
+const mockHub = {
+  addListener: (fn: WsHubListener) => {
+    currentGlobalListeners.add(fn)
+    return () => { currentGlobalListeners.delete(fn) }
+  },
+  addSessionListener: (sessionId: string, fn: WsHubListener) => {
+    let set = currentSessionListeners.get(sessionId)
+    if (!set) {
+      set = new Set()
+      currentSessionListeners.set(sessionId, set)
+    }
+    set.add(fn)
+    return () => { set!.delete(fn) }
+  },
+  subscribe: mockSubscribe,
+  setLastMessageUuid: mockSetLastMessageUuid,
+}
 
 vi.mock('./useWsHub', () => ({
-  useWsHub: () => ({
-    addListener: (fn: WsHubListener) => {
-      currentGlobalListeners.add(fn)
-      return () => { currentGlobalListeners.delete(fn) }
-    },
-    addSessionListener: (sessionId: string, fn: WsHubListener) => {
-      let set = currentSessionListeners.get(sessionId)
-      if (!set) {
-        set = new Set()
-        currentSessionListeners.set(sessionId, set)
-      }
-      set.add(fn)
-      return () => { set!.delete(fn) }
-    },
-    subscribe: mockSubscribe,
-  }),
+  useWsHub: () => mockHub,
   useWsHubStatus: () => 'online' as const,
 }))
 
 // Import AFTER mock so useChatStream picks up our stub.
-import { useChatStream, type PermissionHandlers } from './useChatStream'
+import { useChatStream, cacheClear, type PermissionHandlers } from './useChatStream'
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -52,6 +58,8 @@ describe('useChatStream', () => {
     currentSessionListeners = new Map()
     currentGlobalListeners = new Set()
     mockSubscribe.mockClear()
+    mockSetLastMessageUuid.mockClear()
+    cacheClear()
     vi.clearAllMocks()
   })
 
@@ -464,7 +472,7 @@ describe('useChatStream', () => {
       () => useChatStream('s1', noopPerms),
     )
 
-    expect(mockSubscribe).toHaveBeenCalledWith('s1')
+    expect(mockSubscribe).toHaveBeenCalledWith('s1', undefined)
 
     const cleanupFn = mockSubscribe.mock.results[0].value
     expect(cleanupFn).not.toHaveBeenCalled()

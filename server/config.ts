@@ -15,7 +15,6 @@ interface ConfigFile {
   modelList?: string[]
   recapModel?: string
   maxUploadBytes?: number
-  sessionIdleMs?: number
   historyCap?: number
   maxOpenPanels?: number
   /** Milliseconds of SDK silence before the session is considered stuck
@@ -35,7 +34,6 @@ export interface ServerConfig {
   readonly defaultModel: string
   readonly recapModel: string
   readonly maxUploadBytes: number
-  readonly sessionIdleMs: number
   readonly historyCap: number
   readonly permissionTimeoutMs: number
   readonly workingStuckMs: number
@@ -57,7 +55,6 @@ export let config: ServerConfig = Object.freeze<ServerConfig>({
   defaultModel: 'anthropic/claude-sonnet-4-20250514',
   recapModel: 'claude-haiku-4-5-20251001',
   maxUploadBytes: 25 * 1024 * 1024,
-  sessionIdleMs: 30 * 60 * 1000,
   historyCap: 500,
   permissionTimeoutMs: 5 * 60 * 1000,
   workingStuckMs: 60 * 60 * 1000,
@@ -131,11 +128,6 @@ export async function loadConfig(stateDir: string): Promise<void> {
   if (typeof file_.maxUploadBytes === 'number' && file_.maxUploadBytes > 0) {
     ;(merged as { maxUploadBytes: number }).maxUploadBytes = Math.round(file_.maxUploadBytes)
     console.log(`[config] maxUploadBytes: ${merged.maxUploadBytes}`)
-  }
-
-  if (typeof file_.sessionIdleMs === 'number' && file_.sessionIdleMs > 0) {
-    ;(merged as { sessionIdleMs: number }).sessionIdleMs = Math.round(file_.sessionIdleMs)
-    console.log(`[config] sessionIdleMs: ${merged.sessionIdleMs}`)
   }
 
   if (typeof file_.historyCap === 'number' && file_.historyCap > 0) {

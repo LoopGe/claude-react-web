@@ -45,8 +45,14 @@ interface WsHubApi {
   addSessionListener: (sessionId: string, fn: WsHubListener) => () => void
   /** Idempotently subscribe a session. Safe to call repeatedly; the
    *  hub tracks ref-counts internally so multiple components can
-   *  subscribe to the same session without stepping on each other. */
-  subscribe: (sessionId: string) => () => void
+   *  subscribe to the same session without stepping on each other.
+   *  Pass `sinceUuid` for incremental replay (server sends only
+   *  messages after that UUID). */
+  subscribe: (sessionId: string, sinceUuid?: string) => () => void
+  /** Update the last known message UUID for a session. Used for
+   *  incremental replay on reconnect — the hub stores this and sends
+   *  it with re-subscribe frames after a connection drop. */
+  setLastMessageUuid: (sessionId: string, uuid: string) => void
 }
 
 const WsHubContext = createContext<WsHubApi | null>(null)
@@ -78,6 +84,10 @@ export function WsHubProvider({ children, url }: ProviderProps) {
   const listenersRef = useRef<Set<WsHubListener>>(new Set())
   const sessionListenersRef = useRef<Map<string, Set<WsHubListener>>>(new Map())
   const refCountsRef = useRef<Map<string, number>>(new Map())
+  /** Last known message UUID per session. Sent with subscribe frames so
+   *  the server can do incremental replay instead of full history. Also
+   *  used on reconnect to avoid re-sending the entire message history. */
+  const lastUuidRef = useRef<Map<string, string | null>>(new Map())
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimerRef = useRef<number | null>(null)
   const pingTimerRef = useRef<number | null>(null)
@@ -147,7 +157,8 @@ export function WsHubProvider({ children, url }: ProviderProps) {
       // duplicate subscribes as idempotent, so a tab that never
       // disconnected doesn't get clobbered either.
       for (const sessionId of refCountsRef.current.keys()) {
-        safeSend({ kind: 'subscribe', sessionId })
+        const sinceUuid = lastUuidRef.current.get(sessionId) ?? undefined
+        safeSend({ kind: 'subscribe', sessionId, ...(sinceUuid ? { sinceUuid } : {}) })
       }
       // App-level heartbeat — some reverse proxies close idle WS
       // after 30-60s. A 25s app-level ping is safely below that, and
@@ -267,7 +278,7 @@ export function WsHubProvider({ children, url }: ProviderProps) {
   }, [])
 
   const subscribe = useCallback(
-    (sessionId: string) => {
+    (sessionId: string, sinceUuid?: string) => {
       const cur = refCountsRef.current.get(sessionId) ?? 0
       refCountsRef.current.set(sessionId, cur + 1)
       if (cur === 0) {
@@ -276,12 +287,14 @@ export function WsHubProvider({ children, url }: ProviderProps) {
         // acknowledged by the server are impossible because we drop
         // the send if socket isn't OPEN; when it reopens we replay
         // all subscribes.
-        safeSend({ kind: 'subscribe', sessionId })
+        if (sinceUuid) lastUuidRef.current.set(sessionId, sinceUuid)
+        safeSend({ kind: 'subscribe', sessionId, ...(sinceUuid ? { sinceUuid } : {}) })
       }
       return () => {
         const c = refCountsRef.current.get(sessionId) ?? 0
         if (c <= 1) {
           refCountsRef.current.delete(sessionId)
+          lastUuidRef.current.delete(sessionId)
           safeSend({ kind: 'unsubscribe', sessionId })
         } else {
           refCountsRef.current.set(sessionId, c - 1)
@@ -291,6 +304,10 @@ export function WsHubProvider({ children, url }: ProviderProps) {
     [safeSend],
   )
 
+  const setLastMessageUuid = useCallback((sessionId: string, uuid: string) => {
+    lastUuidRef.current.set(sessionId, uuid)
+  }, [])
+
   // Memoize so the controls part (addListener/subscribe) has stable
   // identity across re-renders. Status is deliberately excluded — it
   // lives in its own WsStatusContext so status flips (connecting →
@@ -298,8 +315,8 @@ export function WsHubProvider({ children, url }: ProviderProps) {
   // This prevents effect teardown/rebuild in consumers like
   // useChatStream that have `[hub]` in their dependency arrays.
   const api = useMemo<WsHubApi>(
-    () => ({ addListener, addSessionListener, subscribe }),
-    [addListener, addSessionListener, subscribe],
+    () => ({ addListener, addSessionListener, subscribe, setLastMessageUuid }),
+    [addListener, addSessionListener, subscribe, setLastMessageUuid],
   )
   return createElement(
     WsHubContext.Provider,

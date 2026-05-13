@@ -14,8 +14,9 @@
 // are delegated straight to the underlying Query, which implements them as
 // in-band control requests to the CLI subprocess.
 //
-// Idle GC runs every minute; any session whose last activity is older than
-// `idleMs` AND has no live subscribers gets deleted.
+// Sessions are only removed when explicitly deleted by the user or when the
+// stuck-session detector fires. A periodic tick checks for stuck sessions
+// (mid-turn silence exceeding workingStuckMs).
 
 import {
   query,
@@ -73,7 +74,6 @@ const AUTO_INTERRUPT_DEDUP_MS = 2 * 60 * 1000
 
 export class SessionManager {
   private sessions = new Map<string, Session>()
-  private idleMs: number
   private historyCap: number
   private permissionTimeoutMs: number
   private workingStuckMs: number
@@ -84,7 +84,6 @@ export class SessionManager {
   private globalSubscribers = new Map<string, GlobalSubscriber>()
 
   constructor(opts: SessionManagerOptions = {}) {
-    this.idleMs = opts.idleMs ?? defaultConfig.sessionIdleMs
     this.claudeBinary = opts.claudeBinary
     this.historyCap = opts.historyCap ?? defaultConfig.historyCap
     this.permissionTimeoutMs = opts.permissionTimeoutMs ?? defaultConfig.permissionTimeoutMs
@@ -94,7 +93,7 @@ export class SessionManager {
     this.gcTimer = setInterval(() => this.gc(), 60_000)
     // Don't keep the Node process alive just for GC
     this.gcTimer.unref?.()
-    console.log(`[session-manager] initialized — idleMs=${this.idleMs}, permissionTimeoutMs=${this.permissionTimeoutMs}, workingStuckMs=${this.workingStuckMs}`)
+    console.log(`[session-manager] initialized — permissionTimeoutMs=${this.permissionTimeoutMs}, workingStuckMs=${this.workingStuckMs}`)
   }
 
   /** Write the current in-memory state of a session into the persistence
@@ -497,7 +496,7 @@ export class SessionManager {
     }
     if (!s.running) {
       console.warn(`[session ${id}] send rejected — session is not running`)
-      // The Query has been unloaded (idle GC or graceful shutdown). The
+      // The Query has been unloaded (explicit delete or graceful shutdown). The
       // caller should POST /resume first rather than retrying send().
       throw new HttpError(409, `session ${id} is not running; resume it first`)
     }
@@ -998,8 +997,8 @@ export class SessionManager {
   }
 
   /** Close the Query and drop the in-memory session, but keep metadata on
-   *  disk so the user can resume it later. Used by the idle GC and during
-   *  graceful shutdown.
+   *  disk so the user can resume it later. Used for explicit deletion and
+   *  during graceful shutdown.
    *
    *  `terminate`: when true, the session is marked terminated in the
    *  persistence store (prevents future resume) — used on explicit delete
@@ -1018,9 +1017,7 @@ export class SessionManager {
     s.abortController.abort()
     s.input.end()
     // When terminating (explicit delete or graceful shutdown), await the
-    // pump so the SDK subprocess has time to exit cleanly. On idle GC we
-    // skip the await — the pump will finish on its own and the session
-    // map entry is removed immediately to free memory.
+    // pump so the SDK subprocess has time to exit cleanly.
     if (opts.terminate) {
       try {
         await Promise.race([
@@ -1187,25 +1184,13 @@ export class SessionManager {
     })
   }
 
-  /** Idle GC: drop in-memory Query for sessions nobody is watching and
-   *  whose last activity is older than idleMs. Metadata stays on disk so
-   *  the session can be resumed later. Terminated sessions are also
-   *  evicted from memory the same way. */
+  /** Periodic check for stuck sessions. Idle sessions are no longer
+   *  auto-unloaded — they persist until explicitly deleted by the user. */
   private gc() {
     const now = Date.now()
-    // Collect IDs first, then unload in a separate pass. unload()
-    // deletes from `this.sessions` synchronously (no await hit on the
-    // idle-GC path), which would mutate the Map during for...of
-    // iteration — the ECMAScript spec says iteration results are
-    // undefined when entries are deleted mid-iteration.
-    const toUnload: string[] = []
     for (const [id, s] of this.sessions) {
-      if (now - s.lastActivityAt > this.idleMs && s.subscribers.size === 0) {
-        toUnload.push(id)
-      }
       this.checkStuck(id, s, now)
     }
-    for (const id of toUnload) void this.unload(id)
   }
 
   /** Detect sessions that have made no progress for too long and try to

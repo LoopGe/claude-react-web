@@ -22,7 +22,6 @@ describe('config', () => {
 
   it('exports sensible hardcoded defaults', () => {
     expect(config.maxUploadBytes).toBe(25 * 1024 * 1024)
-    expect(config.sessionIdleMs).toBe(30 * 60 * 1000)
     expect(config.historyCap).toBe(500)
     expect(config.modelList.length).toBeGreaterThan(0)
     expect(config.defaultModel).toBeTruthy()
@@ -115,14 +114,6 @@ describe('config', () => {
     log.mockRestore()
   })
 
-  it('loadConfig applies sessionIdleMs from config.json', async () => {
-    writeFileSync(join(dir, 'config.json'), JSON.stringify({ sessionIdleMs: 60 * 60 * 1000 }))
-    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
-    await loadConfig(dir)
-    expect(config.sessionIdleMs).toBe(60 * 60 * 1000)
-    log.mockRestore()
-  })
-
   it('loadConfig applies historyCap from config.json', async () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ historyCap: 1000 }))
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
@@ -136,13 +127,6 @@ describe('config', () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxUploadBytes: -1 }))
     await loadConfig(dir)
     expect(config.maxUploadBytes).toBe(before)
-  })
-
-  it('loadConfig ignores non-positive sessionIdleMs', async () => {
-    const before = config.sessionIdleMs
-    writeFileSync(join(dir, 'config.json'), JSON.stringify({ sessionIdleMs: 0 }))
-    await loadConfig(dir)
-    expect(config.sessionIdleMs).toBe(before)
   })
 
   it('loadConfig ignores non-positive historyCap', async () => {

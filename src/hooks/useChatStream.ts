@@ -15,9 +15,40 @@ import { useWsHub, useWsHubStatus } from './useWsHub'
 import type { WsServerFrame } from '../ws-types'
 import type { PermissionRequest, PermissionResolved, SdkMessage } from '../types'
 
+// In-memory LRU cache: session → last known messages. Lets the UI show a
+// previous session's transcript instantly on switch instead of waiting for
+// the server replay. The server remains the source of truth — the cache is
+// just a warm-start hint that gets replaced once the fresh replay arrives.
+const MSG_CACHE_MAX = 5
+const msgCache = new Map<string, SdkMessage[]>()
+function cacheGet(id: string): SdkMessage[] | undefined {
+  const entry = msgCache.get(id)
+  if (entry) { msgCache.delete(id); msgCache.set(id, entry) } // bump LRU
+  return entry
+}
+function cacheSet(id: string, msgs: SdkMessage[]) {
+  if (msgCache.has(id)) msgCache.delete(id)
+  msgCache.set(id, msgs)
+  if (msgCache.size > MSG_CACHE_MAX) {
+    const oldest = msgCache.keys().next().value!
+    msgCache.delete(oldest)
+  }
+}
+/** Append a live message to the cache entry if it exists. Creates a new
+ *  array so the cached reference never aliases React state. */
+function cacheAppend(id: string, msg: SdkMessage) {
+  const entry = msgCache.get(id)
+  if (entry) msgCache.set(id, [...entry, msg])
+}
+/** Clear all cached messages. Used in tests to avoid cross-test leaks. */
+export function cacheClear() {
+  msgCache.clear()
+}
+
 export interface ContextUsage {
   totalTokens?: number
   maxTokens?: number
+  rawMaxTokens?: number
   percentage?: number
   model?: string
 }
@@ -77,6 +108,10 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   /** pid → toolUseId mapping so we can resolve permission decisions to the
    *  correct tool_use block when permission-resolved fires. */
   const pidToToolUseRef = useRef(new Map<string, string>())
+  /** Last message UUID for incremental sync. Updated on replay-done and
+   *  each live message so the hub can send it with re-subscribe frames
+   *  after a connection drop, avoiding full history replay. */
+  const lastUuidRef = useRef<string | null>(null)
   const streamBufRef = useRef<string[]>([])
   /** Ref-based buffer for replay frames. Accumulates all replay chunks
    *  and flushes to state once on `replay-done`, avoiding the O(n²)
@@ -105,7 +140,16 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   useLayoutEffect(() => {
     if (prevSessionRef.current !== sessionId) {
       prevSessionRef.current = sessionId
-      setMessages([])
+      // Warm-start from LRU cache: show previous messages instantly
+      // instead of a loading skeleton while the server replays.
+      const cached = cacheGet(sessionId)
+      setMessages(cached ?? [])
+      setReplayReady(!!cached)
+      // Restore lastUuid from cache so incremental sync works on
+      // the next subscribe.
+      lastUuidRef.current = cached?.length
+        ? ((cached[cached.length - 1] as { uuid?: string }).uuid ?? null)
+        : null
       setContextUsage(null)
       setQueuedAhead(0)
       setTokenRate(null)
@@ -116,7 +160,6 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       setPermissionDecisions(new Map())
       pidToToolUseRef.current.clear()
       replayBufRef.current = []
-      setReplayReady(false)
     }
   }, [sessionId])
 
@@ -165,12 +208,23 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
           // Single flush: accumulated replay + any live messages that
           // arrived during the replay window. One setState call instead
           // of N chunk-appends — eliminates the O(n²) re-render cascade.
+          const all = [...replayBufRef.current, ...pending]
           startTransition(() => {
-            setMessages([...replayBufRef.current, ...pending])
+            setMessages(all)
             replayBufRef.current = []
             pending.length = 0
             setReplayReady(true)
           })
+          // Warm the LRU cache so the next switch to this session is instant.
+          cacheSet(sessionId, all)
+          // Track last message UUID for incremental sync.
+          if (all.length > 0) {
+            const uuid = (all[all.length - 1] as { uuid?: string }).uuid
+            if (uuid) {
+              lastUuidRef.current = uuid
+              hub.setLastMessageUuid(sessionId, uuid)
+            }
+          }
           // Chunked replay: permissions ride on the final replay-done.
           if (frame.permissions?.length) {
             for (const p of frame.permissions ?? []) {
@@ -190,6 +244,13 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
           startTransition(() => {
             setMessages((prev) => [...prev, m])
           })
+          cacheAppend(sessionId, m)
+          // Track last message UUID for incremental sync.
+          const msgUuid = (m as { uuid?: string }).uuid
+          if (msgUuid) {
+            lastUuidRef.current = msgUuid
+            hub.setLastMessageUuid(sessionId, msgUuid)
+          }
           // Compute live token rate from stream_event message_delta
           // events. The SDK's message_delta carries cumulative
           // output_tokens for the current response, so we diff against
@@ -297,7 +358,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       }
     })
 
-    const release = hub.subscribe(sessionId)
+    const release = hub.subscribe(sessionId, lastUuidRef.current ?? undefined)
     return () => {
       off()
       release()
@@ -338,6 +399,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     setActivePhase(null)
     setPermissionDecisions(new Map())
     pidToToolUseRef.current.clear()
+    lastUuidRef.current = null
   }, [])
 
   const clearError = useCallback(() => setOpError(null), [])

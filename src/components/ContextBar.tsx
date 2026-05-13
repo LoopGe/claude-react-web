@@ -13,7 +13,10 @@ interface Props {
 }
 
 export function ContextBar({ usage }: Props) {
-  if (!usage || usage.maxTokens == null || usage.maxTokens <= 0) {
+  // Prefer rawMaxTokens (the model's real advertised context window) over
+  // maxTokens (which may be reduced by compaction headroom reserves).
+  const max = usage?.rawMaxTokens ?? usage?.maxTokens
+  if (!usage || max == null || max <= 0) {
     return (
       <div className="ctx-bar ctx-bar-empty">
         <div className="ctx-bar-label">Context: —</div>
@@ -25,7 +28,6 @@ export function ContextBar({ usage }: Props) {
   }
 
   const used = usage.totalTokens ?? 0
-  const max = usage.maxTokens
   // Prefer SDK's percentage (it may weigh differently than raw tokens / max)
   // but fall back to a straight division if absent.
   const computedPct = usage.percentage ?? (used / max) * 100

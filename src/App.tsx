@@ -190,6 +190,12 @@ export function App() {
   const registerInterrupt = useCallback((sessionId: string, fn: () => void) => {
     interruptFnsRef.current.set(sessionId, fn)
   }, [])
+  // Per-session recap-refresh callbacks registered by <Chat> components.
+  // Enables the Alt+R shortcut to trigger a recap fetch for the focused session.
+  const recapFnsRef = useRef<Map<string, () => void>>(new Map())
+  const registerRecap = useCallback((sessionId: string, fn: () => void) => {
+    recapFnsRef.current.set(sessionId, fn)
+  }, [])
   useEffect(() => {
     openIdsRef.current = openIds
   })
@@ -865,7 +871,7 @@ export function App() {
           description: 'Command palette',
         },
         {
-          combo: 'shift+/',
+          combo: 'shift+?',
           handler: () => setHelpOpen((v) => !v),
           description: 'Keyboard shortcuts',
         },
@@ -881,6 +887,13 @@ export function App() {
             void api.post(`/sessions/${focusedId}/permission-mode`, { mode: next })
           },
           description: 'Cycle permission mode',
+        },
+        {
+          combo: 'alt+r',
+          handler: () => {
+            if (focusedId) recapFnsRef.current.get(focusedId)?.()
+          },
+          description: 'Refresh session recap',
         },
         {
           combo: 'escape',
@@ -1268,6 +1281,7 @@ export function App() {
                   onCloseSettings={() => setSettingsOpenFor(null)}
                   onSwap={swapPanels}
                   onRegisterInterrupt={registerInterrupt}
+                  onRegisterRecap={registerRecap}
                   onAcceptSidebarDrop={async (sidebarId) => {
                     const existing = sessions.find((x) => x.id === sidebarId)
                     let live = existing

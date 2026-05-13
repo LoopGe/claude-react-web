@@ -16,6 +16,8 @@ export interface SessionContextMenuProps {
   onFork: (id: string) => void
   /** Create a new empty session reusing the source's cwd/model/permissionMode. */
   onNewLikeThis: (id: string) => void
+  /** Delete the session and create a fresh one with the same config. */
+  onRestart: (id: string) => void
   /** Current per-session accent hex, or undefined for global default. */
   sessionColor?: string
   /** Set or clear the session accent. */
@@ -37,6 +39,7 @@ export function SessionContextMenu({
   onDelete,
   onFork,
   onNewLikeThis,
+  onRestart,
   sessionColor,
   onColorChange,
   groups,
@@ -65,6 +68,17 @@ export function SessionContextMenu({
       label: 'New session like this',
       icon: '⧉',
       onClick: () => onNewLikeThis(anchor.id),
+    },
+    {
+      label: 'Restart',
+      icon: '↻',
+      onClick: () => {
+        if (session.messageCount > 0) {
+          const title = session.title ?? session.id.slice(0, 8)
+          if (!window.confirm(`Restart session "${title}"?\n\nThis will delete the current session and create a fresh one with the same settings.`)) return
+        }
+        onRestart(anchor.id)
+      },
     },
     { label: '' }, // separator before group actions
     // --- Group actions (exclusive membership — session is in at most one group) ---

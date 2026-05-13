@@ -47,6 +47,8 @@ export interface ChatPanelProps {
    *  the parent App. Enables ESC shortcut to trigger the same code-path
    *  as the Composer's interrupt button. */
   onRegisterInterrupt?: (sessionId: string, fn: () => void) => void
+  /** Forwarded to <Chat> so it can register its recap-refresh callback. */
+  onRegisterRecap?: (sessionId: string, fn: () => void) => void
 }
 
 export function ChatPanel({
@@ -65,6 +67,7 @@ export function ChatPanel({
   onOpenSettings,
   onCloseSettings,
   onRegisterInterrupt,
+  onRegisterRecap,
 }: ChatPanelProps) {
   /** State (not ref) so that Chat re-renders once the portal target mounts. */
   const [headerBtnEl, setHeaderBtnEl] = useState<HTMLDivElement | null>(null)
@@ -119,10 +122,8 @@ export function ChatPanel({
       })
   }
 
-  // `plan` is a read-only mode in the SDK — Claude can plan but can't
-  // execute write tools. Surface it visually so the user remembers why
-  // edits aren't happening; the mode chip alone is too easy to miss.
-  const isPlanMode = (session.permissionMode ?? 'default') === 'plan'
+  const permMode = session.permissionMode ?? 'default'
+  const isNonDefaultMode = permMode !== 'default'
 
   return (
     <section
@@ -130,7 +131,8 @@ export function ChatPanel({
         'chat-panel',
         focused ? 'focused' : '',
         dropActive ? 'drop-target' : '',
-        isPlanMode ? 'plan-mode' : '',
+        isNonDefaultMode ? 'mode-active' : '',
+        isNonDefaultMode ? `mode-${permMode}` : '',
       ].filter(Boolean).join(' ')}
       style={accentStyle}
       onMouseDownCapture={(e) => {
@@ -196,13 +198,18 @@ export function ChatPanel({
         <span className="chat-panel-title" title={session.cwd ?? ''}>
           {session.title ?? session.id.slice(0, 8)}
         </span>
-        {isPlanMode && (
+        {isNonDefaultMode && (
           <span
-            className="chat-panel-plan-badge"
-            title="Plan mode: Claude can plan but won't execute write tools (Edit/Write/Bash). Switch via the mode chip on the right."
-            aria-label="Plan mode (read-only)"
+            className={`chat-panel-mode-badge mode-${permMode}`}
+            title={`Permission mode: ${permMode}`}
+            aria-label={permMode}
           >
-            🗒 plan mode
+            {permMode === 'plan' && '🗒 '}
+            {permMode === 'bypassPermissions' && '⚡ '}
+            {permMode === 'dontAsk' && '⚡ '}
+            {permMode === 'acceptEdits' && '✏️ '}
+            {permMode === 'auto' && '🤖 '}
+            {permMode}
           </span>
         )}
         <div className="chat-panel-meta">
@@ -346,6 +353,7 @@ export function ChatPanel({
             onCloseSettings={onCloseSettings}
             onLiveMessageCount={setLiveMessageCount}
             onRegisterInterrupt={onRegisterInterrupt}
+            onRegisterRecap={onRegisterRecap}
             headerButtonsRef={headerBtnEl}
           />
         ) : (
