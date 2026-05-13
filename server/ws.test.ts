@@ -292,8 +292,15 @@ describe('WebSocket multiplexer', () => {
     // subscriber right now.
     expect(sm.get(info.id).subscribers).toBe(1)
     await client.close()
-    // After close the server should have released the subscriber.
-    await tick()
+    // Close propagation is async across the socket handshake; wait for
+    // the server-side cleanup rather than assuming it lands in one tick.
+    const start = Date.now()
+    while (sm.get(info.id).subscribers !== 0) {
+      if (Date.now() - start > 500) {
+        throw new Error(`timed out waiting for subscriber cleanup; got ${sm.get(info.id).subscribers}`)
+      }
+      await tick()
+    }
     expect(sm.get(info.id).subscribers).toBe(0)
   })
 
