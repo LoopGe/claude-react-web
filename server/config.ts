@@ -3,83 +3,105 @@
 // Configuration is loaded from <stateDir>/config.json (default
 // ~/.claude-react-web/config.json). CLI flags (--model) take priority
 // over the config file; hardcoded defaults are the final fallback.
+//
+// After loadConfig() runs the config object is frozen — mutation attempts
+// throw at runtime, making the "load once" invariant explicit.
 
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 
 /** Schema for config.json */
 interface ConfigFile {
-  /** Available models. The first entry is the default for new sessions. */
   modelList?: string[]
-  /** Lightweight model used for session recap generation. */
   recapModel?: string
-  /** Maximum file upload size in bytes (default 25 MB). */
   maxUploadBytes?: number
-  /** Session idle timeout in milliseconds (default 30 min). */
   sessionIdleMs?: number
-  /** History ring cap — max messages kept in memory per session. */
   historyCap?: number
-  /** Context-window size presets shown in the new-session dialog.
-   *  Each entry is { value: number, label: string, beta?: string }. */
   contextSteps?: Array<{ value: number; label: string; beta?: string }>
+  maxOpenPanels?: number
+  /** Bearer token sent as `Authorization: Bearer <token>` to the API
+   *  (works for both the official endpoint and Anthropic-compatible proxies).
+   *  Required — server refuses to start without it. */
+  authToken?: string
+  /** API endpoint. Defaults to the official one. Override to point at a
+   *  proxy / relay. No trailing slash expected; trimmed during load. */
+  baseUrl?: string
 }
 
-/** Available models for new sessions. The first entry is the default.
- *  Overridden by `modelList` in config.json. */
-export let MODEL_LIST: string[] = [
-  'anthropic/claude-sonnet-4-20250514',
-  'claude-opus-4-20250514',
-  'claude-haiku-3-5-20241022',
-]
-
-/** The first model in the list is the default. */
-export let DEFAULT_MODEL = MODEL_LIST[0]
-
-/** Model used for session recap generation (lightweight, fast).
- *  Overridden by `recapModel` in config.json. */
-export let RECAP_MODEL = 'claude-haiku-3-5-20241022'
-
-/** Maximum file upload size in bytes (default 25 MB).
- *  Overridden by `maxUploadBytes` in config.json. */
-export let MAX_UPLOAD_BYTES = 25 * 1024 * 1024
-
-/** Session idle timeout in milliseconds (default 30 min).
- *  Overridden by `sessionIdleMs` in config.json. */
-export let SESSION_IDLE_MS = 30 * 60 * 1000
-
-/** History ring cap — max messages kept in memory per session.
- *  Overridden by `historyCap` in config.json. */
-export let HISTORY_CAP = 500
-
-/** Default timeout (ms) for pending tool-permission requests. If the user
- *  doesn't respond within this window, the request is auto-denied so the
- *  SDK doesn't hang forever. 0 = no timeout (legacy behaviour). */
-export let PERMISSION_TIMEOUT_MS = 5 * 60 * 1000
-
-/** Maximum time (ms) a session can stay in "working" state before the GC
- *  auto-interrupts it. Prevents the UI from spinning forever when the SDK
- *  subprocess is stuck. 0 = disabled. */
-export let WORKING_STUCK_MS = 10 * 60 * 1000
-
-/** Context-window size presets for the new-session dialog.
- *  Overridden by `contextSteps` in config.json. */
+/** Context-window size presets for the new-session dialog. */
 export interface ContextStep {
   value: number
   label: string
   beta?: string
 }
-export let CONTEXT_STEPS: ContextStep[] = [
-  { value: 100_000,   label: '100k' },
-  { value: 200_000,   label: '200k' },
-  { value: 256_000,   label: '256k' },
-  { value: 512_000,   label: '512k' },
-  { value: 1_000_000, label: '1M', beta: 'context-1m-2025-08-07' },
-]
+
+export interface ServerConfig {
+  readonly modelList: readonly string[]
+  readonly defaultModel: string
+  readonly recapModel: string
+  readonly maxUploadBytes: number
+  readonly sessionIdleMs: number
+  readonly historyCap: number
+  readonly permissionTimeoutMs: number
+  readonly workingStuckMs: number
+  readonly maxOpenPanels: number
+  readonly contextSteps: readonly ContextStep[]
+  /** Undefined until config.json is loaded and `authToken` is populated.
+   *  `requireAuthToken()` throws if accessed before that. */
+  readonly authToken?: string
+  readonly baseUrl: string
+}
+
+/** Current server config. Frozen after loadConfig() — reads are safe,
+ *  writes throw at runtime. */
+export let config: ServerConfig = Object.freeze<ServerConfig>({
+  modelList: Object.freeze([
+    'anthropic/claude-sonnet-4-20250514',
+    'claude-opus-4-20250514',
+    'claude-haiku-3-5-20241022',
+  ]),
+  defaultModel: 'anthropic/claude-sonnet-4-20250514',
+  recapModel: 'claude-haiku-4-5-20251001',
+  maxUploadBytes: 25 * 1024 * 1024,
+  sessionIdleMs: 30 * 60 * 1000,
+  historyCap: 500,
+  permissionTimeoutMs: 5 * 60 * 1000,
+  workingStuckMs: 10 * 60 * 1000,
+  maxOpenPanels: 3,
+  contextSteps: Object.freeze([
+    { value: 100_000,   label: '100k' },
+    { value: 200_000,   label: '200k' },
+    { value: 256_000,   label: '256k' },
+    { value: 512_000,   label: '512k' },
+    { value: 1_000_000, label: '1M', beta: 'context-1m-2025-08-07' },
+  ]),
+  authToken: undefined,
+  baseUrl: 'https://api.anthropic.com',
+})
+
+/** Return the configured auth token or throw. Use at request time so a
+ *  missing token surfaces as an HTTP 500 rather than a silent fallback. */
+export function requireAuthToken(): string {
+  const token = config.authToken
+  if (!token) {
+    throw new Error(
+      'authToken is not configured. Set `authToken` in config.json (and optionally `baseUrl`).',
+    )
+  }
+  return token
+}
+
+/** Test-only: merge overrides into the current frozen config and re-freeze.
+ *  Production code loads config via loadConfig(); tests call this to set
+ *  authToken/baseUrl without writing a temp file. */
+export function __setConfigForTest(overrides: Partial<ServerConfig>): void {
+  config = Object.freeze({ ...config, ...overrides })
+}
 
 /**
- * Load config from `<stateDir>/config.json`, updating the exported
- * variables in-place. If the file is missing or malformed, defaults
- * are used silently.
+ * Load config from `<stateDir>/config.json`, replacing the config object
+ * with a frozen merge of defaults + file values. If the file is missing
+ * or malformed, defaults are used silently.
  */
 export async function loadConfig(stateDir: string): Promise<void> {
   const file = join(stateDir, 'config.json')
@@ -103,38 +125,39 @@ export async function loadConfig(stateDir: string): Promise<void> {
     return
   }
 
-  const cfg = parsed as ConfigFile
+  const file_ = parsed as ConfigFile
+  const merged: ServerConfig = { ...config }
 
-  if (Array.isArray(cfg.modelList) && cfg.modelList.length > 0) {
-    const models = cfg.modelList.filter((m) => typeof m === 'string' && m.trim())
+  if (Array.isArray(file_.modelList) && file_.modelList.length > 0) {
+    const models = file_.modelList.filter((m) => typeof m === 'string' && m.trim())
     if (models.length > 0) {
-      MODEL_LIST = models
-      DEFAULT_MODEL = models[0]
-      console.log(`[config] loaded ${models.length} model(s) from ${file}, default: ${DEFAULT_MODEL}`)
+      ;(merged as { modelList: readonly string[] }).modelList = Object.freeze(models)
+      ;(merged as { defaultModel: string }).defaultModel = models[0]
+      console.log(`[config] loaded ${models.length} model(s) from ${file}, default: ${merged.defaultModel}`)
     }
   }
 
-  if (typeof cfg.recapModel === 'string' && cfg.recapModel.trim()) {
-    RECAP_MODEL = cfg.recapModel.trim()
+  if (typeof file_.recapModel === 'string' && file_.recapModel.trim()) {
+    ;(merged as { recapModel: string }).recapModel = file_.recapModel.trim()
   }
 
-  if (typeof cfg.maxUploadBytes === 'number' && cfg.maxUploadBytes > 0) {
-    MAX_UPLOAD_BYTES = Math.round(cfg.maxUploadBytes)
-    console.log(`[config] maxUploadBytes: ${MAX_UPLOAD_BYTES}`)
+  if (typeof file_.maxUploadBytes === 'number' && file_.maxUploadBytes > 0) {
+    ;(merged as { maxUploadBytes: number }).maxUploadBytes = Math.round(file_.maxUploadBytes)
+    console.log(`[config] maxUploadBytes: ${merged.maxUploadBytes}`)
   }
 
-  if (typeof cfg.sessionIdleMs === 'number' && cfg.sessionIdleMs > 0) {
-    SESSION_IDLE_MS = Math.round(cfg.sessionIdleMs)
-    console.log(`[config] sessionIdleMs: ${SESSION_IDLE_MS}`)
+  if (typeof file_.sessionIdleMs === 'number' && file_.sessionIdleMs > 0) {
+    ;(merged as { sessionIdleMs: number }).sessionIdleMs = Math.round(file_.sessionIdleMs)
+    console.log(`[config] sessionIdleMs: ${merged.sessionIdleMs}`)
   }
 
-  if (typeof cfg.historyCap === 'number' && cfg.historyCap > 0) {
-    HISTORY_CAP = Math.round(cfg.historyCap)
-    console.log(`[config] historyCap: ${HISTORY_CAP}`)
+  if (typeof file_.historyCap === 'number' && file_.historyCap > 0) {
+    ;(merged as { historyCap: number }).historyCap = Math.round(file_.historyCap)
+    console.log(`[config] historyCap: ${merged.historyCap}`)
   }
 
-  if (Array.isArray(cfg.contextSteps) && cfg.contextSteps.length > 0) {
-    const valid = cfg.contextSteps.filter(
+  if (Array.isArray(file_.contextSteps) && file_.contextSteps.length > 0) {
+    const valid = file_.contextSteps.filter(
       (s) =>
         typeof s === 'object' &&
         s !== null &&
@@ -144,12 +167,32 @@ export async function loadConfig(stateDir: string): Promise<void> {
         s.label.trim(),
     )
     if (valid.length > 0) {
-      CONTEXT_STEPS = valid.map((s) => ({
+      ;(merged as { contextSteps: readonly ContextStep[] }).contextSteps = Object.freeze(valid.map((s) => ({
         value: Math.round(s.value),
         label: s.label.trim(),
         beta: typeof s.beta === 'string' && s.beta.trim() ? s.beta.trim() : undefined,
-      }))
-      console.log(`[config] loaded ${CONTEXT_STEPS.length} context step(s) from ${file}`)
+      })))
+      console.log(`[config] loaded ${merged.contextSteps.length} context step(s) from ${file}`)
     }
   }
+
+  if (typeof file_.maxOpenPanels === 'number' && file_.maxOpenPanels !== 0) {
+    ;(merged as { maxOpenPanels: number }).maxOpenPanels = Math.max(2, Math.min(5, Math.round(file_.maxOpenPanels)))
+    console.log(`[config] maxOpenPanels: ${merged.maxOpenPanels}`)
+  }
+
+  if (typeof file_.authToken === 'string' && file_.authToken.trim()) {
+    ;(merged as { authToken?: string }).authToken = file_.authToken.trim()
+    // Never log the token itself — just confirm it's present.
+    console.log('[config] authToken: configured')
+  }
+
+  if (typeof file_.baseUrl === 'string' && file_.baseUrl.trim()) {
+    // Strip trailing slash so callers can always do `${baseUrl}/v1/...`.
+    const trimmed = file_.baseUrl.trim().replace(/\/+$/, '')
+    ;(merged as { baseUrl: string }).baseUrl = trimmed
+    console.log(`[config] baseUrl: ${trimmed}`)
+  }
+
+  config = Object.freeze(merged)
 }

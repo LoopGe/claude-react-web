@@ -3,18 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-// We need to import the mutable module-level exports and the loadConfig
-// function. Because config.ts mutates its own exports, we import the
-// module once and read the current values inside each test.
-import {
-  loadConfig,
-  MODEL_LIST,
-  DEFAULT_MODEL,
-  RECAP_MODEL,
-  MAX_UPLOAD_BYTES,
-  SESSION_IDLE_MS,
-  HISTORY_CAP,
-} from './config.js'
+import { config, loadConfig } from './config.js'
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), 'claude-react-web-config-'))
@@ -32,28 +21,31 @@ describe('config', () => {
   })
 
   it('exports sensible hardcoded defaults', () => {
-    expect(MAX_UPLOAD_BYTES).toBe(25 * 1024 * 1024)
-    expect(SESSION_IDLE_MS).toBe(30 * 60 * 1000)
-    expect(HISTORY_CAP).toBe(500)
-    expect(MODEL_LIST.length).toBeGreaterThan(0)
-    expect(DEFAULT_MODEL).toBeTruthy()
-    expect(RECAP_MODEL).toBeTruthy()
+    expect(config.maxUploadBytes).toBe(25 * 1024 * 1024)
+    expect(config.sessionIdleMs).toBe(30 * 60 * 1000)
+    expect(config.historyCap).toBe(500)
+    expect(config.modelList.length).toBeGreaterThan(0)
+    expect(config.defaultModel).toBeTruthy()
+    expect(config.recapModel).toBeTruthy()
+  })
+
+  it('config object is frozen', () => {
+    expect(Object.isFrozen(config)).toBe(true)
+    expect(() => { (config as any).historyCap = 999 }).toThrow()
   })
 
   it('loadConfig is a no-op when config.json is missing', async () => {
-    // loadConfig mutates module-level vars, so snapshot before.
-    const beforeModels = [...MODEL_LIST]
+    const beforeModels = [...config.modelList]
     await loadConfig(dir)
-    // Should not have changed anything — defaults persist.
-    expect(MODEL_LIST).toEqual(beforeModels)
+    expect(config.modelList).toEqual(beforeModels)
   })
 
   it('loadConfig warns and keeps defaults for malformed JSON', async () => {
     writeFileSync(join(dir, 'config.json'), 'not json at all')
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const beforeModels = [...MODEL_LIST]
+    const beforeModels = [...config.modelList]
     await loadConfig(dir)
-    expect(MODEL_LIST).toEqual(beforeModels)
+    expect(config.modelList).toEqual(beforeModels)
     expect(warn).toHaveBeenCalled()
     warn.mockRestore()
   })
@@ -79,8 +71,8 @@ describe('config', () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ modelList: models }))
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
     await loadConfig(dir)
-    expect(MODEL_LIST).toEqual(models)
-    expect(DEFAULT_MODEL).toBe('custom/model-a')
+    expect(config.modelList).toEqual(models)
+    expect(config.defaultModel).toBe('custom/model-a')
     log.mockRestore()
   })
 
@@ -88,7 +80,7 @@ describe('config', () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ recapModel: 'fast-model' }))
     vi.spyOn(console, 'log').mockImplementation(() => {})
     await loadConfig(dir)
-    expect(RECAP_MODEL).toBe('fast-model')
+    expect(config.recapModel).toBe('fast-model')
   })
 
   it('loadConfig filters empty strings from modelList', async () => {
@@ -98,28 +90,28 @@ describe('config', () => {
     )
     vi.spyOn(console, 'log').mockImplementation(() => {})
     await loadConfig(dir)
-    expect(MODEL_LIST).toEqual(['valid', 'also-valid'])
+    expect(config.modelList).toEqual(['valid', 'also-valid'])
   })
 
   it('loadConfig ignores empty modelList array', async () => {
-    const beforeModels = [...MODEL_LIST]
+    const beforeModels = [...config.modelList]
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ modelList: [] }))
     await loadConfig(dir)
-    expect(MODEL_LIST).toEqual(beforeModels)
+    expect(config.modelList).toEqual(beforeModels)
   })
 
   it('loadConfig ignores empty recapModel string', async () => {
-    const before = RECAP_MODEL
+    const before = config.recapModel
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ recapModel: '   ' }))
     await loadConfig(dir)
-    expect(RECAP_MODEL).toBe(before)
+    expect(config.recapModel).toBe(before)
   })
 
   it('loadConfig applies maxUploadBytes from config.json', async () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxUploadBytes: 10 * 1024 * 1024 }))
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
     await loadConfig(dir)
-    expect(MAX_UPLOAD_BYTES).toBe(10 * 1024 * 1024)
+    expect(config.maxUploadBytes).toBe(10 * 1024 * 1024)
     log.mockRestore()
   })
 
@@ -127,7 +119,7 @@ describe('config', () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ sessionIdleMs: 60 * 60 * 1000 }))
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
     await loadConfig(dir)
-    expect(SESSION_IDLE_MS).toBe(60 * 60 * 1000)
+    expect(config.sessionIdleMs).toBe(60 * 60 * 1000)
     log.mockRestore()
   })
 
@@ -135,28 +127,70 @@ describe('config', () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ historyCap: 1000 }))
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
     await loadConfig(dir)
-    expect(HISTORY_CAP).toBe(1000)
+    expect(config.historyCap).toBe(1000)
     log.mockRestore()
   })
 
   it('loadConfig ignores non-positive maxUploadBytes', async () => {
-    const before = MAX_UPLOAD_BYTES
+    const before = config.maxUploadBytes
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxUploadBytes: -1 }))
     await loadConfig(dir)
-    expect(MAX_UPLOAD_BYTES).toBe(before)
+    expect(config.maxUploadBytes).toBe(before)
   })
 
   it('loadConfig ignores non-positive sessionIdleMs', async () => {
-    const before = SESSION_IDLE_MS
+    const before = config.sessionIdleMs
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ sessionIdleMs: 0 }))
     await loadConfig(dir)
-    expect(SESSION_IDLE_MS).toBe(before)
+    expect(config.sessionIdleMs).toBe(before)
   })
 
   it('loadConfig ignores non-positive historyCap', async () => {
-    const before = HISTORY_CAP
+    const before = config.historyCap
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ historyCap: -100 }))
     await loadConfig(dir)
-    expect(HISTORY_CAP).toBe(before)
+    expect(config.historyCap).toBe(before)
+  })
+
+  it('loadConfig produces a frozen result', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ historyCap: 999 }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(Object.isFrozen(config)).toBe(true)
+    expect(config.historyCap).toBe(999)
+    expect(() => { (config as any).historyCap = 1 }).toThrow()
+  })
+
+  it('exports sensible maxOpenPanels default', () => {
+    expect(config.maxOpenPanels).toBe(3)
+  })
+
+  it('loadConfig applies maxOpenPanels from config.json', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxOpenPanels: 5 }))
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.maxOpenPanels).toBe(5)
+    log.mockRestore()
+  })
+
+  it('loadConfig clamps maxOpenPanels to [2, 5]', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxOpenPanels: 10 }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.maxOpenPanels).toBe(5)
+  })
+
+  it('loadConfig clamps negative maxOpenPanels to 2', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxOpenPanels: -1 }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.maxOpenPanels).toBe(2)
+  })
+
+  it('loadConfig ignores zero maxOpenPanels', async () => {
+    const before = config.maxOpenPanels
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxOpenPanels: 0 }))
+    await loadConfig(dir)
+    expect(config.maxOpenPanels).toBe(before)
   })
 })

@@ -34,14 +34,12 @@ import {
   PANEL_MIN_RATIO_DEFAULT,
   GROUPS_KEY,
   COLLAPSED_GROUPS_KEY,
-  MAX_OPEN_KEY,
-  MAX_OPEN_MIN,
-  MAX_OPEN_MAX,
-  MAX_OPEN_DEFAULT,
+  LAST_SEEN_TURN_KEY,
   clampMaxOpen,
 } from './constants/storageKeys'
 import type { Defaults, ContextStep, ServerConfig } from './types/config'
 import { notificationTooltip } from './utils/notifications'
+import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
 
 export function App() {
   const [sessions, setSessions] = useState<SessionInfo[]>([])
@@ -51,9 +49,15 @@ export function App() {
    *  panel target + clears unread when selected). */
   const [focusedId, setFocusedId] = useState<string | null>(null)
   /** Per-session "last turn seen by the user" timestamp. A session is
-   *  unread when `lastTurnAt > lastSeenTurnAt[id]` AND it isn't open.
-   *  Opening (or focusing) a session bumps the seen timestamp. */
-  const [lastSeenTurn, setLastSeenTurn] = useState<Record<string, number>>({})
+   *  unread when `lastTurnAt > lastSeenTurn[id]` AND it isn't the
+   *  currently-focused panel in a focused window. Opening, focusing, or
+   *  receiving a turn while focused+visible bumps the seen timestamp.
+   *  Persisted so a reload doesn't flag every previously-answered
+   *  session as unread. */
+  const [lastSeenTurn, setLastSeenTurn] = useLocalStorage<Record<string, number>>(
+    LAST_SEEN_TURN_KEY,
+    {},
+  )
   const [defaults, setDefaults] = useState<Defaults>({})
   const [serverModels, setServerModels] = useState<string[]>([])
   const [contextSteps, setContextSteps] = useState<ContextStep[]>([])
@@ -99,10 +103,9 @@ export function App() {
   const [collapsedGroups, setCollapsedGroups] = useLocalStorage<Record<string, boolean>>(COLLAPSED_GROUPS_KEY, {})
   /** Max number of chat panels open at once, and max sessions per group.
    *  Shared setting because the main grid and groups should agree on
-   *  capacity. Clamped to [MAX_OPEN_MIN, MAX_OPEN_MAX]. */
-  const [maxOpenPanels, setMaxOpenPanelsRaw] = useLocalStorage<number>(MAX_OPEN_KEY, MAX_OPEN_DEFAULT)
-  const maxOpen = clampMaxOpen(maxOpenPanels)
-  const setMaxOpenPanels = useCallback((v: number) => setMaxOpenPanelsRaw(clampMaxOpen(v)), [setMaxOpenPanelsRaw])
+   *  capacity. Server-driven via /api/config → config.json. */
+  const [serverMaxOpen, setServerMaxOpen] = useState<number>(3)
+  const maxOpen = clampMaxOpen(serverMaxOpen)
 
   // Configurable layout constraints — persisted in localStorage so
   // power users can tune sidebar limits and panel minimum ratio.
@@ -157,6 +160,7 @@ export function App() {
         setDefaults(r.defaults)
         if (r.models?.length) setServerModels(r.models)
         if (r.contextSteps?.length) setContextSteps(r.contextSteps)
+        if (r.maxOpenPanels != null) setServerMaxOpen(r.maxOpenPanels)
       })
       .catch(() => {})
   }, [])
@@ -288,6 +292,9 @@ export function App() {
           const ids = new Set(frame.sessions.map((s) => s.id))
           setOpenIds((prev) => prev.filter((id) => ids.has(id)))
           setFocusedId((prev) => (prev && ids.has(prev) ? prev : null))
+          // Prune lastSeenTurn entries whose sessions are gone — keeps
+          // the persisted map from growing unbounded across restarts.
+          setLastSeenTurn((prev) => pruneLastSeen(prev, ids))
           break
         }
         case 'session-update': {
@@ -302,6 +309,22 @@ export function App() {
             next[i] = frame.session
             return next
           })
+          // If the update belongs to the currently-focused session AND
+          // the window is focused, the user is actively watching it —
+          // bump lastSeenTurn so a new turn doesn't render as unread
+          // after the panel is closed, or in a non-focused open-panel
+          // sibling. Mirrors maybeNotify's visibility gate so the two
+          // behaviours stay consistent.
+          if (
+            frame.session.lastTurnAt &&
+            focusedIdRef.current === frame.session.id &&
+            typeof document !== 'undefined' &&
+            document.hasFocus()
+          ) {
+            setLastSeenTurn((prev) =>
+              bumpLastSeen(prev, frame.session.id, frame.session.lastTurnAt),
+            )
+          }
           // Falling-edge trigger for desktop notifications — see maybeNotify.
           maybeNotify(frame.session)
           break
@@ -321,6 +344,14 @@ export function App() {
           setSessions((prev) => prev.filter((s) => s.id !== frame.id))
           setOpenIds((prev) => prev.filter((id) => id !== frame.id))
           setFocusedId((prev) => (prev === frame.id ? null : prev))
+          // Drop the session's lastSeenTurn entry — no reason to keep
+          // it around once the server has deleted the session.
+          setLastSeenTurn((prev) => {
+            if (!(frame.id in prev)) return prev
+            const next = { ...prev }
+            delete next[frame.id]
+            return next
+          })
           break
         }
         case 'global-permission-request': {
@@ -344,10 +375,27 @@ export function App() {
       }
     })
     return off
-  }, [hub, maybeNotify, maybePermissionNotify])
+  }, [hub, maybeNotify, maybePermissionNotify, setLastSeenTurn])
 
   // Hub status → reconnecting banner is now derived via `displayedError`
   // (useMemo above) — no effect needed.
+
+  // When the window regains focus, bump the currently-focused session's
+  // lastSeenTurn to its latest lastTurnAt. Without this, a turn that
+  // completed while the user was alt-tabbed away stays marked unread
+  // even though the user is now staring right at it. Pairs with the
+  // session-update hook that bumps seen while focused+visible.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const onFocus = () => {
+      const fid = focusedIdRef.current
+      if (!fid) return
+      const s = sessionsRef.current.find((x) => x.id === fid)
+      setLastSeenTurn((prev) => bumpLastSeen(prev, fid, s?.lastTurnAt))
+    }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [setLastSeenTurn])
 
   /** Push a session id onto the open list. Rules:
    *  - Already open → just focus it, no reshuffle.
@@ -392,7 +440,7 @@ export function App() {
       setFocusedId(id)
       setLastSeenTurn((prev) => ({ ...prev, [id]: lastTurnAt ?? Date.now() }))
     },
-    [],
+    [setLastSeenTurn],
   )
 
   const closeSession = useCallback(
@@ -610,7 +658,7 @@ export function App() {
         }
       }
     },
-    [groups, sessions, maxOpen],
+    [groups, sessions, maxOpen, setLastSeenTurn],
   )
 
   /** Select a session. Dormant (not running, not terminated) sessions are
@@ -712,7 +760,7 @@ export function App() {
         })
       }
     },
-    [sessions, resuming, openSession, groups, activeGroupId, handleActivateGroup],
+    [sessions, resuming, openSession, groups, activeGroupId, handleActivateGroup, setLastSeenTurn],
   )
   // Keep a stable ref so notification onClick handlers can call the
   // full handleSelect logic (group switch, dormant resume, unread clear)
@@ -722,32 +770,30 @@ export function App() {
   })
 
   /** When focus changes to an open panel, bump its seen-turn so the unread
-   *  dot disappears. Focusing an already-read panel is a no-op. */
+   *  dot disappears. Focusing an already-read panel is a no-op. Uses
+   *  `sessionsRef.current` so the callback's identity stays stable across
+   *  every `session-update` WS frame — otherwise each <ChatPanel>'s
+   *  `onFocus` prop churns and defeats memoisation. */
   const focusPanel = useCallback(
     (id: string) => {
       setFocusedId(id)
-      const s = sessions.find((x) => x.id === id)
-      if (s?.lastTurnAt) {
-        setLastSeenTurn((prev) => ({ ...prev, [id]: s.lastTurnAt! }))
-      }
+      const s = sessionsRef.current.find((x) => x.id === id)
+      setLastSeenTurn((prev) => bumpLastSeen(prev, id, s?.lastTurnAt))
     },
-    [sessions],
+    [setLastSeenTurn],
   )
 
-  /** Derive unread counts (really flags — 0 or 1 per session) from the
-   *  session list + lastSeenTurn. Open sessions are always considered
-   *  read; dormant/terminated sessions with a newer lastTurnAt than we've
-   *  seen show a dot. */
-  const unread = useMemo(() => {
-    const out: Record<string, boolean> = {}
-    for (const s of sessions) {
-      if (openIds.includes(s.id)) continue
-      if (!s.lastTurnAt) continue
-      const seen = lastSeenTurn[s.id] ?? 0
-      if (s.lastTurnAt > seen) out[s.id] = true
-    }
-    return out
-  }, [sessions, openIds, lastSeenTurn])
+  /** Derive unread flags from the session list + lastSeenTurn. A session
+   *  is unread when `s.lastTurnAt > lastSeenTurn[id]` — regardless of
+   *  whether the session is open. The session-update WS handler bumps
+   *  `lastSeenTurn[focusedId]` whenever a new turn arrives on the focused
+   *  panel in a focused window, so "user is actively watching" naturally
+   *  clears the flag. Non-focused open panels (a 2-up/3-up layout) do
+   *  show unread, which matches user expectations from chat apps. */
+  const unread = useMemo(
+    () => computeUnread(sessions, lastSeenTurn),
+    [sessions, lastSeenTurn],
+  )
 
   // Update the window title when unread count changes.
   useEffect(() => {
@@ -1044,7 +1090,7 @@ export function App() {
       setFocusedId(id)
       setLastSeenTurn((prev) => ({ ...prev, [id]: lastTurnAt ?? Date.now() }))
     },
-    [],
+    [setLastSeenTurn],
   )
 
   return (
@@ -1171,21 +1217,6 @@ export function App() {
                 />
               ))}
             </div>
-            <label className="max-panels-control" title="Max open panels & group size (2–5)">
-              <span className="max-panels-label">Panels</span>
-              <select
-                className="select max-panels-select"
-                value={maxOpen}
-                onChange={(e) => setMaxOpenPanels(Number(e.target.value))}
-                aria-label="Max open panels"
-              >
-                {Array.from({ length: MAX_OPEN_MAX - MAX_OPEN_MIN + 1 }, (_, i) => MAX_OPEN_MIN + i).map(
-                  (n) => (
-                    <option key={n} value={n}>{n}</option>
-                  ),
-                )}
-              </select>
-            </label>
             <ThemeToggle theme={theme} onToggle={handleToggleTheme} />
           </div>
         </header>
@@ -1226,6 +1257,7 @@ export function App() {
                   key={s.id}
                   session={s}
                   focused={s.id === focusedId}
+                  hasUnread={!!unread[s.id]}
                   slot={i + 1}
                   accentStyle={sessionAccentStyle(s.id)}
                   onFocus={() => focusPanel(s.id)}

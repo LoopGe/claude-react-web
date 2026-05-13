@@ -9,7 +9,7 @@ import { execSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import open from 'open'
 import { buildApp } from './app.js'
-import { loadConfig } from './config.js'
+import { loadConfig, config } from './config.js'
 import { SessionStore, defaultStateDir } from './persistence.js'
 import { McpConfigStore } from './mcp-config.js'
 import { attachWebSocket } from './ws.js'
@@ -152,6 +152,20 @@ async function main() {
 
   const stateDir = args.stateDir ?? defaultStateDir()
   await loadConfig(stateDir)
+  if (!config.authToken) {
+    const configPath = `${stateDir}/config.json`
+    console.error(
+      `[cli] FATAL: authToken is not set in ${configPath}.\n` +
+      '       The server requires an auth token to talk to the Anthropic API ' +
+      '(both the SDK subprocess and the recap feature).\n' +
+      '       Add this to config.json:\n' +
+      '         {\n' +
+      '           "authToken": "<your token>",\n' +
+      '           "baseUrl": "<optional; defaults to https://api.anthropic.com>"\n' +
+      '         }',
+    )
+    process.exit(1)
+  }
   const store = new SessionStore({ stateDir })
   const loaded = await store.load()
   if (loaded.length) {

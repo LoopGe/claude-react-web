@@ -17,6 +17,12 @@ import { PERMISSION_MODES } from '../types'
 export interface ChatPanelProps {
   session: SessionInfo
   focused: boolean
+  /** True when a turn has completed on this session since the user last
+   *  looked at it. Rendered as a small dot next to the slot pill on
+   *  non-focused open panels — so in a 2-up/3-up layout the user notices
+   *  a reply landed on a sibling they aren't currently watching. Ignored
+   *  when `focused` is true (the user is already looking). */
+  hasUnread?: boolean
   /** Slot number (1-indexed) in the main grid. Shown as a pill in the
    *  header so the user can tell this panel apart from the sidebar card
    *  and map it to the Ctrl+<n> shortcut. */
@@ -46,6 +52,7 @@ export interface ChatPanelProps {
 export function ChatPanel({
   session,
   focused,
+  hasUnread,
   slot,
   accentStyle,
   onFocus,
@@ -169,6 +176,13 @@ export function ChatPanel({
           title={statusLabel(session)}
           aria-label={statusLabel(session)}
         />
+        {hasUnread && !focused && (
+          <span
+            className="chat-panel-unread"
+            title="New turn completed while this panel wasn't focused"
+            aria-label="unread"
+          />
+        )}
         <span className="chat-panel-title" title={session.cwd ?? ''}>
           {session.title ?? session.id.slice(0, 8)}
         </span>

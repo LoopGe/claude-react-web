@@ -24,7 +24,7 @@
 import type { IncomingMessage, Server as HttpServer } from 'node:http'
 import type { Socket } from 'node:net'
 import { WebSocketServer, type WebSocket } from 'ws'
-import type { SessionManager } from './session-manager.js'
+import type { SessionBroadcaster } from './session-types.js'
 import {
   WS_PATH,
   type WsClientFrame,
@@ -127,7 +127,7 @@ class WsWriteQueue {
  *  Intentionally NOT a Hono middleware — we need access to the raw
  *  Node server's `upgrade` event, which Hono doesn't expose. Mounting
  *  directly is simpler and avoids a two-layer handshake. */
-export function attachWebSocket(httpServer: HttpServer, sm: SessionManager): () => Promise<void> {
+export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster): () => Promise<void> {
   // `noServer: true` means the WSS doesn't listen on its own port; it
   // only handles connections handed to it via `handleUpgrade()`. That's
   // how we share a port with Hono.

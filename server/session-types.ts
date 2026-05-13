@@ -12,7 +12,6 @@ import type {
 import type { Pushable } from './pushable.js'
 import type { SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
-import { HISTORY_CAP } from './config.js'
 
 /** Subscriber — each connected client gets one of these. */
 export interface Subscriber {
@@ -207,11 +206,31 @@ export interface GlobalSubscriber {
   end: () => void
 }
 
+/** Read-only subscription surface used by ws.ts.
+ *  Narrower than the full SessionManager — depends only on the fan-out
+ *  methods, not on any mutation or lifecycle operations. */
+export interface SessionBroadcaster {
+  subscribeGlobal(): {
+    iterable: AsyncIterable<GlobalSessionEvent>
+    snapshot: SessionInfo[]
+    unsubscribe: () => void
+  }
+  subscribe(sessionId: string): {
+    iterable: AsyncIterable<SDKMessage>
+    history: SDKMessage[]
+    unsubscribe: () => void
+  }
+  subscribePermissions(sessionId: string): {
+    iterable: AsyncIterable<PermissionEvent>
+    snapshot: PermissionRequestSnapshot[]
+    unsubscribe: () => void
+  }
+  subscribeContextUsage(sessionId: string): AsyncIterable<unknown> | null
+}
+
 export class HttpError extends Error {
   constructor(public status: number, message: string) {
     super(message)
   }
 }
 
-/** Re-export for convenience — all session types come from this module. */
-export { HISTORY_CAP }

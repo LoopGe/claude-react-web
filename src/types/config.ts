@@ -13,4 +13,5 @@ export interface ServerConfig {
   defaults: Defaults
   models?: string[]
   contextSteps?: ContextStep[]
+  maxOpenPanels?: number
 }

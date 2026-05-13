@@ -14,12 +14,15 @@ export const PANEL_MIN_RATIO_KEY = 'claude-react-web:panel-min-ratio'
 export const PANEL_MIN_RATIO_DEFAULT = 0.15
 export const GROUPS_KEY = 'claude-react-web:session-groups'
 export const COLLAPSED_GROUPS_KEY = 'claude-react-web:collapsed-groups'
-export const MAX_OPEN_KEY = 'claude-react-web:max-open-panels'
+/** Per-session "last turn the user has seen" timestamps, used to decide
+ *  whether a session shows an unread dot in the sidebar and panel header.
+ *  Persisted so a reload doesn't mark every previously-answered session
+ *  as unread. Pruned when sessions disappear from the server. */
+export const LAST_SEEN_TURN_KEY = 'claude-react-web:last-seen-turn'
 
 /** Allowed range for the max-panels / max-sessions-per-group setting. */
 export const MAX_OPEN_MIN = 2
 export const MAX_OPEN_MAX = 5
-export const MAX_OPEN_DEFAULT = 3
 /** Clamp a user-supplied max-open value to the allowed range. */
 export function clampMaxOpen(v: number): number {
   return Math.max(MAX_OPEN_MIN, Math.min(MAX_OPEN_MAX, Math.round(v)))

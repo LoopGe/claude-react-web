@@ -8,6 +8,7 @@
   "maxUploadBytes": 26214400,
   "sessionIdleMs": 1800000,
   "historyCap": 500,
+  "maxOpenPanels": 3,
   "contextSteps": [
     { "value": 100000,   "label": "100k" },
     { "value": 200000,   "label": "200k" },

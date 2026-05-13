@@ -32,7 +32,7 @@ import { createPushable } from './pushable.js'
 import type { SessionMeta, SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
 import { invalidateRecapCache } from './recap.js'
-import { HISTORY_CAP, SESSION_IDLE_MS, PERMISSION_TIMEOUT_MS, WORKING_STUCK_MS } from './config.js'
+import { config as defaultConfig } from './config.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import { pump as pumpSession } from './session-pump.js'
 import {
@@ -79,11 +79,11 @@ export class SessionManager {
   private globalSubscribers = new Map<string, GlobalSubscriber>()
 
   constructor(opts: SessionManagerOptions = {}) {
-    this.idleMs = opts.idleMs ?? SESSION_IDLE_MS
+    this.idleMs = opts.idleMs ?? defaultConfig.sessionIdleMs
     this.claudeBinary = opts.claudeBinary
-    this.historyCap = opts.historyCap ?? HISTORY_CAP
-    this.permissionTimeoutMs = opts.permissionTimeoutMs ?? PERMISSION_TIMEOUT_MS
-    this.workingStuckMs = opts.workingStuckMs ?? WORKING_STUCK_MS
+    this.historyCap = opts.historyCap ?? defaultConfig.historyCap
+    this.permissionTimeoutMs = opts.permissionTimeoutMs ?? defaultConfig.permissionTimeoutMs
+    this.workingStuckMs = opts.workingStuckMs ?? defaultConfig.workingStuckMs
     this.store = opts.store
     this.mcpStore = opts.mcpConfigStore
     this.gcTimer = setInterval(() => this.gc(), 60_000)
@@ -263,6 +263,20 @@ export class SessionManager {
     // fail to exec. Passing an explicit path side-steps the lookup.
     if (!fullOpts.pathToClaudeCodeExecutable && this.claudeBinary) {
       fullOpts.pathToClaudeCodeExecutable = this.claudeBinary
+    }
+
+    // Inject auth from config.json into the SDK subprocess. The SDK
+    // defaults `Options.env` to `process.env`; by passing an explicit
+    // object we sever that implicit dependency and make config.json the
+    // single source of truth for API credentials.
+    if (!fullOpts.env) {
+      fullOpts.env = {
+        ...process.env,
+        ANTHROPIC_AUTH_TOKEN: defaultConfig.authToken,
+        ANTHROPIC_BASE_URL: defaultConfig.baseUrl,
+        // Strip the legacy x-api-key variable — we standardised on Bearer.
+        ANTHROPIC_API_KEY: undefined,
+      }
     }
 
     // The session struct needs to exist before canUseTool fires (the SDK can
@@ -519,7 +533,19 @@ export class SessionManager {
   /** Interrupt the current assistant turn. */
   async interrupt(id: string): Promise<void> {
     const s = this.requireLive(id)
-    await s.query.interrupt()
+    const startedAt = Date.now()
+    console.log(
+      `[session ${id}] interrupt requested — pendingTurns=${s.pendingTurns}, ` +
+      `pending perms=${s.pending.size}, ` +
+      `workingFor=${s.workingSince ? Date.now() - s.workingSince : 0}ms`,
+    )
+    try {
+      await s.query.interrupt()
+      console.log(`[session ${id}] interrupt() resolved in ${Date.now() - startedAt}ms`)
+    } catch (err) {
+      console.error(`[session ${id}] interrupt() threw after ${Date.now() - startedAt}ms:`, err)
+      throw err
+    }
     s.lastActivityAt = Date.now()
     this.persist(s)
   }
@@ -929,6 +955,10 @@ export class SessionManager {
   async delete(id: string): Promise<void> {
     await this.unload(id, { terminate: true })
     this.store?.remove(id)
+    // Drop any cached recap — otherwise a new session that happens to
+    // reuse this id (rare, but possible under --state-dir swaps) would
+    // see the old summary.
+    invalidateRecapCache(id)
     this.broadcastGlobal({ kind: 'removed', id })
   }
 
@@ -1138,10 +1168,16 @@ export class SessionManager {
         s.workingSince &&
         now - s.workingSince > this.workingStuckMs
       ) {
-        console.warn(`[session ${id}] stuck in working state for ${now - s.workingSince}ms — auto-interrupting`)
-        s.query.interrupt().catch((err) => {
-          console.error(`[session ${id}] auto-interrupt failed:`, err)
-        })
+        const startedAt = Date.now()
+        console.warn(
+          `[session ${id}] stuck in working state for ${now - s.workingSince}ms — auto-interrupting ` +
+          `(pendingTurns=${s.pendingTurns}, pending perms=${s.pending.size}, ` +
+          `subscribers=${s.subscribers.size}, history=${s.history.length})`,
+        )
+        s.query.interrupt().then(
+          () => console.warn(`[session ${id}] auto-interrupt() resolved in ${Date.now() - startedAt}ms`),
+          (err) => console.error(`[session ${id}] auto-interrupt() rejected after ${Date.now() - startedAt}ms:`, err),
+        )
       }
     }
     for (const id of toUnload) void this.unload(id)

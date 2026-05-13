@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { generateRecap, invalidateRecapCache } from './recap.js'
+import { __setConfigForTest, config } from './config.js'
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -80,28 +81,23 @@ function mockFetchError(status: number, body: string) {
 // ── Tests ───────────────────────────────────────────────────────────
 
 describe('recap', () => {
-  // Save and restore env between tests so we can toggle API key presence.
-  const origEnv = { ...process.env }
+  // Save and restore config between tests so we can toggle token presence.
+  const origConfig = { ...config }
 
   beforeEach(() => {
     vi.restoreAllMocks()
-    process.env.ANTHROPIC_API_KEY = 'test-key-123'
-    delete process.env.ANTHROPIC_AUTH_TOKEN
+    __setConfigForTest({ authToken: 'test-token-123', baseUrl: 'https://api.anthropic.com' })
   })
 
   afterEach(() => {
-    // Clear the module-level cache between tests.
-    // Each test gets a unique sessionId so they don't collide, but
-    // we invalidate explicitly for safety.
-    process.env = { ...origEnv }
+    __setConfigForTest(origConfig)
   })
 
   // ── extractHistory (tested via generateRecap + fallback path) ────
 
   describe('history extraction', () => {
     it('counts user and assistant turns', async () => {
-      delete process.env.ANTHROPIC_API_KEY
-      delete process.env.ANTHROPIC_AUTH_TOKEN
+      __setConfigForTest({ authToken: undefined })
       const messages = [
         userMsg('Hello', 'u1'),
         assistantMsg('Hi there', 'a1'),
@@ -116,8 +112,7 @@ describe('recap', () => {
     })
 
     it('extracts tool names from assistant content', async () => {
-      delete process.env.ANTHROPIC_API_KEY
-      delete process.env.ANTHROPIC_AUTH_TOKEN
+      __setConfigForTest({ authToken: undefined })
       const messages = [
         userMsg('read file', 'u1'),
         assistantWithTools('Reading file...', ['Read', 'Glob'], 'a1'),
@@ -127,8 +122,7 @@ describe('recap', () => {
     })
 
     it('skips tool_result-only user frames', async () => {
-      delete process.env.ANTHROPIC_API_KEY
-      delete process.env.ANTHROPIC_AUTH_TOKEN
+      __setConfigForTest({ authToken: undefined })
       const messages = [
         toolResultOnlyMsg(),
         userMsg('actual question', 'u1'),
@@ -140,24 +134,21 @@ describe('recap', () => {
     })
 
     it('uses last result for total_cost_usd (overwrites, not accumulates)', async () => {
-      delete process.env.ANTHROPIC_API_KEY
-      delete process.env.ANTHROPIC_AUTH_TOKEN
+      __setConfigForTest({ authToken: undefined })
       const messages = [resultMsg(0.01), resultMsg(0.05)]
       const r = await generateRecap(messages, 'ext-cost')
       expect(r.stats.totalCostUsd).toBe(0.05)
     })
 
     it('accumulates duration_ms across result messages', async () => {
-      delete process.env.ANTHROPIC_API_KEY
-      delete process.env.ANTHROPIC_AUTH_TOKEN
+      __setConfigForTest({ authToken: undefined })
       const messages = [resultMsg(0.01, 1000), resultMsg(0.02, 2000)]
       const r = await generateRecap(messages, 'ext-duration')
       expect(r.stats.durationMs).toBe(3000)
     })
 
     it('returns fallback for empty session', async () => {
-      delete process.env.ANTHROPIC_API_KEY
-      delete process.env.ANTHROPIC_AUTH_TOKEN
+      __setConfigForTest({ authToken: undefined })
       const r = await generateRecap([], 'ext-empty')
       expect(r.summary).toBe('No messages yet.')
       expect(r.fallback).toBe(true)
@@ -314,8 +305,7 @@ describe('recap', () => {
 
   describe('fallback', () => {
     it('uses fallback when no API key is configured', async () => {
-      delete process.env.ANTHROPIC_API_KEY
-      delete process.env.ANTHROPIC_AUTH_TOKEN
+      __setConfigForTest({ authToken: undefined })
 
       const messages = [userMsg('Help me debug X', 'u1'), assistantMsg('Sure', 'a1')]
       const r = await generateRecap(messages, 'fallback-nokey')
@@ -326,8 +316,7 @@ describe('recap', () => {
     })
 
     it('shows "Empty session" fallback for no user turns', async () => {
-      delete process.env.ANTHROPIC_API_KEY
-      delete process.env.ANTHROPIC_AUTH_TOKEN
+      __setConfigForTest({ authToken: undefined })
 
       // Only assistant messages — no user turns.
       const messages = [assistantMsg('Hello', 'a1')]
@@ -354,34 +343,50 @@ describe('recap', () => {
       // and we fall back.
       expect(r.fallback).toBe(true)
     })
+
+    it('does NOT cache fallback results — next call retries the API', async () => {
+      // First call: API fails → fallback.
+      const errMock = mockFetchError(500, 'server error')
+      const messages = [userMsg('test', 'u1'), assistantMsg('reply', 'a1')]
+      const first = await generateRecap(messages, 'fallback-nocache')
+      expect(first.fallback).toBe(true)
+      expect(errMock).toHaveBeenCalledTimes(1)
+
+      // Second call with same inputs: API now works — should hit the
+      // network again and return the real summary, not the cached fallback.
+      const okMock = mockFetchSuccess('real summary')
+      const second = await generateRecap(messages, 'fallback-nocache')
+      expect(second.fallback).toBeFalsy()
+      expect(second.summary).toBe('real summary')
+      expect(okMock).toHaveBeenCalledTimes(1)
+    })
   })
 
   // ── API call ────────────────────────────────────────────────────
 
   describe('API call', () => {
-    it('sends correct headers with API key auth', async () => {
+    it('sends Bearer auth from config.authToken', async () => {
       mockFetchSuccess('summary')
       const messages = [userMsg('a', 'u1'), assistantMsg('b', 'a1')]
       await generateRecap(messages, 'api-headers')
 
       const call = vi.mocked(fetch).mock.calls[0]
       const headers = (call[1] as RequestInit).headers as Record<string, string>
-      expect(headers['x-api-key']).toBe('test-key-123')
+      expect(headers.Authorization).toBe('Bearer test-token-123')
       expect(headers['anthropic-version']).toBe('2023-06-01')
       expect(headers['Content-Type']).toBe('application/json')
+      // Confirm the legacy x-api-key header is not sent.
+      expect(headers['x-api-key']).toBeUndefined()
     })
 
-    it('uses Bearer auth when ANTHROPIC_AUTH_TOKEN is set', async () => {
-      delete process.env.ANTHROPIC_API_KEY
-      process.env.ANTHROPIC_AUTH_TOKEN = 'my-bearer-token'
-
+    it('uses config.baseUrl for the request URL', async () => {
+      __setConfigForTest({ baseUrl: 'https://proxy.example.com' })
       mockFetchSuccess('summary')
       const messages = [userMsg('a', 'u1'), assistantMsg('b', 'a1')]
-      await generateRecap(messages, 'api-bearer')
+      await generateRecap(messages, 'api-baseurl')
 
-      const headers = vi.mocked(fetch).mock.calls[0][1]?.headers as Record<string, string>
-      expect(headers['Authorization']).toBe('Bearer my-bearer-token')
-      expect(headers['x-api-key']).toBeUndefined()
+      const url = vi.mocked(fetch).mock.calls[0][0] as string
+      expect(url).toBe('https://proxy.example.com/v1/messages')
     })
 
     it('includes system prompt and transcript in request body', async () => {

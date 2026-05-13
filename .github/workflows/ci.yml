@@ -10,12 +10,14 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
+          # Node 22 (active LTS). Node 20 is being phased out on GitHub
+          # runners — see https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+          node-version: 22
           cache: npm
 
       - name: Install dependencies

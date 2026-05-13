@@ -10,7 +10,7 @@ import { SessionManager } from './session-manager.js'
 import { buildApiRouter } from './routes.js'
 import { buildFsRouter } from './fs-routes.js'
 import { buildMcpConfigRouter } from './mcp-routes.js'
-import { DEFAULT_MODEL, MODEL_LIST, CONTEXT_STEPS } from './config.js'
+import { config as serverConfig } from './config.js'
 import type { SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
 
@@ -81,10 +81,11 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
     c.json({
       defaults: {
         cwd: opts.defaults?.cwd ?? process.cwd(),
-        model: opts.defaults?.model ?? DEFAULT_MODEL,
+        model: opts.defaults?.model ?? serverConfig.defaultModel,
       },
-      models: MODEL_LIST,
-      contextSteps: CONTEXT_STEPS,
+      models: serverConfig.modelList,
+      contextSteps: serverConfig.contextSteps,
+      maxOpenPanels: serverConfig.maxOpenPanels,
     }),
   )
   app.route('/api', apiRouter)

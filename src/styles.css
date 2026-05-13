@@ -165,30 +165,6 @@ button { cursor: pointer; }
   box-shadow: 0 0 0 1px var(--bg);
 }
 
-/* Max-panels dropdown in the toolbar — compact inline label + select. */
-.max-panels-control {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: 4px;
-}
-.max-panels-label {
-  font-size: 11px;
-  color: var(--fg-muted);
-  white-space: nowrap;
-  user-select: none;
-}
-.max-panels-select {
-  width: auto;
-  padding: 2px 6px;
-  font-size: 12px;
-  border-radius: 4px;
-  background: var(--bg-elev);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  cursor: pointer;
-}
-
 .input, .textarea, .select {
   background: var(--bg-elev);
   border: 1px solid var(--border);
@@ -412,6 +388,19 @@ body.resizing-col * {
 .chat-panel-status.err { background: var(--danger); }
 .chat-panel-status.terminated { background: var(--fg-muted); opacity: 0.5; }
 .chat-panel-status.dormant { background: var(--fg-muted); opacity: 0.5; }
+
+/* Unread dot on a non-focused open panel's header. Sits between the
+   status dot and the title — matches the sidebar's .session-item-unread
+   treatment so the two indicators feel consistent. */
+.chat-panel-unread {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  box-shadow: 0 0 0 2px var(--bg);
+}
 
 /* Row 2 pieces: cwd (📁 + shortened path), message count, and an
    inline working… chip echoing the status dot for a stronger hint. */
@@ -1961,79 +1950,6 @@ body.resizing-col * {
   display: flex;
   flex-direction: column;
   gap: 6px;
-}
-
-/* Step slider — horizontal discrete-step selector */
-.step-slider { display: flex; flex-direction: column; gap: 6px; }
-.step-slider-readout {
-  display: flex;
-  justify-content: space-between;
-  font-size: 11px;
-  color: var(--fg-muted);
-  padding: 0 4px;
-  user-select: none;
-}
-.step-slider-label { transition: color .15s, font-weight .15s; }
-.step-slider-label.active { color: var(--accent); font-weight: 600; }
-.step-slider-track {
-  position: relative;
-  height: 20px;
-  cursor: pointer;
-  /* Invisible hit-area; the visual track is rendered by ::after. */
-}
-.step-slider-track::after {
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: 0;
-  right: 0;
-  height: 4px;
-  transform: translateY(-50%);
-  background: var(--bg-elev);
-  border-radius: 2px;
-}
-.step-slider-fill {
-  position: absolute;
-  top: 50%;
-  left: 0;
-  height: 4px;
-  transform: translateY(-50%);
-  background: var(--accent);
-  border-radius: 2px;
-  z-index: 1;
-  pointer-events: none;
-  transition: width .08s ease-out;
-}
-.step-slider-dot {
-  position: absolute;
-  top: 50%;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--bg-elev-2);
-  border: 2px solid var(--border);
-  transform: translate(-50%, -50%);
-  z-index: 2;
-  pointer-events: none;
-  transition: background .15s, border-color .15s;
-}
-.step-slider-dot.active {
-  background: var(--accent);
-  border-color: var(--accent);
-}
-.step-slider-thumb {
-  position: absolute;
-  top: 50%;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--accent);
-  border: 2px solid var(--bg);
-  box-shadow: 0 1px 4px rgba(0,0,0,.4);
-  transform: translate(-50%, -50%);
-  z-index: 3;
-  pointer-events: none;
-  transition: left .08s ease-out;
 }
 
 .chip-input {

@@ -145,6 +145,25 @@ The slider respects array order; the first entry is selected by default. The `be
 
 ---
 
+### `maxOpenPanels`
+
+| | |
+|---|---|
+| Type | `number` |
+| Default | `3` |
+
+Maximum number of chat panels open side-by-side, and also the maximum number of sessions per group. Must be in the range 2–5.
+
+```json
+{
+  "maxOpenPanels": 5
+}
+```
+
+Values outside the 2–5 range are clamped. This replaced the previous per-browser UI selector; the value is now server-controlled and shared by all clients.
+
+---
+
 ## Priority order
 
 Configuration values are resolved in this order (highest priority first):
@@ -159,7 +178,6 @@ Some UI layout and behavior constants are stored in the browser's `localStorage`
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `claude-react-web:max-open-panels` | `3` | Max chat panels side-by-side (2–5) |
 | `claude-react-web:sidebar-min-px` | `180` | Sidebar minimum width (px) |
 | `claude-react-web:sidebar-max-px` | `480` | Sidebar maximum width (px) |
 | `claude-react-web:panel-min-ratio` | `0.15` | Minimum panel width as a fraction of viewport |

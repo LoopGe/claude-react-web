@@ -6,7 +6,7 @@
 // when no API key is configured.
 
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { RECAP_MODEL } from './config.js'
+import { config as serverConfig, requireAuthToken } from './config.js'
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -169,21 +169,19 @@ const SYSTEM_PROMPT = `You are a session recap assistant. Summarize the followin
 Be concise and specific. Use plain language. Do not include a greeting or sign-off. Start directly with the summary.`
 
 async function callAnthropic(transcript: string): Promise<string> {
-  const apiKey = process.env.ANTHROPIC_AUTH_TOKEN ?? process.env.ANTHROPIC_API_KEY
-  if (!apiKey) throw new Error('No API key configured')
+  // Throws if authToken is not configured — loadConfig() is supposed to
+  // have rejected startup already, but guard here too for completeness.
+  const token = requireAuthToken()
 
-  const baseUrl = process.env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com'
-  const useBearer = !!process.env.ANTHROPIC_AUTH_TOKEN
-
-  const res = await fetch(`${baseUrl}/v1/messages`, {
+  const res = await fetch(`${serverConfig.baseUrl}/v1/messages`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'anthropic-version': '2023-06-01',
-      ...(useBearer ? { Authorization: `Bearer ${apiKey}` } : { 'x-api-key': apiKey }),
+      Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({
-      model: RECAP_MODEL,
+      model: serverConfig.recapModel,
       max_tokens: 300,
       temperature: 0.3,
       system: SYSTEM_PROMPT,
@@ -261,8 +259,9 @@ async function doGenerateRecap(messages: SDKMessage[], sessionId: string): Promi
     return { summary: cached.summary, stats: cached.stats, cached: true, generatedAt: cached.generatedAt }
   }
 
-  // Generate.
-  const hasKey = !!(process.env.ANTHROPIC_AUTH_TOKEN ?? process.env.ANTHROPIC_API_KEY)
+  // Generate. authToken presence is the single gate — config.json is the
+  // only source of truth (env vars are no longer consulted).
+  const hasKey = !!serverConfig.authToken
   let summary: string
   let fallback = false
 
@@ -282,11 +281,16 @@ async function doGenerateRecap(messages: SDKMessage[], sessionId: string): Promi
   }
 
   const generatedAt = Date.now()
-  cache.set(sessionId, { summary, stats, messageCount: messages.length, lastMessageUuid: lastUuid, generatedAt })
-  // LRU eviction: drop oldest entries when the cache exceeds the cap.
-  if (cache.size > CACHE_MAX_ENTRIES) {
-    const oldest = cache.keys().next().value
-    if (oldest) cache.delete(oldest)
+  // Only cache real AI summaries — fallbacks are a degraded result, and
+  // caching them would prevent retry on the next refresh until TTL expiry
+  // or a new message arrives. Retries are cheap; keep them available.
+  if (!fallback) {
+    cache.set(sessionId, { summary, stats, messageCount: messages.length, lastMessageUuid: lastUuid, generatedAt })
+    // LRU eviction: drop oldest entries when the cache exceeds the cap.
+    if (cache.size > CACHE_MAX_ENTRIES) {
+      const oldest = cache.keys().next().value
+      if (oldest) cache.delete(oldest)
+    }
   }
   return { summary, stats, cached: false, generatedAt, fallback }
 }

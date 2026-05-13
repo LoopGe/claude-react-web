@@ -13,7 +13,17 @@ import { generateRecap } from './recap.js'
 /** Where per-session uploads land inside the session's cwd. Kept visible
  *  (not dot-prefixed) so users can see what the UI dropped in. */
 const UPLOAD_SUBDIR = 'claude-web-uploads'
-import { MAX_UPLOAD_BYTES } from './config.js'
+import { config as serverConfig } from './config.js'
+
+/** Parse JSON body, returning 400 on malformed input instead of silently
+ *  falling back to an empty object. */
+async function safeJson<T>(req: { json<T>(): Promise<T> }): Promise<T> {
+  try {
+    return await req.json<T>()
+  } catch {
+    throw new HttpError(400, 'Malformed JSON body')
+  }
+}
 
 export function buildApiRouter(sm: SessionManager): Hono {
   const app = new Hono()
@@ -67,9 +77,7 @@ export function buildApiRouter(sm: SessionManager): Hono {
   // before deleting it.
   app.patch('/sessions/:id', async (c) => {
     const id = c.req.param('id')
-    const body = await c.req
-      .json<{ title?: string; pinned?: boolean }>()
-      .catch(() => ({}) as { title?: string; pinned?: boolean })
+    const body = await safeJson<{ title?: string; pinned?: boolean }>(c.req)
     // At least one known field is required. Apply them in a fixed order
     // so tests and clients can rely on the final state.
     let info
@@ -104,7 +112,7 @@ export function buildApiRouter(sm: SessionManager): Hono {
   // Send user message
   app.post('/sessions/:id/messages', async (c) => {
     const id = c.req.param('id')
-    const body = await c.req.json<{ text?: string }>().catch(() => ({} as { text?: string }))
+    const body = await safeJson<{ text?: string }>(c.req)
     const text = typeof body.text === 'string' ? body.text : ''
     if (!text.trim()) return c.json({ error: 'text is required' }, 400)
     sm.send(id, text)
@@ -119,14 +127,14 @@ export function buildApiRouter(sm: SessionManager): Hono {
 
   // Change model
   app.post('/sessions/:id/model', async (c) => {
-    const body = await c.req.json<{ model?: string }>().catch(() => ({} as { model?: string }))
+    const body = await safeJson<{ model?: string }>(c.req)
     const info = await sm.setModel(c.req.param('id'), body.model)
     return c.json({ session: info })
   })
 
   // Change permission mode
   app.post('/sessions/:id/permission-mode', async (c) => {
-    const body = await c.req.json<{ mode?: PermissionMode }>().catch(() => ({} as { mode?: PermissionMode }))
+    const body = await safeJson<{ mode?: PermissionMode }>(c.req)
     if (!body.mode) return c.json({ error: 'mode is required' }, 400)
     const info = await sm.setPermissionMode(c.req.param('id'), body.mode)
     return c.json({ session: info })
@@ -134,7 +142,7 @@ export function buildApiRouter(sm: SessionManager): Hono {
 
   // Apply flag settings
   app.post('/sessions/:id/settings', async (c) => {
-    const body = await c.req.json<{ settings?: Settings }>().catch(() => ({} as { settings?: Settings }))
+    const body = await safeJson<{ settings?: Settings }>(c.req)
     const info = await sm.applySettings(c.req.param('id'), body.settings ?? {})
     return c.json({ session: info })
   })
@@ -196,9 +204,9 @@ export function buildApiRouter(sm: SessionManager): Hono {
     const now = Date.now()
     const saved: Array<{ path: string; name: string; size: number }> = []
     for (const f of files) {
-      if (f.size > MAX_UPLOAD_BYTES) {
+      if (f.size > serverConfig.maxUploadBytes) {
         return c.json(
-          { error: `file ${f.name} exceeds ${MAX_UPLOAD_BYTES} bytes` },
+          { error: `file ${f.name} exceeds ${serverConfig.maxUploadBytes} bytes` },
           413 as 400 | 404 | 410 | 500,
         )
       }
@@ -257,7 +265,7 @@ export function buildApiRouter(sm: SessionManager): Hono {
 
   // Enable or disable an MCP server
   app.post('/sessions/:id/mcp/:name/toggle', async (c) => {
-    const body = await c.req.json<{ enabled?: boolean }>().catch(() => ({} as { enabled?: boolean }))
+    const body = await safeJson<{ enabled?: boolean }>(c.req)
     if (typeof body.enabled !== 'boolean') return c.json({ error: 'enabled (boolean) is required' }, 400)
     await sm.toggleMcpServer(c.req.param('id'), c.req.param('name'), body.enabled)
     return c.json({ ok: true })
@@ -271,7 +279,7 @@ export function buildApiRouter(sm: SessionManager): Hono {
 
   // Add/remove MCP servers on a live session via SDK setMcpServers
   app.post('/sessions/:id/mcp/servers', async (c) => {
-    const body = await c.req.json<{ servers?: Record<string, unknown> }>().catch(() => ({} as Record<string, unknown>))
+    const body = await safeJson<{ servers?: Record<string, unknown> }>(c.req)
     if (!body.servers || typeof body.servers !== 'object') {
       return c.json({ error: 'servers (object) is required' }, 400)
     }
@@ -290,9 +298,7 @@ export function buildApiRouter(sm: SessionManager): Hono {
   app.post('/sessions/:id/permissions/:pid/decide', async (c) => {
     const id = c.req.param('id')
     const pid = c.req.param('pid')
-    const raw = (await c.req
-      .json<{ behavior?: unknown; persistForSession?: unknown; message?: unknown }>()
-      .catch(() => ({}))) as { behavior?: unknown; persistForSession?: unknown; message?: unknown }
+    const raw = await safeJson<{ behavior?: unknown; persistForSession?: unknown; message?: unknown }>(c.req)
     if (raw.behavior === 'allow') {
       sm.decide(id, pid, {
         behavior: 'allow',
@@ -320,9 +326,7 @@ export function buildApiRouter(sm: SessionManager): Hono {
   app.post('/sessions/:id/permissions/:pid/answer-question', async (c) => {
     const id = c.req.param('id')
     const pid = c.req.param('pid')
-    const raw = (await c.req.json<{ answers?: unknown }>().catch(() => ({}))) as {
-      answers?: unknown
-    }
+    const raw = await safeJson<{ answers?: unknown }>(c.req)
     if (!Array.isArray(raw.answers)) {
       return c.json({ error: 'answers must be an array' }, 400)
     }

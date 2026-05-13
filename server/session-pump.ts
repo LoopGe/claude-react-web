@@ -31,7 +31,36 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
   console.log(`[session ${session.id}] pump started`)
   let msgCount = 0
   try {
-    for await (const msg of session.query) {
+    const iter = session.query[Symbol.asyncIterator]()
+    // Idle watchdog: every time we await query.next(), start a 60s timer
+    // that warns if nothing comes back. This distinguishes "SDK produced
+    // nothing" from "pump stuck processing a specific message" when
+    // debugging stuck sessions.
+    while (true) {
+      const nextStartedAt = Date.now()
+      let idleWarnCount = 0
+      const idleTimer = setInterval(() => {
+        idleWarnCount++
+        console.warn(
+          `[session ${session.id}] query.next() idle for ${Date.now() - nextStartedAt}ms ` +
+          `(waiting for msg #${msgCount + 1}, warn #${idleWarnCount}, ` +
+          `pendingTurns=${session.pendingTurns}, pending perms=${session.pending.size})`,
+        )
+      }, 60_000)
+      let step: IteratorResult<SDKMessage>
+      try {
+        step = await iter.next()
+      } finally {
+        clearInterval(idleTimer)
+      }
+      if (step.done) break
+      const msg = step.value
+      const msgSubtype = (msg as unknown as { subtype?: string }).subtype
+      console.log(
+        `[session ${session.id}] msg #${msgCount + 1} received — ` +
+        `type=${msg.type}${msgSubtype ? `/${msgSubtype}` : ''} ` +
+        `(next() took ${Date.now() - nextStartedAt}ms)`,
+      )
       session.lastActivityAt = Date.now()
       session.history.push(msg)
       if (session.history.length > deps.historyCap) {
