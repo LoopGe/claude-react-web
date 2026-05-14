@@ -86,9 +86,13 @@ export function useSessionRecap(
   // check prevents re-fetch, but useState gets wiped on unmount — the
   // ref fills the gap.
   const recapCacheRef = useRef<Map<string, RecapMessage>>(new Map())
-  const [message, setMessage] = useState<RecapMessage | null>(
-    () => recapCacheRef.current.get(sessionId) ?? null,
-  )
+  const [message, setMessage] = useState<RecapMessage | null>(null)
+  // Restore from cache on mount / session switch so the user sees the
+  // recap immediately without waiting for a re-fetch.
+  useEffect(() => {
+    const cached = recapCacheRef.current.get(sessionId)
+    if (cached) setMessage(cached)
+  }, [sessionId])
   const fetchAbortRef = useRef<AbortController | null>(null)
 
   /** Fire the recap fetch for `turnAt`. Manages loading/error state by
@@ -157,7 +161,6 @@ export function useSessionRecap(
       // has it — restore so the user sees the recap without a re-fetch.
       const cached = recapCacheRef.current.get(sessionId)
       if (cached && cached.lastTurnAt === lastTurnAt) {
-        // eslint-disable-next-line react-hooks/set-state-in-effect
         setMessage(cached)
       }
       return
@@ -176,7 +179,6 @@ export function useSessionRecap(
       // there isn't one. The alternative (deferring via
       // queueMicrotask) just hides the same setState from the linter
       // without changing the runtime behaviour.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       doFetch(lastTurnAt)
       return
     }

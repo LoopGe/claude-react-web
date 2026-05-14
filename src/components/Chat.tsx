@@ -9,6 +9,7 @@
 // the sessions themselves are long-lived on the server.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { createPortal } from 'react-dom'
 import { SettingsPanel } from './SettingsPanel'
 import { api } from '../hooks/useApi'
@@ -152,17 +153,22 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
   const [searchOpen, setSearchOpen] = useState(false)
   const [exportMenuPos, setExportMenuPos] = useState<{ x: number; y: number } | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
+  const debouncedQuery = useDebouncedValue(searchQuery, 200)
+  const [searchActiveIdx, setSearchActiveIdx] = useState(0)
   /** Indices into transcript items that match the current search query. */
   const searchMatches = useMemo(() => {
-    if (!searchQuery) return [] as number[]
-    const q = searchQuery.toLowerCase()
+    if (!debouncedQuery) return [] as number[]
+    const q = debouncedQuery.toLowerCase()
     const out: number[] = []
     for (let i = 0; i < stream.items.length; i++) {
       const text = stream.items[i]?.searchableText
       if (text && text.toLowerCase().includes(q)) out.push(i)
     }
     return out
-  }, [stream.items, searchQuery])
+  }, [stream.items, debouncedQuery])
+  // Reset active index when the match set changes (new query or new messages).
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on derived data change
+  useEffect(() => { setSearchActiveIdx(0) }, [searchMatches])
   // Ctrl+F opens search on the *focused* panel only. Without the
   // `focused` guard, every mounted Chat would intercept the same
   // keydown event and all search bars would open simultaneously.
@@ -183,11 +189,8 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
   }, [focused])
 
   const handleSearchNavigate = useCallback(
-    (_index: number) => {
-      // _index is the match index (0-based) within searchMatches.
-      // Scroll to the corresponding message via the ref we'll wire up.
-      // For now the MessageList handles its own scrolling; we'll use
-      // a data attribute on messages for future highlighting.
+    (index: number) => {
+      setSearchActiveIdx(index)
     },
     [],
   )
@@ -208,14 +211,19 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
   // visible (showing the answer inline) for a few seconds before closing.
   // The permission is already resolved server-side; this just controls
   // how long the "answer sent" card remains on screen.
-  const answeredQuestionsRef = useRef<Map<string, { request: Extract<PermissionRequest, { kind: 'question' }>; answers: Array<string | string[] | null> }>>(new Map())
-  const [answeredTick, setAnsweredTick] = useState(0)
+  const [answeredQuestions, setAnsweredQuestions] = useState<Map<string, { request: Extract<PermissionRequest, { kind: 'question' }>; answers: Array<string | string[] | null> }>>(() => new Map())
   const addAnsweredQuestion = useCallback((id: string, request: Extract<PermissionRequest, { kind: 'question' }>, answers: Array<string | string[] | null>) => {
-    answeredQuestionsRef.current.set(id, { request, answers })
-    setAnsweredTick((n) => n + 1)
+    setAnsweredQuestions((prev) => {
+      const next = new Map(prev)
+      next.set(id, { request, answers })
+      return next
+    })
     setTimeout(() => {
-      answeredQuestionsRef.current.delete(id)
-      setAnsweredTick((n) => n + 1)
+      setAnsweredQuestions((prev) => {
+        const next = new Map(prev)
+        next.delete(id)
+        return next
+      })
     }, 3000)
   }, [])
 
@@ -432,6 +440,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
         onNavigate={handleSearchNavigate}
         totalResults={searchMatches.length}
         onQueryChange={setSearchQuery}
+        activeIndex={searchActiveIdx}
       />
 
         <MessageList
@@ -442,6 +451,8 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
         streamingContent={stream.streamingContent}
         onRefreshRecap={recap.refresh}
         planStatus={stream.planStatus}
+        searchQuery={searchOpen ? debouncedQuery : ''}
+        searchActiveMsgIdx={searchMatches[searchActiveIdx] ?? -1}
       />
 
       <TodoChecklist messages={stream.messages} working={session.working} />
@@ -527,10 +538,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
         }
 
         // Recently-answered question card (stays for 3s showing the answer).
-        // answeredTick is unused directly — it just forces a re-render when
-        // the map changes.
-        void answeredTick
-        const answeredEntries = Array.from(answeredQuestionsRef.current.values())
+        const answeredEntries = Array.from(answeredQuestions.values())
         if (answeredEntries.length > 0) {
           const entry = answeredEntries[answeredEntries.length - 1]
           return (

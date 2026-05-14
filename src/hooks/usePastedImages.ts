@@ -17,7 +17,7 @@ export function usePastedImages(): UsePastedImages {
   const [images, setImages] = useState<PastedImage[]>([])
   const [error, setError] = useState<string | null>(null)
   const imagesRef = useRef(images)
-  imagesRef.current = images
+  useEffect(() => { imagesRef.current = images }, [images])
 
   const removeImage = useCallback((id: string) => {
     setImages((prev) => {

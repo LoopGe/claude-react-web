@@ -9,7 +9,7 @@
 // assistant output is only semi-trusted and we prefer to render raw HTML
 // as text rather than risk XSS.
 
-import { memo, useState, useRef } from 'react'
+import { memo, useMemo, useState, useRef } from 'react'
 import type { ComponentPropsWithoutRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -148,17 +148,76 @@ function extractText(node: HastNode): string {
   return node.children.map(extractText).join('')
 }
 
-// Memoize so that <Markdown text={sameString} /> doesn't re-parse
-// on parent re-renders (e.g. when the messages array is rebuilt during
-// session switch). MessageView is already memo'd on the full msg object,
-// but the msg identity changes during replay flush even when content is
-// identical — this memo catches that case.
-export const Markdown = memo(function Markdown({ text }: { text: string }) {
+/** Rehype plugin that wraps search-query matches in <mark> elements.
+ *  Operates on the hast tree *after* syntax highlighting, so code
+ *  blocks (whose children are now `raw` HTML) are naturally skipped. */
+function rehypeSearchHighlight(query: string) {
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const regex = new RegExp(`(${escaped})`, 'gi')
+
+  return (tree: unknown) => {
+    walkTextNodes(tree as HastNode, (node, parent, index) => {
+      const val = node.value
+      if (!val || !regex.test(val)) return
+      regex.lastIndex = 0
+      const children: HastNode[] = []
+      let last = 0
+      let m: RegExpExecArray | null
+      while ((m = regex.exec(val)) !== null) {
+        if (m.index > last) {
+          children.push({ type: 'text', value: val.slice(last, m.index) })
+        }
+        children.push({
+          type: 'element',
+          tagName: 'mark',
+          properties: { className: ['search-hl'] },
+          children: [{ type: 'text', value: m[1] }],
+        })
+        last = regex.lastIndex
+      }
+      if (last < val.length) {
+        children.push({ type: 'text', value: val.slice(last) })
+      }
+      parent.children!.splice(index, 1, ...children)
+    })
+  }
+}
+
+/** Walk hast tree, calling fn for every text node. fn may splice
+ *  the parent's children array — the walker adjusts its index. */
+function walkTextNodes(
+  node: HastNode,
+  fn: (node: HastNode, parent: HastNode, index: number) => void,
+): void {
+  if (!node.children) return
+  for (let i = 0; i < node.children.length; i++) {
+    const child = node.children[i]
+    if (child.type === 'text') {
+      const lenBefore = node.children.length
+      fn(child, node, i)
+      // If fn spliced children, adjust index for the inserted nodes.
+      i += node.children.length - lenBefore
+    } else {
+      walkTextNodes(child, fn)
+    }
+  }
+}
+
+export const Markdown = memo(function Markdown({ text, searchQuery }: { text: string; searchQuery?: string }) {
+  const q = searchQuery?.trim()
+
+  // Build the plugin array once per query change so the regex is
+  // compiled once and captured in the plugin closure.
+  const rehypePlugins = useMemo(
+    () => q ? [rehypeHighlightLite, rehypeSearchHighlight(q)] : [rehypeHighlightLite],
+    [q],
+  )
+
   return (
     <div className="md">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlightLite]}
+        rehypePlugins={rehypePlugins}
         components={{
           // Open links in a new tab with rel="noreferrer" to keep them harmless
           a: ({ href, children, ...props }) => (

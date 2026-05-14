@@ -41,16 +41,26 @@ interface Props {
   onRefreshRecap?: () => void
   /** Precomputed plan status keyed by toolUseId. */
   planStatus?: ReadonlyMap<string, PlanStatus>
+  /** Current search query. When non-empty, matching text inside messages
+   *  is highlighted. */
+  searchQuery?: string
+  /** Index (into the items array) of the item that should be
+   *  scrolled into view and visually highlighted as the active search
+   *  result. -1 means no active result. */
+  searchActiveMsgIdx?: number
 }
 
 /** An item in the Virtuoso data array. Pre-computing isCompactSummary
- *  here avoids the renderable[i-1] look-back during itemContent. */
+ *  here avoids the renderable[i-1] look-back during itemContent.
+ *  `itemIndex` maps back to the original items[] position for search
+ *  result scrolling (search indices reference the full, unfiltered list). */
 interface RenderableItem {
   msg: SdkMessage
   isCompactSummary: boolean
+  itemIndex: number
 }
 
-export function MessageList({ items, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, onRefreshRecap, planStatus = new Map() }: Props) {
+export function MessageList({ items, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, onRefreshRecap, planStatus = new Map(), searchQuery, searchActiveMsgIdx }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -77,13 +87,41 @@ export function MessageList({ items, showSystemEvents = false, pendingInterruptR
   const [unseenCount, setUnseenCount] = useState(0)
   const unseenCountRef = useRef(0)
 
-  const renderableItems: RenderableItem[] = useMemo(
-    () =>
-      items
-        .filter((item) => showSystemEvents || !item.hiddenByDefault)
-        .map((item) => ({ msg: item.msg, isCompactSummary: item.isCompactSummary })),
-    [items, showSystemEvents],
-  )
+  const renderableItems: RenderableItem[] = useMemo(() => {
+    const out: RenderableItem[] = []
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i]
+      if (showSystemEvents || !item.hiddenByDefault) {
+        out.push({ msg: item.msg, isCompactSummary: item.isCompactSummary, itemIndex: i })
+      }
+    }
+    return out
+  }, [items, showSystemEvents])
+
+  // Reverse map: full items[] index → Virtuoso (renderableItems) index.
+  // Needed because search indices reference the full, unfiltered list.
+  const itemToVirtIdx = useMemo(() => {
+    const map = new Map<number, number>()
+    for (let vi = 0; vi < renderableItems.length; vi++) {
+      map.set(renderableItems[vi].itemIndex, vi)
+    }
+    return map
+  }, [renderableItems])
+
+  // Scroll to the active search result when it changes.
+  const prevSearchActiveRef = useRef<number>(-1)
+  useEffect(() => {
+    if (searchActiveMsgIdx == null || searchActiveMsgIdx < 0) return
+    if (searchActiveMsgIdx === prevSearchActiveRef.current) return
+    prevSearchActiveRef.current = searchActiveMsgIdx
+    const virtIdx = itemToVirtIdx.get(searchActiveMsgIdx)
+    if (virtIdx != null) {
+      // Temporarily disable follow so the scroll doesn't fight the
+      // auto-follow-to-bottom logic.
+      shouldFollowRef.current = false
+      virtuosoRef.current?.scrollToIndex({ index: virtIdx, behavior: 'smooth', align: 'center' })
+    }
+  }, [searchActiveMsgIdx, itemToVirtIdx])
 
   // Track how many new messages arrived so the unseen badge stays accurate.
   // Virtuoso's followOutput handles the actual scrolling.
@@ -171,6 +209,63 @@ export function MessageList({ items, showSystemEvents = false, pendingInterruptR
     setUnseenCount(0)
   }, [])
 
+  const scrollerRefCb = useCallback((ref: HTMLElement | Window | null) => {
+    if (ref && ref instanceof HTMLElement) scrollerRef.current = ref
+  }, [])
+
+  const followOutput = useCallback(() => (shouldFollowRef.current ? 'auto' : false), [])
+
+  const atBottomStateChange = useCallback((isAtBottom: boolean) => {
+    // UI state: update immediately for jump-to-bottom button.
+    atBottomRef.current = isAtBottom
+    setAtBottom(isAtBottom)
+    if (isAtBottom && unseenCountRef.current !== 0) {
+      unseenCountRef.current = 0
+      setUnseenCount(0)
+    }
+    // Debounced follow state: only stop following after
+    // isAtBottom stays false for FOLLOW_DEBOUNCE_MS. During
+    // batch item additions Virtuoso transiently reports false
+    // while the scroll animation settles — the debounce
+    // filters those out so the follow chain doesn't break.
+    if (isAtBottom) {
+      if (followTimerRef.current != null) {
+        clearTimeout(followTimerRef.current)
+        followTimerRef.current = null
+      }
+      shouldFollowRef.current = true
+    } else {
+      if (followTimerRef.current == null) {
+        followTimerRef.current = setTimeout(() => {
+          followTimerRef.current = null
+          shouldFollowRef.current = false
+        }, FOLLOW_DEBOUNCE_MS)
+      }
+    }
+  }, [FOLLOW_DEBOUNCE_MS])
+
+  const activeVirtIdx = searchActiveMsgIdx != null && searchActiveMsgIdx >= 0
+    ? (itemToVirtIdx.get(searchActiveMsgIdx) ?? -1)
+    : -1
+
+  const itemContent = useCallback((index: number, item: RenderableItem) => (
+    <div className={`virtuoso-item-wrapper${index === activeVirtIdx ? ' search-active-msg' : ''}`}>
+      <MessageView
+        msg={item.msg}
+        isCompactSummary={item.isCompactSummary}
+        interruptedRef={pendingInterruptRef}
+        onRefreshRecap={onRefreshRecap}
+        searchQuery={searchQuery}
+      />
+    </div>
+  ), [pendingInterruptRef, onRefreshRecap, searchQuery, activeVirtIdx])
+
+  const virtuosoComponents = useMemo(() => ({
+    Footer: streamingContent != null
+      ? () => <StreamingFooter content={streamingContent} />
+      : undefined,
+  }), [streamingContent])
+
   return (
     <PlanStatusProvider value={planStatus}>
     <div className="chat-messages-wrap">
@@ -184,62 +279,13 @@ export function MessageList({ items, showSystemEvents = false, pendingInterruptR
         ) : (
           <Virtuoso
             ref={virtuosoRef}
-            scrollerRef={(ref) => { if (ref && ref instanceof HTMLElement) scrollerRef.current = ref }}
+            scrollerRef={scrollerRefCb}
             data={renderableItems}
             initialTopMostItemIndex={renderableItems.length > 0 ? renderableItems.length - 1 : 0}
-            followOutput={() => (shouldFollowRef.current ? 'auto' : false)}
-            atBottomStateChange={(isAtBottom) => {
-              // UI state: update immediately for jump-to-bottom button.
-              atBottomRef.current = isAtBottom
-              setAtBottom(isAtBottom)
-              if (isAtBottom && unseenCountRef.current !== 0) {
-                unseenCountRef.current = 0
-                setUnseenCount(0)
-              }
-              // Debounced follow state: only stop following after
-              // isAtBottom stays false for FOLLOW_DEBOUNCE_MS. During
-              // batch item additions Virtuoso transiently reports false
-              // while the scroll animation settles — the debounce
-              // filters those out so the follow chain doesn't break.
-              if (isAtBottom) {
-                if (followTimerRef.current != null) {
-                  clearTimeout(followTimerRef.current)
-                  followTimerRef.current = null
-                }
-                shouldFollowRef.current = true
-              } else {
-                if (followTimerRef.current == null) {
-                  followTimerRef.current = setTimeout(() => {
-                    followTimerRef.current = null
-                    shouldFollowRef.current = false
-                  }, FOLLOW_DEBOUNCE_MS)
-                }
-              }
-            }}
-            itemContent={(_index, item) => (
-              <div className="virtuoso-item-wrapper">
-                <MessageView
-                  msg={item.msg}
-                  isCompactSummary={item.isCompactSummary}
-                  interruptedRef={pendingInterruptRef}
-                  onRefreshRecap={onRefreshRecap}
-                />
-              </div>
-            )}
-            components={{
-              Footer: streamingContent != null
-                ? () => (
-                    <div className="virtuoso-footer-wrapper">
-                      <div className="msg msg-assistant streaming-msg">
-                        <div className="msg-body assistant-body">
-                          <Markdown text={streamingContent} />
-                          <span className="streaming-cursor" />
-                        </div>
-                      </div>
-                    </div>
-                  )
-                : undefined,
-            }}
+            followOutput={followOutput}
+            atBottomStateChange={atBottomStateChange}
+            itemContent={itemContent}
+            components={virtuosoComponents}
             alignToBottom
           />
         )}
@@ -259,6 +305,19 @@ export function MessageList({ items, showSystemEvents = false, pendingInterruptR
     </PlanStatusProvider>
   )
 }
+
+const StreamingFooter = memo(function StreamingFooter({ content }: { content: string }) {
+  return (
+    <div className="virtuoso-footer-wrapper">
+      <div className="msg msg-assistant streaming-msg">
+        <div className="msg-body assistant-body">
+          <Markdown text={content} />
+          <span className="streaming-cursor" />
+        </div>
+      </div>
+    </div>
+  )
+})
 
 async function copyToClipboard(text: string): Promise<void> {
   try {
@@ -291,11 +350,13 @@ const MessageView = memo(function MessageView({
   isCompactSummary,
   interruptedRef,
   onRefreshRecap,
+  searchQuery,
 }: {
   msg: SdkMessage
   isCompactSummary?: boolean
   interruptedRef?: React.RefObject<boolean>
   onRefreshRecap?: () => void
+  searchQuery?: string
 }) {
   const type = msg.type
 
@@ -388,7 +449,7 @@ const MessageView = memo(function MessageView({
               ))}
             </div>
           )}
-          {userContent && <Markdown text={userContent} />}
+          {userContent && <Markdown text={userContent} searchQuery={searchQuery} />}
         </div>
       </div>
     )
@@ -425,7 +486,7 @@ const MessageView = memo(function MessageView({
         </div>
         <div className="msg-body">
           {blocks.map((b, i) => (
-            <BlockView key={i} block={b} />
+            <BlockView key={i} block={b} searchQuery={searchQuery} />
           ))}
         </div>
       </div>
@@ -694,9 +755,9 @@ function formatCost(usd: number): string {
   return `$${usd.toFixed(2)}`
 }
 
-function BlockView({ block }: { block: Block }) {
+function BlockView({ block, searchQuery }: { block: Block; searchQuery?: string }) {
   if (block.type === 'text' && typeof block.text === 'string') {
-    return <Markdown text={block.text} />
+    return <Markdown text={block.text} searchQuery={searchQuery} />
   }
   if (block.type === 'image') {
     const source = block.source as { type: string; data?: string; media_type?: string } | undefined

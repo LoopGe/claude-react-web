@@ -6,7 +6,7 @@
 // history, bare ↑/↓ walks history only at the text edge so multi-line
 // drafts stay editable.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Attachment } from '../hooks/useAttachments'
 import type { InputHistoryApi } from '../hooks/useInputHistory'
 import type { PastedImage, SlashCommand } from '../types'
@@ -51,7 +51,7 @@ interface Props {
   focusSignal?: number
 }
 
-export function Composer({
+export const Composer = memo(function Composer({
   input,
   setInput,
   sending,
@@ -376,7 +376,7 @@ export function Composer({
       />
     </div>
   )
-}
+})
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`

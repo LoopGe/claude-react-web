@@ -5,7 +5,7 @@
 // The panel auto-hides when there are no todos or when all tasks are done
 // and the assistant has stopped working.
 
-import { useMemo } from 'react'
+import { memo, useMemo } from 'react'
 import type { SdkMessage } from '../types'
 
 interface Todo {
@@ -22,7 +22,7 @@ interface Props {
   working?: boolean
 }
 
-export function TodoChecklist({ messages, working }: Props) {
+export const TodoChecklist = memo(function TodoChecklist({ messages, working }: Props) {
   const todos = useMemo(() => extractLatestTodos(messages, !!working), [messages, working])
 
   // Hide when there's nothing useful to show.
@@ -54,7 +54,7 @@ export function TodoChecklist({ messages, working }: Props) {
       </ul>
     </div>
   )
-}
+})
 
 /** Walk the message list in reverse and return the todos from the most
  *  recent `TodoWrite` tool_use block. Returns null when none found.

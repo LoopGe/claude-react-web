@@ -177,8 +177,12 @@ button { cursor: pointer; }
 .btn-icon {
   padding: 4px 8px;
   min-width: 34px;
+  height: 30px;
   font-size: 15px;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .btn-icon.active {
   color: var(--accent);
@@ -187,7 +191,7 @@ button { cursor: pointer; }
 
 /* Accent colour picker — a row of small coloured dots in the toolbar. */
 .accent-picker {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 4px;
   padding: 0 4px;
@@ -3134,6 +3138,20 @@ details.plan-card-collapsible > summary > .plan-card-header {
   padding: 2px 8px;
   font-size: 14px;
   line-height: 1;
+}
+
+/* ── Search result highlighting ──────────────────────────────────── */
+
+mark.search-hl {
+  background: color-mix(in srgb, var(--warn) 40%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.search-active-msg {
+  outline: 2px solid var(--warn);
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
 /* ── Per-message copy button ───────────────────────────────────── */

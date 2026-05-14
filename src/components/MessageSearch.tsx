@@ -11,13 +11,27 @@ interface Props {
   onNavigate: (index: number) => void
   totalResults: number
   onQueryChange: (query: string) => void
+  /** Externally controlled active index (0-based). When the parent
+   *  resets this (e.g. because the query changed), the internal
+   *  counter syncs to it. */
+  activeIndex?: number
 }
 
-export function MessageSearch({ open, onClose, onNavigate, totalResults, onQueryChange }: Props) {
+export function MessageSearch({ open, onClose, onNavigate, totalResults, onQueryChange, activeIndex }: Props) {
   const [query, setQuery] = useState('')
   const [currentIdx, setCurrentIdx] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const prevQueryRef = useRef(query)
+
+  // Sync internal currentIdx when parent controls activeIndex.
+  // Controlled-component sync; currentIdx intentionally excluded from deps to avoid loops.
+  useEffect(() => {
+    if (activeIndex != null && activeIndex !== currentIdx) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional controlled-component sync
+      setCurrentIdx(activeIndex)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- currentIdx excluded to avoid infinite loop
+  }, [activeIndex])
 
   // Focus input on open. State is already clean because the parent uses a
   // `key` prop that forces a full remount each time search opens.

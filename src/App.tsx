@@ -151,6 +151,34 @@ export function App() {
     [sessionColors],
   )
 
+  const handleSessionColorChange = useCallback((id: string, color: string | undefined) => {
+    // Bypass the React state updater. Opening the context menu is
+    // the only way this fires, and clicking a colour unmounts the
+    // menu in the same tick — React 19 may then discard a setState
+    // updater whose resulting state "won't matter" after unmount,
+    // exactly like the rememberIn bug. Write through directly,
+    // then sync React state for the still-mounted SessionList.
+    const curr: Record<string, string> = (() => {
+      try {
+        const raw = window.localStorage.getItem(SESSION_COLORS_KEY)
+        return raw ? (JSON.parse(raw) ?? {}) : {}
+      } catch {
+        return {}
+      }
+    })()
+    if (color) curr[id] = color
+    else delete curr[id]
+    try {
+      window.localStorage.setItem(SESSION_COLORS_KEY, JSON.stringify(curr))
+    } catch {
+      /* storage full / disabled — in-memory state still reflects it */
+    }
+    setSessionColors(curr)
+  }, [setSessionColors])
+
+  const handleCloseSettings = useCallback(() => setSettingsOpenFor(null), [])
+  const handleOpenSettings = useCallback((id: string) => setSettingsOpenFor(id), [])
+
   const { gridTemplate, onDividerMouseDown, draggingDivider, bodyRef, setPanelRatios } = usePanelColumnResize({ openIds, panelMinRatio })
 
   useEffect(() => {
@@ -873,13 +901,14 @@ export function App() {
         {
           combo: 'shift+?',
           handler: () => setHelpOpen((v) => !v),
+          allowInInput: true,
           description: 'Keyboard shortcuts',
         },
         {
           combo: 'shift+tab',
           handler: () => {
             if (!focusedId) return
-            const s = sessions.find((x) => x.id === focusedId)
+            const s = sessionsRef.current.find((x) => x.id === focusedId)
             if (!s) return
             const cur = (s.permissionMode ?? 'default') as PermissionMode
             const idx = PERMISSION_MODES.indexOf(cur)
@@ -893,6 +922,7 @@ export function App() {
           handler: () => {
             if (focusedId) recapFnsRef.current.get(focusedId)?.()
           },
+          allowInInput: true,
           description: 'Refresh session recap',
         },
         {
@@ -904,7 +934,7 @@ export function App() {
             else if (newSessionDialogOpen) setNewSessionDialogOpen(false)
             else if (settingsOpenFor) setSettingsOpenFor(null)
             else if (focusedId) {
-              const focused = sessions.find((s) => s.id === focusedId)
+              const focused = sessionsRef.current.find((s) => s.id === focusedId)
               if (focused?.working) {
                 // Use the registered interrupt callback (set by <Chat>)
                 // so pendingInterruptRef is set and the result message
@@ -924,7 +954,7 @@ export function App() {
           description: 'Close overlay / Interrupt',
         },
       ],
-      [openIds, focusedId, paletteOpen, helpOpen, newSessionDialogOpen, settingsOpenFor, closeSession, sessions],
+      [openIds, focusedId, paletteOpen, helpOpen, newSessionDialogOpen, settingsOpenFor, closeSession],
     )
   useKeyboardShortcuts(shortcuts)
 
@@ -1105,6 +1135,25 @@ export function App() {
     [setLastSeenTurn],
   )
 
+  const handleAcceptSidebarDrop = useCallback(async (sidebarId: string, targetSlotId: string) => {
+    const existing = sessionsRef.current.find((x) => x.id === sidebarId)
+    let live = existing
+    if (existing && !existing.running && !existing.terminated) {
+      try {
+        const res = await api.post<{ session: SessionInfo }>(
+          `/sessions/${sidebarId}/resume`,
+          {},
+        )
+        live = res.session
+        updateSession(res.session)
+      } catch (err) {
+        setOpError((err as Error).message)
+        return
+      }
+    }
+    openAtSlot(sidebarId, targetSlotId, live?.lastTurnAt)
+  }, [updateSession, openAtSlot])
+
   return (
     <ErrorBoundary>
     <div
@@ -1124,30 +1173,7 @@ export function App() {
           resumingIds={resuming}
           unread={unread}
           sessionColors={sessionColors}
-          onSessionColorChange={(id, color) => {
-            // Bypass the React state updater. Opening the context menu is
-            // the only way this fires, and clicking a colour unmounts the
-            // menu in the same tick — React 19 may then discard a setState
-            // updater whose resulting state "won't matter" after unmount,
-            // exactly like the rememberIn bug. Write through directly,
-            // then sync React state for the still-mounted SessionList.
-            const curr: Record<string, string> = (() => {
-              try {
-                const raw = window.localStorage.getItem(SESSION_COLORS_KEY)
-                return raw ? (JSON.parse(raw) ?? {}) : {}
-              } catch {
-                return {}
-              }
-            })()
-            if (color) curr[id] = color
-            else delete curr[id]
-            try {
-              window.localStorage.setItem(SESSION_COLORS_KEY, JSON.stringify(curr))
-            } catch {
-              /* storage full / disabled — in-memory state still reflects it */
-            }
-            setSessionColors(curr)
-          }}
+          onSessionColorChange={handleSessionColorChange}
           onSelect={handleSelect}
           onCreate={handleCreate}
           onDelete={handleDelete}
@@ -1277,29 +1303,12 @@ export function App() {
                   onSessionUpdate={updateSession}
                   showSystemEvents={showSystemEvents}
                   settingsOpen={settingsOpenFor === s.id}
-                  onOpenSettings={() => setSettingsOpenFor(s.id)}
-                  onCloseSettings={() => setSettingsOpenFor(null)}
+                  onOpenSettings={handleOpenSettings}
+                  onCloseSettings={handleCloseSettings}
                   onSwap={swapPanels}
                   onRegisterInterrupt={registerInterrupt}
                   onRegisterRecap={registerRecap}
-                  onAcceptSidebarDrop={async (sidebarId) => {
-                    const existing = sessions.find((x) => x.id === sidebarId)
-                    let live = existing
-                    if (existing && !existing.running && !existing.terminated) {
-                      try {
-                        const res = await api.post<{ session: SessionInfo }>(
-                          `/sessions/${sidebarId}/resume`,
-                          {},
-                        )
-                        live = res.session
-                        updateSession(res.session)
-                      } catch (err) {
-                        setOpError((err as Error).message)
-                        return
-                      }
-                    }
-                    openAtSlot(sidebarId, s.id, live?.lastTurnAt)
-                  }}
+                  onAcceptSidebarDrop={(sidebarId) => handleAcceptSidebarDrop(sidebarId, s.id)}
                 />
               )
               if (i === openSessions.length - 1) return [node]

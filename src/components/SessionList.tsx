@@ -2,16 +2,16 @@
 // The new-session form lives inside a modal (<NewSessionDialog />) so the
 // sidebar can dedicate its vertical space to listing sessions.
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { isInAppDrag, readDragPayload, setDragPayload } from '../hooks/useDragPayload'
+import { isInAppDrag, readDragPayload } from '../hooks/useDragPayload'
 import { api } from '../hooks/useApi'
-import { shortenPath } from '../utils/paths'
-import { statusLabel } from '../utils/session-status'
 import { ACCENT_COLORS } from '../theme'
 import type { NewSessionForm, SessionGroup, SessionInfo, SidebarSection } from '../types'
 import { NewSessionDialog } from './session-list/NewSessionDialog'
 import { SessionContextMenu } from './session-list/SessionContextMenu'
+import { SessionCard } from './session-list/SessionCard'
+import { Virtuoso } from 'react-virtuoso'
 
 interface Props {
   sessions: SessionInfo[]
@@ -97,7 +97,7 @@ interface Props {
   maxOpen: number
 }
 
-export function SessionList({
+export const SessionList = memo(function SessionList({
   sessions,
   openIds,
   focusedId,
@@ -149,7 +149,6 @@ export function SessionList({
   /** Which card is currently in inline-rename mode, and the draft text. */
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
-  const renameInputRef = useRef<HTMLInputElement>(null)
   /** Active right-click menu. `id` tells us which session it targets. */
   const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null)
   /** Sidebar filter text. Case-insensitive substring match against title,
@@ -203,21 +202,41 @@ export function SessionList({
     return result
   }, [sidebarSections, filter])
 
-  // Auto-focus + select the inline rename input on mount so the user can
-  // immediately start typing to replace the existing title.
-  useEffect(() => {
-    if (renamingId && renameInputRef.current) {
-      renameInputRef.current.focus()
-      renameInputRef.current.select()
-    }
-  }, [renamingId])
-
   // Auto-focus the new-group name input when it appears.
   useEffect(() => {
     if (showNewGroupInput && newGroupInputRef.current) {
       newGroupInputRef.current.focus()
     }
   }, [showNewGroupInput])
+
+  // ── Stable callbacks for SessionCard ─────────────────────────
+  const handleCardContextMenu = useCallback((e: React.MouseEvent, id: string) => {
+    setMenu({ x: e.clientX, y: e.clientY, id })
+  }, [])
+
+  const handleCardDragStart = useCallback((_e: React.DragEvent, id: string) => {
+    setDraggingId(id)
+  }, [])
+
+  const handleCardDragEnd = useCallback(() => {
+    setDraggingId(null)
+    setDropHint(null)
+  }, [])
+
+  const handleSetDropHint = useCallback((id: string, position: 'before' | 'after') => {
+    setDropHint((prev) => {
+      if (prev && prev.id === id && prev.position === position) return prev
+      return { id, position }
+    })
+  }, [])
+
+  const handleClearDropHint = useCallback(() => {
+    setDropHint(null)
+  }, [])
+
+  const handleRenameDraftChange = useCallback((draft: string) => {
+    setRenameDraft(draft)
+  }, [])
 
   const startRename = (s: SessionInfo) => {
     setRenamingId(s.id)
@@ -286,216 +305,12 @@ export function SessionList({
     }
   }
 
-  /** Render a single session card. Extracted so both the flat and sectioned
-   *  views share the exact same card markup.
-   *
-   *  `containerGroupId` — when the card is rendered inside a group's
-   *  body, callers pass the group's id so the card's onDrop can use
-   *  the `onReorderInGroup` handler (which preserves tag membership
-   *  and reorders the group's sessionIds). Outside any group (pinned),
-   *  it's undefined and the card falls back to the global `onReorder`
-   *  path. */
-  const renderSessionCard = (s: SessionInfo, containerGroupId?: string) => {
-    const isResuming = resumingIds?.has(s.id) ?? false
-    const dormant = !s.running && !s.terminated
-    const slotIdx = openIds.indexOf(s.id)
-    const isOpen = slotIdx >= 0
-    const isFocused = s.id === focusedId
-    const hasUnread = !!unread?.[s.id]
-    const working = s.running && s.working
-    const isDragging = draggingId === s.id
-    const hint = dropHint && dropHint.id === s.id ? dropHint.position : null
-    const isRenaming = renamingId === s.id
-    return (
-      <div
-        key={s.id}
-        onContextMenu={(e) => {
-          e.preventDefault()
-          setMenu({ x: e.clientX, y: e.clientY, id: s.id })
-        }}
-        className={[
-          'session-item',
-          isFocused ? 'focused' : '',
-          isOpen && !isFocused ? 'open' : '',
-          s.terminated ? 'terminated' : '',
-          dormant ? 'dormant' : '',
-          isResuming ? 'resuming' : '',
-          hasUnread ? 'unread' : '',
-          isDragging ? 'dragging' : '',
-          hint === 'before' ? 'drop-before' : '',
-          hint === 'after' ? 'drop-after' : '',
-          sessionColors?.[s.id] ? 'tinted' : '',
-          (s.permissionMode ?? 'default') !== 'default' ? 'mode-active' : '',
-          (s.permissionMode ?? 'default') !== 'default' ? `mode-${s.permissionMode}` : '',
-        ].filter(Boolean).join(' ')}
-        style={
-          sessionColors?.[s.id]
-            ? (() => {
-                const hex = sessionColors[s.id]
-                const preset = ACCENT_COLORS.find((c) => c.accent === hex)
-                return { '--accent': hex, '--accent-strong': preset?.strong ?? hex } as CSSProperties
-              })()
-            : undefined
-        }
-        role="button"
-        tabIndex={0}
-        aria-disabled={isResuming}
-        draggable={!isResuming && !!onReorder}
-        onDragStart={(e) => {
-          if (!onReorder) return
-          setDraggingId(s.id)
-          setDragPayload(e, { kind: 'sidebar-card', id: s.id })
-        }}
-        onDragEnd={() => {
-          setDraggingId(null)
-          setDropHint(null)
-        }}
-        onDragOver={(e) => {
-          if (!onReorder || !isInAppDrag(e)) return
-          e.preventDefault()
-          const rect = e.currentTarget.getBoundingClientRect()
-          const position: 'before' | 'after' = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
-          if (!dropHint || dropHint.id !== s.id || dropHint.position !== position) {
-            setDropHint({ id: s.id, position })
-          }
-        }}
-        onDragLeave={(e) => {
-          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
-          if (dropHint?.id === s.id) setDropHint(null)
-        }}
-        onDrop={(e) => {
-          if (!onReorder) return
-          const payload = readDragPayload(e)
-          setDropHint(null)
-          setDraggingId(null)
-          if (!payload || payload.kind !== 'sidebar-card') return
-          e.preventDefault()
-          const rect = e.currentTarget.getBoundingClientRect()
-          const position: 'before' | 'after' = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
-          // Dropping onto a card inside a group routes through the
-          // intra-group handler so the dragged session gets added to
-          // the group's tag list and positioned inside its sessionIds
-          // — instead of only affecting the global sidebarOrder.
-          if (containerGroupId && onReorderInGroup) {
-            onReorderInGroup(payload.id, s.id, position, containerGroupId)
-          } else {
-            onReorder(payload.id, s.id, position)
-          }
-        }}
-        onClick={() => !isResuming && onSelect(s.id)}
-        onKeyDown={(e) => !isResuming && (e.key === 'Enter' || e.key === ' ') && onSelect(s.id)}
-      >
-        <div className="session-item-row">
-          <strong style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {hasUnread && <span className="session-item-unread" aria-label="unread" />}
-            {isOpen && (
-              <span
-                className={`session-item-slot ${isFocused ? 'focused' : ''}`}
-                title={
-                  isFocused
-                    ? `Focused (slot ${slotIdx + 1}) · Ctrl+${slotIdx + 1} to refocus`
-                    : `Open in slot ${slotIdx + 1} · Ctrl+${slotIdx + 1} to focus`
-                }
-                aria-label={isFocused ? `focused slot ${slotIdx + 1}` : `open slot ${slotIdx + 1}`}
-              >
-                {slotIdx + 1}
-              </span>
-            )}
-            {(s.permissionMode ?? 'default') !== 'default' && (
-              <span
-                className={`session-item-mode-badge mode-${s.permissionMode}`}
-                title={s.permissionMode}
-                aria-label={s.permissionMode}
-              >
-                {s.permissionMode === 'plan' && '🗒'}
-                {s.permissionMode === 'bypassPermissions' && '⚡'}
-                {s.permissionMode === 'dontAsk' && '⚡'}
-                {s.permissionMode === 'acceptEdits' && '✏️'}
-                {s.permissionMode === 'auto' && '🤖'}
-              </span>
-            )}
-            {isRenaming ? (
-              <input
-                ref={renameInputRef}
-                className="session-item-rename-input"
-                value={renameDraft}
-                onChange={(e) => setRenameDraft(e.target.value)}
-                onBlur={() => void commitRename(s.id, renameDraft)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault()
-                    void commitRename(s.id, renameDraft)
-                  } else if (e.key === 'Escape') {
-                    e.preventDefault()
-                    cancelRename()
-                  }
-                }}
-                onClick={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
-              />
-            ) : (
-              <span
-                onDoubleClick={(e) => {
-                  e.stopPropagation()
-                  startRename(s)
-                }}
-                title="Double-click to rename"
-              >
-                {s.title ?? <span className="session-item-id">{s.id.slice(0, 8)}</span>}
-              </span>
-            )}
-          </strong>
-          <span
-            className={`session-item-badge ${s.error ? 'err' : s.running ? 'running' : ''} ${working ? 'working' : ''}`}
-            title={s.error ?? (s.terminated && s.terminatedReason ? statusLabel(s) : '')}
-          >
-            {working && <span className="session-item-working-dot" aria-hidden />}
-            {s.error
-              ? 'err'
-              : s.terminated
-              ? 'ended'
-              : isResuming
-              ? 'resuming…'
-              : working
-              ? 'working'
-              : s.running
-              ? 'live'
-              : 'dormant'}
-          </span>
-        </div>
-        {s.error && (
-          <div className="session-item-error" title={s.error}>
-            ⚠ {s.error}
-          </div>
-        )}
-        <div className="session-item-cwd" title={s.cwd ?? ''}>
-          <span aria-hidden>📁</span>
-          <span>{s.cwd ? shortenPath(s.cwd) : '(no cwd)'}</span>
-        </div>
-        <div className="session-item-meta">
-          {s.model ?? 'default'} · {s.permissionMode ?? 'default'}
-        </div>
-        <div className="session-item-row">
-          <span className="session-item-meta">
-            {s.messageCount} msgs · {s.subscribers} viewer{s.subscribers === 1 ? '' : 's'}
-          </span>
-          <button
-            className="session-item-delete"
-            onClick={(e) => {
-              e.stopPropagation()
-              if (s.messageCount > 0) {
-                const title = s.title ?? s.id.slice(0, 8)
-                if (!window.confirm(`Delete session "${title}"?`)) return
-              }
-              onDelete(s.id)
-            }}
-            title="Delete session"
-          >
-            ✕
-          </button>
-        </div>
-      </div>
-    )
+  /** Build props for a <SessionCard />. Shared by both flat and grouped views. */
+  const cardAccentStyle = (s: SessionInfo): CSSProperties | undefined => {
+    const hex = sessionColors?.[s.id]
+    if (!hex) return undefined
+    const preset = ACCENT_COLORS.find((c) => c.accent === hex)
+    return { '--accent': hex, '--accent-strong': preset?.strong ?? hex } as CSSProperties
   }
 
   /** Determine whether a group's sessions currently occupy the main-area
@@ -705,7 +520,36 @@ export function SessionList({
                         onDropIntoGroup(payload.id, sec.group.id)
                       }}
                     >
-                      {sec.sessions.map((s) => renderSessionCard(s, sec.group.id))}
+                      {sec.sessions.map((s) => (
+                        <SessionCard
+                          key={s.id}
+                          session={s}
+                          slotIdx={openIds.indexOf(s.id)}
+                          isOpen={openIds.includes(s.id)}
+                          isFocused={s.id === focusedId}
+                          isResuming={resumingIds?.has(s.id) ?? false}
+                          hasUnread={!!unread?.[s.id]}
+                          isDragging={draggingId === s.id}
+                          dropPosition={dropHint && dropHint.id === s.id ? dropHint.position : null}
+                          isRenaming={renamingId === s.id}
+                          accentStyle={cardAccentStyle(s)}
+                          containerGroupId={sec.group.id}
+                          onSelect={onSelect}
+                          onDelete={onDelete}
+                          onContextMenu={handleCardContextMenu}
+                          onDragStart={handleCardDragStart}
+                          onDragEnd={handleCardDragEnd}
+                          onSetDropHint={handleSetDropHint}
+                          onClearDropHint={handleClearDropHint}
+                          onReorder={onReorder}
+                          onReorderInGroup={onReorderInGroup}
+                          renameDraft={renameDraft}
+                          onRenameDraftChange={handleRenameDraftChange}
+                          onCommitRename={commitRename}
+                          onCancelRename={cancelRename}
+                          onStartRename={startRename}
+                        />
+                      ))}
                     </div>
                   )}
                   {!collapsed && sec.sessions.length === 0 && (
@@ -745,7 +589,35 @@ export function SessionList({
                     <span className="group-header-count">{sec.sessions.length}</span>
                   </div>
                   <div className="group-sessions">
-                    {sec.sessions.map((s) => renderSessionCard(s))}
+                    {sec.sessions.map((s) => (
+                      <SessionCard
+                        key={s.id}
+                        session={s}
+                        slotIdx={openIds.indexOf(s.id)}
+                        isOpen={openIds.includes(s.id)}
+                        isFocused={s.id === focusedId}
+                        isResuming={resumingIds?.has(s.id) ?? false}
+                        hasUnread={!!unread?.[s.id]}
+                        isDragging={draggingId === s.id}
+                        dropPosition={dropHint && dropHint.id === s.id ? dropHint.position : null}
+                        isRenaming={renamingId === s.id}
+                        accentStyle={cardAccentStyle(s)}
+                        onSelect={onSelect}
+                        onDelete={onDelete}
+                        onContextMenu={handleCardContextMenu}
+                        onDragStart={handleCardDragStart}
+                        onDragEnd={handleCardDragEnd}
+                        onSetDropHint={handleSetDropHint}
+                        onClearDropHint={handleClearDropHint}
+                        onReorder={onReorder}
+                        onReorderInGroup={onReorderInGroup}
+                        renameDraft={renameDraft}
+                        onRenameDraftChange={handleRenameDraftChange}
+                        onCommitRename={commitRename}
+                        onCancelRename={cancelRename}
+                        onStartRename={startRename}
+                      />
+                    ))}
                   </div>
                 </div>
               )
@@ -757,8 +629,39 @@ export function SessionList({
               No sessions match "{filter}".
             </div>
           ) : (
-            // ── Flat view (no groups) ──
-            visibleSessions.map((s) => renderSessionCard(s))
+            // ── Flat view (no groups) — virtualized ──
+            <Virtuoso
+              data={visibleSessions}
+              style={{ flex: 1 }}
+              itemContent={(_index, s) => (
+                <SessionCard
+                  session={s}
+                  slotIdx={openIds.indexOf(s.id)}
+                  isOpen={openIds.includes(s.id)}
+                  isFocused={s.id === focusedId}
+                  isResuming={resumingIds?.has(s.id) ?? false}
+                  hasUnread={!!unread?.[s.id]}
+                  isDragging={draggingId === s.id}
+                  dropPosition={dropHint && dropHint.id === s.id ? dropHint.position : null}
+                  isRenaming={renamingId === s.id}
+                  accentStyle={cardAccentStyle(s)}
+                  onSelect={onSelect}
+                  onDelete={onDelete}
+                  onContextMenu={handleCardContextMenu}
+                  onDragStart={handleCardDragStart}
+                  onDragEnd={handleCardDragEnd}
+                  onSetDropHint={handleSetDropHint}
+                  onClearDropHint={handleClearDropHint}
+                  onReorder={onReorder}
+                  onReorderInGroup={onReorderInGroup}
+                  renameDraft={renameDraft}
+                  onRenameDraftChange={handleRenameDraftChange}
+                  onCommitRename={commitRename}
+                  onCancelRename={cancelRename}
+                  onStartRename={startRename}
+                />
+              )}
+            />
           )}
       </div>
 
@@ -801,4 +704,4 @@ export function SessionList({
       )}
     </>
   )
-}
+})

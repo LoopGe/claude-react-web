@@ -2,7 +2,7 @@
  *  carries the close button, focus click-target, and a dormant/terminated
  *  placeholder when the session's Query isn't live. */
 
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Chat } from './Chat'
 import { ContextMenu } from './ContextMenu'
@@ -41,7 +41,7 @@ export interface ChatPanelProps {
   showSystemEvents?: boolean
   /** When true, render the Settings overlay on top of this panel. */
   settingsOpen?: boolean
-  onOpenSettings: () => void
+  onOpenSettings: (sessionId: string) => void
   onCloseSettings: () => void
   /** Forwarded to <Chat> so it can register its interrupt callback with
    *  the parent App. Enables ESC shortcut to trigger the same code-path
@@ -51,7 +51,7 @@ export interface ChatPanelProps {
   onRegisterRecap?: (sessionId: string, fn: () => void) => void
 }
 
-export function ChatPanel({
+export const ChatPanel = memo(function ChatPanel({
   session,
   focused,
   hasUnread,
@@ -290,7 +290,7 @@ export function ChatPanel({
           className="chat-panel-settings"
           onClick={(e) => {
             e.stopPropagation()
-            onOpenSettings()
+            onOpenSettings(session.id)
           }}
           title="Session settings"
           aria-label="Open settings"
@@ -395,4 +395,4 @@ export function ChatPanel({
       </div>
     </section>
   )
-}
+})
