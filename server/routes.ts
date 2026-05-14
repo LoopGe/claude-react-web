@@ -6,7 +6,7 @@
 import { Hono } from 'hono'
 import type { Options, PermissionMode, Settings } from '@anthropic-ai/claude-agent-sdk'
 import { mkdir, writeFile, unlink, readFile, readdir, stat } from 'node:fs/promises'
-import { resolve as resolvePath } from 'node:path'
+import { resolve as resolvePath, join as joinPath } from 'node:path'
 import { homedir } from 'node:os'
 import { execFile } from 'node:child_process'
 import { HttpError, SessionManager } from './session-manager.js'
@@ -15,7 +15,7 @@ import { generateRecap } from './recap.js'
 /** Where per-session uploads land inside the session's cwd. Kept visible
  *  (not dot-prefixed) so users can see what the UI dropped in. */
 const UPLOAD_SUBDIR = 'claude-web-uploads'
-import { config as serverConfig } from './config.js'
+import { config as serverConfig, loadConfig, readConfigFile, updateConfigFile } from './config.js'
 
 /** Parse JSON body, returning 400 on malformed input instead of silently
  *  falling back to an empty object. */
@@ -27,7 +27,7 @@ async function safeJson<T>(req: { json<T>(): Promise<T> }): Promise<T> {
   }
 }
 
-export function buildApiRouter(sm: SessionManager): Hono {
+export function buildApiRouter(sm: SessionManager, configDir?: string): Hono {
   const app = new Hono()
 
   app.onError((err, c) => {
@@ -40,6 +40,81 @@ export function buildApiRouter(sm: SessionManager): Hono {
 
   // Health / version
   app.get('/health', (c) => c.json({ ok: true, sessions: sm.list().length }))
+
+  // Config setup — write authToken/baseUrl to config.json and hot-reload.
+  app.post('/config/setup', async (c) => {
+    if (!configDir) throw new HttpError(500, 'configDir not set')
+    const body = await c.req.json<{ authToken?: string; baseUrl?: string }>().catch(
+      () => { throw new HttpError(400, 'Malformed JSON body') },
+    )
+    if (!body.authToken?.trim()) throw new HttpError(400, 'authToken is required')
+    const configPath = joinPath(configDir, 'config.json')
+    let existing: Record<string, unknown> = {}
+    try {
+      existing = JSON.parse(await readFile(configPath, 'utf8'))
+    } catch { /* file may not exist */ }
+    existing.authToken = body.authToken.trim()
+    if (body.baseUrl?.trim()) {
+      existing.baseUrl = body.baseUrl.trim().replace(/\/+$/, '')
+    }
+    await writeFile(configPath, JSON.stringify(existing, null, 2), 'utf8')
+    await loadConfig(configDir)
+    return c.json({ ok: true, configured: !!serverConfig.authToken })
+  })
+
+  // Read defaults from ~/.claude/settings.json so the setup page can
+  // pre-fill the token and base URL fields.
+  app.get('/config/claude-defaults', async (c) => {
+    const settingsPath = joinPath(homedir(), '.claude', 'settings.json')
+    try {
+      const raw = JSON.parse(await readFile(settingsPath, 'utf8'))
+      const env = raw?.env ?? {}
+      return c.json({
+        authToken: typeof env.ANTHROPIC_API_KEY === 'string' ? env.ANTHROPIC_API_KEY : undefined,
+        baseUrl: typeof env.ANTHROPIC_BASE_URL === 'string' ? env.ANTHROPIC_BASE_URL : undefined,
+      })
+    } catch {
+      return c.json({})
+    }
+  })
+
+  // Full config — returns every field the UI needs for the settings modal.
+  // authToken is masked (last 4 chars only) so the UI can show presence
+  // without leaking the secret.
+  app.get('/config/full', async (c) => {
+    if (!configDir) throw new HttpError(500, 'configDir not set')
+    const raw = await readConfigFile(configDir)
+    const token = (raw.authToken as string) ?? serverConfig.authToken
+    return c.json({
+      configured: !!serverConfig.authToken,
+      authTokenMasked: token ? '****' + token.slice(-4) : undefined,
+      baseUrl: serverConfig.baseUrl,
+      modelList: serverConfig.modelList as string[],
+      recapModel: serverConfig.recapModel,
+      maxUploadBytes: serverConfig.maxUploadBytes,
+      historyCap: serverConfig.historyCap,
+      maxOpenPanels: serverConfig.maxOpenPanels,
+      workingStuckMs: serverConfig.workingStuckMs,
+      warmPoolSize: serverConfig.warmPoolSize,
+      defaults: {
+        cwd: process.cwd(),
+        model: serverConfig.defaultModel,
+      },
+    })
+  })
+
+  // Update config — merges partial updates into config.json and hot-reloads.
+  app.put('/config', async (c) => {
+    if (!configDir) throw new HttpError(500, 'configDir not set')
+    const body = await c.req.json<Record<string, unknown>>().catch(
+      () => { throw new HttpError(400, 'Malformed JSON body') },
+    )
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new HttpError(400, 'Body must be a JSON object')
+    }
+    await updateConfigFile(configDir, body)
+    return c.json({ ok: true, configured: !!serverConfig.authToken })
+  })
 
   // List sessions (snapshot only — for push-based updates the frontend
   // subscribes to the WebSocket channel in ws.ts).
@@ -443,7 +518,7 @@ export function buildApiRouter(sm: SessionManager): Hono {
     }
 
     // Load installed plugins for status check
-    let installed = new Set<string>()
+    const installed = new Set<string>()
     try {
       const raw = await readFile(INSTALLED_PLUGINS, 'utf-8')
       const data = JSON.parse(raw) as Record<string, unknown[]>

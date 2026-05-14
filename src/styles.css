@@ -2390,6 +2390,51 @@ body.resizing-col * {
 }
 .modal-footer .hint { font-size: 11px; color: var(--fg-muted); }
 
+/* Global settings modal */
+.global-settings-modal {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: min(700px, 92vw);
+  max-height: 84vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  position: relative;
+}
+.global-settings-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  padding: 0 16px;
+  gap: 0;
+}
+.global-settings-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 10px 16px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.global-settings-tab:hover {
+  color: var(--fg);
+}
+.global-settings-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.global-settings-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+}
+
 /* Shortcut help overlay */
 .shortcut-table {
   width: 100%;
@@ -3180,6 +3225,7 @@ mark.search-hl {
 
 .session-ended {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   padding: 12px;
@@ -3187,6 +3233,11 @@ mark.search-hl {
   font-size: 13px;
   border-top: 1px solid var(--border);
   flex-shrink: 0;
+  gap: 2px;
+}
+.session-ended-hint {
+  font-size: 12px;
+  opacity: 0.7;
 }
 
 /* ── Error toast (replaces window.alert) ───────────────────────── */

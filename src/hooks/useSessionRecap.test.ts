@@ -56,9 +56,7 @@ describe('useSessionRecap', () => {
     const lastTurn = now - 10 * 60_000 // 10 minutes ago
     const { result } = renderHook(() => useSessionRecap('s1', lastTurn))
 
-    // Loading state appears synchronously.
-    expect(result.current.loadingMessage?.state).toBe('loading')
-
+    // doFetch is deferred via setTimeout(fn, 0) — advance to trigger it
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0)
     })
@@ -140,11 +138,14 @@ describe('useSessionRecap', () => {
 
     const { result } = renderHook(() => useSessionRecap('s1', now - 10 * 60_000))
 
-    expect(result.current.loadingMessage?.state).toBe('loading')
-
+    // doFetch is deferred via setTimeout — advance to trigger it.
+    // Loading state and fetch settlement happen in the same act() batch,
+    // so we verify the fetch was initiated and loading clears after error.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0)
     })
+
+    expect(mockPost).toHaveBeenCalledWith('/sessions/s1/recap', undefined, expect.objectContaining({ signal: expect.any(AbortSignal) }))
 
     // Loading message should clear after error.
     expect(result.current.loadingMessage).toBeNull()

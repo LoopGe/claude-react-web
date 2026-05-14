@@ -169,3 +169,58 @@ export async function loadConfig(stateDir: string): Promise<void> {
 
   config = Object.freeze(merged)
 }
+
+/** Mutable fields the client is allowed to update via PUT /api/config. */
+export const WRITABLE_CONFIG_KEYS = [
+  'authToken',
+  'baseUrl',
+  'modelList',
+  'recapModel',
+  'maxUploadBytes',
+  'historyCap',
+  'maxOpenPanels',
+  'workingStuckMs',
+  'warmPoolSize',
+] as const
+
+/**
+ * Read the raw config.json from disk and return it. Returns an empty object
+ * if the file doesn't exist or is malformed.
+ */
+export async function readConfigFile(stateDir: string): Promise<Record<string, unknown>> {
+  const file = join(stateDir, 'config.json')
+  try {
+    const raw = await fs.readFile(file, 'utf8')
+    const parsed = JSON.parse(raw)
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>
+    }
+  } catch { /* ignore */ }
+  return {}
+}
+
+/**
+ * Merge partial updates into config.json on disk, then hot-reload the
+ * in-memory config via loadConfig(). Only fields listed in
+ * WRITABLE_CONFIG_KEYS are accepted.
+ */
+export async function updateConfigFile(
+  stateDir: string,
+  updates: Record<string, unknown>,
+): Promise<void> {
+  const existing = await readConfigFile(stateDir)
+  for (const key of WRITABLE_CONFIG_KEYS) {
+    if (key in updates) {
+      const val = updates[key]
+      // Treat null / empty-string as "remove the override" (revert to default).
+      if (val === null || val === '') {
+        delete existing[key]
+      } else {
+        existing[key] = val
+      }
+    }
+  }
+  const file = join(stateDir, 'config.json')
+  await fs.writeFile(file, JSON.stringify(existing, null, 2), 'utf8')
+  await loadConfig(stateDir)
+}

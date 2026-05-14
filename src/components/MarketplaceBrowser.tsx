@@ -34,14 +34,19 @@ export function MarketplaceBrowser({ onClose, onInstalled }: Props) {
 
   // Load plugins when marketplace selection changes
   useEffect(() => {
-    if (!selected) { setPlugins([]); return }
+    if (!selected) {
+      // Defer to avoid synchronous setState in effect body
+      const id = setTimeout(() => { setPlugins([]); setLoading(false) }, 0)
+      return () => clearTimeout(id)
+    }
     let cancelled = false
-    setLoading(true)
+    // Defer to avoid synchronous setState in effect body
+    const loadId = setTimeout(() => { if (!cancelled) setLoading(true) }, 0)
     api.get<{ plugins: MarketplacePlugin[] }>(`/marketplaces/${encodeURIComponent(selected)}/plugins`)
       .then((res) => { if (!cancelled) setPlugins(res.plugins ?? []) })
       .catch(() => { if (!cancelled) setPlugins([]) })
       .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
+    return () => { cancelled = true; clearTimeout(loadId) }
   }, [selected])
 
   const install = async (plugin: MarketplacePlugin) => {

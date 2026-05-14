@@ -30,6 +30,9 @@ export interface AppOptions {
    *  `claudeBinary` is NOT exposed to the UI — it's a server-side concern
    *  that gets injected into every Query via options.pathToClaudeCodeExecutable. */
   defaults?: { cwd?: string; model?: string; claudeBinary?: string }
+  /** State directory containing config.json. Passed to the API router
+   *  so the setup endpoint can write config changes to disk. */
+  configDir?: string
 }
 
 /**
@@ -73,12 +76,13 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
     }
   })
 
-  const apiRouter = buildApiRouter(sessionManager)
+  const apiRouter = buildApiRouter(sessionManager, opts.configDir)
   // Expose server defaults to the UI (used to prefill the "new session" form).
   // The fallback model string is sent through to the SDK unchanged when the
   // user doesn't override it; CLI `--model` and UI field both win over this.
   apiRouter.get('/config', (c) =>
     c.json({
+      configured: !!serverConfig.authToken,
       defaults: {
         cwd: opts.defaults?.cwd ?? process.cwd(),
         model: opts.defaults?.model ?? serverConfig.defaultModel,

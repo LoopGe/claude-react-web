@@ -342,7 +342,7 @@ export const ChatPanel = memo(function ChatPanel({
         </div>
       )}
       <div className="chat-panel-body">
-        {session.running ? (
+        {session.running || session.terminated ? (
           <Chat
             key={session.id}
             session={session}
@@ -358,38 +358,8 @@ export const ChatPanel = memo(function ChatPanel({
           />
         ) : (
           <div className="empty-state">
-            <h2>
-              {session.error
-                ? 'This session errored'
-                : session.terminated
-                  ? 'This session has ended'
-                  : 'Session is dormant'}
-            </h2>
-            {session.error ? (
-              <>
-                <p>The underlying SDK Query threw an error and the session was shut down:</p>
-                <pre
-                  style={{
-                    textAlign: 'left',
-                    background: 'var(--bg-elev-2)',
-                    padding: 10,
-                    borderRadius: 4,
-                    whiteSpace: 'pre-wrap',
-                    color: 'var(--danger)',
-                    fontSize: 12,
-                  }}
-                >
-                  {session.error}
-                </pre>
-                <p>Check the server logs for a full stack trace.</p>
-              </>
-            ) : (
-              <p>
-                {session.terminated
-                  ? 'The underlying Query has finished. Create a new session to continue.'
-                  : 'Click the session again in the sidebar to resume it.'}
-              </p>
-            )}
+            <h2>Session is dormant</h2>
+            <p>Click the session again in the sidebar to resume it.</p>
           </div>
         )}
       </div>

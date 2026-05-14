@@ -1,9 +1,7 @@
 // Markdown renderer for chat messages.
 //
 // Uses react-markdown + remark-gfm (tables / task lists / strikethrough)
-// + a lightweight rehype-highlight plugin that registers only common
-// languages from highlight.js/lib/core instead of pulling the full
-// ~9.3 MB highlight.js bundle. This cuts ~200 KB off the client bundle.
+// + a custom lowlight-based rehype plugin for syntax highlighting.
 //
 // We deliberately do NOT enable rehype-raw or any HTML-passthrough plugin —
 // assistant output is only semi-trusted and we prefer to render raw HTML
@@ -13,10 +11,10 @@ import { memo, useMemo, useState, useRef } from 'react'
 import type { ComponentPropsWithoutRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import hljs from 'highlight.js/lib/core'
+import { createLowlight } from 'lowlight'
 
 // Register only the languages most commonly seen in Claude responses.
-// highlight.js/lib/core starts empty — each language adds ~2-8 KB.
+// Each language adds ~2-8 KB to the bundle.
 import javascript from 'highlight.js/lib/languages/javascript'
 import typescript from 'highlight.js/lib/languages/typescript'
 import python from 'highlight.js/lib/languages/python'
@@ -36,95 +34,37 @@ import swift from 'highlight.js/lib/languages/swift'
 import kotlin from 'highlight.js/lib/languages/kotlin'
 import csharp from 'highlight.js/lib/languages/csharp'
 import php from 'highlight.js/lib/languages/php'
-import html from 'highlight.js/lib/languages/xml'  // xml covers html
+import htmlLang from 'highlight.js/lib/languages/xml'  // xml covers html
 import diff from 'highlight.js/lib/languages/diff'
 import dockerfile from 'highlight.js/lib/languages/dockerfile'
 import makefile from 'highlight.js/lib/languages/makefile'
 import ini from 'highlight.js/lib/languages/ini'
 import properties from 'highlight.js/lib/languages/properties'
 
-hljs.registerLanguage('javascript', javascript)
-hljs.registerLanguage('js', javascript)
-hljs.registerLanguage('jsx', javascript)
-hljs.registerLanguage('typescript', typescript)
-hljs.registerLanguage('ts', typescript)
-hljs.registerLanguage('tsx', typescript)
-hljs.registerLanguage('python', python)
-hljs.registerLanguage('py', python)
-hljs.registerLanguage('bash', bash)
-hljs.registerLanguage('sh', bash)
-hljs.registerLanguage('shell', bash)
-hljs.registerLanguage('zsh', bash)
-hljs.registerLanguage('json', json)
-hljs.registerLanguage('xml', xml)
-hljs.registerLanguage('html', html)
-hljs.registerLanguage('css', css)
-hljs.registerLanguage('java', java)
-hljs.registerLanguage('cpp', cpp)
-hljs.registerLanguage('c', cpp)
-hljs.registerLanguage('c++', cpp)
-hljs.registerLanguage('go', go)
-hljs.registerLanguage('rust', rust)
-hljs.registerLanguage('rs', rust)
-hljs.registerLanguage('sql', sql)
-hljs.registerLanguage('markdown', markdown)
-hljs.registerLanguage('md', markdown)
-hljs.registerLanguage('yaml', yaml)
-hljs.registerLanguage('yml', yaml)
-hljs.registerLanguage('ruby', ruby)
-hljs.registerLanguage('rb', ruby)
-hljs.registerLanguage('swift', swift)
-hljs.registerLanguage('kotlin', kotlin)
-hljs.registerLanguage('kt', kotlin)
-hljs.registerLanguage('csharp', csharp)
-hljs.registerLanguage('cs', csharp)
-hljs.registerLanguage('php', php)
-hljs.registerLanguage('diff', diff)
-hljs.registerLanguage('dockerfile', dockerfile)
-hljs.registerLanguage('makefile', makefile)
-hljs.registerLanguage('ini', ini)
-hljs.registerLanguage('properties', properties)
-hljs.registerLanguage('toml', ini)
-hljs.registerLanguage('protobuf', go)  // close enough for proto
+const lowlight = createLowlight({
+  javascript, typescript, python, bash, json, xml,
+  css, java, cpp, go, rust, sql, markdown, yaml,
+  ruby, swift, kotlin, csharp, php, html: htmlLang,
+  diff, dockerfile, makefile, ini, properties,
+})
 
-/** Minimal rehype plugin that highlights fenced code blocks using the
- *  pre-registered highlight.js core. Replaces rehype-highlight which
- *  bundles ALL languages (~9.3 MB). */
-function rehypeHighlightLite() {
-  return (tree: unknown) => {
-    visitNodes(tree as unknown as HastNode, (node) => {
-      if (
-        node.type === 'element' &&
-        node.tagName === 'code' &&
-        node.properties &&
-        Array.isArray(node.properties.className)
-      ) {
-        const classes = node.properties.className as string[]
-        const langClass = classes.find((c) => c.startsWith('language-'))
-        if (!langClass) return
-        const lang = langClass.slice('language-'.length)
-        // Extract raw text from the code node's children
-        const text = extractText(node)
-        if (!text) return
-        try {
-          const result = lang
-            ? hljs.highlight(text, { language: lang, ignoreIllegals: true })
-            : hljs.highlightAuto(text)
-          // Replace children with highlighted HTML
-          node.children = [{ type: 'raw', value: result.value }]
-          // Ensure the language class is present for the CSS theme
-          if (!classes.includes(langClass)) classes.push(langClass)
-        } catch {
-          // Language not registered — leave the raw text as-is
-        }
-      }
-    })
-  }
-}
+lowlight.registerAlias({
+  javascript: ['js', 'jsx'],
+  typescript: ['ts', 'tsx'],
+  python: ['py'],
+  bash: ['sh', 'shell', 'zsh'],
+  cpp: ['c', 'c++'],
+  markdown: ['md'],
+  yaml: ['yml'],
+  ruby: ['rb'],
+  rust: ['rs'],
+  csharp: ['cs'],
+  ini: ['toml'],
+  go: ['protobuf'],  // close enough for proto
+})
 
-/** Minimal hast-like node shape used by the highlight walker. We use a
- *  loose type rather than importing hast's full union to keep the plugin
- *  self-contained and avoid casting gymnastics. */
+/** Minimal hast-like node shape. Uses a loose type rather than importing
+ *  hast's full union to keep the plugins self-contained. */
 interface HastNode {
   type: string
   tagName?: string
@@ -148,9 +88,43 @@ function extractText(node: HastNode): string {
   return node.children.map(extractText).join('')
 }
 
+/** Rehype plugin that highlights fenced code blocks using lowlight.
+ *  Produces proper hast element nodes (spans with hljs-* classes) instead
+ *  of raw HTML strings, which `hast-util-to-jsx-runtime` can render. */
+function rehypeHighlightLite() {
+  return (tree: unknown) => {
+    visitNodes(tree as HastNode, (node) => {
+      if (
+        node.type !== 'element' ||
+        node.tagName !== 'code' ||
+        !node.properties ||
+        !Array.isArray(node.properties.className)
+      ) return
+
+      const classes = node.properties.className
+      const langClass = classes.find((c) => c.startsWith('language-'))
+      if (!langClass) return
+      const lang = langClass.slice('language-'.length)
+      const text = extractText(node)
+      if (!text) return
+
+      try {
+        const result = lang
+          ? lowlight.highlight(lang, text)
+          : lowlight.highlightAuto(text)
+        if (result.children.length > 0) {
+          node.children = result.children as HastNode[]
+        }
+      } catch {
+        // Language not registered — leave the raw text as-is
+      }
+    })
+  }
+}
+
 /** Rehype plugin that wraps search-query matches in <mark> elements.
  *  Operates on the hast tree *after* syntax highlighting, so code
- *  blocks (whose children are now `raw` HTML) are naturally skipped. */
+ *  blocks (whose children are now hljs spans) are naturally skipped. */
 function rehypeSearchHighlight(query: string) {
   const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const regex = new RegExp(`(${escaped})`, 'gi')
@@ -233,11 +207,6 @@ export const Markdown = memo(function Markdown({ text, searchQuery }: { text: st
             const content = String(children ?? '')
             const isBlock = (className && /language-/.test(className)) || content.includes('\n')
             if (isBlock) {
-              // Block code: rehype-highlight has already transformed the
-              // children into <span class="hljs-*"> elements. We let the
-              // `pre` override below handle the outer wrapper (language
-              // label + copy button). The code override only needs to
-              // pass through the highlighted children.
               return (
                 <code className={className} {...props}>
                   {children}

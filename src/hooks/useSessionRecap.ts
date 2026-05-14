@@ -89,14 +89,10 @@ export function useSessionRecap(
     const elapsed = Date.now() - lastTurnAt
     const remaining = IDLE_THRESHOLD_MS - elapsed
 
-    if (remaining <= 0) {
-      doFetch()
-      return
-    }
-
+    // Always defer so setState inside doFetch doesn't run synchronously in the effect body
     const timer = setTimeout(() => {
       doFetch()
-    }, remaining)
+    }, Math.max(0, remaining))
     return () => clearTimeout(timer)
   }, [sessionId, lastTurnAt, doFetch])
 

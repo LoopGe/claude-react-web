@@ -20,8 +20,10 @@ import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, Sidebar
 import { PERMISSION_MODES } from './types'
 import { ACCENT_COLORS, ACCENT_COLOR_KEY, SESSION_COLORS_KEY } from './theme'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { SetupPage } from './components/SetupPage'
 import { ThemeToggle } from './components/ThemeToggle'
 import { ShortcutHelp } from './components/ShortcutHelp'
+import { GlobalSettingsModal } from './components/GlobalSettingsModal'
 import { applyTheme, getStoredTheme, onSystemThemeChange, toggleTheme, type Theme } from './utils/theme'
 
 import {
@@ -43,6 +45,7 @@ import { notificationTooltip } from './utils/notifications'
 import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
 
 export function App() {
+  const [isConfigured, setIsConfigured] = useState<boolean | null>(null)
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   /** Ordered list of open session ids (oldest first). Length ≤ maxOpen. */
   const [openIds, setOpenIds] = useState<string[]>([])
@@ -69,6 +72,7 @@ export function App() {
   const [newSessionDialogOpen, setNewSessionDialogOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
+  const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false)
   const [opError, setOpError] = useState<string | null>(null)
   // Theme state — persisted in localStorage, applied via data-theme on <html>.
   const [theme, setTheme] = useState<Theme>(getStoredTheme)
@@ -185,11 +189,13 @@ export function App() {
     void api
       .get<ServerConfig>('/config')
       .then((r) => {
+        setIsConfigured(r.configured !== false)
+        if (r.configured === false) return
         setDefaults(r.defaults)
         if (r.models?.length) setServerModels(r.models)
         if (r.maxOpenPanels != null) setServerMaxOpen(r.maxOpenPanels)
       })
-      .catch(() => {})
+      .catch(() => setIsConfigured(true))
   }, [])
 
   // Desktop notifications. The hook itself is inert until the user enables
@@ -1154,6 +1160,27 @@ export function App() {
     openAtSlot(sidebarId, targetSlotId, live?.lastTurnAt)
   }, [updateSession, openAtSlot])
 
+  const handleConfigured = useCallback(() => {
+    setIsConfigured(true)
+    // Reload config now that the token is set.
+    void api.get<ServerConfig>('/config').then((r) => {
+      setDefaults(r.defaults)
+      if (r.models?.length) setServerModels(r.models)
+      if (r.maxOpenPanels != null) setServerMaxOpen(r.maxOpenPanels)
+    })
+  }, [])
+
+  const handleGlobalSettingsSaved = useCallback(() => {
+    void api.get<ServerConfig>('/config').then((r) => {
+      setDefaults(r.defaults)
+      if (r.models?.length) setServerModels(r.models)
+      if (r.maxOpenPanels != null) setServerMaxOpen(r.maxOpenPanels)
+    })
+  }, [])
+
+  if (isConfigured === null) return null // still loading
+  if (!isConfigured) return <SetupPage onConfigured={handleConfigured} />
+
   return (
     <ErrorBoundary>
     <div
@@ -1256,6 +1283,14 @@ export function App() {
               ))}
             </div>
             <ThemeToggle theme={theme} onToggle={handleToggleTheme} />
+            <button
+              className="btn btn-icon"
+              onClick={() => setGlobalSettingsOpen(true)}
+              title="Global Settings"
+              aria-label="Global Settings"
+            >
+              ⚙
+            </button>
           </div>
         </header>
 
@@ -1351,6 +1386,13 @@ export function App() {
         onClose={() => setHelpOpen(false)}
         shortcuts={shortcuts}
       />
+
+      {globalSettingsOpen && (
+        <GlobalSettingsModal
+          onClose={() => setGlobalSettingsOpen(false)}
+          onSaved={handleGlobalSettingsSaved}
+        />
+      )}
     </div>
     </ErrorBoundary>
   )

@@ -154,17 +154,14 @@ async function main() {
   await loadConfig(stateDir)
   if (!config.authToken) {
     const configPath = `${stateDir}/config.json`
-    console.error(
-      `[cli] FATAL: authToken is not set in ${configPath}.\n` +
-      '       The server requires an auth token to talk to the Anthropic API ' +
-      '(both the SDK subprocess and the recap feature).\n' +
-      '       Add this to config.json:\n' +
+    console.warn(
+      `[cli] WARNING: authToken is not set in ${configPath}.\n` +
+      '       Open the web UI to configure it, or add this to config.json:\n' +
       '         {\n' +
       '           "authToken": "<your token>",\n' +
       '           "baseUrl": "<optional; defaults to https://api.anthropic.com>"\n' +
       '         }',
     )
-    process.exit(1)
   }
   const store = new SessionStore({ stateDir })
   const loaded = await store.load()
@@ -192,6 +189,7 @@ async function main() {
     sessionStore: store,
     mcpConfigStore: mcpStore,
     defaults: { cwd: args.cwd, model: args.model, claudeBinary },
+    configDir: stateDir,
   })
   const url = `http://${args.host}:${args.port}`
 

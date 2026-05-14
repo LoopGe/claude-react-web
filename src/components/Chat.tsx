@@ -525,6 +525,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
         sending={sending}
         disabled={session.terminated}
         terminated={session.terminated}
+        terminatedReason={session.terminatedReason}
         canAttach={!!session.cwd}
         attachments={attachments.attachments}
         uploading={attachments.uploading}

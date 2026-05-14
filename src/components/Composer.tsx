@@ -20,6 +20,8 @@ interface Props {
   /** True when the session has permanently ended (terminated). Shows a
    *  "session ended" message instead of the disabled textarea. */
   terminated?: boolean
+  /** Why the session terminated (shown below the ended message). */
+  terminatedReason?: string
   /** True when the session has no cwd — attach button greyed with a tooltip. */
   canAttach: boolean
 
@@ -57,6 +59,7 @@ export const Composer = memo(function Composer({
   sending,
   disabled,
   terminated,
+  terminatedReason,
   canAttach,
   attachments,
   uploading,
@@ -152,9 +155,19 @@ export const Composer = memo(function Composer({
   const canSend = !disabled && !sending && (input.trim() !== '' || attachments.length > 0 || pastedImages.length > 0)
 
   if (terminated) {
+    const reasonText =
+      terminatedReason === 'query_error' ? 'Upstream error'
+      : terminatedReason === 'query_ended' ? 'Connection closed'
+      : terminatedReason === 'process_killed' ? 'Process killed'
+      : terminatedReason === 'process_exited' ? 'Process exited'
+      : terminatedReason === 'init_stuck' ? 'Init timed out'
+      : terminatedReason === 'stuck' ? 'Session unresponsive'
+      : terminatedReason === 'deleted' ? 'Session deleted'
+      : null
     return (
       <div className="session-ended">
-        This session has ended. Create a new session to continue.
+        <span>This session has ended{reasonText ? `: ${reasonText}` : ''}.</span>
+        <span className="session-ended-hint">Create a new session to continue.</span>
       </div>
     )
   }
