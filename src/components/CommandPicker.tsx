@@ -1,7 +1,7 @@
 // Popup that appears when the user types "/" in the composer, showing
 // available slash commands with keyboard navigation and fuzzy filtering.
 
-import { useLayoutEffect, useRef } from 'react'
+import { useLayoutEffect, useMemo, useRef } from 'react'
 import type { SlashCommand } from '../types'
 
 interface Props {
@@ -26,8 +26,33 @@ function matches(cmd: SlashCommand, query: string): boolean {
   return cmd.aliases?.some((a) => a.toLowerCase().startsWith(q)) ?? false
 }
 
+interface CommandGroup {
+  plugin: string | null
+  commands: SlashCommand[]
+}
+
+/** Split commands into groups by plugin namespace (first ':' in name). */
+function groupCommands(commands: SlashCommand[]): CommandGroup[] {
+  const map = new Map<string, SlashCommand[]>()
+  for (const cmd of commands) {
+    const colon = cmd.name.indexOf(':')
+    const key = colon > 0 ? cmd.name.slice(0, colon) : '__builtin__'
+    if (!map.has(key)) map.set(key, [])
+    map.get(key)!.push(cmd)
+  }
+  const groups: CommandGroup[] = []
+  // Named plugin groups first, then built-in
+  for (const [key, cmds] of map) {
+    if (key !== '__builtin__') groups.push({ plugin: key, commands: cmds })
+  }
+  const builtin = map.get('__builtin__')
+  if (builtin?.length) groups.push({ plugin: null, commands: builtin })
+  return groups
+}
+
 export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSelect, onClose }: Props) {
   const filtered = commands.filter((c) => matches(c, query))
+  const groups = useMemo(() => groupCommands(filtered), [filtered])
   const rootRef = useRef<HTMLDivElement>(null)
 
   // --- Positioning: fixed, above the textarea, clamped to viewport ---
@@ -93,28 +118,34 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
   // Clamp selectedIndex to valid range.
   const idx = Math.max(0, Math.min(selectedIndex, filtered.length - 1))
 
+  // Flatten groups for keyboard navigation index mapping.
+  let flatIdx = 0
+
   return (
     <div className="cmd-picker" ref={rootRef} role="listbox">
-      {filtered.map((cmd, i) => (
-        <button
-          key={cmd.name}
-          className={`cmd-picker-item${i === idx ? ' active' : ''}`}
-          role="option"
-          aria-selected={i === idx}
-          onMouseDown={(e) => {
-            // Prevent the textarea from losing focus.
-            e.preventDefault()
-            onSelect(cmd)
-          }}
-          onMouseEnter={() => {
-            // Visual feedback on hover — no state change needed since the
-            // parent owns selectedIndex; we just highlight via CSS :hover.
-          }}
-        >
-          <span className="cmd-picker-name">/{cmd.name}</span>
-          {cmd.argumentHint && <span className="cmd-picker-args">{cmd.argumentHint}</span>}
-          {cmd.description && <span className="cmd-picker-desc">{cmd.description}</span>}
-        </button>
+      {groups.map((group) => (
+        <div key={group.plugin ?? '__builtin__'}>
+          {group.plugin && <div className="cmd-picker-group-header">{group.plugin}</div>}
+          {group.commands.map((cmd) => {
+            const i = flatIdx++
+            return (
+              <button
+                key={cmd.name}
+                className={`cmd-picker-item${i === idx ? ' active' : ''}`}
+                role="option"
+                aria-selected={i === idx}
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  onSelect(cmd)
+                }}
+              >
+                <span className="cmd-picker-name">/{cmd.name}</span>
+                {cmd.argumentHint && <span className="cmd-picker-args">{cmd.argumentHint}</span>}
+                {cmd.description && <span className="cmd-picker-desc">{cmd.description}</span>}
+              </button>
+            )
+          })}
+        </div>
       ))}
     </div>
   )

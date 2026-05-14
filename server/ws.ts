@@ -228,16 +228,16 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
           queue.enqueue({
             kind: 'replay',
             sessionId,
-            messages: msg.history,
+            messages: replayHistory,
             permissions: perms.snapshot,
           })
           queue.enqueue({ kind: 'replay-done', sessionId })
         } else {
-          for (let i = 0; i < msg.history.length; i += REPLAY_CHUNK_SIZE) {
+          for (let i = 0; i < replayHistory.length; i += REPLAY_CHUNK_SIZE) {
             queue.enqueue({
               kind: 'replay',
               sessionId,
-              messages: msg.history.slice(i, i + REPLAY_CHUNK_SIZE),
+              messages: replayHistory.slice(i, i + REPLAY_CHUNK_SIZE),
               permissions: [],
             })
           }

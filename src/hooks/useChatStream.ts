@@ -4,7 +4,7 @@ import { sessionStoreRegistry } from '../session-store/registry'
 import type { ActiveSubagent, ActivePhase, PlanStatus, TranscriptItem } from '../session-store/types'
 import { useWsHub, useWsHubStatus } from './useWsHub'
 import type { WsServerFrame } from '../ws-types'
-import type { PermissionRequest, PermissionResolved, SdkMessage } from '../types'
+import type { PermissionRequest, PermissionResolved, SdkMessage, SkillFrontmatter } from '../types'
 
 export interface ContextUsage {
   totalTokens?: number
@@ -12,6 +12,18 @@ export interface ContextUsage {
   rawMaxTokens?: number
   percentage?: number
   model?: string
+  skills?: {
+    includedSkills: number
+    totalSkills: number
+    tokenCount: number
+    skillFrontmatter?: SkillFrontmatter[]
+  }
+  agents?: {
+    tokenCount: number
+    agents?: Array<{ agentType: string; source: string; tokens: number }>
+  }
+  memoryFiles?: { tokenCount: number }
+  mcpTools?: { tokenCount: number }
 }
 
 export type { ActivePhase }

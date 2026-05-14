@@ -28,6 +28,8 @@ import {
   type SDKUserMessage,
   type Settings,
 } from '@anthropic-ai/claude-agent-sdk'
+import { ProcessMonitor, type ProcessExitInfo } from './process-monitor.js'
+import { WarmPool } from './warm-pool.js'
 import { randomUUID } from 'node:crypto'
 import { createPushable } from './pushable.js'
 import type { SessionMeta, SessionStore } from './persistence.js'
@@ -82,6 +84,9 @@ export class SessionManager {
   private mcpStore?: McpConfigStore
   private claudeBinary?: string
   private globalSubscribers = new Map<string, GlobalSubscriber>()
+  private processMonitor: ProcessMonitor
+  private warmPool?: WarmPool
+  private spawnWrapper?: (opts: import('@anthropic-ai/claude-agent-sdk').SpawnOptions) => import('@anthropic-ai/claude-agent-sdk').SpawnedProcess
 
   constructor(opts: SessionManagerOptions = {}) {
     this.claudeBinary = opts.claudeBinary
@@ -93,7 +98,89 @@ export class SessionManager {
     this.gcTimer = setInterval(() => this.gc(), 60_000)
     // Don't keep the Node process alive just for GC
     this.gcTimer.unref?.()
-    console.log(`[session-manager] initialized — permissionTimeoutMs=${this.permissionTimeoutMs}, workingStuckMs=${this.workingStuckMs}`)
+
+    // Process monitor — real-time CLI exit detection
+    this.processMonitor = new ProcessMonitor((info) => this.handleProcessExit(info))
+    this.spawnWrapper = this.processMonitor.createSpawnWrapper()
+
+    // Warm pool — pre-warmed CLI processes for faster session creation
+    const warmPoolSize = opts.warmPoolSize ?? defaultConfig.warmPoolSize
+    if (warmPoolSize > 0) {
+      this.warmPool = new WarmPool({
+        poolSize: warmPoolSize,
+        baseOptions: this.buildBaseOptions(),
+      })
+      void this.warmPool.fill()
+    }
+
+    console.log(
+      `[session-manager] initialized — permissionTimeoutMs=${this.permissionTimeoutMs}, ` +
+      `workingStuckMs=${this.workingStuckMs}, warmPoolSize=${warmPoolSize}`,
+    )
+  }
+
+  /** Build the shared base Options for warm pool pre-warming.
+   *  Includes auth env and claude binary path — everything that's common
+   *  across sessions. Session-specific options (model, cwd, abortController)
+   *  are NOT included. */
+  private buildBaseOptions(): Options {
+    const opts: Options = {}
+    if (this.claudeBinary) {
+      opts.pathToClaudeCodeExecutable = this.claudeBinary
+    }
+    opts.env = {
+      ...process.env,
+      ANTHROPIC_AUTH_TOKEN: defaultConfig.authToken,
+      ANTHROPIC_BASE_URL: defaultConfig.baseUrl,
+      ANTHROPIC_API_KEY: undefined,
+    }
+    return opts
+  }
+
+  /** Handle a CLI process exit detected by ProcessMonitor.
+   *  This fires in real-time (ms) rather than waiting for the 60s GC. */
+  private handleProcessExit(info: ProcessExitInfo): void {
+    const { sessionId, code, signal, killed } = info
+    const s = this.sessions.get(sessionId)
+    if (!s) return // Session already cleaned up (e.g. by unload)
+    if (s.terminated) return // Already terminated — no action needed
+
+    const reason = killed ? 'process_killed' : 'process_exited'
+    const errorMsg = killed
+      ? `CLI process was killed (signal=${signal})`
+      : `CLI process exited unexpectedly (code=${code}, signal=${signal})`
+
+    console.error(`[session ${sessionId}] ${errorMsg}`)
+
+    // Abort the pump so it breaks out of iter.next()
+    s.abortController.abort()
+    s.running = false
+    s.terminated = true
+    s.terminatedReason = reason
+    s.error = errorMsg
+    s.pendingTurns = 0
+    s.workingSince = undefined
+
+    // Deny all pending permissions so SDK awaiters don't hang
+    this.denyPendingPermissions(s)
+
+    // Broadcast synthetic error to subscribers
+    const synthetic: SDKMessage = {
+      type: 'system',
+      subtype: 'error',
+      error: errorMsg,
+      uuid: randomUUID(),
+      session_id: sessionId,
+    } as unknown as SDKMessage
+    for (const sub of s.subscribers.values()) sub.push(synthetic)
+    for (const sub of s.subscribers.values()) sub.end()
+    s.subscribers.clear()
+    for (const sub of s.permissionSubscribers.values()) sub.end()
+    s.permissionSubscribers.clear()
+    s.contextUsagePushable.end()
+
+    this.persist(s)
+    this.broadcastGlobal({ kind: 'update', session: this.info(s) })
   }
 
   /** Write the current in-memory state of a session into the persistence
@@ -443,7 +530,40 @@ export class SessionManager {
     // "can't transition into bypassPermissions" constraint on top.
     fullOpts.permissionMode = undefined
 
-    const q = query({ prompt: input.iterable, options: fullOpts })
+    // Create the AbortController BEFORE query() so we can pass it to the
+    // SDK. This ensures the same AbortSignal flows through to
+    // spawnClaudeCodeProcess, allowing ProcessMonitor to correlate
+    // spawned processes back to sessions via signal identity.
+    const abortController = new AbortController()
+    fullOpts.abortController = abortController
+
+    // Inject the process monitor's spawn wrapper so we get real-time
+    // exit/error notifications for this session's CLI subprocess.
+    fullOpts.spawnClaudeCodeProcess = this.spawnWrapper
+
+    // Register the signal with ProcessMonitor before query() — the
+    // spawn wrapper needs the signal in its map when it fires.
+    this.processMonitor.register(abortController.signal, id)
+
+    // Try to use a pre-warmed query for faster first-message latency.
+    // Warm queries can't be used for resume/fork (they need specific
+    // options baked at startup) or sessions with custom cwd/model.
+    let q: import('@anthropic-ai/claude-agent-sdk').Query
+    const canUseWarm = this.warmPool &&
+      !fullOpts.resume &&
+      !fullOpts.cwd &&
+      !fullOpts.model
+    if (canUseWarm) {
+      const warmQuery = this.warmPool!.acquire()
+      if (warmQuery) {
+        q = warmQuery.query(input.iterable)
+        console.log(`[session ${id}] using warm query`)
+      } else {
+        q = query({ prompt: input.iterable, options: fullOpts })
+      }
+    } else {
+      q = query({ prompt: input.iterable, options: fullOpts })
+    }
 
     // When resuming we keep the original createdAt from the persisted meta
     // so the UI's "session age" doesn't reset each time the user clicks
@@ -467,7 +587,7 @@ export class SessionManager {
       pending: new Map(),
       history: [],
       contextUsagePushable: createPushable<unknown>(`ctx-${id.slice(0, 8)}`),
-      abortController: new AbortController(),
+      abortController,
       pumpTask: Promise.resolve(),
       running: true,
       terminated: false,
@@ -679,6 +799,14 @@ export class SessionManager {
   async applySettings(id: string, settings: Settings): Promise<SessionInfo> {
     const s = this.requireLive(id)
     await s.query.applyFlagSettings(settings)
+    s.lastActivityAt = Date.now()
+    this.persist(s)
+    return this.info(s)
+  }
+
+  async togglePlugin(id: string, pluginName: string, enabled: boolean): Promise<SessionInfo> {
+    const s = this.requireLive(id)
+    await s.query.applyFlagSettings({ enabledPlugins: { [pluginName]: enabled } })
     s.lastActivityAt = Date.now()
     this.persist(s)
     return this.info(s)
@@ -1015,6 +1143,9 @@ export class SessionManager {
     // a wedged SDK generator keeps the pump's 60s idle watchdog firing
     // indefinitely even after the session has been removed.
     s.abortController.abort()
+    // Unregister from ProcessMonitor so we don't get a stale exit callback
+    // for an intentionally-closed session.
+    this.processMonitor.unregister(s.abortController.signal)
     s.input.end()
     // When terminating (explicit delete or graceful shutdown), await the
     // pump so the SDK subprocess has time to exit cleanly.
@@ -1081,8 +1212,33 @@ export class SessionManager {
     return s ? s.history.slice() : null
   }
 
+  /** Append a synthetic recap message to a session's history, replacing
+   *  any existing recap message. Broadcasts to all subscribers so live
+   *  clients see it immediately. Returns false if the session is not
+   *  live (dormant sessions can't receive recap messages). */
+  appendRecap(id: string, recapMsg: SDKMessage | Record<string, unknown>): boolean {
+    const s = this.sessions.get(id)
+    if (!s) return false
+    // Remove any existing recap message — there should be at most one.
+    const existingIdx = s.history.findIndex(
+      (m) => (m as Record<string, unknown>).type === 'recap',
+    )
+    if (existingIdx >= 0) s.history.splice(existingIdx, 1)
+    const msg = recapMsg as SDKMessage
+    s.history.push(msg)
+    if (s.history.length > this.historyCap) {
+      s.history.splice(0, s.history.length - this.historyCap)
+    }
+    for (const sub of s.subscribers.values()) sub.push(msg)
+    s.lastActivityAt = Date.now()
+    this.persist(s)
+    return true
+  }
+
   async shutdown(): Promise<void> {
     if (this.gcTimer) clearInterval(this.gcTimer)
+    // Close warm pool first — no new sessions should use it during shutdown
+    this.warmPool?.close()
     // End all global subscribers so their iterators resolve and
     // don't hang waiting for events that will never arrive.
     for (const sub of this.globalSubscribers.values()) sub.end()

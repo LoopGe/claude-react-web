@@ -1,22 +1,27 @@
 // Right-side settings drawer. Focuses on mid-session controls — options that
 // can only be set at session creation are shown read-only at the top.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api } from '../hooks/useApi'
-import type { McpServerConfigMeta, McpServerStatus, ModelInfo, PermissionMode, SessionInfo } from '../types'
+import type { AgentInfo, McpServerConfigMeta, McpServerStatus, ModelInfo, PermissionMode, Plugin, SessionInfo, SlashCommand } from '../types'
 import { PERMISSION_MODES } from '../types'
 import { McpInstaller } from './McpInstaller'
 import { FlagSettingsEditor } from './FlagSettingsEditor'
 import { ContextBar } from './ContextBar'
+import { MarketplaceBrowser } from './MarketplaceBrowser'
+import { formatTokens } from '../utils/format'
 import type { ContextUsage } from '../hooks/useChatStream'
 
 interface Props {
   session: SessionInfo
   onClose: () => void
   onSessionUpdate: (s: SessionInfo) => void
+  commands?: SlashCommand[]
+  agents?: AgentInfo[]
+  onPluginsReloaded?: () => void
 }
 
-export function SettingsPanel({ session, onClose, onSessionUpdate }: Props) {
+export function SettingsPanel({ session, onClose, onSessionUpdate, commands = [], agents = [], onPluginsReloaded }: Props) {
   const [models, setModels] = useState<ModelInfo[]>([])
   const [settingsText, setSettingsText] = useState('{}')
   const [usage, setUsage] = useState<ContextUsage | null>(null)
@@ -26,6 +31,8 @@ export function SettingsPanel({ session, onClose, onSessionUpdate }: Props) {
   const [mcpInstallerEdit, setMcpInstallerEdit] = useState<McpServerConfigMeta | undefined>(undefined)
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [reloadedPlugins, setReloadedPlugins] = useState<Plugin[]>([])
+  const [showMarketplace, setShowMarketplace] = useState(false)
 
   // Load supported models and MCP status when the panel opens. Parent
   // remounts this component on session switch (via `key={session.id}`),
@@ -167,8 +174,10 @@ export function SettingsPanel({ session, onClose, onSessionUpdate }: Props) {
   const reloadPlugins = async () => {
     setErr(null)
     try {
-      await api.post(`/sessions/${session.id}/plugins/reload`)
+      const res = await api.post<{ result: { plugins?: Plugin[] } }>(`/sessions/${session.id}/plugins/reload`)
+      if (res.result?.plugins) setReloadedPlugins(res.result.plugins)
       await refreshMcp()
+      onPluginsReloaded?.()
     } catch (e) {
       setErr((e as Error).message)
     }
@@ -183,6 +192,36 @@ export function SettingsPanel({ session, onClose, onSessionUpdate }: Props) {
       .catch(() => { /* ignore */ })
     void refreshMcp()
   }
+
+  // Derive plugin groups from commands (split on first ':') + reload metadata.
+  const pluginGroups = useMemo(() => {
+    const groups = new Map<string, { plugin: Plugin | undefined; commands: SlashCommand[]; agents: AgentInfo[] }>()
+    // Index reloaded plugins by name for path/source info
+    const pluginMeta = new Map(reloadedPlugins.map((p) => [p.name, p]))
+    for (const cmd of commands) {
+      const colon = cmd.name.indexOf(':')
+      const pluginName = colon > 0 ? cmd.name.slice(0, colon) : null
+      const key = pluginName ?? '__builtin__'
+      if (!groups.has(key)) groups.set(key, { plugin: pluginMeta.get(pluginName ?? ''), commands: [], agents: [] })
+      groups.get(key)!.commands.push(cmd)
+    }
+    // Assign agents to their plugin namespace if they match a plugin name
+    const pluginNames = new Set(reloadedPlugins.map((p) => p.name))
+    for (const agent of agents) {
+      const match = [...pluginNames].find((n) => agent.name.includes(n))
+      const key = match ?? '__builtin__'
+      if (!groups.has(key)) groups.set(key, { plugin: match ? pluginMeta.get(match) : undefined, commands: [], agents: [] })
+      groups.get(key)!.agents.push(agent)
+    }
+    // Move built-in group to end
+    const result = [...groups.entries()]
+    const builtinIdx = result.findIndex(([k]) => k === '__builtin__')
+    if (builtinIdx >= 0) {
+      const [builtin] = result.splice(builtinIdx, 1)
+      result.push(builtin)
+    }
+    return result
+  }, [commands, agents, reloadedPlugins])
 
   return (
     <aside className="settings-panel">
@@ -257,12 +296,67 @@ export function SettingsPanel({ session, onClose, onSessionUpdate }: Props) {
       <div className="settings-section">
         <h4>Context usage</h4>
         <ContextBar usage={usage} />
+        {usage?.skills && (
+          <details style={{ marginTop: 6 }}>
+            <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--fg-muted)' }}>
+              Skills: {usage.skills.includedSkills}/{usage.skills.totalSkills} loaded, {formatTokens(usage.skills.tokenCount)}
+            </summary>
+            <div style={{ marginTop: 4 }}>
+              {usage.skills.skillFrontmatter?.map((s) => (
+                <div key={s.name} style={{ fontSize: 12, padding: '2px 0', display: 'flex', gap: 6 }}>
+                  <code style={{ fontWeight: 500 }}>{s.name}</code>
+                  <span style={{ color: 'var(--fg-muted)', fontSize: 11 }}>{s.source}</span>
+                  <span style={{ marginLeft: 'auto', color: 'var(--fg-muted)', fontSize: 11 }}>{formatTokens(s.tokens)}</span>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+        {usage?.agents && (
+          <details style={{ marginTop: 4 }}>
+            <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--fg-muted)' }}>
+              Agents: {usage.agents.agents?.length ?? 0}, {formatTokens(usage.agents.tokenCount)}
+            </summary>
+            <div style={{ marginTop: 4 }}>
+              {usage.agents.agents?.map((a, i) => (
+                <div key={i} style={{ fontSize: 12, padding: '2px 0', display: 'flex', gap: 6 }}>
+                  <code style={{ fontWeight: 500 }}>{a.agentType}</code>
+                  <span style={{ color: 'var(--fg-muted)', fontSize: 11 }}>{a.source}</span>
+                  <span style={{ marginLeft: 'auto', color: 'var(--fg-muted)', fontSize: 11 }}>{formatTokens(a.tokens)}</span>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
         <details style={{ marginTop: 6 }}>
           <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--fg-muted)' }}>Raw data</summary>
           <pre className="tool-input" style={{ maxHeight: 200, overflow: 'auto', marginTop: 6 }}>
             {usage ? formatJson(usage) : '—'}
           </pre>
         </details>
+      </div>
+
+      <div className="settings-section">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h4 style={{ margin: 0 }}>Plugins</h4>
+          <button className="btn" style={{ padding: '2px 8px', fontSize: 11 }} onClick={reloadPlugins} disabled={busy || session.terminated}>
+            Reload plugins
+          </button>
+        </div>
+        {pluginGroups.length === 0 && !commands.length && (
+          <div style={{ color: 'var(--fg-muted)', fontSize: 13, marginTop: 6 }}>No plugins loaded</div>
+        )}
+        {pluginGroups.map(([key, group]) => (
+          <PluginCard
+            key={key}
+            name={key === '__builtin__' ? 'Built-in' : key}
+            plugin={group.plugin}
+            commands={group.commands}
+            agents={group.agents}
+            sessionId={session.id}
+            disabled={busy || session.terminated}
+          />
+        ))}
       </div>
 
       <div className="settings-section">
@@ -275,9 +369,6 @@ export function SettingsPanel({ session, onClose, onSessionUpdate }: Props) {
               onClick={() => { setMcpInstallerEdit(undefined); setShowMcpInstaller(true) }}
             >
               Manage
-            </button>
-            <button className="btn" style={{ padding: '2px 8px', fontSize: 11 }} onClick={reloadPlugins} disabled={busy || session.terminated}>
-              Reload plugins
             </button>
           </div>
         </div>
@@ -293,6 +384,25 @@ export function SettingsPanel({ session, onClose, onSessionUpdate }: Props) {
           />
         ))}
       </div>
+
+      <div className="settings-section">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h4 style={{ margin: 0 }}>Marketplace</h4>
+          <button className="btn" style={{ padding: '2px 8px', fontSize: 11 }} onClick={() => setShowMarketplace(true)}>
+            Browse plugins
+          </button>
+        </div>
+        <div style={{ color: 'var(--fg-muted)', fontSize: 13, marginTop: 6 }}>
+          Browse and install plugins from registered marketplaces.
+        </div>
+      </div>
+
+      {showMarketplace && (
+        <MarketplaceBrowser
+          onClose={() => setShowMarketplace(false)}
+          onInstalled={() => { onPluginsReloaded?.() }}
+        />
+      )}
 
       {showMcpInstaller && (
         <McpInstaller
@@ -336,6 +446,106 @@ function formatJson(v: unknown): string {
   } catch {
     return String(v)
   }
+}
+
+function PluginCard({
+  name,
+  plugin,
+  commands,
+  agents,
+  sessionId,
+  disabled,
+}: {
+  name: string
+  plugin?: Plugin
+  commands: SlashCommand[]
+  agents: AgentInfo[]
+  sessionId?: string
+  disabled?: boolean
+}) {
+  const [expanded, setExpanded] = useState(false)
+  // The SDK doesn't expose enabled state, so we default to true and let the
+  // user toggle. After a page refresh the toggle resets — acceptable since
+  // the session-level override is ephemeral anyway.
+  const [enabled, setEnabled] = useState(true)
+  const [toggling, setToggling] = useState(false)
+
+  const toggle = async () => {
+    if (!sessionId || name === 'Built-in') return
+    setToggling(true)
+    try {
+      await api.post(`/sessions/${sessionId}/plugins/${encodeURIComponent(name)}/toggle`, { enabled: !enabled })
+      setEnabled(!enabled)
+    } catch { /* ignore */ }
+    setToggling(false)
+  }
+
+  const isBuiltin = name === 'Built-in'
+  const dotColor = isBuiltin || enabled ? 'var(--plugin-active)' : 'var(--plugin-inactive)'
+
+  return (
+    <div style={{ border: '1px solid var(--border)', borderRadius: 6, marginTop: 8, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: 'var(--bg)' }}>
+        <span style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor, flexShrink: 0 }} />
+        <span style={{ fontWeight: 500, fontSize: 13, flex: 1 }}>{name}</span>
+        {plugin?.source && (
+          <span style={{ fontSize: 10, color: 'var(--fg-muted)', padding: '1px 4px', border: '1px solid var(--border)', borderRadius: 3 }}>
+            {plugin.source}
+          </span>
+        )}
+        <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+          {commands.length} skill{commands.length !== 1 ? 's' : ''}
+          {agents.length > 0 && `, ${agents.length} agent${agents.length !== 1 ? 's' : ''}`}
+        </span>
+        {!isBuiltin && sessionId && (
+          <button
+            className="btn"
+            style={{ padding: '1px 6px', fontSize: 11 }}
+            onClick={toggle}
+            disabled={disabled || toggling}
+          >
+            {enabled ? 'Disable' : 'Enable'}
+          </button>
+        )}
+        {(commands.length > 0 || agents.length > 0) && (
+          <button className="btn" style={{ padding: '1px 6px', fontSize: 11 }} onClick={() => setExpanded(!expanded)}>
+            {expanded ? '▲' : '▼'}
+          </button>
+        )}
+      </div>
+      {plugin?.path && (
+        <div style={{ padding: '2px 10px', fontSize: 11, color: 'var(--fg-muted)', fontFamily: 'var(--mono)', background: 'var(--bg)' }}>
+          {plugin.path}
+        </div>
+      )}
+      {expanded && (
+        <div style={{ padding: '4px 10px 8px', background: 'var(--bg)' }}>
+          {commands.length > 0 && (
+            <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--fg-muted)', marginBottom: 2 }}>Skills</div>
+          )}
+          {commands.map((cmd) => (
+            <div key={cmd.name} style={{ fontSize: 12, padding: '2px 0', display: 'flex', gap: 6, alignItems: 'baseline' }}>
+              <code style={{ fontWeight: 500 }}>/{cmd.name}</code>
+              <span style={{ color: 'var(--fg-muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {cmd.description}
+              </span>
+            </div>
+          ))}
+          {agents.length > 0 && (
+            <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--fg-muted)', marginTop: 4, marginBottom: 2 }}>Agents</div>
+          )}
+          {agents.map((agent) => (
+            <div key={agent.name} style={{ fontSize: 12, padding: '2px 0', display: 'flex', gap: 6, alignItems: 'baseline' }}>
+              <code style={{ fontWeight: 500 }}>{agent.name}</code>
+              <span style={{ color: 'var(--fg-muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {agent.description}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }
 
 const STATUS_COLORS: Record<string, string> = {

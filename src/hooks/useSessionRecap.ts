@@ -1,140 +1,77 @@
-// Session recap hook — auto-fetches an AI summary when a session has
-// been idle for ≥ 5 minutes since its last completed turn, and exposes
-// it as a synthetic message that the caller splices into the transcript.
+// Session recap hook — triggers an AI summary when a session has been
+// idle for ≥ 5 minutes since its last completed turn.
 //
-// "Idle" is defined off `session.lastTurnAt` (server-stamped on every
-// `result` and pushed via session-update WS frames). New user messages
-// bump that timestamp and reset the timer. Sessions that have never
-// produced a turn don't trigger — there's nothing to recap.
+// The recap is persisted server-side as a synthetic message in the
+// session history. The server broadcasts it via WebSocket so all tabs
+// see it, and it survives page refresh via replay.
 //
-// We dedupe with `lastViewed` (localStorage): once we've fetched a recap
-// for a particular `lastTurnAt`, we don't fetch again until the session
-// sees a fresher turn. The recap itself stays in the transcript across
-// renders so the user can scroll back to it.
+// This hook manages the idle timer and loading state. While a fetch is
+// in flight it exposes a synthetic `loadingMessage` that the caller can
+// splice into the transcript for immediate visual feedback.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './useApi'
-import type { RecapResponse, RecapStats, SdkMessage } from '../types'
+import type { SdkMessage } from '../types'
 
-const LAST_VIEWED_KEY = 'claude-react-web:last-viewed'
 const IDLE_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes
 
-export interface RecapData {
-  summary: string
-  stats: RecapStats
-  cached: boolean
-  generatedAt: number
-  fallback?: boolean
-}
-
-/** Synthetic message shape rendered inline by MessageList. The
- *  `type: 'recap'` tag is unique to this hook — no real SDK message
- *  uses it. `lastTurnAt` doubles as a stable key (one recap per turn). */
+/** Synthetic loading message rendered by RecapMessageView. The
+ *  `type: 'recap'` tag is unique — no real SDK message uses it. */
 export interface RecapMessage extends SdkMessage {
   type: 'recap'
   uuid: string
-  lastTurnAt: number
   state: 'loading' | 'ready' | 'error'
-  recap?: RecapData
+  recap?: { summary: string; stats: Record<string, unknown>; fallback?: boolean }
   error?: string
 }
 
 interface SessionRecap {
-  /** Synthetic transcript message, or null when there's nothing to show. */
-  message: RecapMessage | null
-  /** Manual refresh — re-runs the fetch even if it's already shown. */
+  /** Fire a recap fetch now (e.g. Alt+R shortcut). */
   refresh: () => void
-}
-
-/** Read the last-viewed map from localStorage. Non-throwing. */
-function readLastViewed(): Record<string, number> {
-  try {
-    const raw = window.localStorage.getItem(LAST_VIEWED_KEY)
-    return raw ? (JSON.parse(raw) as Record<string, number>) : {}
-  } catch {
-    return {}
-  }
-}
-
-/** Write a single entry into the last-viewed map. Non-throwing. Also
- *  prunes entries older than 7 days so the map can't grow unbounded. */
-function writeLastViewed(id: string, ts: number): void {
-  try {
-    const map = readLastViewed()
-    map[id] = ts
-    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000
-    for (const k of Object.keys(map)) {
-      if (map[k] < cutoff) delete map[k]
-    }
-    window.localStorage.setItem(LAST_VIEWED_KEY, JSON.stringify(map))
-  } catch {
-    /* storage disabled / full — best-effort */
-  }
+  /** Loading message to splice into the transcript, or null. */
+  loadingMessage: RecapMessage | null
 }
 
 /**
  * @param sessionId   target session
  * @param lastTurnAt  server-stamped timestamp of the latest completed
- *                    turn; undefined → no recap is produced
+ *                    turn; undefined → no recap is triggered
  */
 export function useSessionRecap(
   sessionId: string,
   lastTurnAt: number | undefined,
 ): SessionRecap {
-  // Cache recap messages across unmount/remount so switching sessions
-  // doesn't lose an already-fetched recap. The localStorage lastViewed
-  // check prevents re-fetch, but useState gets wiped on unmount — the
-  // ref fills the gap.
-  const recapCacheRef = useRef<Map<string, RecapMessage>>(new Map())
-  const [message, setMessage] = useState<RecapMessage | null>(null)
-  // Restore from cache on mount / session switch so the user sees the
-  // recap immediately without waiting for a re-fetch.
-  useEffect(() => {
-    const cached = recapCacheRef.current.get(sessionId)
-    if (cached) setMessage(cached)
-  }, [sessionId])
+  const [isLoading, setIsLoading] = useState(false)
   const fetchAbortRef = useRef<AbortController | null>(null)
 
-  /** Fire the recap fetch for `turnAt`. Manages loading/error state by
-   *  mutating the synthetic message in place. Returns the AbortController
-   *  so the caller's cleanup can cancel mid-flight. */
+  const loadingMessage = useMemo<RecapMessage | null>(() => {
+    if (!isLoading) return null
+    return {
+      type: 'recap',
+      uuid: `recap:loading:${sessionId}`,
+      session_id: sessionId,
+      state: 'loading',
+    }
+  }, [isLoading, sessionId])
+
+  /** Fire the recap endpoint. The server persists the result as a
+   *  synthetic message and broadcasts it — we just track loading state. */
   const doFetch = useCallback(
-    (turnAt: number) => {
+    () => {
       fetchAbortRef.current?.abort()
       const controller = new AbortController()
       fetchAbortRef.current = controller
 
-      const baseMsg: RecapMessage = {
-        type: 'recap',
-        uuid: `recap:${sessionId}:${turnAt}`,
-        lastTurnAt: turnAt,
-        state: 'loading',
-        session_id: sessionId,
-      }
-      setMessage(baseMsg)
+      setIsLoading(true)
 
       api
-        .post<RecapResponse>(`/sessions/${sessionId}/recap`, undefined, { signal: controller.signal })
-        .then((data) => {
-          if (controller.signal.aborted) return
-          const ready: RecapMessage = {
-            ...baseMsg,
-            state: 'ready',
-            recap: data,
-          }
-          recapCacheRef.current.set(sessionId, ready)
-          setMessage(ready)
-          writeLastViewed(sessionId, turnAt)
-        })
+        .post(`/sessions/${sessionId}/recap`, undefined, { signal: controller.signal })
         .catch((err: unknown) => {
           if (controller.signal.aborted) return
-          const msg = err instanceof Error ? err.message : String(err)
-          console.warn('[recap] fetch failed:', msg)
-          setMessage({
-            ...baseMsg,
-            state: 'error',
-            error: msg,
-          })
+          console.warn('[recap] fetch failed:', err instanceof Error ? err.message : String(err))
+        })
+        .finally(() => {
+          setIsLoading(false)
         })
     },
     [sessionId],
@@ -143,65 +80,25 @@ export function useSessionRecap(
   // Idle-watch effect.
   //
   // Re-runs whenever sessionId or lastTurnAt changes. Decides between
-  //   1. nothing to do (no completed turn, or already viewed),
+  //   1. nothing to do (no completed turn),
   //   2. fire now (idle threshold already passed),
   //   3. schedule a one-shot timer.
-  // Stale-message clearing happens in a separate effect below — keeping
-  // this effect free of setState calls satisfies the
-  // react-hooks/set-state-in-effect rule.
   useEffect(() => {
     if (!lastTurnAt) return
-
-    // Skip if we've already produced a recap for this exact turn — covers
-    // both StrictMode double-mount (in-memory message has same lastTurnAt)
-    // and hot reload (localStorage records the persisted view).
-    const persistedSeen = readLastViewed()[sessionId] ?? 0
-    if (persistedSeen >= lastTurnAt) {
-      // The message may have been lost on unmount but the cache still
-      // has it — restore so the user sees the recap without a re-fetch.
-      const cached = recapCacheRef.current.get(sessionId)
-      if (cached && cached.lastTurnAt === lastTurnAt) {
-        setMessage(cached)
-      }
-      return
-    }
 
     const elapsed = Date.now() - lastTurnAt
     const remaining = IDLE_THRESHOLD_MS - elapsed
 
     if (remaining <= 0) {
-      // doFetch synchronously sets the loading message, which
-      // implicitly replaces any stale (older-turn) recap on screen.
-      // The lint rule below complains about indirect setState in
-      // effects, but mount-with-already-elapsed-threshold is exactly
-      // the case where we genuinely need to kick off side-effectful
-      // work synchronously — we can't wait for a user event because
-      // there isn't one. The alternative (deferring via
-      // queueMicrotask) just hides the same setState from the linter
-      // without changing the runtime behaviour.
-      doFetch(lastTurnAt)
+      doFetch()
       return
     }
 
     const timer = setTimeout(() => {
-      doFetch(lastTurnAt)
+      doFetch()
     }, remaining)
     return () => clearTimeout(timer)
   }, [sessionId, lastTurnAt, doFetch])
-
-  // Hide any recap whose `lastTurnAt` no longer matches the current
-  // input — covers both "user just sent a new message" (old summary
-  // doesn't include the new turn) and "session was reset". Computed
-  // rather than stored so we don't need a setState in an effect, which
-  // the project's react-hooks lint rule forbids. The actual `message`
-  // state stays around in memory so a re-mount with the same lastTurnAt
-  // doesn't have to re-fetch.
-  const visibleMessage = useMemo(() => {
-    if (!message) return null
-    if (lastTurnAt === undefined) return null
-    if (message.lastTurnAt < lastTurnAt) return null
-    return message
-  }, [message, lastTurnAt])
 
   // Cancel any in-flight fetch on unmount.
   useEffect(() => {
@@ -213,8 +110,8 @@ export function useSessionRecap(
 
   const refresh = useCallback(() => {
     if (!lastTurnAt) return
-    doFetch(lastTurnAt)
+    doFetch()
   }, [lastTurnAt, doFetch])
 
-  return { message: visibleMessage, refresh }
+  return { refresh, loadingMessage }
 }

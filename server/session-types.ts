@@ -190,6 +190,9 @@ export interface SessionManagerOptions {
   /** Maximum time (ms) a session can stay "working" before the GC
    *  auto-interrupts it. 0 = disabled. */
   workingStuckMs?: number
+  /** Number of pre-warmed CLI processes to maintain in the warm pool.
+   *  0 = disabled. Default 2. */
+  warmPoolSize?: number
 }
 
 /** Global session-list update event. Broadcast whenever a session's

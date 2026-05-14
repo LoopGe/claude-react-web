@@ -1,12 +1,13 @@
 {
+  "authToken": "sk-ant-...",
+  "baseUrl": "https://api.anthropic.com",
   "modelList": [
     "anthropic/claude-sonnet-4-20250514",
     "claude-opus-4-20250514",
     "claude-haiku-3-5-20241022"
   ],
-  "recapModel": "claude-haiku-3-5-20241022",
+  "recapModel": "claude-haiku-4-5-20251001",
   "maxUploadBytes": 26214400,
-  "sessionIdleMs": 1800000,
   "historyCap": 500,
   "maxOpenPanels": 3
 }

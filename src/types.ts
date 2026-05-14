@@ -100,6 +100,45 @@ export interface SlashCommand {
   aliases?: string[]
 }
 
+/** A plugin loaded by the SDK. */
+export interface Plugin {
+  name: string
+  path: string
+  source?: string
+}
+
+/** An agent exposed by the SDK. */
+export interface AgentInfo {
+  name: string
+  description: string
+  model?: string
+}
+
+/** Per-skill token usage from context-usage. */
+export interface SkillFrontmatter {
+  name: string
+  source: string
+  tokens: number
+}
+
+/** A registered marketplace. */
+export interface MarketplaceInfo {
+  name: string
+  source: string
+  lastUpdated?: string
+  autoUpdate?: boolean
+}
+
+/** A plugin available in a marketplace. */
+export interface MarketplacePlugin {
+  name: string
+  description: string
+  version: string
+  author?: string
+  installed: boolean
+  marketplace: string
+}
+
 /** One question within an AskUserQuestion tool call. */
 export interface QuestionSpec {
   question: string
@@ -180,10 +219,6 @@ export interface PastedImage {
   size: number
   previewUrl: string
 }
-
-export type MessageContentBlock =
-  | { type: 'text'; text: string }
-  | { type: 'image'; source: { type: 'base64'; data: string; media_type: string } }
 
 // ── MCP Server Status ─────────────────────────────────────────────
 

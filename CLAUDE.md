@@ -69,7 +69,7 @@ The server uses a single WebSocket connection per browser tab (`server/ws.ts` + 
 - `src/hooks/useWsHub.ts` — single WebSocket connection per tab with exponential backoff, ping heartbeat, and ref-counted subscriptions. All real-time data (session list, messages, permissions, context usage) flows through this hub.
 - `src/hooks/useChatStream.ts` — per-session channel filter over the hub, replay buffering. Exposes `activePhase` (thinking / writing / tool_use) parsed from `content_block_start` stream events so the UI can show fine-grained progress instead of a generic "Working" label. Also tracks `permissionDecisions` (toolUseId → allow/deny) from `permission-resolved` frames so plan cards flip from pending to approved/rejected even when the SDK doesn't emit a `tool_result` (e.g. `ExitPlanMode`).
 - `src/hooks/usePastedImages.ts` — manages clipboard-pasted images. Converts `File` objects to base64 `PastedImage` entries with preview URLs. Images are sent inline with the next message as multimodal `content` blocks (text + image) via `POST /sessions/:id/messages`.
-- `src/components/subagents.ts` — `extractActiveSubagents()` scans for Agent / Task / Explore tool_use calls with no matching tool_result. Used by `WorkingBubble` to show active subagent chips.
+- `src/session-store/normalize.ts` — `getSubagentStarts()` scans for Agent / Task / Explore tool_use calls with no matching tool_result. Used by `WorkingBubble` to show active subagent chips.
 - `src/hooks/usePermissionChannel.ts` — permission state, optimistic decide+answer.
 - `src/hooks/useApi.ts` — thin `fetch` wrapper with `/api` base (REST calls only; streaming goes through WS).
 - `src/hooks/useKeyboardShortcuts.ts` — global shortcut dispatcher with input-safe routing.
@@ -95,6 +95,6 @@ Vite dev server on 5174 proxies `/api` to 3456. Production: `vite build` → `di
 - QuestionDialog: after the user answers, the dialog lingers for ~3s showing the answer inline (via `initialAnswers` prop), then auto-dismisses. Questions also support an "Other" free-text option.
 - `Shift+Tab` cycles through permission modes (default → auto-accept → bypass).
 - `api_retry` system messages are rendered as rate-limit/overload/retry indicators in the message list.
-- `src/components/subagents.ts` tracks `Agent`, `Task`, and `Explore` tool_use calls for active subagent display.
+- `src/session-store/normalize.ts` tracks `Agent`, `Task`, and `Explore` tool_use calls for active subagent display.
 - CSS: never hardcode color hex values — always use theme CSS variables (e.g. `var(--btn-hover-bg)` not `#242a35`). Every new color must be defined in both `:root` (dark) and `[data-theme="light"]` blocks. This prevents light/dark theme regressions.
 - **先搞清楚问题再动手。** 任何修改（CSS、逻辑、API、架构）都必须先理解问题的全貌再改。不要看到一个"看起来不对"的东西就直接改 — 先追踪上下文、理解设计意图、定位根因，然后再动手。没搞清楚就改是治标，还可能引入新问题。

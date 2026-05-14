@@ -28,8 +28,8 @@ import { useSessionRecap } from '../hooks/useSessionRecap'
 import { MessageSearch } from './MessageSearch'
 import { ContextMenu } from './ContextMenu'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
-import type { PermissionRequest, SessionInfo, SlashCommand } from '../types'
-import type { TranscriptItem } from '../session-store/types'
+import type { AgentInfo, PermissionRequest, SessionInfo, SlashCommand } from '../types'
+
 
 const INPUT_HISTORY_KEY = 'claude-react-web:input-history'
 const DRAFT_KEY_PREFIX = 'claude-react-web:draft:'
@@ -122,6 +122,41 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
     return () => {
       cancelled = true
     }
+  }, [session.id, session.running])
+
+  // Agents — fetched once per session, refreshed after plugin reload.
+  const [agents, setAgents] = useState<AgentInfo[]>([])
+  useEffect(() => {
+    if (!session.running) return
+    let cancelled = false
+    api
+      .get<{ agents: AgentInfo[] }>(`/sessions/${session.id}/agents`)
+      .then((res) => { if (!cancelled) setAgents(res.agents ?? []) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [session.id, session.running])
+
+  /** Invalidate command cache and re-fetch (called after plugin reload). */
+  const refreshCommands = useCallback(() => {
+    commandsCacheRef.current.delete(session.id)
+    if (!session.running) return
+    api
+      .get<{ commands: SlashCommand[] }>(`/sessions/${session.id}/commands`)
+      .then((res) => {
+        const cmds = res.commands ?? []
+        commandsCacheRef.current.set(session.id, cmds)
+        setCommands(cmds)
+      })
+      .catch(() => {})
+  }, [session.id, session.running])
+
+  /** Re-fetch agents list (called after plugin reload). */
+  const refreshAgents = useCallback(() => {
+    if (!session.running) return
+    api
+      .get<{ agents: AgentInfo[] }>(`/sessions/${session.id}/agents`)
+      .then((res) => setAgents(res.agents ?? []))
+      .catch(() => {})
   }, [session.id, session.running])
 
   /** Write-through setter: mirror every change to sessionStorage so the
@@ -227,19 +262,21 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
     }, 3000)
   }, [])
 
-  // Compose transcript items + recap. Answered questions now display
-  // inline inside the QuestionDialog card, so no synthetic messages needed.
-  const itemsWithRecap = useMemo(() => {
-    if (!recap.message) return stream.items
-    const item: TranscriptItem = {
-      id: recap.message.uuid ?? `recap:${session.id}`,
-      msg: recap.message,
-      searchableText: recap.message.recap?.summary ?? recap.message.error ?? null,
+  // Splice the recap loading message into the transcript when a fetch
+  // is in flight. Once the server-generated recap arrives via the stream
+  // (type: 'recap', state: 'ready'), the loading card is no longer needed.
+  const itemsWithRecapLoading = useMemo(() => {
+    if (!recap.loadingMessage) return stream.items
+    const hasRecap = stream.items.some((i) => i.msg.type === 'recap' && i.msg.state === 'ready')
+    if (hasRecap) return stream.items
+    return [...stream.items, {
+      id: recap.loadingMessage.uuid,
+      msg: recap.loadingMessage,
+      searchableText: null,
       isCompactSummary: false,
       hiddenByDefault: false,
-    }
-    return [...stream.items, item]
-  }, [stream.items, recap.message, session.id])
+    }]
+  }, [stream.items, recap.loadingMessage])
 
   // Pull out the specific functions/values we actually use downstream.
   // Putting the whole hook object in a dep list re-creates callbacks every
@@ -444,7 +481,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
       />
 
         <MessageList
-        items={itemsWithRecap}
+        items={itemsWithRecapLoading}
         showSystemEvents={showSystemEvents}
         pendingInterruptRef={pendingInterruptRef}
         replayReady={stream.replayReady}
@@ -581,6 +618,9 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
             session={session}
             onClose={() => onCloseSettings?.()}
             onSessionUpdate={onSessionUpdate}
+            commands={commands}
+            agents={agents}
+            onPluginsReloaded={() => { refreshCommands(); refreshAgents() }}
           />
         </div>
       )}
