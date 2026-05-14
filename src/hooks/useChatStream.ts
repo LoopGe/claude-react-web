@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { getSessionLastMessageUuid, getSessionStore, useSessionSnapshot } from '../session-store/selectors'
 import { sessionStoreRegistry } from '../session-store/registry'
+import { clearAllSessionStorage } from '../session-store/store'
 import type { ActiveSubagent, ActivePhase, PlanStatus, TranscriptItem } from '../session-store/types'
 import { useWsHub, useWsHubStatus } from './useWsHub'
 import type { WsServerFrame } from '../ws-types'
@@ -42,6 +43,10 @@ export interface ChatStream {
   activeSubagents: ActiveSubagent[]
   replayReady: boolean
   trackSentTurn: () => void
+  /** Optimistically insert the user's message into the transcript so it
+   *  appears immediately, before the server echoes it back. The real
+   *  message from the WS stream will replace this placeholder. */
+  insertUserMessage: (text: string) => void
   reset: () => void
   clearError: () => void
 }
@@ -54,6 +59,9 @@ export interface PermissionHandlers {
 /** Clear all cached session state. Used in tests to avoid cross-test leaks. */
 export function cacheClear() {
   sessionStoreRegistry.clear()
+  // Also wipe localStorage entries so stores recreated after clear()
+  // don't reload stale data from a previous test.
+  clearAllSessionStorage()
 }
 
 export function useChatStream(sessionId: string, permissions: PermissionHandlers): ChatStream {
@@ -173,6 +181,15 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     store.dispatch({ type: 'TRACK_SENT_TURN' })
   }, [store])
 
+  const insertUserMessage = useCallback((text: string) => {
+    const message: SdkMessage = {
+      type: 'user',
+      uuid: `optimistic:${crypto.randomUUID()}`,
+      message: { role: 'user', content: text },
+    }
+    store.dispatch({ type: 'OPTIMISTIC_USER_MESSAGE', message })
+  }, [store])
+
   const reset = useCallback(() => {
     store.reset()
   }, [store])
@@ -196,9 +213,10 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       activeSubagents: snapshot.activeSubagents,
       replayReady: snapshot.replayReady,
       trackSentTurn,
+      insertUserMessage,
       reset,
       clearError,
     }),
-    [snapshot, displayedError, trackSentTurn, reset, clearError],
+    [snapshot, displayedError, trackSentTurn, insertUserMessage, reset, clearError],
   )
 }

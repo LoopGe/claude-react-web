@@ -11,9 +11,11 @@ import {
 export function reduceSessionState(state: SessionState, action: SessionAction): SessionState {
   switch (action.type) {
     case 'REPLAY_REPLACE':
-      return replayReplace(state.sessionId, action.messages, action.permissions)
+      return replayReplace(state, action.messages, action.permissions)
     case 'MESSAGE':
       return applyMessage(state, action.message)
+    case 'OPTIMISTIC_USER_MESSAGE':
+      return applyOptimisticUserMessage(state, action.message)
     case 'PERMISSION_REQUEST': {
       const permissionPending = new Map(state.permissionPending)
       permissionPending.set(action.request.id, action.request)
@@ -60,8 +62,19 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
   }
 }
 
-function replayReplace(sessionId: string, messages: SdkMessage[], permissions: PermissionRequest[]): SessionState {
-  let state = createInitialSessionState(sessionId)
+function replayReplace(
+  prevState: SessionState,
+  messages: SdkMessage[],
+  permissions: PermissionRequest[],
+): SessionState {
+  // If the server replay is empty but we already have cached messages
+  // (from localStorage), keep the cache as a fallback. This prevents
+  // blank screens when the server's history ring has been trimmed or
+  // the session was garbage collected.
+  if (messages.length === 0 && prevState.items.length > 0) {
+    return { ...prevState, replayReady: true }
+  }
+  let state = createInitialSessionState(prevState.sessionId)
   for (const permission of permissions) {
     state = reduceSessionState(state, { type: 'PERMISSION_REQUEST', request: permission })
   }
@@ -71,7 +84,33 @@ function replayReplace(sessionId: string, messages: SdkMessage[], permissions: P
   return { ...state, replayReady: true }
 }
 
+function applyOptimisticUserMessage(state: SessionState, message: SdkMessage): SessionState {
+  const item = toTranscriptItem(message, state.items[state.items.length - 1])
+  if (!item) return state
+  return {
+    ...state,
+    items: [...state.items, item],
+    messages: [...state.messages, item.msg],
+    pendingUserMessageId: item.id,
+  }
+}
+
 function applyMessage(state: SessionState, message: SdkMessage): SessionState {
+  // When the server echoes back the user message we sent, replace the
+  // optimistic placeholder instead of appending a duplicate.
+  if (message.type === 'user' && state.pendingUserMessageId) {
+    const real = toTranscriptItem(message, undefined)
+    if (real) {
+      const items = state.items.map((it) =>
+        it.id === state.pendingUserMessageId ? real : it,
+      )
+      const messages = state.messages.map((m) =>
+        (typeof m.uuid === 'string' ? m.uuid : null) === state.pendingUserMessageId ? real.msg : m,
+      )
+      state = { ...state, items, messages, pendingUserMessageId: null }
+    }
+  }
+
   let next: SessionState = {
     ...state,
     eventLog: [...state.eventLog, message],
@@ -79,6 +118,12 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
 
   if (typeof message.uuid === 'string') {
     next.lastMessageUuid = message.uuid
+  }
+
+  // If this is a user message that wasn't matched above (no pending),
+  // clear the pendingUserMessageId to be safe.
+  if (message.type === 'user' && next.pendingUserMessageId) {
+    next.pendingUserMessageId = null
   }
 
   next = updateLiveTurn(next, message)

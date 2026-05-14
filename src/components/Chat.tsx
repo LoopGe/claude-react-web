@@ -282,7 +282,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
   // Putting the whole hook object in a dep list re-creates callbacks every
   // render and can churn child re-renders (the composer's onChange in
   // particular — that's what caused the "can't send / can't type" freeze).
-  const { trackSentTurn, clearError: clearStreamError } = stream
+  const { trackSentTurn, insertUserMessage, clearError: clearStreamError } = stream
   const {
     attachments: attachmentList,
     setDragOver,
@@ -361,6 +361,9 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
       } else {
         await api.post(`/sessions/${session.id}/messages`, { text: full })
       }
+      // Show the user's message in the transcript immediately, before the
+      // server echoes it back via the WS stream.
+      if (full.trim()) insertUserMessage(full)
       if (text) history.add(text)
       setInput('')
       clearAttachments()
@@ -380,7 +383,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
     } finally {
       setSending(false)
     }
-  }, [input, attachmentList, sending, session.id, history, trackSentTurn, clearAttachments, clearError, setInput, pastedImages])
+  }, [input, attachmentList, sending, session.id, history, trackSentTurn, insertUserMessage, clearAttachments, clearError, setInput, pastedImages])
 
   // Set to true when interrupt() fires; the next `result` message renders
   // as "interrupted" and resets this to false.

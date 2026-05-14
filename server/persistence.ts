@@ -153,6 +153,17 @@ export class SessionStore {
       console.warn(`[persistence] write failed: ${err instanceof Error ? err.message : String(err)}`)
     })
     await this.writing
+    // If a concurrent upsert() set dirty=true while we were writing, we
+    // must schedule another flush — otherwise those changes are stranded
+    // (no timer, no pending flush). The next flush() will snapshot the
+    // updated index and write again.
+    if (this.dirty && !this.timer) {
+      this.timer = setTimeout(() => {
+        this.timer = null
+        void this.flush()
+      }, DEBOUNCE_MS)
+      this.timer.unref?.()
+    }
   }
 }
 

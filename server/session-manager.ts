@@ -79,6 +79,7 @@ export class SessionManager {
   private historyCap: number
   private permissionTimeoutMs: number
   private workingStuckMs: number
+  private autoResumeEnabled: boolean
   private gcTimer?: NodeJS.Timeout
   private store?: SessionStore
   private mcpStore?: McpConfigStore
@@ -93,6 +94,7 @@ export class SessionManager {
     this.historyCap = opts.historyCap ?? defaultConfig.historyCap
     this.permissionTimeoutMs = opts.permissionTimeoutMs ?? defaultConfig.permissionTimeoutMs
     this.workingStuckMs = opts.workingStuckMs ?? defaultConfig.workingStuckMs
+    this.autoResumeEnabled = opts.autoResume ?? false
     this.store = opts.store
     this.mcpStore = opts.mcpConfigStore
     this.gcTimer = setInterval(() => this.gc(), 60_000)
@@ -138,12 +140,32 @@ export class SessionManager {
   }
 
   /** Handle a CLI process exit detected by ProcessMonitor.
-   *  This fires in real-time (ms) rather than waiting for the 60s GC. */
+   *  This fires in real-time (ms) rather than waiting for the 60s GC.
+   *
+   *  For clean exits (code=0, not killed), we only abort the controller
+   *  so the pump breaks out of iter.next(). The pump's cleanupPump then
+   *  decides whether to auto-resume or terminate. This avoids a race
+   *  where handleProcessExit sets terminated=true before cleanupPump gets
+   *  a chance to try auto-resume.
+   *
+   *  For unexpected exits (non-zero code or killed), we terminate
+   *  immediately — no auto-resume attempt. */
   private handleProcessExit(info: ProcessExitInfo): void {
     const { sessionId, code, signal, killed } = info
     const s = this.sessions.get(sessionId)
     if (!s) return // Session already cleaned up (e.g. by unload)
     if (s.terminated) return // Already terminated — no action needed
+
+    const cleanExit = !killed && code === 0
+
+    if (cleanExit) {
+      // Normal exit (e.g. idle timeout). Abort the controller so the
+      // pump breaks out of iter.next(), but DON'T set terminated — let
+      // cleanupPump handle auto-resume or termination.
+      console.log(`[session ${sessionId}] CLI exited cleanly (code=0) — deferring to pump cleanup`)
+      s.abortController.abort()
+      return
+    }
 
     const reason = killed ? 'process_killed' : 'process_exited'
     const errorMsg = killed
@@ -443,6 +465,7 @@ export class SessionManager {
             resolve: wrappedResolve,
             signal: ctx.signal,
             abortHandler,
+            timeoutTimer,
           }
           session.pending.set(pid, pending)
           ctx.signal.addEventListener('abort', abortHandler, { once: true })
@@ -511,6 +534,7 @@ export class SessionManager {
           resolve: wrappedResolve,
           signal: ctx.signal,
           abortHandler,
+          timeoutTimer,
         }
         session.pending.set(pid, pending)
         ctx.signal.addEventListener('abort', abortHandler, { once: true })
@@ -588,6 +612,7 @@ export class SessionManager {
       history: [],
       contextUsagePushable: createPushable<unknown>(`ctx-${id.slice(0, 8)}`),
       abortController,
+      canUseTool,
       pumpTask: Promise.resolve(),
       running: true,
       terminated: false,
@@ -657,6 +682,9 @@ export class SessionManager {
     if (s.pendingTurns < 1) s.pendingTurns = 1
     // Invalidate the recap cache — a new message means the cached
     // summary is stale.
+    // User is actively interacting — reset the auto-resume counter so a
+    // future idle timeout gets fresh attempts.
+    this.autoResumeCounts.delete(s)
     invalidateRecapCache(s.id)
     this.persist(s)
   }
@@ -691,6 +719,7 @@ export class SessionManager {
     s.lastActivityAt = Date.now()
     if (s.pendingTurns === 0) s.workingSince = Date.now()
     if (s.pendingTurns < 1) s.pendingTurns = 1
+    this.autoResumeCounts.delete(s)
     invalidateRecapCache(s.id)
     this.persist(s)
   }
@@ -923,6 +952,9 @@ export class SessionManager {
     } catch {
       /* ignore */
     }
+    // Clear the auto-deny timer so its closure (which holds the Session
+    // reference) doesn't keep the session alive until the timeout fires.
+    if (p.timeoutTimer) clearTimeout(p.timeoutTimer)
     s.pending.delete(pid)
     s.lastActivityAt = Date.now()
 
@@ -985,6 +1017,8 @@ export class SessionManager {
     } catch {
       /* ignore */
     }
+    // Clear the auto-deny timer so its closure doesn't leak.
+    if (p.timeoutTimer) clearTimeout(p.timeoutTimer)
     s.pending.delete(pid)
     s.lastActivityAt = Date.now()
 
@@ -1337,7 +1371,107 @@ export class SessionManager {
       persist: (s) => this.persist(s),
       denyPendingPermissions: (s) => this.denyPendingPermissions(s),
       isLive: (id) => this.sessions.has(id),
+      autoResume: this.autoResumeEnabled ? (s) => this.autoResume(s) : undefined,
     })
+  }
+
+  /** Max consecutive auto-resumes before giving up. Prevents infinite
+   *  loops if the CLI subprocess keeps exiting immediately. */
+  private static MAX_AUTO_RESUME = 3
+  /** Tracks consecutive auto-resume attempts per session. */
+  private autoResumeCounts = new WeakMap<Session, number>()
+
+  /** Re-spawn a session's Query after a clean exit (idle timeout).
+   *  Returns true if the session was successfully re-spawned. */
+  private async autoResume(session: Session): Promise<boolean> {
+    // Guard: session must still be live and not explicitly stopped
+    if (!this.sessions.has(session.id)) return false
+    if (session.terminated) return false
+
+    // Guard: the SDK only writes session data to disk after the first
+    // `result` message. If no turn was completed, resume would fail
+    // with "No conversation found with session ID: <uuid>".
+    if (!session.lastTurnAt) {
+      console.warn(`[session ${session.id}] auto-resume skipped — no completed turns (no disk data)`)
+      return false
+    }
+
+    // Track consecutive resumes to avoid infinite loops
+    const resumeCount = this.autoResumeCounts.get(session) ?? 0
+    if (resumeCount >= SessionManager.MAX_AUTO_RESUME) {
+      console.warn(`[session ${session.id}] auto-resume limit reached (${resumeCount}), giving up`)
+      return false
+    }
+
+    console.log(`[session ${session.id}] auto-resuming (attempt ${resumeCount + 1}/${SessionManager.MAX_AUTO_RESUME})`)
+
+    // Close old input and abort controller
+    session.input.end()
+    session.abortController.abort()
+
+    // Create fresh input and abort controller
+    const newInput = createPushable<SDKUserMessage>(`input-${session.id.slice(0, 8)}`)
+    const newAbort = new AbortController()
+
+    // Unregister old signal from ProcessMonitor, register new one
+    this.processMonitor.unregister(session.abortController.signal)
+    this.processMonitor.register(newAbort.signal, session.id)
+
+    // Build resume options — loads conversation history from disk
+    const resumeOpts: Options = {
+      resume: session.id,
+      cwd: session.cwd,
+      model: session.model,
+      permissionMode: session.permissionMode,
+      title: session.title,
+      abortController: newAbort,
+    }
+
+    // Inject standard options (same as spawn())
+    if (resumeOpts.includePartialMessages === undefined) {
+      resumeOpts.includePartialMessages = true
+    }
+    if (!resumeOpts.pathToClaudeCodeExecutable && this.claudeBinary) {
+      resumeOpts.pathToClaudeCodeExecutable = this.claudeBinary
+    }
+    if (!resumeOpts.env) {
+      resumeOpts.env = {
+        ...process.env,
+        ANTHROPIC_AUTH_TOKEN: defaultConfig.authToken,
+        ANTHROPIC_BASE_URL: defaultConfig.baseUrl,
+        ANTHROPIC_API_KEY: undefined,
+      }
+    }
+
+    // Reuse the stored canUseTool callback from the original spawn
+    if (session.canUseTool) {
+      resumeOpts.canUseTool = session.canUseTool
+    }
+    resumeOpts.spawnClaudeCodeProcess = this.spawnWrapper
+
+    // Create new Query
+    const q = query({ prompt: newInput.iterable, options: resumeOpts })
+
+    // Update session with new references
+    session.input = newInput
+    session.query = q
+    session.abortController = newAbort
+    session.running = true
+    this.autoResumeCounts.set(session, resumeCount + 1)
+
+    // Broadcast the session update so clients know it's alive again
+    this.broadcastGlobal({ kind: 'update', session: this.info(session) })
+
+    // Start new pump — returns immediately, runs in background
+    session.pumpTask = pumpSession(session, {
+      historyCap: this.historyCap,
+      persist: (s) => this.persist(s),
+      denyPendingPermissions: (s) => this.denyPendingPermissions(s),
+      isLive: (id) => this.sessions.has(id),
+      autoResume: this.autoResumeEnabled ? (s) => this.autoResume(s) : undefined,
+    })
+
+    return true
   }
 
   /** Periodic check for stuck sessions. Idle sessions are no longer

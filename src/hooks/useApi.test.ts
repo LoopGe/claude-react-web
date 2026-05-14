@@ -30,12 +30,12 @@ function mockFetch(response: {
 }
 
 describe('apiRequest', () => {
-  it('sends GET to /api + path with JSON content-type header', async () => {
+  it('sends GET to /api + path without Content-Type (no body)', async () => {
     mockFetch({ body: { ok: true } })
     const result = await apiRequest('/sessions')
     expect(result).toEqual({ ok: true })
     expect(fetch).toHaveBeenCalledWith('/api/sessions', expect.objectContaining({
-      headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
+      headers: {},
     }))
   })
 

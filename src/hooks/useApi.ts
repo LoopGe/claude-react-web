@@ -42,7 +42,10 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
       ...init,
       signal: timeoutController.signal,
       headers: {
-        'Content-Type': 'application/json',
+        // Only set Content-Type when a body is present. GET/DELETE
+        // requests have no body and the header is meaningless there;
+        // some proxies / CDNs treat it as a CORS preflight trigger.
+        ...(init.body != null ? { 'Content-Type': 'application/json' } : {}),
         ...(init.headers ?? {}),
       },
     })

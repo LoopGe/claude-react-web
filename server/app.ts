@@ -62,6 +62,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
       store: opts.sessionStore,
       mcpConfigStore: opts.mcpConfigStore,
       claudeBinary: opts.defaults?.claudeBinary,
+      autoResume: true,
     })
   const app = new Hono()
 

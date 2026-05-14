@@ -17,6 +17,11 @@ export interface PumpDeps {
   /** Return true if the session is still tracked in the manager's live map.
    *  Used to avoid overwriting state after unload() has already removed it. */
   isLive: (id: string) => boolean
+  /** Called when the Query exits cleanly (no error). If it returns true,
+   *  the session is being auto-resumed — skip full cleanup (don't mark
+   *  terminated, don't end subscribers). If it returns false or throws,
+   *  fall through to normal termination. */
+  autoResume?: (session: Session) => Promise<boolean>
 }
 
 /**
@@ -69,7 +74,14 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
       } finally {
         clearInterval(idleTimer)
       }
-      if (step.done) break
+      if (step.done) {
+        // When the loop exits (normally or via abort signal), explicitly
+        // close the async iterator so the SDK can clean up its subprocess
+        // resources (stdin pipe, child process, etc.). Without this,
+        // aborting the session may leave orphan CLI processes.
+        await iter.return?.()
+        break
+      }
       const msg = step.value
       const msgSubtype = (msg as unknown as { subtype?: string }).subtype
       console.log(
@@ -143,6 +155,18 @@ async function cleanupPump(session: Session, deps: PumpDeps): Promise<void> {
     // state. Overwriting here would stamp terminated=true, which
     // prevents the user from resuming the session later. Skip.
     if (!deps.isLive(session.id)) return
+
+    // When the Query exits cleanly (no error), try auto-resume first.
+    // This keeps the session alive transparently — the CLI subprocess
+    // likely exited due to idle timeout, not user intent.
+    if (!session.error && deps.autoResume) {
+      try {
+        const resumed = await deps.autoResume(session)
+        if (resumed) return // Session re-spawned — skip full cleanup
+      } catch (resumeErr) {
+        console.error(`[session ${session.id}] auto-resume failed, falling back to termination:`, resumeErr)
+      }
+    }
 
     session.running = false
     session.terminated = true

@@ -2,6 +2,7 @@
 // This file contains all public/internal interfaces and types.
 
 import type {
+  CanUseTool,
   PermissionMode,
   PermissionResult,
   PermissionUpdate,
@@ -98,6 +99,10 @@ export type PendingPermission = PermissionRequestSnapshot & {
   resolve: (r: PermissionResult) => void
   signal: AbortSignal
   abortHandler: () => void
+  /** Auto-deny timer handle. Stored so decide() / answerQuestion() can
+   *  clear it when the user responds before the timeout fires, avoiding
+   *  a leaked timer closure that holds the Session reference alive. */
+  timeoutTimer: ReturnType<typeof setTimeout> | null
 }
 
 /** Metadata returned by list() / get(). */
@@ -169,6 +174,10 @@ export interface Session {
    *  unload() can break a wedged generator without waiting for the SDK
    *  subprocess to exit. */
   abortController: AbortController
+  /** Stored canUseTool callback for auto-resume. Reused when the Query
+   *  exits cleanly and needs to be re-spawned without recreating the
+   *  permission handling logic. */
+  canUseTool?: CanUseTool
 }
 
 export interface SessionManagerOptions {
@@ -193,6 +202,9 @@ export interface SessionManagerOptions {
   /** Number of pre-warmed CLI processes to maintain in the warm pool.
    *  0 = disabled. Default 2. */
   warmPoolSize?: number
+  /** When true, sessions automatically re-spawn their Query after a
+   *  clean exit (idle timeout). Default true in production, false in tests. */
+  autoResume?: boolean
 }
 
 /** Global session-list update event. Broadcast whenever a session's

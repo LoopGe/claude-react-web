@@ -46,6 +46,8 @@ export interface SessionState {
   error: string | null
   queuedAhead: number
   lastMessageUuid: string | null
+  /** ID of the optimistic user message pending server confirmation. */
+  pendingUserMessageId: string | null
   permissionPending: Map<string, PermissionRequest>
   permissionDecisions: Map<string, 'allow' | 'deny'>
   pidToToolUseId: Map<string, string>
@@ -56,6 +58,7 @@ export interface SessionState {
 export type SessionAction =
   | { type: 'REPLAY_REPLACE'; messages: SdkMessage[]; permissions: PermissionRequest[] }
   | { type: 'MESSAGE'; message: SdkMessage }
+  | { type: 'OPTIMISTIC_USER_MESSAGE'; message: SdkMessage }
   | { type: 'PERMISSION_REQUEST'; request: PermissionRequest }
   | {
       type: 'PERMISSION_RESOLVED'
@@ -96,6 +99,7 @@ export function createInitialSessionState(sessionId: string): SessionState {
     error: null,
     queuedAhead: 0,
     lastMessageUuid: null,
+    pendingUserMessageId: null,
     permissionPending: new Map(),
     permissionDecisions: new Map(),
     pidToToolUseId: new Map(),

@@ -53,6 +53,12 @@ export class WarmPool {
       }
     } finally {
       this.filling = false
+      // If acquire() was called while we were filling, the skipped fill()
+      // calls left the pool below target. Re-check and fill again so we
+      // don't permanently lose capacity after a burst of acquisitions.
+      if (this.pool.length < this.targetSize && !this.closed) {
+        void this.fill()
+      }
     }
   }
 
@@ -61,6 +67,13 @@ export class WarmPool {
   acquire(): WarmQuery | null {
     if (this.closed || this.pool.length === 0) return null
     const wq = this.pool.pop()!
+    // Double-check after pop: close() may have fired between our
+    // initial guard and the pop(). The popped element is no longer in
+    // the pool so close()'s loop skipped it — close it here instead.
+    if (this.closed) {
+      try { wq.close() } catch { /* already closed */ }
+      return null
+    }
     // Refill asynchronously — don't await, don't block the caller
     void this.fill()
     return wq

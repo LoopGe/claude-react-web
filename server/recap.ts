@@ -181,7 +181,8 @@ const SYSTEM_PROMPT = `You are a session recap assistant. Summarize the followin
 1. What task or problem the user was working on
 2. What files, tools, or code were involved
 3. The current status (completed, in-progress, blocked, errored)
-Be concise and specific. Use plain language. Do not include a greeting or sign-off. Start directly with the summary. Always respond in the same language the user writes in.`
+Be concise and specific. Use plain language. Do not include a greeting or sign-off. Start directly with the summary. Always respond in the same language the user writes in.
+IMPORTANT: Do NOT use JSX syntax, HTML tags, or code markup (like <>, </>, <Component>) in your response. Write in natural prose only. When referencing code elements, use backtick formatting (e.g. \`Button\` component) instead of angle brackets.`
 
 async function callAnthropic(transcript: string): Promise<string> {
   // Throws if authToken is not configured — loadConfig() is supposed to
@@ -213,7 +214,9 @@ async function callAnthropic(transcript: string): Promise<string> {
   const data = (await res.json()) as { content?: Array<{ type?: string; text?: string }> }
   const text = data.content?.[0]?.text
   if (!text) throw new Error('Empty response from Anthropic API')
-  return text
+  // Strip stray JSX fragments (<> </> <React.Fragment> </React.Fragment>) that
+  // the LLM sometimes emits when summarising code-heavy conversations.
+  return text.replace(/<\/?React\.Fragment\s*>|<>|<\/>/g, '').replace(/\s{2,}/g, ' ').trim()
 }
 
 // ── Fallback (no API key) ──────────────────────────────────────────
