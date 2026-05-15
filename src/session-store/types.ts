@@ -40,7 +40,7 @@ export interface SessionState {
   replayReady: boolean
   items: TranscriptItem[]
   messages: SdkMessage[]
-  eventLog: SdkMessage[]
+  eventCount: number
   liveTurn: LiveTurnState | null
   contextUsage: ContextUsage | null
   error: string | null
@@ -93,7 +93,7 @@ export function createInitialSessionState(sessionId: string): SessionState {
     replayReady: false,
     items: [],
     messages: [],
-    eventLog: [],
+    eventCount: 0,
     liveTurn: null,
     contextUsage: null,
     error: null,

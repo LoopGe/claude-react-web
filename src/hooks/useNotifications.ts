@@ -44,14 +44,37 @@ export function useNotifications(): UseNotifications {
   const [enabled, setEnabled] = useLocalStorage<boolean>(ENABLED_KEY, false)
   const [permission, setPermission] = useState<NotificationPermission>(() => currentPermission())
 
+  // On mount, reconcile the localStorage flag with the actual browser
+  // permission.  If the user enabled notifications last session but the
+  // browser permission was revoked in the meantime (e.g. Chrome settings
+  // on Windows), flip `enabled` off so the bell UI is accurate and
+  // `notify()` short-circuits instead of silently doing nothing.
+  useEffect(() => {
+    const actual = currentPermission()
+    setPermission(actual)
+    if (enabled && actual !== 'granted') {
+      setEnabled(false)
+    }
+    // Only on mount — subsequent changes are tracked via the focus listener.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Keep permission in sync — the user might flip it from the browser UI
   // while the tab is open. There's no real event, but polling on focus
   // catches most transitions cheaply.
   useEffect(() => {
-    const refresh = () => setPermission(currentPermission())
+    const refresh = () => {
+      const next = currentPermission()
+      setPermission(next)
+      // Also reconcile enabled — if permission was revoked while the tab
+      // was unfocused, turn off the master switch.
+      if (enabled && next !== 'granted') {
+        setEnabled(false)
+      }
+    }
     window.addEventListener('focus', refresh)
     return () => window.removeEventListener('focus', refresh)
-  }, [])
+  }, [enabled, setEnabled])
 
   const toggle = useCallback(
     async (next?: boolean) => {
@@ -67,16 +90,24 @@ export function useNotifications(): UseNotifications {
         return
       }
       if (Notification.permission === 'default') {
+        let res: string
         try {
-          const res = await Notification.requestPermission()
-          setPermission(res as NotificationPermission)
-          if (res !== 'granted') {
-            // User dismissed or denied — keep the switch OFF so they aren't
-            // stuck in a state where it looks enabled but never fires.
-            setEnabled(false)
-            return
-          }
-        } catch {
+          res = await Notification.requestPermission()
+        } catch (err) {
+          console.warn('[notifications] requestPermission() failed:', err)
+          setEnabled(false)
+          return
+        }
+        // Cross-check: some Windows Chrome configurations resolve the
+        // promise with 'granted' while the actual browser/OS permission
+        // remains denied (e.g. Chrome site-settings toggled off). Read
+        // the canonical Notification.permission to catch this mismatch.
+        const actual = Notification.permission as NotificationPermission
+        setPermission(actual !== 'default' ? actual : (res as NotificationPermission))
+        if (actual !== 'granted') {
+          console.warn(
+            `[notifications] permission not granted (API returned ${res}, actual: ${actual})`,
+          )
           setEnabled(false)
           return
         }
@@ -101,10 +132,10 @@ export function useNotifications(): UseNotifications {
         const n = new Notification(payload.title, {
           body: payload.body,
           tag: payload.tag,
-          // Replace the tag-matching notification silently — default would
-          // re-play the sound for every update which is obnoxious for
-          // sessions firing multiple results in a row.
-          silent: false,
+          // Replace the tag-matching notification silently — without this,
+          // the browser re-plays the system sound for every update which
+          // is obnoxious when a session fires multiple results in a row.
+          silent: true,
         })
         if (payload.onClick) {
           n.onclick = () => {
@@ -113,9 +144,8 @@ export function useNotifications(): UseNotifications {
             n.close()
           }
         }
-      } catch {
-        /* Some browsers throw when constructing in background contexts;
-         *  we treat that as a silent miss rather than a UI error. */
+      } catch (err) {
+        console.warn('[notifications] Notification constructor failed:', err)
       }
     },
     [enabled],

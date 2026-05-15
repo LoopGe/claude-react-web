@@ -167,9 +167,11 @@ export interface Session {
   autoInterruptedAt?: number
   /** Timestamp of the last `result` message, used for the unread badge. */
   lastTurnAt?: number
-  /** Pushable for context_usage events — separate from message history
-   *  so reconnects don't replay stale usage snapshots. */
-  contextUsagePushable: Pushable<unknown>
+  /** Per-subscriber pushables for context_usage events — separate from
+   *  message history so reconnects don't replay stale usage snapshots.
+   *  Each WS subscriber gets its own pushable to avoid waiter overwrite
+   *  when multiple tabs are connected to the same session. */
+  contextUsageSubscribers: Set<Pushable<unknown>>
   /** AbortController whose signal races the pump's `iter.next()` so
    *  unload() can break a wedged generator without waiting for the SDK
    *  subprocess to exit. */
@@ -246,12 +248,10 @@ export interface SessionBroadcaster {
     snapshot: PermissionRequestSnapshot[]
     unsubscribe: () => void
   }
-  subscribeContextUsage(sessionId: string): AsyncIterable<unknown> | null
+  subscribeContextUsage(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null
 }
 
-export class HttpError extends Error {
-  constructor(public status: number, message: string) {
-    super(message)
-  }
-}
+// Re-export HttpError from its canonical location so existing importers
+// (session-manager.ts re-exports, etc.) continue to work during migration.
+export { HttpError } from './errors.js'
 

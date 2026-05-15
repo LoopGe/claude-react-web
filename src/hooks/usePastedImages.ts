@@ -53,11 +53,7 @@ export function usePastedImages(): UsePastedImages {
     const id = crypto.randomUUID()
     const previewUrl = URL.createObjectURL(file)
 
-    const buffer = await file.arrayBuffer()
-    const bytes = new Uint8Array(buffer)
-    let binary = ''
-    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
-    const data = btoa(binary)
+    const data = await fileToBase64(file)
 
     const dims = await getImageDimensions(previewUrl)
 
@@ -98,4 +94,20 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   return `${(n / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/** Convert a File to a base64 string using FileReader, which avoids
+ *  the O(n) string concatenation that blocked the main thread. */
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = reader.result as string
+      // Strip the data-URL prefix (e.g. "data:image/png;base64,")
+      const commaIdx = result.indexOf(',')
+      resolve(commaIdx >= 0 ? result.slice(commaIdx + 1) : result)
+    }
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(file)
+  })
 }

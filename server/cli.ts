@@ -6,7 +6,8 @@
 import { serve } from '@hono/node-server'
 import type { Server } from 'node:http'
 import { execSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import open from 'open'
 import { buildApp } from './app.js'
 import { loadConfig, config } from './config.js'
@@ -30,8 +31,10 @@ interface CliArgs {
  *  Priority:
  *   1. Explicit CLI flag (--claude-binary)
  *   2. CLAUDE_CODE_BINARY env var
- *   3. `which claude` lookup on the shell PATH
- *   4. undefined → let the SDK fall back to its own resolution
+ *   3. `which claude` (Unix) / `where claude` (Windows) lookup on PATH
+ *   4. Windows .cmd shim parsing — extracts the real script path from
+ *      npm's cmd-shim wrapper (handles pnpm/yarn global installs)
+ *   5. undefined → let the SDK fall back to its own resolution
  *
  *  Why this matters: `@anthropic-ai/claude-agent-sdk` bundles platform-
  *  specific native binary packages (e.g. -linux-x64-musl, -linux-x64).
@@ -56,13 +59,78 @@ function resolveClaudeBinary(explicit: string | undefined): string | undefined {
       return fromEnv
     }
   }
+
+  const isWin = process.platform === 'win32'
+
+  // PATH lookup — `which` on Unix, `where` on Windows
+  const lookupCmd = isWin ? 'where claude' : 'which claude'
   try {
-    const out = execSync('which claude', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-    if (out && existsSync(out)) return out
+    const out = execSync(lookupCmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    if (out) {
+      // `where` can return multiple paths (one per line); prefer .cmd on Windows
+      const candidates = out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+      if (isWin && candidates.length > 1) {
+        const cmdCandidate = candidates.find((p) => p.endsWith('.cmd'))
+        if (cmdCandidate) {
+          const resolved = resolveCmdShim(cmdCandidate)
+          if (resolved) return resolved
+          if (existsSync(cmdCandidate)) return cmdCandidate
+        }
+      }
+      const first = candidates[0]
+      if (first && existsSync(first)) {
+        // On Windows, if the hit is a .cmd shim try to resolve through it
+        if (isWin && first.endsWith('.cmd')) {
+          const resolved = resolveCmdShim(first)
+          return resolved || first
+        }
+        return first
+      }
+    }
   } catch {
     /* claude not on PATH — fall through */
   }
+
+  // Windows only: try common global install locations
+  if (isWin) {
+    const appData = process.env.APPDATA
+    if (appData) {
+      const globalCli = join(appData, 'npm', 'claude.cmd')
+      if (existsSync(globalCli)) {
+        const resolved = resolveCmdShim(globalCli)
+        return resolved || globalCli
+      }
+    }
+  }
+
   return undefined
+}
+
+/** Parse an npm cmd-shim .cmd file to extract the real script path.
+ *
+ *  npm's cmd-shim generates files with a line like:
+ *    "%_prog%"  %~dp0\node_modules\...\claude.js %*
+ *  We extract the script path relative to the .cmd file's directory. */
+function resolveCmdShim(cmdPath: string): string | null {
+  try {
+    const content = readFileSync(cmdPath, 'utf8')
+    const cmdDir = dirname(cmdPath)
+
+    // Match the NPM cmd-shim execution line pattern:
+    //   "%_prog%" ... "%dp0%\relative\path.js" %*
+    // or: %dp0%\relative\path.js
+    const match = content.match(/%dp0%\\([^"]+\.js)"?\s*[%*]/) ?? content.match(/"%dp0%\\([^"]+)"/)
+    if (match) {
+      const resolved = join(cmdDir, match[1])
+      if (existsSync(resolved)) {
+        console.log(`[cli] resolved claude via .cmd shim: ${cmdPath} → ${resolved}`)
+        return resolved
+      }
+    }
+  } catch {
+    /* unreadable .cmd — fall through */
+  }
+  return null
 }
 
 const HELP = `
@@ -153,14 +221,10 @@ async function main() {
   const stateDir = args.stateDir ?? defaultStateDir()
   await loadConfig(stateDir)
   if (!config.authToken) {
-    const configPath = `${stateDir}/config.json`
     console.warn(
-      `[cli] WARNING: authToken is not set in ${configPath}.\n` +
-      '       Open the web UI to configure it, or add this to config.json:\n' +
-      '         {\n' +
-      '           "authToken": "<your token>",\n' +
-      '           "baseUrl": "<optional; defaults to https://api.anthropic.com>"\n' +
-      '         }',
+      '[cli] WARNING: authToken is not configured.\n' +
+      '       Open the web UI to set it, or edit config.json and add:\n' +
+      '         "authToken": "<your token>"',
     )
   }
   const store = new SessionStore({ stateDir })

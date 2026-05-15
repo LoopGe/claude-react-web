@@ -36,14 +36,16 @@ function pruneStorageCache(): void {
       const raw = localStorage.getItem(key)
       if (!raw) continue
       try {
-        JSON.parse(raw) // validate
-        // Use a heuristic: order by insertion (localStorage iteration order
-        // is roughly insertion order in most browsers)
-        entries.push({ key, ts: entries.length })
+        const data = JSON.parse(raw) as { savedAt?: number }
+        // Use the savedAt timestamp written by persistToStorage.
+        // Fall back to 0 for entries written by older versions.
+        entries.push({ key, ts: typeof data.savedAt === 'number' ? data.savedAt : 0 })
       } catch {
         entries.push({ key, ts: 0 })
       }
     }
+    // Sort oldest first — evict the least-recently-saved entries.
+    entries.sort((a, b) => a.ts - b.ts)
     while (entries.length > MAX_CACHED_SESSIONS) {
       const oldest = entries.shift()!
       localStorage.removeItem(oldest.key)
@@ -59,6 +61,7 @@ function persistToStorage(sessionId: string, state: SessionState): void {
   try {
     const payload = JSON.stringify({
       v: 1,
+      savedAt: Date.now(),
       messages: state.messages,
       items: state.items.map((i) => ({
         id: i.id,

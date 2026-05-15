@@ -20,16 +20,13 @@
 
 import {
   query,
-  type CanUseTool,
   type Options,
   type PermissionMode,
-  type PermissionResult,
   type SDKMessage,
   type SDKUserMessage,
   type Settings,
 } from '@anthropic-ai/claude-agent-sdk'
 import { ProcessMonitor, type ProcessExitInfo } from './process-monitor.js'
-import { WarmPool } from './warm-pool.js'
 import { randomUUID } from 'node:crypto'
 import { createPushable } from './pushable.js'
 import type { SessionMeta, SessionStore } from './persistence.js'
@@ -41,21 +38,18 @@ import { pump as pumpSession } from './session-pump.js'
 import {
   type Subscriber,
   type PermissionEvent,
-  type PermissionSubscriber,
   type PermissionRequestSnapshot,
-  type PermissionDecisionSummary,
   type QuestionAnswer,
-  type PendingPermission,
   type SessionInfo,
   type Session,
   type SessionManagerOptions,
   type GlobalSessionEvent,
   type GlobalSubscriber,
-  HttpError,
 } from './session-types.js'
-import { toSnapshot, sanitizeQuestions, formatQuestionAnswers, promoteToSession } from './permission-helpers.js'
+import { HttpError } from './errors.js'
+import { PermissionBroker } from './permission-broker.js'
 
-// Re-export all types so existing importers (ws-protocol.ts, routes.ts, etc.) continue to work.
+// Re-export types so existing importers continue to work.
 export {
   type PermissionEvent,
   type QuestionSpec,
@@ -65,8 +59,8 @@ export {
   type SessionInfo,
   type SessionManagerOptions,
   type GlobalSessionEvent,
-  HttpError,
 } from './session-types.js'
+export { HttpError } from './errors.js'
 
 /** How long after firing an auto-interrupt we give the SDK subprocess to
  *  respond before either (a) skipping the next GC tick or (b) escalating
@@ -86,13 +80,14 @@ export class SessionManager {
   private claudeBinary?: string
   private globalSubscribers = new Map<string, GlobalSubscriber>()
   private processMonitor: ProcessMonitor
-  private warmPool?: WarmPool
   private spawnWrapper?: (opts: import('@anthropic-ai/claude-agent-sdk').SpawnOptions) => import('@anthropic-ai/claude-agent-sdk').SpawnedProcess
+  private permBroker: PermissionBroker
 
   constructor(opts: SessionManagerOptions = {}) {
     this.claudeBinary = opts.claudeBinary
     this.historyCap = opts.historyCap ?? defaultConfig.historyCap
     this.permissionTimeoutMs = opts.permissionTimeoutMs ?? defaultConfig.permissionTimeoutMs
+    this.permBroker = new PermissionBroker({ permissionTimeoutMs: this.permissionTimeoutMs })
     this.workingStuckMs = opts.workingStuckMs ?? defaultConfig.workingStuckMs
     this.autoResumeEnabled = opts.autoResume ?? false
     this.store = opts.store
@@ -105,38 +100,22 @@ export class SessionManager {
     this.processMonitor = new ProcessMonitor((info) => this.handleProcessExit(info))
     this.spawnWrapper = this.processMonitor.createSpawnWrapper()
 
-    // Warm pool — pre-warmed CLI processes for faster session creation
-    const warmPoolSize = opts.warmPoolSize ?? defaultConfig.warmPoolSize
-    if (warmPoolSize > 0) {
-      this.warmPool = new WarmPool({
-        poolSize: warmPoolSize,
-        baseOptions: this.buildBaseOptions(),
-      })
-      void this.warmPool.fill()
-    }
-
     console.log(
       `[session-manager] initialized — permissionTimeoutMs=${this.permissionTimeoutMs}, ` +
-      `workingStuckMs=${this.workingStuckMs}, warmPoolSize=${warmPoolSize}`,
+      `workingStuckMs=${this.workingStuckMs}`,
     )
   }
 
-  /** Build the shared base Options for warm pool pre-warming.
-   *  Includes auth env and claude binary path — everything that's common
-   *  across sessions. Session-specific options (model, cwd, abortController)
-   *  are NOT included. */
-  private buildBaseOptions(): Options {
-    const opts: Options = {}
-    if (this.claudeBinary) {
-      opts.pathToClaudeCodeExecutable = this.claudeBinary
-    }
-    opts.env = {
+  /** Construct the env object with API credentials from config.json.
+   *  Shared by spawn and autoResume. */
+  private buildAnthropicEnv(): NodeJS.ProcessEnv {
+    return {
       ...process.env,
       ANTHROPIC_AUTH_TOKEN: defaultConfig.authToken,
       ANTHROPIC_BASE_URL: defaultConfig.baseUrl,
+      // Strip the legacy x-api-key variable — we standardised on Bearer.
       ANTHROPIC_API_KEY: undefined,
     }
-    return opts
   }
 
   /** Handle a CLI process exit detected by ProcessMonitor.
@@ -199,7 +178,8 @@ export class SessionManager {
     s.subscribers.clear()
     for (const sub of s.permissionSubscribers.values()) sub.end()
     s.permissionSubscribers.clear()
-    s.contextUsagePushable.end()
+    for (const sub of s.contextUsageSubscribers) sub.end()
+    s.contextUsageSubscribers.clear()
 
     this.persist(s)
     this.broadcastGlobal({ kind: 'update', session: this.info(s) })
@@ -383,172 +363,15 @@ export class SessionManager {
     // object we sever that implicit dependency and make config.json the
     // single source of truth for API credentials.
     if (!fullOpts.env) {
-      fullOpts.env = {
-        ...process.env,
-        ANTHROPIC_AUTH_TOKEN: defaultConfig.authToken,
-        ANTHROPIC_BASE_URL: defaultConfig.baseUrl,
-        // Strip the legacy x-api-key variable — we standardised on Bearer.
-        ANTHROPIC_API_KEY: undefined,
-      }
+      fullOpts.env = this.buildAnthropicEnv()
     }
 
     // The session struct needs to exist before canUseTool fires (the SDK can
-    // request permission mid-turn), so we declare it here and wire up the
-    // callback against the closure. prefer-const is a false positive —
-    // the assignment happens below, after the canUseTool closure captures
-    // the binding.
-    // eslint-disable-next-line prefer-const
+    // request permission mid-turn). We build the canUseTool callback after
+    // the session object is assigned — the callback is only invoked by the
+    // CLI subprocess async, at which point session is guaranteed to exist.
     let session: Session
-    const canUseTool: CanUseTool = async (toolName, toolInput, ctx) => {
-      // `AskUserQuestion` is an interactive tool (not a permission check)
-      // but it still routes through canUseTool. Intercepting here is the
-      // only reliable way to override its output — PreToolUse.block and
-      // PostToolUse.updatedToolOutput were tested against SDK 2.1.133
-      // and neither actually short-circuits the built-in "no interactive
-      // UI" placeholder handler. canUseTool deny+message DOES short-
-      // circuit it: the model sees our `message` as the tool_result and
-      // proceeds as if it got a real answer. See docs in README.
-      if (toolName === 'AskUserQuestion') {
-        const questions = sanitizeQuestions(toolInput)
-        // If the model sent completely malformed input (no valid questions),
-        // resolve immediately instead of showing an empty dialog.
-        if (questions.length === 0) {
-          return {
-            behavior: 'deny',
-            message: JSON.stringify({
-              note: 'AskUserQuestion input was malformed — no valid questions found.',
-              answers: [],
-            }),
-            interrupt: false,
-            toolUseID: ctx.toolUseID,
-          }
-        }
-        return new Promise<PermissionResult>((resolve) => {
-          const pid = randomUUID()
-          console.log(`[session ${session.id}] AskUserQuestion permission request ${pid} — ${questions.length} question(s)`)
-          const abortHandler = () => {
-            if (!session.pending.has(pid)) return
-            session.pending.delete(pid)
-            console.log(`[session ${session.id}] permission ${pid} aborted (interrupt)`)
-            resolve({ behavior: 'deny', message: 'aborted', interrupt: false, toolUseID: ctx.toolUseID })
-            this.broadcastPermissionResolved(session, pid, {
-              behavior: 'deny',
-              persisted: false,
-              message: 'aborted',
-            })
-          }
-          const timeoutTimer = this.permissionTimeoutMs > 0
-            ? setTimeout(() => {
-                if (!session.pending.has(pid)) return
-                session.pending.delete(pid)
-                try { ctx.signal.removeEventListener('abort', abortHandler) } catch { /* */ }
-                console.warn(`[session ${session.id}] permission ${pid} timed out after ${this.permissionTimeoutMs}ms — auto-denying`)
-                resolve({ behavior: 'deny', message: 'Permission request timed out — no user response.', interrupt: false, toolUseID: ctx.toolUseID })
-                this.broadcastPermissionResolved(session, pid, {
-                  behavior: 'deny',
-                  persisted: false,
-                  message: 'Permission request timed out.',
-                })
-              }, this.permissionTimeoutMs)
-            : null
-          const wrappedResolve = (result: PermissionResult) => {
-            if (timeoutTimer) clearTimeout(timeoutTimer)
-            resolve(result)
-          }
-          const pending: PendingPermission = {
-            kind: 'question',
-            id: pid,
-            toolName: 'AskUserQuestion',
-            questions,
-            toolUseID: ctx.toolUseID,
-            createdAt: Date.now(),
-            resolve: wrappedResolve,
-            signal: ctx.signal,
-            abortHandler,
-            timeoutTimer,
-          }
-          session.pending.set(pid, pending)
-          ctx.signal.addEventListener('abort', abortHandler, { once: true })
-          this.broadcastPermissionRequest(session, pending)
-        })
-      }
-      // `bypassPermissions` is implemented here rather than via the SDK's
-      // own permissionMode flag. That flag is set at spawn time and the
-      // SDK then refuses to transition into it mid-session, which makes
-      // the UI toggle unreliable. By routing every tool call through our
-      // own callback we can flip the behaviour on the fly — session state
-      // (`permissionMode`) is the single source of truth, no CLI-side
-      // --dangerously-skip-permissions plumbing required.
-      if (session.permissionMode === 'bypassPermissions') {
-        return {
-          behavior: 'allow',
-          updatedInput: toolInput,
-          toolUseID: ctx.toolUseID,
-        } satisfies PermissionResult
-      }
-      return new Promise<PermissionResult>((resolve) => {
-        const pid = randomUUID()
-        console.log(`[session ${session.id}] tool permission request ${pid} — ${toolName}`)
-        const abortHandler = () => {
-          if (!session.pending.has(pid)) return
-          session.pending.delete(pid)
-          console.log(`[session ${session.id}] permission ${pid} aborted (interrupt)`)
-          // Aborted means the enclosing turn was interrupted — return a deny
-          // that does NOT cascade (interrupt: false), SDK will unwind anyway.
-          resolve({ behavior: 'deny', message: 'aborted', interrupt: false, toolUseID: ctx.toolUseID })
-          this.broadcastPermissionResolved(session, pid, {
-            behavior: 'deny',
-            persisted: false,
-            message: 'aborted',
-          })
-        }
-        const timeoutTimer = this.permissionTimeoutMs > 0
-          ? setTimeout(() => {
-              if (!session.pending.has(pid)) return
-              session.pending.delete(pid)
-              try { ctx.signal.removeEventListener('abort', abortHandler) } catch { /* */ }
-              console.warn(`[session ${session.id}] permission ${pid} (${toolName}) timed out after ${this.permissionTimeoutMs}ms — auto-denying`)
-              resolve({ behavior: 'deny', message: 'Permission request timed out — no user response.', interrupt: false, toolUseID: ctx.toolUseID })
-              this.broadcastPermissionResolved(session, pid, {
-                behavior: 'deny',
-                persisted: false,
-                message: 'Permission request timed out.',
-              })
-            }, this.permissionTimeoutMs)
-          : null
-        const wrappedResolve = (result: PermissionResult) => {
-          if (timeoutTimer) clearTimeout(timeoutTimer)
-          resolve(result)
-        }
-        const pending: PendingPermission = {
-          kind: 'permission',
-          id: pid,
-          toolName,
-          input: toolInput,
-          title: ctx.title,
-          displayName: ctx.displayName,
-          description: ctx.description,
-          suggestions: ctx.suggestions,
-          toolUseID: ctx.toolUseID,
-          createdAt: Date.now(),
-          resolve: wrappedResolve,
-          signal: ctx.signal,
-          abortHandler,
-          timeoutTimer,
-        }
-        session.pending.set(pid, pending)
-        ctx.signal.addEventListener('abort', abortHandler, { once: true })
-        this.broadcastPermissionRequest(session, pending)
-      })
-    }
 
-    // Always register canUseTool. Previously we skipped it for
-    // bypassPermissions, but now the callback itself short-circuits that
-    // mode — meaning mode swaps at runtime (handled in setPermissionMode
-    // below) take effect immediately without needing a session restart.
-    if (!fullOpts.canUseTool) {
-      fullOpts.canUseTool = canUseTool
-    }
     // Don't forward permissionMode to the SDK. We enforce it ourselves via
     // canUseTool, and the SDK's built-in flag would just add a brittle
     // "can't transition into bypassPermissions" constraint on top.
@@ -569,25 +392,8 @@ export class SessionManager {
     // spawn wrapper needs the signal in its map when it fires.
     this.processMonitor.register(abortController.signal, id)
 
-    // Try to use a pre-warmed query for faster first-message latency.
-    // Warm queries can't be used for resume/fork (they need specific
-    // options baked at startup) or sessions with custom cwd/model.
-    let q: import('@anthropic-ai/claude-agent-sdk').Query
-    const canUseWarm = this.warmPool &&
-      !fullOpts.resume &&
-      !fullOpts.cwd &&
-      !fullOpts.model
-    if (canUseWarm) {
-      const warmQuery = this.warmPool!.acquire()
-      if (warmQuery) {
-        q = warmQuery.query(input.iterable)
-        console.log(`[session ${id}] using warm query`)
-      } else {
-        q = query({ prompt: input.iterable, options: fullOpts })
-      }
-    } else {
-      q = query({ prompt: input.iterable, options: fullOpts })
-    }
+    // Create the Query — spawns the claude CLI subprocess.
+    const q = query({ prompt: input.iterable, options: fullOpts })
 
     // When resuming we keep the original createdAt from the persisted meta
     // so the UI's "session age" doesn't reset each time the user clicks
@@ -595,6 +401,7 @@ export class SessionManager {
     const existingMeta = this.store?.get(id)
     const createdAt = existingMeta?.createdAt ?? Date.now()
 
+    // eslint-disable-next-line prefer-const -- declared above for canUseTool closure capture
     session = {
       id,
       createdAt,
@@ -610,13 +417,31 @@ export class SessionManager {
       permissionSubscribers: new Map(),
       pending: new Map(),
       history: [],
-      contextUsagePushable: createPushable<unknown>(`ctx-${id.slice(0, 8)}`),
+      contextUsageSubscribers: new Set(),
       abortController,
-      canUseTool,
       pumpTask: Promise.resolve(),
       running: true,
       terminated: false,
       pendingTurns: 0,
+    }
+
+    // Build the canUseTool callback via PermissionBroker. The callback
+    // captures `session` by reference — it's only invoked by the CLI
+    // subprocess when a tool needs permission, which happens async well
+    // after this point, so `session` is guaranteed to be assigned.
+    // Always register canUseTool: the callback itself short-circuits
+    // bypassPermissions mode, meaning runtime mode swaps take effect
+    // immediately without a session restart.
+    if (!fullOpts.canUseTool) {
+      const canUseTool = this.permBroker.buildCanUseTool(
+        session,
+        (s, snapshot) => {
+          // Global broadcast — for desktop notifications on dormant sessions
+          this.broadcastGlobal({ kind: 'permission_request', sessionId: s.id, request: snapshot })
+        },
+      )
+      session.canUseTool = canUseTool
+      fullOpts.canUseTool = canUseTool
     }
 
     session.pumpTask = this.pump(session)
@@ -652,7 +477,7 @@ export class SessionManager {
       uuid: randomUUID(),
       session_id: s.id,
     }
-    // 1. Feed the SDK so it triggers an assistant turn.
+    // Feed the SDK so it triggers an assistant turn.
     const pushableClosed = s.input.closed
     console.log(
       `[session ${id}] send PRE-PUSH — ${text.length} chars, uuid=${userMsg.uuid}, ` +
@@ -665,28 +490,7 @@ export class SessionManager {
       `[session ${id}] send POST-PUSH — pushable.closed=${s.input.closed}, ` +
       `hasWaiter=${s.input.hasWaiter}, queueDepth=${s.input.queueDepth}`,
     )
-    // 2. Also broadcast + record locally — the SDK's output stream doesn't
-    //    echo user messages back, so without this step the client would
-    //    never see its own sent text.
-    s.history.push(userMsg)
-    if (s.history.length > this.historyCap) {
-      s.history.splice(0, s.history.length - this.historyCap)
-    }
-    for (const sub of s.subscribers.values()) sub.push(userMsg)
-    s.lastActivityAt = Date.now()
-    // Mark the session as mid-turn. We cap at 1 (not a true counter)
-    // because the SDK may merge multiple queued user messages into fewer
-    // assistant turns — a true count would inflate permanently. The pump
-    // resets to 1 after each result if more items are still queued.
-    if (s.pendingTurns === 0) s.workingSince = Date.now()
-    if (s.pendingTurns < 1) s.pendingTurns = 1
-    // Invalidate the recap cache — a new message means the cached
-    // summary is stale.
-    // User is actively interacting — reset the auto-resume counter so a
-    // future idle timeout gets fresh attempts.
-    this.autoResumeCounts.delete(s)
-    invalidateRecapCache(s.id)
-    this.persist(s)
+    this.pushToSession(s, userMsg)
   }
 
   /** Send a user turn with a content array (text + image blocks). */
@@ -711,17 +515,37 @@ export class SessionManager {
       `pendingTurns=${s.pendingTurns}, input.closed=${s.input.closed}`,
     )
     s.input.push(userMsg)
+    this.pushToSession(s, userMsg)
+  }
+
+  /** Common bookkeeping after pushing a user message into a session:
+   *  record in history, cap the ring buffer, broadcast to subscribers,
+   *  update timestamps, reset auto-resume counter, and persist. */
+  private pushToSession(s: Session, userMsg: SDKUserMessage): void {
+    // Broadcast + record locally — the SDK's output stream doesn't echo
+    // user messages back, so without this step the client would never
+    // see its own sent text.
     s.history.push(userMsg)
     if (s.history.length > this.historyCap) {
       s.history.splice(0, s.history.length - this.historyCap)
     }
     for (const sub of s.subscribers.values()) sub.push(userMsg)
     s.lastActivityAt = Date.now()
+    // Mark the session as mid-turn. We cap at 1 (not a true counter)
+    // because the SDK may merge multiple queued user messages into fewer
+    // assistant turns — a true count would inflate permanently. The pump
+    // resets to 1 after each result if more items are still queued.
     if (s.pendingTurns === 0) s.workingSince = Date.now()
     if (s.pendingTurns < 1) s.pendingTurns = 1
+    // User is actively interacting — reset the auto-resume counter so a
+    // future idle timeout gets fresh attempts.
     this.autoResumeCounts.delete(s)
+    // Invalidate the recap cache — a new message means the cached summary is stale.
     invalidateRecapCache(s.id)
-    this.persist(s)
+    // Guard against concurrent unload(): if the session was removed from
+    // the map between the initial running check and here, persisting would
+    // overwrite the terminal state written by unload().
+    if (this.sessions.has(s.id) && s.running) this.persist(s)
   }
 
   /** Interrupt the current assistant turn. */
@@ -915,8 +739,7 @@ export class SessionManager {
 
   /** List pending tool-permission requests for a session. */
   listPending(id: string): PermissionRequestSnapshot[] {
-    const s = this.require(id)
-    return Array.from(s.pending.values()).map(toSnapshot)
+    return this.permBroker.listPending(this.require(id))
   }
 
   /**
@@ -937,61 +760,9 @@ export class SessionManager {
       | { behavior: 'deny'; message?: string },
   ): void {
     const s = this.require(sid)
-    const p = s.pending.get(pid)
-    if (!p) throw new HttpError(404, `pending permission ${pid} not found`)
-    console.log(`[session ${sid}] decide ${pid} — ${decision.behavior} (${p.toolName})`)
-    if (p.kind === 'question') {
-      throw new HttpError(
-        400,
-        `pending ${pid} is an interactive question, use /answer-question instead`,
-      )
-    }
-    // Detach abort handler so aborting an already-resolved promise is a no-op.
-    try {
-      p.signal.removeEventListener('abort', p.abortHandler)
-    } catch {
-      /* ignore */
-    }
-    // Clear the auto-deny timer so its closure (which holds the Session
-    // reference) doesn't keep the session alive until the timeout fires.
-    if (p.timeoutTimer) clearTimeout(p.timeoutTimer)
-    s.pending.delete(pid)
+    this.permBroker.decide(s, pid, decision)
     s.lastActivityAt = Date.now()
-
-    if (decision.behavior === 'allow') {
-      // The SDK's runtime Zod schema is stricter than the TypeScript type:
-      // `updatedInput` is required (not optional) and `undefined` fields on
-      // the object also trip it. We build the payload incrementally and
-      // echo the tool's original input — a plain approval with no argument
-      // rewriting.
-      const updatedPermissions = decision.persistForSession ? promoteToSession(p.suggestions) : undefined
-      const result: PermissionResult = {
-        behavior: 'allow',
-        updatedInput: p.input,
-        toolUseID: p.toolUseID,
-      }
-      if (updatedPermissions && updatedPermissions.length > 0) {
-        result.updatedPermissions = updatedPermissions
-      }
-      p.resolve(result)
-      this.broadcastPermissionResolved(s, pid, {
-        behavior: 'allow',
-        persisted: !!decision.persistForSession,
-      })
-    } else {
-      const message = decision.message?.trim() || 'User denied the tool request.'
-      p.resolve({
-        behavior: 'deny',
-        message,
-        interrupt: false,
-        toolUseID: p.toolUseID,
-      })
-      this.broadcastPermissionResolved(s, pid, {
-        behavior: 'deny',
-        persisted: false,
-        message,
-      })
-    }
+    this.persist(s)
   }
 
   /**
@@ -1007,33 +778,9 @@ export class SessionManager {
    */
   answerQuestion(sid: string, pid: string, answers: QuestionAnswer[]): void {
     const s = this.require(sid)
-    const p = s.pending.get(pid)
-    if (!p) throw new HttpError(404, `pending ${pid} not found`)
-    if (p.kind !== 'question') {
-      throw new HttpError(400, `pending ${pid} is not an interactive question`)
-    }
-    try {
-      p.signal.removeEventListener('abort', p.abortHandler)
-    } catch {
-      /* ignore */
-    }
-    // Clear the auto-deny timer so its closure doesn't leak.
-    if (p.timeoutTimer) clearTimeout(p.timeoutTimer)
-    s.pending.delete(pid)
+    this.permBroker.answerQuestion(s, pid, answers)
     s.lastActivityAt = Date.now()
-
-    const message = formatQuestionAnswers(p.questions, answers)
-    p.resolve({
-      behavior: 'deny',
-      message,
-      interrupt: false,
-      toolUseID: p.toolUseID,
-    })
-    this.broadcastPermissionResolved(s, pid, {
-      behavior: 'deny',
-      persisted: false,
-      message,
-    })
+    this.persist(s)
   }
 
   /** Subscription for permission-channel events. */
@@ -1042,50 +789,25 @@ export class SessionManager {
     snapshot: PermissionRequestSnapshot[]
     unsubscribe: () => void
   } {
-    const s = this.require(id)
-    const subId = randomUUID()
-    const sub = createAsyncSubscription<PermissionEvent>(() => {
-      s.permissionSubscribers.delete(subId)
-    })
-    const permSub: PermissionSubscriber = { id: subId, push: sub.push, end: sub.end }
-    s.permissionSubscribers.set(subId, permSub)
-
-    return {
-      iterable: sub.iterable,
-      snapshot: Array.from(s.pending.values()).map(toSnapshot),
-      unsubscribe: () => {
-        sub.end()
-        s.permissionSubscribers.delete(subId)
-      },
-    }
+    return this.permBroker.subscribePermissions(this.require(id))
   }
 
   /** AsyncIterable of context-usage snapshots for one session.
    *  Returns null if the session doesn't exist (caller should treat
-   *  as "no context data available"). */
-  subscribeContextUsage(id: string): AsyncIterable<unknown> | null {
+   *  as "no context data available").
+   *  Each subscriber gets its own pushable to avoid waiter overwrite
+   *  when multiple tabs are connected to the same session. */
+  subscribeContextUsage(id: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null {
     const s = this.sessions.get(id)
-    return s?.contextUsagePushable.iterable ?? null
-  }
-
-  private broadcastPermissionRequest(session: Session, p: PendingPermission): void {
-    const snapshot = toSnapshot(p)
-    for (const sub of session.permissionSubscribers.values()) {
-      sub.push({ kind: 'request', payload: snapshot })
-    }
-    // Also fan out to the global session channel so App-level code can
-    // notify even when the Chat panel isn't mounted (e.g. the session
-    // is dormant or open in a panel the user isn't looking at).
-    this.broadcastGlobal({ kind: 'permission_request', sessionId: session.id, request: snapshot })
-  }
-
-  private broadcastPermissionResolved(
-    session: Session,
-    pid: string,
-    decision: PermissionDecisionSummary,
-  ): void {
-    for (const sub of session.permissionSubscribers.values()) {
-      sub.push({ kind: 'resolved', pid, decision })
+    if (!s) return null
+    const pushable = createPushable<unknown>(`ctx-${id.slice(0, 8)}`)
+    s.contextUsageSubscribers.add(pushable)
+    return {
+      iterable: pushable.iterable,
+      unsubscribe: () => {
+        s.contextUsageSubscribers.delete(pushable)
+        pushable.end()
+      },
     }
   }
 
@@ -1126,24 +848,7 @@ export class SessionManager {
    *  stays hanging forever. Called from both unload() (explicit teardown)
    *  and the pump() finally block (Query ended or crashed). */
   private denyPendingPermissions(session: Session) {
-    for (const [pid, p] of session.pending) {
-      try {
-        p.signal.removeEventListener('abort', p.abortHandler)
-      } catch {
-        /* ignore */
-      }
-      try {
-        p.resolve({ behavior: 'deny', message: 'session closed', interrupt: false, toolUseID: p.toolUseID })
-        this.broadcastPermissionResolved(session, pid, {
-          behavior: 'deny',
-          persisted: false,
-          message: 'session closed',
-        })
-      } catch (err) {
-        console.error(`[session ${session.id}] failed to deny permission ${pid}:`, err)
-      }
-    }
-    session.pending.clear()
+    this.permBroker.denyAll(session)
   }
 
   /** Delete a session for good: close its Query AND erase its persistence
@@ -1196,7 +901,8 @@ export class SessionManager {
     s.subscribers.clear()
     for (const sub of s.permissionSubscribers.values()) sub.end()
     s.permissionSubscribers.clear()
-    s.contextUsagePushable.end()
+    for (const sub of s.contextUsageSubscribers) sub.end()
+    s.contextUsageSubscribers.clear()
     // Broadcast the running=false / terminated state BEFORE removing
     // from the map. Without this, the client's copy stays stale at
     // `running: true` — handleSelect then skips resume, and the user
@@ -1271,8 +977,6 @@ export class SessionManager {
 
   async shutdown(): Promise<void> {
     if (this.gcTimer) clearInterval(this.gcTimer)
-    // Close warm pool first — no new sessions should use it during shutdown
-    this.warmPool?.close()
     // End all global subscribers so their iterators resolve and
     // don't hang waiting for events that will never arrive.
     for (const sub of this.globalSubscribers.values()) sub.end()
@@ -1417,12 +1121,16 @@ export class SessionManager {
     this.processMonitor.unregister(session.abortController.signal)
     this.processMonitor.register(newAbort.signal, session.id)
 
-    // Build resume options — loads conversation history from disk
+    // Build resume options — loads conversation history from disk.
+    // Don't forward permissionMode to the SDK (same as spawn()).
+    // We enforce it ourselves via canUseTool, and the SDK's built-in
+    // flag would add a brittle "can't transition into bypassPermissions"
+    // constraint on top.
     const resumeOpts: Options = {
       resume: session.id,
       cwd: session.cwd,
       model: session.model,
-      permissionMode: session.permissionMode,
+      permissionMode: undefined,
       title: session.title,
       abortController: newAbort,
     }
@@ -1435,12 +1143,7 @@ export class SessionManager {
       resumeOpts.pathToClaudeCodeExecutable = this.claudeBinary
     }
     if (!resumeOpts.env) {
-      resumeOpts.env = {
-        ...process.env,
-        ANTHROPIC_AUTH_TOKEN: defaultConfig.authToken,
-        ANTHROPIC_BASE_URL: defaultConfig.baseUrl,
-        ANTHROPIC_API_KEY: undefined,
-      }
+      resumeOpts.env = this.buildAnthropicEnv()
     }
 
     // Reuse the stored canUseTool callback from the original spawn

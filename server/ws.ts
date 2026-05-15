@@ -193,13 +193,15 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
       if (subs.has(sessionId)) return
       let msgSub: { unsubscribe: () => void } | null = null
       let permSub: { unsubscribe: () => void } | null = null
+      let ctxSub: { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null = null
       let ctxIter: AsyncIterator<unknown> | null = null
       try {
         const msg = sm.subscribe(sessionId)
         msgSub = msg
         const perms = sm.subscribePermissions(sessionId)
         permSub = perms
-        ctxIter = sm.subscribeContextUsage(sessionId)?.[Symbol.asyncIterator]() ?? null
+        ctxSub = sm.subscribeContextUsage(sessionId)
+        ctxIter = ctxSub?.iterable[Symbol.asyncIterator]() ?? null
 
         // 1) Send replay. If the client supplied `sinceUuid`, try to
         //    send only messages after that point (incremental sync).
@@ -260,6 +262,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
           stopped = true
           msgSub?.unsubscribe()
           permSub?.unsubscribe()
+          ctxSub?.unsubscribe()
           // Return the context-usage iterator so its pushable waiter
           // resolves with done:true instead of hanging forever.
           if (ctxIter) void ctxIter.return?.()

@@ -102,6 +102,10 @@ describe('McpConfigStore', () => {
   })
 
   it('sets file permissions to 0o600', async () => {
+    // Windows NTFS does not support POSIX permission bits — chmod is a no-op
+    // and stat() always returns the synthesized default mode (0o666).
+    if (process.platform === 'win32') return
+
     const { statSync } = await import('node:fs')
     const store = new McpConfigStore({ stateDir: dir })
     await store.load()

@@ -12,9 +12,11 @@
 // callers fire-and-forget via upsert/remove; shutdown() flushes.
 
 import { promises as fs } from 'node:fs'
-import { join, resolve as resolvePath } from 'node:path'
+import { join } from 'node:path'
 import { homedir } from 'node:os'
 import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
+import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
+import type { JsonFileStoreOptions } from './json-file-store.js'
 
 /** Metadata we need to resurrect a session. Deliberately a subset of
  *  Options — no auth tokens, no full SDK config. Everything here must
@@ -42,18 +44,13 @@ export interface SessionMeta {
   lastTurnAt?: number
 }
 
-const DEFAULT_DIR_NAME = '.claude-react-web'
 const FILE_NAME = 'sessions.json'
-const DEBOUNCE_MS = 500
 
 export function defaultStateDir(): string {
   return join(homedir(), DEFAULT_DIR_NAME)
 }
 
-export interface PersistenceOptions {
-  /** Override the state directory (CLI --state-dir). */
-  stateDir?: string
-}
+export type PersistenceOptions = JsonFileStoreOptions
 
 /**
  * SessionStore — owns the on-disk index and schedules debounced writes.
@@ -65,19 +62,33 @@ export interface PersistenceOptions {
  *   store.remove(id)
  *   await store.flush()  // typically on SIGINT
  */
-export class SessionStore {
-  private readonly dir: string
-  private readonly file: string
-  private readonly index = new Map<string, SessionMeta>()
-  private dirty = false
-  private timer: NodeJS.Timeout | null = null
-  /** Serialises concurrent flushes so we never start a write while a previous
-   *  one is still renaming in. */
-  private writing: Promise<void> = Promise.resolve()
-
+export class SessionStore extends JsonFileStore<SessionMeta> {
   constructor(opts: PersistenceOptions = {}) {
-    this.dir = resolvePath(opts.stateDir ?? defaultStateDir())
-    this.file = join(this.dir, FILE_NAME)
+    super(opts, FILE_NAME, DEFAULT_DIR_NAME, 'persistence')
+  }
+
+  protected getKey(meta: SessionMeta): string {
+    return meta.id
+  }
+
+  /** Parse the on-disk JSON array into SessionMeta entries. */
+  protected parseItems(raw: string): SessionMeta[] {
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) {
+      console.warn(`[persistence] ${this.file} is not an array; ignoring`)
+      return []
+    }
+    const entries: SessionMeta[] = []
+    for (const item of parsed) {
+      const meta = coerceMeta(item)
+      if (meta) entries.push(meta)
+    }
+    return entries
+  }
+
+  /** SessionMeta serialises as a JSON array. */
+  protected serializeForWrite(items: SessionMeta[]): unknown {
+    return items
   }
 
   /** Read the index from disk. A missing or corrupt file is treated as
@@ -85,19 +96,8 @@ export class SessionStore {
   async load(): Promise<SessionMeta[]> {
     try {
       const raw = await fs.readFile(this.file, 'utf8')
-      const parsed = JSON.parse(raw) as unknown
-      if (!Array.isArray(parsed)) {
-        console.warn(`[persistence] ${this.file} is not an array; ignoring`)
-        return []
-      }
-      const entries: SessionMeta[] = []
-      for (const item of parsed) {
-        const meta = coerceMeta(item)
-        if (meta) {
-          this.index.set(meta.id, meta)
-          entries.push(meta)
-        }
-      }
+      const entries = this.parseItems(raw)
+      this.initEntries(entries)
       return entries
     } catch (err) {
       const e = err as NodeJS.ErrnoException
@@ -106,73 +106,6 @@ export class SessionStore {
       return []
     }
   }
-
-  list(): SessionMeta[] {
-    return Array.from(this.index.values())
-  }
-
-  get(id: string): SessionMeta | undefined {
-    return this.index.get(id)
-  }
-
-  /** Insert or replace a session's metadata. Triggers a debounced flush. */
-  upsert(meta: SessionMeta): void {
-    this.index.set(meta.id, { ...meta })
-    this.schedule()
-  }
-
-  remove(id: string): void {
-    if (this.index.delete(id)) this.schedule()
-  }
-
-  private schedule(): void {
-    this.dirty = true
-    if (this.timer) return
-    this.timer = setTimeout(() => {
-      this.timer = null
-      void this.flush()
-    }, DEBOUNCE_MS)
-    this.timer.unref?.()
-  }
-
-  /** Write immediately; safe to call from shutdown paths. */
-  async flush(): Promise<void> {
-    if (this.timer) {
-      clearTimeout(this.timer)
-      this.timer = null
-    }
-    if (!this.dirty) return
-    // Snapshot before the await so concurrent upserts during the write
-    // don't race with the serialisation.
-    const snapshot = Array.from(this.index.values())
-    this.dirty = false
-    this.writing = this.writing.then(() => writeAtomic(this.dir, this.file, snapshot)).catch((err) => {
-      // Re-mark dirty so the next schedule retries. Log but don't throw —
-      // persistence failures should never crash the server.
-      this.dirty = true
-      console.warn(`[persistence] write failed: ${err instanceof Error ? err.message : String(err)}`)
-    })
-    await this.writing
-    // If a concurrent upsert() set dirty=true while we were writing, we
-    // must schedule another flush — otherwise those changes are stranded
-    // (no timer, no pending flush). The next flush() will snapshot the
-    // updated index and write again.
-    if (this.dirty && !this.timer) {
-      this.timer = setTimeout(() => {
-        this.timer = null
-        void this.flush()
-      }, DEBOUNCE_MS)
-      this.timer.unref?.()
-    }
-  }
-}
-
-async function writeAtomic(dir: string, file: string, data: SessionMeta[]): Promise<void> {
-  await fs.mkdir(dir, { recursive: true })
-  const tmp = `${file}.${process.pid}.tmp`
-  // Pretty-print so the file is human-inspectable in ~/.claude-react-web.
-  await fs.writeFile(tmp, JSON.stringify(data, null, 2), { encoding: 'utf8', mode: 0o600 })
-  await fs.rename(tmp, file)
 }
 
 /** Narrow and normalise untrusted JSON into a SessionMeta, or null if it's
@@ -194,6 +127,7 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     title: typeof r.title === 'string' ? r.title : undefined,
     messageCount: typeof r.messageCount === 'number' ? r.messageCount : 0,
     terminated: typeof r.terminated === 'boolean' ? r.terminated : false,
+    terminatedReason: typeof r.terminatedReason === 'string' ? r.terminatedReason : undefined,
     error: typeof r.error === 'string' ? r.error : undefined,
     lastTurnAt: typeof r.lastTurnAt === 'number' ? r.lastTurnAt : undefined,
   }

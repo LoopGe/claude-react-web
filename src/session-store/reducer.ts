@@ -44,7 +44,7 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
     case 'ERROR':
       return { ...state, error: action.message }
     case 'TRACK_SENT_TURN':
-      return { ...state, queuedAhead: Math.max(state.queuedAhead, 1) }
+      return { ...state, queuedAhead: state.queuedAhead + 1 }
     case 'LIVE_TURN_FLUSH':
       if (!state.liveTurn || !state.liveTurn.dirty) return state
       return {
@@ -87,6 +87,18 @@ function replayReplace(
 function applyOptimisticUserMessage(state: SessionState, message: SdkMessage): SessionState {
   const item = toTranscriptItem(message, state.items[state.items.length - 1])
   if (!item) return state
+
+  // If the server's WS echo already arrived and was appended to the
+  // transcript before this optimistic insert ran, don't add a duplicate.
+  // Just point pendingUserMessageId at the existing entry.
+  // NOTE: This uses shallow === on `content`. For plain text strings
+  // this works correctly. For multimodal messages (arrays), the ref
+  // comparison always returns false — the safe direction (no false dedup).
+  const last = state.items[state.items.length - 1]
+  if (last && last.msg.type === 'user' && last.msg.message?.content === message.message?.content) {
+    return { ...state, pendingUserMessageId: last.id }
+  }
+
   return {
     ...state,
     items: [...state.items, item],
@@ -113,7 +125,7 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
 
   let next: SessionState = {
     ...state,
-    eventLog: [...state.eventLog, message],
+    eventCount: state.eventCount + 1,
   }
 
   if (typeof message.uuid === 'string') {
@@ -135,6 +147,10 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
       ...next,
       queuedAhead: 0,
       liveTurn: null,
+      // Clear any lingering optimistic placeholder — the result frame
+      // means the SDK has finished processing, so no server echo for
+      // the user message is expected anymore.
+      pendingUserMessageId: null,
     }
   }
 
@@ -211,7 +227,7 @@ function updateLiveTurn(state: SessionState, message: SdkMessage): SessionState 
   let liveTurn = state.liveTurn
   if (!liveTurn) {
     liveTurn = {
-      turnId: typeof message.uuid === 'string' ? message.uuid : `turn:${state.eventLog.length + 1}`,
+      turnId: typeof message.uuid === 'string' ? message.uuid : `turn:${state.eventCount + 1}`,
       phase: null,
       textBuffer: '',
       flushedText: '',

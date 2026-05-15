@@ -123,7 +123,7 @@ describe('WebSocket multiplexer', () => {
     dir = mkdtempSync(join(tmpdir(), 'claude-rw-ws-'))
     store = new SessionStore({ stateDir: dir })
     await store.load()
-    sm = new SessionManager({ store })
+    sm = new SessionManager({ store, warmPoolSize: 0 })
     server = createServer()
     shutdownWs = attachWebSocket(server, sm)
     await new Promise<void>((resolve) => {

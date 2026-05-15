@@ -88,8 +88,9 @@ export function __setConfigForTest(overrides: Partial<ServerConfig>): void {
 
 /**
  * Load config from `<stateDir>/config.json`, replacing the config object
- * with a frozen merge of defaults + file values. If the file is missing
- * or malformed, defaults are used silently.
+ * with a frozen merge of defaults + file values. If the file is missing a
+ * starter config is scaffolded; if it is malformed, defaults are used
+ * silently.
  */
 export async function loadConfig(stateDir: string): Promise<void> {
   const file = join(stateDir, 'config.json')
@@ -97,7 +98,29 @@ export async function loadConfig(stateDir: string): Promise<void> {
   try {
     raw = await fs.readFile(file, 'utf8')
   } catch {
-    return // file doesn't exist — keep defaults
+    // File doesn't exist — scaffold a starter config so the user has a
+    // concrete file to edit (fill in authToken, adjust models, etc.).
+    try {
+      await fs.mkdir(stateDir, { recursive: true })
+      const scaffold = JSON.stringify(
+        {
+          authToken: '',
+          baseUrl: 'https://api.anthropic.com',
+          modelList: config.modelList.slice(),
+          recapModel: config.recapModel,
+          maxUploadBytes: config.maxUploadBytes,
+          historyCap: config.historyCap,
+          maxOpenPanels: config.maxOpenPanels,
+        },
+        null,
+        2,
+      )
+      await fs.writeFile(file, scaffold, 'utf8')
+      console.log(`[config] created ${file} — fill in authToken to get started`)
+    } catch (err) {
+      console.warn(`[config] could not scaffold ${file}:`, (err as Error).message)
+    }
+    return
   }
 
   let parsed: unknown

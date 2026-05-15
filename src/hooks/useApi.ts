@@ -54,7 +54,9 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
     if (!res.ok) throw toApiError(res, body)
     return body as T
   } catch (err) {
-    if (err instanceof DOMException && err.name === 'AbortError') {
+    // Use duck-typing instead of `err instanceof DOMException` to avoid
+    // ReferenceError in environments where DOMException is not defined.
+    if (err instanceof Error && err.name === 'AbortError') {
       const reason = callerSignal?.aborted
         ? 'Request cancelled'
         : `Request timed out after ${DEFAULT_TIMEOUT_MS / 1000}s`

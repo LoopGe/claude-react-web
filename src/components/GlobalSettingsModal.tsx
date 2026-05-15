@@ -75,15 +75,25 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
     return () => { ac.abort() }
   }, [])
 
-  // Load MCP servers
-  const loadMcp = useCallback(async () => {
+  // Load MCP servers on mount (with proper cleanup)
+  useEffect(() => {
+    const ac = new AbortController()
+    ;(async () => {
+      try {
+        const r = await api.get<{ servers: McpServerConfigMeta[] }>('/mcp-config', { signal: ac.signal })
+        setMcpServers(r.servers)
+      } catch { /* no global config is fine */ }
+    })()
+    return () => { ac.abort() }
+  }, [])
+
+  // Imperative refresh for delete/toggle/save handlers
+  const refreshMcp = useCallback(async () => {
     try {
       const r = await api.get<{ servers: McpServerConfigMeta[] }>('/mcp-config')
       setMcpServers(r.servers)
     } catch { /* no global config is fine */ }
   }, [])
-
-  useEffect(() => { void loadMcp() }, [loadMcp])
 
   const handleSave = async () => {
     setSaving(true)
@@ -129,7 +139,7 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
   const deleteMcpServer = async (name: string) => {
     try {
       await api.delete(`/mcp-config/${encodeURIComponent(name)}`)
-      await loadMcp()
+      await refreshMcp()
     } catch (e) {
       setErr((e as Error).message)
     }
@@ -138,7 +148,7 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
   const toggleMcpServer = async (name: string, enabled: boolean) => {
     try {
       await api.post(`/mcp-config/${encodeURIComponent(name)}/toggle`, { enabled })
-      await loadMcp()
+      await refreshMcp()
     } catch (e) {
       setErr((e as Error).message)
     }
@@ -243,7 +253,7 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
         {showMcpInstaller && (
           <McpInstaller
             server={mcpInstallerEdit}
-            onSave={() => { setShowMcpInstaller(false); setMcpInstallerEdit(undefined); void loadMcp() }}
+            onSave={() => { setShowMcpInstaller(false); setMcpInstallerEdit(undefined); void refreshMcp() }}
             onClose={() => { setShowMcpInstaller(false); setMcpInstallerEdit(undefined) }}
           />
         )}

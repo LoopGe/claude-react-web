@@ -327,7 +327,7 @@ export const Composer = memo(function Composer({
         />
         {pickerOpen && filteredCommands.length > 0 && (
           <CommandPicker
-            commands={commands!}
+            commands={filteredCommands}
             query={pickerQuery}
             selectedIndex={pickerIndex}
             anchorRef={textareaRef}

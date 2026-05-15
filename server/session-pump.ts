@@ -108,7 +108,9 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         session.subscribers.size > 0
       ) {
         void session.query.getContextUsage().then(
-          (usage) => session.contextUsagePushable.push(usage),
+          (usage) => {
+            for (const sub of session.contextUsageSubscribers) sub.push(usage)
+          },
           () => { /* ignore — session may have ended between fire and resolve */ },
         )
       }
@@ -170,7 +172,12 @@ async function cleanupPump(session: Session, deps: PumpDeps): Promise<void> {
 
     session.running = false
     session.terminated = true
-    session.terminatedReason = session.error ? 'query_error' : 'query_ended'
+    // Only set terminatedReason if it hasn't already been set by
+    // handleProcessExit (which provides more specific values like
+    // 'process_killed' or 'process_exited').
+    if (!session.terminatedReason) {
+      session.terminatedReason = session.error ? 'query_error' : 'query_ended'
+    }
     // Reset pending turns so the UI doesn't stay stuck in "working"
     // when the SDK merged queued messages into fewer turns than were
     // sent, or the session ended before emitting a result for every
@@ -180,7 +187,10 @@ async function cleanupPump(session: Session, deps: PumpDeps): Promise<void> {
     deps.denyPendingPermissions(session)
     for (const sub of session.subscribers.values()) sub.end()
     session.subscribers.clear()
-    session.contextUsagePushable.end()
+    for (const sub of session.permissionSubscribers.values()) sub.end()
+    session.permissionSubscribers.clear()
+    for (const sub of session.contextUsageSubscribers) sub.end()
+    session.contextUsageSubscribers.clear()
     // Persist the terminal state so the UI shows the transcript as
     // "ended" after a reload, and resume() can refuse to re-spawn it.
     deps.persist(session)

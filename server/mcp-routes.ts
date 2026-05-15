@@ -13,7 +13,7 @@ import {
   type StoredMcpServer,
   type McpServerInput,
 } from './mcp-config.js'
-import { HttpError } from './session-manager.js'
+import { HttpError } from './errors.js'
 
 export function buildMcpConfigRouter(store: McpConfigStore): Hono {
   const app = new Hono()

@@ -291,11 +291,11 @@ describe('useChatStream', () => {
     })
     expect(result.current.queuedAhead).toBe(1)
 
-    // Calling again should stay at 1 (cap).
+    // Calling again should increment (shows queue depth to user).
     act(() => {
       result.current.trackSentTurn()
     })
-    expect(result.current.queuedAhead).toBe(1)
+    expect(result.current.queuedAhead).toBe(2)
   })
 
   it('resets queuedAhead on result message', async () => {
