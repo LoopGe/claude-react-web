@@ -75,6 +75,73 @@ describe('liteContextUsageFromResult', () => {
     expect(out!.totalTokens).toBe(500)
   })
 
+  it('uses the last iteration when usage.iterations is present', () => {
+    // Multi-iteration turn (server-tool-use loop, subagent recursion).
+    // Top-level usage sums across iterations and would massively
+    // overstate context fill — we want only the last call's prompt.
+    const msg = makeResult({
+      usage: {
+        // Cumulative — what we MUST NOT use.
+        input_tokens: 1808000,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        iterations: [
+          { type: 'message', input_tokens: 600000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1000 },
+          { type: 'message', input_tokens: 700000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1000 },
+          // Last iteration — the real context-window number.
+          { type: 'message', input_tokens: 50000, cache_creation_input_tokens: 100, cache_read_input_tokens: 400000, output_tokens: 1000 },
+        ],
+      },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 1000000 } },
+    })
+    const out = liteContextUsageFromResult(msg)
+    expect(out!.totalTokens).toBe(450100)
+    expect(out!.maxTokens).toBe(1000000)
+    expect(out!.percentage).toBeCloseTo((450100 / 1000000) * 100, 5)
+  })
+
+  it('falls back to top-level usage when iterations is empty or null', () => {
+    const msgEmpty = makeResult({
+      usage: {
+        input_tokens: 1000,
+        cache_creation_input_tokens: 200,
+        cache_read_input_tokens: 5000,
+        iterations: [],
+      },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+    })
+    expect(liteContextUsageFromResult(msgEmpty)!.totalTokens).toBe(6200)
+
+    const msgNull = makeResult({
+      usage: {
+        input_tokens: 1000,
+        cache_creation_input_tokens: 200,
+        cache_read_input_tokens: 5000,
+        iterations: null,
+      },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+    })
+    expect(liteContextUsageFromResult(msgNull)!.totalTokens).toBe(6200)
+  })
+
+  it('handles iteration cache fields that are explicitly null', () => {
+    // The Anthropic Beta types declare cache_*_input_tokens as `number | null`
+    // on the top-level Usage; the iteration variants are `number` but defensive
+    // coalescing matches the top-level path.
+    const msg = makeResult({
+      usage: {
+        input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        iterations: [
+          { type: 'message', input_tokens: 1500, cache_creation_input_tokens: null, cache_read_input_tokens: null, output_tokens: 0 },
+        ],
+      },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+    })
+    expect(liteContextUsageFromResult(msg)!.totalTokens).toBe(1500)
+  })
+
   it('picks the first model entry with a positive contextWindow', () => {
     const msg = makeResult({
       usage: { input_tokens: 100 },

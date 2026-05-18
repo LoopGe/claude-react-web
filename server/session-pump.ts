@@ -238,20 +238,32 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
   // and broader than what we read here — cast through unknown so we can
   // pick out only the numeric fields we care about. Missing fields fall
   // back to 0 below.
+  type IterationUsage = {
+    input_tokens?: number
+    cache_creation_input_tokens?: number | null
+    cache_read_input_tokens?: number | null
+  }
   const result = msg as unknown as {
-    usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }
+    usage?: IterationUsage & { iterations?: IterationUsage[] | null }
     modelUsage?: Record<string, { contextWindow?: number }>
   }
   const usage = result.usage
   const modelUsage = result.modelUsage
   if (!usage || !modelUsage) return null
-  // Total prompt size = non-cached input + cache writes + cache reads.
-  // The Anthropic API reports these as three buckets that together cover
-  // every prompt token; summing yields the prompt the model actually saw.
+  // Context-window usage = the prompt size of the **last** sampling
+  // iteration, NOT the cumulative across iterations. The top-level
+  // `usage.input_tokens + cache_creation + cache_read` sums every API
+  // call this turn made (server-tool-use loops, subagent recursion,
+  // plan-mode hops), which can easily exceed the model's context cap.
+  // Per the Anthropic SDK docs: "Calculate the true context window size
+  // from the last iteration."
+  const lastIter = usage.iterations && usage.iterations.length > 0
+    ? usage.iterations[usage.iterations.length - 1]
+    : usage
   const totalTokens =
-    (usage.input_tokens ?? 0) +
-    (usage.cache_creation_input_tokens ?? 0) +
-    (usage.cache_read_input_tokens ?? 0)
+    (lastIter.input_tokens ?? 0) +
+    (lastIter.cache_creation_input_tokens ?? 0) +
+    (lastIter.cache_read_input_tokens ?? 0)
   // Pick the model with a contextWindow set. In practice modelUsage has
   // exactly one entry per turn — but we iterate defensively.
   let model = ''

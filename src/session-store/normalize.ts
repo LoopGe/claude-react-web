@@ -94,7 +94,7 @@ export function getSubagentStarts(msg: SdkMessage): ActiveSubagent[] {
   const out: ActiveSubagent[] = []
   for (const block of getBlocks(msg)) {
     if (block.type !== 'tool_use' || !SUBAGENT_TOOL_NAMES.has(block.name ?? '')) continue
-    const id = typeof block.id === 'string' ? block.id : typeof block.tool_use_id === 'string' ? block.tool_use_id : undefined
+    const id = typeof block.tool_use_id === 'string' ? block.tool_use_id : typeof block.id === 'string' ? block.id : undefined
     if (!id) continue
     const input = block.input as Record<string, unknown> | undefined
     const label =

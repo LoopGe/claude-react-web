@@ -151,6 +151,11 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
       // means the SDK has finished processing, so no server echo for
       // the user message is expected anymore.
       pendingUserMessageId: null,
+      // Clear active subagents at turn end. Any entries still marked
+      // 'running' are stale — their tool_result either didn't arrive
+      // or wasn't matched. Without this, stale chips persist across
+      // turns because the Map is never pruned.
+      activeSubagents: new Map(),
     }
   }
 

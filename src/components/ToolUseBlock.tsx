@@ -54,10 +54,10 @@ export function ToolUseBlock({ block }: { block: Block }) {
   if (name && SUBAGENT_TOOL_NAMES.has(name)) {
     const blockAny = block as { id?: unknown }
     const id =
-      typeof blockAny.id === 'string'
-        ? blockAny.id
-        : typeof block.tool_use_id === 'string'
-          ? block.tool_use_id
+      typeof block.tool_use_id === 'string'
+        ? block.tool_use_id
+        : typeof blockAny.id === 'string'
+          ? blockAny.id
           : undefined
     if (id) {
       const fallback =
