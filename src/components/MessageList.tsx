@@ -45,6 +45,14 @@ interface Props {
    *  scrolled into view and visually highlighted as the active search
    *  result. -1 means no active result. */
   searchActiveMsgIdx?: number
+  /** Filter mode for parent_tool_use_id:
+   *  - undefined / null: only show root messages (parent_tool_use_id == null).
+   *    This is the default for the main transcript — subagent-internal
+   *    messages are hidden and replaced by SubagentCards in their parent's
+   *    tool_use slot.
+   *  - string: only show messages whose parent_tool_use_id matches.
+   *    Used by SubagentOverlay to render one subagent's inner conversation. */
+  parentToolUseIdFilter?: string | null
 }
 
 /** An item in the Virtuoso data array. Pre-computing isCompactSummary
@@ -57,7 +65,7 @@ interface RenderableItem {
   itemIndex: number
 }
 
-export function MessageList({ items, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, planStatus = new Map(), searchQuery, searchActiveMsgIdx }: Props) {
+export function MessageList({ items, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, planStatus = new Map(), searchQuery, searchActiveMsgIdx, parentToolUseIdFilter }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -88,12 +96,26 @@ export function MessageList({ items, showSystemEvents = false, pendingInterruptR
     const out: RenderableItem[] = []
     for (let i = 0; i < items.length; i++) {
       const item = items[i]
+      const parent = (item.msg as Record<string, unknown>).parent_tool_use_id
+      // Filter by parent_tool_use_id:
+      //  - main transcript (filter == null): show only root messages
+      //    — subagent children are surfaced via SubagentCard placeholders
+      //    in their parent's tool_use slot, and the full inner stream
+      //    lives in SubagentOverlay.
+      //  - overlay (filter == "<id>"): show only direct children of that
+      //    subagent. Nested subagents inside it surface as SubagentCards
+      //    again, allowing drill-down.
+      if (parentToolUseIdFilter == null) {
+        if (parent != null) continue
+      } else {
+        if (parent !== parentToolUseIdFilter) continue
+      }
       if (showSystemEvents || !item.hiddenByDefault) {
         out.push({ msg: item.msg, isCompactSummary: item.isCompactSummary, itemIndex: i })
       }
     }
     return out
-  }, [items, showSystemEvents])
+  }, [items, showSystemEvents, parentToolUseIdFilter])
 
   // Reverse map: full items[] index → Virtuoso (renderableItems) index.
   // Needed because search indices reference the full, unfiltered list.
@@ -123,15 +145,31 @@ export function MessageList({ items, showSystemEvents = false, pendingInterruptR
   // Track how many new messages arrived so the unseen badge stays accurate.
   // Virtuoso's followOutput handles the actual scrolling.
   //
-  // IMPORTANT: we track `items.length` from the normalized transcript rather than
-  // `renderableItems.length` (the filtered/virtuoso-rendered list). Toggling
-  // `showSystemEvents` or a compact-boundary rearranging the filtered
-  // output changes `renderableItems.length` without any new messages arriving,
-  // which would create a spurious delta and inflate the unseen count.
+  // We count items that match the current `parentToolUseIdFilter` but
+  // *not* `hiddenByDefault` / `showSystemEvents` — toggling system events
+  // changes the rendered length without new messages arriving, which would
+  // inflate the badge. Counting by parent dodges the same trap for the
+  // main transcript: subagent-internal frames stream in continuously while
+  // an Agent runs, but they're hidden in the main list, so they shouldn't
+  // tick the badge there. (The overlay has its own MessageList instance
+  // with the matching filter, so its badge counts correctly too.)
+  const trackedCount = useMemo(() => {
+    let count = 0
+    for (const item of items) {
+      const parent = (item.msg as Record<string, unknown>).parent_tool_use_id
+      if (parentToolUseIdFilter == null) {
+        if (parent != null) continue
+      } else {
+        if (parent !== parentToolUseIdFilter) continue
+      }
+      count++
+    }
+    return count
+  }, [items, parentToolUseIdFilter])
   const lastCountRef = useRef(0)
   useEffect(() => {
-    const delta = items.length - lastCountRef.current
-    lastCountRef.current = items.length
+    const delta = trackedCount - lastCountRef.current
+    lastCountRef.current = trackedCount
     if (delta <= 0) return
     if (atBottomRef.current) {
       if (unseenCountRef.current !== 0) {
@@ -141,7 +179,7 @@ export function MessageList({ items, showSystemEvents = false, pendingInterruptR
     } else {
       setUnseenCount((n) => n + delta)
     }
-  }, [items.length])
+  }, [trackedCount])
 
   // Viewport-shrink trigger: the TodoChecklist panel appears/grows below
   // the scroll container, which eats vertical space. Without this
@@ -842,11 +880,16 @@ export function WorkingBubble({
   activeSubagents,
   tokenRate,
   activePhase,
+  onOpenSubagent,
 }: {
   startedAt?: number
   activeSubagents?: ActiveSubagent[]
   tokenRate?: number | null
   activePhase?: import('../hooks/useChatStream').ActivePhase
+  /** When provided, each subagent chip becomes a button that calls this
+   *  with the chip's toolUseId — the host (Chat) opens the overlay
+   *  pointed at that subagent. */
+  onOpenSubagent?: (toolUseId: string) => void
 }) {
   // Use the server-provided turn-start timestamp when available — this
   // survives component remounts (e.g. group switches). Fall back to
@@ -867,6 +910,11 @@ export function WorkingBubble({
   }, [startedAt])
 
   const hasSubagents = activeSubagents && activeSubagents.length > 0
+  // Anchor "now" once per render so each subagent chip below can derive
+  // its own elapsed without reading the ref inside the map callback
+  // (which lint flags as a render-time ref read).
+  // eslint-disable-next-line react-hooks/refs -- deriving a render anchor; ref tracks the turn-start timestamp
+  const nowAnchor = startedAtRef.current + elapsedMs
 
   return (
     <div
@@ -900,16 +948,32 @@ export function WorkingBubble({
         <span className="working-bar-sep" aria-hidden />
       )}
       {/* Show at most MAX_VISIBLE_SUBAGENTS chips to avoid overcrowding;
-          a "+N more" badge shows the remainder count. */}
-      {activeSubagents?.slice(0, MAX_VISIBLE_SUBAGENTS).map((a) => (
-        <span key={a.toolUseId} className="subagent-chip" title={a.label}>
-          <span className="subagent-chip-dots" aria-hidden>
-            <span />
-            <span />
-          </span>
-          <span className="subagent-chip-label">{a.label}</span>
-        </span>
-      ))}
+          a "+N more" badge shows the remainder count. Each chip re-renders
+          with the bubble's 1s tick, so chip elapsed updates for free. */}
+      {activeSubagents?.slice(0, MAX_VISIBLE_SUBAGENTS).map((a) => {
+        const subElapsed = a.startedAt ? Math.max(0, nowAnchor - a.startedAt) : null
+        const clickable = !!onOpenSubagent
+        const Tag = clickable ? 'button' : 'span'
+        return (
+          <Tag
+            key={a.toolUseId}
+            type={clickable ? 'button' : undefined}
+            className={`subagent-chip${clickable ? ' subagent-chip-clickable' : ''}`}
+            title={clickable ? `Open subagent details — ${a.label}` : a.label}
+            onClick={clickable ? () => onOpenSubagent(a.toolUseId) : undefined}
+          >
+            <span className="subagent-chip-dots" aria-hidden>
+              <span />
+              <span />
+            </span>
+            <span className="subagent-chip-label">{a.label}</span>
+            {subElapsed != null && (
+              <span className="subagent-chip-timer">{formatElapsed(subElapsed)}</span>
+            )}
+            {clickable && <span className="subagent-chip-open" aria-hidden>↗</span>}
+          </Tag>
+        )
+      })}
       {activeSubagents && activeSubagents.length > MAX_VISIBLE_SUBAGENTS && (
         <span className="subagent-overflow">
           +{activeSubagents.length - MAX_VISIBLE_SUBAGENTS} more

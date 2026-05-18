@@ -23,6 +23,8 @@ import { ContextBar } from './ContextBar'
 import { MessageList, WorkingBubble } from './MessageList'
 import { PermissionDialog } from './PermissionDialog'
 import { QuestionDialog } from './QuestionDialog'
+import { SubagentOverlay } from './SubagentOverlay'
+import { SubagentProvider } from '../hooks/useSubagentContext'
 import { TodoChecklist } from './TodoChecklist'
 import { useSessionRecap } from '../hooks/useSessionRecap'
 import { MessageSearch } from './MessageSearch'
@@ -183,6 +185,30 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
   })
   const attachments = useAttachments(session.id, session.cwd)
   const pastedImages = usePastedImages()
+
+  // ── Subagent overlay state ────────────────────────────────
+  // Stack of toolUseIds: empty = closed; otherwise the last entry is the
+  // currently-shown subagent. Pushed when the user clicks a SubagentCard
+  // (either in the main transcript or inside the overlay itself, for
+  // nested drill-down). Popped on the back button; cleared on close.
+  const [subagentStack, setSubagentStack] = useState<string[]>([])
+  const openSubagent = useCallback((toolUseId: string) => {
+    setSubagentStack((prev) => {
+      // Don't push the same id twice in a row (idempotent open).
+      if (prev[prev.length - 1] === toolUseId) return prev
+      return [...prev, toolUseId]
+    })
+  }, [])
+  const popSubagent = useCallback(() => {
+    setSubagentStack((prev) => prev.slice(0, -1))
+  }, [])
+  const closeSubagent = useCallback(() => setSubagentStack([]), [])
+  // Memoize the provider value so SubagentCard's `memo()` survives
+  // unrelated Chat re-renders. Both providers below share this object.
+  const subagentCtxValue = useMemo(
+    () => ({ index: stream.subagentIndex, messages: stream.messages, open: openSubagent }),
+    [stream.subagentIndex, stream.messages, openSubagent],
+  )
 
   // ── In-chat search ──────────────────────────────────────────
   const [searchOpen, setSearchOpen] = useState(false)
@@ -483,16 +509,18 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
         activeIndex={searchActiveIdx}
       />
 
+      <SubagentProvider value={subagentCtxValue}>
         <MessageList
-        items={itemsWithRecapLoading}
-        showSystemEvents={showSystemEvents}
-        pendingInterruptRef={pendingInterruptRef}
-        replayReady={stream.replayReady}
-        streamingContent={stream.streamingContent}
-        planStatus={stream.planStatus}
-        searchQuery={searchOpen ? debouncedQuery : ''}
-        searchActiveMsgIdx={searchMatches[searchActiveIdx] ?? -1}
-      />
+          items={itemsWithRecapLoading}
+          showSystemEvents={showSystemEvents}
+          pendingInterruptRef={pendingInterruptRef}
+          replayReady={stream.replayReady}
+          streamingContent={stream.streamingContent}
+          planStatus={stream.planStatus}
+          searchQuery={searchOpen ? debouncedQuery : ''}
+          searchActiveMsgIdx={searchMatches[searchActiveIdx] ?? -1}
+        />
+      </SubagentProvider>
 
       <TodoChecklist messages={stream.messages} working={session.working} />
 
@@ -516,6 +544,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
           activeSubagents={stream.activeSubagents}
           tokenRate={stream.tokenRate}
           activePhase={stream.activePhase}
+          onOpenSubagent={openSubagent}
         />
       )}
 
@@ -626,6 +655,19 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
             onPluginsReloaded={() => { refreshCommands(); refreshAgents() }}
           />
         </div>
+      )}
+
+      {subagentStack.length > 0 && (
+        <SubagentProvider value={subagentCtxValue}>
+          <SubagentOverlay
+            stack={subagentStack}
+            items={stream.items}
+            index={stream.subagentIndex}
+            onClose={closeSubagent}
+            onPop={popSubagent}
+            showSystemEvents={showSystemEvents}
+          />
+        </SubagentProvider>
       )}
     </div>
   )

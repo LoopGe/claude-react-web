@@ -6,6 +6,9 @@
 
 import { Markdown } from './Markdown'
 import { usePlanStatus } from '../hooks/usePlanStatus'
+import { SubagentCard } from './SubagentCard'
+
+const SUBAGENT_TOOL_NAMES = new Set(['Agent', 'Task', 'Explore'])
 
 interface Block {
   type: string
@@ -40,6 +43,29 @@ export function ToolUseBlock({ block }: { block: Block }) {
           ? blockAny.id
           : undefined
     return <PlanCard input={input} toolUseId={id} />
+  }
+
+  // Agent / Task / Explore — render a SubagentCard placeholder instead
+  // of the raw JSON dump. The card is the persistent inline entry point
+  // to the SubagentOverlay (per-panel right-side overlay holding the
+  // subagent's full internal conversation). Without this, the subagent's
+  // child messages would either pollute the main transcript or vanish
+  // entirely after we filter parent_tool_use_id != null out of the list.
+  if (name && SUBAGENT_TOOL_NAMES.has(name)) {
+    const blockAny = block as { id?: unknown }
+    const id =
+      typeof blockAny.id === 'string'
+        ? blockAny.id
+        : typeof block.tool_use_id === 'string'
+          ? block.tool_use_id
+          : undefined
+    if (id) {
+      const fallback =
+        (typeof input?.description === 'string' && input.description) ||
+        (typeof input?.prompt === 'string' && truncatePrompt(input.prompt as string)) ||
+        undefined
+      return <SubagentCard toolUseId={id} fallbackLabel={fallback} />
+    }
   }
 
   return (
@@ -330,4 +356,8 @@ function formatJson(v: unknown): string {
   } catch {
     return String(v)
   }
+}
+
+function truncatePrompt(s: string): string {
+  return s.length <= 80 ? s : `${s.slice(0, 80)}…`
 }

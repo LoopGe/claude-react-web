@@ -254,7 +254,10 @@ function buildSnapshot(state: SessionState): SessionSnapshot {
     queuedAhead: state.queuedAhead,
     permissionDecisions: state.permissionDecisions,
     planStatus: state.planStatus,
-    activeSubagents: Array.from(state.activeSubagents.values()),
+    activeSubagents: Array.from(state.activeSubagents.values()).filter(
+      (s) => s.status === 'running',
+    ),
+    subagentIndex: state.activeSubagents,
     lastMessageUuid: state.lastMessageUuid,
   }
 }

@@ -202,18 +202,49 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
   const starts = getSubagentStarts(message)
   if (starts.length > 0) {
     activeSubagents = new Map(activeSubagents)
-    for (const subagent of starts) activeSubagents.set(subagent.toolUseId, subagent)
+    // Stamp `startedAt` once per subagent so the chip can show an
+    // elapsed time. Preserve any existing value if we re-encounter the
+    // same toolUseId (e.g. duplicate dispatch during replay).
+    const now = Date.now()
+    for (const subagent of starts) {
+      const existing = activeSubagents.get(subagent.toolUseId)
+      activeSubagents.set(subagent.toolUseId, {
+        ...subagent,
+        startedAt: existing?.startedAt ?? subagent.startedAt ?? now,
+        endedAt: existing?.endedAt,
+        status: existing?.status ?? 'running',
+      })
+    }
     changed = true
   }
 
   const toolResultIds = getToolResultIds(message)
   if (toolResultIds.length > 0 && activeSubagents.size > 0) {
-    let removed = false
-    if (activeSubagents === state.activeSubagents) activeSubagents = new Map(activeSubagents)
+    // Don't delete on tool_result — keep the record around so the
+    // overlay can be reopened after completion. Just flip status to
+    // 'done' (or 'interrupted'/'rejected' if we can detect from content)
+    // and stamp endedAt. The "running" filter elsewhere drops them
+    // from the WorkingBubble chip row automatically.
+    //
+    // Most turns include tool_results unrelated to subagents, so defer
+    // the Map clone until we actually have a matching id — otherwise
+    // every Bash/Read/Edit hop allocates a fresh Map for nothing.
+    let touched = false
+    const now = Date.now()
     for (const id of toolResultIds) {
-      removed = activeSubagents.delete(id) || removed
+      const existing = activeSubagents.get(id)
+      if (!existing || existing.status !== 'running') continue
+      if (!touched) {
+        if (activeSubagents === state.activeSubagents) activeSubagents = new Map(activeSubagents)
+        touched = true
+      }
+      activeSubagents.set(id, {
+        ...existing,
+        status: 'done',
+        endedAt: now,
+      })
     }
-    changed = changed || removed
+    changed = changed || touched
   }
 
   return changed ? { ...state, planStatus, activeSubagents } : state

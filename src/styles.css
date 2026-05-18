@@ -1886,6 +1886,28 @@ body.resizing-col * {
   font-weight: 500;
   letter-spacing: 0.01em;
 }
+.subagent-chip-timer {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.subagent-chip-open {
+  font-size: 11px;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+  margin-left: 2px;
+}
+.subagent-chip-clickable {
+  border: 1px solid transparent;
+  cursor: pointer;
+  font: inherit;
+}
+.subagent-chip-clickable:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
 /* "+N more" badge when subagents overflow the max-chip limit. */
 .subagent-overflow {
   font-size: 11px;
@@ -1895,6 +1917,161 @@ body.resizing-col * {
   padding: 2px 8px;
   border-radius: 999px;
   white-space: nowrap;
+}
+
+/* Inline subagent placeholder card — replaces the raw tool_use JSON
+   for Agent / Task / Explore. Whole card is a button to keep a single
+   click target consistent with how the chip works in WorkingBubble. */
+.subagent-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 6px 0;
+  padding: 8px 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  color: var(--fg);
+  transition: background 0.12s, border-color 0.12s;
+}
+.subagent-card:hover {
+  background: var(--bg-elev-2);
+  border-color: var(--accent);
+}
+.subagent-card:disabled { cursor: default; opacity: 0.6; }
+.subagent-card-marker { color: var(--fg-muted); flex-shrink: 0; }
+.subagent-card-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+.subagent-card-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+  font-weight: 500;
+}
+.subagent-card-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.subagent-card-status { font-family: inherit; font-size: 12px; }
+.subagent-card-running .subagent-card-status { color: var(--accent); }
+.subagent-card-done    .subagent-card-status { color: var(--ok, var(--accent)); }
+.subagent-card-rejected .subagent-card-status,
+.subagent-card-interrupted .subagent-card-status { color: var(--warn, var(--danger)); }
+.subagent-card-open { color: var(--fg-muted); font-size: 12px; }
+
+/* Subagent overlay — same per-panel pattern as .settings-overlay but
+   pinned to the right half of the column instead of centred. Backdrop
+   covers the rest of the column so the user can click outside the
+   panel to close. */
+.subagent-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  backdrop-filter: blur(2px);
+  display: flex;
+  justify-content: flex-end;
+}
+.subagent-overlay-panel {
+  width: min(50%, 640px);
+  min-width: 320px;
+  height: 100%;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);
+}
+.subagent-overlay-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.subagent-overlay-back,
+.subagent-overlay-close {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.subagent-overlay-back:hover,
+.subagent-overlay-close:hover {
+  border-color: var(--border);
+  color: var(--fg);
+  background: var(--bg-elev);
+}
+.subagent-overlay-back-spacer { width: 28px; flex-shrink: 0; }
+.subagent-overlay-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.subagent-overlay-breadcrumb {
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.subagent-overlay-current-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.subagent-overlay-status {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+}
+.subagent-overlay-status.status-running { color: var(--accent); }
+.subagent-overlay-status.status-done { color: var(--ok, var(--accent)); }
+.subagent-overlay-status.status-rejected,
+.subagent-overlay-status.status-interrupted { color: var(--warn, var(--danger)); }
+.subagent-overlay-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.subagent-overlay-empty {
+  margin: auto;
+  padding: 32px 24px;
+  text-align: center;
+  color: var(--fg-muted);
+  max-width: 360px;
+  font-size: 13px;
 }
 
 .msg.tool { background: var(--msg-tool-bg); border-style: dashed; border-color: var(--msg-tool-border); }

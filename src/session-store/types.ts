@@ -9,10 +9,16 @@ export interface TranscriptItem {
   hiddenByDefault: boolean
 }
 
+export type SubagentStatus = 'running' | 'done' | 'rejected' | 'interrupted'
+
 export interface ActiveSubagent {
   toolUseId: string
   label: string
   startedAt?: number
+  /** Set when the matching tool_result lands. Undefined while running. */
+  endedAt?: number
+  /** Lifecycle status. Drives chip color and overlay header. */
+  status: SubagentStatus
 }
 
 export type PlanStatus = 'pending' | 'approved' | 'rejected'
@@ -83,7 +89,12 @@ export interface SessionSnapshot {
   queuedAhead: number
   permissionDecisions: ReadonlyMap<string, 'allow' | 'deny'>
   planStatus: ReadonlyMap<string, PlanStatus>
+  /** Currently-running subagents only — drives the WorkingBubble chip row. */
   activeSubagents: ActiveSubagent[]
+  /** Full index (running + completed) keyed by toolUseId. Used by the
+   *  SubagentCard placeholder and the SubagentOverlay so completed
+   *  subagents are still inspectable after their tool_result lands. */
+  subagentIndex: ReadonlyMap<string, ActiveSubagent>
   lastMessageUuid: string | null
 }
 

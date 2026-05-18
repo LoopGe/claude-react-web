@@ -41,6 +41,7 @@ export interface ChatStream {
   permissionDecisions: ReadonlyMap<string, 'allow' | 'deny'>
   planStatus: ReadonlyMap<string, PlanStatus>
   activeSubagents: ActiveSubagent[]
+  subagentIndex: ReadonlyMap<string, ActiveSubagent>
   replayReady: boolean
   trackSentTurn: () => void
   /** Optimistically insert the user's message into the transcript so it
@@ -211,6 +212,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       permissionDecisions: snapshot.permissionDecisions,
       planStatus: snapshot.planStatus,
       activeSubagents: snapshot.activeSubagents,
+      subagentIndex: snapshot.subagentIndex,
       replayReady: snapshot.replayReady,
       trackSentTurn,
       insertUserMessage,
