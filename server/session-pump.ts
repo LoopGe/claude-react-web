@@ -86,6 +86,15 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
       }
       const msg = step.value
       const msgSubtype = (msg as unknown as { subtype?: string }).subtype
+      // SDK 0.3 introduced SDKUserMessageReplay — the SDK echoes the
+      // transcript user messages back (internal state reconstruction).
+      // We already broadcast user messages from send()/sendContent(), so
+      // forwarding the replay too would render the same bubble twice.
+      // The `isReplay: true` discriminator is the SDK's own marker.
+      if ((msg as { isReplay?: boolean }).isReplay) {
+        debugLog(`[session ${session.id}] dropping replay user message uuid=${(msg as { uuid?: string }).uuid}`)
+        continue
+      }
       debugLog(
         `[session ${session.id}] msg #${msgCount + 1} received — ` +
         `type=${msg.type}${msgSubtype ? `/${msgSubtype}` : ''} ` +
