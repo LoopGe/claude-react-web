@@ -112,21 +112,18 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
       }
       for (const sub of session.subscribers.values()) sub.push(msg)
       msgCount++
-      // Fire a non-blocking context-usage fetch only at turn boundaries
-      // (`result`). Mid-turn counts are misleading — the SDK hasn't yet
-      // packed the trailing tool results into a finalized prompt, so the
-      // bar would just flicker without telling the user anything useful.
-      // Polling every N messages also amplified IPC traffic linearly with
-      // tool-heavy turns. The on-demand REST endpoint and the subscribe-
-      // time snapshot still cover the cases where the user wants a live
-      // peek mid-turn.
+      // Derive a context-usage snapshot directly from the result's own
+      // `usage` + `modelUsage` payload — no IPC. The result message is
+      // the SDK's authoritative tally for the API call that just landed,
+      // so we get exact numbers for free instead of round-tripping into
+      // the CLI subprocess for getContextUsage(). The full breakdown
+      // (skills/agents/memoryFiles/mcpTools) still comes from the
+      // on-demand REST endpoint when the user opens SettingsPanel.
       if (msg.type === 'result' && session.subscribers.size > 0) {
-        void session.query.getContextUsage().then(
-          (usage) => {
-            for (const sub of session.contextUsageSubscribers) sub.push(usage)
-          },
-          () => { /* ignore — session may have ended between fire and resolve */ },
-        )
+        const usage = liteContextUsageFromResult(msg)
+        if (usage) {
+          for (const sub of session.contextUsageSubscribers) sub.push(usage)
+        }
       }
       // `result` marks a completed turn. Reset pendingTurns to 0 (each
       // result represents exactly one completed turn). If the user has
@@ -210,5 +207,63 @@ async function cleanupPump(session: Session, deps: PumpDeps): Promise<void> {
     deps.persist(session)
   } catch (cleanupErr) {
     console.error(`[session ${session.id}] pump cleanup error:`, cleanupErr)
+  }
+}
+
+/** Subset of getContextUsage's response that ContextBar actually renders.
+ *  See src/hooks/useChatStream.ts:ContextUsage — these are the four fields
+ *  the chat-side bar reads (totalTokens, maxTokens, percentage, model).
+ *  rawMaxTokens is included because ContextBar prefers it over maxTokens. */
+interface LiteContextUsage {
+  totalTokens: number
+  maxTokens: number
+  rawMaxTokens: number
+  percentage: number
+  model: string
+}
+
+/** Build a LiteContextUsage from a `result` SDK message. Returns null when
+ *  the message lacks the expected fields (e.g. result errors before the
+ *  API call landed).
+ *  @internal — exported only for unit tests; not part of the module's
+ *              public API. */
+export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | null {
+  if (msg.type !== 'result') return null
+  // The result message's `usage` and `modelUsage` shapes are SDK-specific
+  // and broader than what we read here — cast through unknown so we can
+  // pick out only the numeric fields we care about. Missing fields fall
+  // back to 0 below.
+  const result = msg as unknown as {
+    usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }
+    modelUsage?: Record<string, { contextWindow?: number }>
+  }
+  const usage = result.usage
+  const modelUsage = result.modelUsage
+  if (!usage || !modelUsage) return null
+  // Total prompt size = non-cached input + cache writes + cache reads.
+  // The Anthropic API reports these as three buckets that together cover
+  // every prompt token; summing yields the prompt the model actually saw.
+  const totalTokens =
+    (usage.input_tokens ?? 0) +
+    (usage.cache_creation_input_tokens ?? 0) +
+    (usage.cache_read_input_tokens ?? 0)
+  // Pick the model with a contextWindow set. In practice modelUsage has
+  // exactly one entry per turn — but we iterate defensively.
+  let model = ''
+  let contextWindow = 0
+  for (const [name, info] of Object.entries(modelUsage)) {
+    if (info?.contextWindow && info.contextWindow > 0) {
+      model = name
+      contextWindow = info.contextWindow
+      break
+    }
+  }
+  if (contextWindow <= 0) return null
+  return {
+    totalTokens,
+    maxTokens: contextWindow,
+    rawMaxTokens: contextWindow,
+    percentage: (totalTokens / contextWindow) * 100,
+    model,
   }
 }
