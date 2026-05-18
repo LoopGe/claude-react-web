@@ -2666,6 +2666,9 @@ body.resizing-col * {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 .perm-headline {
   font-size: 15px;

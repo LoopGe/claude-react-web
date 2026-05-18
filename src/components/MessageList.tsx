@@ -177,7 +177,12 @@ export function MessageList({ items, showSystemEvents = false, pendingInterruptR
         setUnseenCount(0)
       }
     } else {
-      setUnseenCount((n) => n + delta)
+      // Keep the ref in lockstep with state — the scroll-near-bottom
+      // handler reads `unseenCountRef.current` to decide whether to
+      // clear. Updating only state would leave the ref at 0 and the
+      // handler would silently no-op, leaving the badge stuck.
+      unseenCountRef.current += delta
+      setUnseenCount(unseenCountRef.current)
     }
   }, [trackedCount])
 
@@ -241,6 +246,7 @@ export function MessageList({ items, showSystemEvents = false, pendingInterruptR
 
   const jumpToBottom = useCallback(() => {
     virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'smooth' })
+    unseenCountRef.current = 0
     setUnseenCount(0)
   }, [])
 
