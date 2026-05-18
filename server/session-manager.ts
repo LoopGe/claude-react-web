@@ -144,6 +144,9 @@ export class SessionManager {
       // pump breaks out of iter.next(), but DON'T set terminated — let
       // cleanupPump handle auto-resume or termination.
       console.log(`[session ${sessionId}] CLI exited cleanly (code=0) — deferring to pump cleanup`)
+      // Mark as exiting so the GC timer's checkStuck() skips this session
+      // during the window between abort and cleanupPump finishing.
+      s.exiting = true
       s.abortController.abort()
       return
     }
@@ -1115,6 +1118,7 @@ export class SessionManager {
     session.query = q
     session.abortController = newAbort
     session.running = true
+    session.exiting = false
     this.autoResumeCounts.set(session, resumeCount + 1)
 
     // Broadcast the session update so clients know it's alive again
@@ -1161,7 +1165,7 @@ export class SessionManager {
    *     respond before kicking again. After that escalate to unload. */
   private checkStuck(id: string, s: Session, now: number): void {
     if (this.workingStuckMs <= 0) return
-    if (!s.running || s.terminated) return
+    if (!s.running || s.terminated || s.exiting) return
 
     const idleSince = now - s.lastActivityAt
     if (idleSince <= this.workingStuckMs) return

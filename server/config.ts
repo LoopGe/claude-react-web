@@ -216,8 +216,36 @@ export async function readConfigFile(stateDir: string): Promise<Record<string, u
  * Merge partial updates into config.json on disk, then hot-reload the
  * in-memory config via loadConfig(). Only fields listed in
  * WRITABLE_CONFIG_KEYS are accepted.
+ *
+ * Writes are serialized via a promise chain so that concurrent callers
+ * (e.g. two browser tabs hitting PUT /config) cannot read-modify-write
+ * the same snapshot and silently overwrite each other's changes.
  */
-export async function updateConfigFile(
+let configWriteQueue: Promise<void> = Promise.resolve()
+
+export function updateConfigFile(
+  stateDir: string,
+  updates: Record<string, unknown>,
+): Promise<void> {
+  // Two concerns to balance:
+  //   1. The caller MUST see the real outcome of THIS write (resolve or
+  //      reject) — otherwise we'd hide write failures from the HTTP layer.
+  //   2. The queue MUST NOT be poisoned by a prior failure. If a previous
+  //      `doUpdateConfigFile` rejected, a naive `queue.then(thisWrite)`
+  //      would skip the handler and propagate the old rejection to every
+  //      subsequent caller forever — one transient ENOSPC / EPERM and
+  //      every later config write silently no-ops.
+  //
+  // Solution: the queue swallows errors so it stays fulfilled, but we
+  // return a separate promise that exposes the current write's outcome.
+  const thisWrite = configWriteQueue.then(() => doUpdateConfigFile(stateDir, updates))
+  configWriteQueue = thisWrite.catch(() => {
+    // Don't propagate — the next caller's chained .then() must still run.
+  })
+  return thisWrite
+}
+
+async function doUpdateConfigFile(
   stateDir: string,
   updates: Record<string, unknown>,
 ): Promise<void> {

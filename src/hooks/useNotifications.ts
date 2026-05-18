@@ -25,6 +25,16 @@ export interface NotifyPayload {
   /** Coalesce key — repeated notifications with the same tag replace the
    *  previous one instead of stacking. Usually pass the session id. */
   tag?: string
+  /** Suppress the OS notification sound. WARNING: on Windows + recent
+   *  Chrome this can also suppress the toast itself — `silent: true`
+   *  marks the notification as low-priority and Windows Action Center
+   *  may filter it out. Use only for non-actionable status updates
+   *  (e.g. "turn complete") where the sound is the main annoyance. */
+  silent?: boolean
+  /** Keep the toast visible until the user dismisses it instead of
+   *  auto-hiding after a few seconds. Use for actionable notifications
+   *  (permission requests) so the user has time to notice them. */
+  requireInteraction?: boolean
   /** Called if the user clicks the notification. Typical use: focus the
    *  window + navigate to the session that produced the event. */
   onClick?: () => void
@@ -132,10 +142,11 @@ export function useNotifications(): UseNotifications {
         const n = new Notification(payload.title, {
           body: payload.body,
           tag: payload.tag,
-          // Replace the tag-matching notification silently — without this,
-          // the browser re-plays the system sound for every update which
-          // is obnoxious when a session fires multiple results in a row.
-          silent: true,
+          // Default to NOT silent — Windows + recent Chrome silently drop
+          // silent notifications from Action Center. Callers can opt in
+          // for non-actionable status pings.
+          silent: payload.silent ?? false,
+          requireInteraction: payload.requireInteraction ?? false,
         })
         if (payload.onClick) {
           n.onclick = () => {

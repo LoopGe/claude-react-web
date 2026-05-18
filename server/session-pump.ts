@@ -187,6 +187,7 @@ async function cleanupPump(session: Session, deps: PumpDeps): Promise<void> {
     }
 
     session.running = false
+    session.exiting = false
     session.terminated = true
     // Only set terminatedReason if it hasn't already been set by
     // handleProcessExit (which provides more specific values like
@@ -239,6 +240,7 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
   // pick out only the numeric fields we care about. Missing fields fall
   // back to 0 below.
   type IterationUsage = {
+    type?: 'message' | 'compaction' | 'advisor_message'
     input_tokens?: number
     cache_creation_input_tokens?: number | null
     cache_read_input_tokens?: number | null
@@ -250,20 +252,7 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
   const usage = result.usage
   const modelUsage = result.modelUsage
   if (!usage || !modelUsage) return null
-  // Context-window usage = the prompt size of the **last** sampling
-  // iteration, NOT the cumulative across iterations. The top-level
-  // `usage.input_tokens + cache_creation + cache_read` sums every API
-  // call this turn made (server-tool-use loops, subagent recursion,
-  // plan-mode hops), which can easily exceed the model's context cap.
-  // Per the Anthropic SDK docs: "Calculate the true context window size
-  // from the last iteration."
-  const lastIter = usage.iterations && usage.iterations.length > 0
-    ? usage.iterations[usage.iterations.length - 1]
-    : usage
-  const totalTokens =
-    (lastIter.input_tokens ?? 0) +
-    (lastIter.cache_creation_input_tokens ?? 0) +
-    (lastIter.cache_read_input_tokens ?? 0)
+
   // Pick the model with a contextWindow set. In practice modelUsage has
   // exactly one entry per turn — but we iterate defensively.
   let model = ''
@@ -276,6 +265,58 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
     }
   }
   if (contextWindow <= 0) return null
+
+  // Context-window usage = the prompt size of the most recent regular
+  // sampling iteration. We must:
+  //   1. Skip non-'message' iteration types. 'compaction' iterations
+  //      report the SIZE OF THE SUMMARIZED SOURCE MATERIAL in
+  //      `input_tokens` (can be many millions — far past any model's
+  //      window). 'advisor_message' iterations are internal sub-calls
+  //      that don't reflect what the user-facing model "saw".
+  //   2. Fall back to top-level `usage` only when iterations is absent
+  //      or empty (single-call turn — top-level == that one call).
+  // Per Anthropic SDK docs: "Calculate the true context window size
+  // from the last iteration." — but only the last `message` iteration.
+  let source: IterationUsage = usage
+  if (usage.iterations && usage.iterations.length > 0) {
+    let pickedMessage = false
+    for (let i = usage.iterations.length - 1; i >= 0; i--) {
+      if (usage.iterations[i].type === 'message') {
+        source = usage.iterations[i]
+        pickedMessage = true
+        break
+      }
+    }
+    // No 'message' iteration in this turn (e.g. a turn that's purely
+    // compaction). Pick the last iteration of any kind but flag it for
+    // clamping below — this is the rare path that historically produced
+    // 2337k / 200k numbers.
+    if (!pickedMessage) {
+      source = usage.iterations[usage.iterations.length - 1]
+    }
+  }
+  const rawTotal =
+    (source.input_tokens ?? 0) +
+    (source.cache_creation_input_tokens ?? 0) +
+    (source.cache_read_input_tokens ?? 0)
+
+  // Defensive clamp: a single API call's prompt cannot legitimately
+  // exceed the model's context window. If we still see > 100%, the
+  // SDK is reporting in a way we don't understand — log the raw
+  // payload so the next sighting is debuggable, and cap the displayed
+  // value so the bar is sane.
+  const totalTokens = Math.min(rawTotal, contextWindow)
+  if (rawTotal > contextWindow) {
+    debugLog(
+      `[context-usage] raw total ${rawTotal} > contextWindow ${contextWindow} for model ${model}; ` +
+      `clamping. iterations=${JSON.stringify(usage.iterations ?? null)} top-level=${JSON.stringify({
+        input_tokens: usage.input_tokens,
+        cache_creation_input_tokens: usage.cache_creation_input_tokens,
+        cache_read_input_tokens: usage.cache_read_input_tokens,
+      })}`,
+    )
+  }
+
   return {
     totalTokens,
     maxTokens: contextWindow,

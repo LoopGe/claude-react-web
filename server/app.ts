@@ -2,6 +2,7 @@
 
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import { bodyLimit } from 'hono/body-limit'
 import { serveStatic } from '@hono/node-server/serve-static'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve as resolvePath } from 'node:path'
@@ -90,16 +91,16 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
   // Reject oversized request bodies early. This covers JSON payloads and
   // multipart uploads — the cap is generous (32 MB) to allow the 28 MB
   // base64 image payload plus JSON wrapper overhead.
+  //
+  // Uses Hono's built-in bodyLimit middleware which correctly handles
+  // chunked transfer encoding by reading the actual stream when
+  // Content-Length is absent — our previous Content-Length-only check
+  // was bypassable by omitting that header.
   const MAX_BODY_BYTES = 32 * 1024 * 1024
-  app.use('*', async (c, next) => {
-    if (c.req.method === 'POST' || c.req.method === 'PUT' || c.req.method === 'PATCH') {
-      const len = c.req.header('content-length')
-      if (len && Number(len) > MAX_BODY_BYTES) {
-        return c.json({ error: 'request body too large' }, 413)
-      }
-    }
-    await next()
-  })
+  app.use('*', bodyLimit({
+    maxSize: MAX_BODY_BYTES,
+    onError: (c) => c.json({ error: 'request body too large' }, 413),
+  }))
 
   app.use('*', async (c, next) => {
     // Basic request log — helps when diagnosing CLI issues.

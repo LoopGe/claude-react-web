@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { config, loadConfig } from './config.js'
+import { config, loadConfig, updateConfigFile } from './config.js'
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), 'claude-react-web-config-'))
@@ -176,5 +176,26 @@ describe('config', () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxOpenPanels: 0 }))
     await loadConfig(dir)
     expect(config.maxOpenPanels).toBe(before)
+  })
+
+  it('updateConfigFile keeps the queue alive after a write failure', async () => {
+    // Concurrent writes are serialized via a module-level promise queue.
+    // Earlier this poisoned forever on the first failure: a rejected
+    // promise propagated through every subsequent .then(), silently
+    // skipping all later writes. Verify recovery.
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    // First write: bad stateDir → fs.writeFile rejects with ENOENT.
+    const badDir = join(dir, 'does', 'not', 'exist')
+    await expect(
+      updateConfigFile(badDir, { recapModel: 'after-fail' }),
+    ).rejects.toThrow()
+
+    // Second write: real dir. If the queue is poisoned this never runs
+    // and the assertion below fails (or the await hangs).
+    await updateConfigFile(dir, { recapModel: 'after-fail' })
+
+    const written = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'))
+    expect(written.recapModel).toBe('after-fail')
   })
 })

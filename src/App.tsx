@@ -269,6 +269,11 @@ export function App() {
       title: `⚠ ${title} needs permission`,
       body: `Approve or deny: ${toolLabel}`,
       tag: `${sessionId}:perm`,
+      // Permission notifications are actionable — the user must respond
+      // for the turn to continue. Keep the toast visible until they
+      // dismiss it, and DON'T mark it silent (Windows Action Center
+      // suppresses silent toasts from this kind of "background" page).
+      requireInteraction: true,
       onClick: () => {
         handleSelectRef.current(sessionId)
       },
@@ -292,6 +297,11 @@ export function App() {
       title: `✓ ${title}`,
       body: s.error ? `Errored: ${s.error}` : 'Turn complete',
       tag: s.id,
+      // Status update — quiet to avoid sound spam when several
+      // sessions complete back-to-back. Accepts the Windows-Action-
+      // -Center-silent-suppression tradeoff because the user can
+      // see completion state in the sidebar anyway.
+      silent: true,
       onClick: () => {
         // Delegate to the full sidebar-card navigation logic so notification
         // clicks get the same behaviour: group switching, dormant resume,

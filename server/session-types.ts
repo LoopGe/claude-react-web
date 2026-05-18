@@ -128,6 +128,11 @@ export interface Session {
   pumpTask: Promise<void>
   running: boolean
   terminated: boolean
+  /** Set to true during the window between a clean process exit (abort)
+   *  and cleanupPump deciding whether to auto-resume or terminate.
+   *  Prevents the GC's checkStuck() from misidentifying the session as
+   *  stuck while it is already being cleaned up. */
+  exiting?: boolean
   terminatedReason?: string
   error?: string
   /** Pending turns (user messages sent but no matching `result` yet). A
