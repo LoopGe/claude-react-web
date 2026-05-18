@@ -22,6 +22,7 @@ import {
   query,
   type Options,
   type PermissionMode,
+  type Query,
   type SDKMessage,
   type SDKUserMessage,
   type Settings,
@@ -367,12 +368,6 @@ export class SessionManager {
       fullOpts.env = this.buildAnthropicEnv()
     }
 
-    // The session struct needs to exist before canUseTool fires (the SDK can
-    // request permission mid-turn). We build the canUseTool callback after
-    // the session object is assigned — the callback is only invoked by the
-    // CLI subprocess async, at which point session is guaranteed to exist.
-    let session: Session
-
     // Don't forward permissionMode to the SDK. We enforce it ourselves via
     // canUseTool, and the SDK's built-in flag would just add a brittle
     // "can't transition into bypassPermissions" constraint on top.
@@ -393,17 +388,20 @@ export class SessionManager {
     // spawn wrapper needs the signal in its map when it fires.
     this.processMonitor.register(abortController.signal, id)
 
-    // Create the Query — spawns the claude CLI subprocess.
-    const q = query({ prompt: input.iterable, options: fullOpts })
-
     // When resuming we keep the original createdAt from the persisted meta
     // so the UI's "session age" doesn't reset each time the user clicks
     // "resume". New sessions start from now().
     const existingMeta = this.store?.get(id)
     const createdAt = existingMeta?.createdAt ?? Date.now()
 
-    // eslint-disable-next-line prefer-const -- declared above for canUseTool closure capture
-    session = {
+    // Build the session shell BEFORE query() so canUseTool can capture a
+    // valid reference. `query` is filled in below, after the SDK call.
+    // Order matters: the SDK reads options.canUseTool synchronously from
+    // the options object passed to query(), so fullOpts.canUseTool MUST
+    // be set before that call. Setting it afterwards is silently ignored
+    // and the SDK never invokes our permission gate (manifested as the
+    // permission dialog never appearing in the UI).
+    const session: Session = {
       id,
       createdAt,
       lastActivityAt: Date.now(),
@@ -413,7 +411,8 @@ export class SessionManager {
       // spread above would leave it unset otherwise.
       permissionMode: requestedMode,
       input,
-      query: q,
+      // Placeholder; assigned right after the query() call below.
+      query: undefined as unknown as Query,
       subscribers: new Map(),
       permissionSubscribers: new Map(),
       pending: new Map(),
@@ -426,13 +425,8 @@ export class SessionManager {
       pendingTurns: 0,
     }
 
-    // Build the canUseTool callback via PermissionBroker. The callback
-    // captures `session` by reference — it's only invoked by the CLI
-    // subprocess when a tool needs permission, which happens async well
-    // after this point, so `session` is guaranteed to be assigned.
-    // Always register canUseTool: the callback itself short-circuits
-    // bypassPermissions mode, meaning runtime mode swaps take effect
-    // immediately without a session restart.
+    // Register canUseTool on fullOpts BEFORE query(). See note on
+    // session.query above for why ordering matters.
     if (!fullOpts.canUseTool) {
       const canUseTool = this.permBroker.buildCanUseTool(
         session,
@@ -444,6 +438,10 @@ export class SessionManager {
       session.canUseTool = canUseTool
       fullOpts.canUseTool = canUseTool
     }
+
+    // Create the Query — spawns the claude CLI subprocess.
+    const q = query({ prompt: input.iterable, options: fullOpts })
+    session.query = q
 
     session.pumpTask = this.pump(session)
     this.sessions.set(id, session)
