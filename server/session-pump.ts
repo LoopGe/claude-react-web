@@ -86,13 +86,18 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
       }
       const msg = step.value
       const msgSubtype = (msg as unknown as { subtype?: string }).subtype
-      // SDK 0.3 introduced SDKUserMessageReplay — the SDK echoes the
-      // transcript user messages back (internal state reconstruction).
-      // We already broadcast user messages from send()/sendContent(), so
-      // forwarding the replay too would render the same bubble twice.
-      // The `isReplay: true` discriminator is the SDK's own marker.
-      if ((msg as { isReplay?: boolean }).isReplay) {
-        debugLog(`[session ${session.id}] dropping replay user message uuid=${(msg as { uuid?: string }).uuid}`)
+      // SDK 0.3 echoes top-level user input back through the Query stream
+      // (sometimes as SDKUserMessageReplay with isReplay=true, sometimes
+      // — notably the very first turn after spawn — as a plain
+      // SDKUserMessage with no replay marker). Either way, we already
+      // broadcast our own user messages via SessionManager.send() /
+      // sendContent(), so forwarding the SDK's echo paints the bubble
+      // twice. The reliable discriminator is `parent_tool_use_id`: top-
+      // level user input has it === null, while tool results and
+      // sub-agent outputs (which we DO want to forward) have it set to
+      // the originating tool_use id.
+      if (msg.type === 'user' && (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id == null) {
+        debugLog(`[session ${session.id}] dropping echoed top-level user message uuid=${(msg as { uuid?: string }).uuid}`)
         continue
       }
       debugLog(
