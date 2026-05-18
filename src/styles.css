@@ -3108,24 +3108,6 @@ details.plan-card-collapsible > summary > .plan-card-header {
   100% { transform: translateX(100%); }
 }
 
-.recap-msg-btn {
-  appearance: none;
-  border: none;
-  background: transparent;
-  color: var(--fg-muted);
-  font-size: 14px;
-  padding: 2px 5px;
-  margin-left: auto;
-  border-radius: 4px;
-  cursor: pointer;
-  line-height: 1;
-  transition: background 0.12s, color 0.12s;
-}
-.recap-msg-btn:hover {
-  background: var(--bg-elev-2);
-  color: var(--fg);
-}
-
 .recap-msg-stats {
   display: flex;
   flex-wrap: wrap;

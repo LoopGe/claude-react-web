@@ -489,7 +489,6 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
         pendingInterruptRef={pendingInterruptRef}
         replayReady={stream.replayReady}
         streamingContent={stream.streamingContent}
-        onRefreshRecap={recap.refresh}
         planStatus={stream.planStatus}
         searchQuery={searchOpen ? debouncedQuery : ''}
         searchActiveMsgIdx={searchMatches[searchActiveIdx] ?? -1}

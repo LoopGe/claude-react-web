@@ -36,9 +36,6 @@ interface Props {
   /** Accumulated text from streaming deltas. When non-null, a live
    *  "typing" bubble is rendered at the bottom of the transcript. */
   streamingContent?: string | null
-  /** Forwarded to the inline recap message's ↻ button. Caller (Chat)
-   *  passes useSessionRecap().refresh; without it the button is hidden. */
-  onRefreshRecap?: () => void
   /** Precomputed plan status keyed by toolUseId. */
   planStatus?: ReadonlyMap<string, PlanStatus>
   /** Current search query. When non-empty, matching text inside messages
@@ -60,7 +57,7 @@ interface RenderableItem {
   itemIndex: number
 }
 
-export function MessageList({ items, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, onRefreshRecap, planStatus = new Map(), searchQuery, searchActiveMsgIdx }: Props) {
+export function MessageList({ items, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, planStatus = new Map(), searchQuery, searchActiveMsgIdx }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -254,11 +251,10 @@ export function MessageList({ items, showSystemEvents = false, pendingInterruptR
         msg={item.msg}
         isCompactSummary={item.isCompactSummary}
         interruptedRef={pendingInterruptRef}
-        onRefreshRecap={onRefreshRecap}
         searchQuery={searchQuery}
       />
     </div>
-  ), [pendingInterruptRef, onRefreshRecap, searchQuery, activeVirtIdx])
+  ), [pendingInterruptRef, searchQuery, activeVirtIdx])
 
   const virtuosoComponents = useMemo(() => ({
     Footer: streamingContent != null
@@ -349,13 +345,11 @@ const MessageView = memo(function MessageView({
   msg,
   isCompactSummary,
   interruptedRef,
-  onRefreshRecap,
   searchQuery,
 }: {
   msg: SdkMessage
   isCompactSummary?: boolean
   interruptedRef?: React.RefObject<boolean>
-  onRefreshRecap?: () => void
   searchQuery?: string
 }) {
   const type = msg.type
@@ -375,7 +369,7 @@ const MessageView = memo(function MessageView({
   // chrome-distinct card so the user can tell it's an AI summary, not a
   // real assistant turn.
   if (type === 'recap') {
-    return <RecapMessageView msg={msg} onRefresh={onRefreshRecap} />
+    return <RecapMessageView msg={msg} />
   }
 
   if (type === 'user') {
@@ -652,7 +646,7 @@ function CompactSummary({ text }: { text: string }) {
  *  chrome; ready state shows the AI summary plus stats. The structure
  *  mirrors the previous SessionRecapBanner, but lives inside the
  *  transcript so it scrolls with the conversation instead of floating. */
-function RecapMessageView({ msg, onRefresh }: { msg: SdkMessage; onRefresh?: () => void }) {
+function RecapMessageView({ msg }: { msg: SdkMessage }) {
   const m = msg as {
     state?: 'loading' | 'ready' | 'error'
     error?: string
@@ -689,17 +683,6 @@ function RecapMessageView({ msg, onRefresh }: { msg: SdkMessage; onRefresh?: () 
       <div className="msg recap-msg recap-msg--error" role="note">
         <div className="msg-header">
           <span>⚠️ Recap unavailable</span>
-          {onRefresh && (
-            <button
-              type="button"
-              className="recap-msg-btn"
-              onClick={onRefresh}
-              title="Retry"
-              aria-label="Retry recap"
-            >
-              ↻
-            </button>
-          )}
         </div>
         <div className="msg-body">{m.error ?? 'Unknown error'}</div>
       </div>
@@ -714,17 +697,6 @@ function RecapMessageView({ msg, onRefresh }: { msg: SdkMessage; onRefresh?: () 
     <div className={`msg recap-msg ${fallback ? 'recap-msg--fallback' : ''}`} role="note" aria-label="Session recap">
       <div className="msg-header">
         <span>{fallback ? '📋 Session recap' : '✨ Session recap'}</span>
-        {onRefresh && (
-          <button
-            type="button"
-            className="recap-msg-btn"
-            onClick={onRefresh}
-            title="Regenerate recap"
-            aria-label="Regenerate recap"
-          >
-            ↻
-          </button>
-        )}
       </div>
       <div className="msg-body">
         <Markdown text={summary} />
