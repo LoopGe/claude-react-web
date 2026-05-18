@@ -111,13 +111,16 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         session.history.splice(0, session.history.length - deps.historyCap)
       }
       for (const sub of session.subscribers.values()) sub.push(msg)
-      // Fire a non-blocking context-usage fetch every 10 messages AND
-      // on every `result` so the client always has a fresh snapshot at
-      // turn boundaries (the count may not land on a multiple of 10).
-      if (
-        (++msgCount % 10 === 0 || msg.type === 'result') &&
-        session.subscribers.size > 0
-      ) {
+      msgCount++
+      // Fire a non-blocking context-usage fetch only at turn boundaries
+      // (`result`). Mid-turn counts are misleading — the SDK hasn't yet
+      // packed the trailing tool results into a finalized prompt, so the
+      // bar would just flicker without telling the user anything useful.
+      // Polling every N messages also amplified IPC traffic linearly with
+      // tool-heavy turns. The on-demand REST endpoint and the subscribe-
+      // time snapshot still cover the cases where the user wants a live
+      // peek mid-turn.
+      if (msg.type === 'result' && session.subscribers.size > 0) {
         void session.query.getContextUsage().then(
           (usage) => {
             for (const sub of session.contextUsageSubscribers) sub.push(usage)
