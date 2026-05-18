@@ -1,7 +1,7 @@
 // Panel layout management: which sessions are open, which is focused,
 // panel resize, and swap/eviction logic.
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { usePanelColumnResize } from './usePanelColumnResize'
 
 export interface UsePanelLayoutOpts {
@@ -35,7 +35,12 @@ export function usePanelLayout({ maxOpen, panelMinRatio }: UsePanelLayoutOpts): 
   const [focusedId, setFocusedId] = useState<string | null>(null)
 
   const maxOpenRef = useRef(maxOpen)
-  maxOpenRef.current = maxOpen
+  // Track the latest maxOpen via ref so the openSession callback (called
+  // on user input, after commit) reads fresh data without forcing a
+  // re-create of the callback on every config tick.
+  useEffect(() => {
+    maxOpenRef.current = maxOpen
+  })
   const focusedIdRef = useRef<string | null>(null)
   const openIdsRef = useRef<string[]>([])
 

@@ -22,6 +22,5 @@ export interface FullServerConfig {
   historyCap: number
   maxOpenPanels: number
   workingStuckMs: number
-  warmPoolSize: number
   defaults: Defaults
 }

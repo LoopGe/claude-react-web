@@ -9,6 +9,7 @@
 import { randomUUID } from 'node:crypto'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { Session } from './session-types.js'
+import { debugLog } from './debug.js'
 
 export interface PumpDeps {
   historyCap: number
@@ -37,13 +38,25 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
   let msgCount = 0
   try {
     const iter = session.query[Symbol.asyncIterator]()
+    // Race iter.next() against the session's abort signal so unload() can
+    // break a wedged generator immediately instead of waiting for the SDK
+    // subprocess to exit on its own. Built ONCE per session: once the abort
+    // promise resolves, every subsequent race short-circuits to done.
+    const signal = session.abortController.signal
+    const abortPromise: Promise<IteratorResult<SDKMessage>> = new Promise((resolve) => {
+      if (signal.aborted) {
+        resolve({ done: true, value: undefined })
+        return
+      }
+      signal.addEventListener('abort', () => resolve({ done: true, value: undefined }), { once: true })
+    })
     // Idle watchdog: every time we await query.next(), start a 60s timer
     // that warns if nothing comes back. This distinguishes "SDK produced
     // nothing" from "pump stuck processing a specific message" when
     // debugging stuck sessions.
     while (true) {
       const nextStartedAt = Date.now()
-      console.log(`[session ${session.id}] pump awaiting iter.next() for msg #${msgCount + 1}`)
+      debugLog(`[session ${session.id}] pump awaiting iter.next() for msg #${msgCount + 1}`)
       let idleWarnCount = 0
       const idleTimer = setInterval(() => {
         // Only warn when there's pending work that should have produced
@@ -59,18 +72,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
       }, 10_000)
       let step: IteratorResult<SDKMessage>
       try {
-        // Race iter.next() against the session's abort signal so
-        // unload() can break a wedged generator immediately instead
-        // of waiting for the SDK subprocess to exit on its own.
-        const signal = session.abortController.signal
-        step = await (signal.aborted
-          ? Promise.resolve({ done: true, value: undefined } as IteratorResult<SDKMessage>)
-          : Promise.race([
-              iter.next(),
-              new Promise<IteratorResult<SDKMessage>>((resolve) =>
-                signal.addEventListener('abort', () => resolve({ done: true, value: undefined }), { once: true }),
-              ),
-            ]))
+        step = await Promise.race([iter.next(), abortPromise])
       } finally {
         clearInterval(idleTimer)
       }
@@ -84,7 +86,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
       }
       const msg = step.value
       const msgSubtype = (msg as unknown as { subtype?: string }).subtype
-      console.log(
+      debugLog(
         `[session ${session.id}] msg #${msgCount + 1} received — ` +
         `type=${msg.type}${msgSubtype ? `/${msgSubtype}` : ''} ` +
         `(next() took ${Date.now() - nextStartedAt}ms)`,
@@ -119,7 +121,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
       // already queued another message via send(), pendingTurns will be
       // bumped back to 1 there.
       if (msg.type === 'result') {
-        console.log(`[session ${session.id}] result received — total msgs: ${msgCount}`)
+        debugLog(`[session ${session.id}] result received — total msgs: ${msgCount}`)
         session.pendingTurns = 0
         session.workingSince = undefined
         session.lastTurnAt = Date.now()

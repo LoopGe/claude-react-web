@@ -283,7 +283,10 @@ export const Composer = memo(function Composer({
               // All other keys (letters, backspace, etc.) fall through to
               // onChange which will re-filter or close the picker.
             }
-            if (e.key === 'Enter' && !e.shiftKey) {
+            // Skip Enter while an IME composition is active — CJK input
+            // methods fire Enter to confirm a candidate, and we'd otherwise
+            // treat that as "send" and ship a half-finished message.
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault()
               onSend()
               return

@@ -48,6 +48,7 @@ import {
 } from './session-types.js'
 import { HttpError } from './errors.js'
 import { PermissionBroker } from './permission-broker.js'
+import { debugLog } from './debug.js'
 
 // Re-export types so existing importers continue to work.
 export {
@@ -163,7 +164,7 @@ export class SessionManager {
     s.workingSince = undefined
 
     // Deny all pending permissions so SDK awaiters don't hang
-    this.denyPendingPermissions(s)
+    this.permBroker.denyAll(s)
 
     // Broadcast synthetic error to subscribers
     const synthetic: SDKMessage = {
@@ -479,14 +480,14 @@ export class SessionManager {
     }
     // Feed the SDK so it triggers an assistant turn.
     const pushableClosed = s.input.closed
-    console.log(
+    debugLog(
       `[session ${id}] send PRE-PUSH — ${text.length} chars, uuid=${userMsg.uuid}, ` +
       `pendingTurns=${s.pendingTurns}, input.closed=${pushableClosed}, ` +
       `input.hasWaiter=${s.input.hasWaiter}, input.queueDepth=${s.input.queueDepth}, ` +
       `running=${s.running}, terminated=${s.terminated}`,
     )
     s.input.push(userMsg)
-    console.log(
+    debugLog(
       `[session ${id}] send POST-PUSH — pushable.closed=${s.input.closed}, ` +
       `hasWaiter=${s.input.hasWaiter}, queueDepth=${s.input.queueDepth}`,
     )
@@ -510,7 +511,7 @@ export class SessionManager {
       session_id: s.id,
     }
     const blockSummary = content.map((b) => b.type).join('+')
-    console.log(
+    debugLog(
       `[session ${id}] sendContent PRE-PUSH — blocks=[${blockSummary}], uuid=${userMsg.uuid}, ` +
       `pendingTurns=${s.pendingTurns}, input.closed=${s.input.closed}`,
     )
@@ -582,36 +583,9 @@ export class SessionManager {
    *  clears the title so the UI falls back to the id prefix. */
   rename(id: string, title: string): SessionInfo {
     const trimmed = title.trim() || undefined
-    return this.mutateMeta(id, (draft) => ({ ...draft, title: trimmed }))
-  }
-
-  /** Shared mutator for pure-metadata changes (rename). Works on both
-   *  live and dormant sessions — the UI treats the two the same, and
-   *  the transform needs to land in both in-memory state and persisted
-   *  meta regardless. */
-  private mutateMeta(
-    id: string,
-    transform: (draft: {
-      cwd?: string
-      model?: string
-      permissionMode?: PermissionMode
-      title?: string
-    }) => {
-      cwd?: string
-      model?: string
-      permissionMode?: PermissionMode
-      title?: string
-    },
-  ): SessionInfo {
     const live = this.sessions.get(id)
     if (live) {
-      const draft = transform({
-        cwd: live.cwd,
-        model: live.model,
-        permissionMode: live.permissionMode,
-        title: live.title,
-      })
-      live.title = draft.title
+      live.title = trimmed
       live.lastActivityAt = Date.now()
       this.persist(live)
       return this.info(live)
@@ -619,17 +593,7 @@ export class SessionManager {
     if (!this.store) throw new HttpError(404, `session ${id} not found`)
     const meta = this.store.get(id)
     if (!meta) throw new HttpError(404, `session ${id} not found`)
-    const draft = transform({
-      cwd: meta.cwd,
-      model: meta.model,
-      permissionMode: meta.permissionMode,
-      title: meta.title,
-    })
-    const nextMeta: SessionMeta = {
-      ...meta,
-      title: draft.title,
-      lastActivityAt: Date.now(),
-    }
+    const nextMeta: SessionMeta = { ...meta, title: trimmed, lastActivityAt: Date.now() }
     this.store.upsert(nextMeta)
     const info = this.infoFromMeta(nextMeta)
     this.broadcastGlobal({ kind: 'update', session: info })
@@ -844,13 +808,6 @@ export class SessionManager {
     }
   }
 
-  /** Deny all still-pending tool-permission requests so no SDK awaiter
-   *  stays hanging forever. Called from both unload() (explicit teardown)
-   *  and the pump() finally block (Query ended or crashed). */
-  private denyPendingPermissions(session: Session) {
-    this.permBroker.denyAll(session)
-  }
-
   /** Delete a session for good: close its Query AND erase its persistence
    *  entry. Use when the user explicitly clicks "delete" in the UI. */
   async delete(id: string): Promise<void> {
@@ -896,7 +853,7 @@ export class SessionManager {
         ])
       } catch { /* pump swallows errors internally */ }
     }
-    this.denyPendingPermissions(s)
+    this.permBroker.denyAll(s)
     for (const sub of s.subscribers.values()) sub.end()
     s.subscribers.clear()
     for (const sub of s.permissionSubscribers.values()) sub.end()
@@ -1073,7 +1030,7 @@ export class SessionManager {
     return pumpSession(session, {
       historyCap: this.historyCap,
       persist: (s) => this.persist(s),
-      denyPendingPermissions: (s) => this.denyPendingPermissions(s),
+      denyPendingPermissions: (s) => this.permBroker.denyAll(s),
       isLive: (id) => this.sessions.has(id),
       autoResume: this.autoResumeEnabled ? (s) => this.autoResume(s) : undefined,
     })
@@ -1169,7 +1126,7 @@ export class SessionManager {
     session.pumpTask = pumpSession(session, {
       historyCap: this.historyCap,
       persist: (s) => this.persist(s),
-      denyPendingPermissions: (s) => this.denyPendingPermissions(s),
+      denyPendingPermissions: (s) => this.permBroker.denyAll(s),
       isLive: (id) => this.sessions.has(id),
       autoResume: this.autoResumeEnabled ? (s) => this.autoResume(s) : undefined,
     })

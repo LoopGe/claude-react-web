@@ -334,6 +334,23 @@ export function App() {
           // Prune lastSeenTurn entries whose sessions are gone — keeps
           // the persisted map from growing unbounded across restarts.
           setLastSeenTurn((prev) => pruneLastSeen(prev, ids))
+          // Same idea for sidebarOrder and group.sessionIds — server is
+          // authoritative, so any id it doesn't list is dead. Without
+          // this, deleted sessions accumulate forever in localStorage.
+          setSidebarOrder((prev) => {
+            const next = prev.filter((id) => ids.has(id))
+            return next.length === prev.length ? prev : next
+          })
+          setGroups((prev) => {
+            let changed = false
+            const next = prev.map((g) => {
+              const filtered = g.sessionIds.filter((id) => ids.has(id))
+              if (filtered.length === g.sessionIds.length) return g
+              changed = true
+              return { ...g, sessionIds: filtered }
+            })
+            return changed ? next : prev
+          })
           break
         }
         case 'session-update': {
@@ -414,7 +431,7 @@ export function App() {
       }
     })
     return off
-  }, [hub, maybeNotify, maybePermissionNotify, setLastSeenTurn])
+  }, [hub, maybeNotify, maybePermissionNotify, setLastSeenTurn, setSidebarOrder, setGroups])
 
   // Hub status → reconnecting banner is now derived via `displayedError`
   // (useMemo above) — no effect needed.
@@ -1326,25 +1343,30 @@ export function App() {
             // to match or the columns will de-sync.
             openSessions.flatMap((s, i) => {
               const node = (
-                <ChatPanel
-                  key={s.id}
-                  session={s}
-                  focused={s.id === focusedId}
-                  hasUnread={!!unread[s.id]}
-                  slot={i + 1}
-                  accentStyle={sessionAccentStyle(s.id)}
-                  onFocus={() => focusPanel(s.id)}
-                  onClose={() => closeSession(s.id)}
-                  onSessionUpdate={updateSession}
-                  showSystemEvents={showSystemEvents}
-                  settingsOpen={settingsOpenFor === s.id}
-                  onOpenSettings={handleOpenSettings}
-                  onCloseSettings={handleCloseSettings}
-                  onSwap={swapPanels}
-                  onRegisterInterrupt={registerInterrupt}
-                  onRegisterRecap={registerRecap}
-                  onAcceptSidebarDrop={(sidebarId) => handleAcceptSidebarDrop(sidebarId, s.id)}
-                />
+                // Per-panel ErrorBoundary: if one panel's render throws
+                // (e.g. a malformed assistant message), the other open
+                // panels and the sidebar keep working. children identity
+                // changes on prop updates, so a recovered render auto-clears.
+                <ErrorBoundary key={s.id}>
+                  <ChatPanel
+                    session={s}
+                    focused={s.id === focusedId}
+                    hasUnread={!!unread[s.id]}
+                    slot={i + 1}
+                    accentStyle={sessionAccentStyle(s.id)}
+                    onFocus={() => focusPanel(s.id)}
+                    onClose={() => closeSession(s.id)}
+                    onSessionUpdate={updateSession}
+                    showSystemEvents={showSystemEvents}
+                    settingsOpen={settingsOpenFor === s.id}
+                    onOpenSettings={handleOpenSettings}
+                    onCloseSettings={handleCloseSettings}
+                    onSwap={swapPanels}
+                    onRegisterInterrupt={registerInterrupt}
+                    onRegisterRecap={registerRecap}
+                    onAcceptSidebarDrop={(sidebarId) => handleAcceptSidebarDrop(sidebarId, s.id)}
+                  />
+                </ErrorBoundary>
               )
               if (i === openSessions.length - 1) return [node]
               return [

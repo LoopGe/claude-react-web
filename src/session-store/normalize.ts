@@ -14,7 +14,11 @@ interface Block {
 
 const PLAN_TOOL_NAMES = new Set(['ExitPlanMode', 'EnterPlanMode'])
 const SUBAGENT_TOOL_NAMES = new Set(['Agent', 'Task', 'Explore'])
-const REJECTION_NEEDLES = [
+/** Strings the SDK / canUseTool deny path uses to mean "user said no".
+ *  Matched against tool_result.content text — case-insensitive substring
+ *  match. Both Anthropic CLI and our own deny path land here.
+ *  Exported so plan-status.ts can share the same rule set. */
+export const REJECTION_NEEDLES = [
   'keep planning',
   'user chose to keep planning',
   'rejected',

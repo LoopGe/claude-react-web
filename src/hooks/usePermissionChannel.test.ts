@@ -167,6 +167,31 @@ describe('usePermissionChannel', () => {
     })
   })
 
+  it('re-inserts optimistically-removed request when both POST and recovery fetch fail', async () => {
+    mockGet
+      .mockResolvedValueOnce({ pending: [] })
+      .mockRejectedValueOnce(new Error('also down'))
+    mockPost.mockRejectedValueOnce(new Error('server down'))
+
+    const { result } = renderHook(() => usePermissionChannel('s1'))
+
+    const req = makePermissionRequest('p1')
+    act(() => {
+      result.current.onRequest(req)
+    })
+    expect(result.current.pending).toHaveLength(1)
+
+    await act(async () => {
+      await result.current.decide('p1', { behavior: 'allow', persistForSession: false })
+    })
+
+    expect(result.current.error).toContain('Permission decision failed')
+    await waitFor(() => {
+      expect(result.current.pending).toHaveLength(1)
+    })
+    expect(result.current.pending[0].id).toBe('p1')
+  })
+
   // ── answerQuestion ────────────────────────────────────────────
 
   it('optimistically removes request on answerQuestion', async () => {
@@ -195,6 +220,37 @@ describe('usePermissionChannel', () => {
       '/sessions/s1/permissions/q1/answer-question',
       { answers: ['A'] },
     )
+  })
+
+  it('re-inserts optimistically-removed question when both POST and recovery fetch fail', async () => {
+    mockGet
+      .mockResolvedValueOnce({ pending: [] })
+      .mockRejectedValueOnce(new Error('also down'))
+    mockPost.mockRejectedValueOnce(new Error('server down'))
+
+    const { result } = renderHook(() => usePermissionChannel('s1'))
+
+    const questionReq: PermissionRequest = {
+      kind: 'question',
+      id: 'q1',
+      toolName: 'AskUserQuestion',
+      questions: [{ question: 'Pick one', options: [{ label: 'A' }] }],
+      toolUseID: 'tu-q1',
+      createdAt: Date.now(),
+    }
+    act(() => {
+      result.current.onRequest(questionReq)
+    })
+
+    await act(async () => {
+      await result.current.answerQuestion('q1', ['A'])
+    })
+
+    expect(result.current.error).toContain('Answer submission failed')
+    await waitFor(() => {
+      expect(result.current.pending).toHaveLength(1)
+    })
+    expect(result.current.pending[0].id).toBe('q1')
   })
 
   it('shows error and re-fetches on answerQuestion failure', async () => {

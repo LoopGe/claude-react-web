@@ -7,7 +7,7 @@
 // pending list, covering the race where a request was broadcast before
 // the WebSocket subscription opened.
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { api } from './useApi'
 import type { PermissionRequest, PermissionResolved } from '../types'
@@ -36,6 +36,18 @@ export interface UsePermissionChannel {
 export function usePermissionChannel(sessionId: string): UsePermissionChannel {
   const [pending, setPending] = useState<PermissionRequest[]>([])
   const [error, setError] = useState<string | null>(null)
+
+  // Mirrors `pending` so async control flows (decide, answerQuestion) can
+  // capture the just-removed request synchronously. Reading from the
+  // setPending updater is too late — React batches updaters until the
+  // next render, by which time the catch block has already executed.
+  // The effect-based sync lags by one render, but decide/answerQuestion
+  // are always invoked from a user click that follows a committed render,
+  // so the ref is current when read.
+  const pendingRef = useRef<PermissionRequest[]>(pending)
+  useEffect(() => {
+    pendingRef.current = pending
+  }, [pending])
 
   // Initial snapshot — the WebSocket connection will re-broadcast any still-open
   // request on connect, but grabbing the REST snapshot makes the modal
@@ -70,6 +82,7 @@ export function usePermissionChannel(sessionId: string): UsePermissionChannel {
     async (pid: string, decision: PermissionDecision) => {
       // Optimistically drop the request so the dialog closes immediately.
       // If the POST fails we still show the error bar and re-fetch pending.
+      const removed = pendingRef.current.find((p) => p.id === pid)
       setPending((prev) => prev.filter((p) => p.id !== pid))
       try {
         await api.post(`/sessions/${sessionId}/permissions/${pid}/decide`, decision)
@@ -84,7 +97,10 @@ export function usePermissionChannel(sessionId: string): UsePermissionChannel {
           // recovery fetch. Full replacement would silently drop it.
           setPending((prev) => mergePending(prev, r.pending))
         } catch {
-          /* ignore */
+          // Re-fetch failed too — re-insert the optimistically-removed
+          // request so the user can retry. Otherwise it would vanish from
+          // the dialog and only reappear when WS pushed it again.
+          if (removed) setPending((prev) => mergePending(prev, [removed]))
         }
       }
     },
@@ -95,6 +111,7 @@ export function usePermissionChannel(sessionId: string): UsePermissionChannel {
     async (pid: string, answers: QuestionAnswer[]) => {
       // Same optimistic pattern as decide(): drop locally first so the
       // dialog closes immediately; re-fetch on failure to reconcile.
+      const removed = pendingRef.current.find((p) => p.id === pid)
       setPending((prev) => prev.filter((p) => p.id !== pid))
       try {
         await api.post(
@@ -110,7 +127,7 @@ export function usePermissionChannel(sessionId: string): UsePermissionChannel {
           // Merge instead of replace (same reason as decide()).
           setPending((prev) => mergePending(prev, r.pending))
         } catch {
-          /* ignore */
+          if (removed) setPending((prev) => mergePending(prev, [removed]))
         }
       }
     },

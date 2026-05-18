@@ -3,7 +3,7 @@
 // Encapsulates the shortcut definitions (Mod+1/2/3, Alt+W, Alt+N, etc.)
 // and the interrupt/recap callback registration system.
 
-import { useCallback, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useKeyboardShortcuts } from './useKeyboardShortcuts'
 import { api } from './useApi'
 import type { PermissionMode, SessionInfo } from '../types'
@@ -42,8 +42,13 @@ export function useAppKeyboard(opts: UseAppKeyboardOpts): UseAppKeyboardResult {
     paletteOpen, helpOpen, newSessionDialogOpen, globalSettingsOpen,
   } = opts
 
+  // Track the latest sessions array via ref so the keyboard handlers
+  // (which only run on user input, after commit) read fresh data without
+  // forcing useMemo to rebuild the shortcut list on every sessions change.
   const sessionsRef = useRef(opts.sessions)
-  sessionsRef.current = opts.sessions
+  useEffect(() => {
+    sessionsRef.current = opts.sessions
+  })
 
   const interruptFnsRef = useRef<Map<string, () => void>>(new Map())
   const recapFnsRef = useRef<Map<string, () => void>>(new Map())

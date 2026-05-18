@@ -13,6 +13,7 @@ import type {
 import type { Pushable } from './pushable.js'
 import type { SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
+import type { SessionInfoBase } from '../shared/session-info.js'
 
 /** Subscriber — each connected client gets one of these. */
 export interface Subscriber {
@@ -105,33 +106,9 @@ export type PendingPermission = PermissionRequestSnapshot & {
   timeoutTimer: ReturnType<typeof setTimeout> | null
 }
 
-/** Metadata returned by list() / get(). */
-export interface SessionInfo {
-  id: string
-  createdAt: number
-  lastActivityAt: number
-  subscribers: number
-  messageCount: number
-  cwd?: string
-  model?: string
-  permissionMode?: PermissionMode
-  title?: string
-  running: boolean
-  terminated: boolean
-  terminatedReason?: string
-  error?: string
-  /** True when the SDK is mid-turn (a user message has been sent and no
-   *  matching `result` has arrived yet). Drives the "thinking" animation. */
-  working: boolean
-  /** Epoch ms when the current turn started (first pending turn). Only set
-   *  while `working` is true; allows the client to compute an accurate
-   *  elapsed timer that survives component remounts. */
-  workingSince?: number
-  /** Epoch ms of the last completed turn (last `result` message). The
-   *  frontend diffs this against a locally-remembered value to decide
-   *  whether to show an unread badge on non-focused sessions. */
-  lastTurnAt?: number
-}
+/** Metadata returned by list() / get(). Field shape lives in
+ *  shared/session-info.ts so client and server cannot drift. */
+export type SessionInfo = SessionInfoBase<PermissionMode>
 
 export interface Session {
   id: string
@@ -201,9 +178,6 @@ export interface SessionManagerOptions {
   /** Maximum time (ms) a session can stay "working" before the GC
    *  auto-interrupts it. 0 = disabled. */
   workingStuckMs?: number
-  /** Number of pre-warmed CLI processes to maintain in the warm pool.
-   *  0 = disabled. Default 2. */
-  warmPoolSize?: number
   /** When true, sessions automatically re-spawn their Query after a
    *  clean exit (idle timeout). Default true in production, false in tests. */
   autoResume?: boolean

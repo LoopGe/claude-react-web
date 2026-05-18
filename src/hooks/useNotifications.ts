@@ -45,14 +45,14 @@ export function useNotifications(): UseNotifications {
   const [permission, setPermission] = useState<NotificationPermission>(() => currentPermission())
 
   // On mount, reconcile the localStorage flag with the actual browser
-  // permission.  If the user enabled notifications last session but the
+  // permission. If the user enabled notifications last session but the
   // browser permission was revoked in the meantime (e.g. Chrome settings
   // on Windows), flip `enabled` off so the bell UI is accurate and
   // `notify()` short-circuits instead of silently doing nothing.
+  // (The lazy initializer above already seeds `permission` from
+  // currentPermission(), so we only do the reconciliation step here.)
   useEffect(() => {
-    const actual = currentPermission()
-    setPermission(actual)
-    if (enabled && actual !== 'granted') {
+    if (enabled && currentPermission() !== 'granted') {
       setEnabled(false)
     }
     // Only on mount — subsequent changes are tracked via the focus listener.

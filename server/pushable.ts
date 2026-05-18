@@ -11,6 +11,8 @@
 //   { value: undefined, done: true }.
 // - Only one consumer is expected per iterable (matches Query's usage).
 
+import { debugLog, debugWarn } from './debug.js'
+
 let pushableSeq = 0
 
 export interface Pushable<T> {
@@ -36,23 +38,23 @@ export function createPushable<T>(label = 'pushable'): Pushable<T> {
     push(item: T) {
       pushCallCount++
       if (ended) {
-        console.warn(`[${id}] push #${pushCallCount} DROPPED — ended=true`)
+        debugWarn(`[${id}] push #${pushCallCount} DROPPED — ended=true`)
         return
       }
       if (waiter) {
         const w = waiter
         waiter = null
-        console.log(`[${id}] push #${pushCallCount} → resolved waiter directly (queue was empty, consumer was waiting)`)
+        debugLog(`[${id}] push #${pushCallCount} → resolved waiter directly (queue was empty, consumer was waiting)`)
         w({ value: item, done: false })
       } else {
         queue.push(item)
-        console.log(`[${id}] push #${pushCallCount} → queued (no waiter, queue depth now: ${queue.length})`)
+        debugLog(`[${id}] push #${pushCallCount} → queued (no waiter, queue depth now: ${queue.length})`)
       }
     },
     end() {
       if (ended) return
       ended = true
-      console.log(`[${id}] end() called — queue depth: ${queue.length}, waiter: ${!!waiter}`)
+      debugLog(`[${id}] end() called — queue depth: ${queue.length}, waiter: ${!!waiter}`)
       if (waiter) {
         const w = waiter
         waiter = null
@@ -66,20 +68,20 @@ export function createPushable<T>(label = 'pushable'): Pushable<T> {
 
   const iterable: AsyncIterable<T> = {
     [Symbol.asyncIterator]() {
-      console.log(`[${id}] [Symbol.asyncIterator]() called — new iterator created`)
+      debugLog(`[${id}] [Symbol.asyncIterator]() called — new iterator created`)
       return {
         next(): Promise<IteratorResult<T>> {
           nextCallCount++
           if (queue.length) {
             const item = queue.shift()!
-            console.log(`[${id}] next #${nextCallCount} → resolved from queue (queue depth now: ${queue.length})`)
+            debugLog(`[${id}] next #${nextCallCount} → resolved from queue (queue depth now: ${queue.length})`)
             return Promise.resolve({ value: item, done: false })
           }
           if (ended) {
-            console.log(`[${id}] next #${nextCallCount} → done (ended=true)`)
+            debugLog(`[${id}] next #${nextCallCount} → done (ended=true)`)
             return Promise.resolve({ value: undefined as unknown as T, done: true })
           }
-          console.log(`[${id}] next #${nextCallCount} → waiting (setting waiter, no items in queue)`)
+          debugLog(`[${id}] next #${nextCallCount} → waiting (setting waiter, no items in queue)`)
           return new Promise<IteratorResult<T>>((resolve) => {
             waiter = resolve
           })
@@ -91,7 +93,7 @@ export function createPushable<T>(label = 'pushable'): Pushable<T> {
         // a new iterator). `end()` is the proper way to terminate the
         // producer; `return()` only closes the current consumer.
         return(): Promise<IteratorResult<T>> {
-          console.warn(`[${id}] return() called on iterator — waiter: ${!!waiter}, queue: ${queue.length}, ended: ${ended}`)
+          debugWarn(`[${id}] return() called on iterator — waiter: ${!!waiter}, queue: ${queue.length}, ended: ${ended}`)
           if (waiter) {
             const w = waiter
             waiter = null

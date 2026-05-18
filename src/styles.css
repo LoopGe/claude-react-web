@@ -1981,6 +1981,18 @@ body.resizing-col * {
   border-top-right-radius: 0;
 }
 
+/* Markdown render-error fallback. Markdown wraps its renderer in an
+   ErrorBoundary that swaps in `<pre class="md md-fallback">` when a
+   plugin throws. The subtle danger-tinted border tells the reader the
+   text is shown raw because rendering failed, without screaming. */
+.md-fallback {
+  border-left: 2px solid color-mix(in srgb, var(--danger) 50%, transparent);
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+  padding: 8px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* Syntax-highlighting token colours, scoped to .md so they only apply
    inside chat messages. Colours are driven by --hljs-* variables so the
    light / dark theme palettes are swapped automatically. */

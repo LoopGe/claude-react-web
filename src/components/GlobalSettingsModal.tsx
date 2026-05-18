@@ -1,7 +1,7 @@
 // Global application settings modal. Edits config.json fields and manages
 // MCP server configs. All changes are persisted server-side on Save.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../hooks/useApi'
 import type { FullServerConfig } from '../types/config'
 import type { McpServerConfigMeta } from '../types'
@@ -37,12 +37,13 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
   const [historyCap, setHistoryCap] = useState(500)
   const [maxOpenPanels, setMaxOpenPanels] = useState(3)
   const [workingStuckMs, setWorkingStuckMs] = useState(0)
-  const [warmPoolSize, setWarmPoolSize] = useState(2)
 
   // ── MCP tab state ──
   const [mcpServers, setMcpServers] = useState<McpServerConfigMeta[]>([])
   const [showMcpInstaller, setShowMcpInstaller] = useState(false)
   const [mcpInstallerEdit, setMcpInstallerEdit] = useState<McpServerConfigMeta | undefined>()
+
+  const dialogRef = useRef<HTMLDivElement>(null)
 
   // Esc to close
   useEffect(() => {
@@ -50,6 +51,34 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
+
+  // Focus management: trap Tab inside the dialog, autofocus the first
+  // focusable element on open, and restore focus to the trigger element
+  // on close so keyboard navigation isn't lost in the void.
+  useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null
+    const el = dialogRef.current
+    if (!el) return
+    const focusableSelector =
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab') return
+      const focusable = el.querySelectorAll<HTMLElement>(focusableSelector)
+      if (!focusable.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (e.shiftKey ? document.activeElement === first : document.activeElement === last) {
+        e.preventDefault()
+        ;(e.shiftKey ? last : first).focus()
+      }
+    }
+    el.addEventListener('keydown', handleKey)
+    el.querySelector<HTMLElement>(focusableSelector)?.focus()
+    return () => {
+      el.removeEventListener('keydown', handleKey)
+      previouslyFocused?.focus?.()
+    }
+  }, [])
 
   // Load full config on mount
   useEffect(() => {
@@ -65,7 +94,6 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
         setHistoryCap(cfg.historyCap ?? 500)
         setMaxOpenPanels(cfg.maxOpenPanels ?? 3)
         setWorkingStuckMs(cfg.workingStuckMs ?? 0)
-        setWarmPoolSize(cfg.warmPoolSize ?? 2)
       } catch (e) {
         if ((e as Error).name !== 'AbortError') setErr((e as Error).message)
       } finally {
@@ -107,7 +135,6 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
         historyCap: historyCap > 0 ? historyCap : null,
         maxOpenPanels,
         workingStuckMs,
-        warmPoolSize,
       }
       if (authTokenDirty && authToken.trim()) {
         updates.authToken = authToken.trim()
@@ -164,7 +191,11 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div
+        ref={dialogRef}
         className="global-settings-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Settings"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="modal-header">
@@ -219,12 +250,10 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
                   historyCap={historyCap}
                   maxOpenPanels={maxOpenPanels}
                   workingStuckMs={workingStuckMs}
-                  warmPoolSize={warmPoolSize}
                   onMaxUploadBytesChange={setMaxUploadBytes}
                   onHistoryCapChange={setHistoryCap}
                   onMaxOpenPanelsChange={setMaxOpenPanels}
                   onWorkingStuckMsChange={setWorkingStuckMs}
-                  onWarmPoolSizeChange={setWarmPoolSize}
                 />
               )}
               {tab === 'mcp' && (
@@ -370,20 +399,18 @@ function ModelsTab({
 }
 
 function ServerTab({
-  maxUploadBytes, historyCap, maxOpenPanels, workingStuckMs, warmPoolSize,
+  maxUploadBytes, historyCap, maxOpenPanels, workingStuckMs,
   onMaxUploadBytesChange, onHistoryCapChange, onMaxOpenPanelsChange,
-  onWorkingStuckMsChange, onWarmPoolSizeChange,
+  onWorkingStuckMsChange,
 }: {
   maxUploadBytes: number
   historyCap: number
   maxOpenPanels: number
   workingStuckMs: number
-  warmPoolSize: number
   onMaxUploadBytesChange: (v: number) => void
   onHistoryCapChange: (v: number) => void
   onMaxOpenPanelsChange: (v: number) => void
   onWorkingStuckMsChange: (v: number) => void
-  onWarmPoolSizeChange: (v: number) => void
 }) {
   return (
     <>
@@ -414,13 +441,6 @@ function ServerTab({
         hint={workingStuckMs > 0 ? `~${Math.round(workingStuckMs / 60000)} min. 0 = disabled` : 'Disabled'}
         value={workingStuckMs}
         onChange={onWorkingStuckMsChange}
-        min={0}
-      />
-      <NumberField
-        label="Warm Pool Size"
-        hint="Pre-warmed CLI processes. 0 = disabled"
-        value={warmPoolSize}
-        onChange={onWarmPoolSizeChange}
         min={0}
       />
     </>

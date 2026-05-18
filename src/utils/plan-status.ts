@@ -10,6 +10,7 @@
 // This module is pure so it can be tested without React.
 
 import type { SdkMessage } from '../types'
+import { REJECTION_NEEDLES } from '../session-store/normalize'
 
 /** Lookup: tool_use_id → 'approved' | 'rejected' | 'pending'. */
 export type PlanStatusMap = ReadonlyMap<string, 'approved' | 'rejected' | 'pending'>
@@ -21,17 +22,6 @@ interface Block {
   content?: unknown
   input?: unknown
 }
-
-/** Strings the SDK / canUseTool deny path uses to mean "user said no".
- *  Matched against tool_result.content text — case-insensitive substring
- *  match. Both Anthropic CLI and our own deny path land here. */
-const REJECTION_NEEDLES = [
-  'keep planning',
-  'user chose to keep planning',
-  'rejected',
-  'permission denied',
-  'denied by user',
-]
 
 /**
  * Walk the transcript and decide a status for every plan-mode tool_use.

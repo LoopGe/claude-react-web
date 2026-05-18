@@ -20,8 +20,6 @@ interface ConfigFile {
   /** Milliseconds of SDK silence before the session is considered stuck
    *  and auto-interrupted. Set to 0 to disable. Default: 1 hour. */
   workingStuckMs?: number
-  /** Number of pre-warmed CLI processes to maintain. 0 = disabled. Default 2. */
-  warmPoolSize?: number
   /** Bearer token sent as `Authorization: Bearer <token>` to the API
    *  (works for both the official endpoint and Anthropic-compatible proxies).
    *  Required — server refuses to start without it. */
@@ -39,7 +37,6 @@ export interface ServerConfig {
   readonly historyCap: number
   readonly permissionTimeoutMs: number
   readonly workingStuckMs: number
-  readonly warmPoolSize: number
   readonly maxOpenPanels: number
   /** Undefined until config.json is loaded and `authToken` is populated.
    *  `requireAuthToken()` throws if accessed before that. */
@@ -61,7 +58,6 @@ export let config: ServerConfig = Object.freeze<ServerConfig>({
   historyCap: 500,
   permissionTimeoutMs: 5 * 60 * 1000,
   workingStuckMs: 60 * 60 * 1000,
-  warmPoolSize: 2,
   maxOpenPanels: 3,
   authToken: undefined,
   baseUrl: 'https://api.anthropic.com',
@@ -172,11 +168,6 @@ export async function loadConfig(stateDir: string): Promise<void> {
     console.log(`[config] workingStuckMs: ${merged.workingStuckMs}`)
   }
 
-  if (typeof file_.warmPoolSize === 'number' && file_.warmPoolSize >= 0) {
-    ;(merged as { warmPoolSize: number }).warmPoolSize = Math.round(file_.warmPoolSize)
-    console.log(`[config] warmPoolSize: ${merged.warmPoolSize}`)
-  }
-
   if (typeof file_.authToken === 'string' && file_.authToken.trim()) {
     ;(merged as { authToken?: string }).authToken = file_.authToken.trim()
     // Never log the token itself — just confirm it's present.
@@ -203,7 +194,6 @@ export const WRITABLE_CONFIG_KEYS = [
   'historyCap',
   'maxOpenPanels',
   'workingStuckMs',
-  'warmPoolSize',
 ] as const
 
 /**

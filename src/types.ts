@@ -2,6 +2,8 @@
 // browser bundle and instead rely on `unknown`-shaped messages that the UI
 // renders defensively.
 
+import type { SessionInfoBase } from '../shared/session-info'
+
 export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto'
 
 export const PERMISSION_MODES: PermissionMode[] = [
@@ -13,28 +15,10 @@ export const PERMISSION_MODES: PermissionMode[] = [
   'auto',
 ]
 
-export interface SessionInfo {
-  id: string
-  createdAt: number
-  lastActivityAt: number
-  subscribers: number
-  messageCount: number
-  cwd?: string
-  model?: string
-  permissionMode?: PermissionMode
-  title?: string
-  running: boolean
-  terminated: boolean
-  terminatedReason?: string
-  error?: string
-  /** Server-reported: the SDK is mid-turn. Drives the "thinking" dot. */
-  working: boolean
-  /** Epoch ms when the current turn started. Only set while `working` is
-   *  true; allows the UI to compute an accurate elapsed timer. */
-  workingSince?: number
-  /** Epoch ms of last completed turn. Used to flag unread. */
-  lastTurnAt?: number
-}
+/** Field shape is defined once in shared/session-info.ts and instantiated
+ *  here with the client's PermissionMode union. Server uses the SDK's
+ *  PermissionMode; both project to the same JSON. */
+export type SessionInfo = SessionInfoBase<PermissionMode>
 
 /** A named collection of sessions for quick group switching. Each session
  *  belongs to at most one group (exclusive membership). Sessions not in any

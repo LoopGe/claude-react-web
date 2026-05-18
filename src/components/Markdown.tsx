@@ -12,6 +12,7 @@ import type { ComponentPropsWithoutRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { createLowlight } from 'lowlight'
+import { ErrorBoundary } from './ErrorBoundary'
 
 // Register only the languages most commonly seen in Claude responses.
 // Each language adds ~2-8 KB to the bundle.
@@ -178,6 +179,17 @@ function walkTextNodes(
 }
 
 export const Markdown = memo(function Markdown({ text, searchQuery }: { text: string; searchQuery?: string }) {
+  // Fall back to a <pre>-rendered raw text if anything inside react-markdown
+  // (or our rehype plugins) throws — prevents one bad message from blanking
+  // the whole transcript.
+  return (
+    <ErrorBoundary fallback={<pre className="md md-fallback">{text}</pre>}>
+      <MarkdownInner text={text} searchQuery={searchQuery} />
+    </ErrorBoundary>
+  )
+})
+
+const MarkdownInner = memo(function MarkdownInner({ text, searchQuery }: { text: string; searchQuery?: string }) {
   const q = searchQuery?.trim()
 
   // Build the plugin array once per query change so the regex is

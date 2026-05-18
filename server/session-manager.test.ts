@@ -133,7 +133,7 @@ describe('SessionManager', () => {
     dir = makeTmpDir()
     store = new SessionStore({ stateDir: dir })
     await store.load()
-    sm = new SessionManager({ store, warmPoolSize: 0 })
+    sm = new SessionManager({ store })
   })
 
   afterEach(async () => {
