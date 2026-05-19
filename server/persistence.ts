@@ -29,6 +29,10 @@ export interface SessionMeta {
   model?: string
   permissionMode?: PermissionMode
   title?: string
+  /** Anthropic beta flags forwarded verbatim to the SDK on every
+   *  re-spawn (restart / resume / fork). Persists the 1M-context flag
+   *  for Sonnet 4 across server restarts. */
+  betas?: string[]
   /** Monotonic counter of user turns seen; used as a rough "is there
    *  anything to resume?" hint for the UI. */
   messageCount: number
@@ -125,6 +129,9 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     model: typeof r.model === 'string' ? r.model : undefined,
     permissionMode: typeof r.permissionMode === 'string' ? (r.permissionMode as PermissionMode) : undefined,
     title: typeof r.title === 'string' ? r.title : undefined,
+    betas: Array.isArray(r.betas) && r.betas.every((b) => typeof b === 'string')
+      ? (r.betas as string[])
+      : undefined,
     messageCount: typeof r.messageCount === 'number' ? r.messageCount : 0,
     terminated: typeof r.terminated === 'boolean' ? r.terminated : false,
     terminatedReason: typeof r.terminatedReason === 'string' ? r.terminatedReason : undefined,

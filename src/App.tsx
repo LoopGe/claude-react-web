@@ -644,6 +644,10 @@ export function App() {
         model: source.model,
         permissionMode: source.permissionMode,
         title: source.title ? `${source.title} (copy)` : undefined,
+        // Carry forward the beta flags so a 1M-context session stays 1M
+        // when copied. Without this, "new like this" silently downgrades
+        // the window.
+        betas: source.betas,
         groupId: sourceGroup?.id ?? fallbackGroup?.id,
       }
       await handleCreate(form)
@@ -694,6 +698,9 @@ export function App() {
         cwd: source.cwd,
         model: source.model,
         permissionMode: source.permissionMode,
+        // Preserve beta flags (notably `context-1m-...`) so restart
+        // doesn't silently drop the window from 1M back to 200k.
+        betas: source.betas,
         groupId: sourceGroup?.id ?? fallbackGroup?.id,
       }
       await handleCreate(form)

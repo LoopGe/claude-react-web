@@ -118,6 +118,10 @@ export interface Session {
   model?: string
   permissionMode?: PermissionMode
   title?: string
+  /** Anthropic beta flags the session was spawned with (e.g.
+   *  `context-1m-...`). Stored on the live session so restart / resume
+   *  / fork can re-apply them and the context window stays consistent. */
+  betas?: string[]
   input: Pushable<SDKUserMessage>
   query: Query
   subscribers: Map<string, Subscriber>

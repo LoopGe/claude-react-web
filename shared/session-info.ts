@@ -17,6 +17,11 @@ export interface SessionInfoBase<PM = string> {
   model?: string
   permissionMode?: PM
   title?: string
+  /** Anthropic beta flags the session was created with — kept around so
+   *  restart / resume / fork can re-spawn with the same flags. The
+   *  practical case is `context-1m-...` for Sonnet 4's 1M window: without
+   *  preservation, restart silently drops back to the default 200k. */
+  betas?: string[]
   running: boolean
   terminated: boolean
   terminatedReason?: string

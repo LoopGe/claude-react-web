@@ -215,6 +215,7 @@ export class SessionManager {
       model: s.model,
       permissionMode: s.permissionMode,
       title: s.title,
+      betas: s.betas,
       messageCount: s.history.length,
       terminated: s.terminated,
       terminatedReason: s.terminatedReason,
@@ -254,12 +255,16 @@ export class SessionManager {
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
-  private snapshotMeta(opts: Options): { cwd?: string; model?: string; permissionMode?: PermissionMode; title?: string } {
+  private snapshotMeta(opts: Options): { cwd?: string; model?: string; permissionMode?: PermissionMode; title?: string; betas?: string[] } {
     return {
       cwd: opts.cwd,
       model: opts.model,
       permissionMode: opts.permissionMode,
       title: opts.title,
+      // `betas` carries flags like `context-1m-...` that change the
+      // model's context window. Must survive restart / resume / fork
+      // or the user's 1M session silently downgrades to 200k.
+      betas: Array.isArray(opts.betas) ? opts.betas : undefined,
     }
   }
 
@@ -300,6 +305,12 @@ export class SessionManager {
       model: meta.model,
       permissionMode: meta.permissionMode,
       title: meta.title,
+      // Carry beta flags forward — without this, a 1M-context session
+      // silently downgrades to the model's default window on resume.
+      // Cast: SDK types this as a literal-string union of known flags,
+      // but we store the user-supplied list as plain `string[]` so a
+      // newer flag the SDK type hasn't learned about yet still survives.
+      betas: meta.betas as Options['betas'],
     }
     return this.spawn(id, resumeOpts)
   }
@@ -338,6 +349,9 @@ export class SessionManager {
       model: meta.model,
       permissionMode: meta.permissionMode,
       title,
+      // Same as resume: preserve `context-1m-...` etc. so the fork has
+      // the same effective window as the source. See resume() for the cast rationale.
+      betas: meta.betas as Options['betas'],
     }
     return this.spawn(randomUUID(), forkOpts)
   }

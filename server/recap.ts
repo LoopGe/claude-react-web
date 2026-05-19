@@ -32,6 +32,11 @@ interface CacheEntry {
   stats: RecapStats
   messageCount: number
   lastMessageUuid: string
+  /** The UUID of the last message at the time the recap was generated.
+   *  Used by the route handler after appendRecap() to bump the cache
+   *  snapshot so that subsequent requests with no new messages hit the
+   *  cache instead of re-calling the LLM. */
+  lastMessageUuidAtGeneration: string
   generatedAt: number
 }
 
@@ -62,6 +67,26 @@ const inflight = new Map<string, Promise<RecapResult>>()
 
 export function invalidateRecapCache(sessionId: string): void {
   cache.delete(sessionId)
+}
+
+/**
+ * Bump the cache entry after appendRecap() adds the recap message to the
+ * session's history. Without this, the next request sees a different
+ * messageCount + lastMessageUuid and needlessly re-calls the LLM.
+ *
+ * Only called when generateRecap returned a non-fallback result (which is
+ * the only case where the cache is populated).
+ */
+export function updateRecapCacheAfterAppend(
+  sessionId: string,
+  newMessageCount: number,
+  newLastMessageUuid: string,
+): void {
+  const entry = cache.get(sessionId)
+  if (entry) {
+    entry.messageCount = newMessageCount
+    entry.lastMessageUuid = newLastMessageUuid
+  }
 }
 
 // ── History extraction ─────────────────────────────────────────────
@@ -276,6 +301,9 @@ async function doGenerateRecap(messages: SDKMessage[], sessionId: string): Promi
   ) {
     return { summary: cached.summary, stats: cached.stats, cached: true, generatedAt: cached.generatedAt }
   }
+  // Store the pre-generation UUID so the route handler can bump the cache
+  // after appendRecap() adds the recap message to history.
+  const lastMessageUuidAtGeneration = lastUuid
 
   // Generate. authToken presence is the single gate — config.json is the
   // only source of truth (env vars are no longer consulted).
@@ -304,7 +332,13 @@ async function doGenerateRecap(messages: SDKMessage[], sessionId: string): Promi
   // in place until the next user turn invalidates it. Retries are cheap
   // (network or UI refresh button); keep them available.
   if (!fallback) {
-    cache.set(sessionId, { summary, stats, messageCount: messages.length, lastMessageUuid: lastUuid, generatedAt })
+    cache.set(sessionId, {
+      summary, stats,
+      messageCount: messages.length,
+      lastMessageUuid: lastUuid,
+      lastMessageUuidAtGeneration,
+      generatedAt,
+    })
     // LRU eviction: drop oldest entries when the cache exceeds the cap.
     if (cache.size > CACHE_MAX_ENTRIES) {
       const oldest = cache.keys().next().value
