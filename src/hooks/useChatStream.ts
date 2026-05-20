@@ -45,9 +45,15 @@ export interface ChatStream {
   replayReady: boolean
   trackSentTurn: () => void
   /** Optimistically insert the user's message into the transcript so it
-   *  appears immediately, before the server echoes it back. The real
-   *  message from the WS stream will replace this placeholder. */
-  insertUserMessage: (text: string) => void
+   *  appears immediately, before the server echoes it back. Returns the
+   *  pendingId so the caller can roll it back if the POST fails. The
+   *  real message from the WS stream will replace this placeholder
+   *  (matched by id, not by content — works for multimodal too). */
+  insertUserMessage: (text: string) => string
+  /** Remove a previously-inserted optimistic user message. Used by the
+   *  Composer's send() catch path so a failed POST doesn't leave a
+   *  ghost row in the transcript. */
+  rollbackUserMessage: (pendingId: string) => void
   reset: () => void
   clearError: () => void
 }
@@ -182,13 +188,19 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     store.dispatch({ type: 'TRACK_SENT_TURN' })
   }, [store])
 
-  const insertUserMessage = useCallback((text: string) => {
+  const insertUserMessage = useCallback((text: string): string => {
+    const pendingId = `optimistic:${crypto.randomUUID()}`
     const message: SdkMessage = {
       type: 'user',
-      uuid: `optimistic:${crypto.randomUUID()}`,
+      uuid: pendingId,
       message: { role: 'user', content: text },
     }
     store.dispatch({ type: 'OPTIMISTIC_USER_MESSAGE', message })
+    return pendingId
+  }, [store])
+
+  const rollbackUserMessage = useCallback((pendingId: string) => {
+    store.dispatch({ type: 'ROLLBACK_OPTIMISTIC_USER_MESSAGE', pendingId })
   }, [store])
 
   const reset = useCallback(() => {
@@ -216,9 +228,10 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       replayReady: snapshot.replayReady,
       trackSentTurn,
       insertUserMessage,
+      rollbackUserMessage,
       reset,
       clearError,
     }),
-    [snapshot, displayedError, trackSentTurn, insertUserMessage, reset, clearError],
+    [snapshot, displayedError, trackSentTurn, insertUserMessage, rollbackUserMessage, reset, clearError],
   )
 }

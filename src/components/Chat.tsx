@@ -92,6 +92,13 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
   // this initializer runs exactly once per mount — the right place to hydrate.
   const [input, setInputState] = useState(() => readDraft(session.id))
   const [sending, setSending] = useState(false)
+  // Synchronous reentrancy guard. setSending is async — between two
+  // rapid keypresses (e.g. Enter pressed twice within one frame), React
+  // hasn't committed the state update yet, so the closure inside send()
+  // sees `sending === false` both times and POSTs twice. The ref flips
+  // synchronously so the second call short-circuits immediately. Same
+  // pattern PermissionDialog uses for its busy guard.
+  const sendingRef = useRef(false)
   const [localError, setLocalError] = useState<string | null>(null)
   /** Increments whenever we want the Composer's textarea refocused.
    *  Bumped after a successful send — otherwise the click on the Send
@@ -308,7 +315,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
   // Putting the whole hook object in a dep list re-creates callbacks every
   // render and can churn child re-renders (the composer's onChange in
   // particular — that's what caused the "can't send / can't type" freeze).
-  const { trackSentTurn, insertUserMessage, clearError: clearStreamError } = stream
+  const { trackSentTurn, insertUserMessage, rollbackUserMessage, clearError: clearStreamError } = stream
   const {
     attachments: attachmentList,
     setDragOver,
@@ -360,22 +367,37 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
   )
 
   const send = useCallback(async () => {
+    // Synchronous guard FIRST — before any await or React state read,
+    // so two rapid Enter presses (within one frame) can't both pass.
+    if (sendingRef.current) return
     const text = input.trim()
     // Allow sending with just attachments (e.g. "here, look at these files")
     // — the model sees only the attachments preamble in that case.
     if (!text && attachmentList.length === 0 && pastedImages.images.length === 0) return
-    if (sending) return
+    sendingRef.current = true
     setSending(true)
     clearError()
-    try {
-      const preamble =
-        attachmentList.length > 0
-          ? `Attached file${attachmentList.length === 1 ? '' : 's'} (absolute path${attachmentList.length === 1 ? '' : 's'} — use the Read tool to open):\n` +
-            attachmentList.map((a) => `- ${a.path}`).join('\n') +
-            '\n\n'
-          : ''
-      const full = preamble + text
+    const preamble =
+      attachmentList.length > 0
+        ? `Attached file${attachmentList.length === 1 ? '' : 's'} (absolute path${attachmentList.length === 1 ? '' : 's'} — use the Read tool to open):\n` +
+          attachmentList.map((a) => `- ${a.path}`).join('\n') +
+          '\n\n'
+        : ''
+    const full = preamble + text
 
+    // Insert the optimistic placeholder BEFORE the POST. The server
+    // broadcasts the same user message back over WS the moment send/
+    // sendContent runs, so by the time the POST resolves the broadcast
+    // is already on its way. With this ordering the broadcast lands on
+    // an existing pendingUserMessageId and reducer.applyMessage replaces
+    // the placeholder by id — which works regardless of content shape
+    // (multimodal arrays included). Previously the optimistic insert
+    // ran AFTER await, so the broadcast arrived first and the dedup
+    // (which compares content with ===) failed for image arrays,
+    // leaving two "you" bubbles in the transcript.
+    const pendingId = full.trim() ? insertUserMessage(full) : null
+
+    try {
       if (pastedImages.images.length > 0) {
         // Build content array with text + image blocks
         const content: Array<{ type: string; text?: string; source?: { type: string; data: string; media_type: string } }> = []
@@ -387,9 +409,6 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
       } else {
         await api.post(`/sessions/${session.id}/messages`, { text: full })
       }
-      // Show the user's message in the transcript immediately, before the
-      // server echoes it back via the WS stream.
-      if (full.trim()) insertUserMessage(full)
       if (text) history.add(text)
       setInput('')
       clearAttachments()
@@ -406,10 +425,14 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
       setComposerFocusSignal((n) => n + 1)
     } catch (e) {
       setLocalError((e as Error).message)
+      // Roll back the optimistic placeholder so the user sees that the
+      // send failed (text stays in the input, transcript stays clean).
+      if (pendingId) rollbackUserMessage(pendingId)
     } finally {
+      sendingRef.current = false
       setSending(false)
     }
-  }, [input, attachmentList, sending, session.id, history, trackSentTurn, insertUserMessage, clearAttachments, clearError, setInput, pastedImages])
+  }, [input, attachmentList, session.id, history, trackSentTurn, insertUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, pastedImages])
 
   // Set to true when interrupt() fires; the next `result` message renders
   // as "interrupted" and resets this to false.

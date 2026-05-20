@@ -249,6 +249,14 @@ async function main() {
     )
   }
 
+  const { getLogConfig } = await import('./log.js')
+  const initial = getLogConfig()
+  console.log(
+    `[cli] log: level=${initial.level}` +
+      (initial.scopes ? ` scopes=${initial.scopes.join(',')}` : ' scopes=*') +
+      ' (override via LOG_LEVEL / LOG_SCOPES, or PUT /api/log at runtime)',
+  )
+
   const { app, sessionManager } = buildApp({
     sessionStore: store,
     mcpConfigStore: mcpStore,

@@ -65,6 +65,10 @@ export type SessionAction =
   | { type: 'REPLAY_REPLACE'; messages: SdkMessage[]; permissions: PermissionRequest[] }
   | { type: 'MESSAGE'; message: SdkMessage }
   | { type: 'OPTIMISTIC_USER_MESSAGE'; message: SdkMessage }
+  /** Roll back the most recent optimistic user message (POST failed
+   *  before the server could broadcast it). Identified by pendingId
+   *  so concurrent unrelated dispatches don't drop the wrong row. */
+  | { type: 'ROLLBACK_OPTIMISTIC_USER_MESSAGE'; pendingId: string }
   | { type: 'PERMISSION_REQUEST'; request: PermissionRequest }
   | {
       type: 'PERMISSION_RESOLVED'

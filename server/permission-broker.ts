@@ -26,6 +26,9 @@ import type {
 import { toSnapshot, sanitizeQuestions, formatQuestionAnswers, promoteToSession } from './permission-helpers.js'
 import { HttpError } from './errors.js'
 import { createAsyncSubscription } from './async-subscription.js'
+import { createLogger } from './log.js'
+
+const log = createLogger('broker')
 
 export interface PermissionBrokerOptions {
   /** Timeout (ms) for pending requests. 0 = no timeout. */
@@ -66,6 +69,18 @@ export class PermissionBroker {
     const permissionTimeoutMs = this.permissionTimeoutMs
 
     const canUseTool: CanUseTool = async (toolName, toolInput, ctx) => {
+      // Per-call trace — gated through the scoped logger. To enable just
+      // this scope without flooding the rest:
+      //   LOG_LEVEL=debug LOG_SCOPES=broker
+      // Used to investigate whether subagent tool calls actually route
+      // through canUseTool (key signal: does `agentID=<uuid>` ever appear
+      // for a subagent's Bash, and does sessionMode reflect bypass?).
+      log.debug(
+        `canUseTool fired — tool=${toolName} ` +
+        `agentID=${ctx.agentID ?? 'main'} ` +
+        `sessionMode=${session.permissionMode ?? 'default'} ` +
+        `toolUseID=${ctx.toolUseID}`,
+      )
       // `AskUserQuestion` is an interactive tool (not a permission check)
       // but it still routes through canUseTool. Intercepting here is the
       // only reliable way to override its output — PreToolUse.block and

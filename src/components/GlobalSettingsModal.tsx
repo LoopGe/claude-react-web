@@ -7,7 +7,15 @@ import type { FullServerConfig } from '../types/config'
 import type { McpServerConfigMeta } from '../types'
 import { McpInstaller } from './McpInstaller'
 
-type Tab = 'api' | 'models' | 'server' | 'mcp'
+type Tab = 'api' | 'models' | 'server' | 'mcp' | 'logs'
+
+type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'trace'
+
+interface LogConfig {
+  level: LogLevel
+  scopes: string[] | null
+  availableLevels: readonly LogLevel[]
+}
 
 interface Props {
   onClose: () => void
@@ -186,6 +194,7 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
     { key: 'models', label: 'Models' },
     { key: 'server', label: 'Server' },
     { key: 'mcp', label: 'MCP Servers' },
+    { key: 'logs', label: 'Logs' },
   ]
 
   return (
@@ -265,6 +274,7 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
                   onToggle={toggleMcpServer}
                 />
               )}
+              {tab === 'logs' && <LogsTab />}
             </>
           )}
         </div>
@@ -547,6 +557,118 @@ function McpCard({
           {server.type === 'stdio'
             ? `${server.command} ${(server.args ?? []).join(' ')}`
             : server.url}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Logs tab ─────────────────────────────────────────────────────
+
+/** Runtime log-level / scope-filter control. Affects only the running
+ *  server process — settings are NOT persisted, so a restart resets to
+ *  whatever LOG_LEVEL / LOG_SCOPES env vars say (default: info, all
+ *  scopes). Used as a debug aid: dial `broker` up to debug to inspect
+ *  permission-flow questions without restarting the server. */
+function LogsTab() {
+  const [config, setConfig] = useState<LogConfig | null>(null)
+  const [scopesInput, setScopesInput] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [savedAt, setSavedAt] = useState<number | null>(null)
+
+  useEffect(() => {
+    const ac = new AbortController()
+    api
+      .get<LogConfig>('/log', { signal: ac.signal })
+      .then((cfg) => {
+        setConfig(cfg)
+        setScopesInput(cfg.scopes ? cfg.scopes.join(',') : '')
+      })
+      .catch((e) => {
+        if ((e as Error).name !== 'AbortError') setErr((e as Error).message)
+      })
+    return () => ac.abort()
+  }, [])
+
+  const apply = useCallback(async (patch: { level?: LogLevel; scopes?: string[] | null }) => {
+    setBusy(true)
+    setErr(null)
+    try {
+      const next = await api.put<LogConfig>('/log', patch)
+      setConfig(next)
+      setScopesInput(next.scopes ? next.scopes.join(',') : '')
+      setSavedAt(Date.now())
+    } catch (e) {
+      setErr((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  if (!config) {
+    return <div style={{ padding: 16, color: 'var(--fg-muted)' }}>Loading log config…</div>
+  }
+
+  const onScopesBlur = () => {
+    const trimmed = scopesInput.trim()
+    const parsed = trimmed ? trimmed.split(',').map((s) => s.trim()).filter(Boolean) : null
+    const current = config.scopes ?? null
+    // Only PUT if it changed.
+    const changed =
+      (parsed === null) !== (current === null) ||
+      (parsed && current && (parsed.length !== current.length || parsed.some((s, i) => s !== current[i])))
+    if (changed) void apply({ scopes: parsed && parsed.length > 0 ? parsed : null })
+  }
+
+  return (
+    <div>
+      <Field
+        label="Level"
+        hint="Threshold — only messages at this level or higher get printed. Affects all scopes."
+      >
+        <select
+          value={config.level}
+          disabled={busy}
+          onChange={(e) => void apply({ level: e.target.value as LogLevel })}
+        >
+          {config.availableLevels.map((lvl) => (
+            <option key={lvl} value={lvl}>{lvl}</option>
+          ))}
+        </select>
+      </Field>
+
+      <Field
+        label="Scope filter"
+        hint='Comma-separated scope names (e.g. "broker,pump"). Leave empty to allow all scopes. Use "*" to be explicit. Only listed scopes log at all when set.'
+      >
+        <input
+          type="text"
+          value={scopesInput}
+          disabled={busy}
+          placeholder="(empty = all scopes)"
+          onChange={(e) => setScopesInput(e.target.value)}
+          onBlur={onScopesBlur}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              ;(e.target as HTMLInputElement).blur()
+            }
+          }}
+          style={{ width: '100%' }}
+        />
+      </Field>
+
+      <div style={{ marginTop: 12, fontSize: 12, color: 'var(--fg-muted)' }}>
+        Changes apply immediately to the running server but are <strong>not
+        persisted</strong>. A restart reverts to the boot-time values
+        (LOG_LEVEL / LOG_SCOPES env vars, default <code>info</code> / all).
+      </div>
+
+      {err && <div className="modal-error" style={{ marginTop: 12 }}>{err}</div>}
+      {savedAt && !err && (
+        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--ok, #6cc88b)' }}>
+          ✓ Updated
         </div>
       )}
     </div>

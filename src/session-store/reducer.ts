@@ -16,6 +16,21 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
       return applyMessage(state, action.message)
     case 'OPTIMISTIC_USER_MESSAGE':
       return applyOptimisticUserMessage(state, action.message)
+    case 'ROLLBACK_OPTIMISTIC_USER_MESSAGE': {
+      // Only roll back if the pendingId still matches — between the
+      // failed POST and this dispatch, the user might have already sent
+      // a follow-up that overwrote pendingUserMessageId, in which case
+      // we'd nuke the wrong row.
+      if (state.pendingUserMessageId !== action.pendingId) return state
+      return {
+        ...state,
+        items: state.items.filter((it) => it.id !== action.pendingId),
+        messages: state.messages.filter(
+          (m) => (typeof m.uuid === 'string' ? m.uuid : null) !== action.pendingId,
+        ),
+        pendingUserMessageId: null,
+      }
+    }
     case 'PERMISSION_REQUEST': {
       const permissionPending = new Map(state.permissionPending)
       permissionPending.set(action.request.id, action.request)

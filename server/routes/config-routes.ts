@@ -7,6 +7,7 @@ import { homedir } from 'node:os'
 import { SessionManager } from '../session-manager.js'
 import { HttpError } from '../errors.js'
 import { config as serverConfig, loadConfig, readConfigFile, updateConfigFile } from '../config.js'
+import { LOG_LEVELS, getLogConfig, setLogConfig, type LogLevel } from '../log.js'
 
 export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono {
   const app = new Hono()
@@ -69,6 +70,44 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
         model: serverConfig.defaultModel,
       },
     })
+  })
+
+  // ── Runtime log config ─────────────────────────────────────────────
+  // In-memory only — does NOT persist across restarts. Boot-time defaults
+  // come from LOG_LEVEL / LOG_SCOPES env vars. The UI exposes this so a
+  // user can flip levels mid-debug without restarting the server.
+  app.get('/log', (c) => {
+    return c.json({
+      ...getLogConfig(),
+      availableLevels: LOG_LEVELS,
+    })
+  })
+
+  app.put('/log', async (c) => {
+    const body = await c.req.json<{ level?: string; scopes?: string[] | null }>().catch(
+      () => { throw new HttpError(400, 'Malformed JSON body') },
+    )
+    if (body && typeof body !== 'object') {
+      throw new HttpError(400, 'Body must be a JSON object')
+    }
+    const update: { level?: LogLevel; scopes?: string[] | null } = {}
+    if (body.level != null) {
+      if (typeof body.level !== 'string' || !LOG_LEVELS.includes(body.level as LogLevel)) {
+        throw new HttpError(400, `level must be one of: ${LOG_LEVELS.join(', ')}`)
+      }
+      update.level = body.level as LogLevel
+    }
+    if (body.scopes !== undefined) {
+      if (body.scopes !== null && !Array.isArray(body.scopes)) {
+        throw new HttpError(400, 'scopes must be an array of strings or null')
+      }
+      if (Array.isArray(body.scopes) && !body.scopes.every((s) => typeof s === 'string')) {
+        throw new HttpError(400, 'scopes must contain only strings')
+      }
+      update.scopes = body.scopes
+    }
+    const next = setLogConfig(update)
+    return c.json({ ...next, availableLevels: LOG_LEVELS })
   })
 
   // Update config — merges partial updates into config.json and hot-reloads.
