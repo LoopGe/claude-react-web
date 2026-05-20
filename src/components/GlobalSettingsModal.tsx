@@ -628,6 +628,7 @@ function LogsTab() {
         hint="Threshold — only messages at this level or higher get printed. Affects all scopes."
       >
         <select
+          className="input"
           value={config.level}
           disabled={busy}
           onChange={(e) => void apply({ level: e.target.value as LogLevel })}
@@ -643,6 +644,7 @@ function LogsTab() {
         hint='Comma-separated scope names (e.g. "broker,pump"). Leave empty to allow all scopes. Use "*" to be explicit. Only listed scopes log at all when set.'
       >
         <input
+          className="input"
           type="text"
           value={scopesInput}
           disabled={busy}
@@ -667,7 +669,7 @@ function LogsTab() {
 
       {err && <div className="modal-error" style={{ marginTop: 12 }}>{err}</div>}
       {savedAt && !err && (
-        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--ok, #6cc88b)' }}>
+        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--ok)' }}>
           ✓ Updated
         </div>
       )}

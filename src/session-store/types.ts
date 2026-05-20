@@ -7,6 +7,11 @@ export interface TranscriptItem {
   searchableText: string | null
   isCompactSummary: boolean
   hiddenByDefault: boolean
+  /** True for optimistic placeholders that haven't been replaced by the
+   *  server-side broadcast yet — drives the "sending" spinner on the user
+   *  bubble. Cleared automatically when the broadcast lands and the
+   *  reducer swaps in the real TranscriptItem (which has no `sending`). */
+  sending?: boolean
 }
 
 export type SubagentStatus = 'running' | 'done' | 'rejected' | 'interrupted'

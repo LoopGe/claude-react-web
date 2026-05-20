@@ -63,6 +63,10 @@ interface RenderableItem {
   msg: SdkMessage
   isCompactSummary: boolean
   itemIndex: number
+  /** Optimistic placeholder still in flight — drives the user bubble's
+   *  "sending" spinner. Cleared automatically by the reducer when the
+   *  server's broadcast lands and the optimistic gets swapped out. */
+  sending?: boolean
 }
 
 export function MessageList({ items, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, planStatus = new Map(), searchQuery, searchActiveMsgIdx, parentToolUseIdFilter }: Props) {
@@ -111,7 +115,12 @@ export function MessageList({ items, showSystemEvents = false, pendingInterruptR
         if (parent !== parentToolUseIdFilter) continue
       }
       if (showSystemEvents || !item.hiddenByDefault) {
-        out.push({ msg: item.msg, isCompactSummary: item.isCompactSummary, itemIndex: i })
+        out.push({
+          msg: item.msg,
+          isCompactSummary: item.isCompactSummary,
+          itemIndex: i,
+          sending: item.sending,
+        })
       }
     }
     return out
@@ -296,6 +305,7 @@ export function MessageList({ items, showSystemEvents = false, pendingInterruptR
         isCompactSummary={item.isCompactSummary}
         interruptedRef={pendingInterruptRef}
         searchQuery={searchQuery}
+        sending={item.sending}
       />
     </div>
   ), [pendingInterruptRef, searchQuery, activeVirtIdx])
@@ -390,11 +400,16 @@ const MessageView = memo(function MessageView({
   isCompactSummary,
   interruptedRef,
   searchQuery,
+  sending,
 }: {
   msg: SdkMessage
   isCompactSummary?: boolean
   interruptedRef?: React.RefObject<boolean>
   searchQuery?: string
+  /** When true, render the user bubble with a "sending" spinner.
+   *  Only meaningful for type='user' messages — propagated from the
+   *  TranscriptItem's optimistic-placeholder flag. */
+  sending?: boolean
 }) {
   const type = msg.type
 
@@ -467,7 +482,7 @@ const MessageView = memo(function MessageView({
     // Real user message
     const imageBlocks = blocks.filter((b) => b.type === 'image')
     return (
-      <div className="msg user">
+      <div className={`msg user${sending ? ' msg-sending' : ''}`}>
         <button
           className="msg-copy-btn"
           onClick={() => void copyToClipboard(userContent ?? '')}
@@ -478,6 +493,16 @@ const MessageView = memo(function MessageView({
         </button>
         <div className="msg-header">
           <span>you</span>
+          {sending && (
+            <span
+              className="msg-sending-indicator"
+              title="Sending — waiting for the server to acknowledge"
+              aria-label="Sending"
+            >
+              <span className="msg-sending-spinner" aria-hidden />
+              <span className="msg-sending-label">sending…</span>
+            </span>
+          )}
         </div>
         <div className="msg-body">
           {imageBlocks.length > 0 && (

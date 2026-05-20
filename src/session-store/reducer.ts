@@ -114,27 +114,62 @@ function applyOptimisticUserMessage(state: SessionState, message: SdkMessage): S
     return { ...state, pendingUserMessageId: last.id }
   }
 
+  // Mark the optimistic item as 'sending' so the user bubble can render
+  // a spinner. The flag clears automatically when the server's broadcast
+  // arrives and applyMessage swaps this item out for the real one (the
+  // replaced TranscriptItem has no `sending` field).
+  const optimisticItem = { ...item, sending: true }
   return {
     ...state,
-    items: [...state.items, item],
-    messages: [...state.messages, item.msg],
-    pendingUserMessageId: item.id,
+    items: [...state.items, optimisticItem],
+    messages: [...state.messages, optimisticItem.msg],
+    pendingUserMessageId: optimisticItem.id,
   }
 }
 
 function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   // When the server echoes back the user message we sent, replace the
-  // optimistic placeholder instead of appending a duplicate.
-  if (message.type === 'user' && state.pendingUserMessageId) {
+  // optimistic placeholder IN PLACE and return early. Falling through
+  // to updateTranscript below would append the real message a second
+  // time — that was the "every message shows twice" regression
+  // introduced when we moved insertUserMessage to run before the POST.
+  //
+  // Guard: only match when the incoming message is a top-level user
+  // message (parent_tool_use_id === null/undefined). Subagent
+  // tool_result frames are also `type: 'user'` but should never clobber
+  // the optimistic — without this guard, a tool_result that lands while
+  // pendingUserMessageId is still set would replace the typed text with
+  // a JSON tool result and silently drop what the user wrote.
+  const incomingParent = (message as Record<string, unknown>).parent_tool_use_id
+  if (
+    message.type === 'user' &&
+    state.pendingUserMessageId &&
+    incomingParent == null
+  ) {
     const real = toTranscriptItem(message, undefined)
     if (real) {
-      const items = state.items.map((it) =>
-        it.id === state.pendingUserMessageId ? real : it,
-      )
-      const messages = state.messages.map((m) =>
-        (typeof m.uuid === 'string' ? m.uuid : null) === state.pendingUserMessageId ? real.msg : m,
-      )
-      state = { ...state, items, messages, pendingUserMessageId: null }
+      const idx = state.items.findIndex((it) => it.id === state.pendingUserMessageId)
+      if (idx >= 0) {
+        const items = state.items.slice()
+        items[idx] = real
+        const msgIdx = state.messages.findIndex(
+          (m) => (typeof m.uuid === 'string' ? m.uuid : null) === state.pendingUserMessageId,
+        )
+        const messages = msgIdx >= 0 ? state.messages.slice() : state.messages
+        if (msgIdx >= 0) messages[msgIdx] = real.msg
+        return {
+          ...state,
+          items,
+          messages,
+          eventCount: state.eventCount + 1,
+          lastMessageUuid: typeof message.uuid === 'string' ? message.uuid : state.lastMessageUuid,
+          pendingUserMessageId: null,
+        }
+      }
+      // pendingUserMessageId pointed at a row that's no longer in items
+      // (rollback ran, replay rebuilt, etc.). Clear the dangling pointer
+      // and let the message flow through updateTranscript normally.
+      state = { ...state, pendingUserMessageId: null }
     }
   }
 
@@ -147,9 +182,13 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
     next.lastMessageUuid = message.uuid
   }
 
-  // If this is a user message that wasn't matched above (no pending),
-  // clear the pendingUserMessageId to be safe.
-  if (message.type === 'user' && next.pendingUserMessageId) {
+  // If this is a TOP-LEVEL user message that wasn't matched above
+  // (e.g. arrived but the optimistic placeholder was already gone),
+  // clear pendingUserMessageId to be safe. Don't clear on
+  // tool_result/subagent user frames (parent_tool_use_id != null) —
+  // those are unrelated to the user's typed input and the real echo
+  // may still be on its way.
+  if (message.type === 'user' && next.pendingUserMessageId && incomingParent == null) {
     next.pendingUserMessageId = null
   }
 

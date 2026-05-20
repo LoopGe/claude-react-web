@@ -1638,6 +1638,42 @@ body.resizing-col * {
   margin-bottom: 6px;
   display: flex;
   justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+/* "Sending…" indicator on the user bubble while the server hasn't
+   acknowledged yet. Replaced with no indicator (this entire row is
+   removed) the moment the broadcast lands. */
+.msg-sending-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+.msg-sending-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: msg-sending-spin 0.8s linear infinite;
+}
+.msg-sending-label {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+@keyframes msg-sending-spin {
+  to { transform: rotate(360deg); }
+}
+/* Subtly soften the bubble while in-flight so it visibly differs from
+   the acknowledged state. Restored when the spinner is removed. */
+.msg.user.msg-sending {
+  opacity: 0.75;
 }
 /* User message — right-aligned chat bubble. We shrink the bubble below
    the column width and pin it to the right edge with align-self, which
