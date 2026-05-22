@@ -19,8 +19,6 @@ import type { SessionInfoBase } from '../shared/session-info.js'
 export interface Subscriber {
   id: string
   push: (msg: SDKMessage) => void
-  /** Push a named event that bypasses message history (e.g. context_usage). */
-  pushEvent: (name: string, data: unknown) => void
   end: () => void
   closed: boolean
 }
@@ -36,50 +34,13 @@ export interface PermissionSubscriber {
   end: () => void
 }
 
-/** One question within an AskUserQuestion tool_use. Mirrors the SDK's
- *  internal shape but narrowed so the frontend can rely on it. */
-export interface QuestionSpec {
-  question: string
-  /** Short header/label for the question, shown as a chip in the UI. */
-  header?: string
-  multiSelect?: boolean
-  options: Array<{
-    label: string
-    description?: string
-    /** Preview body (markdown by default). SDK's toolConfig.askUserQuestion
-     *  can flip this to HTML, but we don't set that option. */
-    preview?: string
-  }>
-}
+// Re-export canonical QuestionSpec from shared.
+export type { QuestionSpec } from '../shared/question-spec.js'
 
-/** JSON-safe snapshot of a pending permission request OR interactive
- *  question. Permissions and questions ride on the same channel and
- *  the same pending map — they're both "SDK waiting on the user" events
- *  — but the frontend renders them with different components, so the
- *  `kind` discriminator matters. */
-export type PermissionRequestSnapshot =
-  | {
-      kind: 'permission'
-      id: string
-      toolName: string
-      input: Record<string, unknown>
-      title?: string
-      displayName?: string
-      description?: string
-      suggestions?: PermissionUpdate[]
-      toolUseID: string
-      createdAt: number
-    }
-  | {
-      kind: 'question'
-      id: string
-      toolName: 'AskUserQuestion'
-      /** Raw questions array as handed to the tool. The frontend renders
-       *  one form per element; each is single- or multi-select. */
-      questions: QuestionSpec[]
-      toolUseID: string
-      createdAt: number
-    }
+// Re-export canonical PermissionRequestSnapshot from shared.
+// Server instantiates with the SDK's PermissionUpdate[] for suggestions.
+import type { PermissionRequestBase } from '../shared/permission-request.js'
+export type PermissionRequestSnapshot = PermissionRequestBase<PermissionUpdate[]>
 
 /** Summary of how a pending request was resolved (broadcast to all tabs).
  *  Extends the canonical `PermissionDecision` from shared/ws-protocol.ts
@@ -153,11 +114,22 @@ export interface Session {
   autoInterruptedAt?: number
   /** Timestamp of the last `result` message, used for the unread badge. */
   lastTurnAt?: number
+  /** Snapshot of HEAD captured at session spawn. Used by the GitPanel
+   *  "This session" view to scope diffs to this conversation. Mirrored
+   *  into SessionInfo and persisted via SessionMeta so it survives
+   *  resume + server restart. */
+  gitStartSha?: string
   /** Per-subscriber pushables for context_usage events — separate from
    *  message history so reconnects don't replay stale usage snapshots.
    *  Each WS subscriber gets its own pushable to avoid waiter overwrite
    *  when multiple tabs are connected to the same session. */
   contextUsageSubscribers: Set<Pushable<unknown>>
+  /** Per-subscriber pushables for `git-status-changed` signal frames.
+   *  Same shape as contextUsageSubscribers but carries a signal-only
+   *  payload (no GitStatus snapshot — clients refetch). Driven by
+   *  session-pump on mutating tool_results and by git-write routes on
+   *  user-initiated mutations. */
+  gitStatusSubscribers: Set<Pushable<unknown>>
   /** AbortController whose signal races the pump's `iter.next()` so
    *  unload() can break a wedged generator without waiting for the SDK
    *  subprocess to exit. */
@@ -166,6 +138,28 @@ export interface Session {
    *  exits cleanly and needs to be re-spawned without recreating the
    *  permission handling logic. */
   canUseTool?: CanUseTool
+}
+
+/** End every live subscriber (messages, permissions, context-usage) and
+ *  clear the collections so no dangling references prevent GC.
+ *  Shared across handleProcessExit, cleanupPump, and unload. */
+export function endAllSubscribers(s: Session): void {
+  for (const sub of s.subscribers.values()) {
+    try { sub.end() } catch { /* subscriber dead — don't break cleanup for others */ }
+  }
+  s.subscribers.clear()
+  for (const sub of s.permissionSubscribers.values()) {
+    try { sub.end() } catch { /* subscriber dead — skip */ }
+  }
+  s.permissionSubscribers.clear()
+  for (const sub of s.contextUsageSubscribers) {
+    try { sub.end() } catch { /* subscriber dead — skip */ }
+  }
+  s.contextUsageSubscribers.clear()
+  for (const sub of s.gitStatusSubscribers) {
+    try { sub.end() } catch { /* subscriber dead — skip */ }
+  }
+  s.gitStatusSubscribers.clear()
 }
 
 export interface SessionManagerOptions {
@@ -232,6 +226,12 @@ export interface SessionBroadcaster {
     unsubscribe: () => void
   }
   subscribeContextUsage(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null
+  subscribeGitStatus(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null
+  /** Push a `git-status-changed` signal to every subscriber of the
+   *  session. Mutator-shaped (modifies subscriber state by enqueueing)
+   *  but pure from the caller's perspective; included in the broadcaster
+   *  contract so the debounce helper and write routes can both call it. */
+  broadcastGitStatusChanged(sessionId: string): void
 }
 
 // Re-export HttpError from its canonical location so existing importers

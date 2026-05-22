@@ -9,11 +9,17 @@
 
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
+import { enableFileLogging, disableFileLogging } from './log.js'
 
 /** Schema for config.json */
 interface ConfigFile {
   modelList?: string[]
   recapModel?: string
+  /** Model used by the AI commit-message generator under the GitPanel
+   *  "This session" view. Defaults to the same haiku model as recap; pick
+   *  a different one (e.g. opus for higher quality at much higher cost)
+   *  per project preference. */
+  commitMessageModel?: string
   maxUploadBytes?: number
   historyCap?: number
   maxOpenPanels?: number
@@ -27,12 +33,15 @@ interface ConfigFile {
   /** API endpoint. Defaults to the official one. Override to point at a
    *  proxy / relay. No trailing slash expected; trimmed during load. */
   baseUrl?: string
+  /** Write logs to a file in `<stateDir>/logs/`. Default: false. */
+  logToFile?: boolean
 }
 
 export interface ServerConfig {
   readonly modelList: readonly string[]
   readonly defaultModel: string
   readonly recapModel: string
+  readonly commitMessageModel: string
   readonly maxUploadBytes: number
   readonly historyCap: number
   readonly permissionTimeoutMs: number
@@ -42,6 +51,7 @@ export interface ServerConfig {
    *  `requireAuthToken()` throws if accessed before that. */
   readonly authToken?: string
   readonly baseUrl: string
+  readonly logToFile: boolean
 }
 
 /** Current server config. Frozen after loadConfig() — reads are safe,
@@ -54,6 +64,7 @@ export let config: ServerConfig = Object.freeze<ServerConfig>({
   ]),
   defaultModel: 'anthropic/claude-sonnet-4-20250514',
   recapModel: 'claude-haiku-4-5-20251001',
+  commitMessageModel: 'claude-haiku-4-5-20251001',
   maxUploadBytes: 25 * 1024 * 1024,
   historyCap: 500,
   permissionTimeoutMs: 5 * 60 * 1000,
@@ -61,6 +72,7 @@ export let config: ServerConfig = Object.freeze<ServerConfig>({
   maxOpenPanels: 3,
   authToken: undefined,
   baseUrl: 'https://api.anthropic.com',
+  logToFile: false,
 })
 
 /** Return the configured auth token or throw. Use at request time so a
@@ -104,6 +116,7 @@ export async function loadConfig(stateDir: string): Promise<void> {
           baseUrl: 'https://api.anthropic.com',
           modelList: config.modelList.slice(),
           recapModel: config.recapModel,
+          commitMessageModel: config.commitMessageModel,
           maxUploadBytes: config.maxUploadBytes,
           historyCap: config.historyCap,
           maxOpenPanels: config.maxOpenPanels,
@@ -148,6 +161,10 @@ export async function loadConfig(stateDir: string): Promise<void> {
     ;(merged as { recapModel: string }).recapModel = file_.recapModel.trim()
   }
 
+  if (typeof file_.commitMessageModel === 'string' && file_.commitMessageModel.trim()) {
+    ;(merged as { commitMessageModel: string }).commitMessageModel = file_.commitMessageModel.trim()
+  }
+
   if (typeof file_.maxUploadBytes === 'number' && file_.maxUploadBytes > 0) {
     ;(merged as { maxUploadBytes: number }).maxUploadBytes = Math.round(file_.maxUploadBytes)
     console.log(`[config] maxUploadBytes: ${merged.maxUploadBytes}`)
@@ -181,7 +198,19 @@ export async function loadConfig(stateDir: string): Promise<void> {
     console.log(`[config] baseUrl: ${trimmed}`)
   }
 
+  if (typeof file_.logToFile === 'boolean') {
+    ;(merged as { logToFile: boolean }).logToFile = file_.logToFile
+    console.log(`[config] logToFile: ${file_.logToFile}`)
+  }
+
   config = Object.freeze(merged)
+
+  // Enable or disable file logging based on the loaded config.
+  if (config.logToFile) {
+    enableFileLogging(stateDir)
+  } else {
+    disableFileLogging()
+  }
 }
 
 /** Mutable fields the client is allowed to update via PUT /api/config. */
@@ -190,10 +219,12 @@ export const WRITABLE_CONFIG_KEYS = [
   'baseUrl',
   'modelList',
   'recapModel',
+  'commitMessageModel',
   'maxUploadBytes',
   'historyCap',
   'maxOpenPanels',
   'workingStuckMs',
+  'logToFile',
 ] as const
 
 /**

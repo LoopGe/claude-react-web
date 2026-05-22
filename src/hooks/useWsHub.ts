@@ -136,6 +136,12 @@ export function WsHubProvider({ children, url }: ProviderProps) {
   // reconnect path can reuse it.
   const connect = useCallback(() => {
     if (unmountedRef.current) return
+    // Close any existing socket before creating a new one to prevent
+    // orphaned connections accumulating during rapid reconnects.
+    const old = wsRef.current
+    if (old && old.readyState !== WebSocket.CLOSED) {
+      try { old.close(1000, 'replaced') } catch { /* already closing */ }
+    }
     const target = url ?? wsUrl()
     let ws: WebSocket
     try {
@@ -207,6 +213,11 @@ export function WsHubProvider({ children, url }: ProviderProps) {
 
     ws.addEventListener('close', () => {
       if (unmountedRef.current) return
+      // Only react if this socket is still the active one. When
+      // connect() replaces a socket, the old socket's close event
+      // still fires — without this guard it would schedule a
+      // reconnect that closes the *new* working socket.
+      if (wsRef.current !== ws) return
       if (pingTimerRef.current != null) {
         window.clearInterval(pingTimerRef.current)
         pingTimerRef.current = null

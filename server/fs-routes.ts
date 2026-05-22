@@ -11,7 +11,7 @@
 // driving the browser, this is treated as an authorization-free "show me my
 // own home" tool, not a sandboxed file API.
 
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, resolve as resolvePath, sep } from 'node:path'
@@ -20,6 +20,22 @@ interface DirEntry {
   name: string
   path: string
   isDir: boolean
+}
+
+/** Validate that a `path` query param is present and absolute.
+ *  Returns the resolved path or an error Response. */
+function requireAbsPath(raw: string | undefined, c: Context): { path: string } | { error: Response } {
+  if (!raw) return { error: c.json({ error: 'path query param is required' }, 400) }
+  if (!isAbsolute(raw)) return { error: c.json({ error: 'path must be absolute' }, 400) }
+  return { path: resolvePath(raw) }
+}
+
+/** Map a filesystem errno to the appropriate JSON error response. */
+function fsError(c: Context, err: unknown, notFoundMsg: string) {
+  const code = (err as NodeJS.ErrnoException).code
+  if (code === 'ENOENT') return c.json({ error: notFoundMsg }, 404)
+  if (code === 'EACCES' || code === 'EPERM') return c.json({ error: 'permission denied' }, 403)
+  return c.json({ error: (err as Error).message }, 500)
 }
 
 export function buildFsRouter(): Hono {
@@ -36,20 +52,18 @@ export function buildFsRouter(): Hono {
 
   // List a directory's sub-directories.
   app.get('/list', async (c) => {
-    const raw = c.req.query('path')
     const showHidden = c.req.query('hidden') === '1'
-    if (!raw) return c.json({ error: 'path query param is required' }, 400)
-    if (!isAbsolute(raw)) return c.json({ error: 'path must be absolute' }, 400)
+    const check = requireAbsPath(c.req.query('path'), c)
+    if ('error' in check) return check.error
+    const { path } = check
 
-    const path = resolvePath(raw)
     let entries: DirEntry[]
     try {
       const st = await stat(path)
       if (!st.isDirectory()) return c.json({ error: 'not a directory' }, 400)
       const dirents = await readdir(path, { withFileTypes: true })
       entries = dirents
-        .filter((d) => (showHidden ? true : !d.name.startsWith('.')))
-        .filter((d) => d.isDirectory())
+        .filter((d) => (showHidden || !d.name.startsWith('.')) && d.isDirectory())
         .map<DirEntry>((d) => ({
           name: d.name,
           path: resolvePath(path, d.name),
@@ -57,10 +71,7 @@ export function buildFsRouter(): Hono {
         }))
         .sort((a, b) => a.name.localeCompare(b.name))
     } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code
-      if (code === 'ENOENT') return c.json({ error: 'no such directory' }, 404)
-      if (code === 'EACCES' || code === 'EPERM') return c.json({ error: 'permission denied' }, 403)
-      return c.json({ error: (err as Error).message }, 500)
+      return fsError(c, err, 'no such directory')
     }
 
     return c.json({
@@ -77,10 +88,10 @@ export function buildFsRouter(): Hono {
   // path points at a file). Also returns isDirectory so the caller
   // can tell us if it's already a directory.
   app.get('/resolve-cwd', async (c) => {
-    const raw = c.req.query('path')
-    if (!raw) return c.json({ error: 'path query param is required' }, 400)
-    if (!isAbsolute(raw)) return c.json({ error: 'path must be absolute' }, 400)
-    const path = resolvePath(raw)
+    const check = requireAbsPath(c.req.query('path'), c)
+    if ('error' in check) return check.error
+    const { path } = check
+
     try {
       const st = await stat(path)
       if (st.isDirectory()) {
@@ -89,10 +100,7 @@ export function buildFsRouter(): Hono {
       // It's a regular file / symlink / etc. — walk one level up.
       return c.json({ cwd: dirname(path), resolvedFromFile: true })
     } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code
-      if (code === 'ENOENT') return c.json({ error: 'no such path' }, 404)
-      if (code === 'EACCES' || code === 'EPERM') return c.json({ error: 'permission denied' }, 403)
-      return c.json({ error: (err as Error).message }, 500)
+      return fsError(c, err, 'no such path')
     }
   })
 

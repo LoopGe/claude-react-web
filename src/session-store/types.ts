@@ -57,12 +57,20 @@ export interface SessionState {
   error: string | null
   queuedAhead: number
   lastMessageUuid: string | null
-  /** ID of the optimistic user message pending server confirmation. */
-  pendingUserMessageId: string | null
+  /** IDs of optimistic user messages pending server confirmation.
+   *  A Set (not a single pointer) so rapid sequential sends each get
+   *  their own placeholder that is replaced independently when the
+   *  server echo arrives. */
+  pendingUserMessageIds: ReadonlySet<string>
   permissionPending: Map<string, PermissionRequest>
   permissionDecisions: Map<string, 'allow' | 'deny'>
   pidToToolUseId: Map<string, string>
   planStatus: Map<string, PlanStatus>
+  /** Plan body text extracted from ExitPlanMode tool_result output.
+   *  Keyed by tool_use_id.  The CLI injects plan content from disk into
+   *  the tool_result (not the tool_use input), so we capture it here
+   *  for the PermissionDialog and inline PlanCard to display. */
+  planContent: Map<string, string>
   activeSubagents: Map<string, ActiveSubagent>
 }
 
@@ -98,6 +106,7 @@ export interface SessionSnapshot {
   queuedAhead: number
   permissionDecisions: ReadonlyMap<string, 'allow' | 'deny'>
   planStatus: ReadonlyMap<string, PlanStatus>
+  planContent: ReadonlyMap<string, string>
   /** Currently-running subagents only — drives the WorkingBubble chip row. */
   activeSubagents: ActiveSubagent[]
   /** Full index (running + completed) keyed by toolUseId. Used by the
@@ -119,11 +128,12 @@ export function createInitialSessionState(sessionId: string): SessionState {
     error: null,
     queuedAhead: 0,
     lastMessageUuid: null,
-    pendingUserMessageId: null,
+    pendingUserMessageIds: new Set<string>(),
     permissionPending: new Map(),
     permissionDecisions: new Map(),
     pidToToolUseId: new Map(),
     planStatus: new Map(),
+    planContent: new Map(),
     activeSubagents: new Map(),
   }
 }

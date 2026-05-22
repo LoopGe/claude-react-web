@@ -8,6 +8,7 @@
 
 import { memo, useEffect, useState } from 'react'
 import { useSubagentContext } from '../hooks/useSubagentContext'
+import { formatElapsed } from '../utils/format'
 import type { SdkMessage } from '../types'
 
 interface Props {
@@ -17,19 +18,6 @@ interface Props {
   fallbackLabel?: string
 }
 
-/** Format ms → "12s" / "02:34" / "1:02:34". Mirrors WorkingBubble's
- *  formatElapsed but kept local to avoid an awkward cross-component
- *  import. Both formatters intentionally agree on output. */
-function formatElapsed(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000))
-  if (s < 60) return `${s}s`
-  const h = Math.floor(s / 3600)
-  const m = Math.floor((s % 3600) / 60)
-  const sec = s % 60
-  const pad = (n: number) => n.toString().padStart(2, '0')
-  if (h === 0) return `${pad(m)}:${pad(sec)}`
-  return `${h}:${pad(m)}:${pad(sec)}`
-}
 
 function countToolUses(messages: readonly SdkMessage[], toolUseId: string): number {
   let count = 0

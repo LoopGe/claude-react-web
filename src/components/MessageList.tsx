@@ -11,11 +11,13 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { Markdown } from './Markdown'
 import { ToolUseBlock } from './ToolUseBlock'
-import { PlanStatusProvider } from '../hooks/usePlanStatus'
-import type { SdkMessage } from '../types'
-import { formatTokens } from '../utils/format'
+import { PlanStatusProvider, PlanContentProvider } from '../hooks/usePlanStatus'
+import type { SdkMessage, Block } from '../types'
+import { formatTokens, formatElapsed, formatJson } from '../utils/format'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import type { ActiveSubagent, PlanStatus, TranscriptItem } from '../session-store/types'
+import { truncate } from '../utils/text'
+import { getBlocks } from '../session-store/normalize'
 
 /** Re-export type for backward compatibility (types don't affect Fast Refresh). */
 export type { ActiveSubagent } from '../session-store/types'
@@ -38,6 +40,8 @@ interface Props {
   streamingContent?: string | null
   /** Precomputed plan status keyed by toolUseId. */
   planStatus?: ReadonlyMap<string, PlanStatus>
+  /** Plan body text extracted from ExitPlanMode tool_result outputs. */
+  planContent?: ReadonlyMap<string, string>
   /** Current search query. When non-empty, matching text inside messages
    *  is highlighted. */
   searchQuery?: string
@@ -69,7 +73,13 @@ interface RenderableItem {
   sending?: boolean
 }
 
-export function MessageList({ items, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, planStatus = new Map(), searchQuery, searchActiveMsgIdx, parentToolUseIdFilter }: Props) {
+/** Stable empty-Map sentinels. Using `= new Map()` in the parameter
+ *  defaults below would allocate a fresh Map on every render and defeat
+ *  React.memo equality whenever a parent omits these props. */
+const EMPTY_PLAN_STATUS: ReadonlyMap<string, PlanStatus> = new Map()
+const EMPTY_PLAN_CONTENT: ReadonlyMap<string, string> = new Map()
+
+export const MessageList = memo(function MessageList({ items, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, searchQuery, searchActiveMsgIdx, parentToolUseIdFilter }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -318,6 +328,7 @@ export function MessageList({ items, showSystemEvents = false, pendingInterruptR
 
   return (
     <PlanStatusProvider value={planStatus}>
+    <PlanContentProvider value={planContent}>
     <div className="chat-messages-wrap">
       <div className="chat-messages">
         {renderableItems.length === 0 ? (
@@ -352,9 +363,10 @@ export function MessageList({ items, showSystemEvents = false, pendingInterruptR
         </button>
       )}
     </div>
+    </PlanContentProvider>
     </PlanStatusProvider>
   )
-}
+})
 
 const StreamingFooter = memo(function StreamingFooter({ content }: { content: string }) {
   return (
@@ -382,17 +394,6 @@ async function copyToClipboard(text: string): Promise<void> {
     document.execCommand('copy')
     document.body.removeChild(ta)
   }
-}
-
-interface Block {
-  type: string
-  text?: string
-  thinking?: string
-  name?: string
-  input?: unknown
-  tool_use_id?: string
-  content?: unknown
-  [k: string]: unknown
 }
 
 const MessageView = memo(function MessageView({
@@ -433,7 +434,7 @@ const MessageView = memo(function MessageView({
 
   if (type === 'user') {
     const userContent = extractUserText(msg)
-    const blocks = toBlocks(msg.message?.content)
+    const blocks = getBlocks(msg)
     const toolBlocks = blocks.filter((b) => b.type === 'tool_result')
 
     // Synthetic "conversation summary" frame that the SDK injects right
@@ -519,7 +520,7 @@ const MessageView = memo(function MessageView({
   }
 
   if (type === 'assistant') {
-    const blocks = toBlocks(msg.message?.content)
+    const blocks = getBlocks(msg)
     // Subagent assistant turns (from Task tool workers with
     // forwardSubagentText on) carry the same shape as main-thread
     // assistant turns but with a non-null parent_tool_use_id. Label
@@ -860,14 +861,14 @@ function ToolResultBlock({ block }: { block: Block }) {
 function toolResultPreview(content: unknown): string {
   if (typeof content === 'string') {
     const line = content.split('\n')[0] ?? content
-    return line.length > 120 ? line.slice(0, 120) + '…' : line || '(empty)'
+    return line ? truncate(line, 120) : '(empty)'
   }
   const blocks = Array.isArray(content) ? (content as Block[]) : []
   if (blocks.length === 0) return '(empty)'
   const first = blocks[0]
   if (first.type === 'text' && typeof first.text === 'string') {
     const line = first.text.split('\n')[0] ?? first.text
-    return line.length > 120 ? line.slice(0, 120) + '…' : line || '(empty result)'
+    return line ? truncate(line, 120) : '(empty result)'
   }
   return `[${first.type}]`
 }
@@ -885,23 +886,7 @@ function extractUserText(msg: SdkMessage): string | null {
   return null
 }
 
-function toBlocks(content: unknown): Block[] {
-  if (typeof content === 'string') return [{ type: 'text', text: content }]
-  if (!Array.isArray(content)) return []
-  return content as Block[]
-}
 
-function formatJson(v: unknown): string {
-  try {
-    return JSON.stringify(v, null, 2)
-  } catch {
-    return String(v)
-  }
-}
-
-function truncate(s: string, n: number): string {
-  return s.length <= n ? s : `${s.slice(0, n)}…`
-}
 
 /** Max subagent chips shown before collapsing into "+N more". */
 const MAX_VISIBLE_SUBAGENTS = 5
@@ -1014,17 +999,3 @@ export function WorkingBubble({
   )
 }
 
-/** Format an elapsed duration for the working bubble.
- *  - <60s  → "12s"
- *  - <60m  → "02:34"
- *  - else  → "1:02:34" */
-function formatElapsed(ms: number): string {
-  const s = Math.floor(ms / 1000)
-  if (s < 60) return `${s}s`
-  const h = Math.floor(s / 3600)
-  const m = Math.floor((s % 3600) / 60)
-  const sec = s % 60
-  const pad = (n: number) => n.toString().padStart(2, '0')
-  if (h === 0) return `${pad(m)}:${pad(sec)}`
-  return `${h}:${pad(m)}:${pad(sec)}`
-}

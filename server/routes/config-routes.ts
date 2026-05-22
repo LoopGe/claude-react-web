@@ -1,13 +1,18 @@
 // Config-related routes: setup, defaults, full config, update.
 
 import { Hono } from 'hono'
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { join as joinPath } from 'node:path'
 import { homedir } from 'node:os'
 import { SessionManager } from '../session-manager.js'
 import { HttpError } from '../errors.js'
+import { safeJson } from './index.js'
 import { config as serverConfig, loadConfig, readConfigFile, updateConfigFile } from '../config.js'
-import { LOG_LEVELS, getLogConfig, setLogConfig, type LogLevel } from '../log.js'
+import {
+  LOG_LEVELS, getLogConfig, setLogConfig, type LogLevel,
+  enableFileLogging, disableFileLogging, isFileLoggingEnabled, getLogFilePath,
+} from '../log.js'
+import { writeAtomic } from '../json-file-store.js'
 
 export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono {
   const app = new Hono()
@@ -15,9 +20,7 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
   // Config setup — write authToken/baseUrl to config.json and hot-reload.
   app.post('/config/setup', async (c) => {
     if (!configDir) throw new HttpError(500, 'configDir not set')
-    const body = await c.req.json<{ authToken?: string; baseUrl?: string }>().catch(
-      () => { throw new HttpError(400, 'Malformed JSON body') },
-    )
+    const body = await safeJson<{ authToken?: string; baseUrl?: string }>(c.req)
     if (!body.authToken?.trim()) throw new HttpError(400, 'authToken is required')
     const configPath = joinPath(configDir, 'config.json')
     let existing: Record<string, unknown> = {}
@@ -28,7 +31,7 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
     if (body.baseUrl?.trim()) {
       existing.baseUrl = body.baseUrl.trim().replace(/\/+$/, '')
     }
-    await writeFile(configPath, JSON.stringify(existing, null, 2), 'utf8')
+    await writeAtomic(configDir, configPath, existing)
     await loadConfig(configDir)
     return c.json({ ok: true, configured: !!serverConfig.authToken })
   })
@@ -84,9 +87,7 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
   })
 
   app.put('/log', async (c) => {
-    const body = await c.req.json<{ level?: string; scopes?: string[] | null }>().catch(
-      () => { throw new HttpError(400, 'Malformed JSON body') },
-    )
+    const body = await safeJson<{ level?: string; scopes?: string[] | null }>(c.req)
     if (body && typeof body !== 'object') {
       throw new HttpError(400, 'Body must be a JSON object')
     }
@@ -110,12 +111,39 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
     return c.json({ ...next, availableLevels: LOG_LEVELS })
   })
 
+  // ── File logging toggle ──────────────────────────────────────────
+  // Persisted in config.json so it survives restarts.
+
+  app.get('/log/file', (c) => {
+    return c.json({
+      enabled: isFileLoggingEnabled(),
+      path: getLogFilePath(),
+    })
+  })
+
+  app.put('/log/file', async (c) => {
+    if (!configDir) throw new HttpError(500, 'configDir not set')
+    const body = await safeJson<{ enabled?: unknown }>(c.req)
+    if (!body || typeof body !== 'object') {
+      throw new HttpError(400, 'Body must be a JSON object')
+    }
+    if (typeof body.enabled !== 'boolean') {
+      throw new HttpError(400, 'enabled must be a boolean')
+    }
+    if (body.enabled) {
+      enableFileLogging(configDir)
+    } else {
+      disableFileLogging()
+    }
+    // Persist to config.json
+    await updateConfigFile(configDir, { logToFile: body.enabled })
+    return c.json({ enabled: isFileLoggingEnabled(), path: getLogFilePath() })
+  })
+
   // Update config — merges partial updates into config.json and hot-reloads.
   app.put('/config', async (c) => {
     if (!configDir) throw new HttpError(500, 'configDir not set')
-    const body = await c.req.json<Record<string, unknown>>().catch(
-      () => { throw new HttpError(400, 'Malformed JSON body') },
-    )
+    const body = await safeJson<Record<string, unknown>>(c.req)
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       throw new HttpError(400, 'Body must be a JSON object')
     }

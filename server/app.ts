@@ -8,9 +8,10 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { SessionManager } from './session-manager.js'
-import { HttpError } from './errors.js'
+import { createErrorHandler } from './errors.js'
 import { buildApiRouter } from './routes/index.js'
 import { buildFsRouter } from './fs-routes.js'
+import { buildGitRouter } from './git-routes.js'
 import { buildMcpConfigRouter } from './mcp-routes.js'
 import { config as serverConfig } from './config.js'
 import type { SessionStore } from './persistence.js'
@@ -70,13 +71,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
 
   // Global error handler — catches unhandled errors from sub-routers
   // (e.g. buildFsRouter) that don't have their own onError.
-  app.onError((err, c) => {
-    if (err instanceof HttpError) {
-      return c.json({ error: err.message }, err.status as 400 | 404 | 409 | 410 | 500)
-    }
-    console.error('[app] unhandled error:', err)
-    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500)
-  })
+  app.onError(createErrorHandler('[app]'))
 
   // JSON 404 for unmatched /api/* routes (consistent with API error contract).
   app.notFound((c) => {
@@ -129,6 +124,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
   )
   app.route('/api', apiRouter)
   app.route('/api/fs', buildFsRouter())
+  app.route('/api/git', buildGitRouter())
   if (opts.mcpConfigStore) {
     app.route('/api/mcp-config', buildMcpConfigRouter(opts.mcpConfigStore))
   }

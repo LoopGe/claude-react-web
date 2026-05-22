@@ -26,7 +26,7 @@ export interface Pushable<T> {
   readonly queueDepth: number
 }
 
-export function createPushable<T>(label = 'pushable'): Pushable<T> {
+export function createPushable<T>(label = 'pushable', maxDepth?: number): Pushable<T> {
   const id = `${label}#${++pushableSeq}`
   const queue: T[] = []
   let waiter: ((value: IteratorResult<T>) => void) | null = null
@@ -48,7 +48,14 @@ export function createPushable<T>(label = 'pushable'): Pushable<T> {
         w({ value: item, done: false })
       } else {
         queue.push(item)
-        debugLog(`[${id}] push #${pushCallCount} → queued (no waiter, queue depth now: ${queue.length})`)
+        // When a maxDepth is set, drop the oldest item to prevent
+        // unbounded growth for slow consumers (e.g. background tabs).
+        if (maxDepth !== undefined && queue.length > maxDepth) {
+          queue.shift()
+          debugLog(`[${id}] push #${pushCallCount} → queued, dropped oldest (queue depth now: ${queue.length})`)
+        } else {
+          debugLog(`[${id}] push #${pushCallCount} → queued (no waiter, queue depth now: ${queue.length})`)
+        }
       }
     },
     end() {

@@ -1,23 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
+import { rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
 import { buildFsRouter } from './fs-routes.js'
-
-function tempDir(): string {
-  return mkdtempSync(join(tmpdir(), 'claude-react-web-fs-'))
-}
-
-/** Helper: parse JSON and cast to avoid `unknown` everywhere. */
-async function json(res: Response): Promise<Record<string, unknown>> {
-  return (await res.json()) as Record<string, unknown>
-}
+import { tempDir, json } from './__test-utils__/index.js'
 
 describe('fs-routes', () => {
   let dir: string
 
   beforeEach(() => {
-    dir = tempDir()
+    dir = tempDir('fs')
   })
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true })

@@ -5,7 +5,7 @@
 // component only handles the rendering, outside-click / Esc dismissal,
 // and a small nudge to stay within the viewport.
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 
 export interface ContextMenuItem {
@@ -30,7 +30,7 @@ interface Props {
   onClose: () => void
 }
 
-export function ContextMenu({ x, y, items, onClose }: Props) {
+export const ContextMenu = memo(function ContextMenu({ x, y, items, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   // Measured position after layout — nudged inward if the menu would
   // otherwise overflow the viewport.
@@ -98,4 +98,4 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
       })}
     </div>
   )
-}
+})

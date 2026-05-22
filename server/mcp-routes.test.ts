@@ -1,17 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
-import { tmpdir } from 'node:os'
+import { rmSync } from 'node:fs'
 import { buildMcpConfigRouter } from './mcp-routes.js'
 import { McpConfigStore, type StoredMcpServer } from './mcp-config.js'
-
-function tempDir(): string {
-  return mkdtempSync(join(tmpdir(), 'claude-react-web-mcp-routes-'))
-}
-
-async function json(res: Response): Promise<Record<string, unknown>> {
-  return (await res.json()) as Record<string, unknown>
-}
+import { tempDir, json } from './__test-utils__/index.js'
 
 function makeServer(overrides: Partial<StoredMcpServer> = {}): StoredMcpServer {
   return {
@@ -30,7 +21,7 @@ describe('mcp-config routes', () => {
   let store: McpConfigStore
 
   beforeEach(async () => {
-    dir = tempDir()
+    dir = tempDir('mcp-routes')
     store = new McpConfigStore({ stateDir: dir })
     await store.load()
   })

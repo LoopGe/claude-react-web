@@ -29,39 +29,9 @@ export default defineConfig({
         // pipeline and virtualiser are independent feature domains.
         manualChunks(id) {
           if (id.includes('node_modules')) {
-            // React core — changes least frequently
-            if (id.includes('/react/') || id.includes('/react-dom/')) return 'react-vendor'
-            // Markdown rendering pipeline (react-markdown + remark + rehype + highlight.js)
-            if (
-              id.includes('/react-markdown/') ||
-              id.includes('/remark-gfm/') ||
-              id.includes('/highlight.js/') ||
-              id.includes('/lowlight/') ||
-              id.includes('/unified/') ||
-              id.includes('/micromark') ||
-              id.includes('/mdast-util') ||
-              id.includes('/hast-util') ||
-              id.includes('/unist-util') ||
-              id.includes('/bail/') ||
-              id.includes('/trough/') ||
-              id.includes('/vfile') ||
-              id.includes('/property-information/') ||
-              id.includes('/comma-separated-tokens/') ||
-              id.includes('/space-separated-tokens/') ||
-              id.includes('/decode-named-character-reference/') ||
-              id.includes('/character-entities/') ||
-              id.includes('/trim-lines/') ||
-              id.includes('/ccount/') ||
-              id.includes('/escape-string-regexp/') ||
-              id.includes('/markdown-table/') ||
-              id.includes('/zwitch/') ||
-              id.includes('/direction/') ||
-              id.includes('/is-plain-obj/')
-            ) {
-              return 'markdown-vendor'
-            }
-            // Virtualised list
-            if (id.includes('/react-virtuoso/')) return 'virtuoso-vendor'
+            if (/[/\\]react-dom[/\\]/.test(id) || /[/\\]react[/\\]/.test(id)) return 'react-vendor'
+            if (/[/\\](react-markdown|remark-gfm|highlight\.js|lowlight|unified|micromark|mdast-util|hast-util|unist-util|bail|trough|vfile|property-information|comma-separated-tokens|space-separated-tokens|decode-named-character-reference|character-entities|trim-lines|ccount|escape-string-regexp|markdown-table|zwitch|direction|is-plain-obj)[/\\]/.test(id)) return 'markdown-vendor'
+            if (/[/\\]react-virtuoso[/\\]/.test(id)) return 'virtuoso-vendor'
           }
         },
       },

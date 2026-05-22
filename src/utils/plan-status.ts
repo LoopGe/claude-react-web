@@ -9,19 +9,12 @@
 //
 // This module is pure so it can be tested without React.
 
-import type { SdkMessage } from '../types'
+import type { Block, SdkMessage } from '../types'
 import { REJECTION_NEEDLES } from '../session-store/normalize'
+import { PLAN_TOOL_NAMES } from '../constants/toolNames'
 
 /** Lookup: tool_use_id → 'approved' | 'rejected' | 'pending'. */
 export type PlanStatusMap = ReadonlyMap<string, 'approved' | 'rejected' | 'pending'>
-
-interface Block {
-  type?: string
-  name?: string
-  tool_use_id?: string
-  content?: unknown
-  input?: unknown
-}
 
 /**
  * Walk the transcript and decide a status for every plan-mode tool_use.
@@ -38,11 +31,9 @@ export function computePlanStatus(messages: readonly SdkMessage[]): PlanStatusMa
     if (m.type !== 'assistant') continue
     const blocks = blocksFromMessage(m)
     for (const b of blocks) {
-      if (b.type === 'tool_use' && (b.name === 'ExitPlanMode' || b.name === 'EnterPlanMode')) {
-        if (typeof b.tool_use_id === 'string' || typeof (b as { id?: unknown }).id === 'string') {
-          const id = (typeof b.tool_use_id === 'string' ? b.tool_use_id : (b as { id?: string }).id) as string
-          out.set(id, 'pending')
-        }
+      if (b.type === 'tool_use' && PLAN_TOOL_NAMES.has(b.name ?? '')) {
+        const id = typeof b.tool_use_id === 'string' ? b.tool_use_id : b.id
+        if (id) out.set(id, 'pending')
       }
     }
   }
@@ -76,12 +67,7 @@ function textOfContent(content: unknown): string {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
   return (content as Block[])
-    .map((b) => {
-      if (typeof b === 'object' && b && 'text' in b && typeof (b as { text?: unknown }).text === 'string') {
-        return (b as { text: string }).text
-      }
-      return ''
-    })
+    .map((b) => (typeof b?.text === 'string' ? b.text : ''))
     .filter(Boolean)
     .join('\n')
 }

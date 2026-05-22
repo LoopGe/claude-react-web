@@ -44,6 +44,62 @@ export class PermissionBroker {
 
   // ─── canUseTool construction ──────────────────────────────────────
 
+  /** Shared lifecycle for creating a pending permission/question request.
+   *  Handles timeout timer, abort handler, wrapped resolve, and broadcast.
+   *  Callers only supply the kind-specific PendingPermission fields. */
+  private createPendingRequest<P extends PendingPermission>(
+    session: Session,
+    ctx: { toolUseID: string; signal: AbortSignal },
+    broadcastReq: (s: Session, p: PendingPermission) => void,
+    broadcastRes: (s: Session, pid: string, d: PermissionDecisionSummary) => void,
+    timeoutMs: number,
+    buildPending: (
+      pid: string,
+      resolve: (result: PermissionResult) => void,
+      abortHandler: () => void,
+      timeoutTimer: ReturnType<typeof setTimeout> | null,
+    ) => P,
+    label?: string,
+  ): Promise<PermissionResult> {
+    return new Promise<PermissionResult>((resolve) => {
+      const pid = randomUUID()
+      if (label) log.info(`[session ${session.id}] ${label} ${pid}`)
+      const timeoutTimer = timeoutMs > 0
+        ? setTimeout(() => {
+            if (!session.pending.has(pid)) return
+            session.pending.delete(pid)
+            try { ctx.signal.removeEventListener('abort', abortHandler) } catch { /* */ }
+            log.warn(`[session ${session.id}] permission ${pid} timed out after ${timeoutMs}ms — auto-denying`)
+            resolve({ behavior: 'deny', message: 'Permission request timed out — no user response.', interrupt: false, toolUseID: ctx.toolUseID })
+            broadcastRes(session, pid, {
+              behavior: 'deny',
+              persisted: false,
+              message: 'Permission request timed out.',
+            })
+          }, timeoutMs)
+        : null
+      const wrappedResolve = (result: PermissionResult) => {
+        if (timeoutTimer) clearTimeout(timeoutTimer)
+        resolve(result)
+      }
+      const abortHandler = () => {
+        if (!session.pending.has(pid)) return
+        session.pending.delete(pid)
+        log.info(`[session ${session.id}] permission ${pid} aborted (interrupt)`)
+        wrappedResolve({ behavior: 'deny', message: 'aborted', interrupt: false, toolUseID: ctx.toolUseID })
+        broadcastRes(session, pid, {
+          behavior: 'deny',
+          persisted: false,
+          message: 'aborted',
+        })
+      }
+      const pending = buildPending(pid, wrappedResolve, abortHandler, timeoutTimer)
+      session.pending.set(pid, pending)
+      ctx.signal.addEventListener('abort', abortHandler, { once: true })
+      broadcastReq(session, pending)
+    })
+  }
+
   /** Build the canUseTool callback for a session.
    *
    *  `onPermissionRequest` is called for global broadcast (desktop
@@ -104,54 +160,41 @@ export class PermissionBroker {
             toolUseID: ctx.toolUseID,
           }
         }
-        return new Promise<PermissionResult>((resolve) => {
-          const pid = randomUUID()
-          console.log(`[session ${session.id}] AskUserQuestion permission request ${pid} — ${questions.length} question(s)`)
-          const timeoutTimer = permissionTimeoutMs > 0
-            ? setTimeout(() => {
-                if (!session.pending.has(pid)) return
-                session.pending.delete(pid)
-                try { ctx.signal.removeEventListener('abort', abortHandler) } catch { /* */ }
-                console.warn(`[session ${session.id}] permission ${pid} timed out after ${permissionTimeoutMs}ms — auto-denying`)
-                resolve({ behavior: 'deny', message: 'Permission request timed out — no user response.', interrupt: false, toolUseID: ctx.toolUseID })
-                broadcastRes(session, pid, {
-                  behavior: 'deny',
-                  persisted: false,
-                  message: 'Permission request timed out.',
-                })
-              }, permissionTimeoutMs)
-            : null
-          const wrappedResolve = (result: PermissionResult) => {
-            if (timeoutTimer) clearTimeout(timeoutTimer)
-            resolve(result)
-          }
-          const abortHandler = () => {
-            if (!session.pending.has(pid)) return
-            session.pending.delete(pid)
-            console.log(`[session ${session.id}] permission ${pid} aborted (interrupt)`)
-            wrappedResolve({ behavior: 'deny', message: 'aborted', interrupt: false, toolUseID: ctx.toolUseID })
-            broadcastRes(session, pid, {
-              behavior: 'deny',
-              persisted: false,
-              message: 'aborted',
-            })
-          }
-          const pending: PendingPermission = {
-            kind: 'question',
-            id: pid,
-            toolName: 'AskUserQuestion',
-            questions,
-            toolUseID: ctx.toolUseID,
-            createdAt: Date.now(),
-            resolve: wrappedResolve,
-            signal: ctx.signal,
-            abortHandler,
-            timeoutTimer,
-          }
-          session.pending.set(pid, pending)
-          ctx.signal.addEventListener('abort', abortHandler, { once: true })
-          broadcastReq(session, pending)
-        })
+        return this.createPendingRequest(session, ctx, broadcastReq, broadcastRes, permissionTimeoutMs, (pid, wrappedResolve, abortHandler, timeoutTimer) => ({
+          kind: 'question' as const,
+          id: pid,
+          toolName: 'AskUserQuestion',
+          questions,
+          toolUseID: ctx.toolUseID,
+          createdAt: Date.now(),
+          resolve: wrappedResolve,
+          signal: ctx.signal,
+          abortHandler,
+          timeoutTimer,
+        }), `AskUserQuestion permission request — ${questions.length} question(s)`)
+      }
+      // Plan proposals are not permission requests — they require human
+      // review of the proposed plan regardless of permission mode.  This
+      // check MUST come before the bypassPermissions early-return so that
+      // even in bypass mode the user sees the plan card and can approve
+      // or reject it.
+      if (toolName === 'ExitPlanMode' || toolName === 'EnterPlanMode') {
+        return this.createPendingRequest(session, ctx, broadcastReq, broadcastRes, permissionTimeoutMs, (pid, wrappedResolve, abortHandler, timeoutTimer) => ({
+          kind: 'permission' as const,
+          id: pid,
+          toolName,
+          input: toolInput,
+          title: ctx.title,
+          displayName: ctx.displayName,
+          description: ctx.description,
+          suggestions: ctx.suggestions,
+          toolUseID: ctx.toolUseID,
+          createdAt: Date.now(),
+          resolve: wrappedResolve,
+          signal: ctx.signal,
+          abortHandler,
+          timeoutTimer,
+        }), `plan review request — ${toolName}`)
       }
       // `bypassPermissions` is implemented here rather than via the SDK's
       // own permissionMode flag. That flag is set at spawn time and the
@@ -167,66 +210,39 @@ export class PermissionBroker {
           toolUseID: ctx.toolUseID,
         } satisfies PermissionResult
       }
-      return new Promise<PermissionResult>((resolve) => {
-        const pid = randomUUID()
-        console.log(`[session ${session.id}] tool permission request ${pid} — ${toolName}`)
-        const timeoutTimer = permissionTimeoutMs > 0
-          ? setTimeout(() => {
-              if (!session.pending.has(pid)) return
-              session.pending.delete(pid)
-              try { ctx.signal.removeEventListener('abort', abortHandler) } catch { /* */ }
-              console.warn(`[session ${session.id}] permission ${pid} (${toolName}) timed out after ${permissionTimeoutMs}ms — auto-denying`)
-              resolve({ behavior: 'deny', message: 'Permission request timed out — no user response.', interrupt: false, toolUseID: ctx.toolUseID })
-              broadcastRes(session, pid, {
-                behavior: 'deny',
-                persisted: false,
-                message: 'Permission request timed out.',
-              })
-            }, permissionTimeoutMs)
-          : null
-        const wrappedResolve = (result: PermissionResult) => {
-          if (timeoutTimer) clearTimeout(timeoutTimer)
-          resolve(result)
-        }
-        const abortHandler = () => {
-          if (!session.pending.has(pid)) return
-          session.pending.delete(pid)
-          console.log(`[session ${session.id}] permission ${pid} aborted (interrupt)`)
-          // Aborted means the enclosing turn was interrupted — return a deny
-          // that does NOT cascade (interrupt: false), SDK will unwind anyway.
-          wrappedResolve({ behavior: 'deny', message: 'aborted', interrupt: false, toolUseID: ctx.toolUseID })
-          broadcastRes(session, pid, {
-            behavior: 'deny',
-            persisted: false,
-            message: 'aborted',
-          })
-        }
-        const pending: PendingPermission = {
-          kind: 'permission',
-          id: pid,
-          toolName,
-          input: toolInput,
-          title: ctx.title,
-          displayName: ctx.displayName,
-          description: ctx.description,
-          suggestions: ctx.suggestions,
-          toolUseID: ctx.toolUseID,
-          createdAt: Date.now(),
-          resolve: wrappedResolve,
-          signal: ctx.signal,
-          abortHandler,
-          timeoutTimer,
-        }
-        session.pending.set(pid, pending)
-        ctx.signal.addEventListener('abort', abortHandler, { once: true })
-        broadcastReq(session, pending)
-      })
+      return this.createPendingRequest(session, ctx, broadcastReq, broadcastRes, permissionTimeoutMs, (pid, wrappedResolve, abortHandler, timeoutTimer) => ({
+        kind: 'permission' as const,
+        id: pid,
+        toolName,
+        input: toolInput,
+        title: ctx.title,
+        displayName: ctx.displayName,
+        description: ctx.description,
+        suggestions: ctx.suggestions,
+        toolUseID: ctx.toolUseID,
+        createdAt: Date.now(),
+        resolve: wrappedResolve,
+        signal: ctx.signal,
+        abortHandler,
+        timeoutTimer,
+      }), `tool permission request — ${toolName}`)
     }
 
     return canUseTool
   }
 
   // ─── Public query methods ─────────────────────────────────────────
+
+  /** Detach the abort listener and clear the auto-deny timer for a pending
+   *  request so the closure doesn't keep the session alive. */
+  private cleanupPending(p: PendingPermission): void {
+    try {
+      p.signal.removeEventListener('abort', p.abortHandler)
+    } catch {
+      /* ignore */
+    }
+    if (p.timeoutTimer) clearTimeout(p.timeoutTimer)
+  }
 
   /** List pending tool-permission/question requests. */
   listPending(session: Session): PermissionRequestSnapshot[] {
@@ -252,22 +268,14 @@ export class PermissionBroker {
   ): void {
     const p = session.pending.get(pid)
     if (!p) throw new HttpError(404, `pending permission ${pid} not found`)
-    console.log(`[session ${session.id}] decide ${pid} — ${decision.behavior} (${p.toolName})`)
+    log.info(`[session ${session.id}] decide ${pid} — ${decision.behavior} (${p.toolName})`)
     if (p.kind === 'question') {
       throw new HttpError(
         400,
         `pending ${pid} is an interactive question, use /answer-question instead`,
       )
     }
-    // Detach abort handler so aborting an already-resolved promise is a no-op.
-    try {
-      p.signal.removeEventListener('abort', p.abortHandler)
-    } catch {
-      /* ignore */
-    }
-    // Clear the auto-deny timer so its closure (which holds the Session
-    // reference) doesn't keep the session alive until the timeout fires.
-    if (p.timeoutTimer) clearTimeout(p.timeoutTimer)
+    this.cleanupPending(p)
     session.pending.delete(pid)
 
     if (decision.behavior === 'allow') {
@@ -323,13 +331,7 @@ export class PermissionBroker {
     if (p.kind !== 'question') {
       throw new HttpError(400, `pending ${pid} is not an interactive question`)
     }
-    try {
-      p.signal.removeEventListener('abort', p.abortHandler)
-    } catch {
-      /* ignore */
-    }
-    // Clear the auto-deny timer so its closure doesn't leak.
-    if (p.timeoutTimer) clearTimeout(p.timeoutTimer)
+    this.cleanupPending(p)
     session.pending.delete(pid)
 
     const message = formatQuestionAnswers(p.questions, answers)
@@ -351,14 +353,7 @@ export class PermissionBroker {
    *  and pumpSession() finally block. */
   denyAll(session: Session): void {
     for (const [pid, p] of session.pending) {
-      // Clear the timeout timer so its closure doesn't keep the session
-      // object alive in memory until the timer fires.
-      if (p.timeoutTimer) clearTimeout(p.timeoutTimer)
-      try {
-        p.signal.removeEventListener('abort', p.abortHandler)
-      } catch {
-        /* ignore */
-      }
+      this.cleanupPending(p)
       try {
         p.resolve({ behavior: 'deny', message: 'session closed', interrupt: false, toolUseID: p.toolUseID })
         this.broadcastPermissionResolved(session, pid, {
@@ -367,7 +362,7 @@ export class PermissionBroker {
           message: 'session closed',
         })
       } catch (err) {
-        console.error(`[session ${session.id}] failed to deny permission ${pid}:`, err)
+        log.error(`[session ${session.id}] failed to deny permission ${pid}:`, err)
       }
     }
     session.pending.clear()

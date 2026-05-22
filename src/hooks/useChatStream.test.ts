@@ -325,6 +325,58 @@ describe('useChatStream', () => {
     })
   })
 
+  it('decrements queuedAhead by 1 on result when multiple messages are queued', async () => {
+    const { result } = renderHook(
+      () => useChatStream('s1', noopPerms),
+    )
+
+    // Queue 3 messages
+    act(() => {
+      result.current.trackSentTurn()
+      result.current.trackSentTurn()
+      result.current.trackSentTurn()
+    })
+    expect(result.current.queuedAhead).toBe(3)
+
+    // First result arrives — should decrement to 2, not reset to 0
+    act(() => {
+      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
+      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: { type: 'result', uuid: 'r1' },
+      })
+    })
+    await waitFor(() => {
+      expect(result.current.queuedAhead).toBe(2)
+    })
+
+    // Second result — should decrement to 1
+    act(() => {
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: { type: 'result', uuid: 'r2' },
+      })
+    })
+    await waitFor(() => {
+      expect(result.current.queuedAhead).toBe(1)
+    })
+
+    // Third result — should decrement to 0
+    act(() => {
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: { type: 'result', uuid: 'r3' },
+      })
+    })
+    await waitFor(() => {
+      expect(result.current.queuedAhead).toBe(0)
+    })
+  })
+
   // ── Token rate ────────────────────────────────────────────────
 
   it('computes token rate from stream_event message_delta', async () => {

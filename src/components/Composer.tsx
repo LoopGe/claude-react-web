@@ -7,6 +7,7 @@
 // drafts stay editable.
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { formatBytes } from '../utils/format'
 import type { Attachment } from '../hooks/useAttachments'
 import type { InputHistoryApi } from '../hooks/useInputHistory'
 import type { PastedImage, SlashCommand } from '../types'
@@ -230,7 +231,9 @@ export const Composer = memo(function Composer({
             if (!items) return
             for (const item of items) {
               if (item.type.startsWith('image/') && item.type !== 'image/svg+xml') {
-                e.preventDefault()
+                // Don't call e.preventDefault() — the browser's default
+                // paste inserts any text/plain content into the textarea.
+                // We additionally process the image as an attachment.
                 const file = item.getAsFile()
                 if (file) void onPasteImage(file)
                 return
@@ -393,9 +396,3 @@ export const Composer = memo(function Composer({
     </div>
   )
 })
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`
-}

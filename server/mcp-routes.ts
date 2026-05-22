@@ -13,18 +13,13 @@ import {
   type StoredMcpServer,
   type McpServerInput,
 } from './mcp-config.js'
-import { HttpError } from './errors.js'
+import { HttpError, createErrorHandler } from './errors.js'
+import { safeJson } from './routes/index.js'
 
 export function buildMcpConfigRouter(store: McpConfigStore): Hono {
   const app = new Hono()
 
-  app.onError((err, c) => {
-    if (err instanceof HttpError) {
-      return c.json({ error: err.message }, err.status as 400 | 404 | 409 | 410 | 500)
-    }
-    console.error('[mcp-config] unhandled error:', err)
-    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500)
-  })
+  app.onError(createErrorHandler('[mcp-config]'))
 
   // List all servers (secrets masked)
   app.get('/', (c) => {
@@ -42,9 +37,7 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
 
   // Create a new server
   app.post('/', async (c) => {
-    const body = await c.req.json<McpServerInput>().catch(() => {
-      throw new HttpError(400, 'Invalid JSON body')
-    })
+    const body = await safeJson<McpServerInput>(c.req)
     if (!body.name || !body.name.trim()) throw new HttpError(400, 'name is required')
     if (store.get(body.name.trim())) throw new HttpError(409, `MCP server "${body.name}" already exists; use PUT to update`)
 
@@ -75,9 +68,7 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
     const existing = store.get(name)
     if (!existing) throw new HttpError(404, `MCP server "${name}" not found`)
 
-    const body = await c.req.json<Partial<McpServerInput>>().catch(() => {
-      throw new HttpError(400, 'Invalid JSON body')
-    })
+    const body = await safeJson<Partial<McpServerInput>>(c.req)
 
     // Merge fields — env/headers are merged (not replaced) to prevent
     // accidental secret deletion when the user only wanted to change args.
@@ -122,9 +113,7 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
     const existing = store.get(name)
     if (!existing) throw new HttpError(404, `MCP server "${name}" not found`)
 
-    const body = await c.req.json<{ enabled: boolean }>().catch(() => {
-      throw new HttpError(400, 'Invalid JSON body')
-    })
+    const body = await safeJson<{ enabled: boolean }>(c.req)
     if (typeof body.enabled !== 'boolean') throw new HttpError(400, 'enabled must be a boolean')
 
     const updated: StoredMcpServer = { ...existing, enabled: body.enabled, updatedAt: Date.now() }
@@ -134,9 +123,7 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
 
   // Validate a server config (schema check only, no connection test)
   app.post('/validate', async (c) => {
-    const body = await c.req.json<Partial<StoredMcpServer>>().catch(() => {
-      throw new HttpError(400, 'Invalid JSON body')
-    })
+    const body = await safeJson<Partial<StoredMcpServer>>(c.req)
     const errors = validateMcpServer(body)
     return c.json({ valid: errors.length === 0, errors })
   })

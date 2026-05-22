@@ -1,19 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
 
 import { config, loadConfig, updateConfigFile } from './config.js'
-
-function tempDir(): string {
-  return mkdtempSync(join(tmpdir(), 'claude-react-web-config-'))
-}
+import { tempDir } from './__test-utils__/index.js'
 
 describe('config', () => {
   let dir: string
 
   beforeEach(() => {
-    dir = tempDir()
+    dir = tempDir('config')
   })
 
   afterEach(() => {

@@ -29,13 +29,15 @@ import {
 } from '@anthropic-ai/claude-agent-sdk'
 import { ProcessMonitor, type ProcessExitInfo } from './process-monitor.js'
 import { randomUUID } from 'node:crypto'
-import { createPushable } from './pushable.js'
+import { createPushable, type Pushable } from './pushable.js'
 import type { SessionMeta, SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
 import { invalidateRecapCache } from './recap.js'
+import { tryCaptureGitHead } from './git.js'
+import { cancelGitBroadcast } from './git-broadcast.js'
 import { config as defaultConfig } from './config.js'
 import { createAsyncSubscription } from './async-subscription.js'
-import { pump as pumpSession } from './session-pump.js'
+import { pump as pumpSession, type PumpDeps } from './session-pump.js'
 import {
   type Subscriber,
   type PermissionEvent,
@@ -46,10 +48,12 @@ import {
   type SessionManagerOptions,
   type GlobalSessionEvent,
   type GlobalSubscriber,
+  endAllSubscribers,
 } from './session-types.js'
 import { HttpError } from './errors.js'
 import { PermissionBroker } from './permission-broker.js'
 import { debugLog } from './debug.js'
+import { pushBounded } from './history-utils.js'
 
 // Re-export types so existing importers continue to work.
 export {
@@ -84,6 +88,11 @@ export class SessionManager {
   private processMonitor: ProcessMonitor
   private spawnWrapper?: (opts: import('@anthropic-ai/claude-agent-sdk').SpawnOptions) => import('@anthropic-ai/claude-agent-sdk').SpawnedProcess
   private permBroker: PermissionBroker
+  /** Cached result of buildAnthropicEnv(). Invalidated when config.authToken
+   *  or config.baseUrl change (detected lazily on each call). */
+  private cachedEnv?: NodeJS.ProcessEnv
+  private cachedAuthToken?: string
+  private cachedBaseUrl?: string
 
   constructor(opts: SessionManagerOptions = {}) {
     this.claudeBinary = opts.claudeBinary
@@ -109,15 +118,26 @@ export class SessionManager {
   }
 
   /** Construct the env object with API credentials from config.json.
-   *  Shared by spawn and autoResume. */
+   *  Shared by spawn and autoResume. The result is cached and only
+   *  rebuilt when the auth token or base URL change. */
   private buildAnthropicEnv(): NodeJS.ProcessEnv {
-    return {
+    if (
+      this.cachedEnv &&
+      this.cachedAuthToken === defaultConfig.authToken &&
+      this.cachedBaseUrl === defaultConfig.baseUrl
+    ) {
+      return this.cachedEnv
+    }
+    this.cachedAuthToken = defaultConfig.authToken
+    this.cachedBaseUrl = defaultConfig.baseUrl
+    this.cachedEnv = {
       ...process.env,
       ANTHROPIC_AUTH_TOKEN: defaultConfig.authToken,
       ANTHROPIC_BASE_URL: defaultConfig.baseUrl,
       // Strip the legacy x-api-key variable — we standardised on Bearer.
       ANTHROPIC_API_KEY: undefined,
     }
+    return this.cachedEnv
   }
 
   /** Handle a CLI process exit detected by ProcessMonitor.
@@ -179,12 +199,7 @@ export class SessionManager {
       session_id: sessionId,
     } as unknown as SDKMessage
     for (const sub of s.subscribers.values()) sub.push(synthetic)
-    for (const sub of s.subscribers.values()) sub.end()
-    s.subscribers.clear()
-    for (const sub of s.permissionSubscribers.values()) sub.end()
-    s.permissionSubscribers.clear()
-    for (const sub of s.contextUsageSubscribers) sub.end()
-    s.contextUsageSubscribers.clear()
+    endAllSubscribers(s)
 
     this.persist(s)
     this.broadcastGlobal({ kind: 'update', session: this.info(s) })
@@ -195,6 +210,11 @@ export class SessionManager {
    *  store is configured. Debounced on the store side so calling this on
    *  every tiny state change is fine. */
   private persist(s: Session): void {
+    // Guard against concurrent unload(): if the session was removed from
+    // the map between the initial running check and here, persisting would
+    // overwrite the terminal state written by unload(). Same guard pattern
+    // used in pushToSession() and cleanupPump.
+    if (!this.sessions.has(s.id)) return
     this.writeStore(s)
     this.broadcastGlobal({ kind: 'update', session: this.info(s) })
   }
@@ -221,6 +241,7 @@ export class SessionManager {
       terminatedReason: s.terminatedReason,
       error: s.error,
       lastTurnAt: s.lastTurnAt,
+      gitStartSha: s.gitStartSha,
     })
   }
 
@@ -363,27 +384,7 @@ export class SessionManager {
     // Remember the user-requested permission mode before we strip it
     // from the SDK options. The session's own state ends up holding it.
     const requestedMode = opts.permissionMode
-    // includePartialMessages=true so clients can render streaming deltas; callers
-    // can still override to false if they prefer batched messages only.
-    if (fullOpts.includePartialMessages === undefined) {
-      fullOpts.includePartialMessages = true
-    }
-    // Inject the server-wide `claude` binary path unless the caller has
-    // already specified one. This is the fix for the SDK's musl/glibc
-    // resolution bug on Linux: the native binary subpackage can be
-    // resolved to the wrong libc flavour, and the process would then
-    // fail to exec. Passing an explicit path side-steps the lookup.
-    if (!fullOpts.pathToClaudeCodeExecutable && this.claudeBinary) {
-      fullOpts.pathToClaudeCodeExecutable = this.claudeBinary
-    }
-
-    // Inject auth from config.json into the SDK subprocess. The SDK
-    // defaults `Options.env` to `process.env`; by passing an explicit
-    // object we sever that implicit dependency and make config.json the
-    // single source of truth for API credentials.
-    if (!fullOpts.env) {
-      fullOpts.env = this.buildAnthropicEnv()
-    }
+    this.applyStandardQueryOpts(fullOpts)
 
     // Don't forward permissionMode to the SDK. We enforce it ourselves via
     // canUseTool, and the SDK's built-in flag would just add a brittle
@@ -435,11 +436,16 @@ export class SessionManager {
       pending: new Map(),
       history: [],
       contextUsageSubscribers: new Set(),
+      gitStatusSubscribers: new Set(),
       abortController,
       pumpTask: Promise.resolve(),
       running: true,
       terminated: false,
       pendingTurns: 0,
+      // Preserve gitStartSha across resumes — the persisted meta carries
+      // it forward so the "This session" anchor stays stable even if the
+      // server restarts. New sessions get a fresh capture below.
+      gitStartSha: existingMeta?.gitStartSha,
     }
 
     // Register canUseTool on fullOpts BEFORE query(). See note on
@@ -470,22 +476,28 @@ export class SessionManager {
     // for the row — no races with the POST /sessions response.
     this.writeStore(session)
     this.broadcastGlobal({ kind: 'created', session: this.info(session) })
+    // Fire-and-forget HEAD capture for new sessions. We don't block spawn
+    // on this — even on a slow filesystem the rev-parse takes ms — but
+    // running it inside spawn() would force the whole call chain to be
+    // async, which ripples out to the route handler signature. Fire it
+    // off and persist the resulting SHA on completion. Failure modes
+    // (no git, not a repo) leave gitStartSha undefined and the UI hides
+    // the "This session" section gracefully.
+    if (!session.gitStartSha && session.cwd) {
+      void tryCaptureGitHead(session.cwd).then((sha) => {
+        // Skip if the session was unloaded between spawn and capture.
+        if (!sha || session.terminated || !this.sessions.has(id)) return
+        session.gitStartSha = sha
+        this.writeStore(session)
+        this.broadcastGlobal({ kind: 'update', session: this.info(session) })
+      })
+    }
     return this.info(session)
   }
 
   /** Send a user turn into an existing session. */
   send(id: string, text: string): void {
-    const s = this.require(id)
-    if (s.terminated) {
-      console.warn(`[session ${id}] send rejected — session is terminated`)
-      throw new HttpError(410, `session ${id} is terminated`)
-    }
-    if (!s.running) {
-      console.warn(`[session ${id}] send rejected — session is not running`)
-      // The Query has been unloaded (explicit delete or graceful shutdown). The
-      // caller should POST /resume first rather than retrying send().
-      throw new HttpError(409, `session ${id} is not running; resume it first`)
-    }
+    const s = this.requireRunnable(id)
     const userMsg: SDKUserMessage = {
       type: 'user',
       message: { role: 'user', content: text },
@@ -493,31 +505,18 @@ export class SessionManager {
       uuid: randomUUID(),
       session_id: s.id,
     }
-    // Feed the SDK so it triggers an assistant turn.
-    const pushableClosed = s.input.closed
     debugLog(
       `[session ${id}] send PRE-PUSH — ${text.length} chars, uuid=${userMsg.uuid}, ` +
-      `pendingTurns=${s.pendingTurns}, input.closed=${pushableClosed}, ` +
+      `pendingTurns=${s.pendingTurns}, input.closed=${s.input.closed}, ` +
       `input.hasWaiter=${s.input.hasWaiter}, input.queueDepth=${s.input.queueDepth}, ` +
       `running=${s.running}, terminated=${s.terminated}`,
     )
-    s.input.push(userMsg)
-    debugLog(
-      `[session ${id}] send POST-PUSH — pushable.closed=${s.input.closed}, ` +
-      `hasWaiter=${s.input.hasWaiter}, queueDepth=${s.input.queueDepth}`,
-    )
-    this.pushToSession(s, userMsg)
+    this.dispatchUserMessage(s, userMsg)
   }
 
   /** Send a user turn with a content array (text + image blocks). */
   sendContent(id: string, content: Array<{ type: string; [k: string]: unknown }>): void {
-    const s = this.require(id)
-    if (s.terminated) {
-      throw new HttpError(410, `session ${id} is terminated`)
-    }
-    if (!s.running) {
-      throw new HttpError(409, `session ${id} is not running; resume it first`)
-    }
+    const s = this.requireRunnable(id)
     const userMsg: SDKUserMessage = {
       type: 'user',
       message: { role: 'user', content } as unknown as SDKUserMessage['message'],
@@ -530,6 +529,12 @@ export class SessionManager {
       `[session ${id}] sendContent PRE-PUSH — blocks=[${blockSummary}], uuid=${userMsg.uuid}, ` +
       `pendingTurns=${s.pendingTurns}, input.closed=${s.input.closed}`,
     )
+    this.dispatchUserMessage(s, userMsg)
+  }
+
+  /** Shared tail for send() and sendContent(): push into the SDK input
+   *  queue and broadcast to live subscribers. */
+  private dispatchUserMessage(s: Session, userMsg: SDKUserMessage): void {
     s.input.push(userMsg)
     this.pushToSession(s, userMsg)
   }
@@ -541,10 +546,7 @@ export class SessionManager {
     // Broadcast + record locally — the SDK's output stream doesn't echo
     // user messages back, so without this step the client would never
     // see its own sent text.
-    s.history.push(userMsg)
-    if (s.history.length > this.historyCap) {
-      s.history.splice(0, s.history.length - this.historyCap)
-    }
+    pushBounded(s.history, userMsg, this.historyCap)
     for (const sub of s.subscribers.values()) sub.push(userMsg)
     s.lastActivityAt = Date.now()
     // Mark the session as mid-turn. We cap at 1 (not a true counter)
@@ -779,14 +781,49 @@ export class SessionManager {
   subscribeContextUsage(id: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null {
     const s = this.sessions.get(id)
     if (!s) return null
-    const pushable = createPushable<unknown>(`ctx-${id.slice(0, 8)}`)
-    s.contextUsageSubscribers.add(pushable)
+    return this.subscribePushableSet(s, s.contextUsageSubscribers, 'ctx', 50)
+  }
+
+  /** AsyncIterable of `git-status-changed` signal frames for one session.
+   *  Mirrors subscribeContextUsage; returns null when the session is
+   *  unknown so callers can short-circuit gracefully. */
+  subscribeGitStatus(id: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null {
+    const s = this.sessions.get(id)
+    if (!s) return null
+    return this.subscribePushableSet(s, s.gitStatusSubscribers, 'git', 20)
+  }
+
+  /** Shared implementation for subscribeContextUsage / subscribeGitStatus.
+   *  Creates a per-subscriber pushable, registers it in the given set, and
+   *  returns the iterable + cleanup function. */
+  private subscribePushableSet(
+    s: Session,
+    set: Set<Pushable<unknown>>,
+    label: string,
+    maxSize: number,
+  ): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } {
+    const pushable = createPushable<unknown>(`${label}-${s.id.slice(0, 8)}`, maxSize)
+    set.add(pushable)
     return {
       iterable: pushable.iterable,
       unsubscribe: () => {
-        s.contextUsageSubscribers.delete(pushable)
+        set.delete(pushable)
         pushable.end()
       },
+    }
+  }
+
+  /** Broadcast a `git-status-changed` signal to every subscriber of the
+   *  given session. No-op when the session is unknown or has no
+   *  subscribers. The payload is bare (signal-only) — the client side
+   *  responds by re-fetching its useGitStatus endpoint. */
+  broadcastGitStatusChanged(id: string): void {
+    const s = this.sessions.get(id)
+    if (!s) return
+    if (s.gitStatusSubscribers.size === 0) return
+    const frame = { kind: 'git-status-changed' as const, sessionId: id }
+    for (const sub of s.gitStatusSubscribers) {
+      try { sub.push(frame) } catch { /* subscriber dead — skip */ }
     }
   }
 
@@ -804,10 +841,6 @@ export class SessionManager {
     const sdkSub: Subscriber = {
       id: subId,
       push: sub.push,
-      // Named-event channel (e.g. context_usage) isn't wired into this
-      // iterable-based path yet — the routes layer will want to read
-      // such events directly. Stubbed to satisfy the Subscriber type.
-      pushEvent: () => { /* intentionally empty */ },
       end: sub.end,
       get closed() { return sub.closed },
     }
@@ -869,12 +902,12 @@ export class SessionManager {
       } catch { /* pump swallows errors internally */ }
     }
     this.permBroker.denyAll(s)
-    for (const sub of s.subscribers.values()) sub.end()
-    s.subscribers.clear()
-    for (const sub of s.permissionSubscribers.values()) sub.end()
-    s.permissionSubscribers.clear()
-    for (const sub of s.contextUsageSubscribers) sub.end()
-    s.contextUsageSubscribers.clear()
+    // Cancel any pending git-status broadcast — without this, a timer
+    // scheduled by the last mutating tool_use could still fire after the
+    // session is removed (the broadcast itself is a no-op then, but the
+    // timer is dead code that should be released up front).
+    cancelGitBroadcast(id)
+    endAllSubscribers(s)
     // Broadcast the running=false / terminated state BEFORE removing
     // from the map. Without this, the client's copy stays stale at
     // `running: true` — handleSelect then skips resume, and the user
@@ -909,6 +942,21 @@ export class SessionManager {
     return out
   }
 
+  /** Cheap count of all sessions (live + persisted) without allocating
+   *  a full SessionInfo list. Use for health probes etc. */
+  sessionCount(): number {
+    if (!this.store) return this.sessions.size
+    // Start with the store count, then add live sessions that are NOT
+    // yet persisted (e.g. just created). This avoids allocating an array
+    // from store.list() and is equivalent to the original
+    // live + (store - overlap) formula.
+    let count = this.store.count()
+    for (const id of this.sessions.keys()) {
+      if (!this.store.get(id)) count++
+    }
+    return count
+  }
+
   get(id: string): SessionInfo {
     const live = this.sessions.get(id)
     if (live) return this.info(live)
@@ -937,10 +985,7 @@ export class SessionManager {
     )
     if (existingIdx >= 0) s.history.splice(existingIdx, 1)
     const msg = recapMsg as SDKMessage
-    s.history.push(msg)
-    if (s.history.length > this.historyCap) {
-      s.history.splice(0, s.history.length - this.historyCap)
-    }
+    pushBounded(s.history, msg, this.historyCap)
     for (const sub of s.subscribers.values()) sub.push(msg)
     s.lastActivityAt = Date.now()
     this.persist(s)
@@ -955,9 +1000,11 @@ export class SessionManager {
     this.globalSubscribers.clear()
     const ids = Array.from(this.sessions.keys())
     // Collect pump tasks before unload removes sessions from the map.
-    const pumpTasks = ids
-      .map((id) => this.sessions.get(id)?.pumpTask)
-      .filter(Boolean) as Promise<void>[]
+    const pumpTasks: Promise<void>[] = []
+    for (const id of ids) {
+      const task = this.sessions.get(id)?.pumpTask
+      if (task) pumpTasks.push(task)
+    }
     // Unload without terminating: the user may have exited cleanly and
     // will want to resume on next launch. Only Query-ended sessions stay
     // terminated (that flag was already set by the pump's finally block).
@@ -982,6 +1029,21 @@ export class SessionManager {
     return s
   }
 
+  /** Like require(), but additionally ensures the session is alive and
+   *  the Query is still running — the precondition for send/sendContent. */
+  private requireRunnable(id: string): Session {
+    const s = this.require(id)
+    if (s.terminated) {
+      console.warn(`[session ${id}] send rejected — session is terminated`)
+      throw new HttpError(410, `session ${id} is terminated`)
+    }
+    if (!s.running) {
+      console.warn(`[session ${id}] send rejected — session is not running`)
+      throw new HttpError(409, `session ${id} is not running; resume it first`)
+    }
+    return s
+  }
+
   /** Like require(), but additionally insists the Query is still live.
    *  Use for any method that forwards a control request to the SDK — the
    *  subprocess's stdin is closed once `running` flips to false, so a
@@ -997,6 +1059,7 @@ export class SessionManager {
   }
 
   private info(s: Session): SessionInfo {
+    const isWorking = s.running && s.pendingTurns > 0
     return {
       id: s.id,
       createdAt: s.createdAt,
@@ -1007,13 +1070,15 @@ export class SessionManager {
       model: s.model,
       permissionMode: s.permissionMode,
       title: s.title,
+      betas: s.betas,
       running: s.running,
       terminated: s.terminated,
       terminatedReason: s.terminatedReason,
       error: s.error,
-      working: s.running && s.pendingTurns > 0,
-      workingSince: s.running && s.pendingTurns > 0 ? s.workingSince : undefined,
+      working: isWorking,
+      workingSince: isWorking ? s.workingSince : undefined,
       lastTurnAt: s.lastTurnAt,
+      gitStartSha: s.gitStartSha,
     }
   }
 
@@ -1038,17 +1103,41 @@ export class SessionManager {
       working: false,
       workingSince: undefined,
       lastTurnAt: meta.lastTurnAt,
+      gitStartSha: meta.gitStartSha,
     }
   }
 
-  private async pump(session: Session): Promise<void> {
-    return pumpSession(session, {
+  /** Inject standard options shared by spawn() and autoResume():
+   *  includePartialMessages, pathToClaudeCodeExecutable, and env. */
+  private applyStandardQueryOpts(opts: Options): void {
+    if (opts.includePartialMessages === undefined) {
+      opts.includePartialMessages = true
+    }
+    if (!opts.pathToClaudeCodeExecutable && this.claudeBinary) {
+      opts.pathToClaudeCodeExecutable = this.claudeBinary
+    }
+    if (!opts.env) {
+      opts.env = this.buildAnthropicEnv()
+    }
+  }
+
+  /** Build the PumpDeps object shared by pump() and autoResume(). */
+  private buildPumpDeps(): PumpDeps {
+    return {
       historyCap: this.historyCap,
       persist: (s) => this.persist(s),
       denyPendingPermissions: (s) => this.permBroker.denyAll(s),
       isLive: (id) => this.sessions.has(id),
       autoResume: this.autoResumeEnabled ? (s) => this.autoResume(s) : undefined,
-    })
+      // The pump's mutating-tool detector calls broadcaster.broadcastGitStatusChanged
+      // through the debounce helper. `this` satisfies the SessionBroadcaster
+      // interface (subscribeContextUsage, subscribeGitStatus, etc.).
+      broadcaster: this,
+    }
+  }
+
+  private async pump(session: Session): Promise<void> {
+    return pumpSession(session, this.buildPumpDeps())
   }
 
   /** Max consecutive auto-resumes before giving up. Prevents infinite
@@ -1105,18 +1194,14 @@ export class SessionManager {
       permissionMode: undefined,
       title: session.title,
       abortController: newAbort,
+      // Carry beta flags forward — without this, a 1M-context session
+      // silently downgrades to the model's default window on auto-resume.
+      // See resume() for the cast rationale.
+      betas: session.betas as Options['betas'],
     }
 
     // Inject standard options (same as spawn())
-    if (resumeOpts.includePartialMessages === undefined) {
-      resumeOpts.includePartialMessages = true
-    }
-    if (!resumeOpts.pathToClaudeCodeExecutable && this.claudeBinary) {
-      resumeOpts.pathToClaudeCodeExecutable = this.claudeBinary
-    }
-    if (!resumeOpts.env) {
-      resumeOpts.env = this.buildAnthropicEnv()
-    }
+    this.applyStandardQueryOpts(resumeOpts)
 
     // Reuse the stored canUseTool callback from the original spawn
     if (session.canUseTool) {
@@ -1133,19 +1218,16 @@ export class SessionManager {
     session.abortController = newAbort
     session.running = true
     session.exiting = false
+    // Clear any auto-interrupt flag from the previous pump so the GC
+    // doesn't immediately escalate the freshly-resumed session to unload.
+    session.autoInterruptedAt = undefined
     this.autoResumeCounts.set(session, resumeCount + 1)
 
     // Broadcast the session update so clients know it's alive again
     this.broadcastGlobal({ kind: 'update', session: this.info(session) })
 
     // Start new pump — returns immediately, runs in background
-    session.pumpTask = pumpSession(session, {
-      historyCap: this.historyCap,
-      persist: (s) => this.persist(s),
-      denyPendingPermissions: (s) => this.permBroker.denyAll(s),
-      isLive: (id) => this.sessions.has(id),
-      autoResume: this.autoResumeEnabled ? (s) => this.autoResume(s) : undefined,
-    })
+    session.pumpTask = pumpSession(session, this.buildPumpDeps())
 
     return true
   }
@@ -1180,6 +1262,10 @@ export class SessionManager {
   private checkStuck(id: string, s: Session, now: number): void {
     if (this.workingStuckMs <= 0) return
     if (!s.running || s.terminated || s.exiting) return
+    // Only check sessions that are actively working (mid-turn).
+    // Idle sessions (pendingTurns=0, no pending permissions) are not stuck —
+    // they are waiting for user input and should persist indefinitely.
+    if (s.pendingTurns === 0 && s.pending.size === 0) return
 
     const idleSince = now - s.lastActivityAt
     if (idleSince <= this.workingStuckMs) return

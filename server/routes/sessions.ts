@@ -14,9 +14,7 @@ export function buildSessionRouter(sm: SessionManager): Hono {
 
   // Create session
   app.post('/sessions', async (c) => {
-    const body = await c.req.json<Partial<Options> & { cwd?: string; enabledMcpServers?: string[] }>().catch(
-      () => ({}) as Partial<Options> & { enabledMcpServers?: string[] },
-    )
+    const body = await safeJson<Partial<Options> & { cwd?: string; enabledMcpServers?: string[] }>(c.req)
     const { enabledMcpServers, mcpServers, ...rest } = body as Record<string, unknown> & {
       enabledMcpServers?: string[]
       mcpServers?: Record<string, unknown>

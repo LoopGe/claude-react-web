@@ -7,12 +7,63 @@ import type { CSSProperties } from 'react'
 import { Chat } from './Chat'
 import { ContextMenu } from './ContextMenu'
 import { api } from '../hooks/useApi'
+import { useErrorToast } from '../hooks/useErrorToast'
 import { isInAppDrag, readDragPayload, setDragPayload } from '../hooks/useDragPayload'
+import { useGitStatus } from '../hooks/useGitStatus'
 import { statusClass, statusLabel, shortenModel } from '../utils/session-status'
 import { readRecentModels } from '../utils/recent-models'
 import { shortenPath } from '../utils/paths'
 import type { PermissionMode, SessionInfo } from '../types'
 import { PERMISSION_MODES } from '../types'
+import type { GitStatus } from '../../shared/git-types'
+
+/** Chip text generator: "main" when clean, "main ↑2 ●5 ?1" when dirty.
+ *  Each suffix is suppressed at zero so the chip stays compact when the
+ *  repo is in the common steady state. */
+function gitChipText(s: GitStatus): string {
+  if (s.detached) return 'detached'
+  const branch = s.branch ?? '?'
+  const dirty = s.staged.length + s.unstaged.length
+  const segments: string[] = [branch]
+  if (s.ahead > 0) segments.push(`↑${s.ahead}`)
+  if (s.behind > 0) segments.push(`↓${s.behind}`)
+  if (dirty > 0) segments.push(`●${dirty}`)
+  if (s.untracked.length > 0) segments.push(`?${s.untracked.length}`)
+  return segments.join(' ')
+}
+
+/** Chip tooltip — verbose form for users who hover before clicking. */
+function gitChipTitle(s: GitStatus): string {
+  const lines = [
+    `Branch: ${s.detached ? 'detached HEAD' : (s.branch ?? 'unknown')}`,
+    s.upstream ? `Upstream: ${s.upstream}` : 'No upstream configured',
+  ]
+  if (s.ahead > 0 || s.behind > 0) lines.push(`Sync: ${s.ahead} ahead, ${s.behind} behind`)
+  lines.push(`State: ${s.state}`)
+  lines.push(`Staged: ${s.staged.length} · Unstaged: ${s.unstaged.length} · Untracked: ${s.untracked.length}`)
+  lines.push('Click to open Git panel')
+  return lines.join('\n')
+}
+
+/** Optimistic-update helper: POST to `apiPath`, update session on success,
+ *  rollback + show error toast on failure. */
+function commitWithRollback(
+  session: SessionInfo,
+  apiPath: string,
+  payload: Record<string, unknown>,
+  before: Partial<SessionInfo>,
+  errorMsg: string,
+  onSessionUpdate: (s: SessionInfo) => void,
+  showError: (msg: string) => void,
+) {
+  void api
+    .post<{ session: SessionInfo }>(apiPath, payload)
+    .then((r) => onSessionUpdate(r.session))
+    .catch(() => {
+      showError(errorMsg)
+      onSessionUpdate({ ...session, ...before } as SessionInfo)
+    })
+}
 
 export interface ChatPanelProps {
   session: SessionInfo
@@ -30,19 +81,25 @@ export interface ChatPanelProps {
   /** Per-session accent overrides (sets --accent / --accent-strong on the
    *  panel root so all child var() references pick up the session colour). */
   accentStyle?: CSSProperties
-  onFocus: () => void
-  onClose: () => void
+  onFocus: (sessionId: string) => void
+  onClose: (sessionId: string) => void
   onSessionUpdate: (s: SessionInfo) => void
   /** Swap this panel with another open panel (called with the dragged id). */
   onSwap: (draggedId: string, targetId: string) => void
   /** A sidebar card was dropped onto this panel — replace it. */
-  onAcceptSidebarDrop: (sidebarId: string) => void
+  onAcceptSidebarDrop: (sidebarId: string, sessionId: string) => void
   /** Global transcript toggle (forwarded to the inner <Chat>). */
   showSystemEvents?: boolean
   /** When true, render the Settings overlay on top of this panel. */
   settingsOpen?: boolean
   onOpenSettings: (sessionId: string) => void
   onCloseSettings: () => void
+  /** When true, render the Git overlay on top of this panel. Mutually
+   *  exclusive with `settingsOpen` — opening one closes the other (the
+   *  parent App enforces this via shared dispatch). */
+  gitPanelOpen?: boolean
+  onOpenGitPanel: (sessionId: string) => void
+  onCloseGitPanel: () => void
   /** Forwarded to <Chat> so it can register its interrupt callback with
    *  the parent App. Enables ESC shortcut to trigger the same code-path
    *  as the Composer's interrupt button. */
@@ -66,6 +123,9 @@ export const ChatPanel = memo(function ChatPanel({
   settingsOpen,
   onOpenSettings,
   onCloseSettings,
+  gitPanelOpen,
+  onOpenGitPanel,
+  onCloseGitPanel,
   onRegisterInterrupt,
   onRegisterRecap,
 }: ChatPanelProps) {
@@ -85,41 +145,45 @@ export const ChatPanel = memo(function ChatPanel({
    *  can't be restyled across browsers. */
   const [permMenu, setPermMenu] = useState<{ x: number; y: number } | null>(null)
   /** Inline error toast replacing window.alert for model/permission failures. */
-  const [panelError, setPanelError] = useState<string | null>(null)
+  const [panelError, showError, clearError] = useErrorToast()
   const recentModels = readRecentModels()
   const chipsDisabled = !session.running || session.terminated
   // Use the live count from the stream when available; fall back to the
   // server-pushed session.messageCount (updated only at turn boundaries).
   const effectiveMessageCount = Math.max(session.messageCount, liveMessageCount)
+  // Git status powers BOTH the header chip (always-visible summary) and
+  // the GitPanel overlay (mounted inside <Chat>). Hoisting the hook here
+  // means a single fetch satisfies both consumers; the panel receives
+  // status via prop drilling rather than re-fetching on open. Passing
+  // session.id wires WS auto-refresh on git-status-changed frames.
+  const gitStatus = useGitStatus(session.cwd, session.id, { enabled: !!session.running && !!session.cwd })
 
   const commitModel = (next: string) => {
     const value = next.trim()
     setEditingModel(false)
     if (value === (session.model ?? '')) return
-    const before = session.model
-    void api
-      .post<{ session: SessionInfo }>(`/sessions/${session.id}/model`, {
-        model: value || undefined,
-      })
-      .then((r) => onSessionUpdate(r.session))
-      .catch((err) => {
-        setPanelError(`Couldn't change model: ${(err as Error).message}`)
-        setTimeout(() => setPanelError(null), 5000)
-        onSessionUpdate({ ...session, model: before })
-      })
+    commitWithRollback(
+      session,
+      `/sessions/${session.id}/model`,
+      { model: value || undefined },
+      { model: session.model },
+      `Couldn't change model`,
+      onSessionUpdate,
+      showError,
+    )
   }
 
   const commitPermissionMode = (mode: PermissionMode) => {
     if (mode === (session.permissionMode ?? 'default')) return
-    const before = session.permissionMode
-    void api
-      .post<{ session: SessionInfo }>(`/sessions/${session.id}/permission-mode`, { mode })
-      .then((r) => onSessionUpdate(r.session))
-      .catch((err) => {
-        setPanelError(`Couldn't change permission mode: ${(err as Error).message}`)
-        setTimeout(() => setPanelError(null), 5000)
-        onSessionUpdate({ ...session, permissionMode: before })
-      })
+    commitWithRollback(
+      session,
+      `/sessions/${session.id}/permission-mode`,
+      { mode },
+      { permissionMode: session.permissionMode },
+      `Couldn't change permission mode`,
+      onSessionUpdate,
+      showError,
+    )
   }
 
   const permMode = session.permissionMode ?? 'default'
@@ -139,7 +203,7 @@ export const ChatPanel = memo(function ChatPanel({
         // Focus on any mousedown inside the panel (capture phase so we win
         // against children). Clicking the close button still works because
         // onClose stops propagation, but focusing on the way down is harmless.
-        if (!focused) onFocus()
+        if (!focused) onFocus(session.id)
         void e
       }}
       onDragOver={(e) => {
@@ -162,7 +226,7 @@ export const ChatPanel = memo(function ChatPanel({
         if (payload.kind === 'main-panel') {
           onSwap(payload.id, session.id)
         } else if (payload.kind === 'sidebar-card') {
-          onAcceptSidebarDrop(payload.id)
+          onAcceptSidebarDrop(payload.id, session.id)
         }
       }}
     >
@@ -272,6 +336,30 @@ export const ChatPanel = memo(function ChatPanel({
             <span className="chat-panel-chip-label">mode</span>
             <span className="chat-panel-chip-value">{session.permissionMode ?? 'default'}</span>
           </button>
+          {/* Git chip — surfaces branch + dirty/ahead/behind/untracked
+              counts at a glance. Hidden when the cwd isn't a git repo
+              (so non-git sessions don't get visual noise) or while the
+              status fetch is still settling and we have no data yet. */}
+          {gitStatus.data && gitStatus.data.isRepo === true && (
+            <button
+              type="button"
+              className={[
+                'chat-panel-chip',
+                'git-chip',
+                gitStatus.data.state !== 'clean' && gitStatus.data.state !== 'dirty' ? 'conflict' : '',
+                gitStatus.data.state === 'dirty' ? 'dirty' : '',
+              ].filter(Boolean).join(' ')}
+              title={gitChipTitle(gitStatus.data)}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation()
+                onOpenGitPanel(session.id)
+              }}
+            >
+              <span className="chat-panel-chip-label">⎇</span>
+              <span className="chat-panel-chip-value">{gitChipText(gitStatus.data)}</span>
+            </button>
+          )}
         </div>
         {permMenu && (
           <ContextMenu
@@ -301,7 +389,7 @@ export const ChatPanel = memo(function ChatPanel({
           className="chat-panel-close"
           onClick={(e) => {
             e.stopPropagation()
-            onClose()
+            onClose(session.id)
           }}
           title="Close this panel (Alt+W) · session stays alive"
           aria-label="Close panel"
@@ -338,7 +426,7 @@ export const ChatPanel = memo(function ChatPanel({
       {panelError && (
         <div className="error-toast">
           {panelError}
-          <button className="error-toast-dismiss" onClick={() => setPanelError(null)}>✕</button>
+          <button className="error-toast-dismiss" onClick={clearError}>✕</button>
         </div>
       )}
       <div className="chat-panel-body">
@@ -351,6 +439,12 @@ export const ChatPanel = memo(function ChatPanel({
             showSystemEvents={showSystemEvents}
             settingsOpen={settingsOpen}
             onCloseSettings={onCloseSettings}
+            gitPanelOpen={gitPanelOpen}
+            onCloseGitPanel={onCloseGitPanel}
+            gitStatus={gitStatus.data}
+            gitLoading={gitStatus.loading}
+            gitError={gitStatus.error}
+            onGitRefresh={gitStatus.refresh}
             onLiveMessageCount={setLiveMessageCount}
             onRegisterInterrupt={onRegisterInterrupt}
             onRegisterRecap={onRegisterRecap}

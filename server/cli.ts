@@ -11,6 +11,7 @@ import { dirname, join } from 'node:path'
 import open from 'open'
 import { buildApp } from './app.js'
 import { loadConfig, config } from './config.js'
+import { disableFileLogging, getLogFilePath } from './log.js'
 import { SessionStore, defaultStateDir } from './persistence.js'
 import { McpConfigStore } from './mcp-config.js'
 import { attachWebSocket } from './ws.js'
@@ -256,6 +257,10 @@ async function main() {
       (initial.scopes ? ` scopes=${initial.scopes.join(',')}` : ' scopes=*') +
       ' (override via LOG_LEVEL / LOG_SCOPES, or PUT /api/log at runtime)',
   )
+  const logFilePath = getLogFilePath()
+  if (logFilePath) {
+    console.log(`[cli] file logging: ${logFilePath}`)
+  }
 
   const { app, sessionManager } = buildApp({
     sessionStore: store,
@@ -295,6 +300,7 @@ async function main() {
     } catch (err) {
       console.error('[cli] ws shutdown error:', err)
     }
+    disableFileLogging()
     try {
       await sessionManager.shutdown()
     } finally {

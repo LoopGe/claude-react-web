@@ -2,10 +2,9 @@
 // Chat panels side-by-side. Session Settings now renders as a per-panel
 // overlay (inside ChatPanel) rather than a right drawer — see below.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { SessionList } from './components/SessionList'
-import { CommandPalette } from './components/CommandPalette'
 import { ChatPanel } from './components/ChatPanel'
 import { api } from './hooks/useApi'
 import { isInAppDrag, readDragPayload } from './hooks/useDragPayload'
@@ -18,13 +17,18 @@ import { useWsHub, useWsHubStatus } from './hooks/useWsHub'
 import type { WsServerFrame } from './ws-types'
 import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, SidebarSection } from './types'
 import { PERMISSION_MODES } from './types'
-import { ACCENT_COLORS, ACCENT_COLOR_KEY, SESSION_COLORS_KEY } from './theme'
+import { ACCENT_COLORS, ACCENT_COLOR_KEY, SESSION_COLORS_KEY, buildSessionAccentMap } from './theme'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { SetupPage } from './components/SetupPage'
 import { ThemeToggle } from './components/ThemeToggle'
-import { ShortcutHelp } from './components/ShortcutHelp'
-import { GlobalSettingsModal } from './components/GlobalSettingsModal'
 import { applyTheme, getStoredTheme, onSystemThemeChange, toggleTheme, type Theme } from './utils/theme'
+
+// Lazy-load heavy modal/overlay components that are only shown on demand.
+// This keeps the initial bundle lean — the user pays the download cost
+// only when they actually open the palette, settings, or help modal.
+const CommandPalette = lazy(() => import('./components/CommandPalette').then((m) => ({ default: m.CommandPalette })))
+const ShortcutHelp = lazy(() => import('./components/ShortcutHelp').then((m) => ({ default: m.ShortcutHelp })))
+const GlobalSettingsModal = lazy(() => import('./components/GlobalSettingsModal').then((m) => ({ default: m.GlobalSettingsModal })))
 
 import {
   SIDEBAR_ORDER_KEY,
@@ -40,9 +44,20 @@ import {
   LAST_SEEN_TURN_KEY,
   clampMaxOpen,
 } from './constants/storageKeys'
-import type { Defaults, ServerConfig } from './types/config'
+import type { Defaults, ConfigResponse } from './types/config'
 import { notificationTooltip } from './utils/notifications'
 import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
+
+/** Read the session-accent-color map from localStorage. Used in both
+ *  the color-menu handler and the new-session handler. */
+function readSessionColors(): Record<string, string> {
+  try {
+    const raw = window.localStorage.getItem(SESSION_COLORS_KEY)
+    return raw ? (JSON.parse(raw) ?? {}) : {}
+  } catch {
+    return {}
+  }
+}
 
 export function App() {
   const [isConfigured, setIsConfigured] = useState<boolean | null>(null)
@@ -70,6 +85,7 @@ export function App() {
    *  just that column instead of the whole viewport. */
   const [settingsOpenFor, setSettingsOpenFor] = useState<string | null>(null)
   const [newSessionDialogOpen, setNewSessionDialogOpen] = useState(false)
+  const newSessionDialogOpenRef = useRef(newSessionDialogOpen)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false)
@@ -97,6 +113,7 @@ export function App() {
   /** Ids currently being resumed — briefly disables the item so a double-
    *  click doesn't fire two POSTs. */
   const [resuming, setResuming] = useState<Set<string>>(new Set())
+  const resumingRef = useRef(resuming)
   /** User-chosen ordering for the sidebar. Items here always sort before
    *  anything not listed; unknown ids (e.g. sessions created after the
    *  order was saved) fall through to the default lastActivityAt sort. */
@@ -143,17 +160,9 @@ export function App() {
     root.setProperty('--accent-strong', preset?.strong ?? accentColor)
   }, [accentColor])
 
-  /** Return CSS custom-property overrides for a session that has a
-   *  per-session accent, or undefined when it should use the global one. */
-  const sessionAccentStyle = useCallback(
-    (sessionId: string): CSSProperties | undefined => {
-      const hex = sessionColors[sessionId]
-      if (!hex) return undefined
-      const preset = ACCENT_COLORS.find((c) => c.accent === hex)
-      return { '--accent': hex, '--accent-strong': preset?.strong ?? hex } as CSSProperties
-    },
-    [sessionColors],
-  )
+  /** Pre-computed per-session accent CSS overrides. Stable references
+   *  so ChatPanel's React.memo can skip unchanged panels. */
+  const sessionAccentMap = useMemo(() => buildSessionAccentMap(sessionColors), [sessionColors])
 
   const handleSessionColorChange = useCallback((id: string, color: string | undefined) => {
     // Bypass the React state updater. Opening the context menu is
@@ -162,14 +171,7 @@ export function App() {
     // updater whose resulting state "won't matter" after unmount,
     // exactly like the rememberIn bug. Write through directly,
     // then sync React state for the still-mounted SessionList.
-    const curr: Record<string, string> = (() => {
-      try {
-        const raw = window.localStorage.getItem(SESSION_COLORS_KEY)
-        return raw ? (JSON.parse(raw) ?? {}) : {}
-      } catch {
-        return {}
-      }
-    })()
+    const curr = readSessionColors()
     if (color) curr[id] = color
     else delete curr[id]
     try {
@@ -180,14 +182,27 @@ export function App() {
     setSessionColors(curr)
   }, [setSessionColors])
 
+  const [gitPanelOpenFor, setGitPanelOpenFor] = useState<string | null>(null)
+  // Open/close handlers enforce mutual exclusion between Settings and
+  // Git panels — only one overlay per chat panel at a time. Each opener
+  // clears the other's state, which keeps the UI predictable when the
+  // user clicks back and forth between the two chips.
   const handleCloseSettings = useCallback(() => setSettingsOpenFor(null), [])
-  const handleOpenSettings = useCallback((id: string) => setSettingsOpenFor(id), [])
+  const handleOpenSettings = useCallback((id: string) => {
+    setSettingsOpenFor(id)
+    setGitPanelOpenFor(null)
+  }, [])
+  const handleCloseGitPanel = useCallback(() => setGitPanelOpenFor(null), [])
+  const handleOpenGitPanel = useCallback((id: string) => {
+    setGitPanelOpenFor(id)
+    setSettingsOpenFor(null)
+  }, [])
 
   const { gridTemplate, onDividerMouseDown, draggingDivider, bodyRef, setPanelRatios } = usePanelColumnResize({ openIds, panelMinRatio })
 
   useEffect(() => {
     void api
-      .get<ServerConfig>('/config')
+      .get<ConfigResponse>('/config')
       .then((r) => {
         setIsConfigured(r.configured !== false)
         if (r.configured === false) return
@@ -215,6 +230,10 @@ export function App() {
   const focusedIdRef = useRef(focusedId)
   const sessionsRef = useRef(sessions)
   const maxOpenRef = useRef(maxOpen)
+  const paletteOpenRef = useRef(paletteOpen)
+  const helpOpenRef = useRef(helpOpen)
+  const settingsOpenForRef = useRef(settingsOpenFor)
+  const gitPanelOpenForRef = useRef(gitPanelOpenFor)
   const handleSelectRef = useRef<(id: string) => void>(() => {})
   // Per-session interrupt callbacks registered by <Chat> components.
   // The ESC shortcut in the keyboard handler uses this to trigger the
@@ -230,18 +249,21 @@ export function App() {
   const registerRecap = useCallback((sessionId: string, fn: () => void) => {
     recapFnsRef.current.set(sessionId, fn)
   }, [])
-  useEffect(() => {
-    openIdsRef.current = openIds
-  })
-  useEffect(() => {
-    focusedIdRef.current = focusedId
-  })
-  useEffect(() => {
-    sessionsRef.current = sessions
-  })
-  useEffect(() => {
-    maxOpenRef.current = maxOpen
-  })
+  // Keep refs in sync with the latest state values. Assigned directly
+  // in the render body (before return) so callbacks that capture these
+  // refs always read the current values — no useEffect needed.
+  /* eslint-disable react-hooks/refs -- intentional render-time ref sync; the alternative (useEffect) would lag by one render and break stale-closure callbacks downstream */
+  openIdsRef.current = openIds
+  focusedIdRef.current = focusedId
+  sessionsRef.current = sessions
+  resumingRef.current = resuming
+  maxOpenRef.current = maxOpen
+  paletteOpenRef.current = paletteOpen
+  helpOpenRef.current = helpOpen
+  settingsOpenForRef.current = settingsOpenFor
+  gitPanelOpenForRef.current = gitPanelOpenFor
+  newSessionDialogOpenRef.current = newSessionDialogOpen
+  /* eslint-enable react-hooks/refs */
 
   /** Fire a notification when Claude is waiting on a tool-permission
    *  approval in a session the user isn't actively watching. Same
@@ -585,14 +607,7 @@ export function App() {
           // Save the chosen accent under the new id. Direct localStorage
           // write + setState (same pattern as the color-menu handler) so
           // the write can't be dropped by a pending unmount.
-          const curr: Record<string, string> = (() => {
-            try {
-              const raw = window.localStorage.getItem(SESSION_COLORS_KEY)
-              return raw ? (JSON.parse(raw) ?? {}) : {}
-            } catch {
-              return {}
-            }
-          })()
+          const curr = readSessionColors()
           curr[res.session.id] = accent
           try {
             window.localStorage.setItem(SESSION_COLORS_KEY, JSON.stringify(curr))
@@ -686,14 +701,14 @@ export function App() {
     [closeSession, setGroups, setSessionColors],
   )
 
-  /** Delete the session and create a fresh one with the same config. */
+  /** Create a fresh session with the same config, then delete the old one.
+   *  Create-first ensures the old session is preserved if creation fails. */
   const handleRestart = useCallback(
     async (id: string) => {
       const source = sessions.find((s) => s.id === id)
       if (!source) return
       const sourceGroup = groups.find((g) => g.sessionIds.includes(id))
       const fallbackGroup = groups.find((g) => g.sessionIds.length < maxOpen)
-      await handleDelete(id)
       const form: NewSessionForm = {
         cwd: source.cwd,
         model: source.model,
@@ -703,9 +718,13 @@ export function App() {
         betas: source.betas,
         groupId: sourceGroup?.id ?? fallbackGroup?.id,
       }
+      // Create first — if this fails, the old session stays intact.
+      // handleCreate already sets opError on failure (never re-throws).
       await handleCreate(form)
+      // Only delete the old session after the new one is confirmed created.
+      await handleDelete(id)
     },
-    [sessions, groups, maxOpen, handleDelete, handleCreate],
+    [sessions, groups, maxOpen, handleCreate, handleDelete],
   )
 
   /** Activate a group: replace main-area panels with the group's sessions. */
@@ -735,6 +754,29 @@ export function App() {
     [groups, sessions, maxOpen, setLastSeenTurn],
   )
 
+  /** Resume a dormant session. Handles the resuming-set bookkeeping,
+   *  the API call, and error display. `afterSuccess` runs after the
+   *  sessions state is updated with the fresh session. */
+  const resumeSession = useCallback(
+    async (id: string, afterSuccess: (res: { session: SessionInfo }) => void) => {
+      setResuming((prev) => new Set(prev).add(id))
+      try {
+        const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/resume`, {})
+        setSessions((prev) => prev.map((p) => (p.id === id ? res.session : p)))
+        afterSuccess(res)
+      } catch (e) {
+        setOpError((e as Error).message)
+      } finally {
+        setResuming((prev) => {
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+      }
+    },
+    [setOpError],
+  )
+
   /** Select a session. Dormant (not running, not terminated) sessions are
    *  resumed first — the server spins up a fresh Query with
    *  `options.resume`, then the SSE replay fills in the transcript.
@@ -743,7 +785,7 @@ export function App() {
    *  sessions open in single-panel mode (replace the current panels). */
   const handleSelect = useCallback(
     async (id: string) => {
-      const s = sessions.find((x) => x.id === id)
+      const s = sessionsRef.current.find((x) => x.id === id)
       if (!s) {
         openSession(id, undefined)
         return
@@ -754,30 +796,19 @@ export function App() {
       // Ungrouped session → single-panel mode (replace all open panels).
       if (!sessionGroup) {
         setLastSeenTurn((prev) => ({ ...prev, [id]: s.lastTurnAt ?? Date.now() }))
-        if (!s.running && !s.terminated && !resuming.has(id)) {
+        if (!s.running && !s.terminated && !resumingRef.current.has(id)) {
           // Resume FIRST, then open the panel — this ensures Chat mounts
           // with the session already running on the server, so the hub
           // subscribe → replay flow is fully ready. Without this, the
           // panel shows a dormant placeholder that flashes to "loading"
           // when resume completes, and the replay may arrive before the
           // hub subscribe fires, losing messages.
-          setResuming((prev) => new Set(prev).add(id))
-          try {
-            const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/resume`, {})
-            setSessions((prev) => prev.map((p) => (p.id === id ? res.session : p)))
+          await resumeSession(id, () => {
             // React batches these with the setSessions above so Chat
             // mounts with the fresh (running=true) session immediately.
             setOpenIds([id])
             setFocusedId(id)
-          } catch (e) {
-            setOpError((e as Error).message)
-          } finally {
-            setResuming((prev) => {
-              const next = new Set(prev)
-              next.delete(id)
-              return next
-            })
-          }
+          })
         } else {
           // Already running or terminated — open immediately.
           setOpenIds([id])
@@ -792,21 +823,8 @@ export function App() {
         handleActivateGroup(sessionGroup.id)
         setLastSeenTurn((prev) => ({ ...prev, [id]: s.lastTurnAt ?? Date.now() }))
         // Resume FIRST, then focus — same rationale as ungrouped path.
-        if (!s.running && !s.terminated && !resuming.has(id)) {
-          setResuming((prev) => new Set(prev).add(id))
-          try {
-            const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/resume`, {})
-            setSessions((prev) => prev.map((p) => (p.id === id ? res.session : p)))
-            setFocusedId(id)
-          } catch (e) {
-            setOpError((e as Error).message)
-          } finally {
-            setResuming((prev) => {
-              const next = new Set(prev)
-              next.delete(id)
-              return next
-            })
-          }
+        if (!s.running && !s.terminated && !resumingRef.current.has(id)) {
+          await resumeSession(id, () => { setFocusedId(id) })
         } else {
           setFocusedId(id)
         }
@@ -818,30 +836,16 @@ export function App() {
         openSession(id, s.lastTurnAt)
         return
       }
-      if (resuming.has(id)) return
-      setResuming((prev) => new Set(prev).add(id))
-      try {
-        const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/resume`, {})
-        setSessions((prev) => prev.map((p) => (p.id === id ? res.session : p)))
-        openSession(id, res.session.lastTurnAt)
-      } catch (e) {
-        setOpError((e as Error).message)
-      } finally {
-        setResuming((prev) => {
-          const next = new Set(prev)
-          next.delete(id)
-          return next
-        })
-      }
+      if (resumingRef.current.has(id)) return
+      await resumeSession(id, (res) => { openSession(id, res.session.lastTurnAt) })
     },
-    [sessions, resuming, openSession, groups, activeGroupId, handleActivateGroup, setLastSeenTurn],
+    [resumeSession, openSession, groups, activeGroupId, handleActivateGroup, setLastSeenTurn],
   )
   // Keep a stable ref so notification onClick handlers can call the
   // full handleSelect logic (group switch, dormant resume, unread clear)
   // without the useCallback depending on handleSelect directly.
-  useEffect(() => {
-    handleSelectRef.current = handleSelect
-  })
+  // eslint-disable-next-line react-hooks/refs -- intentional render-time ref sync, same rationale as the block above
+  handleSelectRef.current = handleSelect
 
   /** When focus changes to an open panel, bump its seen-turn so the unread
    *  dot disappears. Focusing an already-read panel is a no-op. Uses
@@ -939,7 +943,7 @@ export function App() {
           description: 'Command palette',
         },
         {
-          combo: 'shift+?',
+          combo: 'mod+?',
           handler: () => setHelpOpen((v) => !v),
           allowInInput: true,
           description: 'Keyboard shortcuts',
@@ -968,11 +972,15 @@ export function App() {
         {
           combo: 'escape',
           handler: () => {
-            // Priority: CommandPalette > ShortcutHelp > NewSessionDialog > per-panel Settings overlay > Interrupt.
-            if (paletteOpen) setPaletteOpen(false)
-            else if (helpOpen) setHelpOpen(false)
-            else if (newSessionDialogOpen) setNewSessionDialogOpen(false)
-            else if (settingsOpenFor) setSettingsOpenFor(null)
+            // Priority: CommandPalette > ShortcutHelp > NewSessionDialog > per-panel Git overlay > Settings overlay > Interrupt.
+            // Git is checked before Settings because it's the more recently
+            // introduced overlay and tends to be what the user wants to
+            // close when they press Esc with both possible.
+            if (paletteOpenRef.current) setPaletteOpen(false)
+            else if (helpOpenRef.current) setHelpOpen(false)
+            else if (newSessionDialogOpenRef.current) setNewSessionDialogOpen(false)
+            else if (gitPanelOpenForRef.current) setGitPanelOpenFor(null)
+            else if (settingsOpenForRef.current) setSettingsOpenFor(null)
             else if (focusedId) {
               const focused = sessionsRef.current.find((s) => s.id === focusedId)
               if (focused?.working) {
@@ -994,7 +1002,7 @@ export function App() {
           description: 'Close overlay / Interrupt',
         },
       ],
-      [openIds, focusedId, paletteOpen, helpOpen, newSessionDialogOpen, settingsOpenFor, closeSession],
+      [openIds, focusedId, closeSession],
     )
   useKeyboardShortcuts(shortcuts)
 
@@ -1194,23 +1202,22 @@ export function App() {
     openAtSlot(sidebarId, targetSlotId, live?.lastTurnAt)
   }, [updateSession, openAtSlot])
 
-  const handleConfigured = useCallback(() => {
-    setIsConfigured(true)
-    // Reload config now that the token is set.
-    void api.get<ServerConfig>('/config').then((r) => {
+  const refreshConfigResponse = useCallback(() => {
+    void api.get<ConfigResponse>('/config').then((r) => {
       setDefaults(r.defaults)
       if (r.models?.length) setServerModels(r.models)
       if (r.maxOpenPanels != null) setServerMaxOpen(r.maxOpenPanels)
     })
   }, [])
 
+  const handleConfigured = useCallback(() => {
+    setIsConfigured(true)
+    refreshConfigResponse()
+  }, [refreshConfigResponse])
+
   const handleGlobalSettingsSaved = useCallback(() => {
-    void api.get<ServerConfig>('/config').then((r) => {
-      setDefaults(r.defaults)
-      if (r.models?.length) setServerModels(r.models)
-      if (r.maxOpenPanels != null) setServerMaxOpen(r.maxOpenPanels)
-    })
-  }, [])
+    refreshConfigResponse()
+  }, [refreshConfigResponse])
 
   if (isConfigured === null) return null // still loading
   if (!isConfigured) return <SetupPage onConfigured={handleConfigured} />
@@ -1370,18 +1377,21 @@ export function App() {
                     focused={s.id === focusedId}
                     hasUnread={!!unread[s.id]}
                     slot={i + 1}
-                    accentStyle={sessionAccentStyle(s.id)}
-                    onFocus={() => focusPanel(s.id)}
-                    onClose={() => closeSession(s.id)}
+                    accentStyle={sessionAccentMap.get(s.id)}
+                    onFocus={focusPanel}
+                    onClose={closeSession}
                     onSessionUpdate={updateSession}
                     showSystemEvents={showSystemEvents}
                     settingsOpen={settingsOpenFor === s.id}
                     onOpenSettings={handleOpenSettings}
                     onCloseSettings={handleCloseSettings}
+                    gitPanelOpen={gitPanelOpenFor === s.id}
+                    onOpenGitPanel={handleOpenGitPanel}
+                    onCloseGitPanel={handleCloseGitPanel}
                     onSwap={swapPanels}
                     onRegisterInterrupt={registerInterrupt}
                     onRegisterRecap={registerRecap}
-                    onAcceptSidebarDrop={(sidebarId) => handleAcceptSidebarDrop(sidebarId, s.id)}
+                    onAcceptSidebarDrop={handleAcceptSidebarDrop}
                   />
                 </ErrorBoundary>
               )
@@ -1404,33 +1414,39 @@ export function App() {
         </div>
       </main>
 
-      <CommandPalette
-        open={paletteOpen}
-        onClose={() => setPaletteOpen(false)}
-        shortcuts={shortcuts}
-        sessions={sessions}
-        onSelectSession={(id) => {
-          if (openIds.includes(id)) {
-            setFocusedId(id)
-          } else {
-            const s = sessions.find((s) => s.id === id)
-            openSession(id, s?.lastTurnAt)
-          }
-          setPaletteOpen(false)
-        }}
-      />
+      <Suspense fallback={null}>
+        <CommandPalette
+          open={paletteOpen}
+          onClose={() => setPaletteOpen(false)}
+          shortcuts={shortcuts}
+          sessions={sessions}
+          onSelectSession={(id) => {
+            if (openIds.includes(id)) {
+              setFocusedId(id)
+            } else {
+              const s = sessions.find((s) => s.id === id)
+              openSession(id, s?.lastTurnAt)
+            }
+            setPaletteOpen(false)
+          }}
+        />
+      </Suspense>
 
-      <ShortcutHelp
-        open={helpOpen}
-        onClose={() => setHelpOpen(false)}
-        shortcuts={shortcuts}
-      />
+      <Suspense fallback={null}>
+        <ShortcutHelp
+          open={helpOpen}
+          onClose={() => setHelpOpen(false)}
+          shortcuts={shortcuts}
+        />
+      </Suspense>
 
       {globalSettingsOpen && (
-        <GlobalSettingsModal
-          onClose={() => setGlobalSettingsOpen(false)}
-          onSaved={handleGlobalSettingsSaved}
-        />
+        <Suspense fallback={null}>
+          <GlobalSettingsModal
+            onClose={() => setGlobalSettingsOpen(false)}
+            onSaved={handleGlobalSettingsSaved}
+          />
+        </Suspense>
       )}
     </div>
     </ErrorBoundary>

@@ -9,7 +9,7 @@ import { McpInstaller } from './McpInstaller'
 import { FlagSettingsEditor } from './FlagSettingsEditor'
 import { ContextBar } from './ContextBar'
 import { MarketplaceBrowser } from './MarketplaceBrowser'
-import { formatTokens } from '../utils/format'
+import { formatTokens, formatJson } from '../utils/format'
 import type { ContextUsage } from '../hooks/useChatStream'
 
 interface Props {
@@ -47,66 +47,63 @@ export function SettingsPanel({ session, onClose, onSessionUpdate, commands = []
     if (!session.running) return
     const ac = new AbortController()
     ;(async () => {
-      // Fetch server-configured models (non-blocking, best-effort)
-      let serverModelIds: string[] = []
-      try {
-        const cfg = await api.get<{ models?: string[] }>('/config', {
-          signal: ac.signal,
-        })
-        serverModelIds = cfg.models ?? []
-      } catch {
-        /* ignore — we'll still have SDK models */
-      }
-      try {
-        const m = await api.get<{ models: ModelInfo[] }>(
-          `/sessions/${session.id}/models`,
-          { signal: ac.signal },
-        )
-        // Merge: SDK models first, then append any server-configured
-        // models that the SDK didn't already include.
-        const sdkIds = new Set(m.models.map((x) => x.id))
+      // Fetch server-configured models and SDK models in parallel.
+      // SDK models merge depends on server config, so those two are
+      // awaited together; the rest are independent fire-and-forget.
+      const [cfgResult, modelsResult, usageResult, mcpResult, gcResult] =
+        await Promise.allSettled([
+          api.get<{ models?: string[] }>('/config', { signal: ac.signal }),
+          api.get<{ models: ModelInfo[] }>(
+            `/sessions/${session.id}/models`,
+            { signal: ac.signal },
+          ),
+          api.get<{ usage: unknown }>(
+            `/sessions/${session.id}/context-usage`,
+            { signal: ac.signal },
+          ),
+          api.get<{ mcp: McpServerStatus[] }>(
+            `/sessions/${session.id}/mcp-status`,
+            { signal: ac.signal },
+          ),
+          api.get<{ servers: McpServerConfigMeta[] }>(
+            '/mcp-config',
+            { signal: ac.signal },
+          ),
+        ])
+
+      if (ac.signal.aborted) return
+
+      // Models: merge SDK models with server-configured ones.
+      const serverModelIds =
+        cfgResult.status === 'fulfilled' ? (cfgResult.value.models ?? []) : []
+      if (modelsResult.status === 'fulfilled') {
+        const sdkIds = new Set(modelsResult.value.models.map((x) => x.id))
         const merged = [
-          ...m.models,
+          ...modelsResult.value.models,
           ...serverModelIds
             .filter((id) => !sdkIds.has(id))
             .map((id): ModelInfo => ({ id })),
         ]
         setModels(merged)
-      } catch (e) {
-        if ((e as Error).name === 'AbortError') return
+      } else {
         // Supported models fails if SDK hasn't initialized yet — fall
         // back to server-configured models so the dropdown isn't empty.
-        console.warn('could not load models:', (e as Error).message)
-        if (serverModelIds.length) {
-          setModels(serverModelIds.map((id): ModelInfo => ({ id })))
+        if ((modelsResult.reason as Error)?.name !== 'AbortError') {
+          console.warn('could not load models:', (modelsResult.reason as Error)?.message)
+          if (serverModelIds.length) {
+            setModels(serverModelIds.map((id): ModelInfo => ({ id })))
+          }
         }
       }
-      try {
-        const u = await api.get<{ usage: unknown }>(
-          `/sessions/${session.id}/context-usage`,
-          { signal: ac.signal },
-        )
-        setUsage(u.usage as ContextUsage)
-      } catch (e) {
-        if ((e as Error).name === 'AbortError') return
+
+      if (usageResult.status === 'fulfilled') {
+        setUsage(usageResult.value.usage as ContextUsage)
       }
-      try {
-        const r = await api.get<{ mcp: McpServerStatus[] }>(
-          `/sessions/${session.id}/mcp-status`,
-          { signal: ac.signal },
-        )
-        setMcp(r.mcp)
-      } catch (e) {
-        if ((e as Error).name === 'AbortError') return
+      if (mcpResult.status === 'fulfilled') {
+        setMcp(mcpResult.value.mcp)
       }
-      try {
-        const gc = await api.get<{ servers: McpServerConfigMeta[] }>(
-          '/mcp-config',
-          { signal: ac.signal },
-        )
-        setGlobalMcpNames(new Set(gc.servers.map((s) => s.name)))
-      } catch {
-        /* ignore — no global config is fine */
+      if (gcResult.status === 'fulfilled') {
+        setGlobalMcpNames(new Set(gcResult.value.servers.map((s) => s.name)))
       }
     })()
     return () => { ac.abort() }
@@ -227,7 +224,7 @@ export function SettingsPanel({ session, onClose, onSessionUpdate, commands = []
     <aside className="settings-panel">
       <h3>
         Session settings
-        <button className="btn" style={{ padding: '2px 8px', fontSize: 11 }} onClick={onClose}>
+        <button className="btn btn-sm" onClick={onClose}>
           Close
         </button>
       </h3>
@@ -339,7 +336,7 @@ export function SettingsPanel({ session, onClose, onSessionUpdate, commands = []
       <div className="settings-section">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h4 style={{ margin: 0 }}>Plugins</h4>
-          <button className="btn" style={{ padding: '2px 8px', fontSize: 11 }} onClick={reloadPlugins} disabled={busy || session.terminated}>
+          <button className="btn btn-sm" onClick={reloadPlugins} disabled={busy || session.terminated}>
             Reload plugins
           </button>
         </div>
@@ -364,8 +361,7 @@ export function SettingsPanel({ session, onClose, onSessionUpdate, commands = []
           <h4 style={{ margin: 0 }}>MCP servers</h4>
           <div style={{ display: 'flex', gap: 6 }}>
             <button
-              className="btn"
-              style={{ padding: '2px 8px', fontSize: 11 }}
+              className="btn btn-sm"
               onClick={() => { setMcpInstallerEdit(undefined); setShowMcpInstaller(true) }}
             >
               Manage
@@ -388,7 +384,7 @@ export function SettingsPanel({ session, onClose, onSessionUpdate, commands = []
       <div className="settings-section">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h4 style={{ margin: 0 }}>Marketplace</h4>
-          <button className="btn" style={{ padding: '2px 8px', fontSize: 11 }} onClick={() => setShowMarketplace(true)}>
+          <button className="btn btn-sm" onClick={() => setShowMarketplace(true)}>
             Browse plugins
           </button>
         </div>
@@ -438,14 +434,6 @@ function ReadOnlyField({ label, value, mono }: { label: string; value: string; m
       </div>
     </div>
   )
-}
-
-function formatJson(v: unknown): string {
-  try {
-    return JSON.stringify(v, null, 2)
-  } catch {
-    return String(v)
-  }
 }
 
 function PluginCard({

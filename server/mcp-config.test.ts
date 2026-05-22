@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
 import {
   McpConfigStore,
   maskSecrets,
@@ -9,10 +8,7 @@ import {
   validateMcpServer,
   type StoredMcpServer,
 } from './mcp-config.js'
-
-function tempDir(): string {
-  return mkdtempSync(join(tmpdir(), 'claude-react-web-mcp-'))
-}
+import { tempDir } from './__test-utils__/index.js'
 
 function makeServer(overrides: Partial<StoredMcpServer> = {}): StoredMcpServer {
   return {
@@ -30,7 +26,7 @@ describe('McpConfigStore', () => {
   let dir: string
 
   beforeEach(() => {
-    dir = tempDir()
+    dir = tempDir('mcp')
   })
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true })
@@ -138,7 +134,7 @@ describe('McpConfigStore', () => {
 describe('McpConfigStore.toSdkConfig', () => {
   let dir: string
 
-  beforeEach(() => { dir = tempDir() })
+  beforeEach(() => { dir = tempDir('mcp') })
   afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
   it('maps stdio servers to SDK config shape', async () => {

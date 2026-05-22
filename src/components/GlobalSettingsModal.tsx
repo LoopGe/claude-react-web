@@ -3,9 +3,11 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../hooks/useApi'
+import { formatBytes } from '../utils/format'
 import type { FullServerConfig } from '../types/config'
 import type { McpServerConfigMeta } from '../types'
 import { McpInstaller } from './McpInstaller'
+import { useFocusTrap } from '../hooks/useFocusTrap'
 
 type Tab = 'api' | 'models' | 'server' | 'mcp' | 'logs'
 
@@ -63,30 +65,7 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
   // Focus management: trap Tab inside the dialog, autofocus the first
   // focusable element on open, and restore focus to the trigger element
   // on close so keyboard navigation isn't lost in the void.
-  useEffect(() => {
-    const previouslyFocused = document.activeElement as HTMLElement | null
-    const el = dialogRef.current
-    if (!el) return
-    const focusableSelector =
-      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Tab') return
-      const focusable = el.querySelectorAll<HTMLElement>(focusableSelector)
-      if (!focusable.length) return
-      const first = focusable[0]
-      const last = focusable[focusable.length - 1]
-      if (e.shiftKey ? document.activeElement === first : document.activeElement === last) {
-        e.preventDefault()
-        ;(e.shiftKey ? last : first).focus()
-      }
-    }
-    el.addEventListener('keydown', handleKey)
-    el.querySelector<HTMLElement>(focusableSelector)?.focus()
-    return () => {
-      el.removeEventListener('keydown', handleKey)
-      previouslyFocused?.focus?.()
-    }
-  }, [])
+  useFocusTrap(dialogRef, { restoreFocus: true, excludeDisabled: true })
 
   // Load full config on mount
   useEffect(() => {
@@ -519,18 +498,17 @@ function McpCard({
           {server.type}
         </span>
         <button
-          className="btn"
-          style={{ padding: '2px 8px', fontSize: 11 }}
+          className="btn btn-sm"
           onClick={() => onToggle(server.name, server.enabled === false)}
           title={server.enabled !== false ? 'Disable' : 'Enable'}
         >
           {server.enabled !== false ? 'ON' : 'OFF'}
         </button>
-        <button className="btn" style={{ padding: '2px 8px', fontSize: 11 }} onClick={() => onEdit(server)}>
+        <button className="btn btn-sm" onClick={() => onEdit(server)}>
           Edit
         </button>
         {!confirmDelete ? (
-          <button className="btn" style={{ padding: '2px 8px', fontSize: 11, color: 'var(--danger)' }} onClick={() => setConfirmDelete(true)}>
+          <button className="btn btn-sm" style={{ color: 'var(--danger)' }} onClick={() => setConfirmDelete(true)}>
             Del
           </button>
         ) : (
@@ -565,17 +543,20 @@ function McpCard({
 
 // ── Logs tab ─────────────────────────────────────────────────────
 
-/** Runtime log-level / scope-filter control. Affects only the running
- *  server process — settings are NOT persisted, so a restart resets to
- *  whatever LOG_LEVEL / LOG_SCOPES env vars say (default: info, all
- *  scopes). Used as a debug aid: dial `broker` up to debug to inspect
- *  permission-flow questions without restarting the server. */
+/** Runtime log-level / scope-filter control and file-logging toggle.
+ *  Level/scopes are in-memory only (reset on restart). File logging is
+ *  persisted to config.json. */
 function LogsTab() {
   const [config, setConfig] = useState<LogConfig | null>(null)
   const [scopesInput, setScopesInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [savedAt, setSavedAt] = useState<number | null>(null)
+
+  // ── File logging state ──
+  const [fileLogEnabled, setFileLogEnabled] = useState(false)
+  const [fileLogPath, setFileLogPath] = useState<string | null>(null)
+  const [fileBusy, setFileBusy] = useState(false)
 
   useEffect(() => {
     const ac = new AbortController()
@@ -588,6 +569,14 @@ function LogsTab() {
       .catch((e) => {
         if ((e as Error).name !== 'AbortError') setErr((e as Error).message)
       })
+    // Fetch file logging state
+    api
+      .get<{ enabled: boolean; path: string | null }>('/log/file', { signal: ac.signal })
+      .then((r) => {
+        setFileLogEnabled(r.enabled)
+        setFileLogPath(r.path)
+      })
+      .catch(() => { /* non-critical */ })
     return () => ac.abort()
   }, [])
 
@@ -605,6 +594,21 @@ function LogsTab() {
       setBusy(false)
     }
   }, [])
+
+  const toggleFileLogging = useCallback(async () => {
+    setFileBusy(true)
+    setErr(null)
+    try {
+      const next = await api.put<{ enabled: boolean; path: string | null }>('/log/file', { enabled: !fileLogEnabled })
+      setFileLogEnabled(next.enabled)
+      setFileLogPath(next.path)
+      setSavedAt(Date.now())
+    } catch (e) {
+      setErr((e as Error).message)
+    } finally {
+      setFileBusy(false)
+    }
+  }, [fileLogEnabled])
 
   if (!config) {
     return <div style={{ padding: 16, color: 'var(--fg-muted)' }}>Loading log config…</div>
@@ -662,10 +666,28 @@ function LogsTab() {
       </Field>
 
       <div style={{ marginTop: 12, fontSize: 12, color: 'var(--fg-muted)' }}>
-        Changes apply immediately to the running server but are <strong>not
+        Level / scope changes apply immediately but are <strong>not
         persisted</strong>. A restart reverts to the boot-time values
         (LOG_LEVEL / LOG_SCOPES env vars, default <code>info</code> / all).
       </div>
+
+      <div style={{ borderTop: '1px solid var(--border)', margin: '16px 0 12px' }} />
+
+      <Field
+        label="Log to file"
+        hint={fileLogEnabled && fileLogPath
+          ? `Writing to ${fileLogPath}`
+          : 'Write server logs to a daily-rotated file. Persisted across restarts.'}
+      >
+        <button
+          className="btn"
+          style={{ padding: '4px 16px', fontSize: 12 }}
+          disabled={fileBusy}
+          onClick={toggleFileLogging}
+        >
+          {fileBusy ? '…' : fileLogEnabled ? 'ON' : 'OFF'}
+        </button>
+      </Field>
 
       {err && <div className="modal-error" style={{ marginTop: 12 }}>{err}</div>}
       {savedAt && !err && (
@@ -707,13 +729,4 @@ function NumberField({
       />
     </Field>
   )
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes <= 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
-  let i = 0
-  let v = bytes
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++ }
-  return `${v.toFixed(i > 0 ? 1 : 0)} ${units[i]}`
 }

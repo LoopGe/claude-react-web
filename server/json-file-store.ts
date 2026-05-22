@@ -60,6 +60,11 @@ export abstract class JsonFileStore<T> {
     return Array.from(this.index.values())
   }
 
+  /** Number of entries in the store without allocating an array. */
+  count(): number {
+    return this.index.size
+  }
+
   get(key: string): T | undefined {
     return this.index.get(key)
   }

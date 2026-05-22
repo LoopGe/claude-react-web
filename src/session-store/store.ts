@@ -26,8 +26,14 @@ export function clearAllSessionStorage(): void {
   } catch { /* ignore */ }
 }
 
-/** Evict oldest localStorage entries when we have too many cached sessions. */
+/** Evict oldest localStorage entries when we have too many cached sessions.
+ *  Throttled to run at most once per minute to avoid repeated JSON.parse
+ *  overhead on every persistToStorage call. */
+let _lastPruneAt = 0
 function pruneStorageCache(): void {
+  const now = Date.now()
+  if (now - _lastPruneAt < 60_000) return
+  _lastPruneAt = now
   try {
     const entries: Array<{ key: string; ts: number }> = []
     for (let i = 0; i < localStorage.length; i++) {
@@ -127,12 +133,30 @@ function loadFromStorage(sessionId: string): { messages: TranscriptItem[]; rawMe
   }
 }
 
+/** Save scheduling parameters.
+ *  - DEBOUNCE: quiet-period before persist after the last write.
+ *  - MAX_DEFER: hard ceiling on how long the very first dirty write can
+ *    sit unsaved during an active stream. Without this, the debounce
+ *    keeps resetting and a session that streams faster than DEBOUNCE
+ *    never persists at all. */
+const SAVE_DEBOUNCE_MS = 2000
+const SAVE_MAX_DEFER_MS = 10_000
+
 export class SessionStore {
   private state: SessionState
   private snapshot: SessionSnapshot
   private listeners = new Set<Listener>()
   private flushTimer: number | null = null
   private saveTimer: number | null = null
+  /** Epoch ms of the first dirty write since the last save. Used together
+   *  with SAVE_MAX_DEFER_MS to bound the window even under a tight write
+   *  loop that keeps resetting the debounce. */
+  private saveDirtySince: number | null = null
+  /** Per-instance subagent filter cache — moved off module scope so
+   *  multiple SessionStore instances (multi-panel layouts) don't
+   *  thrash a shared single-slot cache against each other. */
+  private cachedSubagentsMap: SessionState['activeSubagents'] | null = null
+  private cachedRunningSubagents: SessionSnapshot['activeSubagents'] = []
 
   constructor(sessionId: string) {
     // Try to restore from localStorage cache first
@@ -145,10 +169,10 @@ export class SessionStore {
         lastMessageUuid: cached.lastMessageUuid,
         replayReady: true, // Treat cached data as "replayed"
       }
-      this.snapshot = buildSnapshot(this.state)
+      this.snapshot = this.buildSnapshot(this.state)
     } else {
       this.state = createInitialSessionState(sessionId)
-      this.snapshot = buildSnapshot(this.state)
+      this.snapshot = this.buildSnapshot(this.state)
     }
   }
 
@@ -171,7 +195,7 @@ export class SessionStore {
     const next = reduceSessionState(this.state, action)
     if (next === this.state) return
     this.state = next
-    this.snapshot = buildSnapshot(next)
+    this.snapshot = this.buildSnapshot(next)
     this.scheduleFlush()
     this.scheduleSave()
     this.emit()
@@ -185,7 +209,7 @@ export class SessionStore {
     }
     if (next === this.state) return
     this.state = next
-    this.snapshot = buildSnapshot(next)
+    this.snapshot = this.buildSnapshot(next)
     this.scheduleFlush()
     this.scheduleSave()
     this.emit()
@@ -211,6 +235,7 @@ export class SessionStore {
       window.clearTimeout(this.saveTimer)
       this.saveTimer = null
     }
+    this.saveDirtySince = null
     this.listeners.clear()
   }
 
@@ -226,38 +251,55 @@ export class SessionStore {
     }, 33)
   }
 
-  /** Debounced save to localStorage. Fires 2s after the last state change
-   *  so rapid message bursts don't thrash storage writes. */
+  /** Debounced save to localStorage. Fires SAVE_DEBOUNCE_MS after the last
+   *  state change so rapid message bursts don't thrash storage writes —
+   *  but capped at SAVE_MAX_DEFER_MS from the FIRST dirty write so an
+   *  unbroken stream still gets persisted in bounded time. */
   private scheduleSave(): void {
-    if (this.saveTimer != null) return
+    const now = Date.now()
+    if (this.saveDirtySince == null) this.saveDirtySince = now
+    if (this.saveTimer != null) window.clearTimeout(this.saveTimer)
+    const elapsed = now - this.saveDirtySince
+    const delay = Math.max(0, Math.min(SAVE_DEBOUNCE_MS, SAVE_MAX_DEFER_MS - elapsed))
     this.saveTimer = window.setTimeout(() => {
       this.saveTimer = null
       this.save()
-    }, 2000)
+    }, delay)
   }
 
   private save(): void {
+    this.saveDirtySince = null
     persistToStorage(this.state.sessionId, this.state)
+  }
+
+  /** Per-instance equivalent of the old module-global running-subagents
+   *  cache. The Map reference is compared by identity so the filtered
+   *  array is only reallocated when activeSubagents actually changes. */
+  private getRunningSubagents(map: SessionState['activeSubagents']): SessionSnapshot['activeSubagents'] {
+    if (map === this.cachedSubagentsMap) return this.cachedRunningSubagents
+    this.cachedSubagentsMap = map
+    this.cachedRunningSubagents = Array.from(map.values()).filter((s) => s.status === 'running')
+    return this.cachedRunningSubagents
+  }
+
+  private buildSnapshot(state: SessionState): SessionSnapshot {
+    return {
+      replayReady: state.replayReady,
+      items: state.items,
+      messages: state.messages,
+      streamingContent: state.liveTurn?.flushedText ?? null,
+      activePhase: state.liveTurn?.phase ?? null,
+      tokenRate: state.liveTurn?.tokenRate ?? null,
+      contextUsage: state.contextUsage,
+      error: state.error,
+      queuedAhead: state.queuedAhead,
+      permissionDecisions: state.permissionDecisions,
+      planStatus: state.planStatus,
+      planContent: state.planContent,
+      activeSubagents: this.getRunningSubagents(state.activeSubagents),
+      subagentIndex: state.activeSubagents,
+      lastMessageUuid: state.lastMessageUuid,
+    }
   }
 }
 
-function buildSnapshot(state: SessionState): SessionSnapshot {
-  return {
-    replayReady: state.replayReady,
-    items: state.items,
-    messages: state.messages,
-    streamingContent: state.liveTurn?.flushedText ?? null,
-    activePhase: state.liveTurn?.phase ?? null,
-    tokenRate: state.liveTurn?.tokenRate ?? null,
-    contextUsage: state.contextUsage,
-    error: state.error,
-    queuedAhead: state.queuedAhead,
-    permissionDecisions: state.permissionDecisions,
-    planStatus: state.planStatus,
-    activeSubagents: Array.from(state.activeSubagents.values()).filter(
-      (s) => s.status === 'running',
-    ),
-    subagentIndex: state.activeSubagents,
-    lastMessageUuid: state.lastMessageUuid,
-  }
-}

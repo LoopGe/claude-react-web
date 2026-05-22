@@ -1,6 +1,7 @@
 import type { PermissionRequest, SdkMessage } from '../types'
 import { createInitialSessionState, type SessionAction, type SessionState } from './types'
 import {
+  extractPlanContent,
   getPlanResultDecisions,
   getPlanToolUseIds,
   getSubagentStarts,
@@ -17,18 +18,20 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
     case 'OPTIMISTIC_USER_MESSAGE':
       return applyOptimisticUserMessage(state, action.message)
     case 'ROLLBACK_OPTIMISTIC_USER_MESSAGE': {
-      // Only roll back if the pendingId still matches — between the
-      // failed POST and this dispatch, the user might have already sent
-      // a follow-up that overwrote pendingUserMessageId, in which case
-      // we'd nuke the wrong row.
-      if (state.pendingUserMessageId !== action.pendingId) return state
+      // Only roll back if the pendingId is still tracked — between the
+      // failed POST and this dispatch, the server echo might have
+      // already replaced this placeholder (removing it from the set),
+      // in which case we'd nuke the real message.
+      if (!state.pendingUserMessageIds.has(action.pendingId)) return state
+      const next = new Set(state.pendingUserMessageIds)
+      next.delete(action.pendingId)
       return {
         ...state,
         items: state.items.filter((it) => it.id !== action.pendingId),
         messages: state.messages.filter(
           (m) => (typeof m.uuid === 'string' ? m.uuid : null) !== action.pendingId,
         ),
-        pendingUserMessageId: null,
+        pendingUserMessageIds: next,
       }
     }
     case 'PERMISSION_REQUEST': {
@@ -89,7 +92,24 @@ function replayReplace(
   if (messages.length === 0 && prevState.items.length > 0) {
     return { ...prevState, replayReady: true }
   }
+  // Incremental replay: the server sent only messages after the client's
+  // lastUuid (sinceUuid). Append them to the existing transcript instead
+  // of replacing it — otherwise the entire pre-reconnect history vanishes.
+  if (messages.length > 0 && prevState.items.length > 0) {
+    let state: SessionState = { ...prevState, liveTurn: null, replayReady: true }
+    for (const permission of permissions) {
+      state = reduceSessionState(state, { type: 'PERMISSION_REQUEST', request: permission })
+    }
+    for (const message of messages) {
+      state = applyMessage(state, message)
+    }
+    return state
+  }
   let state = createInitialSessionState(prevState.sessionId)
+  // queuedAhead is a client-only counter that tracks user messages waiting
+  // in the server-side queue. It must survive replayReplace() — otherwise
+  // a WebSocket reconnect (which triggers a replay) wipes the queue bar.
+  state = { ...state, queuedAhead: prevState.queuedAhead }
   for (const permission of permissions) {
     state = reduceSessionState(state, { type: 'PERMISSION_REQUEST', request: permission })
   }
@@ -105,13 +125,15 @@ function applyOptimisticUserMessage(state: SessionState, message: SdkMessage): S
 
   // If the server's WS echo already arrived and was appended to the
   // transcript before this optimistic insert ran, don't add a duplicate.
-  // Just point pendingUserMessageId at the existing entry.
+  // Just add its id to the pending set so applyMessage can match it.
   // NOTE: This uses shallow === on `content`. For plain text strings
   // this works correctly. For multimodal messages (arrays), the ref
   // comparison always returns false — the safe direction (no false dedup).
   const last = state.items[state.items.length - 1]
   if (last && last.msg.type === 'user' && last.msg.message?.content === message.message?.content) {
-    return { ...state, pendingUserMessageId: last.id }
+    const next = new Set(state.pendingUserMessageIds)
+    next.add(last.id)
+    return { ...state, pendingUserMessageIds: next }
   }
 
   // Mark the optimistic item as 'sending' so the user bubble can render
@@ -119,11 +141,13 @@ function applyOptimisticUserMessage(state: SessionState, message: SdkMessage): S
   // arrives and applyMessage swaps this item out for the real one (the
   // replaced TranscriptItem has no `sending` field).
   const optimisticItem = { ...item, sending: true }
+  const next = new Set(state.pendingUserMessageIds)
+  next.add(optimisticItem.id)
   return {
     ...state,
     items: [...state.items, optimisticItem],
     messages: [...state.messages, optimisticItem.msg],
-    pendingUserMessageId: optimisticItem.id,
+    pendingUserMessageIds: next,
   }
 }
 
@@ -138,38 +162,50 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   // message (parent_tool_use_id === null/undefined). Subagent
   // tool_result frames are also `type: 'user'` but should never clobber
   // the optimistic — without this guard, a tool_result that lands while
-  // pendingUserMessageId is still set would replace the typed text with
-  // a JSON tool result and silently drop what the user wrote.
+  // pendingUserMessageIds is still populated would replace the typed text
+  // with a JSON tool result and silently drop what the user wrote.
   const incomingParent = (message as Record<string, unknown>).parent_tool_use_id
   if (
     message.type === 'user' &&
-    state.pendingUserMessageId &&
+    state.pendingUserMessageIds.size > 0 &&
     incomingParent == null
   ) {
     const real = toTranscriptItem(message, undefined)
     if (real) {
-      const idx = state.items.findIndex((it) => it.id === state.pendingUserMessageId)
-      if (idx >= 0) {
+      // Find the first optimistic placeholder that still exists in items.
+      // Echoes arrive in the same order the user sent, so the oldest
+      // pending ID is the correct match.
+      let matchedId: string | null = null
+      for (const pid of state.pendingUserMessageIds) {
+        if (state.items.some((it) => it.id === pid)) {
+          matchedId = pid
+          break
+        }
+      }
+      if (matchedId) {
+        const idx = state.items.findIndex((it) => it.id === matchedId)
         const items = state.items.slice()
         items[idx] = real
         const msgIdx = state.messages.findIndex(
-          (m) => (typeof m.uuid === 'string' ? m.uuid : null) === state.pendingUserMessageId,
+          (m) => (typeof m.uuid === 'string' ? m.uuid : null) === matchedId,
         )
         const messages = msgIdx >= 0 ? state.messages.slice() : state.messages
         if (msgIdx >= 0) messages[msgIdx] = real.msg
+        const nextIds = new Set(state.pendingUserMessageIds)
+        nextIds.delete(matchedId)
         return {
           ...state,
           items,
           messages,
           eventCount: state.eventCount + 1,
           lastMessageUuid: typeof message.uuid === 'string' ? message.uuid : state.lastMessageUuid,
-          pendingUserMessageId: null,
+          pendingUserMessageIds: nextIds,
         }
       }
-      // pendingUserMessageId pointed at a row that's no longer in items
-      // (rollback ran, replay rebuilt, etc.). Clear the dangling pointer
+      // All pending IDs pointed at rows that are no longer in items
+      // (rollback ran, replay rebuilt, etc.). Clear dangling pointers
       // and let the message flow through updateTranscript normally.
-      state = { ...state, pendingUserMessageId: null }
+      state = { ...state, pendingUserMessageIds: new Set<string>() }
     }
   }
 
@@ -183,13 +219,13 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   }
 
   // If this is a TOP-LEVEL user message that wasn't matched above
-  // (e.g. arrived but the optimistic placeholder was already gone),
-  // clear pendingUserMessageId to be safe. Don't clear on
+  // (e.g. arrived but all optimistic placeholders were already gone),
+  // clear pendingUserMessageIds to be safe. Don't clear on
   // tool_result/subagent user frames (parent_tool_use_id != null) —
   // those are unrelated to the user's typed input and the real echo
   // may still be on its way.
-  if (message.type === 'user' && next.pendingUserMessageId && incomingParent == null) {
-    next.pendingUserMessageId = null
+  if (message.type === 'user' && next.pendingUserMessageIds.size > 0 && incomingParent == null) {
+    next = { ...next, pendingUserMessageIds: new Set<string>() }
   }
 
   next = updateLiveTurn(next, message)
@@ -199,12 +235,12 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   if (message.type === 'result') {
     next = {
       ...next,
-      queuedAhead: 0,
+      queuedAhead: Math.max(0, state.queuedAhead - 1),
       liveTurn: null,
-      // Clear any lingering optimistic placeholder — the result frame
+      // Clear any lingering optimistic placeholders — the result frame
       // means the SDK has finished processing, so no server echo for
       // the user message is expected anymore.
-      pendingUserMessageId: null,
+      pendingUserMessageIds: new Set<string>(),
       // Clear active subagents at turn end. Any entries still marked
       // 'running' are stale — their tool_result either didn't arrive
       // or wasn't matched. Without this, stale chips persist across
@@ -242,6 +278,7 @@ function updateTranscript(state: SessionState, message: SdkMessage): SessionStat
 function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
   let changed = false
   let planStatus = state.planStatus
+  let planContent = state.planContent
   let activeSubagents = state.activeSubagents
 
   const planIds = getPlanToolUseIds(message)
@@ -256,6 +293,21 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
     if (planStatus === state.planStatus) planStatus = new Map(planStatus)
     for (const result of planResults) planStatus.set(result.toolUseId, result.status)
     changed = true
+  }
+
+  // Extract plan body from ExitPlanMode tool_result outputs.  The CLI
+  // injects plan content from disk into the output (not the input), so
+  // we capture it here for the PermissionDialog and inline PlanCard.
+  // tool_result blocks only ever land on user messages — gating on
+  // msg.type avoids allocating the Set for every assistant/system/result.
+  if (message.type === 'user' && planStatus.size > 0) {
+    const knownPlanIds = new Set(planStatus.keys())
+    const extracted = extractPlanContent(message, knownPlanIds)
+    if (extracted.length > 0) {
+      if (planContent === state.planContent) planContent = new Map(planContent)
+      for (const { toolUseId, plan } of extracted) planContent.set(toolUseId, plan)
+      changed = true
+    }
   }
 
   const starts = getSubagentStarts(message)
@@ -306,7 +358,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
     changed = changed || touched
   }
 
-  return changed ? { ...state, planStatus, activeSubagents } : state
+  return changed ? { ...state, planStatus, planContent, activeSubagents } : state
 }
 
 function updateLiveTurn(state: SessionState, message: SdkMessage): SessionState {

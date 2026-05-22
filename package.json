@@ -35,7 +35,7 @@
     "dev": "concurrently -n server,client -c blue,magenta \"npm:dev:server\" \"npm:dev:client\"",
     "build:client": "vite build",
     "build:server": "node build.mjs",
-    "build": "npm run build:client && npm run build:server",
+    "build": "concurrently \"npm:build:client\" \"npm:build:server\"",
     "start": "node dist/cli.mjs",
     "preview": "npm run build && npm run start",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",

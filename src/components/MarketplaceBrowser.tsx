@@ -74,7 +74,7 @@ export function MarketplaceBrowser({ onClose, onInstalled }: Props) {
       <div style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)', borderRadius: 8, width: 520, maxHeight: '70vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
           <h3 style={{ margin: 0, fontSize: 15, flex: 1 }}>Plugin Marketplace</h3>
-          <button className="btn" style={{ padding: '2px 8px', fontSize: 11 }} onClick={onClose}>Close</button>
+          <button className="btn btn-sm" onClick={onClose}>Close</button>
         </div>
 
         {err && <div style={{ padding: '6px 16px', fontSize: 12, color: 'var(--danger)', background: 'var(--bg)' }}>{err}</div>}
@@ -108,8 +108,7 @@ export function MarketplaceBrowser({ onClose, onInstalled }: Props) {
                   <span style={{ fontSize: 11, color: 'var(--ok)', padding: '1px 6px', border: '1px solid var(--ok)', borderRadius: 3 }}>Installed</span>
                 ) : (
                   <button
-                    className="btn btn-primary"
-                    style={{ padding: '2px 8px', fontSize: 11 }}
+                    className="btn btn-primary btn-sm"
                     onClick={() => install(p)}
                     disabled={installing === p.name}
                   >

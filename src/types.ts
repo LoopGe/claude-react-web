@@ -123,44 +123,13 @@ export interface MarketplacePlugin {
   marketplace: string
 }
 
-/** One question within an AskUserQuestion tool call. */
-export interface QuestionSpec {
-  question: string
-  header?: string
-  multiSelect?: boolean
-  options: Array<{
-    label: string
-    description?: string
-    preview?: string
-  }>
-}
+// Re-export canonical QuestionSpec from shared.
+export type { QuestionSpec } from '../shared/question-spec.js'
 
-/** Pending event routed on the permission channel. The server uses a
- *  `kind` discriminator to send both tool-permission prompts and
- *  interactive AskUserQuestion calls through the same channel — they
- *  both mean "SDK paused, waiting on the user" — but each kind renders
- *  with its own dialog. */
-export type PermissionRequest =
-  | {
-      kind: 'permission'
-      id: string
-      toolName: string
-      input: Record<string, unknown>
-      title?: string
-      displayName?: string
-      description?: string
-      suggestions?: unknown[] // SDK PermissionUpdate[] — opaque to the UI
-      toolUseID: string
-      createdAt: number
-    }
-  | {
-      kind: 'question'
-      id: string
-      toolName: 'AskUserQuestion'
-      questions: QuestionSpec[]
-      toolUseID: string
-      createdAt: number
-    }
+// Re-export canonical PermissionRequest from shared.
+// Client instantiates with unknown[] for suggestions (opaque to the UI).
+import type { PermissionRequestBase } from '../shared/permission-request.js'
+export type PermissionRequest = PermissionRequestBase<unknown[]>
 
 /** Broadcast envelope for a resolved permission. */
 export interface PermissionResolved {
@@ -189,6 +158,23 @@ export interface SdkMessage {
   total_cost_usd?: number
   num_turns?: number
   duration_ms?: number
+  [k: string]: unknown
+}
+
+// ── Content Block ────────────────────────────────────────────────
+
+/** A single content block within an SDK message's content array.
+ *  Used by MessageList, ToolUseBlock, and the session-store normalisers
+ *  for rendering and tool/plan/subagent extraction. */
+export interface Block {
+  type: string
+  text?: string
+  thinking?: string
+  name?: string
+  id?: string
+  input?: unknown
+  tool_use_id?: string
+  content?: unknown
   [k: string]: unknown
 }
 
@@ -239,18 +225,7 @@ export interface McpServerConfigMeta {
   headerKeys?: string[]
 }
 
-/** Input shape for creating/updating a global MCP server. */
-export interface McpServerInput {
-  name: string
-  type?: 'stdio' | 'sse' | 'http'
-  command?: string
-  args?: string[]
-  env?: Record<string, string>
-  url?: string
-  headers?: Record<string, string>
-  alwaysLoad?: boolean
-  enabled?: boolean
-}
+export type { McpServerInput } from '../shared/mcp-types'
 
 // ── Session Recap ─────────────────────────────────────────────────
 

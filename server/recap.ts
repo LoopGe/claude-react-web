@@ -6,7 +6,8 @@
 // when no API key is configured.
 
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { config as serverConfig, requireAuthToken } from './config.js'
+import { config as serverConfig } from './config.js'
+import { callAnthropicMessages } from './anthropic-api.js'
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -210,35 +211,13 @@ Be concise and specific. Use plain language. Do not include a greeting or sign-o
 IMPORTANT: Do NOT use JSX syntax, HTML tags, or code markup (like <>, </>, <Component>) in your response. Write in natural prose only. When referencing code elements, use backtick formatting (e.g. \`Button\` component) instead of angle brackets.`
 
 async function callAnthropic(transcript: string): Promise<string> {
-  // Throws if authToken is not configured — loadConfig() is supposed to
-  // have rejected startup already, but guard here too for completeness.
-  const token = requireAuthToken()
-
-  const res = await fetch(`${serverConfig.baseUrl}/v1/messages`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'anthropic-version': '2023-06-01',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({
-      model: serverConfig.recapModel,
-      max_tokens: 300,
-      temperature: 0.3,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: transcript }],
-    }),
-    signal: AbortSignal.timeout(15_000),
+  const text = await callAnthropicMessages({
+    model: serverConfig.recapModel,
+    system: SYSTEM_PROMPT,
+    userContent: transcript,
+    maxTokens: 300,
+    temperature: 0.3,
   })
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new Error(`Anthropic API ${res.status}: ${body.slice(0, 200)}`)
-  }
-
-  const data = (await res.json()) as { content?: Array<{ type?: string; text?: string }> }
-  const text = data.content?.[0]?.text
-  if (!text) throw new Error('Empty response from Anthropic API')
   // Strip stray JSX fragments (<> </> <React.Fragment> </React.Fragment>) that
   // the LLM sometimes emits when summarising code-heavy conversations.
   return text.replace(/<\/?React\.Fragment\s*>|<>|<\/>/g, '').replace(/\s{2,}/g, ' ').trim()

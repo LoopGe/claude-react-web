@@ -1,19 +1,6 @@
-import type { PermissionRequest, SdkMessage } from '../types'
+import type { Block, PermissionRequest, SdkMessage } from '../types'
 import type { ActiveSubagent, PlanStatus, TranscriptItem } from './types'
-
-interface Block {
-  type?: string
-  text?: string
-  thinking?: string
-  name?: string
-  id?: string
-  tool_use_id?: string
-  content?: unknown
-  input?: unknown
-}
-
-const PLAN_TOOL_NAMES = new Set(['ExitPlanMode', 'EnterPlanMode'])
-const SUBAGENT_TOOL_NAMES = new Set(['Agent', 'Task', 'Explore'])
+import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES } from '../constants/toolNames'
 /** Strings the SDK / canUseTool deny path uses to mean "user said no".
  *  Matched against tool_result.content text — case-insensitive substring
  *  match. Both Anthropic CLI and our own deny path land here.
@@ -130,6 +117,43 @@ export function getPlanResultDecisions(msg: SdkMessage, known: ReadonlyMap<strin
   return out
 }
 
+/** Extract plan body text from ExitPlanMode tool_result outputs.
+ *
+ *  The CLI's `normalizeToolInput` reads the plan file from disk and
+ *  injects it into the tool_result output as `plan`.  We pull that
+ *  text out so the PermissionDialog and inline PlanCard can display
+ *  it even though the tool_use input only carries `allowedPrompts`. */
+export function extractPlanContent(
+  msg: SdkMessage,
+  knownPlanIds: ReadonlySet<string>,
+): Array<{ toolUseId: string; plan: string }> {
+  if (msg.type !== 'user') return []
+  const out: Array<{ toolUseId: string; plan: string }> = []
+  for (const block of getBlocks(msg)) {
+    if (block.type !== 'tool_result' || typeof block.tool_use_id !== 'string') continue
+    if (!knownPlanIds.has(block.tool_use_id)) continue
+    // The tool_result content is the CLI's ExitPlanModeOutput serialized
+    // as JSON.  Try to parse and extract the `plan` field.
+    const raw = textOfContent(block.content)
+    if (!raw) continue
+    let plan = ''
+    try {
+      const parsed = JSON.parse(raw)
+      if (typeof parsed === 'object' && parsed !== null && typeof parsed.plan === 'string') {
+        plan = parsed.plan
+      }
+    } catch {
+      // Not JSON — the CLI may have returned plain text.  Use as-is
+      // if it looks like a plan (non-empty, not a rejection message).
+      if (raw.length > 0 && !REJECTION_NEEDLES.some((n) => raw.toLowerCase().includes(n))) {
+        plan = raw
+      }
+    }
+    if (plan) out.push({ toolUseId: block.tool_use_id, plan })
+  }
+  return out
+}
+
 export function mapPendingPermissions(requests: PermissionRequest[]): Map<string, PermissionRequest> {
   const map = new Map<string, PermissionRequest>()
   for (const req of requests) map.set(req.id, req)
@@ -145,7 +169,5 @@ function textOfContent(content: unknown): string {
     .join('\n')
 }
 
-function truncate(s: string, n: number): string {
-  return s.length <= n ? s : `${s.slice(0, n)}…`
-}
+import { truncate } from '../utils/text'
 

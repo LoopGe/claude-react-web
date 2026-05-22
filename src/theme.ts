@@ -3,6 +3,8 @@
 // Imported by both App.tsx (global picker) and SessionList.tsx (per-session
 // context-menu picker) so the two stay in sync without duplication.
 
+import type { CSSProperties } from 'react'
+
 /** Each preset carries a main accent and a stronger variant used for
  *  hover / active states. `--accent-strong` falls back to `accent` when
  *  no matching preset is found (e.g. a value loaded from an older build). */
@@ -19,3 +21,20 @@ export const ACCENT_COLORS = [
 
 export const ACCENT_COLOR_KEY = 'claude-react-web:accent-color'
 export const SESSION_COLORS_KEY = 'claude-react-web:session-colors'
+
+/** Build a `sessionId → CSSProperties` map for per-session accent overrides.
+ *  Used by App.tsx (driving ChatPanel) and SessionList.tsx (driving
+ *  SessionCard). Each style sets `--accent` and `--accent-strong` so a
+ *  single `style={accentStyle}` on the panel root cascades to every
+ *  descendant rule that reads those vars. */
+export function buildSessionAccentMap(
+  sessionColors: Record<string, string> | undefined,
+): Map<string, CSSProperties> {
+  const map = new Map<string, CSSProperties>()
+  if (!sessionColors) return map
+  for (const [id, hex] of Object.entries(sessionColors)) {
+    const preset = ACCENT_COLORS.find((c) => c.accent === hex)
+    map.set(id, { '--accent': hex, '--accent-strong': preset?.strong ?? hex } as CSSProperties)
+  }
+  return map
+}

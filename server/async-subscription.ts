@@ -34,6 +34,7 @@ export function createAsyncSubscription<T>(
   onCleanup?: () => void,
 ): AsyncSubscription<T> {
   const queue: T[] = []
+  let head = 0
   let waiter: ((v: IteratorResult<T>) => void) | null = null
   let closed = false
 
@@ -45,8 +46,13 @@ export function createAsyncSubscription<T>(
       w({ value, done: false })
     } else {
       queue.push(value)
-      if (queue.length > SUBSCRIBER_QUEUE_CAP) {
-        queue.splice(0, queue.length - SUBSCRIBER_QUEUE_CAP)
+      const len = queue.length - head
+      if (len > SUBSCRIBER_QUEUE_CAP) {
+        // Drop oldest items (consumed + excess unconsumed) so the
+        // effective queue length returns to SUBSCRIBER_QUEUE_CAP.
+        const keep = SUBSCRIBER_QUEUE_CAP
+        queue.splice(0, queue.length - keep)
+        head = 0
       }
     }
   }
@@ -64,7 +70,9 @@ export function createAsyncSubscription<T>(
   const iterable: AsyncIterable<T> = {
     [Symbol.asyncIterator]: () => ({
       next: (): Promise<IteratorResult<T>> => {
-        if (queue.length) return Promise.resolve({ value: queue.shift()!, done: false })
+        if (head < queue.length) return Promise.resolve({ value: queue[head++]!, done: false })
+        // Compact after full consumption
+        if (head > 0) { queue.splice(0, head); head = 0 }
         if (closed) return Promise.resolve({ value: undefined as unknown as T, done: true })
         return new Promise((r) => { waiter = r })
       },

@@ -78,28 +78,24 @@ export function usePermissionChannel(sessionId: string): UsePermissionChannel {
     setPending((prev) => prev.filter((p) => p.id !== res.id))
   }, [])
 
-  const decide = useCallback(
-    async (pid: string, decision: PermissionDecision) => {
-      // Optimistically drop the request so the dialog closes immediately.
-      // If the POST fails we still show the error bar and re-fetch pending.
+  /** Shared optimistic-update-with-rollback pattern: drop the request
+   *  locally so the dialog closes immediately; on POST failure, re-fetch
+   *  pending to reconcile, and re-insert the removed request if even
+   *  the re-fetch fails. */
+  const optimisticPost = useCallback(
+    async (pid: string, endpoint: string, body: unknown, errorPrefix: string) => {
       const removed = pendingRef.current.find((p) => p.id === pid)
       setPending((prev) => prev.filter((p) => p.id !== pid))
       try {
-        await api.post(`/sessions/${sessionId}/permissions/${pid}/decide`, decision)
+        await api.post(`/sessions/${sessionId}/permissions/${pid}/${endpoint}`, body)
       } catch (e) {
-        setError(`Permission decision failed: ${(e as Error).message}`)
+        setError(`${errorPrefix}: ${(e as Error).message}`)
         try {
           const r = await api.get<{ pending: PermissionRequest[] }>(
             `/sessions/${sessionId}/permissions`,
           )
-          // Merge instead of replace: a new permission-request may have
-          // arrived via WebSocket between the optimistic removal and this
-          // recovery fetch. Full replacement would silently drop it.
           setPending((prev) => mergePending(prev, r.pending))
         } catch {
-          // Re-fetch failed too — re-insert the optimistically-removed
-          // request so the user can retry. Otherwise it would vanish from
-          // the dialog and only reappear when WS pushed it again.
           if (removed) setPending((prev) => mergePending(prev, [removed]))
         }
       }
@@ -107,31 +103,16 @@ export function usePermissionChannel(sessionId: string): UsePermissionChannel {
     [sessionId],
   )
 
+  const decide = useCallback(
+    (pid: string, decision: PermissionDecision) =>
+      optimisticPost(pid, 'decide', decision, 'Permission decision failed'),
+    [optimisticPost],
+  )
+
   const answerQuestion = useCallback(
-    async (pid: string, answers: QuestionAnswer[]) => {
-      // Same optimistic pattern as decide(): drop locally first so the
-      // dialog closes immediately; re-fetch on failure to reconcile.
-      const removed = pendingRef.current.find((p) => p.id === pid)
-      setPending((prev) => prev.filter((p) => p.id !== pid))
-      try {
-        await api.post(
-          `/sessions/${sessionId}/permissions/${pid}/answer-question`,
-          { answers },
-        )
-      } catch (e) {
-        setError(`Answer submission failed: ${(e as Error).message}`)
-        try {
-          const r = await api.get<{ pending: PermissionRequest[] }>(
-            `/sessions/${sessionId}/permissions`,
-          )
-          // Merge instead of replace (same reason as decide()).
-          setPending((prev) => mergePending(prev, r.pending))
-        } catch {
-          if (removed) setPending((prev) => mergePending(prev, [removed]))
-        }
-      }
-    },
-    [sessionId],
+    (pid: string, answers: QuestionAnswer[]) =>
+      optimisticPost(pid, 'answer-question', { answers }, 'Answer submission failed'),
+    [optimisticPost],
   )
 
   const reset = useCallback(() => {

@@ -3,10 +3,10 @@
 // sidebar can dedicate its vertical space to listing sessions.
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties } from 'react'
 import { isInAppDrag, readDragPayload } from '../hooks/useDragPayload'
 import { api } from '../hooks/useApi'
-import { ACCENT_COLORS } from '../theme'
+import { useErrorToast } from '../hooks/useErrorToast'
+import { buildSessionAccentMap } from '../theme'
 import type { NewSessionForm, SessionGroup, SessionInfo, SidebarSection } from '../types'
 import { NewSessionDialog } from './session-list/NewSessionDialog'
 import { SessionContextMenu } from './session-list/SessionContextMenu'
@@ -163,7 +163,7 @@ export const SessionList = memo(function SessionList({
   const [dropZoneActive, setDropZoneActive] = useState(false)
   /** Error message from a failed folder-drop resolution. Shown inline
    *  below the "New session" button and auto-clears after 5 seconds. */
-  const [folderDropError, setFolderDropError] = useState<string | null>(null)
+  const [folderDropError, showFolderDropError, clearFolderDropError] = useErrorToast()
   // --- Group UI state ---
   const [showNewGroupInput, setShowNewGroupInput] = useState(false)
   const [newGroupName, setNewGroupName] = useState('')
@@ -300,18 +300,51 @@ export const SessionList = memo(function SessionList({
       setPrefilledCwd(res.cwd)
       setShowDialog(true)
     } catch (err) {
-      setFolderDropError(`Couldn't use that folder: ${(err as Error).message}`)
-      setTimeout(() => setFolderDropError(null), 5000)
+      showFolderDropError(`Couldn't use that folder: ${(err as Error).message}`)
     }
   }
 
-  /** Build props for a <SessionCard />. Shared by both flat and grouped views. */
-  const cardAccentStyle = (s: SessionInfo): CSSProperties | undefined => {
-    const hex = sessionColors?.[s.id]
-    if (!hex) return undefined
-    const preset = ACCENT_COLORS.find((c) => c.accent === hex)
-    return { '--accent': hex, '--accent-strong': preset?.strong ?? hex } as CSSProperties
-  }
+  /** Pre-computed accent styles per session so SessionCard's React.memo
+   *  sees stable references instead of new objects every render. */
+  const accentStyleMap = useMemo(() => buildSessionAccentMap(sessionColors), [sessionColors])
+
+  /** O(1) lookups for open-session state. */
+  const openIdSet = useMemo(() => new Set(openIds), [openIds])
+  const openIdSlotMap = useMemo(() => new Map(openIds.map((id, i) => [id, i])), [openIds])
+
+  /** Render a SessionCard with all shared props pre-bound. Extracted from
+   *  the 3 render sites (grouped, ungrouped-section, flat) to avoid
+   *  duplicating 17+ props. */
+  const renderCard = useCallback((s: SessionInfo, containerGroupId?: string) => (
+    <SessionCard
+      key={s.id}
+      session={s}
+      slotIdx={openIdSlotMap.get(s.id) ?? -1}
+      isOpen={openIdSet.has(s.id)}
+      isFocused={s.id === focusedId}
+      isResuming={resumingIds?.has(s.id) ?? false}
+      hasUnread={!!unread?.[s.id]}
+      isDragging={draggingId === s.id}
+      dropPosition={dropHint && dropHint.id === s.id ? dropHint.position : null}
+      isRenaming={renamingId === s.id}
+      accentStyle={accentStyleMap.get(s.id)}
+      containerGroupId={containerGroupId}
+      onSelect={onSelect}
+      onDelete={onDelete}
+      onContextMenu={handleCardContextMenu}
+      onDragStart={handleCardDragStart}
+      onDragEnd={handleCardDragEnd}
+      onSetDropHint={handleSetDropHint}
+      onClearDropHint={handleClearDropHint}
+      onReorder={onReorder}
+      onReorderInGroup={onReorderInGroup}
+      renameDraft={renameDraft}
+      onRenameDraftChange={handleRenameDraftChange}
+      onCommitRename={commitRename}
+      onCancelRename={cancelRename}
+      onStartRename={startRename}
+    />
+  ), [openIdSlotMap, openIdSet, focusedId, resumingIds, unread, draggingId, dropHint, renamingId, accentStyleMap, onSelect, onDelete, handleCardContextMenu, handleCardDragStart, handleCardDragEnd, handleSetDropHint, handleClearDropHint, onReorder, onReorderInGroup, renameDraft, handleRenameDraftChange, commitRename, cancelRename, startRename])
 
   /** Determine whether a group's sessions currently occupy the main-area
    *  panels (i.e. its sessions match `openIds`). Used for the active highlight. */
@@ -347,7 +380,7 @@ export const SessionList = memo(function SessionList({
         {folderDropError && (
           <div className="error-toast">
             {folderDropError}
-            <button className="error-toast-dismiss" onClick={() => setFolderDropError(null)}>✕</button>
+            <button className="error-toast-dismiss" onClick={clearFolderDropError}>✕</button>
           </div>
         )}
         {/* Filter input — visible only when there are at least a handful
@@ -520,36 +553,7 @@ export const SessionList = memo(function SessionList({
                         onDropIntoGroup(payload.id, sec.group.id)
                       }}
                     >
-                      {sec.sessions.map((s) => (
-                        <SessionCard
-                          key={s.id}
-                          session={s}
-                          slotIdx={openIds.indexOf(s.id)}
-                          isOpen={openIds.includes(s.id)}
-                          isFocused={s.id === focusedId}
-                          isResuming={resumingIds?.has(s.id) ?? false}
-                          hasUnread={!!unread?.[s.id]}
-                          isDragging={draggingId === s.id}
-                          dropPosition={dropHint && dropHint.id === s.id ? dropHint.position : null}
-                          isRenaming={renamingId === s.id}
-                          accentStyle={cardAccentStyle(s)}
-                          containerGroupId={sec.group.id}
-                          onSelect={onSelect}
-                          onDelete={onDelete}
-                          onContextMenu={handleCardContextMenu}
-                          onDragStart={handleCardDragStart}
-                          onDragEnd={handleCardDragEnd}
-                          onSetDropHint={handleSetDropHint}
-                          onClearDropHint={handleClearDropHint}
-                          onReorder={onReorder}
-                          onReorderInGroup={onReorderInGroup}
-                          renameDraft={renameDraft}
-                          onRenameDraftChange={handleRenameDraftChange}
-                          onCommitRename={commitRename}
-                          onCancelRename={cancelRename}
-                          onStartRename={startRename}
-                        />
-                      ))}
+                      {sec.sessions.map((s) => renderCard(s, sec.group.id))}
                     </div>
                   )}
                   {!collapsed && sec.sessions.length === 0 && (
@@ -589,35 +593,7 @@ export const SessionList = memo(function SessionList({
                     <span className="group-header-count">{sec.sessions.length}</span>
                   </div>
                   <div className="group-sessions">
-                    {sec.sessions.map((s) => (
-                      <SessionCard
-                        key={s.id}
-                        session={s}
-                        slotIdx={openIds.indexOf(s.id)}
-                        isOpen={openIds.includes(s.id)}
-                        isFocused={s.id === focusedId}
-                        isResuming={resumingIds?.has(s.id) ?? false}
-                        hasUnread={!!unread?.[s.id]}
-                        isDragging={draggingId === s.id}
-                        dropPosition={dropHint && dropHint.id === s.id ? dropHint.position : null}
-                        isRenaming={renamingId === s.id}
-                        accentStyle={cardAccentStyle(s)}
-                        onSelect={onSelect}
-                        onDelete={onDelete}
-                        onContextMenu={handleCardContextMenu}
-                        onDragStart={handleCardDragStart}
-                        onDragEnd={handleCardDragEnd}
-                        onSetDropHint={handleSetDropHint}
-                        onClearDropHint={handleClearDropHint}
-                        onReorder={onReorder}
-                        onReorderInGroup={onReorderInGroup}
-                        renameDraft={renameDraft}
-                        onRenameDraftChange={handleRenameDraftChange}
-                        onCommitRename={commitRename}
-                        onCancelRename={cancelRename}
-                        onStartRename={startRename}
-                      />
-                    ))}
+                    {sec.sessions.map((s) => renderCard(s))}
                   </div>
                 </div>
               )
@@ -633,34 +609,7 @@ export const SessionList = memo(function SessionList({
             <Virtuoso
               data={visibleSessions}
               style={{ flex: 1 }}
-              itemContent={(_index, s) => (
-                <SessionCard
-                  session={s}
-                  slotIdx={openIds.indexOf(s.id)}
-                  isOpen={openIds.includes(s.id)}
-                  isFocused={s.id === focusedId}
-                  isResuming={resumingIds?.has(s.id) ?? false}
-                  hasUnread={!!unread?.[s.id]}
-                  isDragging={draggingId === s.id}
-                  dropPosition={dropHint && dropHint.id === s.id ? dropHint.position : null}
-                  isRenaming={renamingId === s.id}
-                  accentStyle={cardAccentStyle(s)}
-                  onSelect={onSelect}
-                  onDelete={onDelete}
-                  onContextMenu={handleCardContextMenu}
-                  onDragStart={handleCardDragStart}
-                  onDragEnd={handleCardDragEnd}
-                  onSetDropHint={handleSetDropHint}
-                  onClearDropHint={handleClearDropHint}
-                  onReorder={onReorder}
-                  onReorderInGroup={onReorderInGroup}
-                  renameDraft={renameDraft}
-                  onRenameDraftChange={handleRenameDraftChange}
-                  onCommitRename={commitRename}
-                  onCancelRename={cancelRename}
-                  onStartRename={startRename}
-                />
-              )}
+              itemContent={(_index, s) => renderCard(s)}
             />
           )}
       </div>
@@ -668,7 +617,7 @@ export const SessionList = memo(function SessionList({
       {menu && <SessionContextMenu
         anchor={menu}
         session={sessions.find((s) => s.id === menu.id)}
-        isOpen={openIds.includes(menu.id)}
+        isOpen={openIdSet.has(menu.id)}
         onClose={() => setMenu(null)}
         onRename={(s) => startRename(s)}
         onClosePanel={(id) => onClosePanel?.(id)}

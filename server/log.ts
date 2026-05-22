@@ -16,6 +16,11 @@
 //          debugging one specific module.
 //   3. Back-compat: legacy DEBUG_SESSION=1 raises the default to 'debug'.
 //
+// File logging (opt-in):
+//   enableFileLogging(stateDir) — writes to <stateDir>/logs/server-YYYY-MM-DD.log
+//   with daily rotation. Disable via disableFileLogging(). Persists via
+//   config.json `logToFile: true`.
+//
 // `passes()` reads the current config on every call so runtime mutations
 // take effect immediately for every subsequent log line.
 
@@ -80,12 +85,17 @@ export interface Logger {
 
 export function createLogger(scope: string): Logger {
   const tag = `[${scope}]`
+  function emit(level: LogLevel, consoleFn: (...a: unknown[]) => void, args: unknown[]) {
+    if (!passes(scope, level)) return
+    consoleFn(tag, ...args)
+    writeToFile(tag, args)
+  }
   return {
-    error: (...args) => { if (passes(scope, 'error')) console.error(tag, ...args) },
-    warn:  (...args) => { if (passes(scope, 'warn'))  console.warn(tag, ...args) },
-    info:  (...args) => { if (passes(scope, 'info'))  console.log(tag, ...args) },
-    debug: (...args) => { if (passes(scope, 'debug')) console.log(tag, ...args) },
-    trace: (...args) => { if (passes(scope, 'trace')) console.log(tag, ...args) },
+    error: (...args) => emit('error', console.error, args),
+    warn:  (...args) => emit('warn',  console.warn,  args),
+    info:  (...args) => emit('info',  console.log,   args),
+    debug: (...args) => emit('debug', console.log,   args),
+    trace: (...args) => emit('trace', console.log,   args),
   }
 }
 
@@ -119,4 +129,110 @@ export function setLogConfig(update: { level?: LogLevel; scopes?: string[] | nul
     }
   }
   return getLogConfig()
+}
+
+// ── File logging ──────────────────────────────────────────────────
+
+import { createWriteStream, mkdirSync, readdirSync, unlinkSync, type WriteStream } from 'node:fs'
+import { join as joinPath } from 'node:path'
+
+let fileStream: WriteStream | null = null
+let fileStreamDate = ''
+let fileLoggingDir: string | null = null
+
+/** Cached "YYYY-MM-DD" key + the UTC-day-boundary (epoch ms) it expires at.
+ *  Recomputing the ISO string on every log line was a measurable hot-path
+ *  cost; the boundary check is a single integer compare. */
+let cachedDayKey = ''
+let cachedDayKeyExpiresAt = 0
+
+/** Maximum number of `server-YYYY-MM-DD.log` files to keep. Anything older
+ *  than this on a rotation gets unlinked. Bounded so a long-running
+ *  installation doesn't accumulate logs forever. */
+const MAX_LOG_FILES = 14
+
+function todayKey(): string {
+  const now = Date.now()
+  if (now < cachedDayKeyExpiresAt) return cachedDayKey
+  const d = new Date(now)
+  cachedDayKey = d.toISOString().slice(0, 10) // YYYY-MM-DD
+  // Next UTC midnight in epoch ms.
+  cachedDayKeyExpiresAt = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1)
+  return cachedDayKey
+}
+
+function openStream(dir: string): void {
+  const date = todayKey()
+  const logDir = joinPath(dir, 'logs')
+  mkdirSync(logDir, { recursive: true })
+  const filePath = joinPath(logDir, `server-${date}.log`)
+  fileStream = createWriteStream(filePath, { flags: 'a' })
+  fileStreamDate = date
+  pruneOldLogs(logDir)
+}
+
+/** Drop the oldest `server-*.log` files past `MAX_LOG_FILES`. Failures are
+ *  swallowed — log retention is best-effort and must never break logging. */
+function pruneOldLogs(logDir: string): void {
+  try {
+    const files = readdirSync(logDir)
+      .filter((f) => /^server-\d{4}-\d{2}-\d{2}\.log$/.test(f))
+      .sort() // ISO date prefix sorts lexicographically = chronologically
+    const excess = files.length - MAX_LOG_FILES
+    if (excess <= 0) return
+    for (let i = 0; i < excess; i++) {
+      try { unlinkSync(joinPath(logDir, files[i])) } catch { /* file gone — ignore */ }
+    }
+  } catch { /* readdir failed — ignore */ }
+}
+
+/** Enable file logging. Logs are written to `<stateDir>/logs/server-YYYY-MM-DD.log`. */
+export function enableFileLogging(stateDir: string): void {
+  if (fileStream) {
+    // Already active — just update the dir in case it changed.
+    fileLoggingDir = stateDir
+    return
+  }
+  fileLoggingDir = stateDir
+  openStream(stateDir)
+}
+
+/** Disable file logging and close the stream. */
+export function disableFileLogging(): void {
+  if (fileStream) {
+    fileStream.end()
+    fileStream = null
+  }
+  fileLoggingDir = null
+  fileStreamDate = ''
+}
+
+/** Whether file logging is currently active. */
+export function isFileLoggingEnabled(): boolean {
+  return fileStream !== null
+}
+
+/** Current log file path (if enabled), or null. */
+export function getLogFilePath(): string | null {
+  if (!fileStream || !fileLoggingDir) return null
+  return joinPath(fileLoggingDir, 'logs', `server-${fileStreamDate}.log`)
+}
+
+function formatArg(arg: unknown): string {
+  if (typeof arg === 'string') return arg
+  if (arg instanceof Error) return arg.stack ?? arg.message
+  try { return JSON.stringify(arg) } catch { return String(arg) }
+}
+
+function writeToFile(tag: string, args: unknown[]): void {
+  if (!fileStream || !fileLoggingDir) return
+  // Daily rotation: check if the date has changed.
+  const date = todayKey()
+  if (date !== fileStreamDate) {
+    fileStream.end()
+    openStream(fileLoggingDir)
+  }
+  const ts = new Date().toISOString()
+  const msg = args.map(formatArg).join(' ')
+  fileStream!.write(`[${ts}] ${tag} ${msg}\n`)
 }

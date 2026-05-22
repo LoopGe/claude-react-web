@@ -3,6 +3,9 @@ import { reduceSessionState } from './reducer'
 import { createInitialSessionState } from './types'
 import type { SdkMessage } from '../types'
 
+const hasId = (ids: ReadonlySet<string>, id: string) => ids.has(id)
+const isEmpty = (ids: ReadonlySet<string>) => ids.size === 0
+
 function applyOptimistic(state: ReturnType<typeof createInitialSessionState>, content: unknown, pendingId = 'optimistic:test'): ReturnType<typeof createInitialSessionState> {
   const message: SdkMessage = {
     type: 'user',
@@ -30,7 +33,7 @@ function applyServerEcho(
 describe('reducer: optimistic user message + server echo', () => {
   it('replaces the optimistic placeholder in-place (does NOT append a duplicate)', () => {
     // Regression: when insertUserMessage runs BEFORE the POST awaits, the
-    // server's manual broadcast arrives while pendingUserMessageId is
+    // server's manual broadcast arrives while pendingUserMessageIds is
     // still set. The reducer used to replace the optimistic AND then
     // fall through to updateTranscript which unconditionally appends —
     // every user message ended up rendered twice.
@@ -38,7 +41,7 @@ describe('reducer: optimistic user message + server echo', () => {
     state = applyOptimistic(state, 'hello', 'optimistic:abc')
     expect(state.items.length).toBe(1)
     expect(state.items[0].sending).toBe(true) // ← drives the spinner UI
-    expect(state.pendingUserMessageId).toBe('optimistic:abc')
+    expect(hasId(state.pendingUserMessageIds, 'optimistic:abc')).toBe(true)
 
     state = applyServerEcho(state, 'hello', 'real-xyz')
     expect(state.items.length).toBe(1)
@@ -46,7 +49,7 @@ describe('reducer: optimistic user message + server echo', () => {
     // After the broadcast lands the replaced item has no `sending`
     // — the indicator clears automatically.
     expect(state.items[0].sending).toBeUndefined()
-    expect(state.pendingUserMessageId).toBe(null)
+    expect(isEmpty(state.pendingUserMessageIds)).toBe(true)
   })
 
   it('replaces correctly for multimodal (array) content — match is by id, not content', () => {
@@ -70,7 +73,7 @@ describe('reducer: optimistic user message + server echo', () => {
     state = applyServerEcho(state, 'hello', 'real-1')
     expect(state.items.length).toBe(1)
     expect(state.items[0].id).toBe('real-1')
-    expect(state.pendingUserMessageId).toBe(null)
+    expect(isEmpty(state.pendingUserMessageIds)).toBe(true)
   })
 
   it('does NOT match a subagent tool_result against a pending optimistic', () => {
@@ -80,7 +83,7 @@ describe('reducer: optimistic user message + server echo', () => {
     // would see their typed text replaced by a JSON tool result.
     let state = createInitialSessionState('s1')
     state = applyOptimistic(state, 'real user input', 'optimistic:abc')
-    expect(state.pendingUserMessageId).toBe('optimistic:abc')
+    expect(hasId(state.pendingUserMessageIds, 'optimistic:abc')).toBe(true)
 
     // tool_result-shaped user message arrives BEFORE the actual echo
     state = applyServerEcho(state, [{ type: 'tool_result', tool_use_id: 'tu_1', content: 'ok' }], 'tool-result-uuid', 'subagent-id')
@@ -88,13 +91,13 @@ describe('reducer: optimistic user message + server echo', () => {
     // Optimistic survives — the tool_result was appended separately
     expect(state.items.length).toBe(2)
     expect(state.items[0].id).toBe('optimistic:abc')
-    expect(state.pendingUserMessageId).toBe('optimistic:abc')
+    expect(hasId(state.pendingUserMessageIds, 'optimistic:abc')).toBe(true)
   })
 
-  it('clears pendingUserMessageId on result frame even if no echo arrived', () => {
+  it('clears pendingUserMessageIds on result frame even if no echo arrived', () => {
     let state = createInitialSessionState('s1')
     state = applyOptimistic(state, 'hello', 'optimistic:abc')
-    expect(state.pendingUserMessageId).toBe('optimistic:abc')
+    expect(hasId(state.pendingUserMessageIds, 'optimistic:abc')).toBe(true)
 
     const resultMsg: SdkMessage = {
       type: 'result',
@@ -102,7 +105,7 @@ describe('reducer: optimistic user message + server echo', () => {
       uuid: 'r-1',
     } as unknown as SdkMessage
     state = reduceSessionState(state, { type: 'MESSAGE', message: resultMsg })
-    expect(state.pendingUserMessageId).toBe(null)
+    expect(isEmpty(state.pendingUserMessageIds)).toBe(true)
   })
 })
 
@@ -117,17 +120,17 @@ describe('reducer: ROLLBACK_OPTIMISTIC_USER_MESSAGE', () => {
       pendingId: 'optimistic:abc',
     })
     expect(state.items.length).toBe(0)
-    expect(state.pendingUserMessageId).toBe(null)
+    expect(isEmpty(state.pendingUserMessageIds)).toBe(true)
   })
 
-  it('is a no-op when the broadcast already cleared pendingUserMessageId', () => {
+  it('is a no-op when the broadcast already cleared pendingUserMessageIds', () => {
     // Race: server broadcast arrives between the failed POST and the
     // catch block dispatching rollback. Rollback must not delete the
     // real message.
     let state = createInitialSessionState('s1')
     state = applyOptimistic(state, 'hello', 'optimistic:abc')
     state = applyServerEcho(state, 'hello', 'real-xyz')
-    expect(state.pendingUserMessageId).toBe(null)
+    expect(isEmpty(state.pendingUserMessageIds)).toBe(true)
     expect(state.items[0].id).toBe('real-xyz')
 
     const before = state

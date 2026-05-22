@@ -4,7 +4,7 @@ export interface Defaults {
 }
 
 /** Lightweight config returned by GET /api/config (startup). */
-export interface ServerConfig {
+export interface ConfigResponse {
   configured?: boolean
   defaults: Defaults
   models?: string[]
@@ -22,5 +22,6 @@ export interface FullServerConfig {
   historyCap: number
   maxOpenPanels: number
   workingStuckMs: number
+  logToFile?: boolean
   defaults: Defaults
 }

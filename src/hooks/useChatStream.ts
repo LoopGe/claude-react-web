@@ -40,6 +40,7 @@ export interface ChatStream {
   activePhase: ActivePhase
   permissionDecisions: ReadonlyMap<string, 'allow' | 'deny'>
   planStatus: ReadonlyMap<string, PlanStatus>
+  planContent: ReadonlyMap<string, string>
   activeSubagents: ActiveSubagent[]
   subagentIndex: ReadonlyMap<string, ActiveSubagent>
   replayReady: boolean
@@ -223,6 +224,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       activePhase: snapshot.activePhase,
       permissionDecisions: snapshot.permissionDecisions,
       planStatus: snapshot.planStatus,
+      planContent: snapshot.planContent,
       activeSubagents: snapshot.activeSubagents,
       subagentIndex: snapshot.subagentIndex,
       replayReady: snapshot.replayReady,

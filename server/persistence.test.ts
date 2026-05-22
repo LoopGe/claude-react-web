@@ -1,12 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
 import { SessionStore, type SessionMeta } from './persistence.js'
-
-function tempDir(): string {
-  return mkdtempSync(join(tmpdir(), 'claude-react-web-store-'))
-}
+import { tempDir } from './__test-utils__/index.js'
 
 function makeMeta(id: string, overrides: Partial<SessionMeta> = {}): SessionMeta {
   return {
@@ -23,7 +19,7 @@ describe('SessionStore', () => {
   let dir: string
 
   beforeEach(() => {
-    dir = tempDir()
+    dir = tempDir('store')
   })
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true })
@@ -131,5 +127,33 @@ describe('SessionStore', () => {
     const store = new SessionStore({ stateDir: dir })
     const loaded = await store.load()
     expect(loaded.map((m) => m.id)).toEqual(['ok'])
+  })
+
+  // ── gitStartSha persistence ─────────────────────────────────────
+  it('preserves gitStartSha across upsert + reload', async () => {
+    const sha = 'abcdef1234567890abcdef1234567890abcdef12'
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    store.upsert(makeMeta('a', { gitStartSha: sha }))
+    await store.flush()
+
+    const store2 = new SessionStore({ stateDir: dir })
+    const loaded = await store2.load()
+    expect(loaded).toHaveLength(1)
+    expect(loaded[0].gitStartSha).toBe(sha)
+  })
+
+  it('drops non-string gitStartSha during coerce', async () => {
+    writeFileSync(
+      join(dir, 'sessions.json'),
+      JSON.stringify([
+        // gitStartSha is a number — invalid → silently dropped to undefined.
+        { id: 'a', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, gitStartSha: 42 },
+      ]),
+    )
+    const store = new SessionStore({ stateDir: dir })
+    const loaded = await store.load()
+    expect(loaded).toHaveLength(1)
+    expect(loaded[0].gitStartSha).toBeUndefined()
   })
 })

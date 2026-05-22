@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Markdown } from './Markdown'
 import type { PermissionRequest, QuestionSpec } from '../types'
+import { useFocusTrap } from '../hooks/useFocusTrap'
 
 /** Narrowed to the question variant of the union. */
 type QuestionRequest = Extract<PermissionRequest, { kind: 'question' }>
@@ -58,30 +59,7 @@ export function QuestionDialog({ request, onSubmit, onSkipAll, onSubmitted, init
   const dialogRef = useRef<HTMLDivElement>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
-  // Focus trap: keep Tab inside the dialog.
-  useEffect(() => {
-    const el = dialogRef.current
-    if (!el) return
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Tab') return
-      const focusable = el.querySelectorAll<HTMLElement>(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-      )
-      if (!focusable.length) return
-      const first = focusable[0]
-      const last = focusable[focusable.length - 1]
-      if (e.shiftKey ? document.activeElement === first : document.activeElement === last) {
-        e.preventDefault()
-        ;(e.shiftKey ? last : first).focus()
-      }
-    }
-    el.addEventListener('keydown', handleKey)
-    const firstFocusable = el.querySelector<HTMLElement>(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-    )
-    firstFocusable?.focus()
-    return () => el.removeEventListener('keydown', handleKey)
-  }, [])
+  useFocusTrap(dialogRef)
 
   const setSingle = (qIdx: number, label: string) => {
     setChoices((prev) => {

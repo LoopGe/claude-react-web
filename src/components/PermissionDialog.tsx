@@ -9,9 +9,11 @@
 // persistForSession=true and let the server promote every suggestion's
 // destination to 'session'. No suggestions? We hide the always button.
 
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import type { PermissionRequest } from '../types'
 import { Markdown } from './Markdown'
+import { useFocusTrap } from '../hooks/useFocusTrap'
+import { PLAN_TOOL_NAMES } from '../constants/toolNames'
 
 /** Narrowed to the permission variant of the union. The question variant
  *  is rendered by `<QuestionDialog />` instead. */
@@ -24,9 +26,15 @@ interface Props {
       | { behavior: 'allow'; persistForSession: boolean }
       | { behavior: 'deny'; message?: string },
   ) => void
+  /** Plan body text from ExitPlanMode tool_result outputs.  The CLI
+   *  injects plan content into the tool_result (not the tool_use input),
+   *  so the PermissionDialog falls back to this map when the input is
+   *  empty.  May be undefined on first render (before the tool_result
+   *  arrives); the dialog re-renders once the map is populated. */
+  planContentMap?: ReadonlyMap<string, string>
 }
 
-export function PermissionDialog({ request, onDecide }: Props) {
+export function PermissionDialog({ request, onDecide, planContentMap }: Props) {
   const [showRaw, setShowRaw] = useState(false)
   const [busy, setBusy] = useState(false)
   // Ref provides a synchronous guard so that rapid double-clicks
@@ -34,30 +42,7 @@ export function PermissionDialog({ request, onDecide }: Props) {
   const busyRef = useRef(false)
   const dialogRef = useRef<HTMLDivElement>(null)
 
-  // Focus trap: keep Tab inside the dialog.
-  useEffect(() => {
-    const el = dialogRef.current
-    if (!el) return
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Tab') return
-      const focusable = el.querySelectorAll<HTMLElement>(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-      )
-      if (!focusable.length) return
-      const first = focusable[0]
-      const last = focusable[focusable.length - 1]
-      if (e.shiftKey ? document.activeElement === first : document.activeElement === last) {
-        e.preventDefault()
-        ;(e.shiftKey ? last : first).focus()
-      }
-    }
-    el.addEventListener('keydown', handleKey)
-    const firstFocusable = el.querySelector<HTMLElement>(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-    )
-    firstFocusable?.focus()
-    return () => el.removeEventListener('keydown', handleKey)
-  }, [])
+  useFocusTrap(dialogRef)
 
   const hasSuggestions = Array.isArray(request.suggestions) && request.suggestions.length > 0
 
@@ -76,8 +61,7 @@ export function PermissionDialog({ request, onDecide }: Props) {
   // here's the plan — should I start executing?" The dialog renders the
   // plan as markdown and the Allow/Deny buttons re-label so they read
   // like a code-review approval rather than a tool gate.
-  const isPlanRequest =
-    request.toolName === 'ExitPlanMode' || request.toolName === 'EnterPlanMode'
+  const isPlanRequest = PLAN_TOOL_NAMES.has(request.toolName)
   const planInput = isPlanRequest ? (request.input as Record<string, unknown> | undefined) : undefined
   const planText =
     typeof planInput?.plan === 'string'
@@ -86,7 +70,7 @@ export function PermissionDialog({ request, onDecide }: Props) {
         ? planInput.content
         : typeof planInput?.markdown === 'string'
           ? (planInput.markdown as string)
-          : null
+          : (request.toolUseID ? planContentMap?.get(request.toolUseID) : undefined) ?? null
   const planAllowedPrompts = Array.isArray(planInput?.allowedPrompts)
     ? (planInput.allowedPrompts as Array<{ tool?: string; prompt?: string }>)
     : []
@@ -122,7 +106,10 @@ export function PermissionDialog({ request, onDecide }: Props) {
               <div className="plan-card-body">
                 {planText
                   ? <Markdown text={planText} />
-                  : <div className="plan-card-empty">(empty plan — Claude sent no body)</div>}
+                  : <div className="plan-card-empty">
+                      Plan will appear in the transcript after approval.
+                      The CLI reads it from the plan file during execution.
+                    </div>}
               </div>
               {planAllowedPrompts.length > 0 && (
                 <div className="plan-card-allowed">

@@ -11,6 +11,29 @@ const KNOWN_MARKETPLACES = resolvePath(CLAUDE_DIR, 'plugins', 'known_marketplace
 const PLUGINS_CACHE = resolvePath(CLAUDE_DIR, 'plugins', 'cache')
 const INSTALLED_PLUGINS = resolvePath(CLAUDE_DIR, 'plugins', 'installed_plugins.json')
 
+// In-memory cache for the installed plugins set. Invalidated on
+// install/uninstall so the GET handler doesn't read disk every time.
+let installedCache: Set<string> | null = null
+let installedCacheTime = 0
+const INSTALLED_CACHE_TTL = 30_000
+
+async function getInstalledPlugins(): Promise<Set<string>> {
+  if (installedCache && Date.now() - installedCacheTime < INSTALLED_CACHE_TTL) {
+    return installedCache
+  }
+  const result = new Set<string>()
+  try {
+    const raw = await readFile(INSTALLED_PLUGINS, 'utf-8')
+    const data = JSON.parse(raw) as Record<string, unknown[]>
+    for (const [key, entries] of Object.entries(data)) {
+      if (Array.isArray(entries) && entries.length > 0) result.add(key)
+    }
+  } catch { /* ignore */ }
+  installedCache = result
+  installedCacheTime = Date.now()
+  return result
+}
+
 /** Reject names containing path separators or leading dots — prevents
  *  path-traversal and CLI argument injection. */
 function assertSafeName(name: string, label: string): void {
@@ -48,14 +71,7 @@ export function buildMarketplaceRouter(): Hono {
       return c.json({ plugins: [] })
     }
 
-    const installed = new Set<string>()
-    try {
-      const raw = await readFile(INSTALLED_PLUGINS, 'utf-8')
-      const data = JSON.parse(raw) as Record<string, unknown[]>
-      for (const [key, entries] of Object.entries(data)) {
-        if (Array.isArray(entries) && entries.length > 0) installed.add(key)
-      }
-    } catch { /* ignore */ }
+    const installed = await getInstalledPlugins()
 
     const entries = await readdir(cacheDir, { withFileTypes: true })
     const plugins = []
@@ -123,6 +139,7 @@ export function buildMarketplaceRouter(): Hono {
           }
         })
       })
+      installedCache = null // invalidate — plugin list changed
       return c.json({ ok: true, output: stdout })
     } catch (e) {
       return c.json({ error: (e as Error).message }, 500)

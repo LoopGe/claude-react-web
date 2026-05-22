@@ -8,8 +8,14 @@
 
 import { randomUUID } from 'node:crypto'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import type { Session } from './session-types.js'
+import type { Session, SessionBroadcaster } from './session-types.js'
+import { endAllSubscribers } from './session-types.js'
 import { debugLog } from './debug.js'
+import { pushBounded } from './history-utils.js'
+import { mutatingToolUseId, scheduleGitBroadcast } from './git-broadcast.js'
+import { createLogger } from './log.js'
+
+const log = createLogger('pump')
 
 export interface PumpDeps {
   historyCap: number
@@ -23,6 +29,11 @@ export interface PumpDeps {
    *  terminated, don't end subscribers). If it returns false or throws,
    *  fall through to normal termination. */
   autoResume?: (session: Session) => Promise<boolean>
+  /** Reference to the broadcaster — needed by the mutating-tool detector
+   *  to schedule a debounced `git-status-changed` frame after Claude
+   *  runs Edit/Write/NotebookEdit/Bash. Optional so test fixtures that
+   *  don't exercise tool-use behaviour can omit it. */
+  broadcaster?: SessionBroadcaster
 }
 
 /**
@@ -34,8 +45,14 @@ export interface PumpDeps {
  * system message so the frontend can surface them.
  */
 export async function pump(session: Session, deps: PumpDeps): Promise<void> {
-  console.log(`[session ${session.id}] pump started`)
+  log.info(`[session ${session.id}] pump started`)
   let msgCount = 0
+  // Pump-local: ids of tool_use blocks for filesystem-mutating tools.
+  // Populated when we see the assistant's tool_use, drained when the
+  // matching tool_result lands (which is when we know git status may
+  // actually have changed). Set rather than Map because we only need
+  // membership — the name was already checked at insertion time.
+  const pendingMutatingToolUses = new Set<string>()
   try {
     const iter = session.query[Symbol.asyncIterator]()
     // Race iter.next() against the session's abort signal so unload() can
@@ -57,31 +74,28 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
     while (true) {
       const nextStartedAt = Date.now()
       debugLog(`[session ${session.id}] pump awaiting iter.next() for msg #${msgCount + 1}`)
-      let idleWarnCount = 0
-      const idleTimer = setInterval(() => {
-        // Only warn when there's pending work that should have produced
-        // a message. Idle with pendingTurns=0 and no pending permissions
-        // is normal — the session is waiting for user input.
+      // Single 60s timeout per iteration — fires once with the total
+      // idle duration instead of repeating every 10s.
+      const idleTimer = setTimeout(() => {
         if (session.pendingTurns === 0 && session.pending.size === 0) return
-        idleWarnCount++
-        console.warn(
+        log.warn(
           `[session ${session.id}] query.next() idle for ${Date.now() - nextStartedAt}ms ` +
-          `(waiting for msg #${msgCount + 1}, warn #${idleWarnCount}, ` +
+          `(waiting for msg #${msgCount + 1}, ` +
           `pendingTurns=${session.pendingTurns}, pending perms=${session.pending.size})`,
         )
-      }, 10_000)
+      }, 60_000)
       let step: IteratorResult<SDKMessage>
       try {
         step = await Promise.race([iter.next(), abortPromise])
       } finally {
-        clearInterval(idleTimer)
+        clearTimeout(idleTimer)
       }
       if (step.done) {
         // When the loop exits (normally or via abort signal), explicitly
         // close the async iterator so the SDK can clean up its subprocess
         // resources (stdin pipe, child process, etc.). Without this,
         // aborting the session may leave orphan CLI processes.
-        await iter.return?.()
+        try { await iter.return?.() } catch { /* subprocess already dead — ignore */ }
         break
       }
       const msg = step.value
@@ -105,17 +119,39 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         `type=${msg.type}${msgSubtype ? `/${msgSubtype}` : ''} ` +
         `(next() took ${Date.now() - nextStartedAt}ms)`,
       )
+      // Detect filesystem-mutating tool_use ids so we can fire a debounced
+      // git-status-changed broadcast when the matching tool_result lands.
+      if (msg.type === 'assistant') {
+        const content = (msg as { message?: { content?: unknown } }).message?.content
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            const id = mutatingToolUseId(block)
+            if (id) pendingMutatingToolUses.add(id)
+          }
+        }
+      }
+      // tool_result for a mutating tool → schedule a debounced
+      // git-status-changed broadcast. SDK 0.3 wraps tool_results in a
+      // user message whose `parent_tool_use_id` is the originating
+      // tool_use id. We don't care about the result content here — just
+      // that it landed (the worktree is now in its post-mutation state).
+      if (msg.type === 'user') {
+        const parentId = (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id
+        if (parentId && pendingMutatingToolUses.has(parentId)) {
+          pendingMutatingToolUses.delete(parentId)
+          if (deps.broadcaster) scheduleGitBroadcast(deps.broadcaster, session.id)
+        }
+      }
       session.lastActivityAt = Date.now()
       // The session has produced something since the last GC kick, so any
       // pending auto-interrupt mark is no longer relevant — clear it so a
       // future silence triggers fresh detection rather than immediately
       // escalating to unload.
       session.autoInterruptedAt = undefined
-      session.history.push(msg)
-      if (session.history.length > deps.historyCap) {
-        session.history.splice(0, session.history.length - deps.historyCap)
+      pushBounded(session.history, msg, deps.historyCap)
+      for (const sub of session.subscribers.values()) {
+        try { sub.push(msg) } catch { /* subscriber dead — don't break broadcast to others */ }
       }
-      for (const sub of session.subscribers.values()) sub.push(msg)
       msgCount++
       // Derive a context-usage snapshot directly from the result's own
       // `usage` + `modelUsage` payload — no IPC. The result message is
@@ -127,7 +163,9 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
       if (msg.type === 'result' && session.subscribers.size > 0) {
         const usage = liteContextUsageFromResult(msg)
         if (usage) {
-          for (const sub of session.contextUsageSubscribers) sub.push(usage)
+          for (const sub of session.contextUsageSubscribers) {
+            try { sub.push(usage) } catch { /* subscriber dead — skip */ }
+          }
         }
       }
       // `result` marks a completed turn. Reset pendingTurns to 0 (each
@@ -139,16 +177,18 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         session.pendingTurns = 0
         session.workingSince = undefined
         session.lastTurnAt = Date.now()
-        deps.persist(session)
+        try { deps.persist(session) } catch (err) {
+          log.warn(`[session ${session.id}] persist failed after result: ${err}`)
+        }
       }
     }
-    console.log(`[session ${session.id}] pump ended normally — ${msgCount} messages processed`)
+    log.info(`[session ${session.id}] pump ended normally — ${msgCount} messages processed`)
   } catch (err) {
     session.error = err instanceof Error ? err.message : String(err)
     // Log with full context — the message alone often omits the stack
     // frame that points at the real culprit (e.g. missing API key,
     // model name typo, CLI subprocess failed to spawn).
-    console.error(`[session ${session.id}] pump error after ${msgCount} messages:`, err)
+    log.error(`[session ${session.id}] pump error after ${msgCount} messages:`, err)
     // Broadcast a synthetic error message so subscribers know what happened.
     const synthetic: SDKMessage = {
       type: 'system',
@@ -157,7 +197,9 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
       uuid: randomUUID(),
       session_id: session.id,
     } as unknown as SDKMessage
-    for (const sub of session.subscribers.values()) sub.push(synthetic)
+    for (const sub of session.subscribers.values()) {
+      try { sub.push(synthetic) } catch { /* subscriber dead — skip */ }
+    }
   } finally {
     await cleanupPump(session, deps)
   }
@@ -182,7 +224,7 @@ async function cleanupPump(session: Session, deps: PumpDeps): Promise<void> {
         const resumed = await deps.autoResume(session)
         if (resumed) return // Session re-spawned — skip full cleanup
       } catch (resumeErr) {
-        console.error(`[session ${session.id}] auto-resume failed, falling back to termination:`, resumeErr)
+        log.error(`[session ${session.id}] auto-resume failed, falling back to termination:`, resumeErr)
       }
     }
 
@@ -202,17 +244,12 @@ async function cleanupPump(session: Session, deps: PumpDeps): Promise<void> {
     session.pendingTurns = 0
     session.workingSince = undefined
     deps.denyPendingPermissions(session)
-    for (const sub of session.subscribers.values()) sub.end()
-    session.subscribers.clear()
-    for (const sub of session.permissionSubscribers.values()) sub.end()
-    session.permissionSubscribers.clear()
-    for (const sub of session.contextUsageSubscribers) sub.end()
-    session.contextUsageSubscribers.clear()
+    endAllSubscribers(session)
     // Persist the terminal state so the UI shows the transcript as
     // "ended" after a reload, and resume() can refuse to re-spawn it.
     deps.persist(session)
   } catch (cleanupErr) {
-    console.error(`[session ${session.id}] pump cleanup error:`, cleanupErr)
+    log.error(`[session ${session.id}] pump cleanup error:`, cleanupErr)
   }
 }
 

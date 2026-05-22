@@ -8,10 +8,11 @@
 // new rules flag as a cascading-render hazard. Re-mount is cheap because
 // the sessions themselves are long-lived on the server.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { createPortal } from 'react-dom'
 import { SettingsPanel } from './SettingsPanel'
+import { GitPanel } from './GitPanel'
 import { api } from '../hooks/useApi'
 import { useAttachments } from '../hooks/useAttachments'
 import { useChatStream } from '../hooks/useChatStream'
@@ -31,6 +32,7 @@ import { MessageSearch } from './MessageSearch'
 import { ContextMenu } from './ContextMenu'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
 import type { AgentInfo, PermissionRequest, SessionInfo, SlashCommand } from '../types'
+import type { GitStatusResponse } from '../../shared/git-types'
 
 
 const INPUT_HISTORY_KEY = 'claude-react-web:input-history'
@@ -65,6 +67,15 @@ interface Props {
   /** When true, render the Settings overlay on top of this chat panel. */
   settingsOpen?: boolean
   onCloseSettings?: () => void
+  /** When true, render the Git overlay. Receives git state already
+   *  fetched by the parent ChatPanel so we don't double-fetch the same
+   *  status the chip is consuming. */
+  gitPanelOpen?: boolean
+  onCloseGitPanel?: () => void
+  gitStatus?: GitStatusResponse | null
+  gitLoading?: boolean
+  gitError?: string | null
+  onGitRefresh?: () => void
   /** Whether this panel is the currently focused (active) one. Used by
    *  useSessionRecap to track last-viewed timestamps. */
   focused?: boolean
@@ -86,7 +97,12 @@ interface Props {
   headerButtonsRef?: HTMLDivElement | null
 }
 
-export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings, onSessionUpdate, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, headerButtonsRef }: Props) {
+export const Chat = memo(function Chat({
+  session, showSystemEvents,
+  settingsOpen, onCloseSettings,
+  gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
+  onSessionUpdate, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, headerButtonsRef,
+}: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
   // The parent remounts Chat on session switch (<Chat key={session.id}>), so
   // this initializer runs exactly once per mount — the right place to hydrate.
@@ -366,6 +382,11 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
     [setDragOver, uploadFiles],
   )
 
+  const handleUploadFiles = useCallback(
+    (files: File[]) => void uploadFiles(files),
+    [uploadFiles],
+  )
+
   const send = useCallback(async () => {
     // Synchronous guard FIRST — before any await or React state read,
     // so two rapid Enter presses (within one frame) can't both pass.
@@ -540,6 +561,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
           replayReady={stream.replayReady}
           streamingContent={stream.streamingContent}
           planStatus={stream.planStatus}
+          planContent={stream.planContent}
           searchQuery={searchOpen ? debouncedQuery : ''}
           searchActiveMsgIdx={searchMatches[searchActiveIdx] ?? -1}
         />
@@ -584,7 +606,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
         attachments={attachments.attachments}
         uploading={attachments.uploading}
         dragOver={attachments.dragOver}
-        onUploadFiles={(files) => void attachments.uploadFiles(files)}
+        onUploadFiles={handleUploadFiles}
         onRemoveAttachment={attachments.removeAttachment}
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
@@ -651,6 +673,7 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
               key={pendingHead.id}
               request={pendingHead}
               onDecide={(d) => void permissions.decide(pendingHead.id, d)}
+              planContentMap={stream.planContent}
             />
           )
         }
@@ -680,6 +703,29 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
         </div>
       )}
 
+      {gitPanelOpen && (
+        <div
+          className="git-overlay"
+          role="dialog"
+          aria-modal="false"
+          aria-label="Git"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) onCloseGitPanel?.()
+          }}
+        >
+          <GitPanel
+            key={session.id}
+            sessionId={session.id}
+            cwd={session.cwd}
+            status={gitStatus ?? null}
+            loading={gitLoading ?? false}
+            error={gitError ?? null}
+            onRefresh={() => onGitRefresh?.()}
+            onClose={() => onCloseGitPanel?.()}
+          />
+        </div>
+      )}
+
       {subagentStack.length > 0 && (
         <SubagentProvider value={subagentCtxValue}>
           <SubagentOverlay
@@ -694,4 +740,4 @@ export function Chat({ session, showSystemEvents, settingsOpen, onCloseSettings,
       )}
     </div>
   )
-}
+})

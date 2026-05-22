@@ -54,18 +54,7 @@ export interface StoredMcpServer {
 /** The on-disk shape: a keyed object. Keys match `name`. */
 export type McpConfigFile = Record<string, StoredMcpServer>
 
-/** Input for creating/updating a global MCP server via the API. */
-export interface McpServerInput {
-  name: string
-  type?: 'stdio' | 'sse' | 'http'
-  command?: string
-  args?: string[]
-  env?: Record<string, string>
-  url?: string
-  headers?: Record<string, string>
-  alwaysLoad?: boolean
-  enabled?: boolean
-}
+export type { McpServerInput } from '../shared/mcp-types'
 
 /** API-safe version of StoredMcpServer with secrets stripped. */
 export interface MaskedMcpServer {

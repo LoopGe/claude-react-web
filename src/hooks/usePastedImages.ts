@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { formatBytes } from '../utils/format'
 import type { PastedImage } from '../types'
 
 const ALLOWED_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
@@ -18,6 +19,10 @@ export function usePastedImages(): UsePastedImages {
   const [error, setError] = useState<string | null>(null)
   const imagesRef = useRef(images)
   useEffect(() => { imagesRef.current = images }, [images])
+  // Generation counter bumped on every clear(). addImage captures the
+  // value before its await and skips the state update if clear() ran
+  // in the interim — otherwise the image lands with a revoked blob URL.
+  const clearGenerationRef = useRef(0)
 
   const removeImage = useCallback((id: string) => {
     setImages((prev) => {
@@ -28,6 +33,7 @@ export function usePastedImages(): UsePastedImages {
   }, [])
 
   const clear = useCallback(() => {
+    clearGenerationRef.current++
     for (const img of imagesRef.current) URL.revokeObjectURL(img.previewUrl)
     setImages([])
     setError(null)
@@ -52,23 +58,35 @@ export function usePastedImages(): UsePastedImages {
 
     const id = crypto.randomUUID()
     const previewUrl = URL.createObjectURL(file)
+    const generation = clearGenerationRef.current
 
-    const data = await fileToBase64(file)
+    try {
+      const data = await fileToBase64(file)
+      const dims = await getImageDimensions(previewUrl)
 
-    const dims = await getImageDimensions(previewUrl)
+      // If clear() was called while we were awaiting, the blob URL has
+      // already been revoked and imagesRef was reset. Discard instead of
+      // inserting a broken preview.
+      if (clearGenerationRef.current !== generation) {
+        URL.revokeObjectURL(previewUrl)
+        return
+      }
 
-    setImages((prev) => [
-      ...prev,
-      {
-        id,
-        data,
-        mediaType: file.type as PastedImage['mediaType'],
-        width: dims.width,
-        height: dims.height,
-        size: file.size,
-        previewUrl,
-      },
-    ])
+      setImages((prev) => [
+        ...prev,
+        {
+          id,
+          data,
+          mediaType: file.type as PastedImage['mediaType'],
+          width: dims.width,
+          height: dims.height,
+          size: file.size,
+          previewUrl,
+        },
+      ])
+    } catch {
+      URL.revokeObjectURL(previewUrl)
+    }
   }, [])
 
   // Cleanup on unmount
@@ -88,12 +106,6 @@ function getImageDimensions(url: string): Promise<{ width: number; height: numbe
     img.onerror = () => resolve({ width: 0, height: 0 })
     img.src = url
   })
-}
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
 /** Convert a File to a base64 string using FileReader, which avoids

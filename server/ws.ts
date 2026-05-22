@@ -62,6 +62,7 @@ const BACKPRESSURE_HIGH = 1_000_000
  */
 class WsWriteQueue {
   private queue: string[] = []
+  private head = 0
   private draining = false
   private stopped = false
   private ws: WebSocket
@@ -84,13 +85,15 @@ class WsWriteQueue {
   stop() {
     this.stopped = true
     this.queue.length = 0
+    this.head = 0
   }
 
   private async drain() {
     this.draining = true
+    let framesSinceYield = 0
     try {
-      while (this.queue.length > 0 && !this.stopped) {
-        const data = this.queue.shift()!
+      while (this.head < this.queue.length && !this.stopped) {
+        const data = this.queue[this.head++]!
         // Backpressure: if the kernel socket buffer is full, send the
         // frame with a callback that fires when it has been flushed.
         // This is the idiomatic ws backpressure mechanism — the library
@@ -103,18 +106,34 @@ class WsWriteQueue {
             this.ws.on('close', onClose)
             this.ws.send(data, () => { cleanup(); resolve() })
           })
+          // The await above already yielded to the event loop.
+          framesSinceYield = 0
         } else {
           if (this.stopped) return
           this.ws.send(data)
         }
-        // Yield to the event loop between frames. This is critical:
-        // without it, a burst of N small frames would still block the
-        // loop for the duration of N × ws.send(). setImmediate lets
-        // other session drivers' synchronous enqueue() calls run,
-        // which is what makes cross-session interleaving possible.
-        await new Promise<void>((r) => setImmediate(r))
+        // Yield to the event loop periodically (every 10 frames) so
+        // other session drivers' synchronous enqueue() calls get a
+        // chance to run. Batching reduces GC pressure from 1 Promise
+        // per frame while still preserving cross-session fairness.
+        if (++framesSinceYield >= 10) {
+          framesSinceYield = 0
+          await new Promise<void>((r) => setImmediate(r))
+        }
       }
     } finally {
+      // Compact the buffer: drop consumed entries so memory doesn't grow
+      // unbounded when enqueue/drain cycles repeat.
+      if (this.head > 0) {
+        if (this.head >= this.queue.length) {
+          // All entries consumed — release the backing store entirely
+          // instead of splicing an empty tail (O(1) vs O(n)).
+          this.queue.length = 0
+        } else {
+          this.queue.splice(0, this.head)
+        }
+        this.head = 0
+      }
       this.draining = false
     }
   }
@@ -195,6 +214,8 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
       let permSub: { unsubscribe: () => void } | null = null
       let ctxSub: { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null = null
       let ctxIter: AsyncIterator<unknown> | null = null
+      let gitSub: { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null = null
+      let gitIter: AsyncIterator<unknown> | null = null
       try {
         const msg = sm.subscribe(sessionId)
         msgSub = msg
@@ -202,6 +223,8 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
         permSub = perms
         ctxSub = sm.subscribeContextUsage(sessionId)
         ctxIter = ctxSub?.iterable[Symbol.asyncIterator]() ?? null
+        gitSub = sm.subscribeGitStatus(sessionId)
+        gitIter = gitSub?.iterable[Symbol.asyncIterator]() ?? null
 
         // 1) Send replay. If the client supplied `sinceUuid`, try to
         //    send only messages after that point (incremental sync).
@@ -255,7 +278,6 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
         // 2) Drive the three live iterables concurrently. Same Promise.race
         //    pattern as the SSE route — each iterator tagged so the loop
         //    knows which frame to emit.
-        const cleanupCbs: Array<() => void> = []
         let stopped = false
         const stop = () => {
           if (stopped) return
@@ -263,14 +285,12 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
           msgSub?.unsubscribe()
           permSub?.unsubscribe()
           ctxSub?.unsubscribe()
-          // Return the context-usage iterator so its pushable waiter
-          // resolves with done:true instead of hanging forever.
+          gitSub?.unsubscribe()
+          // Return the context-usage and git-status iterators so their
+          // pushable waiters resolve with done:true instead of hanging.
           if (ctxIter) void ctxIter.return?.()
-          for (const cb of cleanupCbs) cb()
+          if (gitIter) void gitIter.return?.()
         }
-        cleanupCbs.push(() => {
-          /* no-op placeholder — reserved for future per-driver cleanup */
-        })
 
         void (async () => {
           const msgIter = msg.iterable[Symbol.asyncIterator]()
@@ -280,6 +300,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
             | { kind: 'msg'; result: IteratorResult<unknown> }
             | { kind: 'perm'; result: IteratorResult<unknown> }
             | { kind: 'ctx'; result: IteratorResult<unknown> }
+            | { kind: 'git'; result: IteratorResult<unknown> }
 
           const tag = async (
             kind: Tagged['kind'],
@@ -289,13 +310,15 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
           let msgP: Promise<Tagged> | null = tag('msg', msgIter)
           let permP: Promise<Tagged> | null = tag('perm', permIter)
           let ctxP: Promise<Tagged> | null = ctxIter ? tag('ctx', ctxIter) : null
+          let gitP: Promise<Tagged> | null = gitIter ? tag('git', gitIter) : null
 
           try {
-            while (!stopped && (msgP || permP || ctxP)) {
+            while (!stopped && (msgP || permP || ctxP || gitP)) {
               const pending: Promise<Tagged>[] = []
               if (msgP) pending.push(msgP)
               if (permP) pending.push(permP)
               if (ctxP) pending.push(ctxP)
+              if (gitP) pending.push(gitP)
               const winner = await Promise.race(pending)
               if (winner.kind === 'msg') {
                 if (winner.result.done) msgP = null
@@ -325,7 +348,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
                   }
                   permP = tag('perm', permIter)
                 }
-              } else {
+              } else if (winner.kind === 'ctx') {
                 if (winner.result.done) ctxP = null
                 else {
                   queue.enqueue({
@@ -334,6 +357,16 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
                     usage: winner.result.value,
                   })
                   ctxP = tag('ctx', ctxIter!)
+                }
+              } else {
+                // git-status-changed signal — value carries { kind, sessionId }
+                // but we re-emit the canonical frame with our own sessionId
+                // (defence in depth: the broadcaster is trusted, but no harm
+                // verifying we send the right session).
+                if (winner.result.done) gitP = null
+                else {
+                  queue.enqueue({ kind: 'git-status-changed', sessionId })
+                  gitP = tag('git', gitIter!)
                 }
               }
             }
@@ -358,6 +391,8 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
         // removed on another tab.
         msgSub?.unsubscribe()
         permSub?.unsubscribe()
+        ctxSub?.unsubscribe()
+        gitSub?.unsubscribe()
         queue.enqueue({ kind: 'error', sessionId, message: (err as Error).message })
       }
     }

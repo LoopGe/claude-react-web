@@ -4,7 +4,7 @@
 // claude CLI process at runtime — bundling it would break its internal
 // filesystem-relative lookups. All other deps (hono, open) are bundled.
 import { build } from 'esbuild'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, chmodSync } from 'node:fs'
 
 mkdirSync('dist', { recursive: true })
 
@@ -24,7 +24,6 @@ await build({
 })
 
 // Prepend a Unix shebang so the file is directly executable via the bin entry.
-import { readFileSync } from 'node:fs'
 const path = 'dist/cli.mjs'
 const bundled = readFileSync(path, 'utf8')
 if (!bundled.startsWith('#!')) {
@@ -32,7 +31,6 @@ if (!bundled.startsWith('#!')) {
 }
 
 // Mark it executable (chmod 755)
-import { chmodSync } from 'node:fs'
 chmodSync(path, 0o755)
 
 console.log('✔ Built dist/cli.mjs')

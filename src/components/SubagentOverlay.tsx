@@ -6,6 +6,7 @@
 
 import { memo, useEffect } from 'react'
 import { MessageList } from './MessageList'
+import { formatElapsed } from '../utils/format'
 import type { ActiveSubagent, TranscriptItem } from '../session-store/types'
 
 interface Props {
@@ -21,16 +22,6 @@ interface Props {
   showSystemEvents?: boolean
 }
 
-function formatElapsed(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000))
-  if (s < 60) return `${s}s`
-  const h = Math.floor(s / 3600)
-  const m = Math.floor((s % 3600) / 60)
-  const sec = s % 60
-  const pad = (n: number) => n.toString().padStart(2, '0')
-  if (h === 0) return `${pad(m)}:${pad(sec)}`
-  return `${h}:${pad(m)}:${pad(sec)}`
-}
 
 export const SubagentOverlay = memo(function SubagentOverlay({
   stack,

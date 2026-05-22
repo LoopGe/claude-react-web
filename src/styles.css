@@ -58,6 +58,10 @@
   --hljs-yellow: #e6c07b;
   --plugin-active: var(--ok);
   --plugin-inactive: #636873;
+  /* Drop-shadow for floating overlays (Git/Settings panels, modals).
+     Defined here so light theme can flatten the alpha — dark needs a
+     deeper shadow against the elevated bg, light needs a softer one. */
+  --overlay-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
 }
 
 [data-theme="light"] {
@@ -111,19 +115,19 @@
   --hljs-yellow: #c18401;
   --plugin-active: var(--ok);
   --plugin-inactive: #9e9e9e;
+  --overlay-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
 }
 
-* { box-sizing: border-box; }
-html, body, #root { height: 100%; margin: 0; }
-
-/* Scrollbar styling. Two implementations: WebKit (Chrome / Edge / Safari)
-   sees ::-webkit-scrollbar rules; Firefox reads scrollbar-width / -color.
-   Kept thin (8px) so it doesn't eat the reading column, and half-opaque
-   so it recedes unless actively hovered. */
 * {
+  box-sizing: border-box;
+  /* Scrollbar styling. Two implementations: WebKit (Chrome / Edge / Safari)
+     sees ::-webkit-scrollbar rules; Firefox reads scrollbar-width / -color.
+     Kept thin (8px) so it doesn't eat the reading column, and half-opaque
+     so it recedes unless actively hovered. */
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--fg-muted) 45%, transparent) transparent;
 }
+html, body, #root { height: 100%; margin: 0; }
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -189,6 +193,7 @@ button { cursor: pointer; }
 }
 .btn:hover:not(:disabled) { background: var(--btn-hover-bg); border-color: var(--btn-hover-border); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-sm { padding: 2px 8px; font-size: 11px; }
 .btn-primary {
   background: var(--accent-strong);
   border-color: var(--accent);
@@ -486,7 +491,7 @@ body.resizing-col * {
   animation: session-working-pulse 1s ease-in-out infinite;
 }
 .chat-panel-status.err { background: var(--danger); }
-.chat-panel-status.terminated { background: var(--fg-muted); opacity: 0.5; }
+.chat-panel-status.terminated,
 .chat-panel-status.dormant { background: var(--fg-muted); opacity: 0.5; }
 
 /* Unread dot on a non-focused open panel's header. Sits between the
@@ -716,19 +721,14 @@ body.resizing-col * {
   font-size: 11px;
   vertical-align: middle;
 }
-.session-item.mode-active {
-  box-shadow: inset 3px 0 0 var(--mode-color, var(--warn));
-}
+/* mode-active stripe removed from session cards — the ⚡ badge is enough */
 .session-item.mode-plan { --mode-color: var(--warn); }
 .session-item.mode-bypassPermissions { --mode-color: var(--danger); }
 .session-item.mode-dontAsk { --mode-color: var(--danger); }
 .session-item.mode-acceptEdits { --mode-color: var(--accent); }
 .session-item.mode-auto { --mode-color: var(--accent); }
 .session-item.mode-active.focused {
-  /* When a non-default-mode session is the focused panel, keep the stripe
-     (it's the higher-information signal) but stack the focused outline
-     beside it so the user still sees which row is active. */
-  box-shadow: inset 3px 0 0 var(--mode-color, var(--warn)), 0 0 0 1px var(--accent) inset;
+  box-shadow: 0 0 0 1px var(--accent) inset;
 }
 .chat-panel-body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
 .empty-state {
@@ -3478,3 +3478,703 @@ mark.search-hl {
 .error-toast-dismiss:hover {
   opacity: 1;
 }
+
+/* ─────────────────────────────────────────────────────────────────
+   Git overlay + panel + chip
+   ─────────────────────────────────────────────────────────────────
+   Mirrors the .settings-overlay pattern: absolute-positioned over the
+   chat body, semi-transparent backdrop, a self-contained panel that
+   sizes to its content. All colours go through CSS variables so the
+   light theme inherits the layout without overrides.
+   */
+
+.git-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--bg) 65%, transparent);
+  backdrop-filter: blur(2px);
+  z-index: 5;
+  overflow-y: auto;
+}
+.git-overlay > .git-panel {
+  width: min(520px, 100%);
+  max-height: 100%;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--overlay-shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.git-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.git-panel-branch {
+  font-family: var(--mono);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--fg);
+}
+.git-panel-syncs {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.git-panel-spacer { flex: 1; }
+.git-panel-icon-btn {
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font-size: 14px;
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.git-panel-icon-btn:hover:not(:disabled) {
+  background: var(--btn-hover-bg);
+}
+.git-panel-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.git-panel-banner {
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+  color: var(--warn);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.git-panel-empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+.git-panel-error {
+  color: var(--danger);
+  margin-bottom: 8px;
+}
+.git-panel-action {
+  margin-top: 8px;
+  padding: 4px 12px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+.git-panel-action:hover { background: var(--btn-hover-bg); }
+
+/* Sections — leverage the native <details>/<summary> pair; styling here
+   replaces the default disclosure triangle with our own and turns the
+   summary into a clickable header. The body is plain block flow. */
+.git-panel-section {
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.git-panel-section:last-child {
+  border-bottom: 0;
+  /* Allow the final section (typically Recent commits) to scroll
+     internally instead of forcing the whole panel taller. */
+  flex-shrink: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.git-panel-section > summary {
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--fg);
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.git-panel-section > summary::-webkit-details-marker { display: none; }
+.git-panel-section > summary::before {
+  content: '▸';
+  color: var(--fg-muted);
+  font-size: 10px;
+  width: 10px;
+  display: inline-block;
+}
+.git-panel-section[open] > summary::before { content: '▾'; }
+.git-panel-section[open] > summary { background: var(--bg-elev-1); }
+.git-panel-section-title { flex: 1; }
+.git-panel-section-count {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: var(--bg-elev-2);
+  padding: 0 6px;
+  border-radius: 8px;
+  min-width: 16px;
+  text-align: center;
+}
+.git-panel-section-body {
+  padding: 4px 0 8px;
+}
+.git-panel-section-empty {
+  padding: 6px 24px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+/* File rows — single button toggles accordion; child <pre> renders the
+   diff. Status letter coloured by kind (M=warn, A=ok, D=danger). */
+.git-file-row {
+  display: flex;
+  flex-direction: column;
+}
+.git-file-row.untracked {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px 4px 24px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg);
+}
+.git-file-row-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 4px 12px 4px 24px;
+  color: var(--fg);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: left;
+}
+.git-file-row-toggle:hover {
+  background: var(--btn-hover-bg);
+}
+.git-file-status {
+  width: 14px;
+  font-weight: 700;
+  text-align: center;
+  flex-shrink: 0;
+  color: var(--fg-muted);
+}
+.git-file-status.status-M { color: var(--warn); }
+.git-file-status.status-A { color: var(--ok); }
+.git-file-status.status-D { color: var(--danger); }
+.git-file-status.status-R { color: var(--accent); }
+.git-file-status.status-C { color: var(--accent); }
+.git-file-status.status-U { color: var(--danger); }
+.git-file-status.status-T { color: var(--warn); }
+.git-file-path {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.git-file-renamed-from {
+  color: var(--fg-muted);
+}
+.git-file-arrow {
+  color: var(--fg-muted);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.git-file-diff-wrap {
+  background: var(--bg-elev-1);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  margin: 4px 0;
+}
+.git-file-diff-loading,
+.git-file-diff-error,
+.git-file-diff-binary {
+  padding: 8px 24px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-style: italic;
+}
+.git-file-diff-error { color: var(--danger); font-style: normal; }
+
+.git-file-diff {
+  margin: 0;
+  padding: 8px 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+  overflow-x: auto;
+  max-height: 400px;
+  overflow-y: auto;
+  background: transparent;
+  color: var(--fg);
+}
+.git-diff-line { display: inline; }
+.git-diff-line.add  { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.git-diff-line.del  { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.git-diff-line.hunk { color: var(--accent); }
+.git-diff-line.meta { color: var(--fg-muted); }
+.git-diff-line.truncated {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+/* Recent commits list — compact, hash-prefix, subject mid, meta tail. */
+.git-commits-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.git-commit {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 4px 12px 4px 24px;
+  font-size: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+.git-commit:first-child { border-top: 0; }
+.git-commit:hover { background: var(--btn-hover-bg); }
+.git-commit-hash {
+  font-family: var(--mono);
+  color: var(--accent);
+  font-size: 11px;
+}
+.git-commit-subject {
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.git-commit-meta {
+  color: var(--fg-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.git-commits-empty {
+  padding: 8px 24px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-style: italic;
+}
+.git-commits-error { color: var(--danger); font-style: normal; }
+
+/* Header chip variants — reuse .chat-panel-chip baseline. */
+.chat-panel-chip.git-chip {
+  font-family: var(--mono);
+}
+.chat-panel-chip.git-chip.dirty .chat-panel-chip-value {
+  color: var(--warn);
+}
+.chat-panel-chip.git-chip.conflict .chat-panel-chip-value {
+  color: var(--danger);
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   PR2 additions — write-operation UI
+   ─────────────────────────────────────────────────────────────────
+   Hover-revealed file action buttons, section bulk-action buttons,
+   commit form, branches & stashes lists, banner abort buttons. All
+   colours go through CSS variables and reuse the existing .btn /
+   .btn-primary / .btn-danger family for dialog buttons.
+   */
+
+/* Inline error toast inside the panel — sits between the header and
+   the first section. Auto-dismisses after a few seconds (the hook owns
+   the timer); the ✕ provides immediate dismiss. */
+.git-panel-toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--msg-error-bg);
+  color: var(--msg-error-fg);
+  border-bottom: 1px solid var(--msg-error-border);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.git-panel-toast > span:first-child {
+  flex: 1;
+  white-space: pre-wrap;
+}
+
+/* Banner action buttons sit to the right of the warning text. */
+.git-banner-action {
+  margin-left: auto;
+}
+
+/* Section header actions area — appears next to the title/count.
+   Stops summary's click toggle by stopPropagation in the React side. */
+.git-panel-section-actions {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: auto;
+  /* Override the auto-margin on .git-panel-section-count so the count
+     stays glued to the title, with actions floated to the right. */
+}
+.git-panel-section-actions ~ .git-panel-section-count,
+.git-panel-section-count ~ .git-panel-section-actions {
+  margin-left: 0;
+}
+.git-section-action {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg-muted);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  cursor: pointer;
+  font-family: var(--mono);
+}
+.git-section-action:hover:not(:disabled) {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+}
+.git-section-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.git-section-action.danger {
+  color: var(--danger);
+}
+.git-section-action.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 15%, transparent);
+}
+
+/* File row layout: button (toggles diff) + actions (stage/unstage/discard).
+   The actions are hidden until row hover, and slide in via opacity. */
+.git-file-row-line {
+  display: flex;
+  align-items: center;
+}
+.git-file-row-line > .git-file-row-toggle {
+  flex: 1;
+  /* Override the default full-width pad now that we share the row
+     with action buttons. */
+}
+.git-file-actions {
+  display: flex;
+  gap: 2px;
+  padding-right: 8px;
+  opacity: 0;
+  transition: opacity 0.1s ease-out;
+  flex-shrink: 0;
+}
+.git-file-row:hover .git-file-actions,
+.git-file-row.open .git-file-actions {
+  opacity: 1;
+}
+.git-action-btn {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg-muted);
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: var(--mono);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.git-action-btn:hover:not(:disabled) {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+}
+.git-action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.git-action-btn.danger {
+  color: var(--danger);
+}
+.git-action-btn.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 15%, transparent);
+}
+
+/* The untracked row uses a static span instead of a button so it
+   doesn't acquire toggle visuals — but we still need the same
+   layout shape so its action buttons line up with tracked rows. */
+.git-file-row-toggle.untracked-static {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px 4px 24px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg);
+  background: transparent;
+  border: 0;
+  flex: 1;
+  cursor: default;
+}
+.git-file-row.untracked {
+  display: block;
+  padding: 0;
+}
+
+/* Commit form — textarea + button row stacked. */
+.git-commit-form {
+  padding: 8px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.git-commit-textarea {
+  width: 100%;
+  min-height: 60px;
+  resize: vertical;
+  padding: 6px 8px;
+  background: var(--bg-elev-1);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  box-sizing: border-box;
+}
+.git-commit-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.git-commit-textarea:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.git-commit-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* New-branch inline form. */
+.git-new-branch-form {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.git-new-branch-input {
+  flex: 1;
+  padding: 4px 8px;
+  background: var(--bg-elev-1);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.git-new-branch-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Branch rows — clickable buttons that look like list items. The
+   current branch is non-clickable and visually marked. */
+.git-branch-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 4px 12px 4px 24px;
+  color: var(--fg);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: left;
+}
+.git-branch-row:hover:not(:disabled):not(.current) {
+  background: var(--btn-hover-bg);
+}
+.git-branch-row:disabled {
+  cursor: not-allowed;
+}
+.git-branch-row.current {
+  color: var(--accent);
+  font-weight: 600;
+  cursor: default;
+}
+.git-branch-mark {
+  width: 12px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.git-branch-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.git-branch-upstream {
+  color: var(--fg-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* Stash rows — three-column grid (ref, message, actions). */
+.git-stash-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 12px 4px 24px;
+  font-size: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+.git-stash-row:first-child { border-top: 0; }
+.git-stash-ref {
+  font-family: var(--mono);
+  color: var(--accent);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.git-stash-message {
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.git-stash-actions {
+  display: flex;
+  gap: 2px;
+}
+
+/* Generic "section is empty" message — used by Branches / Stashes
+   while loading or on a non-error empty state. Distinct from the
+   per-section empty hint to allow different copy. */
+.git-section-empty {
+  padding: 6px 24px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+/* ConfirmDialog message body — extra spacing for multi-paragraph
+   warnings. */
+.confirm-dialog-message {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+}
+.confirm-dialog-message p {
+  margin: 0 0 8px;
+}
+.confirm-dialog-message p:last-child {
+  margin-bottom: 0;
+}
+.confirm-dialog-message code {
+  background: var(--bg-elev-1);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   PR3 additions — "This session" view + AI commit message
+   ─────────────────────────────────────────────────────────────────
+   The headline section sits at the top of the panel and gets a
+   subtle accent tint so it reads as the primary call-to-action.
+   ✨ badges flag files in regular sections that ALSO appear in
+   "This session", giving the user a cross-section mental model
+   without forcing them to compare two lists side-by-side.
+   */
+
+.git-this-session > summary {
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev-1));
+  border-left: 3px solid var(--accent);
+}
+.git-this-session[open] > summary {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev-1));
+}
+.git-this-session .git-panel-section-actions {
+  /* The two action buttons here are the entry point to the AI
+     workflow — give them a touch more visual weight than the
+     section-action buttons elsewhere. */
+  gap: 6px;
+}
+.git-this-session .git-section-action {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+/* The static row variant used inside "This session" reuses the
+   tracked-row toggle's spacing without becoming a button. */
+.git-file-row.session-static .git-file-row-toggle.untracked-static {
+  cursor: default;
+}
+
+/* ✨ badge prefix on file paths. Tight spacing — just a separator
+   from the path itself. Doesn't grow the row height. */
+.git-file-session-badge {
+  margin-right: 4px;
+  font-size: 11px;
+  /* The emoji renders at ~14px on most fonts; nudging it down keeps
+     it visually aligned with the M/A/D status letter. */
+  vertical-align: -1px;
+  user-select: none;
+}
+
+/* Commit preview inside the "Commit Claude's changes" ConfirmDialog. */
+.commit-claudes-files {
+  list-style: none;
+  margin: 8px 0;
+  padding: 8px 12px;
+  background: var(--bg-elev-1);
+  border-radius: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.commit-claudes-files li {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 1px 0;
+}
+.commit-claudes-files li code {
+  background: transparent;
+  padding: 0;
+}
+.commit-claudes-preview {
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  background: var(--bg-elev-1);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  max-height: 200px;
+  overflow-y: auto;
+  color: var(--fg);
+}
+
+

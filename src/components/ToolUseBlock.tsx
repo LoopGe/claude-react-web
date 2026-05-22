@@ -4,22 +4,14 @@
 // (diff preview, file-path header, etc.) while falling back to raw JSON
 // for unknown tools.
 
+import { memo } from 'react'
 import { Markdown } from './Markdown'
-import { usePlanStatus } from '../hooks/usePlanStatus'
+import { usePlanStatus, usePlanContent } from '../hooks/usePlanStatus'
 import { SubagentCard } from './SubagentCard'
-
-const SUBAGENT_TOOL_NAMES = new Set(['Agent', 'Task', 'Explore'])
-
-interface Block {
-  type: string
-  text?: string
-  thinking?: string
-  name?: string
-  input?: unknown
-  tool_use_id?: string
-  content?: unknown
-  [k: string]: unknown
-}
+import { formatJson } from '../utils/format'
+import { SUBAGENT_TOOL_NAMES, PLAN_TOOL_NAMES } from '../constants/toolNames'
+import { truncate } from '../utils/text'
+import type { Block } from '../types'
 
 const MAX_PREVIEW_LINES = 20
 
@@ -27,14 +19,14 @@ const MAX_PREVIEW_LINES = 20
 // Public entry point
 // ---------------------------------------------------------------------------
 
-export function ToolUseBlock({ block }: { block: Block }) {
+export const ToolUseBlock = memo(function ToolUseBlock({ block }: { block: Block }) {
   const name = block.name
   const input = block.input as Record<string, unknown> | undefined
 
   // ExitPlanMode and (legacy/alt) EnterPlanMode get their own card —
   // see PlanCard. Skip the generic "→ tool: …" header so the card stands
   // on its own as the dominant element of the assistant message.
-  if (name === 'ExitPlanMode' || name === 'EnterPlanMode') {
+  if (name && PLAN_TOOL_NAMES.has(name)) {
     const blockAny = block as { id?: unknown }
     const id =
       typeof block.tool_use_id === 'string'
@@ -62,7 +54,7 @@ export function ToolUseBlock({ block }: { block: Block }) {
     if (id) {
       const fallback =
         (typeof input?.description === 'string' && input.description) ||
-        (typeof input?.prompt === 'string' && truncatePrompt(input.prompt as string)) ||
+        (typeof input?.prompt === 'string' && truncate(input.prompt as string, 80)) ||
         undefined
       return <SubagentCard toolUseId={id} fallbackLabel={fallback} />
     }
@@ -83,7 +75,7 @@ export function ToolUseBlock({ block }: { block: Block }) {
       }
     </div>
   )
-}
+})
 
 // ---------------------------------------------------------------------------
 // ExitPlanMode / EnterPlanMode
@@ -117,7 +109,11 @@ function PlanCard({
       : typeof input?.markdown === 'string'
         ? (input.markdown as string)
         : null
-  const body = plan ?? fallback
+  // The CLI injects plan content from disk into the tool_result output
+  // (not the tool_use input).  Fall back to the planContent map populated
+  // from tool_results by the session-store reducer.
+  const resultPlan = usePlanContent(toolUseId)
+  const body = plan ?? fallback ?? resultPlan
   const allowedPrompts = Array.isArray(input?.allowedPrompts)
     ? (input.allowedPrompts as Array<{ tool?: string; prompt?: string }>)
     : []
@@ -154,7 +150,11 @@ function PlanCard({
       </summary>
       <div className="plan-card-body">
         {body ? <Markdown text={body} /> : (
-          <div className="plan-card-empty">(empty plan — Claude sent no body)</div>
+          <div className="plan-card-empty">
+            {status === 'pending'
+              ? 'Plan will appear after approval (CLI reads it from the plan file on disk).'
+              : '(empty plan — Claude sent no body)'}
+          </div>
         )}
       </div>
       {allowedPrompts.length > 0 && (
@@ -346,18 +346,3 @@ function TodoWriteView({ input }: { input?: Record<string, unknown> }) {
   )
 }
 
-// ---------------------------------------------------------------------------
-// Utils
-// ---------------------------------------------------------------------------
-
-function formatJson(v: unknown): string {
-  try {
-    return JSON.stringify(v, null, 2)
-  } catch {
-    return String(v)
-  }
-}
-
-function truncatePrompt(s: string): string {
-  return s.length <= 80 ? s : `${s.slice(0, 80)}…`
-}
