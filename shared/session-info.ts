@@ -33,4 +33,10 @@ export interface SessionInfoBase<PM = string> {
   workingSince?: number
   /** Epoch ms of the last completed turn. Used to flag unread. */
   lastTurnAt?: number
+  /** Snapshot of HEAD at session spawn time. Used by the GitPanel
+   *  "This session" view to scope diffs to this conversation's
+   *  duration. Undefined when cwd was not a git repo at spawn,
+   *  HEAD was detached/unborn, or git was unavailable. Survives
+   *  process restarts via persistence.coerceMeta. */
+  gitStartSha?: string
 }

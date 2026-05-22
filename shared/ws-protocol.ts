@@ -127,6 +127,16 @@ export interface WsContextUsage {
   usage: unknown
 }
 
+/** Signal-only frame: "git status for this session changed, please
+ *  refetch". The server intentionally does NOT pack the GitStatus
+ *  payload here so the WS protocol stays decoupled from git-types and
+ *  the frame stays small even on bursty mutations. Clients respond by
+ *  bumping their useGitStatus refresh counter. */
+export interface WsGitStatusChanged {
+  kind: 'git-status-changed'
+  sessionId: string
+}
+
 /** Heartbeat reply. */
 export interface WsPong {
   kind: 'pong'
@@ -155,6 +165,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision> =
   | WsPermissionRequest<Perm>
   | WsPermissionResolved<Decision>
   | WsContextUsage
+  | WsGitStatusChanged
   | WsPong
   | WsError
 

@@ -48,6 +48,7 @@ The server uses a single WebSocket connection per browser tab (`server/ws.ts` + 
 - `session-permission-request` / `session-permission-resolved` — per-session tool permission events
 - `global-permission-request` — cross-session permission notification (for sidebar badge)
 - `session-context-usage` — per-session context window usage
+- `git-status-changed` — per-session signal that the worktree may have changed (debounced, fired after Claude's mutating tools land); clients refetch their own status / branches / stashes / session-files
 
 `server/routes.ts` exposes the REST surface under `/api`:
 
@@ -59,6 +60,7 @@ The server uses a single WebSocket connection per browser tab (`server/ws.ts` + 
 - `POST /sessions/:id/fork` — duplicate a session (resumes from the fork point)
 - `POST /sessions/:id/recap` — AI-generated session summary
 - `/api/fs` (from `server/fs-routes.ts`) — minimal directory-only browser used by the cwd picker. Lists sub-directories of an absolute path; never returns file contents.
+- `/api/git/*` (from `server/git-routes.ts`) — read-only `GET /status`, `/diff`, `/log`, all `?cwd=…`-scoped. Returns `{ isRepo: false }` (200) when the cwd is reachable but isn't a work tree. Writes live under `/api/sessions/:id/git/*` (in `server/routes/git-write.ts`): `stage`, `unstage`, `discard`, `commit`, `abort-merge`, `abort-rebase`, `stash`/`stash-pop`/`stash-drop`, `branch`, `checkout`, `session-files`, `session-diff`, `commit-message`. Destructive verbs require `confirm: true` in the body. After every write the route broadcasts `git-status-changed` and returns the freshly-fetched `GitStatus` (and `branches` / `stashes` when relevant) so clients update without a second round-trip.
 
 `server/app.ts` composes the Hono app, mounts CORS and logging middleware, and locates the built client by walking a few candidate paths so both `tsx server/cli.ts` and the bundled `dist/cli.mjs` find `dist/client/` without config.
 
@@ -76,6 +78,18 @@ The server uses a single WebSocket connection per browser tab (`server/ws.ts` + 
 - `src/types.ts` — UI-side types. The browser bundle does **not** import `@anthropic-ai/claude-agent-sdk`; SDK messages are typed as `SdkMessage` (loose shape with `type/subtype/message/event/...`) and rendered defensively. `src/ws-types.ts` mirrors `server/ws-protocol.ts` (intentional duplication; no automated drift check).
 
 Vite dev server on 5174 proxies `/api` to 3456. Production: `vite build` → `dist/client/`, served statically by the same Hono app that hosts the API. An SPA fallback returns `index.html` for any unmatched GET so client-side routing works.
+
+### Git integration
+
+`server/git.ts` is the single owner of git execution. Every git invocation goes through `runGit(cwd, args, opts)` which uses `child_process.execFile` (never a shell) with a fixed argv; user-supplied paths are validated by `validateRepoRelativePath` (rejects absolute paths and `..` segments) AND prefixed with `--` so a path that happens to look like a ref (e.g. `HEAD`) cannot be reinterpreted. Diff bodies cap at `MAX_DIFF_LINES = 500`; the AI commit-message diff caps at `MAX_AI_DIFF_BYTES` (head+tail trim with an elision marker). `getStatus` probes `isInsideWorkTree` and falls back to `{ isRepo: false }`; `getStatusInRepo` is the variant for callers that already validated repo-ness (write routes use this to avoid a redundant `git rev-parse` spawn per write).
+
+Each session gets a `gitStartSha` anchor when it spawns inside a work tree (`tryCaptureGitHead` — null for unborn HEAD, sessions outside repos, or detached states with no SHA available). It's persisted alongside `SessionMeta` and preserved across resume / fork. Three routes hang off it for the GitPanel "This session" view: `session-files`, `session-diff`, `commit-message` (the AI button). When `gitStartSha` is null those routes return empty payloads / 400 — the UI hides the section.
+
+`server/git-broadcast.ts` debounces `git-status-changed` broadcasts. The pump (`server/session-pump.ts`) detects mutating tool_use blocks (`MUTATING_TOOL_NAMES = {Edit, Write, NotebookEdit, Bash}`) by id, and when the matching tool_result lands it calls `scheduleGitBroadcast`. Bursts of edits within `DEBOUNCE_MS = 500` collapse to one broadcast. User-initiated POST writes call `sm.broadcastGitStatusChanged` directly to keep click-to-refresh latency tight; only the auto-detection path pays the debounce. `cancelGitBroadcast` is invoked from the session unload path so a pending timer can't fire after removal.
+
+`server/anthropic-api.ts` (`callAnthropicMessages`) is the shared Anthropic Messages caller used by both `recap.ts` and `commit-message.ts` — same auth header shape, version pin, 15s timeout. Each caller does its own post-processing (recap strips JSX fragments; commit-message strips code fences) but the wire layer is one place.
+
+Client-side: `src/components/GitPanel.tsx` is a per-panel overlay (mounted alongside `SettingsPanel` inside `Chat`, dismissed by backdrop / Escape, has higher keyboard priority than Settings). `ChatPanel.tsx` renders an always-visible header chip showing branch + dirty/ahead/behind/conflict at a glance; clicking it opens the panel. Hooks are split: `useGitStatus` (status, with WS auto-refetch + a JSON-string no-op compare so unrelated tool runs don't cascade renders), plus `useGitDiff` / `useGitLog` / `useGitBranches` / `useGitStashes` / `useSessionFiles` (lazy-fetched per accordion). Writes go through `useGitWrite`. The `DiffView` component is wrapped in `React.memo` so commit-textarea typing doesn't re-render every open diff.
 
 ### Build: single-file bundle
 
@@ -96,5 +110,6 @@ Vite dev server on 5174 proxies `/api` to 3456. Production: `vite build` → `di
 - `Shift+Tab` cycles through permission modes (default → auto-accept → bypass).
 - `api_retry` system messages are rendered as rate-limit/overload/retry indicators in the message list.
 - `src/session-store/normalize.ts` tracks `Agent`, `Task`, and `Explore` tool_use calls for active subagent display.
+- Git: never spawn through a shell. Always go through `runGit()` in `server/git.ts` (uses `execFile` with fixed argv). Path arguments are double-fenced — callers pass paths through `validateRepoRelativePath()` first AND `runGit` prefixes them with `--`. Destructive write routes require `confirm: true` in the request body. Sessions started inside a git work tree get a persisted `gitStartSha` anchor; the GitPanel's "This session" view and AI commit-message generator both depend on it (they no-op when null).
 - CSS: never hardcode color hex values — always use theme CSS variables (e.g. `var(--btn-hover-bg)` not `#242a35`). Every new color must be defined in both `:root` (dark) and `[data-theme="light"]` blocks. This prevents light/dark theme regressions.
 - **先搞清楚问题再动手。** 任何修改（CSS、逻辑、API、架构）都必须先理解问题的全貌再改。不要看到一个"看起来不对"的东西就直接改 — 先追踪上下文、理解设计意图、定位根因，然后再动手。没搞清楚就改是治标，还可能引入新问题。

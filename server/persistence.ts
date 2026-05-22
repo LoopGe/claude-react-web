@@ -46,6 +46,10 @@ export interface SessionMeta {
    *  unread badges when a turn completes while the user is looking at
    *  another session. */
   lastTurnAt?: number
+  /** Snapshot of HEAD captured when the session was first spawned.
+   *  Survives across process restarts so the GitPanel "This session"
+   *  view stays anchored even if the server is bounced mid-conversation. */
+  gitStartSha?: string
 }
 
 const FILE_NAME = 'sessions.json'
@@ -137,5 +141,6 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     terminatedReason: typeof r.terminatedReason === 'string' ? r.terminatedReason : undefined,
     error: typeof r.error === 'string' ? r.error : undefined,
     lastTurnAt: typeof r.lastTurnAt === 'number' ? r.lastTurnAt : undefined,
+    gitStartSha: typeof r.gitStartSha === 'string' ? r.gitStartSha : undefined,
   }
 }

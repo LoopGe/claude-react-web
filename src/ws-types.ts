@@ -32,7 +32,7 @@ export type WsReplayDone = shared.WsReplayDone<PermissionRequest>
 export type WsMessage = shared.WsMessage<unknown>
 export type WsPermissionRequest = shared.WsPermissionRequest<PermissionRequest>
 export type WsPermissionResolved = shared.WsPermissionResolved<shared.PermissionDecision>
-export type { WsContextUsage, WsPong, WsError, PermissionDecision } from '../shared/ws-protocol.js'
+export type { WsContextUsage, WsGitStatusChanged, WsPong, WsError, PermissionDecision } from '../shared/ws-protocol.js'
 
 export type WsServerFrame = shared.WsServerFrame<
   SessionInfo,
