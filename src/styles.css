@@ -1074,7 +1074,7 @@ body.resizing-col * {
 .perm-card {
   width: min(520px, 100%);
   max-height: 100%;
-  overflow-y: auto;
+  overflow: hidden;
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1087,6 +1087,10 @@ body.resizing-col * {
    panel column on a 1440px display. */
 .perm-card.perm-card-plan {
   width: min(720px, 100%);
+}
+.perm-card .modal-header,
+.perm-card .modal-footer {
+  flex-shrink: 0;
 }
 
 /* Custom right-click menu. Positioned absolutely by the parent. */

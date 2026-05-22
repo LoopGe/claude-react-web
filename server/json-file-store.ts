@@ -69,6 +69,11 @@ export abstract class JsonFileStore<T> {
     return this.index.get(key)
   }
 
+  /** Check if a key exists without allocating the entry. */
+  has(key: string): boolean {
+    return this.index.has(key)
+  }
+
   /** Insert or replace an entry. Triggers a debounced flush. */
   upsert(item: T): void {
     this.index.set(this.getKey(item), { ...item } as T)

@@ -24,6 +24,10 @@ export interface ActiveSubagent {
   endedAt?: number
   /** Lifecycle status. Drives chip color and overlay header. */
   status: SubagentStatus
+  /** Pre-computed count of tool_use blocks within this subagent's messages.
+   *  Incremented during updateIndexes so SubagentCard doesn't need to scan
+   *  the full message list on every render. */
+  toolCount: number
 }
 
 export type PlanStatus = 'pending' | 'approved' | 'rejected'
@@ -37,7 +41,7 @@ export type ActivePhase =
 export interface LiveTurnState {
   turnId: string
   phase: ActivePhase
-  textBuffer: string
+  textChunks: string[]
   flushedText: string
   outputTokens?: number
   tokenRate: number | null

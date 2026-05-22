@@ -14,7 +14,7 @@
 // result. See server/session-manager.ts `answerQuestion` for the wire
 // format.
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Markdown } from './Markdown'
 import type { PermissionRequest, QuestionSpec } from '../types'
 import { useFocusTrap } from '../hooks/useFocusTrap'
@@ -58,6 +58,17 @@ export function QuestionDialog({ request, onSubmit, onSkipAll, onSubmitted, init
   const [submitted, setSubmitted] = useState(!!initialAnswers)
   const dialogRef = useRef<HTMLDivElement>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  // Refs so the Escape effect (registered once on mount) always reads
+  // current values without re-registering on every render.
+  const busyRef = useRef(busy)
+  const submittedRef = useRef(submitted)
+  const cancelRef = useRef<() => void>(() => {})
+  // Sync refs after commit so they're always current without triggering
+  // re-renders (the react-hooks/refs rule forbids writing during render).
+  useLayoutEffect(() => {
+    busyRef.current = busy
+    submittedRef.current = submitted
+  })
 
   useFocusTrap(dialogRef)
 
@@ -192,6 +203,25 @@ export function QuestionDialog({ request, onSubmit, onSkipAll, onSubmitted, init
     onSkipAll()
     timerRef.current = setTimeout(() => onSubmitted?.(), 3000)
   }, [busy, submitted, onSkipAll, onSubmitted])
+  useLayoutEffect(() => { cancelRef.current = cancel })
+
+  // Escape should cancel/skip — not fall through to the global Escape
+  // handler which would interrupt the session instead.
+  // Uses refs for busy/submitted/cancel so the listener is registered
+  // once on mount instead of on every render.
+  useEffect(() => {
+    const el = dialogRef.current
+    if (!el) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !busyRef.current && !submittedRef.current) {
+        e.preventDefault()
+        e.stopPropagation()
+        cancelRef.current()
+      }
+    }
+    el.addEventListener('keydown', onKey)
+    return () => el.removeEventListener('keydown', onKey)
+  })
 
   // Require at least one question to have a non-null answer, otherwise
   // "Submit" is equivalent to "Cancel" and we'd rather the user hit the

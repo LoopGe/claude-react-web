@@ -99,6 +99,8 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
 
   app.use('*', async (c, next) => {
     // Basic request log — helps when diagnosing CLI issues.
+    // Only log API routes to avoid noise from static asset serving.
+    if (!c.req.path.startsWith('/api/')) return next()
     const start = Date.now()
     await next()
     const ms = Date.now() - start

@@ -278,6 +278,9 @@ async function doGenerateRecap(messages: SDKMessage[], sessionId: string): Promi
     cached.messageCount === messages.length &&
     cached.lastMessageUuid === lastUuid
   ) {
+    // Refresh LRU insertion order on cache hit.
+    cache.delete(sessionId)
+    cache.set(sessionId, cached)
     return { summary: cached.summary, stats: cached.stats, cached: true, generatedAt: cached.generatedAt }
   }
   // Store the pre-generation UUID so the route handler can bump the cache

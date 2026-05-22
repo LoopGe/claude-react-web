@@ -91,6 +91,9 @@ export class SessionManager {
   /** Cached result of buildAnthropicEnv(). Invalidated when config.authToken
    *  or config.baseUrl change (detected lazily on each call). */
   private cachedEnv?: NodeJS.ProcessEnv
+  /** Cached PumpDeps — all fields reference stable `this` members,
+   *  so the object is built once and reused. */
+  private cachedPumpDeps?: PumpDeps
   private cachedAuthToken?: string
   private cachedBaseUrl?: string
 
@@ -130,13 +133,35 @@ export class SessionManager {
     }
     this.cachedAuthToken = defaultConfig.authToken
     this.cachedBaseUrl = defaultConfig.baseUrl
-    this.cachedEnv = {
-      ...process.env,
+    // Forward only the env vars the CLI subprocess actually needs instead of
+    // spreading all of process.env (which leaks server-side variables and
+    // creates an unnecessarily large allocation).
+    const env: NodeJS.ProcessEnv = {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME ?? process.env.USERPROFILE,
+      USERPROFILE: process.env.USERPROFILE,
+      SystemRoot: process.env.SystemRoot,
+      TEMP: process.env.TEMP,
+      TMP: process.env.TMP,
+      LANG: process.env.LANG,
+      LC_ALL: process.env.LC_ALL,
+      TERM: process.env.TERM,
+      SHELL: process.env.SHELL,
+      ComSpec: process.env.ComSpec,
+      NODE_PATH: process.env.NODE_PATH,
       ANTHROPIC_AUTH_TOKEN: defaultConfig.authToken,
       ANTHROPIC_BASE_URL: defaultConfig.baseUrl,
       // Strip the legacy x-api-key variable — we standardised on Bearer.
       ANTHROPIC_API_KEY: undefined,
     }
+    // Forward any additional ANTHROPIC_* env vars (except API_KEY which we
+    // intentionally strip) so callers can pass feature flags, debug toggles, etc.
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith('ANTHROPIC_') && key !== 'ANTHROPIC_API_KEY' && !(key in env)) {
+        env[key] = process.env[key]
+      }
+    }
+    this.cachedEnv = env
     return this.cachedEnv
   }
 
@@ -952,7 +977,7 @@ export class SessionManager {
     // live + (store - overlap) formula.
     let count = this.store.count()
     for (const id of this.sessions.keys()) {
-      if (!this.store.get(id)) count++
+      if (!this.store.has(id)) count++
     }
     return count
   }
@@ -1121,19 +1146,24 @@ export class SessionManager {
     }
   }
 
-  /** Build the PumpDeps object shared by pump() and autoResume(). */
+  /** Build (or return cached) PumpDeps shared by pump() and autoResume().
+   *  All fields reference stable `this` members, so the object is built
+   *  once and reused for the lifetime of the SessionManager. */
   private buildPumpDeps(): PumpDeps {
-    return {
-      historyCap: this.historyCap,
-      persist: (s) => this.persist(s),
-      denyPendingPermissions: (s) => this.permBroker.denyAll(s),
-      isLive: (id) => this.sessions.has(id),
-      autoResume: this.autoResumeEnabled ? (s) => this.autoResume(s) : undefined,
-      // The pump's mutating-tool detector calls broadcaster.broadcastGitStatusChanged
-      // through the debounce helper. `this` satisfies the SessionBroadcaster
-      // interface (subscribeContextUsage, subscribeGitStatus, etc.).
-      broadcaster: this,
+    if (!this.cachedPumpDeps) {
+      this.cachedPumpDeps = {
+        historyCap: this.historyCap,
+        persist: (s) => this.persist(s),
+        denyPendingPermissions: (s) => this.permBroker.denyAll(s),
+        isLive: (id) => this.sessions.has(id),
+        autoResume: this.autoResumeEnabled ? (s) => this.autoResume(s) : undefined,
+        // The pump's mutating-tool detector calls broadcaster.broadcastGitStatusChanged
+        // through the debounce helper. `this` satisfies the SessionBroadcaster
+        // interface (subscribeContextUsage, subscribeGitStatus, etc.).
+        broadcaster: this,
+      }
     }
+    return this.cachedPumpDeps
   }
 
   private async pump(session: Session): Promise<void> {

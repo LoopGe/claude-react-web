@@ -58,7 +58,7 @@ interface ConfirmState {
   onConfirm: () => Promise<void>
 }
 
-export function GitPanel({ sessionId, cwd, status, loading, error, onRefresh, onClose }: Props) {
+export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading, error, onRefresh, onClose }: Props) {
   const writeOps = useGitWrite(sessionId)
   const [toastError, showError, clearError] = useErrorToast()
   const [confirm, setConfirm] = useState<ConfirmState | null>(null)
@@ -408,7 +408,7 @@ export function GitPanel({ sessionId, cwd, status, loading, error, onRefresh, on
       )}
     </aside>
   )
-}
+})
 
 // ── Section wrapper using native <details>/<summary> ──────────────────
 

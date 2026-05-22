@@ -67,120 +67,120 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
       }
       signal.addEventListener('abort', () => resolve({ done: true, value: undefined }), { once: true })
     })
-    // Idle watchdog: every time we await query.next(), start a 60s timer
-    // that warns if nothing comes back. This distinguishes "SDK produced
-    // nothing" from "pump stuck processing a specific message" when
-    // debugging stuck sessions.
-    while (true) {
-      const nextStartedAt = Date.now()
-      debugLog(`[session ${session.id}] pump awaiting iter.next() for msg #${msgCount + 1}`)
-      // Single 60s timeout per iteration — fires once with the total
-      // idle duration instead of repeating every 10s.
-      const idleTimer = setTimeout(() => {
-        if (session.pendingTurns === 0 && session.pending.size === 0) return
-        log.warn(
-          `[session ${session.id}] query.next() idle for ${Date.now() - nextStartedAt}ms ` +
-          `(waiting for msg #${msgCount + 1}, ` +
-          `pendingTurns=${session.pendingTurns}, pending perms=${session.pending.size})`,
-        )
-      }, 60_000)
-      let step: IteratorResult<SDKMessage>
-      try {
-        step = await Promise.race([iter.next(), abortPromise])
-      } finally {
-        clearTimeout(idleTimer)
-      }
-      if (step.done) {
-        // When the loop exits (normally or via abort signal), explicitly
-        // close the async iterator so the SDK can clean up its subprocess
-        // resources (stdin pipe, child process, etc.). Without this,
-        // aborting the session may leave orphan CLI processes.
-        try { await iter.return?.() } catch { /* subprocess already dead — ignore */ }
-        break
-      }
-      const msg = step.value
-      const msgSubtype = (msg as unknown as { subtype?: string }).subtype
-      // SDK 0.3 echoes top-level user input back through the Query stream
-      // (sometimes as SDKUserMessageReplay with isReplay=true, sometimes
-      // — notably the very first turn after spawn — as a plain
-      // SDKUserMessage with no replay marker). Either way, we already
-      // broadcast our own user messages via SessionManager.send() /
-      // sendContent(), so forwarding the SDK's echo paints the bubble
-      // twice. The reliable discriminator is `parent_tool_use_id`: top-
-      // level user input has it === null, while tool results and
-      // sub-agent outputs (which we DO want to forward) have it set to
-      // the originating tool_use id.
-      if (msg.type === 'user' && (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id == null) {
-        debugLog(`[session ${session.id}] dropping echoed top-level user message uuid=${(msg as { uuid?: string }).uuid}`)
-        continue
-      }
-      debugLog(
-        `[session ${session.id}] msg #${msgCount + 1} received — ` +
-        `type=${msg.type}${msgSubtype ? `/${msgSubtype}` : ''} ` +
-        `(next() took ${Date.now() - nextStartedAt}ms)`,
+    // Idle watchdog: a single timer per session that warns if query.next()
+    // hasn't resolved within 60s. The mutable `nextStartedAt` is updated at
+    // the top of each iteration so the warning reports the correct duration.
+    // We reuse one timer across all iterations instead of allocating and
+    // clearing a new setTimeout per message (which for a 200-message turn
+    // means 200 timer allocations).
+    let nextStartedAt = Date.now()
+    const idleTimer = setTimeout(() => {
+      if (session.pendingTurns === 0 && session.pending.size === 0) return
+      log.warn(
+        `[session ${session.id}] query.next() idle for ${Date.now() - nextStartedAt}ms ` +
+        `(waiting for msg #${msgCount + 1}, ` +
+        `pendingTurns=${session.pendingTurns}, pending perms=${session.pending.size})`,
       )
-      // Detect filesystem-mutating tool_use ids so we can fire a debounced
-      // git-status-changed broadcast when the matching tool_result lands.
-      if (msg.type === 'assistant') {
-        const content = (msg as { message?: { content?: unknown } }).message?.content
-        if (Array.isArray(content)) {
-          for (const block of content) {
-            const id = mutatingToolUseId(block)
-            if (id) pendingMutatingToolUses.add(id)
+    }, 60_000)
+    try {
+      while (true) {
+        nextStartedAt = Date.now()
+        debugLog(`[session ${session.id}] pump awaiting iter.next() for msg #${msgCount + 1}`)
+        const step: IteratorResult<SDKMessage> = await Promise.race([iter.next(), abortPromise])
+        if (step.done) {
+          // When the loop exits (normally or via abort signal), explicitly
+          // close the async iterator so the SDK can clean up its subprocess
+          // resources (stdin pipe, child process, etc.). Without this,
+          // aborting the session may leave orphan CLI processes.
+          try { await iter.return?.() } catch { /* subprocess already dead — ignore */ }
+          break
+        }
+        const msg = step.value
+        const msgSubtype = (msg as unknown as { subtype?: string }).subtype
+        // SDK 0.3 echoes top-level user input back through the Query stream
+        // (sometimes as SDKUserMessageReplay with isReplay=true, sometimes
+        // — notably the very first turn after spawn — as a plain
+        // SDKUserMessage with no replay marker). Either way, we already
+        // broadcast our own user messages via SessionManager.send() /
+        // sendContent(), so forwarding the SDK's echo paints the bubble
+        // twice. The reliable discriminator is `parent_tool_use_id`: top-
+        // level user input has it === null, while tool results and
+        // sub-agent outputs (which we DO want to forward) have it set to
+        // the originating tool_use id.
+        if (msg.type === 'user' && (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id == null) {
+          debugLog(`[session ${session.id}] dropping echoed top-level user message uuid=${(msg as { uuid?: string }).uuid}`)
+          continue
+        }
+        debugLog(
+          `[session ${session.id}] msg #${msgCount + 1} received — ` +
+          `type=${msg.type}${msgSubtype ? `/${msgSubtype}` : ''} ` +
+          `(next() took ${Date.now() - nextStartedAt}ms)`,
+        )
+        // Detect filesystem-mutating tool_use ids so we can fire a debounced
+        // git-status-changed broadcast when the matching tool_result lands.
+        if (msg.type === 'assistant') {
+          const content = (msg as { message?: { content?: unknown } }).message?.content
+          if (Array.isArray(content)) {
+            for (const block of content) {
+              const id = mutatingToolUseId(block)
+              if (id) pendingMutatingToolUses.add(id)
+            }
+          }
+        }
+        // tool_result for a mutating tool → schedule a debounced
+        // git-status-changed broadcast. SDK 0.3 wraps tool_results in a
+        // user message whose `parent_tool_use_id` is the originating
+        // tool_use id. We don't care about the result content here — just
+        // that it landed (the worktree is now in its post-mutation state).
+        if (msg.type === 'user') {
+          const parentId = (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id
+          if (parentId && pendingMutatingToolUses.has(parentId)) {
+            pendingMutatingToolUses.delete(parentId)
+            if (deps.broadcaster) scheduleGitBroadcast(deps.broadcaster, session.id)
+          }
+        }
+        session.lastActivityAt = Date.now()
+        // The session has produced something since the last GC kick, so any
+        // pending auto-interrupt mark is no longer relevant — clear it so a
+        // future silence triggers fresh detection rather than immediately
+        // escalating to unload.
+        session.autoInterruptedAt = undefined
+        pushBounded(session.history, msg, deps.historyCap)
+        for (const sub of session.subscribers.values()) {
+          try { sub.push(msg) } catch { /* subscriber dead — don't break broadcast to others */ }
+        }
+        msgCount++
+        // Derive a context-usage snapshot directly from the result's own
+        // `usage` + `modelUsage` payload — no IPC. The result message is
+        // the SDK's authoritative tally for the API call that just landed,
+        // so we get exact numbers for free instead of round-tripping into
+        // the CLI subprocess for getContextUsage(). The full breakdown
+        // (skills/agents/memoryFiles/mcpTools) still comes from the
+        // on-demand REST endpoint when the user opens SettingsPanel.
+        if (msg.type === 'result' && session.subscribers.size > 0) {
+          const usage = liteContextUsageFromResult(msg)
+          if (usage) {
+            for (const sub of session.contextUsageSubscribers) {
+              try { sub.push(usage) } catch { /* subscriber dead — skip */ }
+            }
+          }
+        }
+        // `result` marks a completed turn. Reset pendingTurns to 0 (each
+        // result represents exactly one completed turn). If the user has
+        // already queued another message via send(), pendingTurns will be
+        // bumped back to 1 there.
+        if (msg.type === 'result') {
+          debugLog(`[session ${session.id}] result received — total msgs: ${msgCount}`)
+          session.pendingTurns = 0
+          session.workingSince = undefined
+          session.lastTurnAt = Date.now()
+          try { deps.persist(session) } catch (err) {
+            log.warn(`[session ${session.id}] persist failed after result: ${err}`)
           }
         }
       }
-      // tool_result for a mutating tool → schedule a debounced
-      // git-status-changed broadcast. SDK 0.3 wraps tool_results in a
-      // user message whose `parent_tool_use_id` is the originating
-      // tool_use id. We don't care about the result content here — just
-      // that it landed (the worktree is now in its post-mutation state).
-      if (msg.type === 'user') {
-        const parentId = (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id
-        if (parentId && pendingMutatingToolUses.has(parentId)) {
-          pendingMutatingToolUses.delete(parentId)
-          if (deps.broadcaster) scheduleGitBroadcast(deps.broadcaster, session.id)
-        }
-      }
-      session.lastActivityAt = Date.now()
-      // The session has produced something since the last GC kick, so any
-      // pending auto-interrupt mark is no longer relevant — clear it so a
-      // future silence triggers fresh detection rather than immediately
-      // escalating to unload.
-      session.autoInterruptedAt = undefined
-      pushBounded(session.history, msg, deps.historyCap)
-      for (const sub of session.subscribers.values()) {
-        try { sub.push(msg) } catch { /* subscriber dead — don't break broadcast to others */ }
-      }
-      msgCount++
-      // Derive a context-usage snapshot directly from the result's own
-      // `usage` + `modelUsage` payload — no IPC. The result message is
-      // the SDK's authoritative tally for the API call that just landed,
-      // so we get exact numbers for free instead of round-tripping into
-      // the CLI subprocess for getContextUsage(). The full breakdown
-      // (skills/agents/memoryFiles/mcpTools) still comes from the
-      // on-demand REST endpoint when the user opens SettingsPanel.
-      if (msg.type === 'result' && session.subscribers.size > 0) {
-        const usage = liteContextUsageFromResult(msg)
-        if (usage) {
-          for (const sub of session.contextUsageSubscribers) {
-            try { sub.push(usage) } catch { /* subscriber dead — skip */ }
-          }
-        }
-      }
-      // `result` marks a completed turn. Reset pendingTurns to 0 (each
-      // result represents exactly one completed turn). If the user has
-      // already queued another message via send(), pendingTurns will be
-      // bumped back to 1 there.
-      if (msg.type === 'result') {
-        debugLog(`[session ${session.id}] result received — total msgs: ${msgCount}`)
-        session.pendingTurns = 0
-        session.workingSince = undefined
-        session.lastTurnAt = Date.now()
-        try { deps.persist(session) } catch (err) {
-          log.warn(`[session ${session.id}] persist failed after result: ${err}`)
-        }
-      }
+    } finally {
+      clearTimeout(idleTimer)
     }
     log.info(`[session ${session.id}] pump ended normally — ${msgCount} messages processed`)
   } catch (err) {
@@ -277,10 +277,11 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
   // pick out only the numeric fields we care about. Missing fields fall
   // back to 0 below.
   type IterationUsage = {
-    type?: 'message' | 'compaction' | 'advisor_message'
+    type?: string
     input_tokens?: number
     cache_creation_input_tokens?: number | null
     cache_read_input_tokens?: number | null
+    output_tokens?: number
   }
   const result = msg as unknown as {
     usage?: IterationUsage & { iterations?: IterationUsage[] | null }
@@ -303,6 +304,19 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
   }
   if (contextWindow <= 0) return null
 
+  // Always log the raw payload so we can diagnose context-usage issues.
+  // This fires once per turn (when a result message lands) — the cost is
+  // one JSON.stringify per completed turn which is negligible.
+  debugLog(
+    `[context-usage] raw payload for model=${model} contextWindow=${contextWindow}: ` +
+    `top-level=${JSON.stringify({
+      input_tokens: usage.input_tokens,
+      cache_creation_input_tokens: usage.cache_creation_input_tokens,
+      cache_read_input_tokens: usage.cache_read_input_tokens,
+    })} ` +
+    `iterations=${JSON.stringify(usage.iterations ?? null)}`,
+  )
+
   // Context-window usage = the prompt size of the most recent regular
   // sampling iteration. We must:
   //   1. Skip non-'message' iteration types. 'compaction' iterations
@@ -315,21 +329,28 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
   // Per Anthropic SDK docs: "Calculate the true context window size
   // from the last iteration." — but only the last `message` iteration.
   let source: IterationUsage = usage
+  let sourceLabel = 'top-level'
   if (usage.iterations && usage.iterations.length > 0) {
     let pickedMessage = false
     for (let i = usage.iterations.length - 1; i >= 0; i--) {
       if (usage.iterations[i].type === 'message') {
         source = usage.iterations[i]
         pickedMessage = true
+        sourceLabel = `iteration[${i}]`
         break
       }
     }
     // No 'message' iteration in this turn (e.g. a turn that's purely
-    // compaction). Pick the last iteration of any kind but flag it for
-    // clamping below — this is the rare path that historically produced
-    // 2337k / 200k numbers.
+    // compaction). Return null rather than reporting a bogus 100% — the
+    // previous fallback to "last iteration of any kind" silently clamped
+    // to contextWindow, producing the 1000k/1000k bug.
     if (!pickedMessage) {
-      source = usage.iterations[usage.iterations.length - 1]
+      debugLog(
+        `[context-usage] no 'message' iteration found ` +
+        `(types=${usage.iterations.map((it) => it.type).join(', ')}); ` +
+        `skipping update to avoid false 100% reading`,
+      )
+      return null
     }
   }
   const rawTotal =
@@ -339,20 +360,16 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
 
   // Defensive clamp: a single API call's prompt cannot legitimately
   // exceed the model's context window. If we still see > 100%, the
-  // SDK is reporting in a way we don't understand — log the raw
-  // payload so the next sighting is debuggable, and cap the displayed
-  // value so the bar is sane.
-  const totalTokens = Math.min(rawTotal, contextWindow)
+  // SDK is reporting in a way we don't understand — skip the update
+  // rather than showing a false 100% reading.
   if (rawTotal > contextWindow) {
     debugLog(
-      `[context-usage] raw total ${rawTotal} > contextWindow ${contextWindow} for model ${model}; ` +
-      `clamping. iterations=${JSON.stringify(usage.iterations ?? null)} top-level=${JSON.stringify({
-        input_tokens: usage.input_tokens,
-        cache_creation_input_tokens: usage.cache_creation_input_tokens,
-        cache_read_input_tokens: usage.cache_read_input_tokens,
-      })}`,
+      `[context-usage] raw total ${rawTotal} > contextWindow ${contextWindow} for model ${model} ` +
+      `(source=${sourceLabel}); skipping update`,
     )
+    return null
   }
+  const totalTokens = rawTotal
 
   return {
     totalTokens,

@@ -270,7 +270,7 @@ export const Composer = memo(function Composer({
               }
               if (e.key === 'ArrowDown') {
                 e.preventDefault()
-                setPickerIndex((i) => i + 1)
+                setPickerIndex((i) => Math.min(i + 1, filteredCommands.length - 1))
                 return
               }
               if (e.key === 'Enter' || e.key === 'Tab') {

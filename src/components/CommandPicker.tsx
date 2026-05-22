@@ -96,6 +96,7 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault()
+        e.stopPropagation()
         onClose()
       }
     }
@@ -107,6 +108,15 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
     }
   }, [onClose])
 
+  // Clamp selectedIndex to valid range.
+  const idx = Math.max(0, Math.min(selectedIndex, filtered.length - 1))
+
+  // Ref for the active item so we can scroll it into view on keyboard nav.
+  const activeRef = useRef<HTMLButtonElement>(null)
+  useLayoutEffect(() => {
+    activeRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [idx])
+
   if (filtered.length === 0) {
     return (
       <div className="cmd-picker" ref={rootRef} role="listbox">
@@ -114,9 +124,6 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
       </div>
     )
   }
-
-  // Clamp selectedIndex to valid range.
-  const idx = Math.max(0, Math.min(selectedIndex, filtered.length - 1))
 
   // Flatten groups for keyboard navigation index mapping.
   let flatIdx = 0
@@ -128,12 +135,14 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
           {group.plugin && <div className="cmd-picker-group-header">{group.plugin}</div>}
           {group.commands.map((cmd) => {
             const i = flatIdx++
+            const isActive = i === idx
             return (
               <button
                 key={cmd.name}
-                className={`cmd-picker-item${i === idx ? ' active' : ''}`}
+                ref={isActive ? activeRef : undefined}
+                className={`cmd-picker-item${isActive ? ' active' : ''}`}
                 role="option"
-                aria-selected={i === idx}
+                aria-selected={isActive}
                 onMouseDown={(e) => {
                   e.preventDefault()
                   onSelect(cmd)

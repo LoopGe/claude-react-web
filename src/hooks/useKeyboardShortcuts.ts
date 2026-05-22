@@ -39,9 +39,15 @@ export function useKeyboardShortcuts(shortcuts: Shortcut[]): void {
   // re-attached. The listener is registered once (empty dep array);
   // the ref is updated via useLayoutEffect to avoid writing during
   // render (react-hooks/refs).
-  const shortcutsRef = useRef(shortcuts)
+  //
+  // Combos are pre-normalized so the keydown handler avoids repeated
+  // string parsing on every keystroke.
+  const shortcutsRef = useRef<Array<Shortcut & { _normalisedCombo: string }>>([])
   useLayoutEffect(() => {
-    shortcutsRef.current = shortcuts
+    shortcutsRef.current = shortcuts.map((s) => ({
+      ...s,
+      _normalisedCombo: normalise(s.combo),
+    }))
   })
 
   useEffect(() => {
@@ -49,7 +55,7 @@ export function useKeyboardShortcuts(shortcuts: Shortcut[]): void {
       const combo = eventCombo(e)
       if (!combo) return
       for (const s of shortcutsRef.current) {
-        if (normalise(s.combo) !== combo) continue
+        if (s._normalisedCombo !== combo) continue
         if (!s.allowInInput && isInputTarget(e.target)) return
         // preventDefault: shortcuts like Alt+W / Ctrl+1 shouldn't trigger
         // browser default behaviour (open menu, switch tab). The handler

@@ -1,7 +1,7 @@
 // In-chat message search bar. Ctrl+F opens, Escape closes. Highlights
 // matches and provides prev/next navigation. Wired at the Chat-panel level.
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 interface Props {
   open: boolean
@@ -65,20 +65,44 @@ export function MessageSearch({ open, onClose, onNavigate, totalResults, onQuery
     onQueryChange(query)
   }, [query, onQueryChange])
 
-  // Navigate results.
+  // Keep refs so functional state updaters always see the latest values
+  // without being blocked by a stale closure.
+  const totalResultsRef = useRef(totalResults)
+  const onNavigateRef = useRef(onNavigate)
+  // Sync refs after commit so they're always current without triggering
+  // re-renders (the react-hooks/refs rule forbids writing during render).
+  useLayoutEffect(() => {
+    totalResultsRef.current = totalResults
+    onNavigateRef.current = onNavigate
+  })
+  // Flag set by goPrev/goNext so the effect below knows this was a
+  // user-initiated navigation (not a programmatic sync via activeIndex).
+  const userNavigatingRef = useRef(false)
+
+  // Call onNavigate after React commits a user-initiated index change.
+  // Separated from the state updater to keep it pure.
+  useEffect(() => {
+    if (userNavigatingRef.current) {
+      userNavigatingRef.current = false
+      onNavigateRef.current(currentIdx)
+    }
+  }, [currentIdx])
+
+  // Navigate results. Uses functional updater for setCurrentIdx so rapid
+  // clicks within a single render frame each advance by one.
   const goPrev = useCallback(() => {
-    if (totalResults === 0) return
-    const next = (currentIdx - 1 + totalResults) % totalResults
-    setCurrentIdx(next)
-    onNavigate(next)
-  }, [currentIdx, totalResults, onNavigate])
+    const total = totalResultsRef.current
+    if (total === 0) return
+    userNavigatingRef.current = true
+    setCurrentIdx((prev) => (prev - 1 + total) % total)
+  }, [])
 
   const goNext = useCallback(() => {
-    if (totalResults === 0) return
-    const next = (currentIdx + 1) % totalResults
-    setCurrentIdx(next)
-    onNavigate(next)
-  }, [currentIdx, totalResults, onNavigate])
+    const total = totalResultsRef.current
+    if (total === 0) return
+    userNavigatingRef.current = true
+    setCurrentIdx((prev) => (prev + 1) % total)
+  }, [])
 
   if (!open) return null
 

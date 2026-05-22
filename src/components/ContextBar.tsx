@@ -4,6 +4,7 @@
 // (the server pushes a `context_usage` event periodically).
 // No fetch calls, no timers, no polling.
 
+import { memo } from 'react'
 import type { ContextUsage } from '../hooks/useChatStream'
 import { formatTokens } from '../utils/format'
 
@@ -12,7 +13,7 @@ interface Props {
   usage: ContextUsage | null
 }
 
-export function ContextBar({ usage }: Props) {
+export const ContextBar = memo(function ContextBar({ usage }: Props) {
   // Prefer rawMaxTokens (the model's real advertised context window) over
   // maxTokens (which may be reduced by compaction headroom reserves).
   const max = usage?.rawMaxTokens ?? usage?.maxTokens
@@ -51,4 +52,4 @@ export function ContextBar({ usage }: Props) {
       </div>
     </div>
   )
-}
+})

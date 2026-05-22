@@ -867,8 +867,9 @@ export async function getSessionDiff(cwd: string, fromSha: string): Promise<{ te
   const ELISION = '\n\n... [diff truncated to keep request size bounded] ...\n\n'
   const headBytes = Math.floor(MAX_AI_DIFF_BYTES * 0.6)
   const tailBytes = MAX_AI_DIFF_BYTES - headBytes - ELISION.length
-  const head = Buffer.from(stdout, 'utf8').subarray(0, headBytes).toString('utf8')
-  const tail = Buffer.from(stdout, 'utf8').subarray(bytes - tailBytes).toString('utf8')
+  const buf = Buffer.from(stdout, 'utf8')
+  const head = buf.subarray(0, headBytes).toString('utf8')
+  const tail = buf.subarray(bytes - tailBytes).toString('utf8')
   return { text: head + ELISION + tail, truncated: true }
 }
 

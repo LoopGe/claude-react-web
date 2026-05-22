@@ -69,7 +69,8 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
         ...state,
         liveTurn: {
           ...state.liveTurn,
-          flushedText: state.liveTurn.textBuffer,
+          flushedText: state.liveTurn.flushedText + state.liveTurn.textChunks.join(''),
+          textChunks: [],
           dirty: false,
         },
       }
@@ -324,6 +325,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
         startedAt: existing?.startedAt ?? subagent.startedAt ?? now,
         endedAt: existing?.endedAt,
         status: existing?.status ?? 'running',
+        toolCount: existing?.toolCount ?? 0,
       })
     }
     changed = true
@@ -358,6 +360,30 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
     changed = changed || touched
   }
 
+  // Count tool_use blocks in assistant messages that belong to a subagent
+  // (identified by parent_tool_use_id). This pre-computes the value that
+  // SubagentCard previously scanned the full message list to compute.
+  if (message.type === 'assistant' && activeSubagents.size > 0) {
+    const parentId = (message as Record<string, unknown>).parent_tool_use_id
+    if (typeof parentId === 'string') {
+      const existing = activeSubagents.get(parentId)
+      if (existing) {
+        const content = message.message?.content
+        if (Array.isArray(content)) {
+          let newTools = 0
+          for (const b of content as Array<{ type?: string }>) {
+            if (b.type === 'tool_use') newTools++
+          }
+          if (newTools > 0) {
+            if (activeSubagents === state.activeSubagents) activeSubagents = new Map(activeSubagents)
+            activeSubagents.set(parentId, { ...existing, toolCount: existing.toolCount + newTools })
+            changed = true
+          }
+        }
+      }
+    }
+  }
+
   return changed ? { ...state, planStatus, planContent, activeSubagents } : state
 }
 
@@ -371,7 +397,7 @@ function updateLiveTurn(state: SessionState, message: SdkMessage): SessionState 
     liveTurn = {
       turnId: typeof message.uuid === 'string' ? message.uuid : `turn:${state.eventCount + 1}`,
       phase: null,
-      textBuffer: '',
+      textChunks: [],
       flushedText: '',
       tokenRate: null,
       startedAt: Date.now(),
@@ -415,7 +441,7 @@ function updateLiveTurn(state: SessionState, message: SdkMessage): SessionState 
     if (typeof text === 'string') {
       liveTurn = {
         ...liveTurn,
-        textBuffer: liveTurn.textBuffer + text,
+        textChunks: [...liveTurn.textChunks, text],
         lastDeltaAt: performance.now(),
         dirty: true,
       }

@@ -296,19 +296,26 @@ export const Chat = memo(function Chat({
   // The permission is already resolved server-side; this just controls
   // how long the "answer sent" card remains on screen.
   const [answeredQuestions, setAnsweredQuestions] = useState<Map<string, { request: Extract<PermissionRequest, { kind: 'question' }>; answers: Array<string | string[] | null> }>>(() => new Map())
+  // Track pending dismiss timeouts so they can be cleaned up on unmount.
+  const pendingDismissTimers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set())
+  useEffect(() => () => {
+    for (const id of pendingDismissTimers.current) clearTimeout(id)
+  }, [])
   const addAnsweredQuestion = useCallback((id: string, request: Extract<PermissionRequest, { kind: 'question' }>, answers: Array<string | string[] | null>) => {
     setAnsweredQuestions((prev) => {
       const next = new Map(prev)
       next.set(id, { request, answers })
       return next
     })
-    setTimeout(() => {
+    const timerId = setTimeout(() => {
+      pendingDismissTimers.current.delete(timerId)
       setAnsweredQuestions((prev) => {
         const next = new Map(prev)
         next.delete(id)
         return next
       })
     }, 3000)
+    pendingDismissTimers.current.add(timerId)
   }, [])
 
   // Splice the recap loading message into the transcript when a fetch
@@ -490,6 +497,10 @@ export const Chat = memo(function Chat({
   // session state), and `working` is now derived from the message stream
   // itself (result messages clear it) — so no background poll is needed.
 
+  // Stable wrappers so Composer's React.memo isn't defeated by inline arrows.
+  const handleSend = useCallback(() => void send(), [send])
+  const handleInterrupt = useCallback(() => void interrupt(), [interrupt])
+
   return (
     <div className="chat">
       {headerButtonsRef && createPortal(
@@ -616,8 +627,8 @@ export const Chat = memo(function Chat({
         pastedImages={pastedImages.images}
         onPasteImage={pastedImages.addImage}
         onRemovePastedImage={pastedImages.removeImage}
-        onSend={() => void send()}
-        onInterrupt={() => void interrupt()}
+        onSend={handleSend}
+        onInterrupt={handleInterrupt}
         canInterrupt={session.working}
         focusSignal={composerFocusSignal}
       />

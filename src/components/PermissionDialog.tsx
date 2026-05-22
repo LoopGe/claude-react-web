@@ -9,7 +9,7 @@
 // persistForSession=true and let the server promote every suggestion's
 // destination to 'session'. No suggestions? We hide the always button.
 
-import { useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import type { PermissionRequest } from '../types'
 import { Markdown } from './Markdown'
 import { useFocusTrap } from '../hooks/useFocusTrap'
@@ -34,7 +34,7 @@ interface Props {
   planContentMap?: ReadonlyMap<string, string>
 }
 
-export function PermissionDialog({ request, onDecide, planContentMap }: Props) {
+export const PermissionDialog = memo(function PermissionDialog({ request, onDecide, planContentMap }: Props) {
   const [showRaw, setShowRaw] = useState(false)
   const [busy, setBusy] = useState(false)
   // Ref provides a synchronous guard so that rapid double-clicks
@@ -56,6 +56,22 @@ export function PermissionDialog({ request, onDecide, planContentMap }: Props) {
     setBusy(true)
     onDecide(d)
   }
+
+  // Escape should deny and close — not fall through to the global Escape
+  // handler which would interrupt the session instead.
+  useEffect(() => {
+    const el = dialogRef.current
+    if (!el) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !busyRef.current) {
+        e.preventDefault()
+        e.stopPropagation()
+        click({ behavior: 'deny' })
+      }
+    }
+    el.addEventListener('keydown', onKey)
+    return () => el.removeEventListener('keydown', onKey)
+  })
 
   // Plan-mode approval is its own UX: the request is "I'm done planning,
   // here's the plan — should I start executing?" The dialog renders the
@@ -184,7 +200,7 @@ export function PermissionDialog({ request, onDecide, planContentMap }: Props) {
       </div>
     </div>
   )
-}
+})
 
 /**
  * Quick preview for common tool shapes. We pick out the obvious fields

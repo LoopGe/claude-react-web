@@ -168,6 +168,9 @@ export const SessionList = memo(function SessionList({
   const [showNewGroupInput, setShowNewGroupInput] = useState(false)
   const [newGroupName, setNewGroupName] = useState('')
   const newGroupInputRef = useRef<HTMLInputElement>(null)
+  // Guard against double-creation when Enter triggers both the keyDown
+  // handler and the subsequent blur (from DOM removal).
+  const groupCreatedViaEnterRef = useRef(false)
   const visibleSessions = useMemo<SessionInfo[]>(() => {
     const q = filter.trim().toLowerCase()
     if (!q) return sessions
@@ -441,7 +444,10 @@ export const SessionList = memo(function SessionList({
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
                   const name = newGroupName.trim()
-                  if (name) onCreateGroup(name)
+                  if (name) {
+                    groupCreatedViaEnterRef.current = true
+                    onCreateGroup(name)
+                  }
                   setNewGroupName('')
                   setShowNewGroupInput(false)
                 } else if (e.key === 'Escape') {
@@ -450,6 +456,13 @@ export const SessionList = memo(function SessionList({
                 }
               }}
               onBlur={() => {
+                // If Enter already created the group, skip the blur path
+                // to avoid a duplicate creation (Enter unmounts the input,
+                // which fires blur synchronously before React re-renders).
+                if (groupCreatedViaEnterRef.current) {
+                  groupCreatedViaEnterRef.current = false
+                  return
+                }
                 const name = newGroupName.trim()
                 if (name) onCreateGroup(name)
                 setNewGroupName('')

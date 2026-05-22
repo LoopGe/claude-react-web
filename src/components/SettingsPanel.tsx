@@ -1,7 +1,7 @@
 // Right-side settings drawer. Focuses on mid-session controls — options that
 // can only be set at session creation are shown read-only at the top.
 
-import { useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { api } from '../hooks/useApi'
 import type { AgentInfo, McpServerConfigMeta, McpServerStatus, ModelInfo, PermissionMode, Plugin, SessionInfo, SlashCommand } from '../types'
 import { PERMISSION_MODES } from '../types'
@@ -21,7 +21,7 @@ interface Props {
   onPluginsReloaded?: () => void
 }
 
-export function SettingsPanel({ session, onClose, onSessionUpdate, commands = [], agents = [], onPluginsReloaded }: Props) {
+export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onSessionUpdate, commands = [], agents = [], onPluginsReloaded }: Props) {
   const [models, setModels] = useState<ModelInfo[]>([])
   const [settingsText, setSettingsText] = useState('{}')
   const [usage, setUsage] = useState<ContextUsage | null>(null)
@@ -409,7 +409,7 @@ export function SettingsPanel({ session, onClose, onSessionUpdate, commands = []
       )}
     </aside>
   )
-}
+})
 
 function ReadOnlyField({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (

@@ -88,7 +88,7 @@ export function getSubagentStarts(msg: SdkMessage): ActiveSubagent[] {
       (typeof input?.description === 'string' && input.description) ||
       (typeof input?.prompt === 'string' && truncate(input.prompt, 80)) ||
       'Subagent'
-    out.push({ toolUseId: id, label, status: 'running' })
+    out.push({ toolUseId: id, label, status: 'running', toolCount: 0 })
   }
   return out
 }

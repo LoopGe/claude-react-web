@@ -907,28 +907,28 @@ export function App() {
         {
           combo: 'mod+1',
           handler: () => {
-            if (openIds[0]) setFocusedId(openIds[0])
+            if (openIdsRef.current[0]) setFocusedId(openIdsRef.current[0])
           },
           description: 'Focus slot 1',
         },
         {
           combo: 'mod+2',
           handler: () => {
-            if (openIds[1]) setFocusedId(openIds[1])
+            if (openIdsRef.current[1]) setFocusedId(openIdsRef.current[1])
           },
           description: 'Focus slot 2',
         },
         {
           combo: 'mod+3',
           handler: () => {
-            if (openIds[2]) setFocusedId(openIds[2])
+            if (openIdsRef.current[2]) setFocusedId(openIdsRef.current[2])
           },
           description: 'Focus slot 3',
         },
         {
           combo: 'alt+w',
           handler: () => {
-            if (focusedId) closeSession(focusedId)
+            if (focusedIdRef.current) closeSession(focusedIdRef.current)
           },
           description: 'Close focused panel',
         },
@@ -951,20 +951,21 @@ export function App() {
         {
           combo: 'shift+tab',
           handler: () => {
-            if (!focusedId) return
-            const s = sessionsRef.current.find((x) => x.id === focusedId)
+            const fid = focusedIdRef.current
+            if (!fid) return
+            const s = sessionsRef.current.find((x) => x.id === fid)
             if (!s) return
             const cur = (s.permissionMode ?? 'default') as PermissionMode
             const idx = PERMISSION_MODES.indexOf(cur)
             const next = PERMISSION_MODES[(idx + 1) % PERMISSION_MODES.length]
-            void api.post(`/sessions/${focusedId}/permission-mode`, { mode: next })
+            void api.post(`/sessions/${fid}/permission-mode`, { mode: next })
           },
           description: 'Cycle permission mode',
         },
         {
           combo: 'alt+r',
           handler: () => {
-            if (focusedId) recapFnsRef.current.get(focusedId)?.()
+            if (focusedIdRef.current) recapFnsRef.current.get(focusedIdRef.current)?.()
           },
           allowInInput: true,
           description: 'Refresh session recap',
@@ -981,19 +982,19 @@ export function App() {
             else if (newSessionDialogOpenRef.current) setNewSessionDialogOpen(false)
             else if (gitPanelOpenForRef.current) setGitPanelOpenFor(null)
             else if (settingsOpenForRef.current) setSettingsOpenFor(null)
-            else if (focusedId) {
-              const focused = sessionsRef.current.find((s) => s.id === focusedId)
+            else if (focusedIdRef.current) {
+              const focused = sessionsRef.current.find((s) => s.id === focusedIdRef.current)
               if (focused?.working) {
                 // Use the registered interrupt callback (set by <Chat>)
                 // so pendingInterruptRef is set and the result message
                 // shows the "interrupted" label.
-                const fn = interruptFnsRef.current.get(focusedId)
+                const fn = interruptFnsRef.current.get(focusedIdRef.current)
                 if (fn) {
                   void fn()
                 } else {
                   // Fallback: Chat hasn't registered yet (e.g. still
                   // mounting). Direct POST still interrupts the turn.
-                  void api.post(`/sessions/${focusedId}/interrupt`)
+                  void api.post(`/sessions/${focusedIdRef.current}/interrupt`)
                 }
               }
             }
@@ -1002,7 +1003,7 @@ export function App() {
           description: 'Close overlay / Interrupt',
         },
       ],
-      [openIds, focusedId, closeSession],
+      [closeSession],
     )
   useKeyboardShortcuts(shortcuts)
 

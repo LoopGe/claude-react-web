@@ -9,28 +9,12 @@
 import { memo, useEffect, useState } from 'react'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { formatElapsed } from '../utils/format'
-import type { SdkMessage } from '../types'
 
 interface Props {
   toolUseId: string
   /** Fallback label — shown when the subagent hasn't been recorded in
    *  the index yet (stale state during a hard refresh, etc.). */
   fallbackLabel?: string
-}
-
-
-function countToolUses(messages: readonly SdkMessage[], toolUseId: string): number {
-  let count = 0
-  for (const m of messages) {
-    if ((m as Record<string, unknown>).parent_tool_use_id !== toolUseId) continue
-    if (m.type !== 'assistant') continue
-    const content = m.message?.content
-    if (!Array.isArray(content)) continue
-    for (const b of content as Array<{ type?: string }>) {
-      if (b.type === 'tool_use') count++
-    }
-  }
-  return count
 }
 
 export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabel }: Props) {
@@ -57,7 +41,8 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
     ? (endedAt ?? now) - startedAt
     : null
 
-  const toolCount = ctx ? countToolUses(ctx.messages, toolUseId) : 0
+  // Pre-computed in the reducer's updateIndexes — no message scanning needed.
+  const toolCount = record?.toolCount ?? 0
 
   const statusIcon =
     status === 'running' ? '●'

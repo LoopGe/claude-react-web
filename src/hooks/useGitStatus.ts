@@ -34,6 +34,34 @@ interface BaseFetchState<T> {
   error: string | null
 }
 
+// ── WS auto-refresh helper ────────────────────────────────────────────
+//
+// Subscribes to `git-status-changed` frames for a session and calls
+// `refresh` when one arrives. Shared by useGitStatus, useGitBranches,
+// useGitStashes, and useSessionFiles — each previously duplicated
+// this subscribe/listen/cleanup pattern independently.
+
+function useGitWsRefresh(
+  sessionId: string | undefined,
+  enabled: boolean,
+  refresh: () => void,
+): void {
+  const hub = useWsHub()
+  useEffect(() => {
+    if (!enabled || !sessionId) return
+    const offSub = hub.subscribe(sessionId)
+    const offListener = hub.addSessionListener(sessionId, (frame) => {
+      if (frame.kind === 'git-status-changed') refresh()
+    })
+    return () => {
+      offSub()
+      offListener()
+    }
+  }, [enabled, sessionId, hub, refresh])
+}
+
+// ── useGitStatus ──────────────────────────────────────────────────────
+
 /** Cheap structural equality for GitStatusResponse. Used to short-circuit
  *  setData on WS-triggered refetches when nothing actually changed —
  *  most Edit/Write tool runs land in node_modules / non-tracked files
@@ -71,7 +99,6 @@ export function useGitStatus(
   const [error, setError] = useState<string | null>(null)
   const [tick, setTick] = useState(0)
   const abortRef = useRef<AbortController | null>(null)
-  const hub = useWsHub()
 
   useEffect(() => {
     if (!enabled || !cwd) {
@@ -124,20 +151,12 @@ export function useGitStatus(
   // session, bump the tick to refetch. The hub's subscribe() is
   // ref-counted so multiple consumers (chip + open GitPanel) share one
   // server-side stream without duplication.
-  useEffect(() => {
-    if (!enabled || !sessionId) return
-    const offSub = hub.subscribe(sessionId)
-    const offListener = hub.addSessionListener(sessionId, (frame) => {
-      if (frame.kind === 'git-status-changed') refresh()
-    })
-    return () => {
-      offSub()
-      offListener()
-    }
-  }, [enabled, sessionId, hub, refresh])
+  useGitWsRefresh(sessionId, enabled, refresh)
 
   return { data, loading, error, refresh }
 }
+
+// ── useGitDiff ────────────────────────────────────────────────────────
 
 export interface UseGitDiffReturn extends BaseFetchState<GitDiff> {
   refresh: () => void
@@ -197,6 +216,8 @@ export function useGitDiff(
 
   return { data, loading, error, refresh }
 }
+
+// ── useGitLog ─────────────────────────────────────────────────────────
 
 export interface UseGitLogReturn extends BaseFetchState<GitCommit[]> {
   refresh: () => void
@@ -273,7 +294,6 @@ export function useGitBranches(
   const [error, setError] = useState<string | null>(null)
   const [tick, setTick] = useState(0)
   const abortRef = useRef<AbortController | null>(null)
-  const hub = useWsHub()
 
   useEffect(() => {
     if (!enabled || !sessionId) {
@@ -305,13 +325,7 @@ export function useGitBranches(
 
   const refresh = useCallback(() => { setTick((n) => n + 1) }, [])
 
-  useEffect(() => {
-    if (!enabled || !sessionId) return
-    const offListener = hub.addSessionListener(sessionId, (frame) => {
-      if (frame.kind === 'git-status-changed') refresh()
-    })
-    return () => { offListener() }
-  }, [enabled, sessionId, hub, refresh])
+  useGitWsRefresh(sessionId, enabled, refresh)
 
   return { data, loading, error, refresh }
 }
@@ -329,7 +343,6 @@ export function useGitStashes(
   const [error, setError] = useState<string | null>(null)
   const [tick, setTick] = useState(0)
   const abortRef = useRef<AbortController | null>(null)
-  const hub = useWsHub()
 
   useEffect(() => {
     if (!enabled || !sessionId) {
@@ -361,13 +374,7 @@ export function useGitStashes(
 
   const refresh = useCallback(() => { setTick((n) => n + 1) }, [])
 
-  useEffect(() => {
-    if (!enabled || !sessionId) return
-    const offListener = hub.addSessionListener(sessionId, (frame) => {
-      if (frame.kind === 'git-status-changed') refresh()
-    })
-    return () => { offListener() }
-  }, [enabled, sessionId, hub, refresh])
+  useGitWsRefresh(sessionId, enabled, refresh)
 
   return { data, loading, error, refresh }
 }
@@ -393,7 +400,6 @@ export function useSessionFiles(
   const [error, setError] = useState<string | null>(null)
   const [tick, setTick] = useState(0)
   const abortRef = useRef<AbortController | null>(null)
-  const hub = useWsHub()
 
   useEffect(() => {
     if (!enabled || !sessionId) {
@@ -431,13 +437,7 @@ export function useSessionFiles(
 
   const refresh = useCallback(() => { setTick((n) => n + 1) }, [])
 
-  useEffect(() => {
-    if (!enabled || !sessionId) return
-    const offListener = hub.addSessionListener(sessionId, (frame) => {
-      if (frame.kind === 'git-status-changed') refresh()
-    })
-    return () => { offListener() }
-  }, [enabled, sessionId, hub, refresh])
+  useGitWsRefresh(sessionId, enabled, refresh)
 
   return { data, loading, error, refresh, gitStartSha }
 }

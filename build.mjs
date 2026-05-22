@@ -11,6 +11,7 @@ mkdirSync('dist', { recursive: true })
 await build({
   entryPoints: ['server/cli.ts'],
   bundle: true,
+  minify: true,
   platform: 'node',
   target: 'node20',
   format: 'esm',

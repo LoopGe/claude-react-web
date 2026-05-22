@@ -182,10 +182,10 @@ describe('liteContextUsageFromResult', () => {
     expect(liteContextUsageFromResult(msg)!.totalTokens).toBe(5000)
   })
 
-  it('clamps totalTokens to maxTokens when the SDK reports something unparseable', () => {
-    // No 'message' iteration in the turn — only compaction. We pick
-    // the last iteration as a fallback and clamp so the bar can't
-    // visually exceed 100%.
+  it('returns null when only compaction iterations exist (no message iteration)', () => {
+    // No 'message' iteration in the turn — only compaction. Previously
+    // this would clamp to contextWindow, producing a false 100% reading.
+    // Now we return null so the bar shows the last known good value.
     const msg = makeResult({
       usage: {
         input_tokens: 0,
@@ -197,9 +197,42 @@ describe('liteContextUsageFromResult', () => {
       },
       modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
     })
-    const out = liteContextUsageFromResult(msg)
-    expect(out!.totalTokens).toBe(200000) // clamped
-    expect(out!.percentage).toBe(100)
+    expect(liteContextUsageFromResult(msg)).toBeNull()
+  })
+
+  it('returns null when iterations have no type field', () => {
+    // SDK may return iterations without a `type` field — all iterations
+    // would fail the type === 'message' check. Return null to avoid
+    // falling back to a potentially-cumulative value.
+    const msg = makeResult({
+      usage: {
+        input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        iterations: [
+          { input_tokens: 50000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1000 },
+        ],
+      },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+    })
+    expect(liteContextUsageFromResult(msg)).toBeNull()
+  })
+
+  it('returns null when raw total exceeds context window (unparseable SDK data)', () => {
+    // The SDK reported more tokens than the context window can hold —
+    // the data is unparseable. Return null rather than clamping to 100%.
+    const msg = makeResult({
+      usage: {
+        input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        iterations: [
+          { type: 'message', input_tokens: 500000, cache_creation_input_tokens: 0, cache_read_input_tokens: 600000, output_tokens: 1000 },
+        ],
+      },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+    })
+    expect(liteContextUsageFromResult(msg)).toBeNull()
   })
 
   it('picks the first model entry with a positive contextWindow', () => {

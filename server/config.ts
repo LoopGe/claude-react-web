@@ -145,7 +145,13 @@ export async function loadConfig(stateDir: string): Promise<void> {
     return
   }
 
-  const file_ = parsed as ConfigFile
+  applyParsedConfig(parsed as ConfigFile, stateDir, file)
+}
+
+/** Merge a parsed config.json object into the in-memory config.
+ *  Extracted from loadConfig() so doUpdateConfigFile() can skip the
+ *  second disk read after writing an update. */
+function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): void {
   const merged: ServerConfig = { ...config }
 
   if (Array.isArray(file_.modelList) && file_.modelList.length > 0) {
@@ -294,5 +300,6 @@ async function doUpdateConfigFile(
   }
   const file = join(stateDir, 'config.json')
   await fs.writeFile(file, JSON.stringify(existing, null, 2), 'utf8')
-  await loadConfig(stateDir)
+  // Apply the merged result directly instead of re-reading from disk.
+  applyParsedConfig(existing as ConfigFile, stateDir, file)
 }
