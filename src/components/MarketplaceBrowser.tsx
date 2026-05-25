@@ -1,129 +1,498 @@
-// Marketplace browser — lists available plugins from registered marketplaces
-// and allows installing them via the claude CLI.
+// Marketplace browser — adds, removes, refreshes plugin marketplaces and
+// installs / enables / disables / uninstalls individual plugins.
+//
+// All mutating operations route through `/api/marketplaces/...` which
+// shells out to the `claude` CLI on the server. The UI surfaces CLI
+// errors verbatim because they're more accurate than anything we'd
+// reconstruct (e.g. "marketplace 'foo' not found", "invalid path").
+//
+// In-band confirms (Add form, Remove confirm) replace the toolbar row
+// rather than stacking modal-on-modal — keeps focus management simple
+// and avoids z-index ambiguity with the parent modal.
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../hooks/useApi'
+import { formatRelativeTime } from '../utils/format'
 import type { MarketplaceInfo, MarketplacePlugin } from '../types'
 
 interface Props {
   onClose: () => void
+  /** Called whenever installed/enabled state may have changed so the
+   *  parent can re-fetch slash-commands / agents. */
   onInstalled?: () => void
 }
+
+type ToolbarMode = 'idle' | 'adding' | 'confirming-remove'
 
 export function MarketplaceBrowser({ onClose, onInstalled }: Props) {
   const [marketplaces, setMarketplaces] = useState<MarketplaceInfo[]>([])
   const [selected, setSelected] = useState<string>('')
   const [plugins, setPlugins] = useState<MarketplacePlugin[]>([])
-  const [loading, setLoading] = useState(false)
-  const [installing, setInstalling] = useState<string | null>(null)
+  const [pluginsLoading, setPluginsLoading] = useState(false)
   const [filter, setFilter] = useState('')
+  /** Per-plugin in-flight action (`installing`/`uninstalling`/`toggling`)
+   *  so we can disable the relevant buttons and show progress text. */
+  const [busyPlugin, setBusyPlugin] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  /** Banner shown when a marketplace-level action succeeds; clears on next mutation. */
+  const [info, setInfo] = useState<string | null>(null)
+  const [toolbarMode, setToolbarMode] = useState<ToolbarMode>('idle')
+  const [addSource, setAddSource] = useState('')
+  const [addBusy, setAddBusy] = useState(false)
+  const [refreshingAll, setRefreshingAll] = useState(false)
+  const [refreshingOne, setRefreshingOne] = useState(false)
+  const [removingOne, setRemovingOne] = useState(false)
 
-  // Load marketplaces on mount
-  useEffect(() => {
-    let cancelled = false
-    api.get<{ marketplaces: MarketplaceInfo[] }>('/marketplaces')
-      .then((res) => {
-        if (cancelled) return
-        setMarketplaces(res.marketplaces ?? [])
-        if (res.marketplaces?.length) setSelected(res.marketplaces[0].name)
-      })
-      .catch(() => {})
-    return () => { cancelled = true }
+  const addInputRef = useRef<HTMLInputElement>(null)
+
+  // Per-loader request-id refs. Each loader call increments its ref;
+  // after `await`, the resolved handler bails out if a newer call has
+  // since been issued. Without this, rapid marketplace-switching can
+  // race: a slow loadPlugins('A') resolves AFTER a fast loadPlugins('B')
+  // and overwrites B's plugin list with A's. (Replaces the `cancelled`
+  // flag pattern from the previous incarnation — refs survive the
+  // useCallback identity churn caused by `selected` deps.)
+  const marketplacesReqRef = useRef(0)
+  const pluginsReqRef = useRef(0)
+
+  // ─── Data loaders ─────────────────────────────────────────────
+
+  const loadMarketplaces = useCallback(
+    async (preferName?: string): Promise<MarketplaceInfo[]> => {
+      const reqId = ++marketplacesReqRef.current
+      try {
+        const res = await api.get<{ marketplaces: MarketplaceInfo[] }>('/marketplaces')
+        // Stale response — a newer loadMarketplaces() has been issued.
+        // Drop our setState calls but still return the list to the
+        // caller (which awaited THIS call's promise specifically and
+        // is using the result for its own sync logic).
+        if (reqId !== marketplacesReqRef.current) return res.marketplaces ?? []
+        const list = res.marketplaces ?? []
+        setMarketplaces(list)
+        if (preferName && list.some((m) => m.name === preferName)) {
+          setSelected(preferName)
+        } else if (list.length > 0 && !list.some((m) => m.name === selected)) {
+          setSelected(list[0].name)
+        } else if (list.length === 0) {
+          setSelected('')
+        }
+        return list
+      } catch (e) {
+        if (reqId !== marketplacesReqRef.current) return []
+        setErr((e as Error).message)
+        return []
+      }
+    },
+    [selected],
+  )
+
+  const loadPlugins = useCallback(async (marketplace: string) => {
+    if (!marketplace) {
+      // The empty-marketplace path also bumps the request id so any
+      // earlier in-flight loadPlugins(prev) gets superseded — otherwise
+      // a slow prior fetch could repopulate the list seconds later.
+      ++pluginsReqRef.current
+      setPlugins([])
+      return
+    }
+    const reqId = ++pluginsReqRef.current
+    setPluginsLoading(true)
+    try {
+      const res = await api.get<{ plugins: MarketplacePlugin[] }>(
+        `/marketplaces/${encodeURIComponent(marketplace)}/plugins`,
+      )
+      if (reqId !== pluginsReqRef.current) return
+      setPlugins(res.plugins ?? [])
+    } catch (e) {
+      if (reqId !== pluginsReqRef.current) return
+      setPlugins([])
+      setErr((e as Error).message)
+    } finally {
+      // Only the latest in-flight request owns the loading flag — an
+      // earlier-superseded request flipping it back to false here
+      // would cause UI flicker if the latest is still pending.
+      if (reqId === pluginsReqRef.current) setPluginsLoading(false)
+    }
   }, [])
 
-  // Load plugins when marketplace selection changes
+  // Load marketplaces once on mount. The setState calls inside
+  // loadMarketplaces happen after an `await` (microtask boundary), so
+  // the lint rule's "setState during effect" complaint is a false
+  // positive — but explicit silence is clearer than relying on a
+  // future fix.
   useEffect(() => {
-    if (!selected) {
-      // Defer to avoid synchronous setState in effect body
-      const id = setTimeout(() => { setPlugins([]); setLoading(false) }, 0)
-      return () => clearTimeout(id)
-    }
-    let cancelled = false
-    // Defer to avoid synchronous setState in effect body
-    const loadId = setTimeout(() => { if (!cancelled) setLoading(true) }, 0)
-    api.get<{ plugins: MarketplacePlugin[] }>(`/marketplaces/${encodeURIComponent(selected)}/plugins`)
-      .then((res) => { if (!cancelled) setPlugins(res.plugins ?? []) })
-      .catch(() => { if (!cancelled) setPlugins([]) })
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true; clearTimeout(loadId) }
-  }, [selected])
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadMarketplaces()
+    // We intentionally don't depend on loadMarketplaces — its identity
+    // changes whenever `selected` does, which would re-fetch on every
+    // dropdown change. The plugin-list effect below handles selection.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
-  const install = async (plugin: MarketplacePlugin) => {
-    setInstalling(plugin.name)
+  // Reload plugin list whenever the selected marketplace changes.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadPlugins(selected)
+  }, [selected, loadPlugins])
+
+  // Auto-focus the source input when the user opens the Add form.
+  useEffect(() => {
+    if (toolbarMode === 'adding') {
+      addInputRef.current?.focus()
+    }
+  }, [toolbarMode])
+
+  // ─── Plugin actions ───────────────────────────────────────────
+
+  const runPluginAction = useCallback(
+    async (plugin: MarketplacePlugin, verb: 'install' | 'uninstall' | 'enable' | 'disable') => {
+      setBusyPlugin(plugin.name)
+      setErr(null)
+      // Clear any lingering marketplace-level info banner ("Removed
+      // 'X'.", "Refreshed 'Y'.") so it doesn't sit above an unrelated
+      // plugin action. Other mutating paths (submitAdd/refreshOne/
+      // refreshAll) already do this; runPluginAction was the outlier.
+      setInfo(null)
+      try {
+        const path = `/marketplaces/${encodeURIComponent(plugin.marketplace)}/plugins/${encodeURIComponent(plugin.name)}`
+        if (verb === 'install') {
+          await api.post(`${path}/install`)
+        } else if (verb === 'uninstall') {
+          await api.delete(path)
+        } else {
+          await api.post(`${path}/${verb}`)
+        }
+        // Reload from server so the cached list reflects the new state
+        // (including any side-effects on dependent plugins).
+        await loadPlugins(plugin.marketplace)
+        onInstalled?.()
+      } catch (e) {
+        setErr((e as Error).message)
+      } finally {
+        setBusyPlugin(null)
+      }
+    },
+    [loadPlugins, onInstalled],
+  )
+
+  // ─── Marketplace actions ──────────────────────────────────────
+
+  const submitAdd = useCallback(async () => {
+    const source = addSource.trim()
+    if (!source) return
+    setAddBusy(true)
     setErr(null)
+    setInfo(null)
+    // Capture existing names so we can detect the newly-added one and
+    // auto-select it after the list refetches.
+    const before = new Set(marketplaces.map((m) => m.name))
     try {
-      await api.post(`/marketplaces/${encodeURIComponent(plugin.marketplace)}/plugins/${encodeURIComponent(plugin.name)}/install`)
-      // Mark as installed locally
-      setPlugins((prev) => prev.map((p) => p.name === plugin.name ? { ...p, installed: true } : p))
+      await api.post('/marketplaces', { source })
+      const list = await loadMarketplaces()
+      const added = list.find((m) => !before.has(m.name))
+      if (added) {
+        setSelected(added.name)
+        setInfo(`Added "${added.name}".`)
+      }
+      setAddSource('')
+      setToolbarMode('idle')
       onInstalled?.()
     } catch (e) {
       setErr((e as Error).message)
+    } finally {
+      setAddBusy(false)
     }
-    setInstalling(null)
-  }
+  }, [addSource, marketplaces, loadMarketplaces, onInstalled])
 
-  const filtered = plugins.filter((p) =>
-    !filter || p.name.toLowerCase().includes(filter.toLowerCase()) || p.description.toLowerCase().includes(filter.toLowerCase())
+  const confirmRemove = useCallback(async () => {
+    if (!selected) return
+    setRemovingOne(true)
+    setErr(null)
+    try {
+      await api.delete(`/marketplaces/${encodeURIComponent(selected)}`)
+      setInfo(`Removed "${selected}". Plugins remain installed.`)
+      setToolbarMode('idle')
+      await loadMarketplaces()
+      onInstalled?.()
+    } catch (e) {
+      setErr((e as Error).message)
+    } finally {
+      setRemovingOne(false)
+    }
+  }, [selected, loadMarketplaces, onInstalled])
+
+  const refreshOne = useCallback(async () => {
+    if (!selected) return
+    setRefreshingOne(true)
+    setErr(null)
+    try {
+      await api.post(`/marketplaces/${encodeURIComponent(selected)}/refresh`)
+      await loadMarketplaces(selected)
+      await loadPlugins(selected)
+      setInfo(`Refreshed "${selected}".`)
+    } catch (e) {
+      setErr((e as Error).message)
+    } finally {
+      setRefreshingOne(false)
+    }
+  }, [selected, loadMarketplaces, loadPlugins])
+
+  const refreshAll = useCallback(async () => {
+    setRefreshingAll(true)
+    setErr(null)
+    try {
+      await api.post('/marketplaces/refresh-all')
+      await loadMarketplaces(selected)
+      if (selected) await loadPlugins(selected)
+      setInfo('Refreshed all marketplaces.')
+    } catch (e) {
+      setErr((e as Error).message)
+    } finally {
+      setRefreshingAll(false)
+    }
+  }, [selected, loadMarketplaces, loadPlugins])
+
+  // ─── Derived data ─────────────────────────────────────────────
+
+  const selectedInfo = useMemo<MarketplaceInfo | undefined>(
+    () => marketplaces.find((m) => m.name === selected),
+    [marketplaces, selected],
   )
 
+  const filteredPlugins = useMemo<MarketplacePlugin[]>(() => {
+    if (!filter) return plugins
+    const q = filter.toLowerCase()
+    return plugins.filter(
+      (p) => p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q),
+    )
+  }, [plugins, filter])
+
+  const anyMutating = addBusy || removingOne || refreshingAll || refreshingOne
+
+  // ─── Render ───────────────────────────────────────────────────
+
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.5)' }}
-      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}
-    >
-      <div style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)', borderRadius: 8, width: 520, maxHeight: '70vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <h3 style={{ margin: 0, fontSize: 15, flex: 1 }}>Plugin Marketplace</h3>
+    <div className="marketplace-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="marketplace-card">
+        <div className="modal-header">
+          <h3>Plugin Marketplace</h3>
           <button className="btn btn-sm" onClick={onClose}>Close</button>
         </div>
 
-        {err && <div style={{ padding: '6px 16px', fontSize: 12, color: 'var(--danger)', background: 'var(--bg)' }}>{err}</div>}
+        {err && (
+          <div className="marketplace-error">
+            <span>{err}</span>
+            <button className="error-toast-dismiss" onClick={() => setErr(null)}>✕</button>
+          </div>
+        )}
+        {info && !err && (
+          <div className="marketplace-info">
+            <span>{info}</span>
+            <button className="error-toast-dismiss" onClick={() => setInfo(null)}>✕</button>
+          </div>
+        )}
 
-        <div style={{ padding: '8px 16px', display: 'flex', gap: 8, borderBottom: '1px solid var(--border)' }}>
-          <select className="select" value={selected} onChange={(e) => setSelected(e.target.value)} style={{ flex: 1 }}>
+        {/* Marketplace selector + filter row */}
+        <div className="marketplace-row">
+          <select
+            className="select"
+            value={selected}
+            onChange={(e) => setSelected(e.target.value)}
+            disabled={marketplaces.length === 0}
+          >
+            {marketplaces.length === 0 && <option value="">No marketplaces registered</option>}
             {marketplaces.map((m) => (
               <option key={m.name} value={m.name}>{m.name}</option>
             ))}
           </select>
           <input
             className="input"
-            placeholder="Filter plugins..."
+            placeholder="Filter plugins…"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            style={{ flex: 1 }}
+            disabled={!selected}
           />
+          <button
+            className="btn btn-sm"
+            onClick={() => { setToolbarMode('adding'); setErr(null); setInfo(null) }}
+            disabled={anyMutating}
+          >
+            + Add
+          </button>
         </div>
 
-        <div style={{ flex: 1, overflow: 'auto', padding: '8px 16px' }}>
-          {loading && <div style={{ color: 'var(--fg-muted)', fontSize: 13, textAlign: 'center', padding: 16 }}>Loading...</div>}
-          {!loading && filtered.length === 0 && (
-            <div style={{ color: 'var(--fg-muted)', fontSize: 13, textAlign: 'center', padding: 16 }}>No plugins found</div>
-          )}
-          {filtered.map((p) => (
-            <div key={p.name} style={{ border: '1px solid var(--border)', borderRadius: 6, padding: '8px 12px', marginBottom: 8 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontWeight: 500, fontSize: 13, flex: 1 }}>{p.name}</span>
-                <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>v{p.version}</span>
-                {p.installed ? (
-                  <span style={{ fontSize: 11, color: 'var(--ok)', padding: '1px 6px', border: '1px solid var(--ok)', borderRadius: 3 }}>Installed</span>
-                ) : (
-                  <button
-                    className="btn btn-primary btn-sm"
-                    onClick={() => install(p)}
-                    disabled={installing === p.name}
-                  >
-                    {installing === p.name ? 'Installing...' : 'Install'}
-                  </button>
-                )}
+        {/* Selected-marketplace meta + per-marketplace toolbar (or active form) */}
+        {toolbarMode === 'adding' ? (
+          <div className="marketplace-add-form">
+            <input
+              ref={addInputRef}
+              className="input marketplace-add-input"
+              placeholder="GitHub repo (owner/repo), git URL, or local path"
+              value={addSource}
+              onChange={(e) => setAddSource(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && addSource.trim() && !addBusy) {
+                  e.preventDefault()
+                  void submitAdd()
+                } else if (e.key === 'Escape') {
+                  e.preventDefault()
+                  setToolbarMode('idle')
+                  setAddSource('')
+                }
+              }}
+              disabled={addBusy}
+            />
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={() => void submitAdd()}
+              disabled={!addSource.trim() || addBusy}
+            >
+              {addBusy ? 'Adding…' : 'Add'}
+            </button>
+            <button
+              className="btn btn-sm"
+              onClick={() => { setToolbarMode('idle'); setAddSource('') }}
+              disabled={addBusy}
+            >
+              Cancel
+            </button>
+          </div>
+        ) : toolbarMode === 'confirming-remove' ? (
+          <div className="marketplace-confirm-remove">
+            <span>
+              Remove <strong>{selected}</strong>? Plugins from this marketplace stay installed.
+            </span>
+            <div className="marketplace-confirm-actions">
+              <button
+                className="btn btn-sm"
+                onClick={() => setToolbarMode('idle')}
+                disabled={removingOne}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-danger btn-sm"
+                onClick={() => void confirmRemove()}
+                disabled={removingOne}
+              >
+                {removingOne ? 'Removing…' : 'Remove'}
+              </button>
+            </div>
+          </div>
+        ) : selectedInfo ? (
+          <div className="marketplace-meta-row">
+            <div className="marketplace-meta-text">
+              <div className="marketplace-meta-source" title={selectedInfo.source}>
+                source: {selectedInfo.source || '(unknown)'}
               </div>
-              {p.description && (
-                <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 4 }}>{p.description}</div>
-              )}
-              {p.author && (
-                <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 2 }}>by {p.author}</div>
+              {selectedInfo.lastUpdated && (
+                <div className="marketplace-meta-time">
+                  Updated {formatRelativeTime(selectedInfo.lastUpdated)}
+                </div>
               )}
             </div>
-          ))}
+            <div className="marketplace-meta-actions">
+              <button
+                className="btn btn-sm"
+                onClick={() => void refreshOne()}
+                disabled={anyMutating}
+                title="Refresh this marketplace from its source"
+              >
+                {refreshingOne ? '↻ Refreshing…' : '↻ Refresh'}
+              </button>
+              <button
+                className="btn btn-sm"
+                onClick={() => void refreshAll()}
+                disabled={anyMutating || marketplaces.length === 0}
+                title="Refresh every registered marketplace"
+              >
+                {refreshingAll ? '↻ Refreshing all…' : '↻ Refresh all'}
+              </button>
+              <button
+                className="btn btn-danger btn-sm"
+                onClick={() => { setToolbarMode('confirming-remove'); setErr(null); setInfo(null) }}
+                disabled={anyMutating}
+                title="Unregister this marketplace (plugins stay installed)"
+              >
+                🗑 Remove
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {/* Plugin list */}
+        <div className="marketplace-plugin-list">
+          {pluginsLoading && (
+            <div className="marketplace-plugin-empty">Loading…</div>
+          )}
+          {!pluginsLoading && !selected && (
+            <div className="marketplace-plugin-empty">
+              Add a marketplace above to browse plugins.
+            </div>
+          )}
+          {!pluginsLoading && selected && filteredPlugins.length === 0 && (
+            <div className="marketplace-plugin-empty">
+              {plugins.length === 0
+                ? 'No plugins available in this marketplace.'
+                : 'No plugins match the filter.'}
+            </div>
+          )}
+          {!pluginsLoading && filteredPlugins.map((p) => {
+            const busy = busyPlugin === p.name
+            return (
+              <div key={p.name} className="marketplace-plugin-row">
+                <div className="marketplace-plugin-head">
+                  <span className="marketplace-plugin-name">{p.name}</span>
+                  <span className="marketplace-plugin-version">v{p.version}</span>
+                  {p.installed && (
+                    <span
+                      className={`marketplace-plugin-status ${p.enabled ? 'enabled' : 'disabled'}`}
+                      title={p.enabled ? 'Plugin is enabled' : 'Plugin is installed but disabled'}
+                    >
+                      {p.enabled ? '● enabled' : '○ disabled'}
+                    </span>
+                  )}
+                  <div className="marketplace-plugin-actions">
+                    {!p.installed && (
+                      <button
+                        className="btn btn-primary btn-sm"
+                        onClick={() => void runPluginAction(p, 'install')}
+                        disabled={busy}
+                      >
+                        {busy ? 'Installing…' : 'Install'}
+                      </button>
+                    )}
+                    {p.installed && (
+                      <>
+                        <button
+                          className="btn btn-sm"
+                          onClick={() => void runPluginAction(p, p.enabled ? 'disable' : 'enable')}
+                          disabled={busy}
+                          title={p.enabled ? 'Disable without uninstalling' : 'Re-enable this plugin'}
+                        >
+                          {busy ? '…' : p.enabled ? 'Disable' : 'Enable'}
+                        </button>
+                        <button
+                          className="btn btn-danger btn-sm"
+                          onClick={() => void runPluginAction(p, 'uninstall')}
+                          disabled={busy}
+                          title="Remove this plugin entirely"
+                        >
+                          {busy ? '…' : 'Uninstall'}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+                {p.description && (
+                  <div className="marketplace-plugin-desc">{p.description}</div>
+                )}
+                {p.author && (
+                  <div className="marketplace-plugin-author">by {p.author}</div>
+                )}
+              </div>
+            )
+          })}
         </div>
       </div>
     </div>

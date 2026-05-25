@@ -34,3 +34,40 @@ export function formatBytes(n: number): string {
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i++ }
   return `${v.toFixed(i > 0 ? 1 : 0)} ${units[i]}`
 }
+
+/** Format an ISO timestamp as a compact relative-time string:
+ *  "just now", "5m ago", "3h ago", "yesterday", "5d ago", "3w ago",
+ *  or a localized date for anything older than a month. Falsy /
+ *  un-parseable inputs return an empty string so callers can render
+ *  conditionally without an extra null check. Future timestamps are
+ *  treated as "just now" rather than emitting a misleading negative
+ *  duration. */
+export function formatRelativeTime(iso: string | undefined | null, now: number = Date.now()): string {
+  if (!iso) return ''
+  const t = Date.parse(iso)
+  if (!Number.isFinite(t)) return ''
+  const deltaMs = now - t
+  if (deltaMs < 0) return 'just now'
+  const sec = Math.floor(deltaMs / 1000)
+  // Threshold has to land on a minute boundary, otherwise the
+  // [threshold, 60s) range produces "0m ago" — `Math.floor(sec / 60)`
+  // is 0 in that interval. "just now" therefore covers the full first
+  // minute; minutes-ago kicks in at exactly 60s.
+  if (sec < 60) return 'just now'
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min}m ago`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}h ago`
+  const day = Math.floor(hr / 24)
+  if (day === 1) return 'yesterday'
+  if (day < 7) return `${day}d ago`
+  const week = Math.floor(day / 7)
+  if (week < 5) return `${week}w ago`
+  // Older than ~5 weeks — fall back to an absolute date. Local date
+  // string is OK here; relative-time becomes vague past a month.
+  try {
+    return new Date(t).toLocaleDateString()
+  } catch {
+    return ''
+  }
+}

@@ -3335,11 +3335,6 @@ details.plan-card-collapsible > summary > .plan-card-header {
   from { opacity: 0; transform: translateY(-4px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.recap-msg--fallback {
-  border-style: solid;
-  border-color: var(--border);
-  background: var(--bg-elev);
-}
 .recap-msg--error {
   border-color: color-mix(in srgb, var(--danger) 40%, transparent);
   background: color-mix(in srgb, var(--danger) 6%, transparent);
@@ -4273,4 +4268,305 @@ mark.search-hl {
   color: var(--fg);
 }
 
+/* ── Composer snippets manager (right-click → "Manage snippets…") ─── */
+
+.perm-card.snippets-manager-card {
+  width: min(640px, 100%);
+}
+/* The list takes the flex slack; the add-form sits at fixed height
+   below it. Without flex-shrink the add form would consume half the
+   card on a tall snippet list. */
+.snippets-manager-list {
+  flex: 1;
+  min-height: 120px;
+  overflow-y: auto;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.snippets-manager-empty {
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  padding: 12px 0;
+  text-align: center;
+}
+.snippets-manager-add {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.snippets-manager-add-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.snippet-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.snippet-row-editing {
+  background: var(--bg-elev-2);
+  border-color: var(--accent);
+}
+.snippet-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.snippet-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.snippet-preview {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.snippet-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.snippet-edit-form {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.snippet-edit-form .textarea {
+  min-height: 80px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.snippet-edit-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+/* ── Plugin Marketplace browser ───────────────────────────────── */
+
+.marketplace-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 2000;
+}
+.marketplace-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: min(640px, 92vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+.marketplace-error,
+.marketplace-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.marketplace-error {
+  background: color-mix(in srgb, var(--danger) 15%, var(--bg-elev));
+  color: var(--danger);
+}
+.marketplace-info {
+  background: color-mix(in srgb, var(--ok) 12%, var(--bg-elev));
+  color: var(--ok);
+}
+.marketplace-row {
+  display: flex;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.marketplace-row .select { flex: 1; min-width: 0; }
+.marketplace-row .input { flex: 1; min-width: 0; }
+
+/* Selected-marketplace meta + per-marketplace toolbar (idle state). */
+.marketplace-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  background: var(--bg);
+}
+.marketplace-meta-text {
+  flex: 1;
+  min-width: 0;
+}
+.marketplace-meta-source {
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.marketplace-meta-time {
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-top: 2px;
+}
+.marketplace-meta-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* Inline Add form replaces the meta-row. */
+.marketplace-add-form {
+  display: flex;
+  gap: 6px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  flex-shrink: 0;
+}
+.marketplace-add-input { flex: 1; }
+
+/* Inline Remove confirmation replaces the meta-row. */
+.marketplace-confirm-remove {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-elev));
+  flex-shrink: 0;
+  font-size: 12.5px;
+  color: var(--fg);
+}
+.marketplace-confirm-remove > span { flex: 1; min-width: 0; }
+.marketplace-confirm-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Plugin list. */
+.marketplace-plugin-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.marketplace-plugin-empty {
+  color: var(--fg-muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 20px;
+}
+.marketplace-plugin-row {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  background: var(--bg);
+}
+.marketplace-plugin-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.marketplace-plugin-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+.marketplace-plugin-version {
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-family: var(--mono);
+}
+.marketplace-plugin-status {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  font-weight: 500;
+}
+.marketplace-plugin-status.enabled { color: var(--ok); }
+.marketplace-plugin-status.disabled { color: var(--fg-muted); }
+.marketplace-plugin-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.marketplace-plugin-desc {
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+.marketplace-plugin-author {
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-top: 2px;
+}
+
+/* In-band "Discard unsaved changes?" footer that replaces the Close
+   button when the user tries to close the manager with dirty edits. */
+.snippets-discard-warning {
+  font-size: 12.5px;
+  color: var(--danger);
+  font-weight: 600;
+}
+.snippets-discard-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* Preview block shown inside the "Save snippet" PromptDialog so the
+   user can see what's being saved before confirming the label. */
+.snippet-save-preview {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  max-height: 160px;
+  overflow-y: auto;
+  color: var(--fg-muted);
+}
 

@@ -4,7 +4,14 @@ import type { ContextUsage } from '../hooks/useChatStream'
 export interface TranscriptItem {
   id: string
   msg: SdkMessage
-  searchableText: string | null
+  /** Canonical plain-text view of the message — markdown syntax
+   *  stripped, block boundaries collapsed to single newlines.  This
+   *  is the SSOT for in-session search: both the match counter
+   *  (Chat.tsx) and the highlight renderer (rehype-highlight.ts in
+   *  src/search/) agree because they derive their views from this
+   *  same canonicalisation pipeline.  Null when the message has no
+   *  text content (e.g. tool-result-only frames). */
+  plainText: string | null
   isCompactSummary: boolean
   hiddenByDefault: boolean
   /** True for optimistic placeholders that haven't been replaced by the

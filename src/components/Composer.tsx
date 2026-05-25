@@ -10,8 +10,13 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { formatBytes } from '../utils/format'
 import type { Attachment } from '../hooks/useAttachments'
 import type { InputHistoryApi } from '../hooks/useInputHistory'
+import { useComposerSnippets, type ComposerSnippet } from '../hooks/useComposerSnippets'
+import { useErrorToast } from '../hooks/useErrorToast'
 import type { PastedImage, SlashCommand } from '../types'
 import { CommandPicker } from './CommandPicker'
+import { ContextMenu, type ContextMenuItem } from './ContextMenu'
+import { PromptDialog } from './PromptDialog'
+import { SnippetsManagerDialog } from './SnippetsManagerDialog'
 
 interface Props {
   input: string
@@ -52,6 +57,11 @@ interface Props {
    *  (e.g. after a successful send, where the click on the Send button
    *  would otherwise leave focus on the button). */
   focusSignal?: number
+  /** Trigger an on-demand session recap. Surfaced as a "Generate recap"
+   *  item in the textarea's right-click menu. Disabled when canRecap is
+   *  false (e.g. session has never completed a turn). */
+  onRecap?: () => void
+  canRecap?: boolean
 }
 
 export const Composer = memo(function Composer({
@@ -79,9 +89,29 @@ export const Composer = memo(function Composer({
   onInterrupt,
   canInterrupt,
   focusSignal,
+  onRecap,
+  canRecap,
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // ── Right-click context menu state ─────────────────────────────
+  //
+  // The textarea's native context menu is replaced with our own so we can
+  // mix application-level actions (recap, snippets) with the standard
+  // edit operations. Because clicking a menu item moves focus off the
+  // textarea, we snapshot the selection at the moment of right-click —
+  // every Cut / Copy / Paste / Insert action references THAT range, not
+  // whatever the textarea reports later.
+  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
+  const [savedSelection, setSavedSelection] = useState<{ start: number; end: number }>({ start: 0, end: 0 })
+  const [showSnippetsManager, setShowSnippetsManager] = useState(false)
+  /** Set when the user clicked "Save current input as snippet…". Holds
+   *  the textarea content at that moment so future edits don't mutate
+   *  the captured snippet body before they confirm the label. */
+  const [pendingSnippetSave, setPendingSnippetSave] = useState<{ content: string } | null>(null)
+  const [clipboardError, showClipboardError, clearClipboardError] = useErrorToast()
+  const snippets = useComposerSnippets()
 
   // ---- Slash command picker state ----
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -152,6 +182,153 @@ export const Composer = memo(function Composer({
   }, [focusSignal])
 
   const openFilePicker = () => fileInputRef.current?.click()
+
+  // ── Context menu helpers ──────────────────────────────────────
+  //
+  // All edits operate on the snapshot taken when the menu opened, never
+  // on the live textarea selection (which is gone the moment the menu
+  // takes focus). insertAtSavedSelection replaces the snapshot range with
+  // `text` and moves the caret to the end of the inserted text.
+  const insertAtSavedSelection = useCallback(
+    (text: string) => {
+      const { start, end } = savedSelection
+      const next = input.slice(0, start) + text + input.slice(end)
+      setInput(next)
+      const caret = start + text.length
+      requestAnimationFrame(() => {
+        const el = textareaRef.current
+        if (!el) return
+        el.focus()
+        el.setSelectionRange(caret, caret)
+      })
+    },
+    [input, savedSelection, setInput],
+  )
+
+  const handleCut = useCallback(async () => {
+    const { start, end } = savedSelection
+    if (start === end) return
+    const sel = input.slice(start, end)
+    try {
+      await navigator.clipboard.writeText(sel)
+      insertAtSavedSelection('')
+    } catch {
+      showClipboardError('Cut failed — use Ctrl+X instead.')
+    }
+  }, [savedSelection, input, insertAtSavedSelection, showClipboardError])
+
+  const handleCopy = useCallback(async () => {
+    const { start, end } = savedSelection
+    if (start === end) return
+    const sel = input.slice(start, end)
+    try {
+      await navigator.clipboard.writeText(sel)
+    } catch {
+      showClipboardError('Copy failed — use Ctrl+C instead.')
+    }
+  }, [savedSelection, input, showClipboardError])
+
+  const handlePaste = useCallback(async () => {
+    try {
+      const text = await navigator.clipboard.readText()
+      if (text) insertAtSavedSelection(text)
+    } catch {
+      showClipboardError('Paste failed — use Ctrl+V instead.')
+    }
+  }, [insertAtSavedSelection, showClipboardError])
+
+  const handleSelectAll = useCallback(() => {
+    requestAnimationFrame(() => {
+      const el = textareaRef.current
+      if (!el) return
+      el.focus()
+      el.setSelectionRange(0, input.length)
+    })
+  }, [input.length])
+
+  const handleInsertSnippet = useCallback(
+    (s: ComposerSnippet) => {
+      insertAtSavedSelection(s.content)
+    },
+    [insertAtSavedSelection],
+  )
+
+  const handleSaveCurrentAsSnippet = useCallback(() => {
+    if (input.trim() === '') return
+    setPendingSnippetSave({ content: input })
+  }, [input])
+
+  const handleTextareaContextMenu = useCallback(
+    (e: React.MouseEvent<HTMLTextAreaElement>) => {
+      // The slash-command picker is its own keyboard-routed UI; popping a
+      // second floating panel on top of it is confusing. Defer to the
+      // browser default in that case (cheap escape hatch).
+      if (pickerOpen) return
+      e.preventDefault()
+      const el = textareaRef.current
+      if (el) {
+        setSavedSelection({ start: el.selectionStart, end: el.selectionEnd })
+      }
+      setMenuPos({ x: e.clientX, y: e.clientY })
+    },
+    [pickerOpen],
+  )
+
+  const closeMenu = useCallback(() => setMenuPos(null), [])
+
+  const menuItems = useMemo<ContextMenuItem[]>(() => {
+    const hasSelection = savedSelection.start !== savedSelection.end
+    const items: ContextMenuItem[] = [
+      { label: 'Cut', icon: '✂', onClick: () => void handleCut(), disabled: !hasSelection || disabled },
+      { label: 'Copy', icon: '📋', onClick: () => void handleCopy(), disabled: !hasSelection },
+      { label: 'Paste', icon: '📥', onClick: () => void handlePaste(), disabled: disabled },
+      { label: 'Select all', onClick: handleSelectAll, disabled: input.length === 0 },
+    ]
+    if (onRecap) {
+      items.push({})
+      items.push({
+        label: 'Generate recap',
+        icon: '📝',
+        onClick: onRecap,
+        disabled: !canRecap,
+      })
+    }
+    items.push({})
+    for (const s of snippets.snippets) {
+      items.push({
+        label: s.label,
+        onClick: () => handleInsertSnippet(s),
+        disabled,
+      })
+    }
+    if (snippets.snippets.length > 0) items.push({})
+    items.push({
+      label: 'Save current input as snippet…',
+      icon: '+',
+      onClick: handleSaveCurrentAsSnippet,
+      disabled: input.trim() === '',
+    })
+    items.push({
+      label: 'Manage snippets…',
+      icon: '⚙',
+      onClick: () => setShowSnippetsManager(true),
+    })
+    return items
+  }, [
+    savedSelection.start,
+    savedSelection.end,
+    input,
+    disabled,
+    handleCut,
+    handleCopy,
+    handlePaste,
+    handleSelectAll,
+    onRecap,
+    canRecap,
+    snippets.snippets,
+    handleInsertSnippet,
+    handleSaveCurrentAsSnippet,
+  ])
 
   const canSend = !disabled && !sending && (input.trim() !== '' || attachments.length > 0 || pastedImages.length > 0)
 
@@ -226,6 +403,7 @@ export const Composer = memo(function Composer({
               : 'Send a message (Enter = send, Shift+Enter = newline, ↑/↓ history, 📎 to attach)'
           }
           value={input}
+          onContextMenu={handleTextareaContextMenu}
           onPaste={(e) => {
             const items = e.clipboardData?.items
             if (!items) return
@@ -393,6 +571,41 @@ export const Composer = memo(function Composer({
           if (files.length > 0) onUploadFiles(files)
         }}
       />
+
+      {menuPos && (
+        <ContextMenu x={menuPos.x} y={menuPos.y} items={menuItems} onClose={closeMenu} />
+      )}
+
+      {clipboardError && (
+        <div className="error-toast">
+          {clipboardError}
+          <button className="error-toast-dismiss" onClick={clearClipboardError}>✕</button>
+        </div>
+      )}
+
+      {pendingSnippetSave && (
+        <PromptDialog
+          title="Save snippet"
+          message={
+            <>
+              <p>Pick a label for this snippet. The current composer text will be saved as its content.</p>
+              <pre className="snippet-save-preview">{pendingSnippetSave.content}</pre>
+            </>
+          }
+          defaultValue=""
+          confirmLabel="Save"
+          placeholder="Snippet label"
+          onConfirm={(label) => {
+            snippets.add(label, pendingSnippetSave.content)
+            setPendingSnippetSave(null)
+          }}
+          onCancel={() => setPendingSnippetSave(null)}
+        />
+      )}
+
+      {showSnippetsManager && (
+        <SnippetsManagerDialog api={snippets} onClose={() => setShowSnippetsManager(false)} />
+      )}
     </div>
   )
 })

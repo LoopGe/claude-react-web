@@ -241,13 +241,16 @@ export const Chat = memo(function Chat({
   const [searchQuery, setSearchQuery] = useState('')
   const debouncedQuery = useDebouncedValue(searchQuery, 200)
   const [searchActiveIdx, setSearchActiveIdx] = useState(0)
-  /** Indices into transcript items that match the current search query. */
+  /** Indices into transcript items that match the current search query.
+   *  Uses the canonical `plainText` field — same view the rehype
+   *  highlighter reconstructs at render time, so the counter and
+   *  the visible <mark>s describe the same text. */
   const searchMatches = useMemo(() => {
     if (!debouncedQuery) return [] as number[]
     const q = debouncedQuery.toLowerCase()
     const out: number[] = []
     for (let i = 0; i < stream.items.length; i++) {
-      const text = stream.items[i]?.searchableText
+      const text = stream.items[i]?.plainText
       if (text && text.toLowerCase().includes(q)) out.push(i)
     }
     return out
@@ -322,15 +325,18 @@ export const Chat = memo(function Chat({
 
   // Splice the recap loading message into the transcript when a fetch
   // is in flight. Once the server-generated recap arrives via the stream
-  // (type: 'recap', state: 'ready'), the loading card is no longer needed.
+  // (type: 'recap', state: 'ready' OR 'error'), the loading card is no
+  // longer needed — error cards replace the bar the same way ready cards do.
   const itemsWithRecapLoading = useMemo(() => {
     if (!recap.loadingMessage) return stream.items
-    const hasRecap = stream.items.some((i) => i.msg.type === 'recap' && i.msg.state === 'ready')
+    const hasRecap = stream.items.some(
+      (i) => i.msg.type === 'recap' && (i.msg.state === 'ready' || i.msg.state === 'error'),
+    )
     if (hasRecap) return stream.items
     return [...stream.items, {
       id: recap.loadingMessage.uuid,
       msg: recap.loadingMessage,
-      searchableText: null,
+      plainText: null,
       isCompactSummary: false,
       hiddenByDefault: false,
     }]
@@ -645,6 +651,8 @@ export const Chat = memo(function Chat({
         onInterrupt={handleInterrupt}
         canInterrupt={session.working}
         focusSignal={composerFocusSignal}
+        onRecap={recap.refresh}
+        canRecap={!!session.lastTurnAt}
       />
 
       {/* Pending permission dialogs + recently-answered question cards

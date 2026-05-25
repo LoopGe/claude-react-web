@@ -1,5 +1,7 @@
 import { createInitialSessionState, type SessionAction, type SessionSnapshot, type SessionState, type TranscriptItem } from './types'
 import { reduceSessionState } from './reducer'
+import { extractMessagePlainText } from '../search'
+import type { SdkMessage } from '../types'
 
 type Listener = () => void
 
@@ -65,13 +67,15 @@ function pruneStorageCache(): void {
  *  other ephemeral state are excluded. */
 function persistToStorage(sessionId: string, state: SessionState): void {
   try {
+    // plainText is derived from msg via extractMessagePlainText —
+    // we never persist it.  loadFromStorage re-derives on hydrate
+    // so format upgrades to the extractor land automatically.
     const payload = JSON.stringify({
       v: 1,
       savedAt: Date.now(),
       messages: state.messages,
       items: state.items.map((i) => ({
         id: i.id,
-        searchableText: i.searchableText,
         isCompactSummary: i.isCompactSummary,
         hiddenByDefault: i.hiddenByDefault,
         // Store msg as raw object — SdkMessage is loosely typed
@@ -87,7 +91,6 @@ function persistToStorage(sessionId: string, state: SessionState): void {
         items: state.items.slice(-200).map((i) => ({
           id: i.id,
           msg: i.msg,
-          searchableText: i.searchableText,
           isCompactSummary: i.isCompactSummary,
           hiddenByDefault: i.hiddenByDefault,
         })),
@@ -111,15 +114,17 @@ function loadFromStorage(sessionId: string): { messages: TranscriptItem[]; rawMe
     if (!data || data.v !== 1 || !Array.isArray(data.items)) return null
     const items = data.items as Array<{
       id: string
-      msg: unknown
-      searchableText?: string | null
+      msg: SdkMessage
       isCompactSummary?: boolean
       hiddenByDefault?: boolean
     }>
     const messages = items.map((i) => ({
       id: i.id,
       msg: i.msg,
-      searchableText: i.searchableText ?? null,
+      // Re-derive on hydrate.  Older payloads (pre-rename) had a
+      // `searchableText` field; we ignore it because the extractor
+      // we're using now produces a different (and aligned) view.
+      plainText: extractMessagePlainText(i.msg),
       isCompactSummary: i.isCompactSummary ?? false,
       hiddenByDefault: i.hiddenByDefault ?? false,
     })) as TranscriptItem[]

@@ -52,7 +52,7 @@ function toItems(msgs: SdkMessage[]): TranscriptItem[] {
     .map((msg, i) => ({
       id: `item-${i}`,
       msg,
-      searchableText: null,
+      plainText: null,
       isCompactSummary: false,
       hiddenByDefault: msg.type === 'system' && msg.subtype !== 'error' && msg.subtype !== 'compact_boundary' && msg.subtype !== 'api_retry',
     }))

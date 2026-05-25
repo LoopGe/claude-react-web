@@ -13,6 +13,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { createLowlight } from 'lowlight'
 import { ErrorBoundary } from './ErrorBoundary'
+import { rehypeHighlightQuery } from '../search'
 
 // Register only the languages most commonly seen in Claude responses.
 // Each language adds ~2-8 KB to the bundle.
@@ -65,7 +66,7 @@ lowlight.registerAlias({
 })
 
 /** Minimal hast-like node shape. Uses a loose type rather than importing
- *  hast's full union to keep the plugins self-contained. */
+ *  hast's full union to keep the plugin self-contained. */
 interface HastNode {
   type: string
   tagName?: string
@@ -91,7 +92,14 @@ function extractText(node: HastNode): string {
 
 /** Rehype plugin that highlights fenced code blocks using lowlight.
  *  Produces proper hast element nodes (spans with hljs-* classes) instead
- *  of raw HTML strings, which `hast-util-to-jsx-runtime` can render. */
+ *  of raw HTML strings, which `hast-util-to-jsx-runtime` can render.
+ *
+ *  Note: this MUST run before rehypeHighlightQuery so that search
+ *  marks land inside the colourised spans (resulting in nested
+ *  `<span class="hljs-keyword"><mark>function</mark></span>` markup
+ *  that composes both colours visually).  If the order were swapped,
+ *  the lowlight pass would replace the text-with-marks subtree
+ *  wholesale and erase the highlights. */
 function rehypeHighlightLite() {
   return (tree: unknown) => {
     visitNodes(tree as HastNode, (node) => {
@@ -123,61 +131,6 @@ function rehypeHighlightLite() {
   }
 }
 
-/** Rehype plugin that wraps search-query matches in <mark> elements.
- *  Operates on the hast tree *after* syntax highlighting, so code
- *  blocks (whose children are now hljs spans) are naturally skipped. */
-function rehypeSearchHighlight(query: string) {
-  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const regex = new RegExp(`(${escaped})`, 'gi')
-
-  return (tree: unknown) => {
-    walkTextNodes(tree as HastNode, (node, parent, index) => {
-      const val = node.value
-      if (!val || !regex.test(val)) return
-      regex.lastIndex = 0
-      const children: HastNode[] = []
-      let last = 0
-      let m: RegExpExecArray | null
-      while ((m = regex.exec(val)) !== null) {
-        if (m.index > last) {
-          children.push({ type: 'text', value: val.slice(last, m.index) })
-        }
-        children.push({
-          type: 'element',
-          tagName: 'mark',
-          properties: { className: ['search-hl'] },
-          children: [{ type: 'text', value: m[1] }],
-        })
-        last = regex.lastIndex
-      }
-      if (last < val.length) {
-        children.push({ type: 'text', value: val.slice(last) })
-      }
-      parent.children!.splice(index, 1, ...children)
-    })
-  }
-}
-
-/** Walk hast tree, calling fn for every text node. fn may splice
- *  the parent's children array — the walker adjusts its index. */
-function walkTextNodes(
-  node: HastNode,
-  fn: (node: HastNode, parent: HastNode, index: number) => void,
-): void {
-  if (!node.children) return
-  for (let i = 0; i < node.children.length; i++) {
-    const child = node.children[i]
-    if (child.type === 'text') {
-      const lenBefore = node.children.length
-      fn(child, node, i)
-      // If fn spliced children, adjust index for the inserted nodes.
-      i += node.children.length - lenBefore
-    } else {
-      walkTextNodes(child, fn)
-    }
-  }
-}
-
 export const Markdown = memo(function Markdown({ text, searchQuery }: { text: string; searchQuery?: string }) {
   // Fall back to a <pre>-rendered raw text if anything inside react-markdown
   // (or our rehype plugins) throws — prevents one bad message from blanking
@@ -192,10 +145,14 @@ export const Markdown = memo(function Markdown({ text, searchQuery }: { text: st
 const MarkdownInner = memo(function MarkdownInner({ text, searchQuery }: { text: string; searchQuery?: string }) {
   const q = searchQuery?.trim()
 
-  // Build the plugin array once per query change so the regex is
-  // compiled once and captured in the plugin closure.
+  // Build the plugin array once per query change.  The search
+  // highlighter (from src/search/) flattens the tree, runs the regex
+  // ONCE on the canonical text, then splices <mark>s — so phrases
+  // that span inline boundaries (e.g. "**hello** world" → query
+  // "hello world") are highlighted, which the previous per-text-node
+  // implementation could not reach.
   const rehypePlugins = useMemo(
-    () => q ? [rehypeHighlightLite, rehypeSearchHighlight(q)] : [rehypeHighlightLite],
+    () => q ? [rehypeHighlightLite, rehypeHighlightQuery(q)] : [rehypeHighlightLite],
     [q],
   )
 

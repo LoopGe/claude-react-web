@@ -228,6 +228,23 @@ export const MessageList = memo(function MessageList({ items, showSystemEvents =
     return () => ro.disconnect()
   }, [renderableItems.length])
 
+  // Streaming-content auto-follow. Virtuoso's `followOutput` only fires
+  // when `data` changes, but streamingContent lives in the Footer slot —
+  // its DOM grows every ~33ms flush without `data` changing, so without
+  // this effect the typing text silently overflows below the viewport.
+  // We bypass Virtuoso here and write scrollTop directly because the
+  // Footer is not addressable via scrollToIndex (which targets items).
+  // Mirrors the ResizeObserver branch: only re-pins when the user was
+  // already at the bottom — if they scrolled up to read history mid-
+  // stream, atBottomRef goes false and we stop fighting their scroll.
+  useEffect(() => {
+    if (streamingContent == null) return
+    if (!atBottomRef.current) return
+    const el = scrollerRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+  }, [streamingContent])
+
   // Clear the unseen count when the user scrolls close to the bottom.
   // atBottomStateChange only fires when Virtuoso's internal at-bottom
   // state flips — if the user scrolls most of the way down but doesn't
@@ -729,7 +746,6 @@ function RecapMessageView({ msg }: { msg: SdkMessage }) {
         durationMs: number
         toolsUsed: string[]
       }
-      fallback?: boolean
     }
   }
   const state = m.state ?? 'loading'
@@ -761,12 +777,12 @@ function RecapMessageView({ msg }: { msg: SdkMessage }) {
 
   const recap = m.recap
   if (!recap) return null
-  const { summary, stats, fallback } = recap
+  const { summary, stats } = recap
 
   return (
-    <div className={`msg recap-msg ${fallback ? 'recap-msg--fallback' : ''}`} role="note" aria-label="Session recap">
+    <div className="msg recap-msg" role="note" aria-label="Session recap">
       <div className="msg-header">
-        <span>{fallback ? '📋 Session recap' : '✨ Session recap'}</span>
+        <span>✨ Session recap</span>
       </div>
       <div className="msg-body">
         <Markdown text={summary} />

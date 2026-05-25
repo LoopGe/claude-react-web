@@ -1,59 +1,81 @@
 // Session recap route: AI-generated summary.
+//
+// Successful recaps and failures are both persisted as a synthetic
+// `type: 'recap'` message in the session history (state:'ready' or
+// state:'error'). The message is broadcast over WS so all live tabs
+// see it. The HTTP body mirrors what was persisted so callers that
+// don't subscribe still know what happened.
 
 import { Hono } from 'hono'
 import { SessionManager } from '../session-manager.js'
 import { generateRecap, updateRecapCacheAfterAppend } from '../recap.js'
+
+interface ErrorRecapBody {
+  state: 'error'
+  error: string
+  generatedAt: number
+}
 
 export function buildRecapRouter(sm: SessionManager): Hono {
   const app = new Hono()
 
   app.post('/sessions/:id/recap', async (c) => {
     const id = c.req.param('id')
-    const info = sm.get(id) // throws 404 if not found
+    sm.get(id) // throws 404 if not found
     const history = sm.getHistory(id)
+
+    // Dormant session — history was GC'd from memory. Can't summarise
+    // and can't broadcast (no live subscribers, appendRecap would no-op).
+    // Surface the reason in the response body. The client's loading
+    // splice clears on response; the user sees no transcript update,
+    // which matches the pre-change behaviour for dormant sessions.
     if (!history) {
-      // Dormant session — history is gone but metadata persists.
-      const msgCount = info.messageCount
-      if (msgCount > 0) {
-        return c.json({
-          summary: `Session with ${msgCount} message${msgCount === 1 ? '' : 's'} (dormant — resume to generate full recap).`,
-          stats: { messageCount: msgCount, userTurns: 0, assistantTurns: 0, totalCostUsd: 0, durationMs: 0, toolsUsed: [] },
-          cached: false,
-          generatedAt: Date.now(),
-          fallback: true,
-        })
-      }
-      return c.json({
-        summary: 'No messages yet.',
-        stats: { messageCount: 0, userTurns: 0, assistantTurns: 0, totalCostUsd: 0, durationMs: 0, toolsUsed: [] },
-        cached: false,
+      const body: ErrorRecapBody = {
+        state: 'error',
+        error: 'Session is dormant — resume it to generate a recap.',
         generatedAt: Date.now(),
-        fallback: true,
-      })
+      }
+      return c.json(body)
     }
-    const result = await generateRecap(history, id)
-    const recapMsg = {
-      type: 'recap',
-      uuid: `recap:${id}:${result.generatedAt}`,
-      session_id: id,
-      recap: result,
-      state: 'ready',
-    }
-    sm.appendRecap(id, recapMsg)
-    // After appending the recap message, the history has grown by one and
-    // the last message UUID is now the recap's UUID. If we don't update the
-    // cache, the next request sees a mismatch and re-calls the LLM even
-    // though no real user message was added. Only bump when generateRecap
-    // actually cached the result (not for fallbacks, which are intentionally
-    // not cached so retries remain possible).
-    if (result.cached || !result.fallback) {
+
+    try {
+      const result = await generateRecap(history, id)
+      const recapMsg = {
+        type: 'recap',
+        uuid: `recap:${id}:${result.generatedAt}`,
+        session_id: id,
+        recap: result,
+        state: 'ready',
+      }
+      sm.appendRecap(id, recapMsg)
+      // After appending, the history has grown by one and the last
+      // message UUID is now the recap's UUID. Bump the cache fingerprint
+      // so the next request hits the cache instead of re-calling the LLM.
       const updatedHistory = sm.getHistory(id)
       if (updatedHistory) {
         const lastMsg = updatedHistory[updatedHistory.length - 1] as Record<string, unknown> | undefined
         updateRecapCacheAfterAppend(id, updatedHistory.length, (lastMsg?.uuid as string) ?? '')
       }
+      return c.json(result)
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      console.warn(`[recap] generation failed for ${id}:`, errMsg)
+      const generatedAt = Date.now()
+      // Persist the error as a state:'error' recap message so all live
+      // subscribers see "⚠️ Recap unavailable" instead of a stuck loading
+      // bar. appendRecap replaces any prior recap message — a successful
+      // retry will overwrite this card.
+      const recapMsg = {
+        type: 'recap',
+        uuid: `recap:${id}:${generatedAt}`,
+        session_id: id,
+        state: 'error',
+        error: errMsg,
+      }
+      sm.appendRecap(id, recapMsg)
+      const body: ErrorRecapBody = { state: 'error', error: errMsg, generatedAt }
+      return c.json(body)
     }
-    return c.json(result)
   })
 
   return app

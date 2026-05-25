@@ -1,6 +1,7 @@
 import type { Block, PermissionRequest, SdkMessage } from '../types'
 import type { ActiveSubagent, PlanStatus, TranscriptItem } from './types'
 import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES } from '../constants/toolNames'
+import { extractMessagePlainText } from '../search'
 /** Strings the SDK / canUseTool deny path uses to mean "user said no".
  *  Matched against tool_result.content text — case-insensitive substring
  *  match. Both Anthropic CLI and our own deny path land here.
@@ -28,7 +29,7 @@ export function toTranscriptItem(msg: SdkMessage, prev: TranscriptItem | undefin
   const item: TranscriptItem = {
     id,
     msg,
-    searchableText: extractSearchableText(msg),
+    plainText: extractMessagePlainText(msg),
     isCompactSummary: Boolean(
       msg.type === 'user' &&
       prev?.msg.type === 'system' &&
@@ -49,20 +50,6 @@ export function getBlocks(msg: SdkMessage): Block[] {
   if (typeof content === 'string') return [{ type: 'text', text: content }]
   if (!Array.isArray(content)) return []
   return content as Block[]
-}
-
-export function extractSearchableText(msg: SdkMessage): string | null {
-  const content = msg.message?.content
-  if (typeof content === 'string') return content
-  if (Array.isArray(content)) {
-    const text = (content as Block[])
-      .filter((b) => b.type === 'text' && typeof b.text === 'string')
-      .map((b) => b.text as string)
-      .join('\n')
-    return text || null
-  }
-  if (msg.type === 'system' && typeof msg.error === 'string') return msg.error
-  return null
 }
 
 export function getPlanToolUseIds(msg: SdkMessage): string[] {

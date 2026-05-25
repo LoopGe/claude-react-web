@@ -120,6 +120,10 @@ export interface MarketplacePlugin {
   version: string
   author?: string
   installed: boolean
+  /** Only meaningful when `installed` is true. Defaults to true server-side
+   *  when the CLI doesn't expose an explicit flag (most installed plugins
+   *  are enabled — disabled is the explicit, less common state). */
+  enabled: boolean
   marketplace: string
 }
 

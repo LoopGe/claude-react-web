@@ -21,7 +21,7 @@ export interface RecapMessage extends SdkMessage {
   type: 'recap'
   uuid: string
   state: 'loading' | 'ready' | 'error'
-  recap?: { summary: string; stats: Record<string, unknown>; fallback?: boolean }
+  recap?: { summary: string; stats: Record<string, unknown> }
   error?: string
 }
 
