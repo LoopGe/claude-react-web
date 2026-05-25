@@ -706,27 +706,25 @@ export const Chat = memo(function Chat({
         return null
       })()}
 
-      {settingsOpen && (
-        <div
-          className="settings-overlay"
-          role="dialog"
-          aria-modal="false"
-          aria-label="Session settings"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) onCloseSettings?.()
-          }}
-        >
-          <SettingsPanel
-            key={session.id}
-            session={session}
-            onClose={() => onCloseSettings?.()}
-            onSessionUpdate={onSessionUpdate}
-            commands={commands}
-            agents={agents}
-            onPluginsReloaded={() => { refreshCommands(); refreshAgents() }}
-          />
-        </div>
-      )}
+      <div
+        className={`settings-overlay${settingsOpen ? '' : ' hidden'}`}
+        role="dialog"
+        aria-modal="false"
+        aria-label="Session settings"
+        onMouseDown={(e) => {
+          if (e.target === e.currentTarget) onCloseSettings?.()
+        }}
+      >
+        <SettingsPanel
+          key={session.id}
+          session={session}
+          onClose={() => onCloseSettings?.()}
+          onSessionUpdate={onSessionUpdate}
+          commands={commands}
+          agents={agents}
+          onPluginsReloaded={() => { refreshCommands(); refreshAgents() }}
+        />
+      </div>
 
       {gitPanelOpen && (
         <div

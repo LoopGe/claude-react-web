@@ -345,6 +345,23 @@ export class SessionManager {
     if (meta.terminated) {
       throw new HttpError(410, `session ${id} has ended and cannot be resumed`)
     }
+    // Guard: the SDK only writes session data to disk after the first
+    // `result` message.  If no turn was completed there is nothing to
+    // resume — the SDK would fail with
+    //   "No conversation found with session ID: <uuid>"
+    // Mark the session as terminated so the client can clean it up.
+    if (!meta.lastTurnAt) {
+      meta.terminated = true
+      meta.terminatedReason = 'no_data'
+      this.store.upsert(meta)
+      // Broadcast so the client removes / dims the session immediately
+      // instead of letting the user click it again and again.
+      this.broadcastGlobal({ kind: 'update', session: this.infoFromMeta(meta) })
+      throw new HttpError(
+        410,
+        `session ${id} has no conversation data on disk — it cannot be resumed (the first turn never completed)`,
+      )
+    }
     const resumeOpts: Options = {
       resume: id,
       cwd: meta.cwd,

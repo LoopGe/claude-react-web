@@ -5,9 +5,24 @@ interface Props {
   onConfigured: () => void
 }
 
+/** Same defaults as server/config.ts so the setup page doesn't need an
+ *  extra round-trip just to show the scaffold values. */
+const DEFAULT_MODELS = [
+  'anthropic/claude-sonnet-4-20250514',
+  'claude-opus-4-20250514',
+  'claude-haiku-3-5-20241022',
+]
+
 export function SetupPage({ onConfigured }: Props) {
   const [authToken, setAuthToken] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
+
+  // ── Model configuration ──
+  const [showModels, setShowModels] = useState(false)
+  const [modelList, setModelList] = useState<string[]>(DEFAULT_MODELS.slice())
+  const [newModel, setNewModel] = useState('')
+  const [recapModel, setRecapModel] = useState('')
+  const [commitMessageModel, setCommitMessageModel] = useState('')
 
   // Pre-fill from ~/.claude/settings.json if available.
   useEffect(() => {
@@ -23,6 +38,19 @@ export function SetupPage({ onConfigured }: Props) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const addModel = () => {
+    const m = newModel.trim()
+    if (!m || modelList.includes(m)) return
+    setModelList([...modelList, m])
+    setNewModel('')
+  }
+
+  const removeModel = (model: string) => {
+    setModelList(modelList.filter((m) => m !== model))
+    if (recapModel === model) setRecapModel('')
+    if (commitMessageModel === model) setCommitMessageModel('')
+  }
+
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault()
@@ -36,6 +64,9 @@ export function SetupPage({ onConfigured }: Props) {
         await api.post('/config/setup', {
           authToken: authToken.trim(),
           baseUrl: baseUrl.trim() || undefined,
+          modelList: modelList.length > 0 ? modelList : undefined,
+          recapModel: recapModel.trim() || undefined,
+          commitMessageModel: commitMessageModel.trim() || undefined,
         })
         onConfigured()
       } catch (err) {
@@ -44,7 +75,7 @@ export function SetupPage({ onConfigured }: Props) {
         setLoading(false)
       }
     },
-    [authToken, baseUrl, onConfigured],
+    [authToken, baseUrl, modelList, recapModel, commitMessageModel, onConfigured],
   )
 
   return (
@@ -108,6 +139,109 @@ export function SetupPage({ onConfigured }: Props) {
               placeholder="https://api.anthropic.com"
               style={styles.input}
             />
+          </div>
+
+          {/* ── Model configuration (collapsible) ── */}
+          <div style={styles.field}>
+            <button
+              type="button"
+              onClick={() => setShowModels(!showModels)}
+              style={styles.sectionToggle}
+            >
+              <span>{showModels ? '▾' : '▸'} Model Configuration</span>
+              <span style={styles.optional}>
+                {showModels ? 'collapse' : 'expand'}
+              </span>
+            </button>
+
+            {showModels && (
+              <div style={styles.sectionBody}>
+                <div style={styles.field}>
+                  <label style={styles.label}>Available Models</label>
+                  <p style={styles.hint}>
+                    First model is the default. Add model IDs one at a time.
+                  </p>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {modelList.map((m, i) => (
+                      <div key={m} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <span style={{
+                          fontSize: 11, color: 'var(--fg-muted)', width: 18, textAlign: 'right', flexShrink: 0,
+                        }}>
+                          {i === 0 ? '★' : ''}
+                        </span>
+                        <code style={{
+                          flex: 1, fontSize: 12, padding: '4px 8px',
+                          background: 'var(--bg-elev-2)', border: '1px solid var(--border)', borderRadius: 4,
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}>
+                          {m}
+                        </code>
+                        <button
+                          type="button"
+                          className="btn"
+                          style={{ padding: '2px 6px', fontSize: 11, flexShrink: 0 }}
+                          onClick={() => removeModel(m)}
+                          title="Remove"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                    <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+                      <input
+                        className="input"
+                        style={{ flex: 1, fontSize: 12 }}
+                        value={newModel}
+                        onChange={(e) => setNewModel(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addModel() } }}
+                        placeholder="model-id (e.g. claude-sonnet-4-20250514)"
+                      />
+                      <button type="button" className="btn" style={{ fontSize: 11, padding: '2px 8px' }} onClick={addModel}>
+                        Add
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={styles.field}>
+                  <label style={styles.label}>
+                    Recap Model <span style={styles.optional}>(optional)</span>
+                  </label>
+                  <p style={styles.hint}>
+                    Model used for AI session summaries. Leave empty to use the default (first model).
+                  </p>
+                  <select
+                    className="input"
+                    value={recapModel}
+                    onChange={(e) => setRecapModel(e.target.value)}
+                  >
+                    <option value="">(default)</option>
+                    {modelList.map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div style={styles.field}>
+                  <label style={styles.label}>
+                    Commit Message Model <span style={styles.optional}>(optional)</span>
+                  </label>
+                  <p style={styles.hint}>
+                    Model used for AI-generated commit messages in the Git panel. Leave empty to use the default.
+                  </p>
+                  <select
+                    className="input"
+                    value={commitMessageModel}
+                    onChange={(e) => setCommitMessageModel(e.target.value)}
+                  >
+                    <option value="">(default)</option>
+                    {modelList.map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
           </div>
 
           {error && <div style={styles.error}>{error}</div>}
@@ -244,5 +378,25 @@ const styles: Record<string, React.CSSProperties> = {
   submitBtnDisabled: {
     opacity: 0.5,
     cursor: 'not-allowed',
+  },
+  sectionToggle: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    width: '100%',
+    padding: '8px 0',
+    fontSize: 13,
+    fontWeight: 600,
+    color: 'var(--fg)',
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+  },
+  sectionBody: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 14,
+    paddingTop: 4,
   },
 }

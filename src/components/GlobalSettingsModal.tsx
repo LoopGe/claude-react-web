@@ -40,6 +40,7 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
   // ── Models tab state ──
   const [modelList, setModelList] = useState<string[]>([])
   const [recapModel, setRecapModel] = useState('')
+  const [commitMessageModel, setCommitMessageModel] = useState('')
   const [newModel, setNewModel] = useState('')
 
   // ── Server tab state ──
@@ -77,6 +78,7 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
         setAuthTokenMasked(cfg.authTokenMasked)
         setModelList(cfg.modelList ?? [])
         setRecapModel(cfg.recapModel ?? '')
+        setCommitMessageModel(cfg.commitMessageModel ?? '')
         setMaxUploadBytes(cfg.maxUploadBytes ?? 0)
         setHistoryCap(cfg.historyCap ?? 500)
         setMaxOpenPanels(cfg.maxOpenPanels ?? 3)
@@ -118,6 +120,7 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
         baseUrl: baseUrl.trim() || null,
         modelList: modelList.length > 0 ? modelList : null,
         recapModel: recapModel.trim() || null,
+        commitMessageModel: commitMessageModel.trim() || null,
         maxUploadBytes: maxUploadBytes > 0 ? maxUploadBytes : null,
         historyCap: historyCap > 0 ? historyCap : null,
         maxOpenPanels,
@@ -148,6 +151,7 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
   const removeModel = (model: string) => {
     setModelList(modelList.filter((m) => m !== model))
     if (recapModel === model) setRecapModel('')
+    if (commitMessageModel === model) setCommitMessageModel('')
   }
 
   const deleteMcpServer = async (name: string) => {
@@ -225,8 +229,10 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
                 <ModelsTab
                   modelList={modelList}
                   recapModel={recapModel}
+                  commitMessageModel={commitMessageModel}
                   newModel={newModel}
                   onRecapModelChange={setRecapModel}
+                  onCommitMessageModelChange={setCommitMessageModel}
                   onNewModelChange={setNewModel}
                   onAddModel={addModel}
                   onRemoveModel={removeModel}
@@ -317,13 +323,15 @@ function ApiTab({
 }
 
 function ModelsTab({
-  modelList, recapModel, newModel,
-  onRecapModelChange, onNewModelChange, onAddModel, onRemoveModel,
+  modelList, recapModel, commitMessageModel, newModel,
+  onRecapModelChange, onCommitMessageModelChange, onNewModelChange, onAddModel, onRemoveModel,
 }: {
   modelList: string[]
   recapModel: string
+  commitMessageModel: string
   newModel: string
   onRecapModelChange: (v: string) => void
+  onCommitMessageModelChange: (v: string) => void
   onNewModelChange: (v: string) => void
   onAddModel: () => void
   onRemoveModel: (m: string) => void
@@ -376,6 +384,18 @@ function ModelsTab({
           className="input"
           value={recapModel}
           onChange={(e) => onRecapModelChange(e.target.value)}
+        >
+          <option value="">(default)</option>
+          {modelList.map((m) => (
+            <option key={m} value={m}>{m}</option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Commit Message Model" hint="Model used for AI-generated commit messages in Git panel">
+        <select
+          className="input"
+          value={commitMessageModel}
+          onChange={(e) => onCommitMessageModelChange(e.target.value)}
         >
           <option value="">(default)</option>
           {modelList.map((m) => (

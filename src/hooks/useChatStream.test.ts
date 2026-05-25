@@ -325,7 +325,12 @@ describe('useChatStream', () => {
     })
   })
 
-  it('decrements queuedAhead by 1 on result when multiple messages are queued', async () => {
+  it('resets queuedAhead to 0 on every result, even when multiple sends are queued', async () => {
+    // Background: the SDK may merge multiple queued user messages into a
+    // single assistant turn (one result for N sends). If we decremented
+    // per-result, queuedAhead would permanently strand at N - M and the
+    // queue bar would stay stuck on. Mirror the server's pendingTurns
+    // reset semantics — every result clears the counter to 0.
     const { result } = renderHook(
       () => useChatStream('s1', noopPerms),
     )
@@ -338,7 +343,7 @@ describe('useChatStream', () => {
     })
     expect(result.current.queuedAhead).toBe(3)
 
-    // First result arrives — should decrement to 2, not reset to 0
+    // A single result (e.g. SDK merged all three) resets to 0.
     act(() => {
       dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
       dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
@@ -349,32 +354,15 @@ describe('useChatStream', () => {
       })
     })
     await waitFor(() => {
-      expect(result.current.queuedAhead).toBe(2)
-    })
-
-    // Second result — should decrement to 1
-    act(() => {
-      dispatchToSession('s1', {
-        kind: 'message',
-        sessionId: 's1',
-        message: { type: 'result', uuid: 'r2' },
-      })
-    })
-    await waitFor(() => {
-      expect(result.current.queuedAhead).toBe(1)
-    })
-
-    // Third result — should decrement to 0
-    act(() => {
-      dispatchToSession('s1', {
-        kind: 'message',
-        sessionId: 's1',
-        message: { type: 'result', uuid: 'r3' },
-      })
-    })
-    await waitFor(() => {
       expect(result.current.queuedAhead).toBe(0)
     })
+
+    // Subsequent sends start counting from a clean baseline so the bar
+    // doesn't over-report a phantom queue.
+    act(() => {
+      result.current.trackSentTurn()
+    })
+    expect(result.current.queuedAhead).toBe(1)
   })
 
   // ── Token rate ────────────────────────────────────────────────

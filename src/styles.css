@@ -704,6 +704,9 @@ body.resizing-col * {
   z-index: 5;
   overflow-y: auto;
 }
+.settings-overlay.hidden {
+  display: none;
+}
 .settings-overlay > .settings-panel {
   width: min(420px, 100%);
   max-height: 100%;
@@ -1348,7 +1351,7 @@ body.resizing-col * {
   background: var(--bg-elev);
   color: var(--fg-muted);
 }
-.session-item-badge.running { color: var(--ok); }
+.session-item-badge.running { color: var(--accent); }
 .session-item-badge.err { color: var(--danger); }
 .session-item-delete {
   opacity: 0;

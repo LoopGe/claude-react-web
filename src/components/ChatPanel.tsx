@@ -11,7 +11,7 @@ import { useErrorToast } from '../hooks/useErrorToast'
 import { isInAppDrag, readDragPayload, setDragPayload } from '../hooks/useDragPayload'
 import { useGitStatus } from '../hooks/useGitStatus'
 import { statusClass, statusLabel, shortenModel } from '../utils/session-status'
-import { readRecentModels } from '../utils/recent-models'
+import { useModelOptions } from '../hooks/useModelOptions'
 import { shortenPath } from '../utils/paths'
 import type { PermissionMode, SessionInfo } from '../types'
 import { PERMISSION_MODES } from '../types'
@@ -149,7 +149,12 @@ export const ChatPanel = memo(function ChatPanel({
   const [permMenu, setPermMenu] = useState<{ x: number; y: number } | null>(null)
   /** Inline error toast replacing window.alert for model/permission failures. */
   const [panelError, showError, clearError] = useErrorToast()
-  const recentModels = readRecentModels()
+  // Datalist for the inline model chip. We only start fetching when the
+  // user clicks to edit (or has already opened it once on this panel) —
+  // no need to ping /sessions/:id/models + /config for every panel that
+  // happens to be open. The hook keeps recents from localStorage as a
+  // fallback so the dropdown isn't empty during the brief fetch window.
+  const modelOptions = useModelOptions(session.id, editingModel && !!session.running)
   const chipsDisabled = !session.running || session.terminated
   // Use the live count from the stream when available; fall back to the
   // server-pushed session.messageCount (updated only at turn boundaries).
@@ -320,7 +325,7 @@ export const ChatPanel = memo(function ChatPanel({
             </button>
           )}
           <datalist id="chat-panel-model-datalist">
-            {recentModels.map((m) => (
+            {modelOptions.map((m) => (
               <option key={m} value={m} />
             ))}
           </datalist>

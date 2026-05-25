@@ -18,6 +18,7 @@ export interface FullServerConfig {
   baseUrl: string
   modelList: string[]
   recapModel: string
+  commitMessageModel: string
   maxUploadBytes: number
   historyCap: number
   maxOpenPanels: number

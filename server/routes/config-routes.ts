@@ -17,10 +17,18 @@ import { writeAtomic } from '../json-file-store.js'
 export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono {
   const app = new Hono()
 
-  // Config setup — write authToken/baseUrl to config.json and hot-reload.
+  // Config setup — write authToken/baseUrl/model fields to config.json and
+  // hot-reload. Accepts optional modelList / recapModel / commitMessageModel
+  // so the setup page can configure everything in one shot.
   app.post('/config/setup', async (c) => {
     if (!configDir) throw new HttpError(500, 'configDir not set')
-    const body = await safeJson<{ authToken?: string; baseUrl?: string }>(c.req)
+    const body = await safeJson<{
+      authToken?: string
+      baseUrl?: string
+      modelList?: string[]
+      recapModel?: string
+      commitMessageModel?: string
+    }>(c.req)
     if (!body.authToken?.trim()) throw new HttpError(400, 'authToken is required')
     const configPath = joinPath(configDir, 'config.json')
     let existing: Record<string, unknown> = {}
@@ -30,6 +38,15 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
     existing.authToken = body.authToken.trim()
     if (body.baseUrl?.trim()) {
       existing.baseUrl = body.baseUrl.trim().replace(/\/+$/, '')
+    }
+    if (Array.isArray(body.modelList) && body.modelList.length > 0) {
+      existing.modelList = body.modelList.filter((m) => typeof m === 'string' && m.trim())
+    }
+    if (typeof body.recapModel === 'string') {
+      existing.recapModel = body.recapModel.trim() || undefined
+    }
+    if (typeof body.commitMessageModel === 'string') {
+      existing.commitMessageModel = body.commitMessageModel.trim() || undefined
     }
     await writeAtomic(configDir, configPath, existing)
     await loadConfig(configDir)
@@ -64,6 +81,7 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
       baseUrl: serverConfig.baseUrl,
       modelList: serverConfig.modelList as string[],
       recapModel: serverConfig.recapModel,
+      commitMessageModel: serverConfig.commitMessageModel,
       maxUploadBytes: serverConfig.maxUploadBytes,
       historyCap: serverConfig.historyCap,
       maxOpenPanels: serverConfig.maxOpenPanels,

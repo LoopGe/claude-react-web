@@ -236,7 +236,16 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   if (message.type === 'result') {
     next = {
       ...next,
-      queuedAhead: Math.max(0, state.queuedAhead - 1),
+      // Reset to 0 (not decrement). The SDK can merge multiple queued
+      // user messages into a single assistant turn, so N sends might
+      // produce M < N result frames — decrementing per-result then
+      // permanently strands queuedAhead at N - M, and the queue bar
+      // becomes stuck on. Mirror the server's pendingTurns reset
+      // (server/session-pump.ts:174 — "each result represents exactly
+      // one completed turn"). If more messages are still queued after
+      // this turn we briefly under-report, but the next turn's working
+      // state covers the visual "still busy" cue via WorkingBubble.
+      queuedAhead: 0,
       liveTurn: null,
       // Clear any lingering optimistic placeholders — the result frame
       // means the SDK has finished processing, so no server echo for
