@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
-import { getSessionLastMessageUuid, getSessionStore, useSessionSnapshot } from '../session-store/selectors'
+import { getSessionLastMessageUuid, getSessionStore, useSessionField } from '../session-store/selectors'
 import { sessionStoreRegistry } from '../session-store/registry'
 import { clearAllSessionStorage } from '../session-store/store'
 import type { ActiveSubagent, ActivePhase, PlanStatus, TranscriptItem } from '../session-store/types'
@@ -76,7 +76,24 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   const hub = useWsHub()
   const hubStatus = useWsHubStatus()
   const store = useMemo(() => getSessionStore(sessionId), [sessionId])
-  const snapshot = useSessionSnapshot(sessionId)
+  // Individual field subscriptions — only re-render when the specific
+  // field's reference changes (Object.is check). During streaming content
+  // deltas, only streamingContent / activePhase / tokenRate change; all
+  // other fields keep their references stable.
+  const items = useSessionField(sessionId, 'items')
+  const messages = useSessionField(sessionId, 'messages')
+  const streamingContent = useSessionField(sessionId, 'streamingContent')
+  const activePhase = useSessionField(sessionId, 'activePhase')
+  const tokenRate = useSessionField(sessionId, 'tokenRate')
+  const contextUsage = useSessionField(sessionId, 'contextUsage')
+  const error = useSessionField(sessionId, 'error')
+  const queuedAhead = useSessionField(sessionId, 'queuedAhead')
+  const permissionDecisions = useSessionField(sessionId, 'permissionDecisions')
+  const planStatus = useSessionField(sessionId, 'planStatus')
+  const planContent = useSessionField(sessionId, 'planContent')
+  const activeSubagents = useSessionField(sessionId, 'activeSubagents')
+  const subagentIndex = useSessionField(sessionId, 'subagentIndex')
+  const replayReady = useSessionField(sessionId, 'replayReady')
   const permsRef = useRef(permissions)
 
   useEffect(() => {
@@ -177,13 +194,13 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
 
   const displayedError = useMemo(() => {
     if (hubStatus === 'reconnecting') {
-      return snapshot.error == null || snapshot.error === 'Stream reconnecting…'
+      return error == null || error === 'Stream reconnecting…'
         ? 'Stream reconnecting…'
-        : snapshot.error
+        : error
     }
-    if (hubStatus === 'online') return snapshot.error === 'Stream reconnecting…' ? null : snapshot.error
-    return snapshot.error
-  }, [hubStatus, snapshot.error])
+    if (hubStatus === 'online') return error === 'Stream reconnecting…' ? null : error
+    return error
+  }, [hubStatus, error])
 
   const trackSentTurn = useCallback(() => {
     store.dispatch({ type: 'TRACK_SENT_TURN' })
@@ -214,26 +231,26 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
 
   return useMemo(
     () => ({
-      items: snapshot.items,
-      messages: snapshot.messages,
-      queuedAhead: snapshot.queuedAhead,
+      items,
+      messages,
+      queuedAhead,
       error: displayedError,
-      contextUsage: snapshot.contextUsage,
-      tokenRate: snapshot.tokenRate,
-      streamingContent: snapshot.streamingContent,
-      activePhase: snapshot.activePhase,
-      permissionDecisions: snapshot.permissionDecisions,
-      planStatus: snapshot.planStatus,
-      planContent: snapshot.planContent,
-      activeSubagents: snapshot.activeSubagents,
-      subagentIndex: snapshot.subagentIndex,
-      replayReady: snapshot.replayReady,
+      contextUsage,
+      tokenRate,
+      streamingContent,
+      activePhase,
+      permissionDecisions,
+      planStatus,
+      planContent,
+      activeSubagents,
+      subagentIndex,
+      replayReady,
       trackSentTurn,
       insertUserMessage,
       rollbackUserMessage,
       reset,
       clearError,
     }),
-    [snapshot, displayedError, trackSentTurn, insertUserMessage, rollbackUserMessage, reset, clearError],
+    [items, messages, queuedAhead, displayedError, contextUsage, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, activeSubagents, subagentIndex, replayReady, trackSentTurn, insertUserMessage, rollbackUserMessage, reset, clearError],
   )
 }

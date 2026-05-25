@@ -51,6 +51,14 @@ export interface SessionCardProps {
   onCommitRename: (id: string, title: string) => void
   onCancelRename: () => void
   onStartRename: (session: SessionInfo) => void
+  /** Trigger a custom confirmation dialog instead of window.confirm. */
+  onAskConfirm?: (config: {
+    title: string
+    message: React.ReactNode
+    confirmLabel: string
+    destructive?: boolean
+    onConfirm: () => void | Promise<void>
+  }) => void
 }
 
 export const SessionCard = memo(function SessionCard({
@@ -79,6 +87,7 @@ export const SessionCard = memo(function SessionCard({
   onCommitRename,
   onCancelRename,
   onStartRename,
+  onAskConfirm,
 }: SessionCardProps) {
   const renameInputRef = useRef<HTMLInputElement>(null)
 
@@ -224,7 +233,7 @@ export const SessionCard = memo(function SessionCard({
             : s.terminated
             ? 'ended'
             : isResuming
-            ? 'resuming…'
+            ? <><span className="session-resuming-spinner" aria-hidden />resuming…</>
             : working
             ? 'working'
             : s.running
@@ -252,9 +261,16 @@ export const SessionCard = memo(function SessionCard({
           className="session-item-delete"
           onClick={(e) => {
             e.stopPropagation()
-            if (s.messageCount > 0) {
+            if (s.messageCount > 0 && onAskConfirm) {
               const title = s.title ?? s.id.slice(0, 8)
-              if (!window.confirm(`Delete session "${title}"?`)) return
+              onAskConfirm({
+                title: 'Delete session?',
+                message: <p>Delete &ldquo;{title}&rdquo;? This permanently removes the conversation.</p>,
+                confirmLabel: 'Delete',
+                destructive: true,
+                onConfirm: () => onDelete(s.id),
+              })
+              return
             }
             onDelete(s.id)
           }}

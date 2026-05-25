@@ -3,6 +3,7 @@
 
 import { memo, useEffect, useMemo, useState } from 'react'
 import { api } from '../hooks/useApi'
+import { useSuccessToast } from '../hooks/useSuccessToast'
 import type { AgentInfo, McpServerConfigMeta, McpServerStatus, ModelInfo, PermissionMode, Plugin, SessionInfo, SlashCommand } from '../types'
 import { PERMISSION_MODES } from '../types'
 import { McpInstaller } from './McpInstaller'
@@ -31,6 +32,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
   const [mcpInstallerEdit, setMcpInstallerEdit] = useState<McpServerConfigMeta | undefined>(undefined)
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [successMsg, showSuccess, clearSuccess] = useSuccessToast()
   const [reloadedPlugins, setReloadedPlugins] = useState<Plugin[]>([])
   const [showMarketplace, setShowMarketplace] = useState(false)
 
@@ -115,6 +117,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
     try {
       const r = await fn()
       onSessionUpdate(r.session)
+      showSuccess('Settings applied')
     } catch (e) {
       setErr((e as Error).message)
     } finally {
@@ -230,6 +233,12 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
       </h3>
 
       {err && <div className="error-bar">{err}</div>}
+      {successMsg && (
+        <div className="success-toast" style={{ margin: '4px 18px' }}>
+          {successMsg}
+          <button className="success-toast-dismiss" onClick={clearSuccess}>✕</button>
+        </div>
+      )}
 
       <div className="settings-section">
         <h4>Read-only (set at create)</h4>

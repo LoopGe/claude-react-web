@@ -106,6 +106,8 @@ export interface ChatPanelProps {
   onRegisterInterrupt?: (sessionId: string, fn: () => void) => void
   /** Forwarded to <Chat> so it can register its recap-refresh callback. */
   onRegisterRecap?: (sessionId: string, fn: () => void) => void
+  /** True while the session is being resumed from dormancy. */
+  isResuming?: boolean
 }
 
 export const ChatPanel = memo(function ChatPanel({
@@ -128,6 +130,7 @@ export const ChatPanel = memo(function ChatPanel({
   onCloseGitPanel,
   onRegisterInterrupt,
   onRegisterRecap,
+  isResuming,
 }: ChatPanelProps) {
   /** State (not ref) so that Chat re-renders once the portal target mounts. */
   const [headerBtnEl, setHeaderBtnEl] = useState<HTMLDivElement | null>(null)
@@ -452,8 +455,17 @@ export const ChatPanel = memo(function ChatPanel({
           />
         ) : (
           <div className="empty-state">
-            <h2>Session is dormant</h2>
-            <p>Click the session again in the sidebar to resume it.</p>
+            {isResuming ? (
+              <>
+                <div className="app-loading-spinner" />
+                <p>Resuming session…</p>
+              </>
+            ) : (
+              <>
+                <h2>Session is dormant</h2>
+                <p>Click the session again in the sidebar to resume it.</p>
+              </>
+            )}
           </div>
         )}
       </div>

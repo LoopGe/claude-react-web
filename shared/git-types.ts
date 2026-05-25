@@ -25,6 +25,10 @@ export interface GitFileEntry {
   unstaged: boolean
   /** Original path for renames/copies (R/C). Forward-slash form. */
   renamedFrom?: string
+  /** Lines added (from `git diff --numstat`). Undefined for untracked files. */
+  insertions?: number
+  /** Lines deleted (from `git diff --numstat`). Undefined for untracked files. */
+  deletions?: number
 }
 
 /** Repo-wide working state. `dirty` just means "has any file changes";

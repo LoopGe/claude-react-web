@@ -490,6 +490,16 @@ function FileRow({ file, cwd, staged, inSession, writeOps, onError, askConfirm }
             )}
             {file.path}
           </span>
+          {(file.insertions != null || file.deletions != null) && (
+            <span className="git-file-changes">
+              {file.insertions != null && file.insertions > 0 && (
+                <span className="git-file-additions">+{file.insertions}</span>
+              )}
+              {file.deletions != null && file.deletions > 0 && (
+                <span className="git-file-deletions">-{file.deletions}</span>
+              )}
+            </span>
+          )}
           <span className="git-file-arrow">{open ? '▾' : '▸'}</span>
         </button>
         <div className="git-file-actions">
@@ -793,7 +803,30 @@ function BranchesSection({ sessionId, currentBranch, writeOps, onError, askConfi
       setNewName('')
       setNewBranchOpen(false)
     } catch (e) {
-      onError('Create branch', (e as Error).message)
+      const err = e as Error & { status?: number }
+      if (checkout && err.status === 409) {
+        askConfirm(
+          {
+            title: 'Uncommitted changes block branch creation',
+            message: (
+              <>
+                <p>Creating and switching to <code>{newName.trim()}</code> would overwrite uncommitted changes.</p>
+                <p>Auto-stash and create? Your changes will be saved as <code>stash@{'{0}'}</code>.</p>
+              </>
+            ),
+            confirmLabel: 'Auto-stash & create',
+            destructive: false,
+          },
+          async () => {
+            await writeOps.createBranch(newName.trim(), true, true)
+            setNewName('')
+            setNewBranchOpen(false)
+          },
+          `Create branch ${newName.trim()}`,
+        )
+      } else {
+        onError('Create branch', err.message)
+      }
     }
   }
 
@@ -1154,6 +1187,16 @@ function ThisSessionSection({
                   )}
                   {f.path}
                 </span>
+                {(f.insertions != null || f.deletions != null) && (
+                  <span className="git-file-changes">
+                    {f.insertions != null && f.insertions > 0 && (
+                      <span className="git-file-additions">+{f.insertions}</span>
+                    )}
+                    {f.deletions != null && f.deletions > 0 && (
+                      <span className="git-file-deletions">-{f.deletions}</span>
+                    )}
+                  </span>
+                )}
               </span>
             </div>
           </div>

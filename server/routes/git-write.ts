@@ -184,7 +184,7 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
       throw new HttpError(400, 'index must be a non-negative integer')
     }
     await stashDrop(cwd, body.index)
-    // No worktree change — no broadcast needed.
+    sm.broadcastGitStatusChanged(id)
     return c.json({ stashes: await listStashes(cwd) })
   })
 
@@ -199,13 +199,14 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
   app.post('/sessions/:id/git/branch', async (c) => {
     const id = c.req.param('id')
     const cwd = getSessionCwd(id)
-    const body = await safeJson<{ name?: unknown; checkout?: unknown }>(c.req)
+    const body = await safeJson<{ name?: unknown; checkout?: unknown; autoStash?: unknown }>(c.req)
     if (typeof body.name !== 'string') throw new HttpError(400, 'name must be a string')
     const checkout = body.checkout === true
-    await createBranch(cwd, body.name, checkout)
-    if (checkout) sm.broadcastGitStatusChanged(id)
+    const autoStash = body.autoStash === true
+    const result = await createBranch(cwd, body.name, checkout, autoStash)
+    sm.broadcastGitStatusChanged(id)
     const [status, branches] = await Promise.all([freshStatus(cwd), listBranches(cwd)])
-    return c.json({ status, branches })
+    return c.json({ status, branches, stashed: result.stashed })
   })
 
   app.post('/sessions/:id/git/checkout', async (c) => {

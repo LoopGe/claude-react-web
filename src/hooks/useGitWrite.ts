@@ -32,6 +32,7 @@ interface DropResult {
 
 interface BranchResult extends WriteResult {
   branches: GitBranch[]
+  stashed?: boolean
 }
 
 interface CheckoutResult extends BranchResult {
@@ -50,7 +51,7 @@ export interface UseGitWriteReturn {
   stashCreate: (opts?: { message?: string; includeUntracked?: boolean }) => Promise<StashResult>
   stashPop: (index: number) => Promise<StashResult>
   stashDrop: (index: number) => Promise<DropResult>
-  createBranch: (name: string, checkout: boolean) => Promise<BranchResult>
+  createBranch: (name: string, checkout: boolean, autoStash?: boolean) => Promise<BranchResult>
   checkout: (branch: string, autoStash: boolean) => Promise<CheckoutResult>
   /** AI commit-message generation. The server runs the gitStartSha…HEAD
    *  diff through Anthropic and returns a conventional-commit message.
@@ -180,11 +181,11 @@ export function useGitWrite(sessionId: string | undefined): UseGitWriteReturn {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, run])
 
-  const createBranch = useCallback((name: string, checkout: boolean) => {
+  const createBranch = useCallback((name: string, checkout: boolean, autoStash?: boolean) => {
     ensureSession()
     return run(
       `branch:${name}`,
-      () => api.post<BranchResult>(`${base}/branch`, { name, checkout }),
+      () => api.post<BranchResult>(`${base}/branch`, { name, checkout, autoStash: autoStash ?? false }),
     )
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, run])

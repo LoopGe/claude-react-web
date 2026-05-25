@@ -6,11 +6,15 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { isInAppDrag, readDragPayload } from '../hooks/useDragPayload'
 import { api } from '../hooks/useApi'
 import { useErrorToast } from '../hooks/useErrorToast'
+import { useSuccessToast } from '../hooks/useSuccessToast'
 import { buildSessionAccentMap } from '../theme'
 import type { NewSessionForm, SessionGroup, SessionInfo, SidebarSection } from '../types'
 import { NewSessionDialog } from './session-list/NewSessionDialog'
 import { SessionContextMenu } from './session-list/SessionContextMenu'
 import { SessionCard } from './session-list/SessionCard'
+import { ConfirmDialog } from './ConfirmDialog'
+import { PromptDialog } from './PromptDialog'
+import { ContextMenu } from './ContextMenu'
 import { Virtuoso } from 'react-virtuoso'
 
 interface Props {
@@ -164,6 +168,31 @@ export const SessionList = memo(function SessionList({
   /** Error message from a failed folder-drop resolution. Shown inline
    *  below the "New session" button and auto-clears after 5 seconds. */
   const [folderDropError, showFolderDropError, clearFolderDropError] = useErrorToast()
+  const [successMsg, showSuccess, clearSuccess] = useSuccessToast()
+  // --- Confirm / Prompt dialog state (replaces window.confirm / window.prompt) ---
+  type ConfirmState = {
+    title: string
+    message: React.ReactNode
+    confirmLabel: string
+    destructive?: boolean
+    onConfirm: () => void | Promise<void>
+  }
+  type PromptState = {
+    title: string
+    message: React.ReactNode
+    defaultValue: string
+    confirmLabel: string
+    placeholder?: string
+    onConfirm: (value: string) => void | Promise<void>
+  }
+  const [confirmState, setConfirmState] = useState<ConfirmState | null>(null)
+  const [confirmBusy, setConfirmBusy] = useState(false)
+  const [promptState, setPromptState] = useState<PromptState | null>(null)
+  const [promptBusy, setPromptBusy] = useState(false)
+  /** Pending group pill context menu target — the group id whose
+   *  right-click context menu should open. Null when menu is closed. */
+  const [groupMenuTarget, setGroupMenuTarget] = useState<string | null>(null)
+  const [groupMenuPos, setGroupMenuPos] = useState<{ x: number; y: number } | null>(null)
   // --- Group UI state ---
   const [showNewGroupInput, setShowNewGroupInput] = useState(false)
   const [newGroupName, setNewGroupName] = useState('')
@@ -315,6 +344,31 @@ export const SessionList = memo(function SessionList({
   const openIdSet = useMemo(() => new Set(openIds), [openIds])
   const openIdSlotMap = useMemo(() => new Map(openIds.map((id, i) => [id, i])), [openIds])
 
+  /** Stable callback for child components to request a confirmation dialog. */
+  const handleAskConfirm = useCallback((config: {
+    title: string
+    message: React.ReactNode
+    confirmLabel: string
+    destructive?: boolean
+    onConfirm: () => void | Promise<void>
+  }) => {
+    setConfirmState({
+      title: config.title,
+      message: config.message,
+      confirmLabel: config.confirmLabel,
+      destructive: config.destructive,
+      onConfirm: async () => {
+        setConfirmBusy(true)
+        try {
+          await config.onConfirm()
+        } finally {
+          setConfirmBusy(false)
+          setConfirmState(null)
+        }
+      },
+    })
+  }, [])
+
   /** Render a SessionCard with all shared props pre-bound. Extracted from
    *  the 3 render sites (grouped, ungrouped-section, flat) to avoid
    *  duplicating 17+ props. */
@@ -346,8 +400,9 @@ export const SessionList = memo(function SessionList({
       onCommitRename={commitRename}
       onCancelRename={cancelRename}
       onStartRename={startRename}
+      onAskConfirm={handleAskConfirm}
     />
-  ), [openIdSlotMap, openIdSet, focusedId, resumingIds, unread, draggingId, dropHint, renamingId, accentStyleMap, onSelect, onDelete, handleCardContextMenu, handleCardDragStart, handleCardDragEnd, handleSetDropHint, handleClearDropHint, onReorder, onReorderInGroup, renameDraft, handleRenameDraftChange, commitRename, cancelRename, startRename])
+  ), [openIdSlotMap, openIdSet, focusedId, resumingIds, unread, draggingId, dropHint, renamingId, accentStyleMap, onSelect, onDelete, handleCardContextMenu, handleCardDragStart, handleCardDragEnd, handleSetDropHint, handleClearDropHint, onReorder, onReorderInGroup, renameDraft, handleRenameDraftChange, commitRename, cancelRename, startRename, handleAskConfirm])
 
   /** Determine whether a group's sessions currently occupy the main-area
    *  panels (i.e. its sessions match `openIds`). Used for the active highlight. */
@@ -386,6 +441,12 @@ export const SessionList = memo(function SessionList({
             <button className="error-toast-dismiss" onClick={clearFolderDropError}>✕</button>
           </div>
         )}
+        {successMsg && (
+          <div className="success-toast">
+            {successMsg}
+            <button className="success-toast-dismiss" onClick={clearSuccess}>✕</button>
+          </div>
+        )}
         {/* Filter input — visible only when there are at least a handful
             of sessions. Below that the filter is more friction than help. */}
         {sessions.length > 3 && (
@@ -420,14 +481,8 @@ export const SessionList = memo(function SessionList({
               onClick={() => onActivateGroup(g.id)}
               onContextMenu={(e) => {
                 e.preventDefault()
-                const choice = window.prompt(`Group "${g.name}"\n\nType a new name to rename, or leave empty to delete:`, g.name)
-                if (choice === null) return // cancelled
-                const trimmed = choice.trim()
-                if (!trimmed) {
-                  onDeleteGroup(g.id)
-                } else if (trimmed !== g.name) {
-                  onRenameGroup(g.id, trimmed)
-                }
+                setGroupMenuTarget(g.id)
+                setGroupMenuPos({ x: e.clientX, y: e.clientY })
               }}
             >
               {g.name}
@@ -643,6 +698,8 @@ export const SessionList = memo(function SessionList({
         groups={groups}
         onAddToGroup={onAddToGroup}
         maxOpen={maxOpen}
+        onShowSuccess={showSuccess}
+        onAskConfirm={handleAskConfirm}
       />}
 
       {showDialog && (
@@ -662,6 +719,97 @@ export const SessionList = memo(function SessionList({
             setShowDialog(false)
             setPrefilledCwd(undefined)
           }}
+        />
+      )}
+
+      {/* Group pill context menu (replaces window.prompt) */}
+      {groupMenuTarget && groupMenuPos && (() => {
+        const g = groups.find((grp) => grp.id === groupMenuTarget)
+        if (!g) return null
+        return (
+          <ContextMenu
+            x={groupMenuPos.x}
+            y={groupMenuPos.y}
+            onClose={() => setGroupMenuTarget(null)}
+            items={[
+              {
+                label: 'Rename group…',
+                icon: '✎',
+                onClick: () => {
+                  setPromptState({
+                    title: 'Rename group',
+                    message: <p>Rename &ldquo;{g.name}&rdquo; to a new name.</p>,
+                    defaultValue: g.name,
+                    confirmLabel: 'Rename',
+                    placeholder: 'Group name',
+                    onConfirm: async (value) => {
+                      onRenameGroup(g.id, value)
+                      setPromptState(null)
+                    },
+                  })
+                },
+              },
+              {
+                label: 'Delete group',
+                icon: '🗑',
+                danger: true,
+                onClick: () => {
+                  setConfirmState({
+                    title: 'Delete group?',
+                    message: <p>Delete &ldquo;{g.name}&rdquo;? Sessions in this group will not be deleted.</p>,
+                    confirmLabel: 'Delete',
+                    destructive: true,
+                    onConfirm: async () => {
+                      setConfirmBusy(true)
+                      try {
+                        onDeleteGroup(g.id)
+                      } finally {
+                        setConfirmBusy(false)
+                        setConfirmState(null)
+                      }
+                    },
+                  })
+                },
+              },
+            ]}
+          />
+        )
+      })()}
+
+      {/* Confirm dialog (replaces window.confirm) */}
+      {confirmState && (
+        <ConfirmDialog
+          title={confirmState.title}
+          message={confirmState.message}
+          confirmLabel={confirmState.confirmLabel}
+          destructive={confirmState.destructive}
+          busy={confirmBusy}
+          onConfirm={confirmState.onConfirm}
+          onCancel={() => { if (!confirmBusy) setConfirmState(null) }}
+        />
+      )}
+
+      {/* Prompt dialog (replaces window.prompt for group rename) */}
+      {promptState && (
+        <PromptDialog
+          title={promptState.title}
+          message={promptState.message}
+          defaultValue={promptState.defaultValue}
+          confirmLabel={promptState.confirmLabel}
+          placeholder={promptState.placeholder}
+          busy={promptBusy}
+          onConfirm={(value) => {
+            void (async () => {
+              setPromptBusy(true)
+              try {
+                await promptState.onConfirm(value)
+              } finally {
+                setPromptBusy(false)
+                setPromptState(null)
+              }
+            })()
+          }}
+          onCancel={() => { if (!promptBusy) setPromptState(null) }}
         />
       )}
     </>

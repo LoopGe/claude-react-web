@@ -257,6 +257,72 @@ function bucketFiles(entries: GitFileEntry[]): {
   return { staged, unstaged, untracked }
 }
 
+// ── Numstat helpers ─────────────────────────────────────────────────
+
+interface NumstatEntry {
+  insertions: number
+  deletions: number
+}
+
+/** Parse `git diff --numstat` stdout into a path→counts map.
+ *  Binary files produce `-\t-\tpath` which we map to {0, 0}. */
+function parseNumstatOutput(stdout: string): Map<string, NumstatEntry> {
+  const map = new Map<string, NumstatEntry>()
+  for (const line of stdout.split('\n')) {
+    if (!line) continue
+    const tab1 = line.indexOf('\t')
+    if (tab1 === -1) continue
+    const tab2 = line.indexOf('\t', tab1 + 1)
+    if (tab2 === -1) continue
+    const path = line.slice(tab2 + 1)
+    map.set(path, {
+      insertions: parseInt(line.slice(0, tab1), 10) || 0,
+      deletions: parseInt(line.slice(tab1 + 1, tab2), 10) || 0,
+    })
+  }
+  return map
+}
+
+/** Run `git diff --numstat [--cached]` and return a map from path to
+ *  insertion/deletion counts. */
+async function getNumstatMap(
+  cwd: string,
+  cached: boolean,
+): Promise<Map<string, NumstatEntry>> {
+  const args = ['-c', 'core.quotepath=false', 'diff', '--numstat']
+  if (cached) args.push('--cached')
+  const { stdout } = await runGit(cwd, args)
+  return parseNumstatOutput(stdout)
+}
+
+/** Same as getNumstatMap but comparing against a base SHA (for "This session"). */
+async function getSessionNumstatMap(
+  cwd: string,
+  fromSha: string,
+): Promise<Map<string, NumstatEntry>> {
+  const { stdout } = await runGit(cwd, [
+    '-c', 'core.quotepath=false',
+    'diff', '--numstat', fromSha,
+  ], {
+    allowExitCodes: new Set([128]),
+  })
+  return parseNumstatOutput(stdout)
+}
+
+/** Attach insertion/deletion counts to entries that match a numstat map. */
+function applyNumstat(
+  entries: GitFileEntry[],
+  map: Map<string, NumstatEntry>,
+): void {
+  for (const e of entries) {
+    const stats = map.get(e.path)
+    if (stats) {
+      e.insertions = stats.insertions
+      e.deletions = stats.deletions
+    }
+  }
+}
+
 export async function getStatus(cwd: string): Promise<GitStatusResponse> {
   if (!(await isInsideWorkTree(cwd))) {
     return { isRepo: false }
@@ -346,6 +412,16 @@ export async function getStatusInRepo(cwd: string): Promise<GitStatus> {
   }
 
   const buckets = bucketFiles(entries)
+
+  // Fetch per-file line counts in parallel (staged via --cached, unstaged via default).
+  // Untracked files have no diff — they get no counts.
+  const [stagedNumstat, unstagedNumstat] = await Promise.all([
+    buckets.staged.length > 0 ? getNumstatMap(cwd, true) : Promise.resolve(new Map<string, NumstatEntry>()),
+    buckets.unstaged.length > 0 ? getNumstatMap(cwd, false) : Promise.resolve(new Map<string, NumstatEntry>()),
+  ])
+  applyNumstat(buckets.staged, stagedNumstat)
+  applyNumstat(buckets.unstaged, unstagedNumstat)
+
   const inProgress = await detectInProgressState(cwd)
   const dirty =
     buckets.staged.length > 0 ||
@@ -679,14 +755,43 @@ export async function listBranches(cwd: string): Promise<GitBranch[]> {
   return branches
 }
 
-export async function createBranch(cwd: string, name: string, checkout: boolean): Promise<void> {
+export async function createBranch(
+  cwd: string,
+  name: string,
+  checkout: boolean,
+  autoStash = false,
+): Promise<{ stashed: boolean }> {
   await ensureGitRepo(cwd)
   await validateBranchName(name)
-  if (checkout) {
-    await runGit(cwd, ['checkout', '-b', name])
-  } else {
+  if (!checkout) {
     await runGit(cwd, ['branch', name])
+    return { stashed: false }
   }
+  // Mirror checkoutBranch's conflict handling: when the user has
+  // uncommitted changes, git checkout -b exits 1 with a "would be
+  // overwritten" message. Surface as 409 so the client can offer
+  // auto-stash instead of showing a raw error toast.
+  const first = await runGit(cwd, ['checkout', '-b', name], { allowExitCodes: new Set([1, 128]) })
+  if (first.exitCode === 0) return { stashed: false }
+  const msg = (first.stderr || first.stdout || '').trim()
+  if (!/would be overwritten|local changes/i.test(msg)) {
+    throw new HttpError(500, `git checkout -b failed: ${msg.slice(0, 500)}`)
+  }
+  if (!autoStash) {
+    throw new HttpError(409, 'uncommitted changes block checkout — commit, stash, or pass autoStash')
+  }
+  // Auto-stash, retry. If checkout still fails, keep the stash so
+  // the user's work isn't lost (same safety net as checkoutBranch).
+  await runGit(cwd, ['stash', 'push', '-u', '-m', `auto-stash before creating ${name}`])
+  const second = await runGit(cwd, ['checkout', '-b', name], { allowExitCodes: new Set([1, 128]) })
+  if (second.exitCode !== 0) {
+    throw new HttpError(
+      500,
+      `branch creation still failed after auto-stash — your changes are saved as stash@{0}, ` +
+      `pop manually with stash-pop. Underlying error: ${(second.stderr || second.stdout).trim().slice(0, 300)}`,
+    )
+  }
+  return { stashed: true }
 }
 
 export async function checkoutBranch(
@@ -826,6 +931,14 @@ export async function getSessionFiles(cwd: string, fromSha: string): Promise<Git
       ...(renamedFrom ? { renamedFrom } : {}),
     })
   }
+
+  // Attach per-file line counts for tracked changes since fromSha.
+  // Untracked files have no diff to count — they get no stats.
+  if (out.length > 0) {
+    const numstat = await getSessionNumstatMap(cwd, fromSha)
+    applyNumstat(out, numstat)
+  }
+
   // Also include untracked files — these don't appear in `diff fromSha`
   // because they have no prior version to compare against. We pull them
   // from getStatusInRepo (skipping the inside-work-tree probe — ensureGitRepo

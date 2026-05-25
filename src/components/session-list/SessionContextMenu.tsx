@@ -27,6 +27,17 @@ export interface SessionContextMenuProps {
   onAddToGroup: (sessionId: string, groupId: string) => void
   /** Max sessions per group. */
   maxOpen: number
+  /** Optional success-feedback callback (e.g. after clipboard copy). */
+  onShowSuccess?: (msg: string) => void
+  /** Trigger a custom confirmation dialog instead of window.confirm.
+   *  Called with a config object; the dialog is rendered by the parent. */
+  onAskConfirm?: (config: {
+    title: string
+    message: React.ReactNode
+    confirmLabel: string
+    destructive?: boolean
+    onConfirm: () => void | Promise<void>
+  }) => void
 }
 
 export function SessionContextMenu({
@@ -45,6 +56,8 @@ export function SessionContextMenu({
   groups,
   onAddToGroup,
   maxOpen,
+  onShowSuccess,
+  onAskConfirm,
 }: SessionContextMenuProps) {
   if (!session) return null
   const items: ContextMenuItem[] = [
@@ -75,7 +88,15 @@ export function SessionContextMenu({
       onClick: () => {
         if (session.messageCount > 0) {
           const title = session.title ?? session.id.slice(0, 8)
-          if (!window.confirm(`Restart session "${title}"?\n\nThis will delete the current session and create a fresh one with the same settings.`)) return
+          if (onAskConfirm) {
+            onAskConfirm({
+              title: 'Restart session?',
+              message: <p>Restart &ldquo;{title}&rdquo;? This will delete the current session and create a fresh one with the same settings.</p>,
+              confirmLabel: 'Restart',
+              onConfirm: () => onRestart(anchor.id),
+            })
+            return
+          }
         }
         onRestart(anchor.id)
       },
@@ -113,7 +134,9 @@ export function SessionContextMenu({
       label: 'Copy session ID',
       icon: '#',
       onClick: () => {
-        void navigator.clipboard?.writeText(session.id).catch(() => {})
+        void navigator.clipboard?.writeText(session.id)
+          .then(() => onShowSuccess?.('Session ID copied'))
+          .catch(() => {})
       },
     },
     {
@@ -121,7 +144,11 @@ export function SessionContextMenu({
       icon: '📁',
       disabled: !session.cwd,
       onClick: () => {
-        if (session.cwd) void navigator.clipboard?.writeText(session.cwd).catch(() => {})
+        if (session.cwd) {
+          void navigator.clipboard?.writeText(session.cwd)
+            .then(() => onShowSuccess?.('Working directory copied'))
+            .catch(() => {})
+        }
       },
     },
     { label: '' }, // separator
@@ -164,10 +191,21 @@ export function SessionContextMenu({
         // — those are essentially scratch sessions the user created and
         // abandoned without typing anything.
         const hasHistory = session.messageCount > 0
-        if (hasHistory) {
+        if (hasHistory && onAskConfirm) {
           const title = session.title ?? session.id.slice(0, 8)
-          const msg = `Delete session "${title}"?\n\nThis permanently removes the conversation from disk. The Anthropic SDK's own session log in ~/.claude/projects/ is kept, but the app won't reference it anymore.`
-          if (!window.confirm(msg)) return
+          onAskConfirm({
+            title: 'Delete session?',
+            message: (
+              <>
+                <p>Delete &ldquo;{title}&rdquo;?</p>
+                <p>This permanently removes the conversation from disk. The Anthropic SDK&rsquo;s own session log in ~/.claude/projects/ is kept, but the app won&rsquo;t reference it anymore.</p>
+              </>
+            ),
+            confirmLabel: 'Delete',
+            destructive: true,
+            onConfirm: () => onDelete(anchor.id),
+          })
+          return
         }
         onDelete(anchor.id)
       },

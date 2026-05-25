@@ -1220,7 +1220,13 @@ export function App() {
     refreshConfigResponse()
   }, [refreshConfigResponse])
 
-  if (isConfigured === null) return null // still loading
+  if (isConfigured === null) {
+    return (
+      <div className="app-loading">
+        <div className="app-loading-spinner" />
+      </div>
+    )
+  }
   if (!isConfigured) return <SetupPage onConfigured={handleConfigured} />
 
   return (
@@ -1393,6 +1399,7 @@ export function App() {
                     onRegisterInterrupt={registerInterrupt}
                     onRegisterRecap={registerRecap}
                     onAcceptSidebarDrop={handleAcceptSidebarDrop}
+                    isResuming={resuming.has(s.id)}
                   />
                 </ErrorBoundary>
               )

@@ -31,6 +31,7 @@ import { useSessionRecap } from '../hooks/useSessionRecap'
 import { MessageSearch } from './MessageSearch'
 import { ContextMenu } from './ContextMenu'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
+import { useSuccessToast } from '../hooks/useSuccessToast'
 import type { AgentInfo, PermissionRequest, SessionInfo, SlashCommand } from '../types'
 import type { GitStatusResponse } from '../../shared/git-types'
 
@@ -236,6 +237,7 @@ export const Chat = memo(function Chat({
   // ── In-chat search ──────────────────────────────────────────
   const [searchOpen, setSearchOpen] = useState(false)
   const [exportMenuPos, setExportMenuPos] = useState<{ x: number; y: number } | null>(null)
+  const [exportSuccess, showExportSuccess, clearExportSuccess] = useSuccessToast()
   const [searchQuery, setSearchQuery] = useState('')
   const debouncedQuery = useDebouncedValue(searchQuery, 200)
   const [searchActiveIdx, setSearchActiveIdx] = useState(0)
@@ -540,12 +542,18 @@ export const Chat = memo(function Chat({
             {
               label: 'Export as Markdown',
               icon: '📄',
-              onClick: () => exportConversation(stream.messages, session.title ?? session.id.slice(0, 8)),
+              onClick: () => {
+                exportConversation(stream.messages, session.title ?? session.id.slice(0, 8))
+                showExportSuccess('Exported as Markdown')
+              },
             },
             {
               label: 'Export as JSON',
               icon: '{}',
-              onClick: () => exportConversationJson(stream.messages, session.title ?? session.id.slice(0, 8)),
+              onClick: () => {
+                exportConversationJson(stream.messages, session.title ?? session.id.slice(0, 8))
+                showExportSuccess('Exported as JSON')
+              },
             },
           ]}
         />
@@ -581,6 +589,12 @@ export const Chat = memo(function Chat({
       <TodoChecklist messages={stream.messages} working={session.working} />
 
       {error && <div className="error-bar">{error}</div>}
+      {exportSuccess && (
+        <div className="success-toast" style={{ margin: '4px 18px' }}>
+          {exportSuccess}
+          <button className="success-toast-dismiss" onClick={clearExportSuccess}>✕</button>
+        </div>
+      )}
 
       {/* The queue bar is only interesting when the user has queued extra
           turns on top of the one currently running — a single pending
