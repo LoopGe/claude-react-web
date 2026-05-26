@@ -33,13 +33,22 @@ interface SessionRecap {
 }
 
 /**
- * @param sessionId   target session
- * @param lastTurnAt  server-stamped timestamp of the latest completed
- *                    turn; undefined → no recap is triggered
+ * @param sessionId       target session
+ * @param lastTurnAt      server-stamped timestamp of the latest completed
+ *                        turn; undefined → no recap is triggered
+ * @param hasFreshRecap   true when the transcript already contains a recap
+ *                        whose generatedAt covers the current lastTurnAt
+ *                        (computed by the caller from stream.items). When
+ *                        true, the auto-fire path skips the fetch — without
+ *                        this gate, every session switch on an idle session
+ *                        re-POSTs `/recap` and the server's cached recap
+ *                        gets re-broadcast, stacking duplicate cards in the
+ *                        transcript. Manual refresh ignores this flag.
  */
 export function useSessionRecap(
   sessionId: string,
   lastTurnAt: number | undefined,
+  hasFreshRecap: boolean = false,
 ): SessionRecap {
   const [isLoading, setIsLoading] = useState(false)
   const fetchAbortRef = useRef<AbortController | null>(null)
@@ -79,12 +88,17 @@ export function useSessionRecap(
 
   // Idle-watch effect.
   //
-  // Re-runs whenever sessionId or lastTurnAt changes. Decides between
-  //   1. nothing to do (no completed turn),
+  // Re-runs whenever sessionId / lastTurnAt / hasFreshRecap changes.
+  // Decides between
+  //   1. nothing to do (no completed turn, or recap already covers it),
   //   2. fire now (idle threshold already passed),
   //   3. schedule a one-shot timer.
   useEffect(() => {
     if (!lastTurnAt) return
+    // Recap already exists for this turn — don't re-fire on session switch.
+    // The server's recap cache returns the same generatedAt (and therefore
+    // the same uuid) on hit, so re-firing produces a duplicate broadcast.
+    if (hasFreshRecap) return
 
     const elapsed = Date.now() - lastTurnAt
     const remaining = IDLE_THRESHOLD_MS - elapsed
@@ -94,7 +108,7 @@ export function useSessionRecap(
       doFetch()
     }, Math.max(0, remaining))
     return () => clearTimeout(timer)
-  }, [sessionId, lastTurnAt, doFetch])
+  }, [sessionId, lastTurnAt, doFetch, hasFreshRecap])
 
   // Cancel any in-flight fetch on unmount.
   useEffect(() => {

@@ -6,12 +6,14 @@
 import { Hono } from 'hono'
 import { SessionManager } from '../session-manager.js'
 import { HttpError, createErrorHandler } from '../errors.js'
+import type { MpStore } from '../mp-store.js'
 import { buildSessionRouter } from './sessions.js'
 import { buildPermissionRouter } from './permissions.js'
 import { buildUploadRouter } from './uploads.js'
 import { buildRecapRouter } from './recap.js'
 import { buildConfigRouter } from './config-routes.js'
 import { buildMarketplaceRouter } from './marketplace.js'
+import { buildMpRouter } from './mp-marketplace.js'
 import { buildGitWriteRouter } from './git-write.js'
 
 /** Parse JSON body, returning 400 on malformed input instead of silently
@@ -24,7 +26,7 @@ export async function safeJson<T>(req: { json<T>(): Promise<T> }): Promise<T> {
   }
 }
 
-export function buildApiRouter(sm: SessionManager, configDir?: string): Hono {
+export function buildApiRouter(sm: SessionManager, configDir?: string, mpStore?: MpStore): Hono {
   const app = new Hono()
 
   app.onError(createErrorHandler('[api]'))
@@ -40,6 +42,13 @@ export function buildApiRouter(sm: SessionManager, configDir?: string): Hono {
   app.route('/', buildPermissionRouter(sm))
   app.route('/', buildRecapRouter(sm))
   app.route('/', buildMarketplaceRouter())
+  // Homegrown marketplace lives under /mp/* and is independent of the
+  // CLI-shelling /marketplaces routes above. Only mounted when an
+  // MpStore was provided — other buildApp callers (tests, standalone
+  // tooling) skip it cleanly.
+  if (mpStore) {
+    app.route('/', buildMpRouter(sm, mpStore))
+  }
   app.route('/', buildGitWriteRouter(sm))
 
   return app

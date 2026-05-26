@@ -185,6 +185,74 @@ describe('useSessionRecap', () => {
     expect(mockPost).not.toHaveBeenCalled()
   })
 
+  // ── hasFreshRecap gate ───────────────────────────────────────
+  //
+  // Regression: switching back to an idle session re-fired the recap
+  // fetch on every mount. Server cache returned the same uuid, the
+  // broadcast was applied without dedup, and the transcript stacked
+  // identical recap cards on every switch. The gate stops the auto-fire
+  // when the transcript already covers the current lastTurnAt.
+
+  it('does NOT auto-fetch when hasFreshRecap is true', async () => {
+    const now = Date.now()
+    vi.setSystemTime(now)
+
+    const lastTurn = now - 10 * 60_000 // 10 min idle — would normally fire
+    renderHook(() => useSessionRecap('s1', lastTurn, true))
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(mockPost).not.toHaveBeenCalled()
+  })
+
+  it('auto-fetches once hasFreshRecap flips back to false (recap evicted / staled)', async () => {
+    const now = Date.now()
+    vi.setSystemTime(now)
+
+    const lastTurn = now - 10 * 60_000
+    const { rerender } = renderHook(
+      ({ fresh }: { fresh: boolean }) =>
+        useSessionRecap('s1', lastTurn, fresh),
+      { initialProps: { fresh: true } },
+    )
+
+    // Initially gated.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(mockPost).not.toHaveBeenCalled()
+
+    // The cached recap got pruned (e.g. items rebuilt without it) — gate flips.
+    rerender({ fresh: false })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(mockPost).toHaveBeenCalledTimes(1)
+  })
+
+  it('manual refresh fires even when hasFreshRecap is true', async () => {
+    const now = Date.now()
+    vi.setSystemTime(now)
+
+    const lastTurn = now - 10 * 60_000
+    const { result } = renderHook(() => useSessionRecap('s1', lastTurn, true))
+
+    // Auto-path is gated.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(mockPost).not.toHaveBeenCalled()
+
+    // Explicit user refresh ignores the gate.
+    await act(async () => {
+      result.current.refresh()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(mockPost).toHaveBeenCalledTimes(1)
+  })
+
   it('refresh aborts a previous in-flight request', async () => {
     const now = Date.now()
     vi.setSystemTime(now)

@@ -32,6 +32,7 @@ import { randomUUID } from 'node:crypto'
 import { createPushable, type Pushable } from './pushable.js'
 import type { SessionMeta, SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
+import type { MpStore } from './mp-store.js'
 import { invalidateRecapCache } from './recap.js'
 import { tryCaptureGitHead } from './git.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
@@ -83,6 +84,7 @@ export class SessionManager {
   private gcTimer?: NodeJS.Timeout
   private store?: SessionStore
   private mcpStore?: McpConfigStore
+  private mpStore?: MpStore
   private claudeBinary?: string
   private globalSubscribers = new Map<string, GlobalSubscriber>()
   private processMonitor: ProcessMonitor
@@ -106,6 +108,7 @@ export class SessionManager {
     this.autoResumeEnabled = opts.autoResume ?? false
     this.store = opts.store
     this.mcpStore = opts.mcpConfigStore
+    this.mpStore = opts.mpStore
     this.gcTimer = setInterval(() => this.gc(), 60_000)
     // Don't keep the Node process alive just for GC
     this.gcTimer.unref?.()
@@ -1150,7 +1153,8 @@ export class SessionManager {
   }
 
   /** Inject standard options shared by spawn() and autoResume():
-   *  includePartialMessages, pathToClaudeCodeExecutable, and env. */
+   *  includePartialMessages, pathToClaudeCodeExecutable, env, and the
+   *  marketplace-enabled plugin paths. */
   private applyStandardQueryOpts(opts: Options): void {
     if (opts.includePartialMessages === undefined) {
       opts.includePartialMessages = true
@@ -1160,6 +1164,22 @@ export class SessionManager {
     }
     if (!opts.env) {
       opts.env = this.buildAnthropicEnv()
+    }
+    // Merge marketplace-enabled plugin paths into Options.plugins. We
+    // append rather than replace so a caller can pass its own plugins
+    // through (e.g. tests or one-off ad-hoc spawns). Each entry is
+    // `{ type: 'local', path }` — the only SdkPluginConfig variant the
+    // SDK currently accepts. Plugins whose dirs disappeared since the
+    // last enable are silently filtered by the store helper.
+    if (this.mpStore) {
+      const enabledPaths = this.mpStore.getEnabledPluginAbsolutePaths()
+      if (enabledPaths.length > 0) {
+        const existing = opts.plugins ?? []
+        opts.plugins = [
+          ...existing,
+          ...enabledPaths.map((path) => ({ type: 'local' as const, path })),
+        ]
+      }
     }
   }
 

@@ -109,6 +109,102 @@ describe('reducer: optimistic user message + server echo', () => {
   })
 })
 
+describe('reducer: recap dedup', () => {
+  // Regression: switching to an idle session would re-fire the recap
+  // fetch; the server's broadcast of the new recap was appended on top
+  // of the prior recap restored from localStorage, so each session
+  // switch stacked another duplicate card.
+  function applyRecap(
+    state: ReturnType<typeof createInitialSessionState>,
+    uuid: string,
+    summary: string,
+    state_: 'ready' | 'loading' | 'error' = 'ready',
+  ): ReturnType<typeof createInitialSessionState> {
+    const message = {
+      type: 'recap',
+      uuid,
+      session_id: 's1',
+      state: state_,
+      recap: { summary, stats: {} },
+    } as unknown as SdkMessage
+    return reduceSessionState(state, { type: 'MESSAGE', message })
+  }
+
+  it('replaces an existing recap card when a new recap message arrives', () => {
+    let state = createInitialSessionState('s1')
+    state = applyRecap(state, 'recap:s1:111', 'old summary')
+    expect(state.items.length).toBe(1)
+
+    state = applyRecap(state, 'recap:s1:222', 'new summary')
+    // Still one card — the old one is gone, the new one took its place.
+    expect(state.items.length).toBe(1)
+    expect(state.items[0].id).toBe('recap:s1:222')
+    expect(state.messages.length).toBe(1)
+    expect((state.messages[0] as { uuid: string }).uuid).toBe('recap:s1:222')
+  })
+
+  it('preserves non-recap messages when replacing the recap', () => {
+    let state = createInitialSessionState('s1')
+    // user → assistant → recap → another user turn
+    state = applyServerEcho(state, 'hi', 'u-1')
+    state = applyRecap(state, 'recap:s1:111', 'old')
+    state = applyServerEcho(state, 'follow up', 'u-2')
+    expect(state.items.length).toBe(3)
+
+    state = applyRecap(state, 'recap:s1:222', 'new')
+    // recap card replaced, the two user turns survive, recap moves to tail
+    expect(state.items.length).toBe(3)
+    const ids = state.items.map((i) => i.id)
+    expect(ids).toContain('u-1')
+    expect(ids).toContain('u-2')
+    expect(ids).toContain('recap:s1:222')
+    expect(ids).not.toContain('recap:s1:111')
+  })
+
+  it('self-heals legacy duplicate recaps (multiple stale recaps in cached items)', () => {
+    // Simulates localStorage cache from before the fix: three stale recap
+    // cards already in items. A single new recap broadcast must collapse
+    // all of them to one.
+    let state = createInitialSessionState('s1')
+    state = applyRecap(state, 'recap:s1:1', 's1')
+    state = applyRecap(state, 'recap:s1:2', 's2')
+    // Bypass the dedup to seed a third stale recap manually — mimic what
+    // a buggy persisted state could look like on hydrate.
+    state = {
+      ...state,
+      items: [
+        ...state.items,
+        {
+          id: 'recap:s1:3',
+          msg: {
+            type: 'recap',
+            uuid: 'recap:s1:3',
+            session_id: 's1',
+            state: 'ready',
+            recap: { summary: 's3', stats: {} },
+          } as unknown as SdkMessage,
+          plainText: null,
+          isCompactSummary: false,
+          hiddenByDefault: false,
+        },
+      ],
+      messages: [
+        ...state.messages,
+        {
+          type: 'recap',
+          uuid: 'recap:s1:3',
+        } as unknown as SdkMessage,
+      ],
+    }
+    expect(state.items.filter((i) => (i.msg as { type?: string }).type === 'recap').length).toBe(2)
+
+    state = applyRecap(state, 'recap:s1:fresh', 'fresh')
+    const recapItems = state.items.filter((i) => (i.msg as { type?: string }).type === 'recap')
+    expect(recapItems.length).toBe(1)
+    expect(recapItems[0].id).toBe('recap:s1:fresh')
+  })
+})
+
 describe('reducer: ROLLBACK_OPTIMISTIC_USER_MESSAGE', () => {
   it('removes the optimistic placeholder when POST fails', () => {
     let state = createInitialSessionState('s1')

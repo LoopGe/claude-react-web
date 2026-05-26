@@ -267,6 +267,27 @@ function updateTranscript(state: SessionState, message: SdkMessage): SessionStat
   const item = toTranscriptItem(message, prev)
   if (!item) return state
 
+  // Recaps are unique — at most one card per session. The server enforces
+  // this in appendRecap() by splicing out any prior recap before pushing
+  // the new one, but the broadcast that follows is just a normal `message`
+  // frame, so without mirroring the rule here every session switch that
+  // re-fires the idle recap fetch would stack a fresh card on top of the
+  // one we restored from localStorage. Filter ALL existing recaps (not just
+  // the latest) so legacy duplicates already cached pre-fix self-heal.
+  if ((item.msg as { type?: string }).type === 'recap') {
+    const filteredItems = state.items.filter(
+      (it) => (it.msg as { type?: string }).type !== 'recap',
+    )
+    const filteredMessages = state.messages.filter(
+      (m) => (m as { type?: string }).type !== 'recap',
+    )
+    return {
+      ...state,
+      items: [...filteredItems, item],
+      messages: [...filteredMessages, item.msg],
+    }
+  }
+
   if (
     item.msg.type === 'system' &&
     item.msg.subtype === 'api_retry' &&

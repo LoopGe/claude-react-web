@@ -7,9 +7,10 @@ import { formatBytes } from '../utils/format'
 import type { FullServerConfig } from '../types/config'
 import type { McpServerConfigMeta } from '../types'
 import { McpInstaller } from './McpInstaller'
+import { MarketplaceTab } from './MarketplaceTab'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 
-type Tab = 'api' | 'models' | 'server' | 'mcp' | 'logs'
+type Tab = 'api' | 'models' | 'server' | 'mcp' | 'marketplace' | 'logs'
 
 type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'trace'
 
@@ -177,6 +178,7 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
     { key: 'models', label: 'Models' },
     { key: 'server', label: 'Server' },
     { key: 'mcp', label: 'MCP Servers' },
+    { key: 'marketplace', label: 'Marketplace' },
     { key: 'logs', label: 'Logs' },
   ]
 
@@ -259,6 +261,7 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
                   onToggle={toggleMcpServer}
                 />
               )}
+              {tab === 'marketplace' && <MarketplaceTab />}
               {tab === 'logs' && <LogsTab />}
             </>
           )}

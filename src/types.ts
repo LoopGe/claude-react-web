@@ -249,3 +249,50 @@ export interface RecapResponse {
   generatedAt: number
   fallback?: boolean
 }
+
+// ── Marketplace (homegrown /api/mp) ───────────────────────────────
+//
+// UI mirror of the server-side types. Intentionally NOT imported from
+// the server module — the browser bundle stays free of node-specific
+// imports. Drift is bounded because both sides project to the same JSON
+// shape; the wire layer is the source of truth.
+
+export interface MpSource {
+  type: 'https'
+  url: string
+  ref?: string
+}
+
+/** Marketplace summary returned by GET /mp/marketplaces. The cached
+ *  manifest is intentionally omitted to keep the list response small;
+ *  per-plugin data lives behind GET /mp/marketplaces/:id/plugins. */
+export interface MpListItem {
+  id: string
+  displayName: string
+  source: MpSource
+  addedAt: number
+  lastRefreshedAt: number
+  lastSha: string
+  pluginCount: number
+  manifestVersion?: string
+  ownerName?: string
+}
+
+/** Plugin entry as surfaced by the marketplace plugins endpoint. */
+export interface MpPluginInfo {
+  name: string
+  description?: string
+  version?: string
+  author?: string
+  category?: string
+  tags?: string[]
+  enabled: boolean
+}
+
+/** Non-fatal warning surfaced by the manifest parser. The UI displays
+ *  these next to the marketplace so the user knows when a plugin was
+ *  silently dropped. */
+export interface MpParseWarning {
+  kind: 'plugin-missing-name' | 'plugin-dir-not-found' | 'plugin-invalid-name' | 'plugin-bad-shape'
+  detail: string
+}

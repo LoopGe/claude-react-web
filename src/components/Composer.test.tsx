@@ -2,9 +2,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, fireEvent } from '@testing-library/react'
 import { Composer } from './Composer'
 import type { SlashCommand } from '../types'
+import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 
 const noop = vi.fn()
 const noopAsync = async () => {}
+
+const stubSnippets: ComposerSnippetsApi = {
+  snippets: [],
+  add: (label, content) => ({ id: 'stub', label, content }),
+  update: noop,
+  remove: noop,
+  move: noop,
+}
 
 const defaultProps = {
   input: '',
@@ -30,6 +39,9 @@ const defaultProps = {
   onInterrupt: noop,
   canInterrupt: false,
   focusSignal: 0,
+  snippets: stubSnippets,
+  onOpenSnippetsManager: noop,
+  onSaveCurrentAsSnippet: noop,
 }
 
 describe('Composer', () => {

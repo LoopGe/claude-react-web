@@ -10,7 +10,7 @@
 // metadata that earns its keep. Order is the array order; reordering is
 // handled by the manager modal via move-up / move-down buttons.
 
-import { useCallback } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useLocalStorage } from './useLocalStorage'
 
 export interface ComposerSnippet {
@@ -98,5 +98,13 @@ export function useComposerSnippets(): ComposerSnippetsApi {
     [setSnippets],
   )
 
-  return { snippets, add, update, remove, move }
+  // Memoize the api object so consumers can pass it as a prop without
+  // breaking React.memo on the receiving component. Without this, the
+  // fresh object literal would invalidate the memo on every parent
+  // render — a real concern for Chat → Composer where Chat re-renders
+  // on every streaming token.
+  return useMemo(
+    () => ({ snippets, add, update, remove, move }),
+    [snippets, add, update, remove, move],
+  )
 }

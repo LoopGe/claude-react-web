@@ -23,10 +23,13 @@ import { Composer } from './Composer'
 import { ContextBar } from './ContextBar'
 import { MessageList, WorkingBubble } from './MessageList'
 import { PermissionDialog } from './PermissionDialog'
+import { PromptDialog } from './PromptDialog'
 import { QuestionDialog } from './QuestionDialog'
+import { SnippetsManagerDialog } from './SnippetsManagerDialog'
 import { SubagentOverlay } from './SubagentOverlay'
 import { SubagentProvider } from '../hooks/useSubagentContext'
 import { TodoChecklist } from './TodoChecklist'
+import { useComposerSnippets } from '../hooks/useComposerSnippets'
 import { useSessionRecap } from '../hooks/useSessionRecap'
 import { MessageSearch } from './MessageSearch'
 import { ContextMenu } from './ContextMenu'
@@ -294,7 +297,48 @@ export const Chat = memo(function Chat({
   // a synthetic message we splice into the transcript so the recap reads
   // as part of the conversation rather than a floating overlay. The hook
   // resets whenever lastTurnAt advances (i.e. user sent a new message).
-  const recap = useSessionRecap(session.id, session.lastTurnAt)
+  //
+  // hasFreshRecap gates the auto-fire path: when items already contain a
+  // ready/error recap that covers the current lastTurnAt, switching back
+  // to this session must NOT re-POST /recap. Without this gate, the
+  // server's cached recap (same uuid) gets re-broadcast every switch and
+  // duplicate cards stack up. An 'error' recap also counts as fresh —
+  // the user retries via Alt+R, not by switching panels.
+  const hasFreshRecap = useMemo(() => {
+    if (!session.lastTurnAt) return false
+    for (const it of stream.items) {
+      const m = it.msg as {
+        type?: string
+        state?: string
+        recap?: { generatedAt?: number }
+      }
+      if (m.type !== 'recap') continue
+      if (m.state !== 'ready' && m.state !== 'error') continue
+      if (m.state === 'error') return true
+      const ga = m.recap?.generatedAt
+      if (typeof ga === 'number' && ga >= session.lastTurnAt) return true
+    }
+    return false
+  }, [stream.items, session.lastTurnAt])
+  const recap = useSessionRecap(session.id, session.lastTurnAt, hasFreshRecap)
+
+  // Composer snippets — owned at this (panel) level so the manager and
+  // save-prompt dialogs can render as siblings of settings-overlay /
+  // git-overlay. When mounted inside <Composer>, .perm-overlay anchored
+  // to .chat-composer's tiny strip and the dialogs were unusable.
+  // The hook persists to localStorage and syncs across instances, so
+  // calling it once here gives every panel a consistent view.
+  const snippets = useComposerSnippets()
+  const [showSnippetsManager, setShowSnippetsManager] = useState(false)
+  /** Set when the user clicked "Save current input as snippet…". Holds
+   *  the textarea snapshot so future edits don't mutate the captured
+   *  content before the user confirms a label. */
+  const [pendingSnippetSave, setPendingSnippetSave] = useState<{ content: string } | null>(null)
+  const handleOpenSnippetsManager = useCallback(() => setShowSnippetsManager(true), [])
+  const handleSaveCurrentAsSnippet = useCallback(
+    (content: string) => setPendingSnippetSave({ content }),
+    [],
+  )
 
   // Track questions that have been answered but whose dialog should stay
   // visible (showing the answer inline) for a few seconds before closing.
@@ -653,6 +697,9 @@ export const Chat = memo(function Chat({
         focusSignal={composerFocusSignal}
         onRecap={recap.refresh}
         canRecap={!!session.lastTurnAt}
+        snippets={snippets}
+        onOpenSnippetsManager={handleOpenSnippetsManager}
+        onSaveCurrentAsSnippet={handleSaveCurrentAsSnippet}
       />
 
       {/* Pending permission dialogs + recently-answered question cards
@@ -768,6 +815,37 @@ export const Chat = memo(function Chat({
             showSystemEvents={showSystemEvents}
           />
         </SubagentProvider>
+      )}
+
+      {/* Snippet dialogs render as panel-level overlays. They use
+          .perm-overlay (position: absolute; inset: 0) which now anchors
+          to .chat (position: relative) instead of the tiny .chat-composer
+          strip — so they cover the whole panel like settings/git. */}
+      {pendingSnippetSave && (
+        <PromptDialog
+          title="Save snippet"
+          message={
+            <>
+              <p>Pick a label for this snippet. The current composer text will be saved as its content.</p>
+              <pre className="snippet-save-preview">{pendingSnippetSave.content}</pre>
+            </>
+          }
+          defaultValue=""
+          confirmLabel="Save"
+          placeholder="Snippet label"
+          onConfirm={(label) => {
+            snippets.add(label, pendingSnippetSave.content)
+            setPendingSnippetSave(null)
+          }}
+          onCancel={() => setPendingSnippetSave(null)}
+        />
+      )}
+
+      {showSnippetsManager && (
+        <SnippetsManagerDialog
+          api={snippets}
+          onClose={() => setShowSnippetsManager(false)}
+        />
       )}
     </div>
   )

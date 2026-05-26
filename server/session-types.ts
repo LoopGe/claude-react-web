@@ -13,6 +13,7 @@ import type {
 import type { Pushable } from './pushable.js'
 import type { SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
+import type { MpStore } from './mp-store.js'
 import type { SessionInfoBase } from '../shared/session-info.js'
 
 /** Subscriber — each connected client gets one of these. */
@@ -170,6 +171,9 @@ export interface SessionManagerOptions {
   /** When set, global MCP server configs are available for merging
    *  into new sessions. See server/mcp-config.ts. */
   mcpConfigStore?: McpConfigStore
+  /** When set, every new SDK Query is spawned with plugin paths from
+   *  enabled marketplace plugins injected into Options.plugins. */
+  mpStore?: MpStore
   /** Absolute path to the `claude` CLI binary, injected into every
    *  Query's Options.pathToClaudeCodeExecutable. Bypasses the SDK's
    *  internal platform-native-package resolution, which can pick a

@@ -16,6 +16,7 @@ import { buildMcpConfigRouter } from './mcp-routes.js'
 import { config as serverConfig } from './config.js'
 import type { SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
+import type { MpStore } from './mp-store.js'
 
 export interface AppOptions {
   /** Directory containing the built frontend (dist/client). */
@@ -29,6 +30,11 @@ export interface AppOptions {
   /** Global MCP server config store. Mounted as /api/mcp-config and
    *  passed to SessionManager for merging into new sessions. */
   mcpConfigStore?: McpConfigStore
+  /** Homegrown marketplace store. When provided, the /api/mp/* routes
+   *  are mounted and SessionManager spawns inject enabled plugin paths
+   *  into Options.plugins. Optional to keep existing tests / standalone
+   *  buildApp callers working without churn. */
+  mpStore?: MpStore
   /** Default values exposed via GET /api/config (used by the "new session" form).
    *  `claudeBinary` is NOT exposed to the UI — it's a server-side concern
    *  that gets injected into every Query via options.pathToClaudeCodeExecutable. */
@@ -64,6 +70,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
     new SessionManager({
       store: opts.sessionStore,
       mcpConfigStore: opts.mcpConfigStore,
+      mpStore: opts.mpStore,
       claudeBinary: opts.defaults?.claudeBinary,
       autoResume: true,
     })
@@ -109,7 +116,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
     }
   })
 
-  const apiRouter = buildApiRouter(sessionManager, opts.configDir)
+  const apiRouter = buildApiRouter(sessionManager, opts.configDir, opts.mpStore)
   // Expose server defaults to the UI (used to prefill the "new session" form).
   // The fallback model string is sent through to the SDK unchanged when the
   // user doesn't override it; CLI `--model` and UI field both win over this.

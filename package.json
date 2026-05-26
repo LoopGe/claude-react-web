@@ -1,6 +1,6 @@
 {
   "name": "@mi/claude-react-web",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Local interactive chat platform powered by @anthropic-ai/claude-agent-sdk",
   "type": "module",
   "license": "MIT",

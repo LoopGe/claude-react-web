@@ -10,13 +10,11 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { formatBytes } from '../utils/format'
 import type { Attachment } from '../hooks/useAttachments'
 import type { InputHistoryApi } from '../hooks/useInputHistory'
-import { useComposerSnippets, type ComposerSnippet } from '../hooks/useComposerSnippets'
+import type { ComposerSnippet, ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { useErrorToast } from '../hooks/useErrorToast'
 import type { PastedImage, SlashCommand } from '../types'
 import { CommandPicker } from './CommandPicker'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
-import { PromptDialog } from './PromptDialog'
-import { SnippetsManagerDialog } from './SnippetsManagerDialog'
 
 interface Props {
   input: string
@@ -62,6 +60,17 @@ interface Props {
    *  false (e.g. session has never completed a turn). */
   onRecap?: () => void
   canRecap?: boolean
+
+  /** Snippets state + CRUD api. Owned by the parent (Chat) so the manager
+   *  + save dialogs can render at panel level instead of being squeezed
+   *  into the composer strip. */
+  snippets: ComposerSnippetsApi
+  /** Open the snippets manager dialog. Parent controls the visibility
+   *  state and renders the dialog at panel level. */
+  onOpenSnippetsManager: () => void
+  /** Capture the current composer text and ask the parent to prompt
+   *  for a label. Only called when the input is non-empty. */
+  onSaveCurrentAsSnippet: (content: string) => void
 }
 
 export const Composer = memo(function Composer({
@@ -91,6 +100,9 @@ export const Composer = memo(function Composer({
   focusSignal,
   onRecap,
   canRecap,
+  snippets,
+  onOpenSnippetsManager,
+  onSaveCurrentAsSnippet,
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -105,13 +117,7 @@ export const Composer = memo(function Composer({
   // whatever the textarea reports later.
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
   const [savedSelection, setSavedSelection] = useState<{ start: number; end: number }>({ start: 0, end: 0 })
-  const [showSnippetsManager, setShowSnippetsManager] = useState(false)
-  /** Set when the user clicked "Save current input as snippet…". Holds
-   *  the textarea content at that moment so future edits don't mutate
-   *  the captured snippet body before they confirm the label. */
-  const [pendingSnippetSave, setPendingSnippetSave] = useState<{ content: string } | null>(null)
   const [clipboardError, showClipboardError, clearClipboardError] = useErrorToast()
-  const snippets = useComposerSnippets()
 
   // ---- Slash command picker state ----
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -255,8 +261,8 @@ export const Composer = memo(function Composer({
 
   const handleSaveCurrentAsSnippet = useCallback(() => {
     if (input.trim() === '') return
-    setPendingSnippetSave({ content: input })
-  }, [input])
+    onSaveCurrentAsSnippet(input)
+  }, [input, onSaveCurrentAsSnippet])
 
   const handleTextareaContextMenu = useCallback(
     (e: React.MouseEvent<HTMLTextAreaElement>) => {
@@ -311,7 +317,7 @@ export const Composer = memo(function Composer({
     items.push({
       label: 'Manage snippets…',
       icon: '⚙',
-      onClick: () => setShowSnippetsManager(true),
+      onClick: onOpenSnippetsManager,
     })
     return items
   }, [
@@ -328,6 +334,7 @@ export const Composer = memo(function Composer({
     snippets.snippets,
     handleInsertSnippet,
     handleSaveCurrentAsSnippet,
+    onOpenSnippetsManager,
   ])
 
   const canSend = !disabled && !sending && (input.trim() !== '' || attachments.length > 0 || pastedImages.length > 0)
@@ -581,30 +588,6 @@ export const Composer = memo(function Composer({
           {clipboardError}
           <button className="error-toast-dismiss" onClick={clearClipboardError}>✕</button>
         </div>
-      )}
-
-      {pendingSnippetSave && (
-        <PromptDialog
-          title="Save snippet"
-          message={
-            <>
-              <p>Pick a label for this snippet. The current composer text will be saved as its content.</p>
-              <pre className="snippet-save-preview">{pendingSnippetSave.content}</pre>
-            </>
-          }
-          defaultValue=""
-          confirmLabel="Save"
-          placeholder="Snippet label"
-          onConfirm={(label) => {
-            snippets.add(label, pendingSnippetSave.content)
-            setPendingSnippetSave(null)
-          }}
-          onCancel={() => setPendingSnippetSave(null)}
-        />
-      )}
-
-      {showSnippetsManager && (
-        <SnippetsManagerDialog api={snippets} onClose={() => setShowSnippetsManager(false)} />
       )}
     </div>
   )
