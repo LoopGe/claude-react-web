@@ -9,7 +9,7 @@
 
 import { promises as fs } from 'node:fs'
 import { existsSync } from 'node:fs'
-import { isAbsolute, join, normalize, sep } from 'node:path'
+import { isAbsolute, join, normalize, resolve, sep } from 'node:path'
 
 /** Manifest filename, relative to the repo root. */
 export const MANIFEST_REL_PATH = '.claude-plugin/marketplace.json'
@@ -160,26 +160,38 @@ export async function parseMarketplace(repoRoot: string): Promise<ParseResult> {
     seenNames.add(pName)
 
     // Resolve plugin directory. Convention: each plugin lives at
-    // `<repo>/<plugin.source.path>` if the manifest specifies a path,
-    // otherwise at `<repo>/<plugin.name>`. (Both conventions show up in
-    // real-world Anthropic marketplaces.) The source object's exact shape
-    // varies — we accept `{path: '...'}` as the canonical form and ignore
-    // every other variant for now.
+    // `<repo>/<plugin.source>` if the manifest specifies one, otherwise at
+    // `<repo>/<plugin.name>`. (Both conventions show up in real-world
+    // Anthropic marketplaces.) Two `source` shapes are accepted:
+    //   "source": "./"             — string shorthand, the value IS the path
+    //   "source": { path: "./" }   — canonical object form
+    // Anything else (number, array, object without `path`) is ignored and we
+    // fall back to the plugin name.
     let relDir: string | null = pName
-    if (entry.source && typeof entry.source === 'object' && !Array.isArray(entry.source)) {
+    let rawSourcePath: string | null = null
+    if (typeof entry.source === 'string') {
+      const trimmed = entry.source.trim()
+      if (trimmed) rawSourcePath = trimmed
+    } else if (entry.source && typeof entry.source === 'object' && !Array.isArray(entry.source)) {
       const src = entry.source as Record<string, unknown>
       if (typeof src.path === 'string' && src.path.trim()) {
-        relDir = validateRelativePath(src.path.trim())
-        if (!relDir) {
-          warnings.push({
-            kind: 'plugin-bad-shape',
-            detail: `plugin "${pName}" has invalid source.path; falling back to plugin name as directory`,
-          })
-          relDir = pName
-        }
+        rawSourcePath = src.path.trim()
       }
     }
-    const absDir = join(repoRoot, relDir)
+    if (rawSourcePath !== null) {
+      const validated = validateRelativePath(rawSourcePath)
+      if (!validated) {
+        warnings.push({
+          kind: 'plugin-bad-shape',
+          detail: `plugin "${pName}" has invalid source path; falling back to plugin name as directory`,
+        })
+      } else {
+        relDir = validated
+      }
+    }
+    // resolve() (vs join) canonicalises trailing separators — `'./'` produces
+    // exactly `repoRoot` instead of `repoRoot + sep`.
+    const absDir = resolve(repoRoot, relDir)
     if (!existsSync(absDir)) {
       warnings.push({
         kind: 'plugin-dir-not-found',

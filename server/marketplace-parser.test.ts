@@ -119,6 +119,47 @@ describe('parseMarketplace', () => {
     expect(manifest.plugins[0].dir).toBe(join(repo, 'subdir/nested'))
   })
 
+  it('honours plugin.source as a string shorthand pointing at the repo root', async () => {
+    // Real-world manifest seen in the wild: { "source": "./" } means the
+    // plugin lives at the cloned repo root, not in a subdir named after it.
+    writeManifest(repo, {
+      name: 'M',
+      plugins: [
+        { name: 'plug', source: './' },
+      ],
+    })
+    const { manifest, warnings } = await parseMarketplace(repo)
+    expect(warnings).toEqual([])
+    expect(manifest.plugins).toHaveLength(1)
+    expect(manifest.plugins[0].dir).toBe(repo)
+  })
+
+  it('honours plugin.source as a string shorthand pointing at a subdir', async () => {
+    mkdirSync(join(repo, 'packages', 'plug'), { recursive: true })
+    writeManifest(repo, {
+      name: 'M',
+      plugins: [
+        { name: 'plug', source: 'packages/plug' },
+      ],
+    })
+    const { manifest, warnings } = await parseMarketplace(repo)
+    expect(warnings).toEqual([])
+    expect(manifest.plugins[0].dir).toBe(join(repo, 'packages/plug'))
+  })
+
+  it('rejects an absolute source string and falls back to the plugin name', async () => {
+    makePluginDir(repo, 'plug')
+    writeManifest(repo, {
+      name: 'M',
+      plugins: [
+        { name: 'plug', source: '/etc/passwd' },
+      ],
+    })
+    const { manifest, warnings } = await parseMarketplace(repo)
+    expect(manifest.plugins[0].dir).toBe(join(repo, 'plug'))
+    expect(warnings.some((w) => w.kind === 'plugin-bad-shape')).toBe(true)
+  })
+
   it('rejects an absolute source.path and falls back to the plugin name', async () => {
     makePluginDir(repo, 'plug')
     writeManifest(repo, {
