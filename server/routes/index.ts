@@ -12,6 +12,7 @@ import { buildPermissionRouter } from './permissions.js'
 import { buildUploadRouter } from './uploads.js'
 import { buildRecapRouter } from './recap.js'
 import { buildConfigRouter } from './config-routes.js'
+import { buildHealthRouter } from './health-routes.js'
 import { buildMarketplaceRouter } from './marketplace.js'
 import { buildMpRouter } from './mp-marketplace.js'
 import { buildGitWriteRouter } from './git-write.js'
@@ -26,7 +27,12 @@ export async function safeJson<T>(req: { json<T>(): Promise<T> }): Promise<T> {
   }
 }
 
-export function buildApiRouter(sm: SessionManager, configDir?: string, mpStore?: MpStore): Hono {
+export function buildApiRouter(
+  sm: SessionManager,
+  configDir?: string,
+  mpStore?: MpStore,
+  claudeBinary?: string,
+): Hono {
   const app = new Hono()
 
   app.onError(createErrorHandler('[api]'))
@@ -36,6 +42,7 @@ export function buildApiRouter(sm: SessionManager, configDir?: string, mpStore?:
 
   // Mount sub-routers in the same order as the original routes.ts
   // to preserve Hono's route-matching priority.
+  app.route('/', buildHealthRouter(claudeBinary))
   app.route('/', buildConfigRouter(sm, configDir))
   app.route('/', buildSessionRouter(sm))
   app.route('/', buildUploadRouter(sm))

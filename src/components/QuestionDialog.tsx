@@ -354,7 +354,17 @@ function QuestionBlock({ index, question, value, onSingle, onMulti, onSkip, othe
             </button>
           )
         })}
-        {/* Other — free-text option */}
+        {/* Other — free-text option.
+         *
+         * The toggle and the input are SIBLINGS, not nested. Earlier we
+         * tried both <button>(input inside) and <div role=button>(input
+         * inside): the first hits a Chrome bug where Space inside the
+         * nested input activates the outer button (clearing the typed
+         * text), and the second violates the WAI-ARIA rule that role=
+         * button must not contain interactive descendants (NVDA/VO read
+         * the input value into the button's accessible name). A real
+         * <button> sibling-of an <input> is plain, valid markup and
+         * neither footgun applies. */}
         <button
           type="button"
           className={`question-option ${otherActive ? 'selected' : ''}`}
@@ -366,22 +376,24 @@ function QuestionBlock({ index, question, value, onSingle, onMulti, onSkip, othe
           </span>
           <div className="question-option-body">
             <div className="question-option-label">Other</div>
-            {otherActive && (
-              <input
-                type="text"
-                className="question-other-input"
-                placeholder="Type your answer..."
-                value={otherText}
-                onChange={(e) => onOtherTextChange(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') e.preventDefault()
-                }}
-                autoFocus
-                onClick={(e) => e.stopPropagation()}
-              />
-            )}
           </div>
         </button>
+        {otherActive && (
+          <input
+            type="text"
+            className="question-other-input"
+            placeholder="Type your answer..."
+            value={otherText}
+            onChange={(e) => onOtherTextChange(e.target.value)}
+            // Enter would trigger the dialog's outer focus-trap form
+            // semantics or bubble to keyboard shortcuts; eat it so the
+            // user can't accidentally submit while typing.
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') e.preventDefault()
+            }}
+            autoFocus
+          />
+        )}
       </div>
       <button
         type="button"

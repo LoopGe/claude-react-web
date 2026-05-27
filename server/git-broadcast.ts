@@ -62,15 +62,16 @@ export function _resetGitBroadcastForTests(): void {
 
 /** The set of SDK tool names we treat as "filesystem-mutating". A
  *  tool_result for any of these triggers a debounced broadcast. Bash
- *  is included because its commands frequently touch files (`git`
- *  itself, `mv`, `rm`, `npm install`); it's coarser than a per-command
- *  whitelist but the cost of an extra `git status` is negligible
- *  relative to false negatives. */
+ *  and PowerShell are included because their commands frequently touch
+ *  files (`git` itself, `mv` / `Remove-Item`, `npm install`, etc.);
+ *  it's coarser than a per-command whitelist but the cost of an extra
+ *  `git status` is negligible relative to false negatives. */
 export const MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
   'Edit',
   'Write',
   'NotebookEdit',
   'Bash',
+  'PowerShell',
 ])
 
 interface ToolUseLike {

@@ -165,14 +165,32 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             }
           }
         }
-        // `result` marks a completed turn. Reset pendingTurns to 0 (each
-        // result represents exactly one completed turn). If the user has
-        // already queued another message via send(), pendingTurns will be
-        // bumped back to 1 there.
+        // `result` marks a completed turn.
+        //
+        // If the user queued another message while this turn was running
+        // (input.queueDepth > 0), the SDK is about to start the next turn
+        // immediately — clearing pendingTurns/workingSince here would make
+        // the UI flash to "not working" between turns and hide the
+        // WorkingBubble until the next HTTP send() bump. Detecting more
+        // pending input lets us keep the working state continuous across
+        // back-to-back turns. The race window is closed: SDK emits
+        // `result` BEFORE calling iter.next() for the next turn, so the
+        // queued item is still in our Pushable when we observe `result`.
         if (msg.type === 'result') {
-          debugLog(`[session ${session.id}] result received — total msgs: ${msgCount}`)
-          session.pendingTurns = 0
-          session.workingSince = undefined
+          const moreQueued = session.input.queueDepth > 0
+          debugLog(
+            `[session ${session.id}] result received — total msgs: ${msgCount}, ` +
+            `input.queueDepth=${session.input.queueDepth}, moreQueued=${moreQueued}`,
+          )
+          if (moreQueued) {
+            // Keep pendingTurns=1 and workingSince anchored at its existing
+            // value so the UI continues to show "working" without flicker.
+            // The next result will re-evaluate the queue.
+            session.pendingTurns = 1
+          } else {
+            session.pendingTurns = 0
+            session.workingSince = undefined
+          }
           session.lastTurnAt = Date.now()
           try { deps.persist(session) } catch (err) {
             log.warn(`[session ${session.id}] persist failed after result: ${err}`)

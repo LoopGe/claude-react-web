@@ -90,6 +90,11 @@ export const SubagentOverlay = memo(function SubagentOverlay({
               ⏴
             </button>
           ) : (
+            // Reserve the back-button slot when there's nothing to go
+            // back to, so drilling 1→2 (and back 2→1) does not jump
+            // every label in the title row sideways by ~36px (button
+            // width + gap). The placeholder is aria-hidden because it
+            // carries no semantics — it only preserves layout.
             <span className="subagent-overlay-back-spacer" aria-hidden />
           )}
           <div className="subagent-overlay-title">

@@ -30,11 +30,35 @@ const mockHandles: MockQueryHandle[] = []
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => {
   return {
-    query({ options }: { prompt: unknown; options: Record<string, unknown> }) {
+    query({ prompt, options }: { prompt: unknown; options: Record<string, unknown> }) {
       const queue: unknown[] = []
       let waiter: ((v: IteratorResult<unknown>) => void) | null = null
       let done = false
       let errored: unknown = null
+
+      // Match the real SDK's prompt consumption pacing:
+      //   - On spawn, the SDK calls iter.next() once to get the FIRST
+      //     user message that started the turn.
+      //   - It does NOT call iter.next() again until AFTER emitting
+      //     `result` for the current turn — at which point it pulls the
+      //     next queued user message (or blocks waiting for one).
+      //
+      // This pacing matters for tests of working-state behavior: between
+      // start-of-turn and result, queued user messages SIT in the input
+      // Pushable's queue (queueDepth > 0). A naive "drain everything in
+      // a loop" mock keeps a waiter permanently armed, so push() never
+      // queues anything, and queueDepth-based logic in production is
+      // invisible to tests.
+      const promptIter = (prompt as AsyncIterable<unknown>)?.[Symbol.asyncIterator]?.()
+      let drainInFlight = false
+      const drainOne = () => {
+        if (!promptIter || done || drainInFlight) return
+        drainInFlight = true
+        promptIter.next().finally(() => { drainInFlight = false })
+      }
+      // Initial drain: SDK consumes the first user message to start its
+      // first turn.
+      drainOne()
 
       const pushResolved = (r: IteratorResult<unknown>) => {
         if (waiter) {
@@ -50,6 +74,11 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
           if (done) return
           if (waiter) pushResolved({ value: msg, done: false })
           else queue.push(msg)
+          // After result, the real SDK pulls the next queued user
+          // message to start its next turn. Mirror that here so tests
+          // exercising back-to-back turns see the input queue drain
+          // between turns.
+          if ((msg as { type?: string })?.type === 'result') drainOne()
         },
         finish: () => {
           done = true
@@ -194,16 +223,50 @@ describe('SessionManager', () => {
     expect(after.lastTurnAt!).toBeGreaterThanOrEqual(before)
   })
 
-  it('pendingTurns caps at 1 — result always clears working', async () => {
+  it('pendingTurns caps at 1 across multiple sends', async () => {
+    // Multiple back-to-back sends never inflate pendingTurns past 1
+    // (which would otherwise stick the UI in "working" forever once
+    // the SDK merged queued messages into fewer turns than were sent).
     const info = sm.create({})
     sm.send(info.id, 'first')
     sm.send(info.id, 'second')
-    // pendingTurns is capped at 1, not inflated to 2.
+    sm.send(info.id, 'third')
     expect(sm.get(info.id).working).toBe(true)
-
-    // One result clears working — the SDK may merge queued messages into
-    // a single turn, so we can't assume one result per send.
+    // Drain everything: each result lands, the SDK pulls the next
+    // queued message, and the next result will see an empty queue.
     mockHandles[0].emit({ type: 'result' })
+    await tick()
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    await tick()
+    expect(sm.get(info.id).working).toBe(false)
+  })
+
+  it('result keeps working=true while another user message is still queued', async () => {
+    // Repro for the WorkingBubble flicker bug: user sends msg A, then
+    // queues msg B while A is still running. When the SDK emits result
+    // for A, the pump used to unconditionally clear pendingTurns to 0,
+    // momentarily flipping working=false until the next HTTP send()
+    // bumped it back. The fix: if the input pushable still has queued
+    // items when result lands, keep pendingTurns=1 so the working state
+    // stays continuous.
+    const info = sm.create({})
+    sm.send(info.id, 'first')
+    sm.send(info.id, 'second')
+    // Mock SDK drains 'first' immediately on spawn (initial drainOne).
+    // 'second' sits in the input queue until the next 'result' triggers
+    // the next drain. So when we emit the FIRST result, queueDepth>0.
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    // BUG WAS: working would flip to false here. FIXED: working stays
+    // true because the input queue still has at least one item.
+    expect(sm.get(info.id).working).toBe(true)
+    // Once the second turn finishes (and no more queued input), working
+    // clears as normal.
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
     await tick()
     expect(sm.get(info.id).working).toBe(false)
   })

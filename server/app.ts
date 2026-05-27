@@ -116,7 +116,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
     }
   })
 
-  const apiRouter = buildApiRouter(sessionManager, opts.configDir, opts.mpStore)
+  const apiRouter = buildApiRouter(sessionManager, opts.configDir, opts.mpStore, opts.defaults?.claudeBinary)
   // Expose server defaults to the UI (used to prefill the "new session" form).
   // The fallback model string is sent through to the SDK unchanged when the
   // user doesn't override it; CLI `--model` and UI field both win over this.

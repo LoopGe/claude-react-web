@@ -17,8 +17,10 @@ import type { Block, QuestionSpec } from '../types'
 
 // Per-tool input view. Each view receives the raw tool_use input (loosely
 // typed because SDK schemas drift) and falls back to formatJson internally
-// when the shape is unexpected.
-type ToolInputView = ComponentType<{ input?: Record<string, unknown> }>
+// when the shape is unexpected. `toolName` is forwarded so a single view
+// can serve more than one tool (e.g. BashToolView covers both Bash and
+// PowerShell, branching on the name to swap the prompt glyph).
+type ToolInputView = ComponentType<{ input?: Record<string, unknown>; toolName?: string }>
 
 const MAX_PREVIEW_LINES = 20
 
@@ -108,7 +110,7 @@ export const ToolUseBlock = memo(function ToolUseBlock({ block }: { block: Block
         → tool: <code>{name}</code>
       </div>
       {View
-        ? <View input={input} />
+        ? <View input={input} toolName={name} />
         : <div className="tool-input">{formatJson(block.input)}</div>
       }
     </div>
@@ -118,12 +120,18 @@ export const ToolUseBlock = memo(function ToolUseBlock({ block }: { block: Block
 // Dispatch table for per-tool inline views. Defined after the component
 // declarations below — JS hoisting handles the function references.
 // New tools: declare the view, then add an entry here.
+//
+// Bash and PowerShell share BashToolView — both have the same input shape
+// (command, description, run_in_background, timeout) and the same visual
+// "shell command + chips + description" layout. The view branches on
+// `toolName` to swap the prompt glyph ($ vs >).
 const TOOL_VIEWS: Record<string, ToolInputView> = {
   Edit: EditToolView,
   MultiEdit: EditToolView,
   Write: WriteToolView,
   TodoWrite: TodoWriteView,
   Bash: BashToolView,
+  PowerShell: BashToolView,
   Read: ReadToolView,
   Grep: GrepToolView,
   Glob: GlobToolView,
@@ -592,8 +600,14 @@ const BASH_SINGLE_LINE_PREVIEW = 200
  * or multiline commands collapse into <details> with the first 3 lines
  * as a preview — the model often pipes here-docs that easily exceed the
  * fold threshold.
+ *
+ * Also serves the `PowerShell` tool (same input shape: command,
+ * description, run_in_background, timeout). The `toolName` prop swaps
+ * the prompt glyph: `$` for Bash, `PS>` for PowerShell — both are
+ * universally recognised shell prompts and disambiguate the language
+ * at a glance when both tools appear in the same transcript.
  */
-function BashToolView({ input }: { input?: Record<string, unknown> }) {
+function BashToolView({ input, toolName }: { input?: Record<string, unknown>; toolName?: string }) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -601,6 +615,8 @@ function BashToolView({ input }: { input?: Record<string, unknown> }) {
   const description = typeof input.description === 'string' ? input.description : null
   const inBackground = input.run_in_background === true
   const timeoutMs = typeof input.timeout === 'number' ? input.timeout : null
+  const isPowerShell = toolName === 'PowerShell'
+  const promptGlyph = isPowerShell ? 'PS>' : '$'
 
   const lines = command.split('\n')
   const tooLong = command.length > BASH_FOLD_THRESHOLD || lines.length > BASH_PREVIEW_LINES
@@ -633,7 +649,7 @@ function BashToolView({ input }: { input?: Record<string, unknown> }) {
         <details className="bash-tool-collapsible">
           <summary>
             <div className="bash-tool-line">
-              <span className="bash-tool-prompt" aria-hidden>$</span>
+              <span className="bash-tool-prompt" aria-hidden>{promptGlyph}</span>
               <code className="bash-tool-command">{previewText}</code>
               {chips}
             </div>
@@ -647,7 +663,7 @@ function BashToolView({ input }: { input?: Record<string, unknown> }) {
         </details>
       ) : (
         <div className="bash-tool-line">
-          <span className="bash-tool-prompt" aria-hidden>$</span>
+          <span className="bash-tool-prompt" aria-hidden>{promptGlyph}</span>
           <code className="bash-tool-command">{command}</code>
           {chips}
         </div>

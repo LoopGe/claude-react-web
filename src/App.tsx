@@ -1203,21 +1203,50 @@ export function App() {
     openAtSlot(sidebarId, targetSlotId, live?.lastTurnAt)
   }, [updateSession, openAtSlot])
 
-  const refreshConfigResponse = useCallback(() => {
-    void api.get<ConfigResponse>('/config').then((r) => {
-      setDefaults(r.defaults)
-      if (r.models?.length) setServerModels(r.models)
-      if (r.maxOpenPanels != null) setServerMaxOpen(r.maxOpenPanels)
-    })
+  const refreshConfigResponse = useCallback(async () => {
+    const r = await api.get<ConfigResponse>('/config')
+    setDefaults(r.defaults)
+    if (r.models?.length) setServerModels(r.models)
+    if (r.maxOpenPanels != null) setServerMaxOpen(r.maxOpenPanels)
   }, [])
 
-  const handleConfigured = useCallback(() => {
-    setIsConfigured(true)
-    refreshConfigResponse()
-  }, [refreshConfigResponse])
+  const handleConfigured = useCallback(
+    async ({ openNewSession }: { openNewSession: boolean }) => {
+      // Best-effort refresh — populates defaults.cwd / serverModels so
+      // the auto-opened NewSessionDialog isn't blank. We DELIBERATELY
+      // swallow refresh errors and flip isConfigured anyway, because:
+      //
+      //   1. /config/setup already succeeded (otherwise SetupPage would
+      //      have caught its own POST failure and never called us).
+      //      Trapping the user on SetupPage makes the next retry click
+      //      re-POST /config/setup, overwriting the just-written file.
+      //
+      //   2. Empty defaults are recoverable — the user picks cwd / model
+      //      manually in NewSessionDialog. A "stuck on setup forever"
+      //      page is not.
+      //
+      // SetupPage's finalize catch therefore only fires for /config/setup
+      // failures, which are legitimate retries.
+      try {
+        await refreshConfigResponse()
+      } catch (err) {
+        console.error('Post-setup /config refresh failed:', err)
+      }
+      setIsConfigured(true)
+      if (openNewSession) setNewSessionDialogOpen(true)
+    },
+    [refreshConfigResponse],
+  )
 
   const handleGlobalSettingsSaved = useCallback(() => {
-    refreshConfigResponse()
+    // Surface refresh failures so saved global settings don't silently
+    // leave the App with stale `defaults` / `serverModels`. The modal
+    // closes on its own success path; we can't bubble back into it, so
+    // we log. Better than `void`-discarding the rejection — at least the
+    // failure is visible in the console.
+    refreshConfigResponse().catch((err) => {
+      console.error('Post-save /config refresh failed:', err)
+    })
   }, [refreshConfigResponse])
 
   if (isConfigured === null) {

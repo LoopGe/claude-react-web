@@ -76,6 +76,9 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
       if (ac.signal.aborted) return
 
       // Models: merge SDK models with server-configured ones.
+      // The SDK→wire translation in /sessions/:id/models already filters
+      // entries with no id, so we don't need to defend against empties
+      // here.
       const serverModelIds =
         cfgResult.status === 'fulfilled' ? (cfgResult.value.models ?? []) : []
       if (modelsResult.status === 'fulfilled') {
@@ -270,7 +273,11 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
             <option value="">(default)</option>
             {models.map((m) => (
               <option key={m.id} value={m.id}>
-                {m.display_name ?? m.id}
+                {/* `||` not `??` — SDK has been observed to return
+                 *  display_name as an empty string for some proxy
+                 *  providers, which would render a blank label even
+                 *  though the id is well-formed. */}
+                {m.display_name || m.id}
               </option>
             ))}
           </select>

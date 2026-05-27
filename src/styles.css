@@ -2193,7 +2193,14 @@ body.resizing-col * {
   color: var(--fg);
   background: var(--bg-elev);
 }
-.subagent-overlay-back-spacer { width: 28px; flex-shrink: 0; }
+/* Layout placeholder rendered when there is no Back button (stack
+ * depth = 1). Same width footprint as `.subagent-overlay-back` so
+ * drilling between depth 1 ⇄ 2 does not shift the title sideways. */
+.subagent-overlay-back-spacer {
+  display: inline-block;
+  width: 28px;
+  flex-shrink: 0;
+}
 .subagent-overlay-title {
   flex: 1;
   min-width: 0;
@@ -3621,7 +3628,12 @@ details.plan-card-collapsible > summary > .plan-card-header {
   color: var(--fg);
 }
 .question-other-input {
-  width: 100%;
+  /* Sibling of .question-option (not nested inside its body), so we
+   * have to manually indent past the option's padding-left (12px) +
+   * marker (~16px) + flex gap (10px) to keep the typed text visually
+   * aligned with the "Other" label and the other options' content. */
+  width: calc(100% - 38px);
+  margin-left: 38px;
   margin-top: 4px;
   padding: 6px 8px;
   background: var(--bg);

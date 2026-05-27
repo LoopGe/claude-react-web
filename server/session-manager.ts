@@ -36,6 +36,7 @@ import type { MpStore } from './mp-store.js'
 import { invalidateRecapCache } from './recap.js'
 import { tryCaptureGitHead } from './git.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
+import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig } from './config.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import { pump as pumpSession, type PumpDeps } from './session-pump.js'
@@ -180,12 +181,12 @@ export class SessionManager {
    *  For unexpected exits (non-zero code or killed), we terminate
    *  immediately — no auto-resume attempt. */
   private handleProcessExit(info: ProcessExitInfo): void {
-    const { sessionId, code, signal, killed } = info
+    const { sessionId, code, signal, killed, spawnError } = info
     const s = this.sessions.get(sessionId)
     if (!s) return // Session already cleaned up (e.g. by unload)
     if (s.terminated) return // Already terminated — no action needed
 
-    const cleanExit = !killed && code === 0
+    const cleanExit = !killed && code === 0 && !spawnError
 
     if (cleanExit) {
       // Normal exit (e.g. idle timeout). Abort the controller so the
@@ -199,10 +200,45 @@ export class SessionManager {
       return
     }
 
-    const reason = killed ? 'process_killed' : 'process_exited'
-    const errorMsg = killed
-      ? `CLI process was killed (signal=${signal})`
-      : `CLI process exited unexpectedly (code=${code}, signal=${signal})`
+    // Determine reason / message. spawnError takes priority — it's a
+    // structured failure from ProcessMonitor's 'error' event and carries
+    // the actual errno (ENOENT for "binary missing", EACCES for
+    // "not executable", etc.) which is much more actionable than the
+    // generic "code=null, signal=null" we'd otherwise produce.
+    let reason: 'process_killed' | 'process_exited' | 'spawn_failed'
+    let errorMsg: string
+    if (spawnError) {
+      reason = 'spawn_failed'
+      // Any spawn-time failure proves the cached health snapshot is no
+      // longer trustworthy — the binary may have been moved, replaced,
+      // chmod-ed, or the host may have hit an fd-table cap (EMFILE) or a
+      // sandbox policy (EPERM). Drop the cache unconditionally so the
+      // next /health/claude probe re-runs --version and reports the real
+      // current state. The previous narrow ENOENT/EACCES-only path
+      // silently kept "ok: true" cached after EMFILE / EPERM / ELOOP
+      // failures.
+      invalidateClaudeHealth()
+      const enoent = spawnError.code === 'ENOENT'
+      const eacces = spawnError.code === 'EACCES'
+      if (enoent) {
+        errorMsg =
+          'claude CLI binary not found (ENOENT). Install it ' +
+          '(npm i -g @anthropic-ai/claude-code) or set CLAUDE_CODE_BINARY ' +
+          'to the path of an existing binary.'
+      } else if (eacces) {
+        errorMsg =
+          `claude CLI binary is not executable (EACCES${spawnError.message ? `: ${spawnError.message}` : ''}). ` +
+          'Check file permissions or set CLAUDE_CODE_BINARY to a different path.'
+      } else {
+        errorMsg = `claude CLI failed to start: ${spawnError.message || spawnError.code || 'unknown'}`
+      }
+    } else if (killed) {
+      reason = 'process_killed'
+      errorMsg = `CLI process was killed (signal=${signal})`
+    } else {
+      reason = 'process_exited'
+      errorMsg = `CLI process exited unexpectedly (code=${code}, signal=${signal})`
+    }
 
     console.error(`[session ${sessionId}] ${errorMsg}`)
 

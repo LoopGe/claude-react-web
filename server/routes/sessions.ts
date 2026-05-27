@@ -131,8 +131,29 @@ export function buildSessionRouter(sm: SessionManager): Hono {
   })
 
   // Supported models
+  //
+  // The SDK's ModelInfo uses { value, displayName, description, ... } —
+  // camelCase plus a generic `value` key. The browser bundle has its own
+  // ModelInfo type using snake_case `display_name` and id-shaped `id`.
+  // We translate at the wire so the browser type doesn't have to know
+  // about the SDK's shape; if the SDK ever renames fields again (it has
+  // before), only this one mapping changes. Drop entries with no
+  // identifier — defensive, since rendering an <option> with neither id
+  // nor label produces an invisible row that looks like a layout bug.
   app.get('/sessions/:id/models', async (c) => {
-    const models = await sm.supportedModels(c.req.param('id'))
+    type SdkModelInfo = {
+      value?: string
+      displayName?: string
+      description?: string
+    }
+    const raw = (await sm.supportedModels(c.req.param('id'))) as unknown as SdkModelInfo[]
+    const models = raw
+      .filter((m) => typeof m.value === 'string' && m.value.trim().length > 0)
+      .map((m) => ({
+        id: m.value as string,
+        display_name: m.displayName,
+        description: m.description,
+      }))
     return c.json({ models })
   })
 
