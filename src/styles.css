@@ -7,6 +7,11 @@
   --fg-muted: #8c94a3;
   --accent: #7b8cde;
   --accent-strong: #5b6fc7;
+  /* Foreground colour for text/icons placed on top of --accent (e.g. primary
+     CTA buttons). Always white because --accent stays saturated enough in
+     both themes for AA contrast — but lives behind a token so components
+     never reference a raw hex. */
+  --on-accent: #ffffff;
   --danger: #f06363;
   --ok: #6cc88b;
   --warn: #e6b450;
@@ -73,6 +78,7 @@
   --fg-muted: #5e6774;
   --accent: #4f62c8;
   --accent-strong: #3b4ea8;
+  --on-accent: #ffffff;
   --danger: #d93b3b;
   --ok: #2e9e56;
   --warn: #c79518;
@@ -289,7 +295,13 @@ button { cursor: pointer; }
   --sidebar-width: 280px;
   display: grid;
   grid-template-columns: var(--sidebar-width) 1fr;
+  /* dvh (dynamic viewport height) accounts for the mobile-browser URL bar
+     collapse — 100vh on iOS/Android Safari/Chrome over-extends and clips
+     content when the chrome retracts. The 100vh line is a fallback for
+     Safari < 15.4 (March 2022), where `dvh` is unrecognised and the
+     property would otherwise resolve to `auto` and collapse the layout. */
   height: 100vh;
+  height: 100dvh;
   /* Grid items default to min-height: auto (= content size), which lets the
      chat message list push the whole page taller than the viewport. Every
      direct child must be explicitly constrained. */
@@ -761,7 +773,9 @@ body.resizing-col * {
   display: flex;
   align-items: center;
   justify-content: center;
+  /* See `.app` height comment — 100vh fallback for Safari < 15.4. */
   height: 100vh;
+  height: 100dvh;
   background: var(--bg);
 }
 .app-loading-spinner {
@@ -779,6 +793,28 @@ body.resizing-col * {
   border-bottom: 1px solid var(--msg-error-border);
   color: var(--msg-error-fg);
   font-size: 13px;
+}
+/* Visually-hide the error-bar when empty WITHOUT removing it from the
+ * a11y tree. Keeping the live region permanently mounted (instead of
+ * conditionally rendering it only when an error appears) ensures that
+ * screen readers see the mutation when content changes from "" → error
+ * — some SR/browser combos do not announce content that's already
+ * present at mount, so a `{err && <div role=alert>}` pattern can drop
+ * the announcement entirely.
+ *
+ * Standard "sr-only / visually-hidden" recipe: 1×1 absolutely
+ * positioned, clipped, no border/padding. Element stays focusable and
+ * announceable; takes no visual space. */
+.error-bar-empty {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* Queue indicator — shows while previous turn is still running. Sits above
@@ -1310,6 +1346,36 @@ body.resizing-col * {
   box-shadow: 0 0 0 2px var(--bg);
 }
 .session-item.unread strong { color: var(--fg); }
+/* Pending-permission count badge — appears next to the title when the
+   session has tool permission / AskUserQuestion requests waiting on the
+   user. Pulses gently so dormant tabs don't get missed. Uses --warn
+   (amber) rather than --danger because routine prompts shouldn't read
+   as errors. */
+.session-item-perm-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--warn);
+  color: var(--bg);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  margin-right: 6px;
+  vertical-align: middle;
+  animation: session-perm-badge-pulse 1.6s ease-in-out infinite;
+}
+@keyframes session-perm-badge-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 60%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 0%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .session-item-perm-badge { animation: none; }
+}
 /* Working indicator — a small pulsing dot next to the badge when the
    Query is actively processing a turn. */
 .session-item-badge.working { color: var(--accent); }
@@ -1397,13 +1463,21 @@ body.resizing-col * {
 /* Each virtualised item is wrapped in this div so that .msg.user's
    align-self: flex-end still works (the old flex column on
    .chat-messages is gone; each item is its own flex column now).
-   Horizontal padding centers the reading column on wide screens. */
+   Horizontal padding centers the reading column on wide screens.
+
+   `contain: layout style` isolates each item's layout/style work so a
+   change inside one message can't trigger reflow of the others. Critical
+   for long sessions where every streaming flush would otherwise let the
+   browser revisit every item's layout box. We deliberately stop short of
+   `contain: layout style paint` because messages can render shadow/box
+   overflows (selection rings, hover focus) that should escape the box. */
 .virtuoso-item-wrapper {
   display: flex;
   flex-direction: column;
   padding-bottom: 14px;  /* replaces the old gap: 14px on .chat-messages */
   padding-left: max(20px, calc((100% - 900px) / 2));
   padding-right: max(20px, calc((100% - 900px) / 2));
+  contain: layout style;
 }
 /* Virtuoso Footer doesn't go through .virtuoso-item-wrapper, so the
    streaming message needs the same centering padding to align with
@@ -1498,9 +1572,17 @@ body.resizing-col * {
   overflow: hidden;
 }
 .ctx-bar-fill {
+  /* Always full-width; the visible portion is controlled by transform:
+     scaleX. transform/opacity are compositor-friendly so the bar can
+     update every streaming tick without triggering a layout pass.
+     The element sets `--ctx-progress` (0..1) inline and we scale to it. */
+  width: 100%;
   height: 100%;
   background: var(--accent);
-  transition: width 0.3s ease;
+  transform-origin: left center;
+  transform: scaleX(var(--ctx-progress, 0));
+  will-change: transform;
+  transition: transform 0.3s ease;
 }
 /* All levels use accent — urgency is conveyed by the percentage text. */
 .ctx-bar-empty .ctx-bar-fill { background: var(--border); }
@@ -1822,8 +1904,15 @@ body.resizing-col * {
 
 /* Rendered images in message history */
 .msg-image {
+  display: block;
   max-width: min(100%, 600px);
   max-height: 400px;
+  /* Note: we used to set `min-height: 80px` to bound CLS during base64
+     decode, but that permanently letterboxes any image whose intrinsic
+     height is < 80px (e.g. a 32×32 icon). The `decoding="async"` on the
+     <img> already lets the browser keep paint smooth; if the bubble
+     "pops" by a few pixels at decode time, that's preferable to a
+     screenshot of a small icon being padded with empty whitespace. */
   border-radius: 4px;
   margin: 4px 0;
   object-fit: contain;
@@ -2395,6 +2484,9 @@ body.resizing-col * {
   color: var(--fg);
   font-size: 12px;
   font-weight: 500;
+  /* See .diff-line note below — same horizontal-scroll concern applies
+     here so the header bg covers the full content width. */
+  min-width: max-content;
 }
 .diff-lines { padding: 4px 0; }
 .diff-line {
@@ -2402,6 +2494,13 @@ body.resizing-col * {
   padding: 1px 10px;
   white-space: pre;
   min-height: 18px;
+  /* `min-width: max-content` makes each row grow to its widest text so
+     the row's background colour (red for del, green for add) follows the
+     full horizontal scroll. Without it, the row is clipped to .diff-block's
+     viewport width and the colour cuts off mid-scroll while the text
+     keeps going — visible as a hard edge between coloured row and
+     uncoloured continuation. */
+  min-width: max-content;
 }
 .diff-line-del {
   background: color-mix(in srgb, var(--danger) 12%, transparent);
@@ -2423,6 +2522,8 @@ body.resizing-col * {
   color: var(--fg-muted);
   font-style: italic;
   border-top: 1px dashed var(--border);
+  /* Match .diff-line so the dashed top-border spans the full scroll width. */
+  min-width: max-content;
 }
 
 /* Settings panel */
@@ -2923,6 +3024,327 @@ body.resizing-col * {
 .inline-todo-pending { color: var(--fg-muted); }
 .inline-todo-pending .inline-todo-icon { opacity: 0.5; }
 
+/* --- Shared tool-input chip ------------------------------------------
+   Tiny pill used by Bash/Read/Grep/Task views for modifier flags. Kept
+   close to the body font-size so a row of chips lines up against the
+   command/pattern text without crowding it. */
+.tool-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  font-size: 10.5px;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+.tool-chip-accent {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev-2));
+}
+
+/* --- Bash inline view ------------------------------------------------ */
+.bash-tool {
+  margin-top: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.bash-tool-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.bash-tool-prompt {
+  color: var(--accent);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.bash-tool-command {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: transparent;
+  padding: 0;
+}
+.bash-tool-desc {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.45;
+}
+.bash-tool-desc-marker {
+  color: var(--fg-muted);
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+details.bash-tool-collapsible {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+details.bash-tool-collapsible > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+details.bash-tool-collapsible > summary::-webkit-details-marker { display: none; }
+.bash-tool-fold-hint {
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-style: italic;
+  margin-left: 14px; /* align with command after the $ prompt + gap */
+}
+.bash-tool-full {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+/* --- Read inline view ----------------------------------------------- */
+.read-tool {
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+/* The Read view reuses .diff-file-path for the header — the existing
+   styling already covers what we need. The range subline lives below. */
+.read-tool-range {
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  background: var(--bg);
+}
+
+/* --- Grep inline view ----------------------------------------------- */
+.grep-tool {
+  margin-top: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+}
+.grep-tool-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+}
+.grep-tool-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.grep-tool-pattern {
+  font-family: var(--mono);
+  color: var(--fg);
+  background: var(--bg-elev-2);
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  font-size: 12.5px;
+  word-break: break-word;
+}
+
+/* --- WebFetch inline view ------------------------------------------- */
+.web-tool {
+  margin-top: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.web-tool-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  min-width: 0;
+}
+.web-tool-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.web-tool-url {
+  font-family: var(--mono);
+  color: var(--accent);
+  text-decoration: none;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+.web-tool-url:hover {
+  text-decoration: underline;
+}
+.web-tool-prompt {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.45;
+}
+.web-tool-prompt-marker {
+  color: var(--fg-muted);
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+/* --- NotebookEdit inline view --------------------------------------- */
+.notebook-edit-meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border-bottom: 1px dashed var(--border);
+  background: var(--bg);
+}
+.notebook-edit-deleted {
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  font-style: italic;
+  background: color-mix(in srgb, var(--danger) 6%, var(--bg));
+}
+
+/* --- TaskCreate / TaskUpdate inline view ---------------------------- */
+.task-mutation {
+  margin-top: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.task-mutation-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+}
+.task-mutation-verb {
+  padding: 1px 7px;
+  font-family: var(--mono);
+  font-weight: 600;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.task-mutation-verb.verb-create {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+}
+.task-mutation-verb.verb-update {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.task-mutation-id {
+  font-family: var(--mono);
+  color: var(--fg);
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.task-mutation-status {
+  padding: 1px 7px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  text-transform: lowercase;
+  letter-spacing: 0;
+}
+.task-mutation-status.status-completed {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
+  background: color-mix(in srgb, var(--ok) 10%, var(--bg-elev-2));
+}
+.task-mutation-status.status-in_progress {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev-2));
+}
+.task-mutation-status.status-deleted {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-elev-2));
+}
+.task-mutation-owner {
+  font-family: var(--mono);
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--fg);
+}
+.task-mutation-subject {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--fg);
+  line-height: 1.4;
+}
+.task-mutation-desc {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  line-height: 1.45;
+}
+.task-mutation-deps {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+.task-mutation-deps code {
+  background: var(--bg-elev-2);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+  color: var(--fg);
+}
+
 /* --- Plan card -------------------------------------------------------
    ExitPlanMode renders the proposed plan inline. Markdown body lives in
    .plan-card-body; the header carries an icon + status pill (pending /
@@ -3232,6 +3654,159 @@ details.plan-card-collapsible > summary > .plan-card-header {
   color: var(--fg);
 }
 
+/* --- Inline AskUserQuestion card -------------------------------------
+   Rendered inside the transcript by ToolUseBlock when the model asks
+   a question. Pending cards auto-expand so the user can read the
+   prompt; resolved cards collapse to a one-line summary so long
+   transcripts stay scannable. Accent-tinted to read as informational
+   (vs amber/warn for plans). */
+details.question-inline-card {
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg-elev));
+  margin: 8px 0;
+  overflow: clip;
+}
+details.question-inline-card > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 8px 12px;
+  user-select: none;
+}
+details.question-inline-card > summary::-webkit-details-marker { display: none; }
+details.question-inline-card[open] > summary {
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+}
+.question-inline-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.question-inline-icon {
+  font-size: 14px;
+}
+.question-inline-title {
+  font-weight: 600;
+  color: var(--fg);
+}
+.question-inline-status {
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.question-inline-status.answered {
+  background: color-mix(in srgb, var(--ok) 18%, transparent);
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 35%, transparent);
+}
+.question-inline-status.skipped {
+  background: color-mix(in srgb, var(--fg-muted) 12%, transparent);
+  color: var(--fg-muted);
+  border-color: color-mix(in srgb, var(--fg-muted) 30%, transparent);
+}
+.question-inline-body {
+  padding: 10px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.question-inline-empty {
+  color: var(--fg-muted);
+  font-style: italic;
+  font-size: 12.5px;
+}
+.question-inline-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.question-inline-item.skipped {
+  opacity: 0.65;
+}
+.question-inline-item-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--fg-muted);
+}
+.question-inline-skipped-badge {
+  margin-left: auto;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg-muted) 12%, transparent);
+  color: var(--fg-muted);
+  border: 1px solid color-mix(in srgb, var(--fg-muted) 30%, transparent);
+}
+.question-inline-options {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.question-inline-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 12.5px;
+}
+.question-inline-option.selected {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-elev));
+}
+.question-inline-option-marker {
+  font-size: 14px;
+  color: var(--fg-muted);
+  line-height: 1.2;
+  margin-top: 1px;
+}
+.question-inline-option.selected .question-inline-option-marker {
+  color: var(--accent);
+}
+.question-inline-option-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.question-inline-option-label {
+  font-weight: 500;
+  color: var(--fg);
+}
+.question-inline-option-desc {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  line-height: 1.45;
+}
+.question-inline-option-custom-tag {
+  font-size: 10.5px;
+  color: var(--fg-muted);
+  font-weight: 400;
+  margin-left: 4px;
+}
+
 /* ── Command Palette ─────────────────────────────────────────────── */
 
 .palette-backdrop {
@@ -3246,7 +3821,9 @@ details.plan-card-collapsible > summary > .plan-card-header {
 
 .palette {
   width: min(560px, calc(100vw - 40px));
+  /* 100vh fallback for Safari < 15.4 (which doesn't resolve dvh in calc). */
   max-height: min(480px, calc(100vh - 240px));
+  max-height: min(480px, calc(100dvh - 240px));
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -3471,8 +4048,7 @@ mark.search-hl {
   color: var(--fg);
   border-color: var(--accent);
 }
-.msg:hover .msg-copy-btn,
-.msg-copy-btn:focus-visible {
+.msg:hover .msg-copy-btn {
   opacity: 0.7;
 }
 .msg-copy-btn:focus-visible {
@@ -4568,5 +5144,101 @@ mark.search-hl {
   max-height: 160px;
   overflow-y: auto;
   color: var(--fg-muted);
+}
+
+/* ── A11y: skip link ───────────────────────────────────────────────
+ *
+ * First focusable element in the DOM. Visually hidden by default
+ * (clipped to a 1px square off-screen), but when it receives keyboard
+ * focus it slides into the top-left corner so a Tab-only user can
+ * jump straight to the chat panels region without traversing the
+ * entire sidebar. Standard WCAG 2.4.1 pattern.
+ */
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 10000;
+  padding: 8px 14px;
+  background: var(--accent);
+  color: var(--bg);
+  text-decoration: none;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 13px;
+  /* Off-screen until focused. transform-based hide avoids `display: none`
+     which would also remove from the tab order. */
+  transform: translateY(-150%);
+  transition: transform 0.15s ease;
+}
+.skip-link:focus,
+.skip-link:focus-visible {
+  transform: translateY(0);
+  outline: 2px solid var(--bg);
+  outline-offset: 2px;
+}
+
+/* ── A11y: global keyboard focus ring ───────────────────────────────
+ *
+ * Until this rule existed, the only `:focus-visible` selector in the
+ * stylesheet was on `.msg-copy-btn`. Every other interactive element
+ * (buttons, chips, session items, composer textarea, settings overlay
+ * controls) had no visible focus ring at all — keyboard-only and
+ * screen-reader users had no idea where focus was. WCAG 2.4.7 fail.
+ *
+ * `:focus-visible` only paints when the user reached the element via
+ * keyboard (or programmatic focus-on-error), so mouse clicks on
+ * buttons don't flash the ring.
+ *
+ * Note: we deliberately do NOT set `border-radius` here. Modern
+ * browsers paint `outline` along the element's own border-radius, so
+ * forcing a uniform radius would distort circular elements like
+ * `.accent-swatch` (border-radius: 50%) and pill controls
+ * (border-radius: 999px) into 3px-cornered squares whenever they
+ * received keyboard focus.
+ */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* Strip the platform default outline only when our :focus-visible
+ * rule applies — non-keyboard focus (e.g. mouse-click on a button)
+ * still suppresses both, which matches every other modern UI. */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* ── A11y: prefers-reduced-motion ──────────────────────────────────
+ *
+ * Vestibular-sensitive users need motion-on-state-change kept short
+ * (WCAG 2.3.3). State transitions — slides, expands, fades on
+ * navigation — are the trigger; we squash those to a single frame.
+ *
+ * We deliberately do NOT touch `animation-*` here. Several of the
+ * stylesheet's keyframe animations are *load-bearing progress
+ * indicators* (`.app-loading-spinner`, `.msg-sending-spinner`,
+ * `.session-resuming-spinner`, `.session-working-pulse`,
+ * `.working-bubble-pulse`, `.working-dot-bounce`, `.cursor-blink`,
+ * `.recap-shimmer`). Forcing `animation-iteration-count: 1` with a
+ * 0.01ms duration would freeze each one at its end frame — so a user
+ * who opted into reduced-motion would see a static spinner that never
+ * communicates whether work is in progress or stuck. That's worse
+ * than the rotation we're trying to suppress.
+ *
+ * If a specific *decorative* animation (e.g. a celebratory bounce on
+ * success) is added in future, suppress that one with its own
+ * targeted `@media (prefers-reduced-motion)` rule rather than
+ * resurrecting a blanket override.
+ *
+ * The `!important` is necessary because individual rules already
+ * specify their own durations.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 

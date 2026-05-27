@@ -250,7 +250,7 @@ export function McpInstaller({ server, onSave, onClose }: Props) {
 
           {/* Errors */}
           {errors.length > 0 && (
-            <div style={{ color: '#f44336', fontSize: 13 }}>
+            <div style={{ color: 'var(--danger)', fontSize: 13 }}>
               {errors.map((e, i) => <div key={i}>{e}</div>)}
             </div>
           )}

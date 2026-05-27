@@ -502,6 +502,14 @@ export class SessionManager {
           // Global broadcast — for desktop notifications on dormant sessions
           this.broadcastGlobal({ kind: 'permission_request', sessionId: s.id, request: snapshot })
         },
+        // Pending count changed (enqueue / timeout / abort). Rebroadcast
+        // the SessionInfo so the sidebar's pendingPermissionCount badge
+        // updates. Skip if the session was unloaded mid-flight — info(s)
+        // would still work but the broadcast would race the `removed`.
+        (s) => {
+          if (!this.sessions.has(s.id)) return
+          this.broadcastGlobal({ kind: 'update', session: this.info(s) })
+        },
       )
       session.canUseTool = canUseTool
       fullOpts.canUseTool = canUseTool
@@ -1124,6 +1132,7 @@ export class SessionManager {
       workingSince: isWorking ? s.workingSince : undefined,
       lastTurnAt: s.lastTurnAt,
       gitStartSha: s.gitStartSha,
+      pendingPermissionCount: s.pending.size,
     }
   }
 
@@ -1149,6 +1158,8 @@ export class SessionManager {
       workingSince: undefined,
       lastTurnAt: meta.lastTurnAt,
       gitStartSha: meta.gitStartSha,
+      // A dormant Query holds no canUseTool callbacks; pending is always 0.
+      pendingPermissionCount: 0,
     }
   }
 

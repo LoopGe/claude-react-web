@@ -46,12 +46,20 @@ export class PermissionBroker {
 
   /** Shared lifecycle for creating a pending permission/question request.
    *  Handles timeout timer, abort handler, wrapped resolve, and broadcast.
-   *  Callers only supply the kind-specific PendingPermission fields. */
+   *  Callers only supply the kind-specific PendingPermission fields.
+   *
+   *  `notifyPendingChanged` fires after every mutation of `session.pending`
+   *  (enqueue, timeout, abort) so the manager can rebroadcast a fresh
+   *  SessionInfo whose `pendingPermissionCount` reflects the new size.
+   *  decide() / answerQuestion() / denyAll() paths are NOT covered here
+   *  because the manager already wraps them with persist() / unload-time
+   *  broadcasts. */
   private createPendingRequest<P extends PendingPermission>(
     session: Session,
     ctx: { toolUseID: string; signal: AbortSignal },
     broadcastReq: (s: Session, p: PendingPermission) => void,
     broadcastRes: (s: Session, pid: string, d: PermissionDecisionSummary) => void,
+    notifyPendingChanged: (s: Session) => void,
     timeoutMs: number,
     buildPending: (
       pid: string,
@@ -76,6 +84,7 @@ export class PermissionBroker {
               persisted: false,
               message: 'Permission request timed out.',
             })
+            notifyPendingChanged(session)
           }, timeoutMs)
         : null
       const wrappedResolve = (result: PermissionResult) => {
@@ -92,11 +101,13 @@ export class PermissionBroker {
           persisted: false,
           message: 'aborted',
         })
+        notifyPendingChanged(session)
       }
       const pending = buildPending(pid, wrappedResolve, abortHandler, timeoutTimer)
       session.pending.set(pid, pending)
       ctx.signal.addEventListener('abort', abortHandler, { once: true })
       broadcastReq(session, pending)
+      notifyPendingChanged(session)
     })
   }
 
@@ -106,11 +117,19 @@ export class PermissionBroker {
    *  notifications on dormant sessions). Per-session broadcast to
    *  permissionSubscribers happens internally.
    *
+   *  `onPendingChanged` fires whenever the session's pending map mutates
+   *  via this broker — enqueue, timeout, or abort. The manager uses it
+   *  to rebroadcast SessionInfo so the sidebar can show a pending-count
+   *  badge. (decide/answerQuestion/denyAll are NOT routed through here
+   *  because the manager already follows them with its own persist/
+   *  broadcast.)
+   *
    *  IMPORTANT: `session` must be the fully-constructed Session object.
    *  Calling this before the session is assigned would pass undefined. */
   buildCanUseTool(
     session: Session,
     onPermissionRequest: (session: Session, snapshot: PermissionRequestSnapshot) => void,
+    onPendingChanged: (session: Session) => void = () => { /* no-op default */ },
   ): CanUseTool {
     // Capture broadcast callbacks for use inside the closure.
     const broadcastReq = (s: Session, p: PendingPermission) => {
@@ -160,7 +179,7 @@ export class PermissionBroker {
             toolUseID: ctx.toolUseID,
           }
         }
-        return this.createPendingRequest(session, ctx, broadcastReq, broadcastRes, permissionTimeoutMs, (pid, wrappedResolve, abortHandler, timeoutTimer) => ({
+        return this.createPendingRequest(session, ctx, broadcastReq, broadcastRes, onPendingChanged, permissionTimeoutMs, (pid, wrappedResolve, abortHandler, timeoutTimer) => ({
           kind: 'question' as const,
           id: pid,
           toolName: 'AskUserQuestion',
@@ -179,7 +198,7 @@ export class PermissionBroker {
       // even in bypass mode the user sees the plan card and can approve
       // or reject it.
       if (toolName === 'ExitPlanMode' || toolName === 'EnterPlanMode') {
-        return this.createPendingRequest(session, ctx, broadcastReq, broadcastRes, permissionTimeoutMs, (pid, wrappedResolve, abortHandler, timeoutTimer) => ({
+        return this.createPendingRequest(session, ctx, broadcastReq, broadcastRes, onPendingChanged, permissionTimeoutMs, (pid, wrappedResolve, abortHandler, timeoutTimer) => ({
           kind: 'permission' as const,
           id: pid,
           toolName,
@@ -210,7 +229,7 @@ export class PermissionBroker {
           toolUseID: ctx.toolUseID,
         } satisfies PermissionResult
       }
-      return this.createPendingRequest(session, ctx, broadcastReq, broadcastRes, permissionTimeoutMs, (pid, wrappedResolve, abortHandler, timeoutTimer) => ({
+      return this.createPendingRequest(session, ctx, broadcastReq, broadcastRes, onPendingChanged, permissionTimeoutMs, (pid, wrappedResolve, abortHandler, timeoutTimer) => ({
         kind: 'permission' as const,
         id: pid,
         toolName,

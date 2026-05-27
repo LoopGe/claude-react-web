@@ -4,7 +4,7 @@
 // (the server pushes a `context_usage` event periodically).
 // No fetch calls, no timers, no polling.
 
-import { memo } from 'react'
+import { memo, type CSSProperties } from 'react'
 import type { ContextUsage } from '../hooks/useChatStream'
 import { formatTokens } from '../utils/format'
 
@@ -22,7 +22,10 @@ export const ContextBar = memo(function ContextBar({ usage }: Props) {
       <div className="ctx-bar ctx-bar-empty">
         <div className="ctx-bar-label">Context: —</div>
         <div className="ctx-bar-track" aria-hidden>
-          <div className="ctx-bar-fill" style={{ width: '0%' }} />
+          <div
+            className="ctx-bar-fill"
+            style={{ ['--ctx-progress' as string]: 0 } as CSSProperties}
+          />
         </div>
       </div>
     )
@@ -48,7 +51,10 @@ export const ContextBar = memo(function ContextBar({ usage }: Props) {
         </span>
       </div>
       <div className="ctx-bar-track" aria-hidden>
-        <div className="ctx-bar-fill" style={{ width: `${bounded}%` }} />
+        <div
+          className="ctx-bar-fill"
+          style={{ ['--ctx-progress' as string]: bounded / 100 } as CSSProperties}
+        />
       </div>
     </div>
   )

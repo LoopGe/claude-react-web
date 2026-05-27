@@ -631,6 +631,7 @@ export const Chat = memo(function Chat({
           streamingContent={stream.streamingContent}
           planStatus={stream.planStatus}
           planContent={stream.planContent}
+          questionAnswers={stream.questionAnswers}
           searchQuery={searchOpen ? debouncedQuery : ''}
           searchActiveMsgIdx={searchMatches[searchActiveIdx] ?? -1}
         />
@@ -638,7 +639,18 @@ export const Chat = memo(function Chat({
 
       <TodoChecklist messages={stream.messages} working={session.working} />
 
-      {error && <div className="error-bar">{error}</div>}
+      {/* Always-mounted live region — see `.error-bar-empty` in styles.css.
+          Keeping the region in the DOM (just visually hidden when empty)
+          guarantees a screen reader announces the content mutation when an
+          error arrives, instead of relying on the SR to notice that a
+          fresh role="alert" element appeared with text already inside. */}
+      <div
+        className={`error-bar${error ? '' : ' error-bar-empty'}`}
+        role="alert"
+        aria-live="polite"
+      >
+        {error ?? ''}
+      </div>
       {exportSuccess && (
         <div className="success-toast" style={{ margin: '4px 18px' }}>
           {exportSuccess}

@@ -8,6 +8,7 @@ import {
   getToolResultIds,
   toTranscriptItem,
 } from './normalize'
+import { extractQuestionAnswers, getQuestionToolUseIds } from '../utils/question-answers'
 
 export function reduceSessionState(state: SessionState, action: SessionAction): SessionState {
   switch (action.type) {
@@ -310,6 +311,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
   let changed = false
   let planStatus = state.planStatus
   let planContent = state.planContent
+  let questionAnswers = state.questionAnswers
   let activeSubagents = state.activeSubagents
 
   const planIds = getPlanToolUseIds(message)
@@ -337,6 +339,39 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
     if (extracted.length > 0) {
       if (planContent === state.planContent) planContent = new Map(planContent)
       for (const { toolUseId, plan } of extracted) planContent.set(toolUseId, plan)
+      changed = true
+    }
+  }
+
+  // Track AskUserQuestion tool_use ids so the inline QuestionCard can
+  // render a "pending" state immediately (before the user answers).
+  // We seed with an empty answers array; the tool_result handler below
+  // replaces it when the JSON answers payload lands.
+  const questionIds = getQuestionToolUseIds(message)
+  if (questionIds.length > 0) {
+    let touched = false
+    for (const id of questionIds) {
+      if (questionAnswers.has(id)) continue
+      if (!touched) {
+        questionAnswers = new Map(questionAnswers)
+        touched = true
+      }
+      questionAnswers.set(id, [])
+    }
+    if (touched) changed = true
+  }
+
+  // Parse JSON answers from AskUserQuestion tool_results (built by
+  // server/permission-helpers.ts:formatQuestionAnswers).  Same gating
+  // pattern as the plan-content branch above — only user messages
+  // carry tool_results, and we only care if we've seen the matching
+  // tool_use first.
+  if (message.type === 'user' && questionAnswers.size > 0) {
+    const knownQuestionIds = new Set(questionAnswers.keys())
+    const extracted = extractQuestionAnswers(message, knownQuestionIds)
+    if (extracted.length > 0) {
+      if (questionAnswers === state.questionAnswers) questionAnswers = new Map(questionAnswers)
+      for (const { toolUseId, answers } of extracted) questionAnswers.set(toolUseId, answers)
       changed = true
     }
   }
@@ -414,7 +449,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
     }
   }
 
-  return changed ? { ...state, planStatus, planContent, activeSubagents } : state
+  return changed ? { ...state, planStatus, planContent, questionAnswers, activeSubagents } : state
 }
 
 function updateLiveTurn(state: SessionState, message: SdkMessage): SessionState {

@@ -62,7 +62,7 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
       const env = raw?.env ?? {}
       const key = typeof env.ANTHROPIC_API_KEY === 'string' ? env.ANTHROPIC_API_KEY : undefined
       return c.json({
-        authToken: key ? '****' + key.slice(-4) : undefined,
+        authToken: key,
         baseUrl: typeof env.ANTHROPIC_BASE_URL === 'string' ? env.ANTHROPIC_BASE_URL : undefined,
       })
     } catch {

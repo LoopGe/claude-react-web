@@ -12,10 +12,12 @@ import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { Markdown } from './Markdown'
 import { ToolUseBlock } from './ToolUseBlock'
 import { PlanStatusProvider, PlanContentProvider } from '../hooks/usePlanStatus'
+import { QuestionAnswersProvider } from '../hooks/useQuestionAnswers'
 import type { SdkMessage, Block } from '../types'
 import { formatTokens, formatElapsed, formatJson } from '../utils/format'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import type { ActiveSubagent, PlanStatus, TranscriptItem } from '../session-store/types'
+import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { truncate } from '../utils/text'
 import { getBlocks } from '../session-store/normalize'
 
@@ -42,6 +44,9 @@ interface Props {
   planStatus?: ReadonlyMap<string, PlanStatus>
   /** Plan body text extracted from ExitPlanMode tool_result outputs. */
   planContent?: ReadonlyMap<string, string>
+  /** Parsed AskUserQuestion answers keyed by tool_use_id. Empty array
+   *  means pending (tool_use seen, answer not yet submitted). */
+  questionAnswers?: ReadonlyMap<string, QuestionAnswerEntry[]>
   /** Current search query. When non-empty, matching text inside messages
    *  is highlighted. */
   searchQuery?: string
@@ -78,8 +83,19 @@ interface RenderableItem {
  *  React.memo equality whenever a parent omits these props. */
 const EMPTY_PLAN_STATUS: ReadonlyMap<string, PlanStatus> = new Map()
 const EMPTY_PLAN_CONTENT: ReadonlyMap<string, string> = new Map()
+const EMPTY_QUESTION_ANSWERS: ReadonlyMap<string, QuestionAnswerEntry[]> = new Map()
 
-export const MessageList = memo(function MessageList({ items, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, searchQuery, searchActiveMsgIdx, parentToolUseIdFilter }: Props) {
+/** Distance from the bottom (px) within which we treat the user as
+ *  "still at the bottom" for follow-mode and the jump-to-bottom button.
+ *  Virtuoso's own atBottomStateChange uses pixel-perfect detection,
+ *  which is too strict — a single line of streaming output can flip
+ *  it false while the user clearly hasn't scrolled away. We override
+ *  Virtuoso's verdict with this tolerance both in `atBottomStateChange`
+ *  (so its `false` doesn't kill follow-mode) and in the scroll handler
+ *  (so re-entering the band restores follow-mode). */
+const NEAR_BOTTOM_PX = 200
+
+export const MessageList = memo(function MessageList({ items, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, searchQuery, searchActiveMsgIdx, parentToolUseIdFilter }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -96,6 +112,10 @@ export const MessageList = memo(function MessageList({ items, showSystemEvents =
   // for FOLLOW_DEBOUNCE_MS do we actually stop following.
   const shouldFollowRef = useRef(true)
   const followTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Tracks the previous scrollTop so the scroll handler can detect
+  // *user-driven* upward scrolls (scrollTop decreasing) and bypass the
+  // follow-disable debounce — see the scroll-listener effect for why.
+  const lastScrollTopRef = useRef(0)
   const [followDebounceRaw] = useLocalStorage<number>(
     'claude-react-web:follow-debounce-ms',
     150,
@@ -237,38 +257,83 @@ export const MessageList = memo(function MessageList({ items, showSystemEvents =
   // Mirrors the ResizeObserver branch: only re-pins when the user was
   // already at the bottom — if they scrolled up to read history mid-
   // stream, atBottomRef goes false and we stop fighting their scroll.
+  //
+  // The scrollTop write is deferred to the next animation frame so the
+  // 33ms streaming flush doesn't cause a synchronous layout-read-after-
+  // write inside React's commit phase (forced reflow). The cancel on
+  // cleanup prevents a stale frame from re-pinning after the user has
+  // scrolled away or the component unmounted.
   useEffect(() => {
     if (streamingContent == null) return
     if (!atBottomRef.current) return
     const el = scrollerRef.current
     if (!el) return
-    el.scrollTop = el.scrollHeight
+    const raf = requestAnimationFrame(() => {
+      // Re-check atBottom inside the frame: the user may have scrolled
+      // up between the effect firing and the frame running.
+      if (!atBottomRef.current) return
+      el.scrollTop = el.scrollHeight
+    })
+    return () => cancelAnimationFrame(raf)
   }, [streamingContent])
 
-  // Clear the unseen count when the user scrolls close to the bottom.
-  // atBottomStateChange only fires when Virtuoso's internal at-bottom
-  // state flips — if the user scrolls most of the way down but doesn't
-  // reach the absolute bottom (e.g. a very tall last message), the
-  // callback never fires and the badge stays stuck.  This listener
-  // uses a generous 200 px threshold so the badge clears well before
-  // the pixel-perfect bottom boundary that Virtuoso requires.
+  // Authoritative scroll-state listener — covers two cases that
+  // Virtuoso's `atBottomStateChange` alone gets wrong:
+  //
+  //   1. RESTORE follow when the user scrolls back into the bottom
+  //      band (distance < NEAR_BOTTOM_PX). Virtuoso only fires its
+  //      callback at the pixel-perfect bottom; without this listener
+  //      a scroll to e.g. distance=50 leaves follow disabled forever.
+  //      This restoration is unconditional — it does NOT gate on
+  //      `unseenCount`. Earlier the gate `unseenCount !== 0` made
+  //      restoration impossible if no new messages arrived during
+  //      the scroll-up window, leaving the user stuck out of follow
+  //      with no feedback.
+  //
+  //   2. DISABLE follow IMMEDIATELY when the user actively scrolls
+  //      up past the band (scrollTop decreasing AND distance >=
+  //      NEAR_BOTTOM_PX). The 150 ms debounce in `atBottomStateChange`
+  //      exists to filter Virtuoso's transient `false` during the
+  //      scroll-to-bottom *animation* — but a real user-initiated
+  //      scroll-up is not that. Waiting 150 ms means the very next
+  //      data item (tool_result, new assistant turn) lands during the
+  //      window with `shouldFollowRef` still true and yanks the user
+  //      back to the bottom. Detecting scrollTop decrease lets us
+  //      bypass the debounce on genuine user input.
   useEffect(() => {
     const el = scrollerRef.current
     if (!el) return
-    const NEAR_BOTTOM_PX = 200
+    lastScrollTopRef.current = el.scrollTop
     const handler = () => {
       const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-      if (distanceFromBottom < NEAR_BOTTOM_PX && unseenCountRef.current !== 0) {
-        unseenCountRef.current = 0
-        setUnseenCount(0)
-        // Re-enable follow mode so future messages auto-scroll.
+      const isNearBottom = distanceFromBottom < NEAR_BOTTOM_PX
+      const prevScrollTop = lastScrollTopRef.current
+      lastScrollTopRef.current = el.scrollTop
+      const isScrollingUp = el.scrollTop < prevScrollTop
+
+      if (isNearBottom) {
+        // Re-enter the bottom band — restore follow + clear badge.
         if (followTimerRef.current != null) {
           clearTimeout(followTimerRef.current)
           followTimerRef.current = null
         }
         shouldFollowRef.current = true
-        atBottomRef.current = true
-        setAtBottom(true)
+        if (!atBottomRef.current) {
+          atBottomRef.current = true
+          setAtBottom(true)
+        }
+        if (unseenCountRef.current !== 0) {
+          unseenCountRef.current = 0
+          setUnseenCount(0)
+        }
+      } else if (isScrollingUp && shouldFollowRef.current) {
+        // User dragged the viewport upward past the band — kill follow
+        // now, before the pending data-item arrival uses it.
+        if (followTimerRef.current != null) {
+          clearTimeout(followTimerRef.current)
+          followTimerRef.current = null
+        }
+        shouldFollowRef.current = false
       }
     }
     el.addEventListener('scroll', handler, { passive: true })
@@ -292,7 +357,22 @@ export const MessageList = memo(function MessageList({ items, showSystemEvents =
 
   const followOutput = useCallback(() => (shouldFollowRef.current ? 'auto' : false), [])
 
-  const atBottomStateChange = useCallback((isAtBottom: boolean) => {
+  const atBottomStateChange = useCallback((reportedAtBottom: boolean) => {
+    // Virtuoso's at-bottom check is pixel-perfect; we use a NEAR_BOTTOM_PX
+    // tolerance everywhere else (scroll handler, button visibility intent).
+    // Without this override, a slight upward scroll inside the tolerance
+    // band fires `false` here and starts the follow-disable timer — which
+    // racing against the scroll handler's restoration produces the bug
+    // where follow flickers off seconds after the user thought they were
+    // safely back at the bottom.
+    let isAtBottom = reportedAtBottom
+    if (!isAtBottom) {
+      const el = scrollerRef.current
+      if (el) {
+        const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+        if (distance < NEAR_BOTTOM_PX) isAtBottom = true
+      }
+    }
     // UI state: update immediately for jump-to-bottom button.
     atBottomRef.current = isAtBottom
     setAtBottom(isAtBottom)
@@ -346,6 +426,7 @@ export const MessageList = memo(function MessageList({ items, showSystemEvents =
   return (
     <PlanStatusProvider value={planStatus}>
     <PlanContentProvider value={planContent}>
+    <QuestionAnswersProvider value={questionAnswers}>
     <div className="chat-messages-wrap">
       <div className="chat-messages">
         {renderableItems.length === 0 ? (
@@ -380,6 +461,7 @@ export const MessageList = memo(function MessageList({ items, showSystemEvents =
         </button>
       )}
     </div>
+    </QuestionAnswersProvider>
     </PlanContentProvider>
     </PlanStatusProvider>
   )
@@ -442,6 +524,16 @@ const MessageView = memo(function MessageView({
     }
   }, [type, interruptedRef])
 
+  // Memoise the block list so the child `BlockView` / `ToolResultBlock`
+  // memos actually hit. `getBlocks(msg)` returns a *fresh* array (and
+  // fresh inner object) every call when `msg.message.content` is a
+  // string — the common case for plain text messages. Without this
+  // memo, every keystroke in the search box rebuilds every block of
+  // every message, even though the underlying message hasn't changed.
+  // Stable `msg` reference (the store hands us immutable items) →
+  // stable `blocks` → stable `block` props → memos hit.
+  const blocks = useMemo(() => getBlocks(msg), [msg])
+
   // Synthetic recap message — see useSessionRecap. Rendered as its own
   // chrome-distinct card so the user can tell it's an AI summary, not a
   // real assistant turn.
@@ -451,7 +543,6 @@ const MessageView = memo(function MessageView({
 
   if (type === 'user') {
     const userContent = extractUserText(msg)
-    const blocks = getBlocks(msg)
     const toolBlocks = blocks.filter((b) => b.type === 'tool_result')
 
     // Synthetic "conversation summary" frame that the SDK injects right
@@ -537,7 +628,6 @@ const MessageView = memo(function MessageView({
   }
 
   if (type === 'assistant') {
-    const blocks = getBlocks(msg)
     // Subagent assistant turns (from Task tool workers with
     // forwardSubagentText on) carry the same shape as main-thread
     // assistant turns but with a non-null parent_tool_use_id. Label
@@ -813,7 +903,17 @@ function formatCost(usd: number): string {
   return `$${usd.toFixed(2)}`
 }
 
-function BlockView({ block, searchQuery }: { block: Block; searchQuery?: string }) {
+// Memoised because parent `MessageView` re-renders on every `searchQuery`
+// keystroke (the prop is part of MessageView's memo signature). Without
+// this memo, every block of every message rebuilds — `<Markdown>` parses
+// markdown again, base64 `<img>` re-decodes, `<ToolUseBlock>` reconciles
+// its tree — once per character the user types in the search box.
+// The memo is shallow-equality-correct here: `MessageView` wraps its
+// `getBlocks(msg)` call in `useMemo([msg])`, so `block` references are
+// stable across `searchQuery` changes. (Without that wrapper this memo
+// would silently miss for string-content messages, since `getBlocks`
+// returns a fresh `[{type:'text', text}]` on every call for strings.)
+const BlockView = memo(function BlockView({ block, searchQuery }: { block: Block; searchQuery?: string }) {
   if (block.type === 'text' && typeof block.text === 'string') {
     return <Markdown text={block.text} searchQuery={searchQuery} />
   }
@@ -821,10 +921,18 @@ function BlockView({ block, searchQuery }: { block: Block; searchQuery?: string 
     const source = block.source as { type: string; data?: string; media_type?: string } | undefined
     if (source?.type === 'base64' && source.data && source.media_type) {
       return (
+        // decoding="async" lets the browser decode the (potentially large)
+        // base64 image off the main thread so paint isn't blocked. We
+        // intentionally do NOT plumb a `min-height` reservation here —
+        // bounding decode-time CLS that way also permanently letterboxes
+        // small images (e.g. a 32×32 icon paste) with empty whitespace,
+        // which is more visually disruptive than the brief height-pop at
+        // decode time.
         <img
           className="msg-image"
           src={`data:${source.media_type};base64,${source.data}`}
           alt="pasted image"
+          decoding="async"
         />
       )
     }
@@ -846,9 +954,13 @@ function BlockView({ block, searchQuery }: { block: Block; searchQuery?: string 
       [{block.type}] {formatJson(block)}
     </div>
   )
-}
+})
 
-function ToolResultBlock({ block }: { block: Block }) {
+// Memoised for the same reason as BlockView — when `searchQuery` changes
+// every MessageView re-renders, and we don't want to rebuild every
+// expanded tool-result `<details>` (which can contain thousands of chars
+// of pre-formatted output) just because the user hit a key in search.
+const ToolResultBlock = memo(function ToolResultBlock({ block }: { block: Block }) {
   const content = block.content
   const preview = toolResultPreview(content)
   const body =
@@ -870,7 +982,7 @@ function ToolResultBlock({ block }: { block: Block }) {
       <div className="tool-input">{body}</div>
     </details>
   )
-}
+})
 
 /** One-line preview for the collapsed <summary>.
  *  Keeps the transcript scannable when many tool results are present. */

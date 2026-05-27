@@ -39,4 +39,10 @@ export interface SessionInfoBase<PM = string> {
    *  HEAD was detached/unborn, or git was unavailable. Survives
    *  process restarts via persistence.coerceMeta. */
   gitStartSha?: string
+  /** Number of tool-permission requests / AskUserQuestion prompts
+   *  awaiting a user decision. Drives the sidebar badge on
+   *  SessionCard so users can see at a glance which background
+   *  sessions are blocked waiting on them. Always 0 for dormant
+   *  sessions (a torn-down Query has no pending callbacks). */
+  pendingPermissionCount?: number
 }

@@ -232,7 +232,16 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
         </button>
       </h3>
 
-      {err && <div className="error-bar">{err}</div>}
+      {/* Always-mounted live region — see `.error-bar-empty` in styles.css.
+          The region stays in the DOM so screen readers reliably announce
+          settings-save failures. */}
+      <div
+        className={`error-bar${err ? '' : ' error-bar-empty'}`}
+        role="alert"
+        aria-live="polite"
+      >
+        {err ?? ''}
+      </div>
       {successMsg && (
         <div className="success-toast" style={{ margin: '4px 18px' }}>
           {successMsg}
@@ -545,12 +554,15 @@ function PluginCard({
   )
 }
 
+// Map MCP server status to existing semantic theme tokens. Keeps light/dark
+// parity (CLAUDE.md forbids hardcoded hex in components — every colour must
+// resolve via a CSS variable defined in both :root and [data-theme="light"]).
 const STATUS_COLORS: Record<string, string> = {
-  connected: '#4caf50',
-  failed: '#f44336',
-  'needs-auth': '#ff9800',
-  disabled: '#9e9e9e',
-  pending: '#2196f3',
+  connected: 'var(--ok)',
+  failed: 'var(--danger)',
+  'needs-auth': 'var(--warn)',
+  disabled: 'var(--fg-muted)',
+  pending: 'var(--accent)',
 }
 
 function McpServerCard({
@@ -567,7 +579,7 @@ function McpServerCard({
   disabled: boolean
 }) {
   const [expanded, setExpanded] = useState(false)
-  const color = STATUS_COLORS[server.status] ?? '#9e9e9e'
+  const color = STATUS_COLORS[server.status] ?? 'var(--fg-muted)'
   const canReconnect = server.status === 'failed' || server.status === 'disabled'
   const canDisable = server.status !== 'disabled'
   const canEnable = server.status === 'disabled'
@@ -579,7 +591,7 @@ function McpServerCard({
         <span style={{ fontWeight: 500, fontSize: 13, flex: 1 }}>
           {server.name}
           {isGlobal && (
-            <span style={{ fontSize: 10, color: '#2196f3', marginLeft: 6, fontWeight: 400, padding: '1px 4px', border: '1px solid #2196f3', borderRadius: 3 }}>
+            <span style={{ fontSize: 10, color: 'var(--accent)', marginLeft: 6, fontWeight: 400, padding: '1px 4px', border: '1px solid var(--accent)', borderRadius: 3 }}>
               global
             </span>
           )}
@@ -613,7 +625,7 @@ function McpServerCard({
         )}
       </div>
       {server.error && (
-        <div style={{ padding: '4px 10px', fontSize: 12, color: '#f44336', background: 'var(--bg)' }}>
+        <div style={{ padding: '4px 10px', fontSize: 12, color: 'var(--danger)', background: 'var(--bg)' }}>
           {server.error}
         </div>
       )}
@@ -622,9 +634,9 @@ function McpServerCard({
           {server.tools.map((t) => (
             <div key={t.name} style={{ fontSize: 12, padding: '2px 0', display: 'flex', gap: 6, alignItems: 'baseline' }}>
               <code style={{ fontWeight: 500 }}>{t.name}</code>
-              {t.annotations?.readOnly && <span style={{ fontSize: 10, color: '#4caf50' }}>read-only</span>}
-              {t.annotations?.destructive && <span style={{ fontSize: 10, color: '#f44336' }}>destructive</span>}
-              {t.annotations?.openWorld && <span style={{ fontSize: 10, color: '#ff9800' }}>open-world</span>}
+              {t.annotations?.readOnly && <span style={{ fontSize: 10, color: 'var(--ok)' }}>read-only</span>}
+              {t.annotations?.destructive && <span style={{ fontSize: 10, color: 'var(--danger)' }}>destructive</span>}
+              {t.annotations?.openWorld && <span style={{ fontSize: 10, color: 'var(--warn)' }}>open-world</span>}
               {t.description && <span style={{ color: 'var(--fg-muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.description}</span>}
             </div>
           ))}

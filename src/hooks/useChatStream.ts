@@ -41,6 +41,7 @@ export interface ChatStream {
   permissionDecisions: ReadonlyMap<string, 'allow' | 'deny'>
   planStatus: ReadonlyMap<string, PlanStatus>
   planContent: ReadonlyMap<string, string>
+  questionAnswers: ReadonlyMap<string, import('../utils/question-answers').QuestionAnswerEntry[]>
   activeSubagents: ActiveSubagent[]
   subagentIndex: ReadonlyMap<string, ActiveSubagent>
   replayReady: boolean
@@ -91,6 +92,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   const permissionDecisions = useSessionField(sessionId, 'permissionDecisions')
   const planStatus = useSessionField(sessionId, 'planStatus')
   const planContent = useSessionField(sessionId, 'planContent')
+  const questionAnswers = useSessionField(sessionId, 'questionAnswers')
   const activeSubagents = useSessionField(sessionId, 'activeSubagents')
   const subagentIndex = useSessionField(sessionId, 'subagentIndex')
   const replayReady = useSessionField(sessionId, 'replayReady')
@@ -242,6 +244,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       permissionDecisions,
       planStatus,
       planContent,
+      questionAnswers,
       activeSubagents,
       subagentIndex,
       replayReady,
@@ -251,6 +254,6 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       reset,
       clearError,
     }),
-    [items, messages, queuedAhead, displayedError, contextUsage, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, activeSubagents, subagentIndex, replayReady, trackSentTurn, insertUserMessage, rollbackUserMessage, reset, clearError],
+    [items, messages, queuedAhead, displayedError, contextUsage, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, activeSubagents, subagentIndex, replayReady, trackSentTurn, insertUserMessage, rollbackUserMessage, reset, clearError],
   )
 }

@@ -1,5 +1,6 @@
 import type { PermissionRequest, SdkMessage } from '../types'
 import type { ContextUsage } from '../hooks/useChatStream'
+import type { QuestionAnswerEntry } from '../utils/question-answers'
 
 export interface TranscriptItem {
   id: string
@@ -82,6 +83,12 @@ export interface SessionState {
    *  the tool_result (not the tool_use input), so we capture it here
    *  for the PermissionDialog and inline PlanCard to display. */
   planContent: Map<string, string>
+  /** Parsed answers from AskUserQuestion tool_results, keyed by
+   *  tool_use_id.  An empty array means the tool_use was seen but the
+   *  answers JSON hasn't landed yet (or couldn't be parsed) — the
+   *  inline QuestionCard renders that as "pending".  A non-empty array
+   *  means the user submitted answers.  See utils/question-answers.ts. */
+  questionAnswers: Map<string, QuestionAnswerEntry[]>
   activeSubagents: Map<string, ActiveSubagent>
 }
 
@@ -118,6 +125,9 @@ export interface SessionSnapshot {
   permissionDecisions: ReadonlyMap<string, 'allow' | 'deny'>
   planStatus: ReadonlyMap<string, PlanStatus>
   planContent: ReadonlyMap<string, string>
+  /** Parsed AskUserQuestion answers keyed by tool_use_id.  Empty array
+   *  for pending (no answers submitted yet); non-empty for answered. */
+  questionAnswers: ReadonlyMap<string, QuestionAnswerEntry[]>
   /** Currently-running subagents only — drives the WorkingBubble chip row. */
   activeSubagents: ActiveSubagent[]
   /** Full index (running + completed) keyed by toolUseId. Used by the
@@ -145,6 +155,7 @@ export function createInitialSessionState(sessionId: string): SessionState {
     pidToToolUseId: new Map(),
     planStatus: new Map(),
     planContent: new Map(),
+    questionAnswers: new Map(),
     activeSubagents: new Map(),
   }
 }

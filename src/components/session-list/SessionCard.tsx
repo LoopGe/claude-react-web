@@ -101,6 +101,7 @@ export const SessionCard = memo(function SessionCard({
 
   const dormant = !s.running && !s.terminated
   const working = s.running && s.working
+  const pendingCount = s.pendingPermissionCount ?? 0
 
   return (
     <div
@@ -165,6 +166,15 @@ export const SessionCard = memo(function SessionCard({
     >
       <div className="session-item-row">
         <strong style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {pendingCount > 0 && (
+            <span
+              className="session-item-perm-badge"
+              title={`${pendingCount} permission request${pendingCount === 1 ? '' : 's'} awaiting decision`}
+              aria-label={`${pendingCount} pending permission${pendingCount === 1 ? '' : 's'}`}
+            >
+              {pendingCount > 9 ? '9+' : pendingCount}
+            </span>
+          )}
           {hasUnread && <span className="session-item-unread" aria-label="unread" />}
           {isOpen && (
             <span

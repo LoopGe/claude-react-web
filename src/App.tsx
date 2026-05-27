@@ -1235,7 +1235,13 @@ export function App() {
       className="app"
       style={{ ['--sidebar-width' as string]: `${effectiveSidebarWidth}px` }}
     >
-      <aside className="sidebar">
+      {/* Skip link for keyboard users — first focusable element on the
+          page. Hidden visually until it receives focus, at which point
+          it slides into view. Sends focus to the chat panels region so
+          a Tab-only user doesn't have to walk through the entire
+          sidebar to reach the conversation. */}
+      <a className="skip-link" href="#main">Skip to chat</a>
+      <aside className="sidebar" aria-label="Sessions">
         <div className="brand">
           <span className="brand-dot" /> claude-react-web
         </div>
@@ -1285,7 +1291,12 @@ export function App() {
         />
       </aside>
 
-      <main className="main">
+      {/* tabIndex={-1} makes the landmark a programmatic focus target so
+          activating the skip-link (`href="#main"`) actually moves focus
+          here. Without it, the browser scrolls into view but focus stays
+          at the link, and the next Tab walks back through the sidebar —
+          defeating the whole point of the skip-link. */}
+      <main className="main" id="main" tabIndex={-1} aria-label="Chat panels">
         <header className="main-header">
           {/* The header used to echo the focused session's title / model /
               mode / cwd, but with up to three panels open that information
@@ -1293,7 +1304,13 @@ export function App() {
               it at the top was both redundant and subtly wrong (it looked
               like "the active session" when all three are active). Now the
               row holds only the app-level toolbar. */}
-          <div className="main-toolbar">
+          {/* role="group" rather than "toolbar": ARIA's toolbar pattern
+              expects arrow-key roving between items, which we don't
+              implement (Tab walks the cluster like ordinary buttons).
+              Group preserves the labelled-region semantics so a screen
+              reader still announces "App actions" without making a
+              keyboard promise we don't keep. */}
+          <div className="main-toolbar" role="group" aria-label="App actions">
             <button
               className={`btn btn-icon ${showSystemEvents ? 'active' : ''}`}
               onClick={() => setShowSystemEvents((v) => !v)}
@@ -1342,7 +1359,18 @@ export function App() {
           </div>
         </header>
 
-        {displayedError && <div className="error-bar">{displayedError}</div>}
+        {/* Always-mounted live region — see `.error-bar-empty` in
+            styles.css for the rationale. The visible bar appears only
+            when `displayedError` is set; the rest of the time the
+            element collapses to a 1×1 sr-only square so a screen reader
+            still observes the content mutation when an error arrives. */}
+        <div
+          className={`error-bar${displayedError ? '' : ' error-bar-empty'}`}
+          role="alert"
+          aria-live="polite"
+        >
+          {displayedError ?? ''}
+        </div>
 
         <div
           ref={bodyRef}
