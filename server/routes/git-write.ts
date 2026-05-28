@@ -32,8 +32,7 @@ import {
   listBranches,
   createBranch,
   checkoutBranch,
-  getSessionFiles,
-  getSessionDiff,
+  getStagedDiff,
 } from '../git.js'
 import { generateCommitMessage } from '../commit-message.js'
 import type { GitStatus } from '../../shared/git-types.js'
@@ -47,17 +46,6 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     const info = sm.get(id) // throws HttpError(404) on unknown id
     if (!info.cwd) throw new HttpError(400, 'session has no cwd configured')
     return info.cwd
-  }
-
-  /** Resolve session + cwd + gitStartSha. The third value may be null
-   *  when the session was spawned outside a git work tree (or HEAD was
-   *  unborn / detached at the time); routes that need an anchor return
-   *  early with `gitStartSha: null` to let the frontend hide its
-   *  "This session" affordances. */
-  function getSessionAnchor(id: string): { cwd: string; gitStartSha: string | null } {
-    const info = sm.get(id)
-    if (!info.cwd) throw new HttpError(400, 'session has no cwd configured')
-    return { cwd: info.cwd, gitStartSha: info.gitStartSha ?? null }
   }
 
   /** Common fetch: post-write status snapshot. Routes that mutate the
@@ -110,11 +98,18 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
   app.post('/sessions/:id/git/commit', async (c) => {
     const id = c.req.param('id')
     const cwd = getSessionCwd(id)
-    const body = await safeJson<{ message?: unknown; amend?: unknown }>(c.req)
+    const body = await safeJson<{ message?: unknown; amend?: unknown; confirm?: unknown }>(c.req)
     if (typeof body.message !== 'string') {
       throw new HttpError(400, 'message must be a string')
     }
     const amend = body.amend === true
+    // Amending rewrites the previous commit's SHA — destructive in the
+    // same sense as discard / abort / stash-drop, so gate on confirm:true
+    // to match the rest of the write surface. A normal (non-amend)
+    // commit doesn't need confirm — it only adds.
+    if (amend && body.confirm !== true) {
+      throw new HttpError(400, 'amend requires confirm:true')
+    }
     await commitChanges(cwd, body.message, amend)
     sm.broadcastGitStatusChanged(id)
     return c.json({ status: await freshStatus(cwd) })
@@ -221,37 +216,15 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     return c.json({ status, branches, stashed: result.stashed })
   })
 
-  // ── This-session anchor ───────────────────────────────────────────
-  // These three routes back the GitPanel "This session" view: a
-  // collapsible section showing what changed since the session started,
-  // plus the AI button that fills the commit textarea.
-
-  app.get('/sessions/:id/git/session-files', async (c) => {
-    const id = c.req.param('id')
-    const { cwd, gitStartSha } = getSessionAnchor(id)
-    if (!gitStartSha) {
-      return c.json({ files: [], gitStartSha: null })
-    }
-    return c.json({ files: await getSessionFiles(cwd, gitStartSha), gitStartSha })
-  })
-
-  app.get('/sessions/:id/git/session-diff', async (c) => {
-    const id = c.req.param('id')
-    const { cwd, gitStartSha } = getSessionAnchor(id)
-    if (!gitStartSha) {
-      return c.json({ text: '', truncated: false, gitStartSha: null })
-    }
-    const r = await getSessionDiff(cwd, gitStartSha)
-    return c.json({ ...r, gitStartSha })
-  })
-
   app.post('/sessions/:id/git/commit-message', async (c) => {
+    // Generates a Conventional Commit message from the *staged* diff —
+    // i.e. exactly what would land in the next `git commit`.
     const id = c.req.param('id')
-    const { cwd, gitStartSha } = getSessionAnchor(id)
-    if (!gitStartSha) {
-      throw new HttpError(400, 'session has no git anchor — cannot generate a commit message')
+    const cwd = getSessionCwd(id)
+    const { text } = await getStagedDiff(cwd)
+    if (!text.trim()) {
+      throw new HttpError(400, 'nothing staged — stage some changes first')
     }
-    const { text } = await getSessionDiff(cwd, gitStartSha)
     // generateCommitMessage handles its own fallback path so an
     // unconfigured authToken or unreachable API doesn't surface as a
     // 500 — the caller always gets a usable message.

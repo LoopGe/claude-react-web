@@ -72,6 +72,11 @@ export type PendingPermission = PermissionRequestSnapshot & {
  *  shared/session-info.ts so client and server cannot drift. */
 export type SessionInfo = SessionInfoBase<PermissionMode>
 
+/** Re-export the canonical shapes from shared so server-side modules
+ *  that import them (recap manager, session manager) can pull them
+ *  through `session-types.ts` like everything else. */
+export type { SessionPhase, SessionRecap, SessionRecapStats } from '../shared/session-info.js'
+
 export interface Session {
   id: string
   createdAt: number
@@ -131,6 +136,12 @@ export interface Session {
    *  session-pump on mutating tool_results and by git-write routes on
    *  user-initiated mutations. */
   gitStatusSubscribers: Set<Pushable<unknown>>
+  /** Per-subscriber pushables for `session-recap-update` frames.
+   *  Mirrors gitStatusSubscribers; carries the SessionRecap payload
+   *  (or undefined to mean cleared). Driven by RecapManager.invalidate
+   *  / requestGenerate via SessionManager. Each WS subscriber gets its
+   *  own pushable so a slow tab can't block another tab's updates. */
+  recapSubscribers: Set<Pushable<unknown>>
   /** AbortController whose signal races the pump's `iter.next()` so
    *  unload() can break a wedged generator without waiting for the SDK
    *  subprocess to exit. */
@@ -139,6 +150,13 @@ export interface Session {
    *  exits cleanly and needs to be re-spawned without recreating the
    *  permission handling logic. */
   canUseTool?: CanUseTool
+  /** AI-generated session recap state. Lives on the live session (not
+   *  in `history`) so it isn't subject to the 500-msg ring-buffer cap
+   *  and so the WS frame can carry it as a typed payload rather than
+   *  as a synthetic SDK message. Reset to undefined on `invalidate`
+   *  (any user-initiated change to the conversation). Not persisted —
+   *  unloading the session drops it; resume regenerates on demand. */
+  recap?: import('../shared/session-info.js').SessionRecap
 }
 
 /** End every live subscriber (messages, permissions, context-usage) and
@@ -161,6 +179,10 @@ export function endAllSubscribers(s: Session): void {
     try { sub.end() } catch { /* subscriber dead — skip */ }
   }
   s.gitStatusSubscribers.clear()
+  for (const sub of s.recapSubscribers) {
+    try { sub.end() } catch { /* subscriber dead — skip */ }
+  }
+  s.recapSubscribers.clear()
 }
 
 export interface SessionManagerOptions {
@@ -231,6 +253,15 @@ export interface SessionBroadcaster {
   }
   subscribeContextUsage(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null
   subscribeGitStatus(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null
+  /** Per-session recap subscription. Returns the current recap snapshot
+   *  alongside the live iterable so a freshly-subscribed tab sees the
+   *  current state without waiting for the next transition. Null when
+   *  the session is unknown (callers short-circuit). */
+  subscribeSessionRecap(sessionId: string): {
+    iterable: AsyncIterable<unknown>
+    snapshot: import('../shared/session-info.js').SessionRecap | undefined
+    unsubscribe: () => void
+  } | null
   /** Push a `git-status-changed` signal to every subscriber of the
    *  session. Mutator-shaped (modifies subscriber state by enqueueing)
    *  but pure from the caller's perspective; included in the broadcaster

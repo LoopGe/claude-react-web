@@ -11,6 +11,7 @@ import type {
   PermissionDecisionSummary,
   PermissionRequestSnapshot,
   SessionInfo,
+  SessionRecap,
 } from './session-types.js'
 import type * as shared from '../shared/ws-protocol.js'
 
@@ -36,13 +37,15 @@ export type WsReplayDone = shared.WsReplayDone<PermissionRequestSnapshot>
 export type WsMessage = shared.WsMessage<SDKMessage>
 export type WsPermissionRequest = shared.WsPermissionRequest<PermissionRequestSnapshot>
 export type WsPermissionResolved = shared.WsPermissionResolved<PermissionDecisionSummary>
+export type WsSessionRecapUpdate = shared.WsSessionRecapUpdate<SessionRecap>
 export type { WsContextUsage, WsGitStatusChanged, WsPong, WsError } from '../shared/ws-protocol.js'
 
 export type WsServerFrame = shared.WsServerFrame<
   SessionInfo,
   SDKMessage,
   PermissionRequestSnapshot,
-  PermissionDecisionSummary
+  PermissionDecisionSummary,
+  SessionRecap
 >
 
 export { WS_PATH } from '../shared/ws-protocol.js'

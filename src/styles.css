@@ -817,6 +817,79 @@ body.resizing-col * {
   border: 0;
 }
 
+/* Update notification banner — surfaces "a newer @mi/claude-react-web is
+ * on npm". Sits in the same vertical band as .error-bar (immediately
+ * below the header). Uses the accent colour as a soft tint so it reads
+ * as informational rather than alarming, while keeping enough contrast
+ * for the install command to remain skim-readable. */
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 18px;
+  background: color-mix(in srgb, var(--accent) 15%, var(--bg));
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 40%, var(--bg));
+  color: var(--fg);
+  font-size: 13px;
+}
+.update-banner-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.update-banner-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.update-banner-cmd {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 2px 8px;
+  background: color-mix(in srgb, var(--bg) 65%, var(--accent));
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--bg));
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.update-banner-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+  background: var(--accent);
+  color: var(--on-accent);
+  border: 1px solid var(--accent-strong);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.update-banner-btn:hover {
+  background: var(--accent-strong);
+}
+.update-banner-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.update-banner-close:hover {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+}
+
 /* Queue indicator — shows while previous turn is still running. Sits above
    the context bar so it's the last thing the eye passes over before the
    composer, making "your message is queued, not lost" visually obvious. */
@@ -3364,18 +3437,19 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   border-radius: 6px;
   background: color-mix(in srgb, var(--warn) 6%, var(--bg-elev));
   margin: 8px 0;
-  /* overflow:clip clips to the border-radius just like overflow:hidden,
-     but does NOT establish a new BFC. A BFC forces min-height:auto on
-     this flex child inside .modal-section, preventing the parent's
-     overflow-y:auto from ever triggering — the card "absorbs" all
-     overflow internally and the scrollbar never appears. */
+  /* overflow:clip clips to the border-radius (so .plan-card-allowed's
+     bottom background respects the rounded corners) without establishing
+     a new BFC.
+
+     IMPORTANT — do NOT add `min-height: 0` here. In the PermissionDialog
+     this card is a flex child of .modal-section (flex:1; min-height:0;
+     overflow-y:auto). Setting min-height:0 lets the flex algorithm shrink
+     the card below its content height, and `overflow:clip` then silently
+     clips the overflowing markdown — .modal-section never sees overflow,
+     so its scrollbar never appears. With min-height:auto (the default),
+     the card grows to fit its content; when content exceeds the
+     available height, .modal-section overflows and scrolls correctly. */
   overflow: clip;
-  /* In the PermissionDialog, .plan-card is a flex child of .modal-section
-     (flex column, flex:1). Without this, min-height defaults to auto
-     (= content height), so the flex algorithm can never shrink the card
-     below its content — .modal-section collapses to 0px and the
-     overflow-y:auto scrollbar never appears. */
-  min-height: 0;
 }
 .plan-card-header {
   display: flex;
@@ -4778,84 +4852,6 @@ mark.search-hl {
   font-size: 12px;
 }
 
-/* ─────────────────────────────────────────────────────────────────
-   PR3 additions — "This session" view + AI commit message
-   ─────────────────────────────────────────────────────────────────
-   The headline section sits at the top of the panel and gets a
-   subtle accent tint so it reads as the primary call-to-action.
-   ✨ badges flag files in regular sections that ALSO appear in
-   "This session", giving the user a cross-section mental model
-   without forcing them to compare two lists side-by-side.
-   */
-
-.git-this-session > summary {
-  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev-1));
-  border-left: 3px solid var(--accent);
-}
-.git-this-session[open] > summary {
-  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev-1));
-}
-.git-this-session .git-panel-section-actions {
-  /* The two action buttons here are the entry point to the AI
-     workflow — give them a touch more visual weight than the
-     section-action buttons elsewhere. */
-  gap: 6px;
-}
-.git-this-session .git-section-action {
-  padding: 2px 8px;
-  font-size: 11px;
-}
-
-/* The static row variant used inside "This session" reuses the
-   tracked-row toggle's spacing without becoming a button. */
-.git-file-row.session-static .git-file-row-toggle.untracked-static {
-  cursor: default;
-}
-
-/* ✨ badge prefix on file paths. Tight spacing — just a separator
-   from the path itself. Doesn't grow the row height. */
-.git-file-session-badge {
-  margin-right: 4px;
-  font-size: 11px;
-  /* The emoji renders at ~14px on most fonts; nudging it down keeps
-     it visually aligned with the M/A/D status letter. */
-  vertical-align: -1px;
-  user-select: none;
-}
-
-/* Commit preview inside the "Commit Claude's changes" ConfirmDialog. */
-.commit-claudes-files {
-  list-style: none;
-  margin: 8px 0;
-  padding: 8px 12px;
-  background: var(--bg-elev-1);
-  border-radius: 4px;
-  max-height: 180px;
-  overflow-y: auto;
-}
-.commit-claudes-files li {
-  font-family: var(--mono);
-  font-size: 11px;
-  padding: 1px 0;
-}
-.commit-claudes-files li code {
-  background: transparent;
-  padding: 0;
-}
-.commit-claudes-preview {
-  margin: 8px 0 0;
-  padding: 8px 12px;
-  background: var(--bg-elev-1);
-  border-radius: 4px;
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  max-height: 200px;
-  overflow-y: auto;
-  color: var(--fg);
-}
-
 /* ── Composer snippets manager (right-click → "Manage snippets…") ─── */
 
 .perm-card.snippets-manager-card {
@@ -5218,6 +5214,429 @@ mark.search-hl {
  * still suppresses both, which matches every other modern UI. */
 :focus:not(:focus-visible) {
   outline: none;
+}
+
+/* ── ToolCard chrome ──────────────────────────────────────────────────
+ *
+ * Shared frame for every tool_use card (Edit, Write, Read, Grep, Bash,
+ * etc.). The header carries an icon + title + chip row + status badge +
+ * copy button on a single line; the body holds tool-specific content
+ * (a diff, a chip row, a checklist, etc).
+ *
+ * Each per-tool view supplies its own `.tool-card-${name}` class so it
+ * can override colours / paddings without touching the shared chrome.
+ */
+.tool-card {
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elev);
+  overflow: hidden; /* clip children to the rounded corners */
+  font-size: 13px;
+}
+.tool-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-elev-2);
+  border-bottom: 1px solid var(--border);
+  min-height: 32px;
+  flex-wrap: wrap;
+}
+/* When the card has no body, the header IS the card — drop the bottom
+ * border so the card looks like a single bar instead of an empty
+ * panel.  Read / Grep / Glob / WebSearch / WebFetch all hit this. */
+.tool-card:not(:has(.tool-card-body)) .tool-card-header {
+  border-bottom: none;
+}
+.tool-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  color: var(--fg-muted);
+}
+.tool-card-title {
+  font-weight: 500;
+  color: var(--fg);
+  font-size: 13px;
+  min-width: 0;
+  /* Allow the title to flex but never push past chips/status off-screen */
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-card-title-code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--bg);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.tool-card-spacer {
+  flex: 1;
+  min-width: 4px;
+}
+.tool-card-body {
+  background: var(--bg);
+  font-size: 12.5px;
+}
+
+/* File-path title block — bold filename + muted dir suffix.
+ *
+ * Uses inline-flex so a row of file paths in the same card body wraps
+ * nicely; explicit `min-width: 0` lets the dir's text-overflow ellipsis
+ * actually clip when there isn't room. */
+.tool-card-filepath {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+.tool-card-filepath-base {
+  font-family: var(--mono);
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+}
+.tool-card-filepath-badge {
+  font-size: 10.5px;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 6px;
+  text-transform: lowercase;
+  flex-shrink: 0;
+}
+.tool-card-filepath-dir {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Tool status pill — tiny icon + (optional) text inline at the right
+ * end of the header. Three colour variants. The compact form drops the
+ * label and just shows the icon, used for dense rows. */
+.tool-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-family: var(--mono);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+}
+.tool-status-label { line-height: 1; }
+.tool-status-running {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.tool-status-running svg {
+  animation: tool-status-spin 0.9s linear infinite;
+}
+.tool-status-success {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  border-color: color-mix(in srgb, var(--ok) 30%, transparent);
+}
+.tool-status-error {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+}
+.tool-status-compact {
+  padding: 2px;
+  width: 18px;
+  height: 18px;
+  justify-content: center;
+}
+@keyframes tool-status-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Copy button — minimal icon button that only reveals its background on
+ * hover so it doesn't compete with the status badge for attention. */
+.tool-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.tool-copy-btn:hover {
+  background: var(--bg);
+  color: var(--fg);
+  border-color: var(--border);
+}
+.tool-copy-btn.copied {
+  color: var(--ok);
+}
+.tool-copy-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* --- Per-tool body adaptations -------------------------------------------
+ *
+ * Each ToolCard variant tweaks the body padding / colour to match the
+ * shape of its content. The shared chrome stays untouched.
+ */
+
+/* Diff / Edit / Write / NotebookEdit body. We lose the outer border (the
+ * card itself has it now) and reset the file-path bar that previously
+ * lived at the top of the diff — the card header replaces it. */
+.tool-card-diff .tool-card-body {
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-x: auto;
+}
+.diff-block-inner {
+  padding: 4px 0;
+}
+.diff-chunk-label {
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  border-bottom: 1px dashed var(--border);
+  font-family: var(--mono);
+}
+.diff-chunk-label + .diff-lines {
+  padding-top: 2px;
+}
+.diff-line-ctx {
+  color: var(--fg-muted);
+  background: transparent;
+}
+
+/* Click-to-expand truncation block: replaces the old static
+ * "… N more lines" footer with a real <details> the user can open. */
+.diff-truncation-details {
+  border-top: 1px dashed var(--border);
+}
+.diff-truncation-details > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 6px 10px;
+  font-size: 11.5px;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  font-style: italic;
+  user-select: none;
+}
+.diff-truncation-details > summary::-webkit-details-marker { display: none; }
+.diff-truncation-details > summary:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.diff-truncation-details[open] > summary::after {
+  content: ' (click to collapse)';
+  opacity: 0.6;
+}
+.diff-truncation-details[open] {
+  border-bottom: none;
+}
+
+/* Bash / PowerShell body. The header now carries the prompt + first
+ * line; the body only renders the fold (full command) and / or the
+ * description subtitle. */
+.tool-card-bash .bash-tool-line {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  flex: 1;
+  overflow: hidden;
+}
+.tool-card-bash .bash-tool-prompt {
+  color: var(--accent);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.tool-card-bash .bash-tool-command {
+  color: var(--fg);
+  background: transparent;
+  padding: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.tool-card-bash .bash-tool-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 10px;
+}
+.tool-card-bash details.bash-tool-collapsible {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tool-card-bash details.bash-tool-collapsible > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+.tool-card-bash details.bash-tool-collapsible > summary::-webkit-details-marker { display: none; }
+.tool-card-bash details.bash-tool-collapsible > summary:hover .bash-tool-fold-hint {
+  color: var(--accent);
+}
+
+/* Grep / Glob / WebSearch — pattern lives inside the header title.
+ * The card is body-less; nothing extra is needed here, but we adjust
+ * the header padding to feel snug given the small content.
+ *
+ * Each tool gets its own semantic class (tool-card-grep / -glob /
+ * -websearch) so devtools shows what tool you're inspecting; the
+ * pattern-pill styling is one definition shared via the selector
+ * list below.  Adding a fourth pattern-driven tool? Add it here. */
+.tool-card-grep .tool-card-header,
+.tool-card-glob .tool-card-header,
+.tool-card-websearch .tool-card-header,
+.tool-card-read .tool-card-header,
+.tool-card-web .tool-card-header {
+  padding: 6px 10px;
+}
+.tool-card-grep .grep-tool-pattern,
+.tool-card-glob .grep-tool-pattern,
+.tool-card-websearch .grep-tool-pattern {
+  font-family: var(--mono);
+  color: var(--fg);
+  background: var(--bg);
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  font-size: 12.5px;
+  word-break: break-word;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* WebFetch — link styling for the URL anchor in the header title.
+ * Hover underline is the only visible affordance the link is clickable;
+ * the IconExternalLink at the end re-emphasises it. */
+.tool-card-web .web-tool-url {
+  color: var(--accent);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
+}
+.tool-card-web .web-tool-url:hover {
+  text-decoration: underline;
+}
+.tool-card-web .web-tool-prompt {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.45;
+}
+.tool-card-web .web-tool-prompt-marker {
+  color: var(--fg-muted);
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+/* Todo card body — inline checklist sits flush against the header. */
+.tool-card-todo .tool-card-body {
+  padding: 6px 10px 8px;
+}
+.tool-card-todo .inline-todo-list {
+  margin: 0;
+}
+
+/* Task mutation card — body holds optional description / dependency rows. */
+.tool-card-task .tool-card-body {
+  padding: 6px 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tool-card-task .task-mutation-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Unknown-tool fallback — keep the raw JSON readable but clearly
+ * differentiated from the structured cards. */
+.tool-card-unknown .tool-card-body {
+  padding: 0;
+}
+.tool-card-unknown .tool-input {
+  margin: 0;
+  border-radius: 0;
+  padding: 8px 10px;
+  background: var(--bg);
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+}
+
+/* Status chip variant for "danger" — used by NotebookEdit delete chip
+ * and other destructive markers. */
+.tool-chip-danger {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-elev-2));
+}
+.tool-chip-success {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
+  background: color-mix(in srgb, var(--ok) 10%, var(--bg-elev-2));
+}
+
+/* NotebookEdit "deleted" pill, now inside the body of a ToolCard. */
+.tool-card-diff .notebook-edit-deleted {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: var(--danger);
+  font-style: italic;
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
 }
 
 /* ── A11y: prefers-reduced-motion ──────────────────────────────────

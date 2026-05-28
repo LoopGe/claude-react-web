@@ -86,6 +86,7 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
       historyCap: serverConfig.historyCap,
       maxOpenPanels: serverConfig.maxOpenPanels,
       workingStuckMs: serverConfig.workingStuckMs,
+      updateCheckRegistry: serverConfig.updateCheckRegistry,
       defaults: {
         cwd: process.cwd(),
         model: serverConfig.defaultModel,

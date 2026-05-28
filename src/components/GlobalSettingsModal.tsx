@@ -9,8 +9,9 @@ import type { McpServerConfigMeta } from '../types'
 import { McpInstaller } from './McpInstaller'
 import { MarketplaceTab } from './MarketplaceTab'
 import { useFocusTrap } from '../hooks/useFocusTrap'
+import type { UpdateInfo } from '../../shared/update-info'
 
-type Tab = 'api' | 'models' | 'server' | 'mcp' | 'marketplace' | 'logs'
+type Tab = 'api' | 'models' | 'server' | 'mcp' | 'marketplace' | 'logs' | 'about'
 
 type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'trace'
 
@@ -24,9 +25,22 @@ interface Props {
   onClose: () => void
   /** Called after config is saved so the parent can refresh its state. */
   onSaved?: () => void
+  /** Update-info shared from <App>. Lets the About tab show the same
+   *  state the top banner uses, and hitting "Check now" updates both. */
+  updateInfo?: UpdateInfo | null
+  updateRefreshing?: boolean
+  updateError?: string | null
+  onRefreshUpdate?: () => void
 }
 
-export function GlobalSettingsModal({ onClose, onSaved }: Props) {
+export function GlobalSettingsModal({
+  onClose,
+  onSaved,
+  updateInfo,
+  updateRefreshing,
+  updateError,
+  onRefreshUpdate,
+}: Props) {
   const [tab, setTab] = useState<Tab>('api')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -49,6 +63,13 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
   const [historyCap, setHistoryCap] = useState(500)
   const [maxOpenPanels, setMaxOpenPanels] = useState(3)
   const [workingStuckMs, setWorkingStuckMs] = useState(0)
+
+  // ── About tab state ──
+  // The registry URL is editable from the About tab. Empty string =
+  // feature disabled (matches server-side semantics in
+  // applyParsedConfig — empty trims to '' and the checker treats that
+  // as `{ disabled: true }`).
+  const [updateCheckRegistry, setUpdateCheckRegistry] = useState('')
 
   // ── MCP tab state ──
   const [mcpServers, setMcpServers] = useState<McpServerConfigMeta[]>([])
@@ -84,6 +105,7 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
         setHistoryCap(cfg.historyCap ?? 500)
         setMaxOpenPanels(cfg.maxOpenPanels ?? 3)
         setWorkingStuckMs(cfg.workingStuckMs ?? 0)
+        setUpdateCheckRegistry(cfg.updateCheckRegistry ?? '')
       } catch (e) {
         if ((e as Error).name !== 'AbortError') setErr((e as Error).message)
       } finally {
@@ -126,6 +148,11 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
         historyCap: historyCap > 0 ? historyCap : null,
         maxOpenPanels,
         workingStuckMs,
+        // Empty / whitespace clears the override (server treats that as
+        // "feature disabled"). PUT /config translates null/'' to a key
+        // delete, so the next reload reverts to the default empty
+        // string.
+        updateCheckRegistry: updateCheckRegistry.trim() || null,
       }
       if (authTokenDirty && authToken.trim()) {
         updates.authToken = authToken.trim()
@@ -180,6 +207,7 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
     { key: 'mcp', label: 'MCP Servers' },
     { key: 'marketplace', label: 'Marketplace' },
     { key: 'logs', label: 'Logs' },
+    { key: 'about', label: 'About' },
   ]
 
   return (
@@ -263,6 +291,16 @@ export function GlobalSettingsModal({ onClose, onSaved }: Props) {
               )}
               {tab === 'marketplace' && <MarketplaceTab />}
               {tab === 'logs' && <LogsTab />}
+              {tab === 'about' && (
+                <AboutTab
+                  info={updateInfo ?? null}
+                  refreshing={!!updateRefreshing}
+                  error={updateError ?? null}
+                  onRefresh={onRefreshUpdate}
+                  registry={updateCheckRegistry}
+                  onRegistryChange={setUpdateCheckRegistry}
+                />
+              )}
             </>
           )}
         </div>
@@ -720,6 +758,139 @@ function LogsTab() {
       )}
     </div>
   )
+}
+
+// ── About / Updates ──────────────────────────────────────────────
+//
+// Shows the running version, the latest npm version (or an error), the
+// last-checked timestamp, and a "Check now" button. The data is owned
+// by <App>'s useUpdateInfo hook so dismissing this modal and opening
+// the banner stays in sync.
+
+function AboutTab({
+  info,
+  refreshing,
+  error,
+  onRefresh,
+  registry,
+  onRegistryChange,
+}: {
+  info: UpdateInfo | null
+  refreshing: boolean
+  error: string | null
+  onRefresh?: () => void
+  /** Pending value of `updateCheckRegistry` — saved when the modal's
+   *  Save button fires `handleSave`. Empty string means "disable". */
+  registry: string
+  onRegistryChange: (v: string) => void
+}) {
+  // Formatted "last checked" — relative time tends to read as fresher
+  // than an absolute date for a quick "did this just check?" glance.
+  const checkedAtLabel = info?.checkedAt ? formatRelative(info.checkedAt) : 'never'
+
+  // The probe error from the server (info.error) is the more useful
+  // value for the user — it describes WHY the registry couldn't be
+  // reached. Only fall back to the local fetch error (`error`) when
+  // the server itself was unreachable.
+  const displayError = info?.error ?? error
+  const hasUpdate = !!(info?.hasUpdate && info.latest)
+  const disabled = !!info?.disabled
+  const upToDate =
+    !!info && !info.checking && !info.hasUpdate && info.latest && !displayError && !disabled
+
+  return (
+    <div>
+      <Field label="Project">
+        <div style={{ fontSize: 13 }}>claude-react-web</div>
+      </Field>
+      <Field label="Current version">
+        <div style={{ fontSize: 13, fontFamily: 'var(--mono)' }}>
+          {info?.current ?? '—'}
+        </div>
+      </Field>
+      <Field
+        label="Update registry"
+        hint="npm registry probed for the `latest` dist-tag. Leave empty to disable update checks. Changes take effect after Save."
+      >
+        <input
+          className="input"
+          type="url"
+          value={registry}
+          onChange={(e) => onRegistryChange(e.target.value)}
+          placeholder="https://registry.npmjs.org"
+          spellCheck={false}
+        />
+      </Field>
+      <Field label="Latest version" hint={`Last checked: ${checkedAtLabel}`}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 13, fontFamily: 'var(--mono)' }}>
+            {disabled
+              ? '—'
+              : info?.latest ?? (info?.checking ? 'checking…' : '—')}
+          </span>
+          {hasUpdate && (
+            <span
+              style={{
+                fontSize: 11,
+                padding: '2px 8px',
+                borderRadius: 10,
+                background: 'var(--accent)',
+                color: 'var(--on-accent)',
+              }}
+            >
+              update available
+            </span>
+          )}
+          {upToDate && (
+            <span style={{ fontSize: 12, color: 'var(--ok)' }}>✓ up to date</span>
+          )}
+          {disabled && (
+            <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+              update checks disabled
+            </span>
+          )}
+        </div>
+      </Field>
+      {hasUpdate && (
+        <Field label="Upgrade command" hint="If you installed globally, use `npm i -g claude-react-web@latest`.">
+          <div style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>
+            npx claude-react-web@latest
+          </div>
+        </Field>
+      )}
+      {displayError && !disabled && (
+        <div className="modal-error" style={{ marginTop: 8 }}>
+          Could not reach the registry: {displayError}
+        </div>
+      )}
+      <div style={{ marginTop: 16 }}>
+        <button
+          className="btn"
+          onClick={onRefresh}
+          disabled={refreshing || !onRefresh || disabled}
+          title={disabled ? 'Set a registry URL above and Save first.' : undefined}
+        >
+          {refreshing ? 'Checking…' : 'Check now'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/** Compact relative-time formatter for the "last checked" label.
+ *  Avoids pulling in a full i18n lib for one line of UI text. */
+function formatRelative(ms: number): string {
+  const delta = Date.now() - ms
+  if (delta < 0) return 'just now'
+  const sec = Math.round(delta / 1000)
+  if (sec < 5) return 'just now'
+  if (sec < 60) return `${sec}s ago`
+  const min = Math.round(sec / 60)
+  if (min < 60) return `${min}m ago`
+  const hr = Math.round(min / 60)
+  if (hr < 24) return `${hr}h ago`
+  const day = Math.round(hr / 24)
+  return `${day}d ago`
 }
 
 // ── Shared primitives ────────────────────────────────────────────

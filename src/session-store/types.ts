@@ -40,6 +40,21 @@ export interface ActiveSubagent {
 
 export type PlanStatus = 'pending' | 'approved' | 'rejected'
 
+/** Tool execution lifecycle.
+ *
+ *  - 'running'  — assistant emitted a tool_use block, no matching tool_result yet
+ *  - 'success'  — matching tool_result arrived without an is_error flag
+ *  - 'error'    — matching tool_result arrived with is_error: true (the SDK
+ *                 sets this when canUseTool denies, when the tool throws,
+ *                 or when the tool reports failure)
+ *
+ *  Used by ToolUseBlock to render a status badge in the upper-right of
+ *  every tool card. PlanCard / QuestionCard / SubagentCard maintain their
+ *  own (more specific) status maps because their lifecycle differs — a
+ *  Plan's "approved/rejected" doesn't map cleanly to "success/error" of a
+ *  generic tool, and AskUserQuestion doesn't have a meaningful "error". */
+export type ToolStatus = 'running' | 'success' | 'error'
+
 export type ActivePhase =
   | 'thinking'
   | 'writing'
@@ -89,6 +104,12 @@ export interface SessionState {
    *  inline QuestionCard renders that as "pending".  A non-empty array
    *  means the user submitted answers.  See utils/question-answers.ts. */
   questionAnswers: Map<string, QuestionAnswerEntry[]>
+  /** Generic tool lifecycle keyed by tool_use_id. Drives the status badge
+   *  on every ToolUseBlock card. PlanCard / QuestionCard / SubagentCard
+   *  use their own (more semantic) maps because their lifecycle differs —
+   *  but for Bash / Read / Grep / Edit / Write / etc. this map is the
+   *  single source of truth. */
+  toolStatus: Map<string, ToolStatus>
   activeSubagents: Map<string, ActiveSubagent>
 }
 
@@ -128,6 +149,8 @@ export interface SessionSnapshot {
   /** Parsed AskUserQuestion answers keyed by tool_use_id.  Empty array
    *  for pending (no answers submitted yet); non-empty for answered. */
   questionAnswers: ReadonlyMap<string, QuestionAnswerEntry[]>
+  /** Generic tool lifecycle by tool_use_id (running/success/error). */
+  toolStatus: ReadonlyMap<string, ToolStatus>
   /** Currently-running subagents only — drives the WorkingBubble chip row. */
   activeSubagents: ActiveSubagent[]
   /** Full index (running + completed) keyed by toolUseId. Used by the
@@ -156,6 +179,7 @@ export function createInitialSessionState(sessionId: string): SessionState {
     planStatus: new Map(),
     planContent: new Map(),
     questionAnswers: new Map(),
+    toolStatus: new Map(),
     activeSubagents: new Map(),
   }
 }

@@ -16,6 +16,7 @@ import { SessionStore, defaultStateDir } from './persistence.js'
 import { McpConfigStore } from './mcp-config.js'
 import { MpStore } from './mp-store.js'
 import { attachWebSocket } from './ws.js'
+import { checkForUpdates } from './update-checker.js'
 
 interface CliArgs {
   port: number
@@ -292,6 +293,18 @@ async function main() {
           console.log(`[cli] could not auto-open browser — visit ${url} manually`)
         })
       }
+      // Fire-and-forget update probe. Failures are swallowed — the
+      // checker writes the error to its cached snapshot, which the UI
+      // can surface in the About view; we don't want to spam stdout
+      // when the registry is unreachable behind a firewall. Skipped
+      // entirely when no registry is configured (info.disabled).
+      void checkForUpdates().then((upd) => {
+        if (upd.disabled) return
+        if (upd.hasUpdate && upd.latest) {
+          console.log(`[cli] update available: ${upd.current} → ${upd.latest}`)
+          console.log(`[cli]   run: npx claude-react-web@latest`)
+        }
+      })
     },
   )
 

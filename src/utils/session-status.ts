@@ -19,9 +19,12 @@ export function statusLabel(s: SessionInfo): string {
     if (reason === 'query_ended') return 'Session ended: connection closed'
     if (reason === 'process_killed') return 'Session ended: process killed'
     if (reason === 'process_exited') return 'Session ended: process exited'
+    if (reason === 'spawn_failed') return 'Session ended: CLI failed to start'
     if (reason === 'init_stuck') return 'Session ended: init timed out'
     if (reason === 'stuck') return 'Session ended: unresponsive'
     if (reason === 'deleted') return 'Session deleted'
+    if (reason === 'transcript_missing') return 'Session ended: transcript missing'
+    if (reason === 'no_data') return 'Session ended: no conversation data on disk'
     return 'Session ended'
   }
   if (s.working) return 'Working on a turn'

@@ -295,20 +295,6 @@ async function getNumstatMap(
   return parseNumstatOutput(stdout)
 }
 
-/** Same as getNumstatMap but comparing against a base SHA (for "This session"). */
-async function getSessionNumstatMap(
-  cwd: string,
-  fromSha: string,
-): Promise<Map<string, NumstatEntry>> {
-  const { stdout } = await runGit(cwd, [
-    '-c', 'core.quotepath=false',
-    'diff', '--numstat', fromSha,
-  ], {
-    allowExitCodes: new Set([128]),
-  })
-  return parseNumstatOutput(stdout)
-}
-
 /** Attach insertion/deletion counts to entries that match a numstat map. */
 function applyNumstat(
   entries: GitFileEntry[],
@@ -868,121 +854,61 @@ export async function tryCaptureGitHead(cwd: string): Promise<string | undefined
   }
 }
 
-/** List of files that differ between `fromSha` and the current state
- *  (worktree + index + new commits between fromSha..HEAD). Reuses the
- *  GitFileEntry shape so the frontend can render with the same components
- *  as the regular sections.
- *
- *  We compute this as `git diff --name-status fromSha` against the
- *  worktree (no HEAD/index restriction), which automatically merges
- *  committed + staged + unstaged changes since fromSha into one set. */
-export async function getSessionFiles(cwd: string, fromSha: string): Promise<GitFileEntry[]> {
+/** Unified diff of the staged area (`git diff --cached`), capped at
+ *  MAX_AI_DIFF_BYTES with the same head+tail trim used elsewhere.
+ *  Feeds the Generate-commit-message flow in the Commit section. Returns
+ *  an empty string when nothing is staged — callers should refuse to
+ *  generate a message in that case. */
+export async function getStagedDiff(cwd: string): Promise<{ text: string; truncated: boolean }> {
   await ensureGitRepo(cwd)
-  if (!/^[0-9a-f]{7,40}$/i.test(fromSha)) {
-    throw new HttpError(400, 'invalid fromSha')
-  }
-  // diff fromSha (no second ref) compares fromSha tree against the
-  // worktree, which is exactly what we want: every change since the
-  // anchor, regardless of whether it's been committed yet.
-  // -z: NUL-terminated records; --name-status: include M/A/D/R + path.
   const { stdout } = await runGit(cwd, [
     '-c', 'core.quotepath=false',
-    'diff', '--name-status', '-z', fromSha,
-  ], {
-    // The fromSha must be a tree-ish that exists. If it doesn't (history
-    // rewritten?), git exits 128 — treat as empty rather than crash.
-    allowExitCodes: new Set([128]),
-  })
-  const out: GitFileEntry[] = []
-  // With -z, `--name-status` emits records as: <status>\0<path>\0[<oldpath>\0]
-  // R/C status codes carry a similarity score (R100 etc); strip it back to
-  // a single letter. The walk consumes 1–2 records per entry depending on
-  // whether it's a rename.
-  const records = stdout.split('\0')
-  if (records.length && records[records.length - 1] === '') records.pop()
-  for (let i = 0; i < records.length; i++) {
-    const code = records[i]
-    if (!code) continue
-    const letter = code[0]
-    const isRename = letter === 'R' || letter === 'C'
-    const path = records[i + 1]
-    if (path === undefined) break
-    i++
-    let renamedFrom: string | undefined
-    if (isRename) {
-      const oldPath = records[i + 1]
-      if (oldPath !== undefined) {
-        renamedFrom = oldPath
-        i++
-      }
-    }
-    // letter comes from `git diff --name-status` so '?' / '!' never appear,
-    // but reuse statusChar() for consistency with the porcelain parser.
-    const status: GitFileStatus = statusChar(letter)
-    out.push({
-      path,
-      status,
-      // For session files we don't bother distinguishing staged/unstaged
-      // because a single file may be in either bucket relative to HEAD —
-      // here we only care that it changed since fromSha. The regular
-      // Staged / Changes sections still show the per-bucket breakdown.
-      staged: false,
-      unstaged: true,
-      ...(renamedFrom ? { renamedFrom } : {}),
-    })
-  }
-
-  // Attach per-file line counts for tracked changes since fromSha.
-  // Untracked files have no diff to count — they get no stats.
-  if (out.length > 0) {
-    const numstat = await getSessionNumstatMap(cwd, fromSha)
-    applyNumstat(out, numstat)
-  }
-
-  // Also include untracked files — these don't appear in `diff fromSha`
-  // because they have no prior version to compare against. We pull them
-  // from getStatusInRepo (skipping the inside-work-tree probe — ensureGitRepo
-  // above already validated it).
-  const status = await getStatusInRepo(cwd)
-  const seen = new Set(out.map((f) => f.path))
-  for (const u of status.untracked) {
-    if (!seen.has(u.path)) out.push(u)
-  }
-  // Stable order: alphabetical so the UI doesn't reshuffle on each refresh.
-  out.sort((a, b) => a.path.localeCompare(b.path))
-  return out
+    'diff', '--no-color', '--cached',
+  ])
+  return trimDiffToCap(stdout)
 }
 
-/** Combined unified diff between fromSha and current state, capped at
- *  MAX_AI_DIFF_BYTES. The output feeds into generateCommitMessage(). */
-export async function getSessionDiff(cwd: string, fromSha: string): Promise<{ text: string; truncated: boolean }> {
-  await ensureGitRepo(cwd)
-  if (!/^[0-9a-f]{7,40}$/i.test(fromSha)) {
-    throw new HttpError(400, 'invalid fromSha')
-  }
-  const { stdout } = await runGit(cwd, [
-    '-c', 'core.quotepath=false',
-    'diff', '--no-color', fromSha,
-  ], {
-    allowExitCodes: new Set([128]),
-    // Diffs can be large. We still buffer up to maxBuffer, then trim
-    // post-hoc to MAX_AI_DIFF_BYTES — keeping the full buffer means we
-    // can choose to head+tail-trim instead of arbitrary truncation.
-  })
-  const bytes = Buffer.byteLength(stdout, 'utf8')
+/** Cap a diff string at MAX_AI_DIFF_BYTES with a head+tail trim. Reserve
+ *  ~60% of the cap for the head (more useful — function signatures,
+ *  types, top-of-file changes); the rest for the tail. The middle gets
+ *  an elision marker so the model knows there's content it can't see. */
+function trimDiffToCap(text: string): { text: string; truncated: boolean } {
+  const bytes = Buffer.byteLength(text, 'utf8')
   if (bytes <= MAX_AI_DIFF_BYTES) {
-    return { text: stdout, truncated: false }
+    return { text, truncated: false }
   }
-  // Head-and-tail trim. Reserve ~60% of the cap for the head (more
-  // useful — function signatures, types, top-of-file changes); the rest
-  // for the tail. The middle gets an elision marker so the model knows
-  // there's content it can't see.
   const ELISION = '\n\n... [diff truncated to keep request size bounded] ...\n\n'
   const headBytes = Math.floor(MAX_AI_DIFF_BYTES * 0.6)
   const tailBytes = MAX_AI_DIFF_BYTES - headBytes - ELISION.length
-  const buf = Buffer.from(stdout, 'utf8')
-  const head = buf.subarray(0, headBytes).toString('utf8')
-  const tail = buf.subarray(bytes - tailBytes).toString('utf8')
+  const buf = Buffer.from(text, 'utf8')
+  // Slice on UTF-8 codepoint boundaries — a raw byte slice in the
+  // middle of a multi-byte sequence (CJK, emoji, accented chars) would
+  // emit U+FFFD replacement chars at the seam, garbling the context
+  // we send to the LLM. snapToCodepoint walks back/forward to a leading
+  // byte (a byte whose top bits are NOT 10).
+  const headEnd = snapDownToCodepoint(buf, headBytes)
+  const tailStart = snapUpToCodepoint(buf, bytes - tailBytes)
+  const head = buf.subarray(0, headEnd).toString('utf8')
+  const tail = buf.subarray(tailStart).toString('utf8')
   return { text: head + ELISION + tail, truncated: true }
+}
+
+/** Snap a byte offset down to the nearest UTF-8 codepoint boundary
+ *  (i.e. a byte that is NOT a continuation byte 10xxxxxx). Used as the
+ *  exclusive end of a head slice. */
+function snapDownToCodepoint(buf: Buffer, offset: number): number {
+  let i = Math.min(offset, buf.length)
+  // A continuation byte has its top two bits = 10 (0x80..=0xBF). Walk
+  // backward until we land on a leading byte (or the start).
+  while (i > 0 && (buf[i] & 0xc0) === 0x80) i--
+  return i
+}
+
+/** Snap a byte offset up to the nearest UTF-8 codepoint boundary. Used
+ *  as the inclusive start of a tail slice. */
+function snapUpToCodepoint(buf: Buffer, offset: number): number {
+  let i = Math.max(0, Math.min(offset, buf.length))
+  while (i < buf.length && (buf[i] & 0xc0) === 0x80) i++
+  return i
 }
 

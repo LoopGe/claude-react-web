@@ -21,8 +21,7 @@ import {
   abortMerge,
   getStatus,
   tryCaptureGitHead,
-  getSessionFiles,
-  getSessionDiff,
+  getStagedDiff,
 } from './git.js'
 import { Hono } from 'hono'
 import { createErrorHandler } from './errors.js'
@@ -682,7 +681,7 @@ describe('git-routes', () => {
       })
     })
 
-    // ── Session anchor: tryCaptureGitHead + getSessionFiles + getSessionDiff
+    // ── Session anchor capture (tryCaptureGitHead) + staged-diff helper
     describe('tryCaptureGitHead', () => {
       it.skipIf(!gitOk)('returns the HEAD SHA in a normal repo', async () => {
         gitInit(dir)
@@ -716,49 +715,44 @@ describe('git-routes', () => {
       })
     })
 
-    describe('getSessionFiles / getSessionDiff', () => {
-      it.skipIf(!gitOk)('lists files changed since fromSha (commits + worktree + untracked)', async () => {
-        gitInit(dir)
-        writeFileSync(join(dir, 'a.txt'), 'a-orig\n')
-        writeFileSync(join(dir, 'b.txt'), 'b-orig\n')
-        const startSha = gitCommitAll(dir, 'init')
-
-        // Modify a.txt and commit
-        writeFileSync(join(dir, 'a.txt'), 'a-new\n')
-        gitCommitAll(dir, 'change a')
-        // Modify b.txt without staging
-        writeFileSync(join(dir, 'b.txt'), 'b-new\n')
-        // Add a new untracked file
-        writeFileSync(join(dir, 'c.txt'), 'c-new\n')
-
-        const files = await getSessionFiles(dir, startSha)
-        const paths = files.map((f) => f.path).sort()
-        expect(paths).toEqual(['a.txt', 'b.txt', 'c.txt'])
-      })
-
-      it.skipIf(!gitOk)('returns an empty array when nothing changed since fromSha', async () => {
+    describe('getStagedDiff', () => {
+      it.skipIf(!gitOk)('returns the staged diff and ignores unstaged changes', async () => {
         gitInit(dir)
         writeFileSync(join(dir, 'a.txt'), 'orig\n')
-        const startSha = gitCommitAll(dir, 'init')
+        gitCommitAll(dir, 'init')
+        // Stage a change to a.txt; leave b.txt as an unstaged new file.
+        writeFileSync(join(dir, 'a.txt'), 'staged\n')
+        execFileSync('git', ['add', 'a.txt'], { cwd: dir })
+        writeFileSync(join(dir, 'b.txt'), 'unstaged\n')
 
-        const files = await getSessionFiles(dir, startSha)
-        expect(files).toEqual([])
+        const r = await getStagedDiff(dir)
+        expect(r.truncated).toBe(false)
+        expect(r.text).toContain('a.txt')
+        // Unstaged b.txt must NOT appear — Generate runs against `--cached` only.
+        expect(r.text).not.toContain('b.txt')
       })
 
-      it.skipIf(!gitOk)('rejects malformed fromSha', async () => {
-        gitInit(dir)
-        await expect(getSessionFiles(dir, 'not-a-sha')).rejects.toThrow(/invalid fromSha/)
-      })
-
-      it.skipIf(!gitOk)('getSessionDiff returns text and truncates oversized diffs', async () => {
+      it.skipIf(!gitOk)('returns an empty string when nothing is staged', async () => {
         gitInit(dir)
         writeFileSync(join(dir, 'a.txt'), 'orig\n')
-        const startSha = gitCommitAll(dir, 'init')
+        gitCommitAll(dir, 'init')
+        writeFileSync(join(dir, 'a.txt'), 'unstaged-only\n')
+
+        const r = await getStagedDiff(dir)
+        expect(r.text).toBe('')
+        expect(r.truncated).toBe(false)
+      })
+
+      it.skipIf(!gitOk)('truncates oversized staged diffs', async () => {
+        gitInit(dir)
+        writeFileSync(join(dir, 'a.txt'), 'orig\n')
+        gitCommitAll(dir, 'init')
         // Make a large change (~30 KB) so we're past MAX_AI_DIFF_BYTES (16 KB).
         const big = Array.from({ length: 1500 }, (_, i) => `new line ${i}`).join('\n') + '\n'
         writeFileSync(join(dir, 'a.txt'), big)
+        execFileSync('git', ['add', 'a.txt'], { cwd: dir })
 
-        const r = await getSessionDiff(dir, startSha)
+        const r = await getStagedDiff(dir)
         expect(r.text).toContain('diff --git')
         expect(r.truncated).toBe(true)
         expect(r.text).toContain('[diff truncated')

@@ -52,12 +52,24 @@ export function getBlocks(msg: SdkMessage): Block[] {
   return content as Block[]
 }
 
+/** Pull the tool_use id off a Block defensively.  The SDK's normalised
+ *  shape and our internal post-processed shape disagree on the field
+ *  name — `tool_use_id` (assistant block in our normalised form) vs.
+ *  `id` (raw SDK block).  Centralising the lookup means a future SDK
+ *  shape drift only needs to be fixed here, not in every walker. */
+export function extractToolUseId(block: Block): string | undefined {
+  const blockAny = block as { id?: unknown; tool_use_id?: unknown }
+  if (typeof blockAny.tool_use_id === 'string') return blockAny.tool_use_id
+  if (typeof blockAny.id === 'string') return blockAny.id
+  return undefined
+}
+
 export function getPlanToolUseIds(msg: SdkMessage): string[] {
   if (msg.type !== 'assistant') return []
   const ids: string[] = []
   for (const block of getBlocks(msg)) {
     if (block.type !== 'tool_use' || !PLAN_TOOL_NAMES.has(block.name ?? '')) continue
-    const id = typeof block.tool_use_id === 'string' ? block.tool_use_id : typeof block.id === 'string' ? block.id : undefined
+    const id = extractToolUseId(block)
     if (id) ids.push(id)
   }
   return ids
@@ -68,7 +80,7 @@ export function getSubagentStarts(msg: SdkMessage): ActiveSubagent[] {
   const out: ActiveSubagent[] = []
   for (const block of getBlocks(msg)) {
     if (block.type !== 'tool_use' || !SUBAGENT_TOOL_NAMES.has(block.name ?? '')) continue
-    const id = typeof block.tool_use_id === 'string' ? block.tool_use_id : typeof block.id === 'string' ? block.id : undefined
+    const id = extractToolUseId(block)
     if (!id) continue
     const input = block.input as Record<string, unknown> | undefined
     const label =
@@ -89,6 +101,50 @@ export function getToolResultIds(msg: SdkMessage): string[] {
     }
   }
   return ids
+}
+
+/** All tool_use ids in an assistant message, regardless of tool name.
+ *  Used by the reducer to seed the toolStatus map with 'running' for
+ *  every tool call as soon as the assistant emits it.
+ *
+ *  PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, and AskUserQuestion are
+ *  EXCLUDED — those have their own (more semantic) status maps and
+ *  rendering their generic status badge alongside the specific one
+ *  would be redundant and confusing. */
+const TOOL_STATUS_EXCLUDE = new Set<string>([
+  ...PLAN_TOOL_NAMES,
+  ...SUBAGENT_TOOL_NAMES,
+  'AskUserQuestion',
+])
+
+export function getToolUseStarts(msg: SdkMessage): string[] {
+  if (msg.type !== 'assistant') return []
+  const ids: string[] = []
+  for (const block of getBlocks(msg)) {
+    if (block.type !== 'tool_use') continue
+    if (block.name && TOOL_STATUS_EXCLUDE.has(block.name)) continue
+    const id = extractToolUseId(block)
+    if (id) ids.push(id)
+  }
+  return ids
+}
+
+/** Per-tool_result outcome: success vs error.
+ *  The SDK marks failed tool calls with `is_error: true` on the
+ *  tool_result block — we use that as the source of truth. canUseTool
+ *  denial also lands here as is_error: true with content like
+ *  "Permission denied". */
+export function getToolResultOutcomes(
+  msg: SdkMessage,
+): Array<{ toolUseId: string; outcome: 'success' | 'error' }> {
+  if (msg.type !== 'user') return []
+  const out: Array<{ toolUseId: string; outcome: 'success' | 'error' }> = []
+  for (const block of getBlocks(msg)) {
+    if (block.type !== 'tool_result' || typeof block.tool_use_id !== 'string') continue
+    const isError = (block as Record<string, unknown>).is_error === true
+    out.push({ toolUseId: block.tool_use_id, outcome: isError ? 'error' : 'success' })
+  }
+  return out
 }
 
 export function getPlanResultDecisions(msg: SdkMessage, known: ReadonlyMap<string, PlanStatus>): Array<{ toolUseId: string; status: PlanStatus }> {

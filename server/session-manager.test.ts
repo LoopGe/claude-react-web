@@ -28,8 +28,29 @@ interface MockQueryHandle {
 
 const mockHandles: MockQueryHandle[] = []
 
+// Default mock: pretend every session's transcript file is present on
+// disk. fork()/resume() probe this via `getSessionInfo({ dir })` to
+// reject missing-jsonl sources before spawning a doomed Query — tests
+// that exercise that failure path override with mockResolvedValueOnce.
+//
+// Wrapped in `vi.hoisted` because vi.mock factories run BEFORE module-
+// scope const declarations (Vitest hoists them). Without hoisting the
+// closure inside the factory hits a TDZ on the bare `const` and any
+// call into getSessionInfo via the SDK shim falls through to the
+// vi.fn default (returns undefined), which makes hasSdkTranscript()
+// always report "transcript missing" and breaks every fork/resume
+// happy-path test.
+const { mockGetSessionInfo } = vi.hoisted(() => {
+  return {
+    mockGetSessionInfo: vi.fn<(id: string, opts?: { dir?: string }) => Promise<unknown>>(
+      async (id) => ({ sessionId: id }),
+    ),
+  }
+})
+
 vi.mock('@anthropic-ai/claude-agent-sdk', () => {
   return {
+    getSessionInfo: (id: string, opts?: { dir?: string }) => mockGetSessionInfo(id, opts),
     query({ prompt, options }: { prompt: unknown; options: Record<string, unknown> }) {
       const queue: unknown[] = []
       let waiter: ((v: IteratorResult<unknown>) => void) | null = null
@@ -159,6 +180,11 @@ describe('SessionManager', () => {
 
   beforeEach(async () => {
     mockHandles.length = 0
+    // Reset the SDK mocks: clear call history AND restore the default
+    // "transcript exists" implementation, so a `mockResolvedValueOnce`
+    // override leaking past its test can't cascade into others.
+    mockGetSessionInfo.mockReset()
+    mockGetSessionInfo.mockImplementation(async (id) => ({ sessionId: id }))
     dir = makeTmpDir()
     store = new SessionStore({ stateDir: dir })
     await store.load()
@@ -363,7 +389,7 @@ describe('SessionManager', () => {
     await sm.unload(info.id)
 
     // Live map no longer contains it, but persistence does.
-    const resumed = sm.resume(info.id)
+    const resumed = await sm.resume(info.id)
     expect(resumed.id).toBe(info.id)
     expect(mockHandles).toHaveLength(2)
     expect(mockHandles[1].options.resume).toBe(info.id)
@@ -371,9 +397,9 @@ describe('SessionManager', () => {
     expect(mockHandles[1].options.model).toBe('m1')
   })
 
-  it('resume() is idempotent when the session is already live', () => {
+  it('resume() is idempotent when the session is already live', async () => {
     const info = sm.create({})
-    const again = sm.resume(info.id)
+    const again = await sm.resume(info.id)
     expect(again.id).toBe(info.id)
     // No extra Query was spawned.
     expect(mockHandles).toHaveLength(1)
@@ -388,7 +414,7 @@ describe('SessionManager', () => {
     // pump's finally block sets terminated=true, persists, and the session
     // is still in memory. Unload to persist the terminal state.
     await sm.unload(info.id)
-    expect(() => sm.resume(info.id)).toThrow(/ended/i)
+    await expect(sm.resume(info.id)).rejects.toThrow(/ended/i)
   })
 
   it('setModel() updates the session and forwards to the Query', async () => {
@@ -450,7 +476,7 @@ describe('SessionManager', () => {
     sm.send(source.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
-    const forked = sm.fork(source.id)
+    const forked = await sm.fork(source.id)
     expect(forked.id).not.toBe(source.id)
     expect(mockHandles).toHaveLength(2)
     // The forked Query's options must carry the resume + forkSession combo;
@@ -468,7 +494,7 @@ describe('SessionManager', () => {
     mockHandles[0].emit({ type: 'result' })
     await tick()
     await sm.unload(source.id)
-    const forked = sm.fork(source.id)
+    const forked = await sm.fork(source.id)
     expect(forked.id).not.toBe(source.id)
     // sm now has 1 live session (the original was unloaded; fork is new).
     expect(mockHandles).toHaveLength(2)
@@ -486,19 +512,19 @@ describe('SessionManager', () => {
     // send/result update noise ahead of it.
     const sub = sm.subscribeGlobal()
     const it = sub.iterable[Symbol.asyncIterator]()
-    const forked = sm.fork(source.id)
+    const forked = await sm.fork(source.id)
     const next = await it.next()
     expect(next.done).toBe(false)
     expect(next.value).toMatchObject({ kind: 'created', session: { id: forked.id } })
     sub.unsubscribe()
   })
 
-  it('fork() refuses a source with no completed turns (avoids SDK "No conversation found" error)', () => {
+  it('fork() refuses a source with no completed turns (avoids SDK "No conversation found" error)', async () => {
     const source = sm.create({ title: 'fresh' })
     // No send → no result → no jsonl on disk. Fork should throw with a
     // 400 (user-actionable) rather than letting the SDK blow up later
     // with a cryptic "No conversation found with session ID: <uuid>".
-    expect(() => sm.fork(source.id)).toThrow(/no completed turns yet/i)
+    await expect(sm.fork(source.id)).rejects.toThrow(/no completed turns yet/i)
     // No extra Query was spawned.
     expect(mockHandles).toHaveLength(1)
   })
@@ -506,7 +532,47 @@ describe('SessionManager', () => {
   it('fork() refuses a dormant source that never completed a turn', async () => {
     const source = sm.create({ title: 'fresh-dormant' })
     await sm.unload(source.id)
-    expect(() => sm.fork(source.id)).toThrow(/no completed turns yet/i)
+    await expect(sm.fork(source.id)).rejects.toThrow(/no completed turns yet/i)
+  })
+
+  it('fork() refuses when the SDK transcript file is missing on disk', async () => {
+    const source = sm.create({ cwd: '/tmp', title: 'orphan-fork' })
+    // Complete a turn so the lastTurnAt guard passes — we want this test
+    // to land squarely on the on-disk-probe guard, not the in-memory one.
+    sm.send(source.id, 'hi')
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    // Simulate the SDK's jsonl having been deleted out from under us.
+    mockGetSessionInfo.mockResolvedValueOnce(undefined)
+    // Watch the global stream for the dim-it-now `update` event.
+    const sub = sm.subscribeGlobal()
+    const it = sub.iterable[Symbol.asyncIterator]()
+    await expect(sm.fork(source.id)).rejects.toThrow(/transcript file is missing/i)
+    expect(mockHandles).toHaveLength(1) // no doomed Query was spawned
+    // Source is now flagged terminated with the new reason so the UI
+    // dims it instead of inviting another fork attempt.
+    const next = await it.next()
+    expect(next.value).toMatchObject({
+      kind: 'update',
+      session: { id: source.id, terminated: true, terminatedReason: 'transcript_missing' },
+    })
+    sub.unsubscribe()
+  })
+
+  it('resume() refuses when the SDK transcript file is missing on disk', async () => {
+    const info = sm.create({ cwd: '/tmp', title: 'orphan-resume' })
+    sm.send(info.id, 'hi')
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    await sm.unload(info.id)
+    mockGetSessionInfo.mockResolvedValueOnce(undefined)
+    await expect(sm.resume(info.id)).rejects.toThrow(/transcript file is missing/i)
+    // No second Query was spawned (only the original create + initial spawn).
+    expect(mockHandles).toHaveLength(1)
+    // Persisted meta now reflects the missing-transcript state.
+    await store.flush()
+    expect(store.get(info.id)?.terminated).toBe(true)
+    expect(store.get(info.id)?.terminatedReason).toBe('transcript_missing')
   })
 
   it('canUseTool short-circuits when permissionMode is bypassPermissions', async () => {

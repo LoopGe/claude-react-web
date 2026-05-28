@@ -24,5 +24,8 @@ export interface FullServerConfig {
   maxOpenPanels: number
   workingStuckMs: number
   logToFile?: boolean
+  /** Empty string when the user hasn't configured a registry — the
+   *  update checker treats that as "disabled". */
+  updateCheckRegistry: string
   defaults: Defaults
 }

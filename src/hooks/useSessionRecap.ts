@@ -1,116 +1,116 @@
-// Session recap hook — triggers an AI summary when a session has been
-// idle for ≥ 5 minutes since its last completed turn.
+// Session recap hook — phase-driven trigger.
 //
-// The recap is persisted server-side as a synthetic message in the
-// session history. The server broadcasts it via WebSocket so all tabs
-// see it, and it survives page refresh via replay.
+// The recap pipeline architecture:
 //
-// This hook manages the idle timer and loading state. While a fetch is
-// in flight it exposes a synthetic `loadingMessage` that the caller can
-// splice into the transcript for immediate visual feedback.
+//   ┌──────────┐  invariant: phase==='idle' before any generation runs
+//   │ Server   │  RecapManager owns session.recap (in-memory only)
+//   │          │  broadcasts on transitions via session-recap-update
+//   │          │  AND inline on SessionInfo (via session-update)
+//   └────┬─────┘
+//        │  WS frames: session-update.recap, session-recap-update
+//        ▼
+//   ┌──────────┐
+//   │ Client   │  reads session.recap from the SessionInfo prop
+//   │          │  (App.tsx receives session-update → re-renders Chat)
+//   │  this    │  decides when to ask for a fresh recap based on
+//   │  hook    │    (phase === 'idle') AND (lastTurnAt is set)
+//   │          │    AND (no fresh recap already covers it)
+//   └──────────┘
+//
+// The client gate on phase is the primary trigger; the server's 409
+// response is a defence-in-depth check for races. The "5 minutes idle"
+// timer is a UX choice (don't summarise mid-thought) — it's a property
+// of THIS hook only, not of the recap pipeline.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { api } from './useApi'
-import type { SdkMessage } from '../types'
+import type { SessionInfo } from '../types'
 
-const IDLE_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes
+/** How long after the last completed turn we wait before auto-firing
+ *  the recap. The user is presumed to have moved on by then. Manual
+ *  refresh (Alt+R) bypasses this. */
+const IDLE_THRESHOLD_MS = 5 * 60 * 1000
 
-/** Synthetic loading message rendered by RecapMessageView. The
- *  `type: 'recap'` tag is unique — no real SDK message uses it. */
-export interface RecapMessage extends SdkMessage {
-  type: 'recap'
-  uuid: string
-  state: 'loading' | 'ready' | 'error'
-  recap?: { summary: string; stats: Record<string, unknown> }
-  error?: string
-}
-
-interface SessionRecap {
-  /** Fire a recap fetch now (e.g. Alt+R shortcut). */
+export interface UseSessionRecapApi {
+  /** Manually trigger a recap fetch. Bypasses the 5-minute idle timer
+   *  (e.g. Alt+R). Still respects the server's phase gate — if the
+   *  session isn't idle, the server returns 409 and the broadcast
+   *  state stays unchanged. */
   refresh: () => void
-  /** Loading message to splice into the transcript, or null. */
-  loadingMessage: RecapMessage | null
 }
 
 /**
- * @param sessionId       target session
- * @param lastTurnAt      server-stamped timestamp of the latest completed
- *                        turn; undefined → no recap is triggered
- * @param hasFreshRecap   true when the transcript already contains a recap
- *                        whose generatedAt covers the current lastTurnAt
- *                        (computed by the caller from stream.items). When
- *                        true, the auto-fire path skips the fetch — without
- *                        this gate, every session switch on an idle session
- *                        re-POSTs `/recap` and the server's cached recap
- *                        gets re-broadcast, stacking duplicate cards in the
- *                        transcript. Manual refresh ignores this flag.
+ * Drive recap auto-generation for one session.
+ *
+ * The hook reads `session.phase`, `session.lastTurnAt`, and
+ * `session.recap` from the parent's SessionInfo (kept current by
+ * App-level WebSocket session-update frames) and schedules a POST
+ * /recap when:
+ *
+ *   - phase is 'idle' (no in-flight turn, no queued input, no
+ *     pending permissions),
+ *   - the session has at least one completed turn,
+ *   - and no recap already covers it (status === 'ready' would mean
+ *     a fresh one was just generated; 'pending' means one is in
+ *     flight; both block; status === 'error' also blocks auto-retry,
+ *     because looping on a failing recap wastes API calls — the user
+ *     retries via Alt+R if they care).
+ *
+ * On any change to phase / lastTurnAt / recap, the previous timer is
+ * cleared and a new one scheduled. So a user starting to type
+ * cancels the pending recap before it fires; a generation result
+ * landing flips the recap status to 'ready' and clears the timer.
  */
-export function useSessionRecap(
-  sessionId: string,
-  lastTurnAt: number | undefined,
-  hasFreshRecap: boolean = false,
-): SessionRecap {
-  const [isLoading, setIsLoading] = useState(false)
+export function useSessionRecap(session: SessionInfo): UseSessionRecapApi {
   const fetchAbortRef = useRef<AbortController | null>(null)
 
-  const loadingMessage = useMemo<RecapMessage | null>(() => {
-    if (!isLoading) return null
-    return {
-      type: 'recap',
-      uuid: `recap:loading:${sessionId}`,
-      session_id: sessionId,
-      state: 'loading',
-    }
-  }, [isLoading, sessionId])
+  const doFetch = useCallback(() => {
+    fetchAbortRef.current?.abort()
+    const controller = new AbortController()
+    fetchAbortRef.current = controller
 
-  /** Fire the recap endpoint. The server persists the result as a
-   *  synthetic message and broadcasts it — we just track loading state. */
-  const doFetch = useCallback(
-    () => {
-      fetchAbortRef.current?.abort()
-      const controller = new AbortController()
-      fetchAbortRef.current = controller
+    api
+      .post(`/sessions/${session.id}/recap`, undefined, { signal: controller.signal })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return
+        // The server's RecapManager broadcasts the error state via WS,
+        // so we don't need to track it locally — the next session-update
+        // will flip session.recap.status to 'error'. We only log here
+        // for the rare case where the request fails before reaching the
+        // manager (network drop, etc.).
+        console.warn('[recap] fetch failed:', err instanceof Error ? err.message : String(err))
+      })
+  }, [session.id])
 
-      setIsLoading(true)
-
-      api
-        .post(`/sessions/${sessionId}/recap`, undefined, { signal: controller.signal })
-        .catch((err: unknown) => {
-          if (controller.signal.aborted) return
-          console.warn('[recap] fetch failed:', err instanceof Error ? err.message : String(err))
-        })
-        .finally(() => {
-          setIsLoading(false)
-        })
-    },
-    [sessionId],
-  )
-
-  // Idle-watch effect.
+  // Auto-fire effect.
   //
-  // Re-runs whenever sessionId / lastTurnAt / hasFreshRecap changes.
-  // Decides between
-  //   1. nothing to do (no completed turn, or recap already covers it),
-  //   2. fire now (idle threshold already passed),
-  //   3. schedule a one-shot timer.
+  // Re-runs whenever any of the three driving fields change. The body
+  // is structured as a series of early returns so the "happy path" case
+  // (schedule a timer) sits at the bottom and reads top-to-bottom:
+  // requirements first, then the action.
   useEffect(() => {
-    if (!lastTurnAt) return
-    // Recap already exists for this turn — don't re-fire on session switch.
-    // The server's recap cache returns the same generatedAt (and therefore
-    // the same uuid) on hit, so re-firing produces a duplicate broadcast.
-    if (hasFreshRecap) return
+    // Primary gate: only the 'idle' phase is a safe moment to
+    // summarise. The server enforces this too (returns 409 otherwise),
+    // but gating here avoids a wasted round-trip and a transient
+    // 'pending' state on session.recap.
+    if (session.phase !== 'idle') return
+    // No completed turn → nothing to summarise.
+    if (!session.lastTurnAt) return
+    // Already covered. The server clears session.recap to undefined on
+    // every conversation mutation (RecapManager.invalidate), so a
+    // present recap means "this is fresh for the current lastTurnAt".
+    if (session.recap) return
 
-    const elapsed = Date.now() - lastTurnAt
-    const remaining = IDLE_THRESHOLD_MS - elapsed
-
-    // Always defer so setState inside doFetch doesn't run synchronously in the effect body
+    const elapsed = Date.now() - session.lastTurnAt
+    const remaining = Math.max(0, IDLE_THRESHOLD_MS - elapsed)
     const timer = setTimeout(() => {
       doFetch()
-    }, Math.max(0, remaining))
+    }, remaining)
     return () => clearTimeout(timer)
-  }, [sessionId, lastTurnAt, doFetch, hasFreshRecap])
+  }, [session.phase, session.lastTurnAt, session.recap, doFetch])
 
-  // Cancel any in-flight fetch on unmount.
+  // Cancel any in-flight fetch on unmount so a stale response doesn't
+  // race against the next mounted hook.
   useEffect(() => {
     const ref = fetchAbortRef
     return () => {
@@ -119,9 +119,9 @@ export function useSessionRecap(
   }, [])
 
   const refresh = useCallback(() => {
-    if (!lastTurnAt) return
+    if (!session.lastTurnAt) return
     doFetch()
-  }, [lastTurnAt, doFetch])
+  }, [session.lastTurnAt, doFetch])
 
-  return { refresh, loadingMessage }
+  return { refresh }
 }

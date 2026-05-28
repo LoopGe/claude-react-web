@@ -1,18 +1,58 @@
 // Structured rendering for tool_use blocks.
 //
-// Dispatches by tool name to provide rich views for Edit/Write tools
-// (diff preview, file-path header, etc.) while falling back to raw JSON
-// for unknown tools.
+// Dispatches by tool name to provide rich views for Edit/Write/Bash/Read
+// /etc., falling back to raw JSON for unknown tools.  Every concrete view
+// is wrapped in <ToolCard> (see ToolCard.tsx) so they share the same
+// chrome — icon, title, chip row, status badge, copy button — and the UI
+// stays consistent across the dispatch table.
+//
+// Three tools have their *own* card wrappers because they carry their own
+// lifecycle that doesn't map onto the generic running/success/error model
+// (PlanCard's pending/approved/rejected, QuestionCard's pending/answered
+// /skipped, SubagentCard's child-conversation drill-in):
+//
+//   - ExitPlanMode / EnterPlanMode → PlanCard
+//   - AskUserQuestion              → QuestionCard
+//   - Agent / Task / Explore       → SubagentCard
+//
+// Everything else routes through TOOL_VIEWS at the bottom of the file.
+//
+// `toolUseId` is threaded through to every view so ToolCard can flip the
+// status badge from running → success/error when the matching tool_result
+// lands. Without it, the badge would be permanently stuck on "running".
 
-import { memo, type ComponentType } from 'react'
+import { memo, type ComponentType, type ReactNode } from 'react'
 import { Markdown } from './Markdown'
 import { usePlanStatus, usePlanContent } from '../hooks/usePlanStatus'
 import { useQuestionAnswers } from '../hooks/useQuestionAnswers'
 import { SubagentCard } from './SubagentCard'
+import { ToolCard } from './ToolCard'
+import {
+  IconAlertCircle,
+  IconCheck,
+  IconCircle,
+  IconCircleDot,
+  IconClipboardList,
+  IconExternalLink,
+  IconFileCode,
+  IconFileText,
+  IconFolderSearch,
+  IconGlobe,
+  IconListTodo,
+  IconMessageQuestion,
+  IconNotebook,
+  IconSearch,
+  IconShield,
+  IconTerminal,
+  IconWebSearch,
+} from './icons/ToolIcons'
 import { formatJson } from '../utils/format'
 import { SUBAGENT_TOOL_NAMES, PLAN_TOOL_NAMES } from '../constants/toolNames'
 import { QUESTION_TOOL_NAME, type QuestionAnswerEntry } from '../utils/question-answers'
 import { truncate } from '../utils/text'
+import { splitFilePath, shortenDir, detectLanguage } from '../utils/file-display'
+import { highlightLineHast } from '../utils/diff-highlight'
+import { extractToolUseId } from '../session-store/normalize'
 import type { Block, QuestionSpec } from '../types'
 
 // Per-tool input view. Each view receives the raw tool_use input (loosely
@@ -20,7 +60,13 @@ import type { Block, QuestionSpec } from '../types'
 // when the shape is unexpected. `toolName` is forwarded so a single view
 // can serve more than one tool (e.g. BashToolView covers both Bash and
 // PowerShell, branching on the name to swap the prompt glyph).
-type ToolInputView = ComponentType<{ input?: Record<string, unknown>; toolName?: string }>
+// `toolUseId` is threaded so ToolCard can look up live status.
+type ToolViewProps = {
+  input?: Record<string, unknown>
+  toolName?: string
+  toolUseId?: string
+}
+type ToolInputView = ComponentType<ToolViewProps>
 
 const MAX_PREVIEW_LINES = 20
 
@@ -50,50 +96,20 @@ function isSafeUrl(url: string): boolean {
 export const ToolUseBlock = memo(function ToolUseBlock({ block }: { block: Block }) {
   const name = block.name
   const input = block.input as Record<string, unknown> | undefined
+  const id = extractToolUseId(block)
 
-  // ExitPlanMode and (legacy/alt) EnterPlanMode get their own card —
-  // see PlanCard. Skip the generic "→ tool: …" header so the card stands
-  // on its own as the dominant element of the assistant message.
+  // ExitPlanMode / EnterPlanMode → bespoke PlanCard (own lifecycle).
   if (name && PLAN_TOOL_NAMES.has(name)) {
-    const blockAny = block as { id?: unknown }
-    const id =
-      typeof block.tool_use_id === 'string'
-        ? block.tool_use_id
-        : typeof blockAny.id === 'string'
-          ? blockAny.id
-          : undefined
     return <PlanCard input={input} toolUseId={id} />
   }
 
-  // AskUserQuestion — render a QuestionCard with the question/options
-  // and (once the user answers) the selection. Without this, the raw
-  // tool_use JSON dumps the entire questions array into the transcript
-  // as ugly preformatted JSON.
+  // AskUserQuestion → bespoke QuestionCard (own lifecycle).
   if (name === QUESTION_TOOL_NAME) {
-    const blockAny = block as { id?: unknown }
-    const id =
-      typeof block.tool_use_id === 'string'
-        ? block.tool_use_id
-        : typeof blockAny.id === 'string'
-          ? blockAny.id
-          : undefined
     return <QuestionCard input={input} toolUseId={id} />
   }
 
-  // Agent / Task / Explore — render a SubagentCard placeholder instead
-  // of the raw JSON dump. The card is the persistent inline entry point
-  // to the SubagentOverlay (per-panel right-side overlay holding the
-  // subagent's full internal conversation). Without this, the subagent's
-  // child messages would either pollute the main transcript or vanish
-  // entirely after we filter parent_tool_use_id != null out of the list.
+  // Agent / Task / Explore → SubagentCard (drill-in to child conversation).
   if (name && SUBAGENT_TOOL_NAMES.has(name)) {
-    const blockAny = block as { id?: unknown }
-    const id =
-      typeof block.tool_use_id === 'string'
-        ? block.tool_use_id
-        : typeof blockAny.id === 'string'
-          ? blockAny.id
-          : undefined
     if (id) {
       const fallback =
         (typeof input?.description === 'string' && input.description) ||
@@ -104,16 +120,23 @@ export const ToolUseBlock = memo(function ToolUseBlock({ block }: { block: Block
   }
 
   const View = name ? TOOL_VIEWS[name] : undefined
+  if (View) {
+    return <View input={input} toolName={name} toolUseId={id} />
+  }
+  // Unknown tool — fall back to raw JSON inside a generic ToolCard so the
+  // status badge is still visible and the row aligns with the rest of the
+  // transcript. Title is the tool name itself; nothing better to show.
   return (
-    <div style={{ margin: '6px 0' }}>
-      <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
-        → tool: <code>{name}</code>
-      </div>
-      {View
-        ? <View input={input} toolName={name} />
-        : <div className="tool-input">{formatJson(block.input)}</div>
-      }
-    </div>
+    <ToolCard
+      icon={<IconShield />}
+      title={name ? <code className="tool-card-title-code">{name}</code> : 'tool'}
+      toolUseId={id}
+      copyValue={() => formatJson(input)}
+      copyLabel="Copy raw input"
+      className="tool-card-unknown"
+    >
+      <pre className="tool-input">{formatJson(input)}</pre>
+    </ToolCard>
   )
 })
 
@@ -140,6 +163,36 @@ const TOOL_VIEWS: Record<string, ToolInputView> = {
   NotebookEdit: NotebookEditToolView,
   TaskCreate: TaskMutationView,
   TaskUpdate: TaskMutationView,
+}
+
+// ---------------------------------------------------------------------------
+// File-path header (shared)
+// ---------------------------------------------------------------------------
+
+/** A two-line file-path display used as the *title* of file-touching tool
+ *  cards (Edit, Write, Read, NotebookEdit).  Bold filename on top, muted
+ *  parent dir below — so the user's eye lands on the actual file name
+ *  before processing the path context.
+ *
+ *  The directory uses middle-ellipsis truncation (see shortenDir) instead
+ *  of CSS right-truncate, because the leaf folder is the most informative
+ *  segment and `text-overflow: ellipsis` would clip it first.  */
+function FilePathTitle({
+  path,
+  badge,
+}: {
+  path: string
+  badge?: string
+}) {
+  const { dir, base } = splitFilePath(path)
+  const shortDir = dir ? shortenDir(dir, 48) : ''
+  return (
+    <span className="tool-card-filepath" title={path}>
+      <span className="tool-card-filepath-base">{base || path}</span>
+      {badge && <span className="tool-card-filepath-badge">{badge}</span>}
+      {shortDir && <span className="tool-card-filepath-dir">{shortDir}</span>}
+    </span>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +259,9 @@ function PlanCard({
     >
       <summary>
         <div className="plan-card-header">
-          <span className="plan-card-icon" aria-hidden>🗒</span>
+          <span className="plan-card-icon" aria-hidden>
+            <IconClipboardList size={15} />
+          </span>
           <span className="plan-card-title">Plan proposal</span>
           <span className={`plan-card-status ${status}`} title={statusTitle}>
             {statusLabel}
@@ -301,7 +356,9 @@ function QuestionCard({
     >
       <summary>
         <div className="question-inline-header">
-          <span className="question-inline-icon" aria-hidden>💬</span>
+          <span className="question-inline-icon" aria-hidden>
+            <IconMessageQuestion size={15} />
+          </span>
           <span className="question-inline-title">
             {questions.length === 1 ? 'Question for you' : `${questions.length} questions for you`}
           </span>
@@ -415,42 +472,74 @@ function QuestionItemView({
 // Edit / MultiEdit
 // ---------------------------------------------------------------------------
 
-function EditToolView({ input }: { input?: Record<string, unknown> }) {
+function EditToolView({ input, toolUseId }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
 
   const filePath = typeof input.file_path === 'string' ? input.file_path : null
+  const edits = input.edits
 
   // MultiEdit: { file_path, edits: [{ old_string, new_string }] }
-  const edits = input.edits
-  if (Array.isArray(edits)) {
-    return (
-      <div className="diff-block">
-        {filePath && <DiffFilePath path={filePath} />}
-        {edits.map((edit: unknown, i: number) => {
-          const e = edit as Record<string, unknown>
-          return (
-            <DiffChunk
-              key={i}
-              oldText={typeof e.old_string === 'string' ? e.old_string : ''}
-              newText={typeof e.new_string === 'string' ? e.new_string : ''}
-              label={edits.length > 1 ? `edit ${i + 1}` : undefined}
-            />
-          )
-        })}
-      </div>
-    )
-  }
-
   // Single Edit: { file_path, old_string, new_string }
-  const oldText = typeof input.old_string === 'string' ? input.old_string : ''
-  const newText = typeof input.new_string === 'string' ? input.new_string : ''
+  const editList: Array<{ old: string; new: string }> = Array.isArray(edits)
+    ? edits.map((e) => {
+        const o = e as Record<string, unknown>
+        return {
+          old: typeof o.old_string === 'string' ? o.old_string : '',
+          new: typeof o.new_string === 'string' ? o.new_string : '',
+        }
+      })
+    : [
+        {
+          old: typeof input.old_string === 'string' ? input.old_string : '',
+          new: typeof input.new_string === 'string' ? input.new_string : '',
+        },
+      ]
+
+  // Copy: serialise the edit as -/+ marked lines so a paste into chat,
+  // a code review tool, or a Slack thread reads visually like a diff.
+  // This is NOT a real unified diff — there's no `--- a/file +++ b/file`
+  // header and no `@@` hunk marker, so `patch` won't apply it. The
+  // button is labelled "Copy edit" rather than "Copy diff" to make
+  // that contract honest. If a future caller actually needs an
+  // applicable patch, generate one with a real diff library here.
+  const copyValue = () =>
+    editList
+      .map((e, i) => {
+        const header = editList.length > 1 ? `# edit ${i + 1}\n` : ''
+        const oldLines = e.old.split('\n').map((l) => `- ${l}`).join('\n')
+        const newLines = e.new.split('\n').map((l) => `+ ${l}`).join('\n')
+        return `${header}${oldLines}\n${newLines}`
+      })
+      .join('\n\n')
+
+  const chips = Array.isArray(edits) && edits.length > 1 ? (
+    <span className="tool-chip">{edits.length} edits</span>
+  ) : null
+
   return (
-    <div className="diff-block">
-      {filePath && <DiffFilePath path={filePath} />}
-      <DiffChunk oldText={oldText} newText={newText} />
-    </div>
+    <ToolCard
+      icon={<IconFileCode />}
+      title={filePath ? <FilePathTitle path={filePath} /> : 'edit'}
+      chips={chips}
+      toolUseId={toolUseId}
+      copyValue={copyValue}
+      copyLabel="Copy edit"
+      className="tool-card-diff"
+    >
+      <div className="diff-block-inner">
+        {editList.map((e, i) => (
+          <DiffChunk
+            key={i}
+            oldText={e.old}
+            newText={e.new}
+            filePath={filePath ?? undefined}
+            label={editList.length > 1 ? `edit ${i + 1}` : undefined}
+          />
+        ))}
+      </div>
+    </ToolCard>
   )
 }
 
@@ -458,7 +547,7 @@ function EditToolView({ input }: { input?: Record<string, unknown> }) {
 // Write
 // ---------------------------------------------------------------------------
 
-function WriteToolView({ input }: { input?: Record<string, unknown> }) {
+function WriteToolView({ input, toolUseId }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -467,47 +556,53 @@ function WriteToolView({ input }: { input?: Record<string, unknown> }) {
   const content = typeof input.content === 'string' ? input.content : ''
   const lines = content.split('\n')
   const totalLines = lines.length
-  const preview = lines.slice(0, MAX_PREVIEW_LINES)
-  const truncated = totalLines > MAX_PREVIEW_LINES
 
   return (
-    <div className="diff-block">
-      {filePath && <DiffFilePath path={filePath} label="new file" />}
-      <div className="diff-lines">
-        {preview.map((line, i) => (
-          <div key={i} className="diff-line diff-line-add">
-            <span className="diff-line-marker">+</span>
-            <span className="diff-line-text">{line}</span>
-          </div>
-        ))}
+    <ToolCard
+      icon={<IconFileText />}
+      title={filePath ? <FilePathTitle path={filePath} badge="new file" /> : 'write'}
+      chips={<span className="tool-chip">{totalLines} line{totalLines === 1 ? '' : 's'}</span>}
+      toolUseId={toolUseId}
+      copyValue={() => content}
+      copyLabel="Copy file content"
+      className="tool-card-diff"
+    >
+      <div className="diff-block-inner">
+        <ExpandableDiff
+          lines={lines}
+          filePath={filePath ?? undefined}
+        />
       </div>
-      {truncated && (
-        <div className="diff-truncation">
-          … {totalLines - MAX_PREVIEW_LINES} more lines ({totalLines} total)
-        </div>
-      )}
-    </div>
+    </ToolCard>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Shared sub-components
+// Shared sub-components (diff rendering)
 // ---------------------------------------------------------------------------
 
-function DiffFilePath({ path, label }: { path: string; label?: string }) {
-  // Show just the filename prominently, full path as tooltip
-  const parts = path.split('/')
-  const fileName = parts[parts.length - 1] || path
+/** Render a single diff line with optional syntax highlighting via the
+ *  shared lowlight instance. Empty / unknown-language lines fall back to
+ *  plain text rather than throwing. */
+function DiffLine({
+  line,
+  marker,
+  variant,
+  language,
+}: {
+  line: string
+  marker: '+' | '-' | ' '
+  variant: 'add' | 'del' | 'ctx'
+  language: string | null
+}) {
+  // Empty lines: skip highlighting for a tiny perf win.
+  const hast = line && language ? highlightLineHast(language, line) : null
   return (
-    <div className="diff-file-path" title={path}>
-      <span>📄</span>
-      <span>{fileName}</span>
-      {label && <span style={{ color: 'var(--fg-muted)', fontWeight: 400 }}>({label})</span>}
-      {parts.length > 1 && (
-        <span style={{ color: 'var(--fg-muted)', marginLeft: 'auto', fontSize: 11 }}>
-          {parts.slice(0, -1).join('/')}
-        </span>
-      )}
+    <div className={`diff-line diff-line-${variant === 'add' ? 'add' : variant === 'del' ? 'del' : 'ctx'}`}>
+      <span className="diff-line-marker">{marker}</span>
+      <span className="diff-line-text">
+        {hast ?? line}
+      </span>
     </div>
   )
 }
@@ -515,70 +610,195 @@ function DiffFilePath({ path, label }: { path: string; label?: string }) {
 function DiffChunk({
   oldText,
   newText,
+  filePath,
   label,
 }: {
   oldText: string
   newText: string
+  filePath?: string
   label?: string
 }) {
   const oldLines = oldText.split('\n')
   const newLines = newText.split('\n')
+  const language = filePath ? detectLangSafe(filePath) : null
 
   return (
     <>
-      {label && (
-        <div style={{ padding: '4px 10px', color: 'var(--fg-muted)', fontSize: 11, borderBottom: '1px dashed var(--border)' }}>
-          {label}
-        </div>
-      )}
+      {label && <div className="diff-chunk-label">{label}</div>}
       <div className="diff-lines">
         {oldLines.map((line, i) => (
-          <div key={`del-${i}`} className="diff-line diff-line-del">
-            <span className="diff-line-marker">-</span>
-            <span className="diff-line-text">{line}</span>
-          </div>
+          <DiffLine key={`del-${i}`} line={line} marker="-" variant="del" language={language} />
         ))}
         {newLines.map((line, i) => (
-          <div key={`add-${i}`} className="diff-line diff-line-add">
-            <span className="diff-line-marker">+</span>
-            <span className="diff-line-text">{line}</span>
-          </div>
+          <DiffLine key={`add-${i}`} line={line} marker="+" variant="add" language={language} />
         ))}
       </div>
     </>
   )
 }
 
+/** Render a sequence of additions (Write / NotebookEdit) with click-to-expand
+ *  truncation: first MAX_PREVIEW_LINES are visible, remainder hides behind
+ *  a <details> the user can open.
+ *
+ *  Currently only used for additions (the "create a file" / "write a cell"
+ *  shapes — both are content the assistant is *adding*, not replacing).
+ *  If a deletion-only call site appears later, lift the marker/variant
+ *  back into props rather than reintroducing a dead branch. */
+function ExpandableDiff({
+  lines,
+  filePath,
+}: {
+  lines: string[]
+  filePath?: string
+}) {
+  const language = filePath ? detectLangSafe(filePath) : null
+  const total = lines.length
+  if (total <= MAX_PREVIEW_LINES) {
+    return (
+      <div className="diff-lines">
+        {lines.map((line, i) => (
+          <DiffLine
+            key={i}
+            line={line}
+            marker="+"
+            variant="add"
+            language={language}
+          />
+        ))}
+      </div>
+    )
+  }
+  const visible = lines.slice(0, MAX_PREVIEW_LINES)
+  const hidden = lines.slice(MAX_PREVIEW_LINES)
+  return (
+    <>
+      <div className="diff-lines">
+        {visible.map((line, i) => (
+          <DiffLine
+            key={i}
+            line={line}
+            marker="+"
+            variant="add"
+            language={language}
+          />
+        ))}
+      </div>
+      <details className="diff-truncation-details">
+        <summary>
+          <span className="diff-truncation-summary">
+            … show {total - MAX_PREVIEW_LINES} more line{total - MAX_PREVIEW_LINES === 1 ? '' : 's'} ({total} total)
+          </span>
+        </summary>
+        <div className="diff-lines">
+          {hidden.map((line, i) => (
+            <DiffLine
+              key={i}
+              line={line}
+              marker="+"
+              variant="add"
+              language={language}
+            />
+          ))}
+        </div>
+      </details>
+    </>
+  )
+}
+
+// Cache lookups: detectLanguage is cheap, but most file paths repeat across
+// many lines of the same diff so a tiny memo avoids re-walking the EXT
+// table per render.
+//
+// Bounded with FIFO eviction so a long-lived tab that visits dozens of
+// repos can't accumulate path entries indefinitely. The cap is
+// deliberately generous — typical sessions touch <100 distinct paths and
+// the cache value is just `string | null`, so the memory footprint at
+// the cap is on the order of tens of KB.
+const MAX_LANG_CACHE = 256
+const langCache = new Map<string, string | null>()
+function detectLangSafe(path: string): string | null {
+  const cached = langCache.get(path)
+  if (cached !== undefined || langCache.has(path)) {
+    // Map order is preserved by insertion. Re-inserting would update
+    // recency for an LRU policy; we don't bother — FIFO is fine here
+    // because file paths in a session don't have a strong recency
+    // pattern (every diff line of the same file hits the same key).
+    return cached ?? null
+  }
+  if (langCache.size >= MAX_LANG_CACHE) {
+    // Evict the oldest entry. `keys().next().value` on a Map returns
+    // the first inserted key.
+    const oldest = langCache.keys().next().value
+    if (oldest !== undefined) langCache.delete(oldest)
+  }
+  const lang = detectLanguage(path)
+  langCache.set(path, lang)
+  return lang
+}
+
 // ---------------------------------------------------------------------------
 // TodoWrite
 // ---------------------------------------------------------------------------
 
-function TodoWriteView({ input }: { input?: Record<string, unknown> }) {
+function TodoWriteView({ input, toolUseId }: ToolViewProps) {
   if (!input || !Array.isArray(input.todos)) {
     return <div className="tool-input">{formatJson(input)}</div>
   }
+  const todos = input.todos as Array<Record<string, unknown>>
+  const counts = {
+    completed: 0,
+    in_progress: 0,
+    pending: 0,
+  } as Record<string, number>
+  for (const t of todos) {
+    const s = t.status === 'completed' || t.status === 'in_progress' ? t.status : 'pending'
+    counts[s]++
+  }
+  const chips: ReactNode[] = []
+  if (counts.in_progress > 0) chips.push(
+    <span key="ip" className="tool-chip tool-chip-accent">{counts.in_progress} active</span>,
+  )
+  if (counts.pending > 0) chips.push(
+    <span key="p" className="tool-chip">{counts.pending} pending</span>,
+  )
+  if (counts.completed > 0) chips.push(
+    <span key="c" className="tool-chip tool-chip-success">{counts.completed} done</span>,
+  )
+
   return (
-    <ul className="inline-todo-list">
-      {(input.todos as unknown[]).map((item, i) => {
-        if (!item || typeof item !== 'object') return null
-        const obj = item as Record<string, unknown>
-        const content = typeof obj.content === 'string' ? obj.content : String(obj.content ?? '')
-        const status = obj.status
-        const cls =
-          status === 'completed'
-            ? 'inline-todo-completed'
-            : status === 'in_progress'
-              ? 'inline-todo-in_progress'
-              : 'inline-todo-pending'
-        const icon = status === 'completed' ? '✔' : status === 'in_progress' ? '◉' : '○'
-        return (
-          <li key={i} className={`inline-todo-item ${cls}`}>
-            <span className="inline-todo-icon" aria-hidden>{icon}</span>
-            <span className="inline-todo-text">{content}</span>
-          </li>
-        )
-      })}
-    </ul>
+    <ToolCard
+      icon={<IconListTodo />}
+      title="Todo list"
+      chips={<>{chips}</>}
+      toolUseId={toolUseId}
+      className="tool-card-todo"
+    >
+      <ul className="inline-todo-list">
+        {todos.map((item, i) => {
+          if (!item || typeof item !== 'object') return null
+          const obj = item as Record<string, unknown>
+          const content = typeof obj.content === 'string' ? obj.content : String(obj.content ?? '')
+          const status = obj.status
+          const cls =
+            status === 'completed'
+              ? 'inline-todo-completed'
+              : status === 'in_progress'
+                ? 'inline-todo-in_progress'
+                : 'inline-todo-pending'
+          const Icon =
+            status === 'completed' ? IconCheck : status === 'in_progress' ? IconCircleDot : IconCircle
+          return (
+            <li key={i} className={`inline-todo-item ${cls}`}>
+              <span className="inline-todo-icon" aria-hidden>
+                <Icon size={13} />
+              </span>
+              <span className="inline-todo-text">{content}</span>
+            </li>
+          )
+        })}
+      </ul>
+    </ToolCard>
   )
 }
 
@@ -588,10 +808,6 @@ function TodoWriteView({ input }: { input?: Record<string, unknown> }) {
 
 const BASH_FOLD_THRESHOLD = 240
 const BASH_PREVIEW_LINES = 3
-// When the command is a single line longer than the fold threshold, the
-// summary still needs to be short — otherwise we'd render the full 800-char
-// command in the closed <details> and the fold would do nothing. Truncate
-// to roughly the fold width with an ellipsis.
 const BASH_SINGLE_LINE_PREVIEW = 200
 
 /**
@@ -607,7 +823,7 @@ const BASH_SINGLE_LINE_PREVIEW = 200
  * universally recognised shell prompts and disambiguate the language
  * at a glance when both tools appear in the same transcript.
  */
-function BashToolView({ input, toolName }: { input?: Record<string, unknown>; toolName?: string }) {
+function BashToolView({ input, toolName, toolUseId }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -620,12 +836,6 @@ function BashToolView({ input, toolName }: { input?: Record<string, unknown>; to
 
   const lines = command.split('\n')
   const tooLong = command.length > BASH_FOLD_THRESHOLD || lines.length > BASH_PREVIEW_LINES
-  // Two preview shapes:
-  //  - Multi-line command → first N lines verbatim (line-count fold).
-  //  - Single-line command above the char threshold → truncate the line so
-  //    the closed <details> stays compact instead of rendering the entire
-  //    command in the summary. (Without this branch, single-line 800-char
-  //    pipelines visually defeat the fold.)
   const isSingleLineLong = lines.length === 1 && command.length > BASH_FOLD_THRESHOLD
   const previewText = isSingleLineLong
     ? command.slice(0, BASH_SINGLE_LINE_PREVIEW) + '…'
@@ -643,38 +853,50 @@ function BashToolView({ input, toolName }: { input?: Record<string, unknown>; to
     </>
   )
 
+  // Title is the first line of the command (the most informative bit at a
+  // glance); the body holds the full command (folded if long).
+  const titleLine = (
+    <span className="bash-tool-line">
+      <span className="bash-tool-prompt" aria-hidden>{promptGlyph}</span>
+      <code className="bash-tool-command">
+        {tooLong ? previewText : command}
+      </code>
+    </span>
+  )
+
   return (
-    <div className="bash-tool">
-      {tooLong ? (
-        <details className="bash-tool-collapsible">
-          <summary>
-            <div className="bash-tool-line">
-              <span className="bash-tool-prompt" aria-hidden>{promptGlyph}</span>
-              <code className="bash-tool-command">{previewText}</code>
-              {chips}
+    <ToolCard
+      icon={<IconTerminal />}
+      title={titleLine}
+      chips={chips}
+      toolUseId={toolUseId}
+      copyValue={() => command}
+      copyLabel="Copy command"
+      className="tool-card-bash"
+    >
+      {(tooLong || description) && (
+        <div className="bash-tool-body">
+          {tooLong && (
+            <details className="bash-tool-collapsible">
+              <summary>
+                <span className="bash-tool-fold-hint">
+                  {remaining > 0
+                    ? `… show ${remaining} more line${remaining === 1 ? '' : 's'} (${lines.length} total)`
+                    : `… show full command (${command.length} chars)`}
+                </span>
+              </summary>
+              <pre className="bash-tool-full"><code>{command}</code></pre>
+            </details>
+          )}
+          {description && (
+            <div className="bash-tool-desc">
+              <span className="bash-tool-desc-marker" aria-hidden>└─</span>
+              <span>{description}</span>
             </div>
-            <div className="bash-tool-fold-hint">
-              {remaining > 0
-                ? `… ${remaining} more line${remaining === 1 ? '' : 's'} (${lines.length} total)`
-                : `… ${command.length} chars (click to expand)`}
-            </div>
-          </summary>
-          <pre className="bash-tool-full"><code>{command}</code></pre>
-        </details>
-      ) : (
-        <div className="bash-tool-line">
-          <span className="bash-tool-prompt" aria-hidden>{promptGlyph}</span>
-          <code className="bash-tool-command">{command}</code>
-          {chips}
+          )}
         </div>
       )}
-      {description && (
-        <div className="bash-tool-desc">
-          <span className="bash-tool-desc-marker" aria-hidden>└─</span>
-          <span>{description}</span>
-        </div>
-      )}
-    </div>
+    </ToolCard>
   )
 }
 
@@ -692,11 +914,11 @@ function formatBashTimeout(ms: number): string {
 // ---------------------------------------------------------------------------
 
 /**
- * File-path header (reuses the diff-file-path layout: bold filename, grey
- * directory right-aligned) plus a "lines N–M" / "pages X–Y" subline when
- * offset/limit/pages are set.
+ * File-path header (filename + grey dir) plus a "lines N–M" / "pages X–Y"
+ * chip when offset/limit/pages are set. Reads have no body — the file path
+ * + range is the entire useful payload at the tool_use stage.
  */
-function ReadToolView({ input }: { input?: Record<string, unknown> }) {
+function ReadToolView({ input, toolUseId }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -720,10 +942,15 @@ function ReadToolView({ input }: { input?: Record<string, unknown> }) {
   if (pages) rangeText = rangeText ? `${rangeText} · pages ${pages}` : `pages ${pages}`
 
   return (
-    <div className="read-tool">
-      <DiffFilePath path={filePath} />
-      {rangeText && <div className="read-tool-range">{rangeText}</div>}
-    </div>
+    <ToolCard
+      icon={<IconFileText />}
+      title={<FilePathTitle path={filePath} />}
+      chips={rangeText ? <span className="tool-chip">{rangeText}</span> : null}
+      toolUseId={toolUseId}
+      copyValue={() => filePath}
+      copyLabel="Copy path"
+      className="tool-card-read"
+    />
   )
 }
 
@@ -736,7 +963,7 @@ function ReadToolView({ input }: { input?: Record<string, unknown> }) {
  * for glob/type/path/output_mode and the case/multiline/-n flags. Order
  * mirrors how a human reads `rg "pattern" --glob='*.tsx' src/`.
  */
-function GrepToolView({ input }: { input?: Record<string, unknown> }) {
+function GrepToolView({ input, toolUseId }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -754,34 +981,42 @@ function GrepToolView({ input }: { input?: Record<string, unknown> }) {
   const after = typeof input['-A'] === 'number' ? (input['-A'] as number) : null
   const context = typeof input['-C'] === 'number' ? (input['-C'] as number) : null
 
+  const chips = (
+    <>
+      {(glob || type) && (
+        <span className="tool-chip tool-chip-accent">
+          {glob ? `glob:${glob}` : `type:${type}`}
+        </span>
+      )}
+      {path && <span className="tool-chip">in {path}</span>}
+      {outputMode && outputMode !== 'files_with_matches' && (
+        <span className="tool-chip">{outputMode}</span>
+      )}
+      {caseInsensitive && <span className="tool-chip" title="Case insensitive">-i</span>}
+      {multiline && <span className="tool-chip" title="Multiline mode">multiline</span>}
+      {context != null
+        ? <span className="tool-chip">±{context}</span>
+        : (before != null || after != null) && (
+            <span className="tool-chip">
+              {before != null ? `-B${before}` : ''}
+              {before != null && after != null ? ' ' : ''}
+              {after != null ? `-A${after}` : ''}
+            </span>
+          )}
+      {headLimit != null && <span className="tool-chip">head:{headLimit}</span>}
+    </>
+  )
+
   return (
-    <div className="grep-tool">
-      <div className="grep-tool-row">
-        <span className="grep-tool-icon" aria-hidden>🔍</span>
-        <code className="grep-tool-pattern">&ldquo;{pattern}&rdquo;</code>
-        {(glob || type) && (
-          <span className="tool-chip tool-chip-accent">
-            {glob ? `glob:${glob}` : `type:${type}`}
-          </span>
-        )}
-        {path && <span className="tool-chip">in {path}</span>}
-        {outputMode && outputMode !== 'files_with_matches' && (
-          <span className="tool-chip">{outputMode}</span>
-        )}
-        {caseInsensitive && <span className="tool-chip" title="Case insensitive">-i</span>}
-        {multiline && <span className="tool-chip" title="Multiline mode">multiline</span>}
-        {context != null
-          ? <span className="tool-chip">±{context}</span>
-          : (before != null || after != null) && (
-              <span className="tool-chip">
-                {before != null ? `-B${before}` : ''}
-                {before != null && after != null ? ' ' : ''}
-                {after != null ? `-A${after}` : ''}
-              </span>
-            )}
-        {headLimit != null && <span className="tool-chip">head:{headLimit}</span>}
-      </div>
-    </div>
+    <ToolCard
+      icon={<IconSearch />}
+      title={<code className="grep-tool-pattern">&ldquo;{pattern}&rdquo;</code>}
+      chips={chips}
+      toolUseId={toolUseId}
+      copyValue={() => pattern}
+      copyLabel="Copy pattern"
+      className="tool-card-grep"
+    />
   )
 }
 
@@ -798,7 +1033,7 @@ function GrepToolView({ input }: { input?: Record<string, unknown> }) {
  * what's present — nothing in the input means "this field is unchanged"
  * and we don't render a blank line for it.
  */
-function TaskMutationView({ input }: { input?: Record<string, unknown> }) {
+function TaskMutationView({ input, toolUseId }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -813,40 +1048,51 @@ function TaskMutationView({ input }: { input?: Record<string, unknown> }) {
   const addBlocks = Array.isArray(input.addBlocks) ? (input.addBlocks as string[]) : null
   const addBlockedBy = Array.isArray(input.addBlockedBy) ? (input.addBlockedBy as string[]) : null
 
-  // For pure-create the subject is mandatory in practice; for update it's
-  // optional. Fall back to "(no subject)" rather than an empty line so
-  // the card always has something to anchor on.
-  const heading = subject ?? (verb === 'create' ? '(no subject)' : null)
+  // Heading: subject for both, falling back so the card always anchors on
+  // something readable rather than collapsing to chip-only.
+  const heading = subject ?? (verb === 'create' ? '(no subject)' : taskId ? `Update #${taskId}` : '(no subject)')
+
+  const chips = (
+    <>
+      <span className={`task-mutation-verb verb-${verb}`}>{verb}</span>
+      {taskId && <span className="task-mutation-id">#{taskId}</span>}
+      {status && (
+        <span className={`task-mutation-status status-${status}`} title={`Status: ${status}`}>
+          {status}
+        </span>
+      )}
+      {owner && <span className="task-mutation-owner" title="Owner">@{owner}</span>}
+    </>
+  )
 
   return (
-    <div className="task-mutation">
-      <div className="task-mutation-header">
-        <span className={`task-mutation-verb verb-${verb}`}>{verb}</span>
-        {taskId && <span className="task-mutation-id">#{taskId}</span>}
-        {status && (
-          <span className={`task-mutation-status status-${status}`} title={`Status: ${status}`}>
-            {status}
-          </span>
-        )}
-        {owner && <span className="task-mutation-owner" title="Owner">@{owner}</span>}
-      </div>
-      {heading && <div className="task-mutation-subject">{heading}</div>}
-      {description && <div className="task-mutation-desc">{truncate(description, 200)}</div>}
-      {(addBlocks?.length || addBlockedBy?.length) ? (
-        <div className="task-mutation-deps">
-          {addBlocks?.length ? (
-            <span>
-              blocks <code>{addBlocks.join(', ')}</code>
-            </span>
-          ) : null}
-          {addBlockedBy?.length ? (
-            <span>
-              blocked by <code>{addBlockedBy.join(', ')}</code>
-            </span>
+    <ToolCard
+      icon={<IconClipboardList />}
+      title={heading}
+      chips={chips}
+      toolUseId={toolUseId}
+      className="tool-card-task"
+    >
+      {(description || addBlocks?.length || addBlockedBy?.length) ? (
+        <div className="task-mutation-body">
+          {description && <div className="task-mutation-desc">{truncate(description, 200)}</div>}
+          {(addBlocks?.length || addBlockedBy?.length) ? (
+            <div className="task-mutation-deps">
+              {addBlocks?.length ? (
+                <span>
+                  blocks <code>{addBlocks.join(', ')}</code>
+                </span>
+              ) : null}
+              {addBlockedBy?.length ? (
+                <span>
+                  blocked by <code>{addBlockedBy.join(', ')}</code>
+                </span>
+              ) : null}
+            </div>
           ) : null}
         </div>
       ) : null}
-    </div>
+    </ToolCard>
   )
 }
 
@@ -856,10 +1102,9 @@ function TaskMutationView({ input }: { input?: Record<string, unknown> }) {
 
 /**
  * Pattern-only file matcher. Visually a stripped-down Grep — same row
- * layout, same .grep-tool-* CSS (factoring out shared styles is the
- * pragmatic move when two tools render almost identically).
+ * layout, same chip vocabulary.
  */
-function GlobToolView({ input }: { input?: Record<string, unknown> }) {
+function GlobToolView({ input, toolUseId }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -869,13 +1114,15 @@ function GlobToolView({ input }: { input?: Record<string, unknown> }) {
   const path = typeof input.path === 'string' ? input.path : null
 
   return (
-    <div className="grep-tool">
-      <div className="grep-tool-row">
-        <span className="grep-tool-icon" aria-hidden>📁</span>
-        <code className="grep-tool-pattern">{pattern}</code>
-        {path && <span className="tool-chip">in {path}</span>}
-      </div>
-    </div>
+    <ToolCard
+      icon={<IconFolderSearch />}
+      title={<code className="grep-tool-pattern">{pattern}</code>}
+      chips={path ? <span className="tool-chip">in {path}</span> : null}
+      toolUseId={toolUseId}
+      copyValue={() => pattern}
+      copyLabel="Copy pattern"
+      className="tool-card-glob"
+    />
   )
 }
 
@@ -885,14 +1132,14 @@ function GlobToolView({ input }: { input?: Record<string, unknown> }) {
 
 /**
  * URL on top as a real anchor so the user can click through; prompt as
- * a muted subtitle on the second line. The URL itself is the key
- * information — what the model wants from it is secondary.
+ * a muted body line. The URL itself is the key information — what the
+ * model wants from it is secondary.
  *
  * The link is hardcoded to noopener/noreferrer + _blank — opening into
  * the chat tab is never what the user wants here, and a webpage that
  * inherits this app's window context could read its origin.
  */
-function WebFetchToolView({ input }: { input?: Record<string, unknown> }) {
+function WebFetchToolView({ input, toolUseId }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -901,40 +1148,46 @@ function WebFetchToolView({ input }: { input?: Record<string, unknown> }) {
   if (!url) return <div className="tool-input">{formatJson(input)}</div>
 
   const safe = isSafeUrl(url)
+  const titleNode = safe ? (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="web-tool-url"
+      title={url}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {url}
+      <IconExternalLink size={11} />
+    </a>
+  ) : (
+    <>
+      <code className="web-tool-url" title={url}>{url}</code>
+      <span
+        className="tool-chip"
+        title="URL scheme is not in the http/https/mailto/ftp allowlist; rendered as plain text to avoid javascript: / data: URL execution."
+      >
+        unsafe scheme
+      </span>
+    </>
+  )
 
   return (
-    <div className="web-tool">
-      <div className="web-tool-line">
-        <span className="web-tool-icon" aria-hidden>🌐</span>
-        {safe ? (
-          <a
-            href={url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="web-tool-url"
-            title={url}
-          >
-            {url}
-          </a>
-        ) : (
-          <>
-            <code className="web-tool-url" title={url}>{url}</code>
-            <span
-              className="tool-chip"
-              title="URL scheme is not in the http/https/mailto/ftp allowlist; rendered as plain text to avoid javascript: / data: URL execution."
-            >
-              unsafe scheme
-            </span>
-          </>
-        )}
-      </div>
+    <ToolCard
+      icon={<IconGlobe />}
+      title={titleNode}
+      toolUseId={toolUseId}
+      copyValue={() => url}
+      copyLabel="Copy URL"
+      className="tool-card-web"
+    >
       {prompt && (
         <div className="web-tool-prompt">
           <span className="web-tool-prompt-marker" aria-hidden>└─</span>
           <span>{truncate(prompt, 240)}</span>
         </div>
       )}
-    </div>
+    </ToolCard>
   )
 }
 
@@ -947,7 +1200,7 @@ function WebFetchToolView({ input }: { input?: Record<string, unknown> }) {
  * — visually parallels Grep / Glob so the "I'm searching X with these
  *   modifiers" pattern reads consistently across tools.
  */
-function WebSearchToolView({ input }: { input?: Record<string, unknown> }) {
+function WebSearchToolView({ input, toolUseId }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -961,23 +1214,31 @@ function WebSearchToolView({ input }: { input?: Record<string, unknown> }) {
     ? (input.blocked_domains as string[]).filter((d) => typeof d === 'string')
     : []
 
+  const chips = (
+    <>
+      {allowed.length > 0 && (
+        <span className="tool-chip tool-chip-accent" title="Allowed domains">
+          only: {allowed.join(', ')}
+        </span>
+      )}
+      {blocked.length > 0 && (
+        <span className="tool-chip" title="Blocked domains">
+          block: {blocked.join(', ')}
+        </span>
+      )}
+    </>
+  )
+
   return (
-    <div className="grep-tool">
-      <div className="grep-tool-row">
-        <span className="grep-tool-icon" aria-hidden>🔎</span>
-        <code className="grep-tool-pattern">&ldquo;{query}&rdquo;</code>
-        {allowed.length > 0 && (
-          <span className="tool-chip tool-chip-accent" title="Allowed domains">
-            only: {allowed.join(', ')}
-          </span>
-        )}
-        {blocked.length > 0 && (
-          <span className="tool-chip" title="Blocked domains">
-            block: {blocked.join(', ')}
-          </span>
-        )}
-      </div>
-    </div>
+    <ToolCard
+      icon={<IconWebSearch />}
+      title={<code className="grep-tool-pattern">&ldquo;{query}&rdquo;</code>}
+      chips={chips}
+      toolUseId={toolUseId}
+      copyValue={() => query}
+      copyLabel="Copy query"
+      className="tool-card-websearch"
+    />
   )
 }
 
@@ -986,18 +1247,15 @@ function WebSearchToolView({ input }: { input?: Record<string, unknown> }) {
 // ---------------------------------------------------------------------------
 
 /**
- * Path header (reuses DiffFilePath) + cell metadata chip row + a +/-
- * diff body. NotebookEdit's edit_mode has three values:
+ * Path header + cell metadata chip row + a +/- diff body. NotebookEdit's
+ * edit_mode has three values:
  *   - 'replace' (default) : the new_source replaces the cell — show
  *                           it as +-only (we don't have the old text).
  *   - 'insert'            : a fresh cell is added — show +-only.
  *   - 'delete'            : cell removed — show an empty body with
  *                           "(cell deleted)" instead of a diff.
- *
- * Long sources collapse the same way WriteToolView truncates — keep
- * the pattern consistent so users learn one rule.
  */
-function NotebookEditToolView({ input }: { input?: Record<string, unknown> }) {
+function NotebookEditToolView({ input, toolUseId }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -1012,38 +1270,41 @@ function NotebookEditToolView({ input }: { input?: Record<string, unknown> }) {
   const isDelete = editMode === 'delete'
   const lines = newSource.split('\n')
   const totalLines = lines.length
-  const preview = lines.slice(0, MAX_PREVIEW_LINES)
-  const truncated = totalLines > MAX_PREVIEW_LINES
+
+  const chips = (
+    <>
+      <span className={`tool-chip tool-chip-${editMode === 'delete' ? 'danger' : 'accent'}`}>
+        {editMode}
+      </span>
+      {cellId && <span className="tool-chip">cell {cellId}</span>}
+      {cellType && <span className="tool-chip">{cellType}</span>}
+      {!isDelete && <span className="tool-chip">{totalLines} line{totalLines === 1 ? '' : 's'}</span>}
+    </>
+  )
 
   return (
-    <div className="diff-block">
-      <DiffFilePath path={filePath} label={editMode} />
-      {(cellId || cellType) && (
-        <div className="notebook-edit-meta">
-          {cellId && <span className="tool-chip">cell {cellId}</span>}
-          {cellType && <span className="tool-chip tool-chip-accent">{cellType}</span>}
+    <ToolCard
+      icon={<IconNotebook />}
+      title={<FilePathTitle path={filePath} />}
+      chips={chips}
+      toolUseId={toolUseId}
+      copyValue={isDelete ? undefined : () => newSource}
+      copyLabel="Copy cell content"
+      className="tool-card-diff"
+    >
+      {isDelete ? (
+        <div className="notebook-edit-deleted">
+          <IconAlertCircle size={13} /> cell deleted
+        </div>
+      ) : (
+        <div className="diff-block-inner">
+          <ExpandableDiff
+            lines={lines}
+            filePath={filePath}
+          />
         </div>
       )}
-      {isDelete ? (
-        <div className="notebook-edit-deleted">(cell deleted)</div>
-      ) : (
-        <>
-          <div className="diff-lines">
-            {preview.map((line, i) => (
-              <div key={i} className="diff-line diff-line-add">
-                <span className="diff-line-marker">+</span>
-                <span className="diff-line-text">{line}</span>
-              </div>
-            ))}
-          </div>
-          {truncated && (
-            <div className="diff-truncation">
-              … {totalLines - MAX_PREVIEW_LINES} more lines ({totalLines} total)
-            </div>
-          )}
-        </>
-      )}
-    </div>
+    </ToolCard>
   )
 }
 

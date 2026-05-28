@@ -69,6 +69,17 @@ export function extractQuestionAnswers(
   return out
 }
 
+/** Parse the JSON-encoded answers payload built by
+ *  `server/permission-helpers.ts:formatQuestionAnswers`. Returns the
+ *  parsed entries, or an empty array on any malformed input — same
+ *  contract as the internal parseAnswersJson helper, exposed so the
+ *  PERMISSION_RESOLVED reducer can decode the resolution `message`
+ *  field directly (see reducer comment for why we can't only rely on
+ *  the tool_result echo path). */
+export function parseQuestionAnswersMessage(raw: string): QuestionAnswerEntry[] {
+  return parseAnswersJson(raw)
+}
+
 function parseAnswersJson(raw: string): QuestionAnswerEntry[] {
   let obj: unknown
   try {

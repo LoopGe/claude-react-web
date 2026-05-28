@@ -1,145 +1,67 @@
-// Session recap generator.
+// Session recap generator — state machine.
 //
-// Reads a session's message history, calls the Anthropic Messages API
-// (direct fetch — not through the SDK) to produce a concise summary,
-// and caches the result in-memory.
+// This module is the single owner of `session.recap`. Three things live
+// here:
+//   1. The pure transcript-extraction + LLM-call helpers (extractHistory,
+//      buildTranscript, callAnthropic, detectLanguage).
+//   2. `RecapManager` — a small state machine whose two public verbs are
+//      `invalidate(sessionId)` and `requestGenerate(sessionId)`. It owns
+//      the lifecycle (`pending → ready/error`), the in-flight dedup, and
+//      the broadcast.
+//   3. The recap is not a synthetic `type:'recap'` SDK message in
+//      session.history any more. It lives on `session.recap` and is
+//      pushed to clients via the `session-recap-update` WS frame
+//      (carried inside SessionInfo on full updates too).
 //
-// There is no local-fallback summary: when the API key is missing or
-// the call fails we throw, and the route layer surfaces the error as
-// a `state: 'error'` recap message. Hiding failures behind a generic
-// "Empty session" string was misleading — users had no way to tell a
-// truly empty conversation apart from a misconfigured authToken.
+// Invariants (enforced by the route layer + this module):
+//   - We NEVER generate a recap while `phaseOf(session) !== 'idle'`.
+//     The route returns 409/410/412 in those cases; clients also gate
+//     auto-fire on phase. Belt + braces.
+//   - We NEVER store an error in cache. A failed run leaves
+//     session.recap with `status:'error'`; the next requestGenerate
+//     re-tries from scratch.
+//   - We do NOT persist recap to disk (per spec). Server restart drops
+//     all recaps; the client's idle timer will re-arm and regenerate.
 
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { config as serverConfig } from './config.js'
 import { callAnthropicMessages } from './anthropic-api.js'
+import type { SessionRecap, SessionRecapStats } from '../shared/session-info.js'
+import { HttpError } from './errors.js'
 
 // ── Types ──────────────────────────────────────────────────────────
 
-export interface RecapStats {
-  messageCount: number
-  userTurns: number
-  assistantTurns: number
-  totalCostUsd: number
-  durationMs: number
-  toolsUsed: string[]
-}
+export type { SessionRecap, SessionRecapStats } from '../shared/session-info.js'
 
-export interface RecapResult {
-  summary: string
-  stats: RecapStats
-  cached: boolean
-  generatedAt: number
-}
-
-interface CacheEntry {
-  summary: string
-  stats: RecapStats
-  messageCount: number
-  lastMessageUuid: string
-  /** The UUID of the last message at the time the recap was generated.
-   *  Used by the route handler after appendRecap() to bump the cache
-   *  snapshot so that subsequent requests with no new messages hit the
-   *  cache instead of re-calling the LLM. */
-  lastMessageUuidAtGeneration: string
-  generatedAt: number
-}
-
-// ── Cache ──────────────────────────────────────────────────────────
-//
-// Cache lifetime rules (NO time-based TTL):
-//   1. `invalidateRecapCache(id)` — called on every send() and delete()
-//      in SessionManager. New user turn = stale summary, full stop.
-//   2. Message-count + last-message-uuid fingerprint mismatch — covers
-//      compaction, history truncation, or any other path that mutates
-//      the transcript without going through send() (rare, but possible
-//      under future SDK features).
-//   3. LRU eviction when the map exceeds `CACHE_MAX_ENTRIES`.
-//   4. Process restart — the Map is in-memory only.
-//
-// We deliberately do NOT expire by wall-clock age. A summary stays valid
-// as long as the underlying conversation is unchanged: a 6-hour-old
-// summary of a conversation that hasn't grown in 6 hours is still 100%
-// accurate, and re-running the LLM would burn money + tokens for an
-// identical result.
-//
-// Errors are NOT cached. When auth is missing or the API throws,
-// generateRecap rejects and nothing lands in the map — the next click
-// re-tries from scratch. (The empty-session shortcut also doesn't write
-// to the cache: it would invalidate on the first user turn anyway.)
-
-const cache = new Map<string, CacheEntry>()
-const CACHE_MAX_ENTRIES = 200
-
-/** In-flight dedup map: if two requests for the same session arrive
- *  concurrently, the second one reuses the first one's promise. */
-const inflight = new Map<string, Promise<RecapResult>>()
-
-export function invalidateRecapCache(sessionId: string): void {
-  cache.delete(sessionId)
-}
-
-/**
- * Bump the cache entry after appendRecap() adds the recap message to the
- * session's history. Without this, the next request sees a different
- * messageCount + lastMessageUuid and needlessly re-calls the LLM.
- *
- * Only meaningful when the cache already contains an entry for the
- * session (i.e. generateRecap successfully called the LLM). Empty-session
- * results don't write to the cache, so this is a no-op for them.
- */
-export function updateRecapCacheAfterAppend(
-  sessionId: string,
-  newMessageCount: number,
-  newLastMessageUuid: string,
-): void {
-  const entry = cache.get(sessionId)
-  if (entry) {
-    entry.messageCount = newMessageCount
-    entry.lastMessageUuid = newLastMessageUuid
-  }
-}
-
-// ── History extraction ─────────────────────────────────────────────
-
-interface ExtractedLine {
-  role: 'User' | 'Assistant'
-  text: string
+/** Hooks the recapManager calls back into the SessionManager.
+ *  Kept as a thin interface so this module never imports
+ *  SessionManager and the unit tests can mock both sides. */
+export interface RecapManagerDeps {
+  /** Current SessionPhase. recapManager refuses to generate when not 'idle'. */
+  getPhase: (sessionId: string) => 'idle' | 'working' | 'terminated' | 'dormant' | 'unknown'
+  /** Live message history for the session (snapshot). Returns null
+   *  when the session is dormant — recapManager surfaces a 412. */
+  getHistory: (sessionId: string) => SDKMessage[] | null
+  /** Mutator: write the session's recap field. The caller is expected
+   *  to also broadcast (via broadcastRecap). recapManager calls these
+   *  in pairs after every transition. */
+  setRecap: (sessionId: string, recap: SessionRecap | undefined) => void
+  /** Push a `session-recap-update` to the session's subscribers AND
+   *  fan out a session-update on the global channel so the sidebar
+   *  recap-status indicator (if any) stays current. */
+  broadcastRecap: (sessionId: string, recap: SessionRecap | undefined) => void
 }
 
 // ── Language detection ─────────────────────────────────────────────
 //
-// Why this exists: when a user types in Chinese / Japanese / Korean /
-// Russian / etc., the LLM frequently produces an English summary because
-//   1. the system prompt is in English (strong dominant-language signal),
-//   2. tool outputs / file paths / stack traces in the transcript are
-//      overwhelmingly English, drowning out the user's actual language,
-//   3. truncation can leave only English tail content visible.
-//
-// We count script characters in *user-role text only* (the user's chat
-// turns are the most reliable language signal — assistant turns echo
-// whichever language the prior recap chose) and pick the dominant
-// non-Latin script above a small threshold.
-//
-// Why Latin-script users get null instead of 'English': we cannot
-// reliably distinguish English from French/Spanish/German/etc. with a
-// script-only heuristic. If we returned 'English' for every Latin-script
-// transcript, French users would get summaries explicitly forced to
-// English — strictly worse than the pre-detection baseline. Returning
-// null tells buildSystemPrompt to fall back to the generic "match the
-// user's language" directive, which lets the LLM correctly infer
-// French/Spanish/etc. from context (the same behaviour we shipped
-// before adding detection at all).
+// (Unchanged from the previous revision — see git history for the long
+// design note. Counts non-Latin script characters in user-role text and
+// returns a language label, or null for Latin-script transcripts where
+// the LLM has to infer English/French/Spanish/etc. from context.)
 
-/** Returns a human-readable language label (with a native sample so the
- *  LLM gets both an English name and an in-language anchor) when a
- *  non-Latin script dominates the user's input. Returns null for
- *  Latin-script input (English, French, Spanish, German, …) — the
- *  caller falls back to a generic "respond in the user's language"
- *  directive in that case. */
 export function detectLanguage(userText: string): string | null {
   let cjk = 0
-  let kana = 0 // hiragana + katakana (Japanese-exclusive)
+  let kana = 0
   let hangul = 0
   let cyrillic = 0
   let arabic = 0
@@ -149,27 +71,21 @@ export function detectLanguage(userText: string): string | null {
   for (const ch of userText) {
     const cp = ch.codePointAt(0)
     if (cp == null) continue
-    // Hangul: Syllables + Jamo + Compatibility Jamo + Extended-A/B.
-    // The extended ranges cover archaic / academic Korean which would
-    // otherwise miss the threshold in short messages.
     if (
-      (cp >= 0xac00 && cp <= 0xd7af) || // Hangul Syllables
-      (cp >= 0x1100 && cp <= 0x11ff) || // Hangul Jamo
-      (cp >= 0x3130 && cp <= 0x318f) || // Hangul Compatibility Jamo
-      (cp >= 0xa960 && cp <= 0xa97f) || // Hangul Jamo Extended-A
-      (cp >= 0xd7b0 && cp <= 0xd7ff)    // Hangul Jamo Extended-B
+      (cp >= 0xac00 && cp <= 0xd7af) ||
+      (cp >= 0x1100 && cp <= 0x11ff) ||
+      (cp >= 0x3130 && cp <= 0x318f) ||
+      (cp >= 0xa960 && cp <= 0xa97f) ||
+      (cp >= 0xd7b0 && cp <= 0xd7ff)
     ) hangul++
     else if (cp >= 0x3040 && cp <= 0x30ff) kana++
-    // CJK: Unified + Ext A through G + Compat. Without the SMP ranges,
-    // rare characters (classical Chinese, unusual personal names) fall
-    // through to the English-default branch.
     else if (
-      (cp >= 0x4e00 && cp <= 0x9fff) ||  // CJK Unified Ideographs
-      (cp >= 0x3400 && cp <= 0x4dbf) ||  // CJK Ext A
-      (cp >= 0x20000 && cp <= 0x2ebef) || // CJK Ext B-F (contiguous block)
-      (cp >= 0x30000 && cp <= 0x3134f) || // CJK Ext G
-      (cp >= 0xf900 && cp <= 0xfaff) ||  // CJK Compat Ideographs
-      (cp >= 0x2f800 && cp <= 0x2fa1f)   // CJK Compat Ideographs Supplement
+      (cp >= 0x4e00 && cp <= 0x9fff) ||
+      (cp >= 0x3400 && cp <= 0x4dbf) ||
+      (cp >= 0x20000 && cp <= 0x2ebef) ||
+      (cp >= 0x30000 && cp <= 0x3134f) ||
+      (cp >= 0xf900 && cp <= 0xfaff) ||
+      (cp >= 0x2f800 && cp <= 0x2fa1f)
     ) cjk++
     else if (cp >= 0x0400 && cp <= 0x04ff) cyrillic++
     else if (cp >= 0x0600 && cp <= 0x06ff) arabic++
@@ -177,14 +93,8 @@ export function detectLanguage(userText: string): string | null {
     else if (cp >= 0x0e00 && cp <= 0x0e7f) thai++
     else if (cp >= 0x0900 && cp <= 0x097f) devanagari++
   }
-  // Threshold: a handful of non-Latin chars in user input is a strong
-  // intentional signal. Anything below this is probably a stray symbol
-  // (e.g. a single diacritic in an otherwise-English message).
   const MIN = 4
-  // Hangul is Korean-exclusive — easiest disambiguation, check first.
   if (hangul >= MIN) return 'Korean (한국어)'
-  // Japanese requires kana; CJK alone is Chinese. Order matters because
-  // Japanese text usually contains both kana and CJK kanji.
   if (kana >= MIN) return 'Japanese (日本語)'
   if (cjk >= MIN) return 'Chinese (中文)'
   if (cyrillic >= MIN) return 'Russian (Русский)'
@@ -192,12 +102,16 @@ export function detectLanguage(userText: string): string | null {
   if (hebrew >= MIN) return 'Hebrew (עברית)'
   if (thai >= MIN) return 'Thai (ไทย)'
   if (devanagari >= MIN) return 'Hindi (हिन्दी)'
-  // Latin-script — we can't tell English from French/Spanish/German/etc.
-  // by script counts alone, so let the LLM infer from context.
   return null
 }
 
-/** Pull a flat text block from a message's content field. */
+// ── History extraction ─────────────────────────────────────────────
+
+interface ExtractedLine {
+  role: 'User' | 'Assistant'
+  text: string
+}
+
 function extractText(content: unknown): string {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
@@ -207,7 +121,6 @@ function extractText(content: unknown): string {
     .join('')
 }
 
-/** Pull tool_use block names from assistant content. */
 function extractToolNames(content: unknown): string[] {
   if (!Array.isArray(content)) return []
   return (content as Array<{ type?: string; name?: string }>)
@@ -219,10 +132,9 @@ function truncate(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max) + '…'
 }
 
-/** Extract a compact transcript + stats from the message history. */
 function extractHistory(messages: SDKMessage[]): {
   lines: ExtractedLine[]
-  stats: RecapStats
+  stats: SessionRecapStats
   language: string | null
 } {
   const lines: ExtractedLine[] = []
@@ -231,9 +143,6 @@ function extractHistory(messages: SDKMessage[]): {
   let assistantTurns = 0
   let totalCost = 0
   let totalDuration = 0
-  // Accumulate full user text (pre-truncation) for language detection so
-  // a long Chinese message that gets sliced to 500 chars still contributes
-  // its full character mass to the script counts.
   let userTextBuf = ''
 
   for (const msg of messages) {
@@ -242,7 +151,6 @@ function extractHistory(messages: SDKMessage[]): {
 
     if (type === 'user') {
       const content = (m as { message?: { content?: unknown } }).message?.content
-      // Skip tool_result-only frames (synthetic SDK bookkeeping).
       if (Array.isArray(content)) {
         const hasToolResult = (content as Array<{ type?: string }>).some((b) => b.type === 'tool_result')
         const hasText = (content as Array<{ type?: string; text?: string }>).some(
@@ -264,20 +172,14 @@ function extractHistory(messages: SDKMessage[]): {
         lines.push({ role: 'Assistant', text: truncate(text.trim(), 500) })
       }
     } else if (type === 'result') {
-      // SDK's total_cost_usd is a *cumulative* value, not per-turn.
-      // Always overwrite instead of adding — the last result carries
-      // the final running total.
       const cost = (m as { total_cost_usd?: number }).total_cost_usd
       if (typeof cost === 'number') totalCost = cost
-
-      // SDK result messages carry a duration_ms field indicating how
-      // long the turn took. Accumulate across all turns.
       const dur = (m as { duration_ms?: number }).duration_ms
       if (typeof dur === 'number') totalDuration += dur
     }
   }
 
-  const stats: RecapStats = {
+  const stats: SessionRecapStats = {
     messageCount: messages.length,
     userTurns,
     assistantTurns,
@@ -289,29 +191,18 @@ function extractHistory(messages: SDKMessage[]): {
   return { lines, stats, language }
 }
 
-/** Build the transcript text for the summarization prompt. Keeps the
- *  first 3 and last N lines within a ~12k char budget. The language
- *  hint is appended at the very end so it sits at the recency-biased
- *  tail of the user content — empirically this is much stickier than
- *  the same instruction in the system prompt alone. When `language` is
- *  null (Latin-script input we can't pin down) the hint asks the LLM
- *  to infer the language from the user lines instead of naming one. */
 function buildTranscript(lines: ExtractedLine[], language: string | null): string {
   const CHAR_BUDGET = 12_000
   const formatted = lines.map((l, i) => `[${i + 1}] ${l.role}: ${l.text}`)
   const tailHint = language
     ? `\n\n---\nWrite the recap summary in ${language}.`
     : `\n\n---\nWrite the recap summary in the same language the user uses in their messages above.`
-  // The tail hint is always appended unconditionally, so its length must
-  // be charged against the budget — otherwise long conversations end up
-  // ~tailHint.length bytes over the documented 12k cap.
   const effectiveBudget = CHAR_BUDGET - tailHint.length
   const total = formatted.reduce((n, s) => n + s.length + 1, 0)
   if (total <= effectiveBudget) return formatted.join('\n') + tailHint
 
-  // Keep first 3 + as many trailing lines as fit.
   const head = formatted.slice(0, 3)
-  let budget = effectiveBudget - head.reduce((n, s) => n + s.length + 1, 0) - 40 // 40 for the marker
+  let budget = effectiveBudget - head.reduce((n, s) => n + s.length + 1, 0) - 40
   const tail: string[] = []
   for (let i = formatted.length - 1; i >= 3; i--) {
     const line = formatted[i]
@@ -325,19 +216,6 @@ function buildTranscript(lines: ExtractedLine[], language: string | null): strin
 
 // ── Anthropic API ──────────────────────────────────────────────────
 
-/** Build the system prompt with an explicit, last-position language
- *  directive. The language requirement lives both in its own block and
- *  is restated at the tail of the transcript (see buildTranscript) —
- *  belt-and-braces because mixed-script transcripts (Chinese chat +
- *  English file paths / stack traces) bias the model toward English
- *  unless the directive is unmissable.
- *
- *  When `language` is null (the script-detection heuristic couldn't
- *  pin one down — typically Latin-script text where en/fr/es/de all
- *  look identical), we fall back to a generic "match the user" rule.
- *  Forcing 'English' here would actively break French/Spanish/German
- *  users; the catch-all wording lets the LLM infer correctly from the
- *  User: lines in the transcript. */
 function buildSystemPrompt(language: string | null): string {
   const intro = `You are a session recap assistant. Summarize the following conversation between a user and Claude (an AI coding assistant) in 2-4 sentences. Focus on:
 1. What task or problem the user was working on
@@ -364,94 +242,299 @@ async function callAnthropic(transcript: string, language: string | null): Promi
     system: buildSystemPrompt(language),
     userContent: transcript,
     maxTokens: 300,
-    // Recap is a deterministic summarization task — no creativity needed.
-    // Temperature 0 also makes language-adherence more stable.
     temperature: 0,
   })
-  // Strip stray JSX fragments (<> </> <React.Fragment> </React.Fragment>) that
-  // the LLM sometimes emits when summarising code-heavy conversations.
   return text.replace(/<\/?React\.Fragment\s*>|<>|<\/>/g, '').replace(/\s{2,}/g, ' ').trim()
 }
 
-// ── Public API ─────────────────────────────────────────────────────
+// ── State machine ──────────────────────────────────────────────────
 
-export async function generateRecap(messages: SDKMessage[], sessionId: string): Promise<RecapResult> {
-  // Concurrent dedup: if the same session is already generating a recap
-  // (e.g. user double-clicks refresh, or two tabs hit simultaneously),
-  // reuse the in-flight promise.
-  const existing = inflight.get(sessionId)
-  if (existing) return existing
+/** Owns the recap lifecycle for every session. One instance per
+ *  SessionManager. Public surface is intentionally tiny — `invalidate`
+ *  on every conversation mutation, `requestGenerate` on every recap
+ *  trigger (manual or automatic). All edge cases (concurrent requests,
+ *  busy session, dormant session, missing auth) are handled inside.
+ *
+ *  Why a class rather than module-level state: the previous file used
+ *  module-scoped Maps for cache + inflight, which made per-instance
+ *  isolation in tests painful and tied recap lifetime to the process
+ *  rather than the SessionManager that owns it. */
+export class RecapManager {
+  private deps: RecapManagerDeps
+  /** In-flight LLM calls keyed by sessionId. A second concurrent
+   *  requestGenerate hits the same promise — no double-spend. */
+  private inflight = new Map<string, Promise<SessionRecap>>()
+  /** Monotonic generation counter per session. Bumped on every
+   *  invalidate(); the in-flight #doGenerate snapshots the value at
+   *  start and #applyResult drops the final ready/error write when the
+   *  current generation has moved on. The transient 'pending' write is
+   *  still broadcast so the UI can show progress before invalidation. */
+  private generation = new Map<string, number>()
 
-  const promise = doGenerateRecap(messages, sessionId)
-  inflight.set(sessionId, promise)
-  try {
-    return await promise
-  } finally {
-    inflight.delete(sessionId)
+  constructor(deps: RecapManagerDeps) {
+    this.deps = deps
+  }
+
+  /** Drop any stored recap for a session. Called from SessionManager
+   *  on every conversation mutation (send, sendContent, delete,
+   *  unload). The next requestGenerate triggers a fresh LLM call. */
+  invalidate(sessionId: string): void {
+    this.deps.setRecap(sessionId, undefined)
+    this.deps.broadcastRecap(sessionId, undefined)
+    // Bump the generation so any in-flight LLM call landing after this
+    // point is recognised as stale and discarded by #applyResult. We do
+    // NOT cancel the in-flight call itself — the network round-trip is
+    // already paid for, dropping the result is cleaner than tearing
+    // down the AbortController plumbing.
+    this.generation.set(sessionId, (this.generation.get(sessionId) ?? 0) + 1)
+  }
+
+  /**
+   * Request a recap for a session. Returns the resulting `SessionRecap`.
+   * Throws `HttpError` for unrecoverable cases the route layer should
+   * surface verbatim:
+   *   409 — phase !== 'idle' (working / queued / pending permission)
+   *   410 — phase === 'terminated'
+   *   412 — phase === 'dormant' (session unloaded; resume first)
+   *   404 — phase === 'unknown' (session not in the manager's map)
+   *
+   * Cache rules:
+   *   - status:'ready' is returned as-is and counts as fresh.
+   *     `invalidate()` is the only way fresh becomes stale.
+   *   - status:'pending' from a previous call dedups — second caller
+   *     awaits the same promise.
+   *   - status:'error' is NOT treated as fresh. The next call retries.
+   */
+  async requestGenerate(sessionId: string): Promise<SessionRecap> {
+    const phase = this.deps.getPhase(sessionId)
+    switch (phase) {
+      case 'unknown':
+        throw new HttpError(404, `session ${sessionId} not found`)
+      case 'terminated':
+        throw new HttpError(410, `session ${sessionId} is terminated — recap unavailable`)
+      case 'dormant':
+        throw new HttpError(
+          412,
+          `session ${sessionId} is dormant — resume it before generating a recap`,
+        )
+      case 'working':
+        throw new HttpError(
+          409,
+          `session ${sessionId} is busy — wait for the current turn to finish before generating a recap`,
+        )
+      case 'idle':
+        break
+      default: {
+        const _exhaustive: never = phase
+        throw new HttpError(500, `unexpected phase: ${_exhaustive}`)
+      }
+    }
+
+    // In-flight dedup — second concurrent caller reuses the first's
+    // promise instead of double-spending on the LLM.
+    const existing = this.inflight.get(sessionId)
+    if (existing) return existing
+
+    const history = this.deps.getHistory(sessionId)
+    if (!history) {
+      // Race: phase said idle but history disappeared (session was
+      // unloaded between the phase check and here). Treat as 412.
+      throw new HttpError(412, `session ${sessionId} is no longer available`)
+    }
+
+    const promise = this.#doGenerate(sessionId, history)
+    this.inflight.set(sessionId, promise)
+    try {
+      return await promise
+    } finally {
+      this.inflight.delete(sessionId)
+    }
+  }
+
+  /** Drive one generation cycle: extract → call LLM → apply.
+   *  Sets `pending` immediately so live subscribers see the loading
+   *  state without waiting for the API round-trip. */
+  async #doGenerate(sessionId: string, history: SDKMessage[]): Promise<SessionRecap> {
+    const { lines, stats, language } = extractHistory(history)
+    // Snapshot the generation at dispatch. invalidate() bumps it; the
+    // final ready/error apply is then recognised as stale and dropped.
+    const gen = this.generation.get(sessionId) ?? 0
+
+    // Empty session: synthesize a ready recap with no LLM call. Same
+    // behaviour as the old empty-session shortcut, but now the result
+    // also lands on session.recap so the UI can render it consistently.
+    if (lines.length === 0) {
+      const empty: SessionRecap = {
+        status: 'ready',
+        summary: 'No messages yet.',
+        stats,
+        generatedAt: Date.now(),
+      }
+      this.#applyResult(sessionId, empty, gen)
+      return empty
+    }
+
+    // Auth check up-front — the LLM call would fail anyway, but failing
+    // here gives a sharper error message than the generic fetch error.
+    if (!serverConfig.authToken) {
+      const errored: SessionRecap = {
+        status: 'error',
+        error: 'Recap unavailable: authToken is not configured. Set authToken in config.json.',
+        generatedAt: Date.now(),
+      }
+      this.#applyResult(sessionId, errored, gen)
+      // Throw so the route returns the error to the explicit caller too.
+      throw new Error(errored.error ?? 'authToken not configured')
+    }
+
+    // Mark pending so live clients show the loading state immediately.
+    // The pending broadcast is intentionally NOT gated on generation —
+    // it represents an in-flight call the user just triggered, and the
+    // UI relies on it to show a spinner before the LLM round-trip.
+    const pending: SessionRecap = { status: 'pending' }
+    this.#applyResult(sessionId, pending, gen)
+
+    try {
+      const transcript = buildTranscript(lines, language)
+      const summary = await callAnthropic(transcript, language)
+      const ready: SessionRecap = {
+        status: 'ready',
+        summary,
+        stats,
+        generatedAt: Date.now(),
+      }
+      this.#applyResult(sessionId, ready, gen)
+      return ready
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      const errored: SessionRecap = {
+        status: 'error',
+        error: message,
+        generatedAt: Date.now(),
+      }
+      this.#applyResult(sessionId, errored, gen)
+      // Re-throw so the route caller sees the failure too.
+      throw err
+    }
+  }
+
+  /** Write + broadcast in one place. Two staleness gates:
+   *
+   *  1. `gen` — if invalidate() bumped the generation while this LLM
+   *     call was in flight, the result is stale; drop it instead of
+   *     overwriting the freshly-cleared cache with a stale ready/error.
+   *     The gate is bypassed when no `gen` is supplied (legacy callers).
+   *
+   *  2. phase — if the session has gone away (terminated/dormant/
+   *     unknown) between dispatch and result, the setRecap target may
+   *     not exist; skip the write and broadcast. */
+  #applyResult(sessionId: string, recap: SessionRecap, gen?: number): void {
+    if (gen !== undefined) {
+      const current = this.generation.get(sessionId) ?? 0
+      if (current !== gen) return
+    }
+    const phase = this.deps.getPhase(sessionId)
+    if (phase === 'unknown' || phase === 'terminated' || phase === 'dormant') return
+    this.deps.setRecap(sessionId, recap)
+    this.deps.broadcastRecap(sessionId, recap)
   }
 }
 
-async function doGenerateRecap(messages: SDKMessage[], sessionId: string): Promise<RecapResult> {
-  const { lines, stats, language } = extractHistory(messages)
+// ── Backwards-compat shim ──────────────────────────────────────────
+//
+// A few legacy call sites (the test file, and recap.test.ts) still
+// import `generateRecap` and `invalidateRecapCache` from this module.
+// We keep them as thin wrappers around a module-local RecapManager
+// instance that mocks the SessionManager interaction so the existing
+// pure-extraction tests keep working without rewriting them.
+//
+// New code should NOT import these — go through SessionManager's
+// recapManager instance instead.
 
-  // Empty session — no work to do. Not an error: the user just clicked
-  // recap on a brand-new conversation. Returned as a normal ready summary
-  // (no LLM call, no cache write — would auto-invalidate on the first
-  // user turn anyway).
-  if (lines.length === 0) {
-    return { summary: 'No messages yet.', stats, cached: false, generatedAt: Date.now() }
-  }
+interface LegacyEntry { history: SDKMessage[] }
+const legacyState = new Map<string, LegacyEntry>()
+const legacyRecaps = new Map<string, SessionRecap>()
+const legacyManager = new RecapManager({
+  getPhase: (id) => (legacyState.has(id) || legacyRecaps.has(id) ? 'idle' : 'unknown'),
+  getHistory: (id) => legacyState.get(id)?.history ?? null,
+  setRecap: (id, recap) => {
+    if (recap === undefined) legacyRecaps.delete(id)
+    else legacyRecaps.set(id, recap)
+  },
+  broadcastRecap: () => { /* legacy shim — no broadcast */ },
+})
 
-  // Check cache. No wall-clock TTL — see the cache section header for the
-  // full set of invalidation rules.
-  const lastMsg = messages[messages.length - 1] as Record<string, unknown> | undefined
-  const lastUuid = (lastMsg?.uuid as string) ?? ''
-  // If the last message has no UUID (SDK didn't provide one), we can't
-  // trust the cache to be valid — any two messages of the same length
-  // would look identical. Skip the cache in that case.
-  const canTrustCache = !!lastUuid
-  const cached = cache.get(sessionId)
+/** @deprecated Legacy shim for the standalone tests. New code should
+ *  go through SessionManager.recapManager. */
+export async function generateRecap(
+  messages: SDKMessage[],
+  sessionId: string,
+): Promise<{ summary: string; stats: SessionRecapStats; cached: boolean; generatedAt: number }> {
+  // Cache-hit emulation: if we already have a ready recap for this id
+  // and the history hasn't changed, return it as cached. Mirrors the
+  // pre-refactor test expectations.
+  const prevHistory = legacyState.get(sessionId)?.history
+  const prevReady = legacyRecaps.get(sessionId)
   if (
-    canTrustCache &&
-    cached &&
-    cached.messageCount === messages.length &&
-    cached.lastMessageUuid === lastUuid
+    prevReady?.status === 'ready' &&
+    prevHistory &&
+    prevHistory.length === messages.length &&
+    prevHistory.every((m, i) => (m as { uuid?: string }).uuid === (messages[i] as { uuid?: string }).uuid)
   ) {
-    // Refresh LRU insertion order on cache hit.
-    cache.delete(sessionId)
-    cache.set(sessionId, cached)
-    return { summary: cached.summary, stats: cached.stats, cached: true, generatedAt: cached.generatedAt }
+    return {
+      summary: prevReady.summary ?? '',
+      stats: prevReady.stats ?? emptyRecapStats(),
+      cached: true,
+      generatedAt: prevReady.generatedAt ?? Date.now(),
+    }
   }
-  // Store the pre-generation UUID so the route handler can bump the cache
-  // after appendRecap() adds the recap message to history.
-  const lastMessageUuidAtGeneration = lastUuid
-
-  // No fallback — if the auth token is missing we throw so the route
-  // layer can surface the real reason ("authToken not configured") as a
-  // state:'error' recap card. Returning a vague local-summary used to
-  // hide misconfiguration.
-  if (!serverConfig.authToken) {
-    throw new Error(
-      'Recap unavailable: authToken is not configured. Set authToken in config.json.',
-    )
+  legacyState.set(sessionId, { history: messages })
+  // LRU cap mirrors the previous module-level CACHE_MAX_ENTRIES.
+  if (legacyState.size > 200) {
+    const oldest = legacyState.keys().next().value
+    if (oldest) {
+      legacyState.delete(oldest)
+      legacyRecaps.delete(oldest)
+    }
   }
-
-  // Let API errors propagate. The route layer catches and renders them.
-  const transcript = buildTranscript(lines, language)
-  const summary = await callAnthropic(transcript, language)
-
-  const generatedAt = Date.now()
-  cache.set(sessionId, {
-    summary, stats,
-    messageCount: messages.length,
-    lastMessageUuid: lastUuid,
-    lastMessageUuidAtGeneration,
-    generatedAt,
-  })
-  // LRU eviction: drop oldest entries when the cache exceeds the cap.
-  if (cache.size > CACHE_MAX_ENTRIES) {
-    const oldest = cache.keys().next().value
-    if (oldest) cache.delete(oldest)
+  const recap = await legacyManager.requestGenerate(sessionId)
+  // requestGenerate may return any RecapStatus. Only 'ready' carries
+  // stats/generatedAt; other statuses surface through the return shape
+  // below as defaulted values rather than crashing on a non-null
+  // assertion.
+  if (recap.status === 'ready') {
+    return {
+      summary: recap.summary ?? '',
+      stats: recap.stats ?? emptyRecapStats(),
+      cached: false,
+      generatedAt: recap.generatedAt ?? Date.now(),
+    }
   }
-  return { summary, stats, cached: false, generatedAt }
+  // Non-ready (pending/error) — preserve the existing test contract
+  // (string summary, zeroed stats) without throwing.
+  return {
+    summary: '',
+    stats: emptyRecapStats(),
+    cached: false,
+    generatedAt: recap.generatedAt ?? Date.now(),
+  }
+}
+
+function emptyRecapStats(): SessionRecapStats {
+  return {
+    messageCount: 0,
+    userTurns: 0,
+    assistantTurns: 0,
+    totalCostUsd: 0,
+    durationMs: 0,
+    toolsUsed: [],
+  }
+}
+
+/** @deprecated Legacy shim. Use RecapManager.invalidate via
+ *  SessionManager.recapManager. */
+export function invalidateRecapCache(sessionId: string): void {
+  legacyState.delete(sessionId)
+  legacyRecaps.delete(sessionId)
+  legacyManager.invalidate(sessionId)
 }

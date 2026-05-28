@@ -22,7 +22,6 @@ import { useWsHub } from './useWsHub'
 import type {
   GitBranch,
   GitDiff,
-  GitFileEntry,
   GitStatusResponse,
   GitCommit,
   GitStashEntry,
@@ -38,8 +37,8 @@ interface BaseFetchState<T> {
 //
 // Subscribes to `git-status-changed` frames for a session and calls
 // `refresh` when one arrives. Shared by useGitStatus, useGitBranches,
-// useGitStashes, and useSessionFiles — each previously duplicated
-// this subscribe/listen/cleanup pattern independently.
+// and useGitStashes — each previously duplicated this subscribe /
+// listen / cleanup pattern independently.
 
 function useGitWsRefresh(
   sessionId: string | undefined,
@@ -379,65 +378,3 @@ export function useGitStashes(
   return { data, loading, error, refresh }
 }
 
-// ── This-session anchor ───────────────────────────────────────────────
-// Lists files changed since session spawn — the input to the
-// "This session" view + the AI commit-message generator. `gitStartSha`
-// is exposed alongside so the GitPanel can hide the entire section
-// when the session was started outside a git repo.
-
-export interface UseSessionFilesReturn extends BaseFetchState<GitFileEntry[]> {
-  gitStartSha: string | null
-  refresh: () => void
-}
-
-export function useSessionFiles(
-  sessionId: string | undefined,
-  enabled: boolean,
-): UseSessionFilesReturn {
-  const [data, setData] = useState<GitFileEntry[] | null>(null)
-  const [gitStartSha, setGitStartSha] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [tick, setTick] = useState(0)
-  const abortRef = useRef<AbortController | null>(null)
-
-  useEffect(() => {
-    if (!enabled || !sessionId) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on input change
-      setData(null)
-      setGitStartSha(null)
-      setError(null)
-      return
-    }
-    const ctrl = new AbortController()
-    abortRef.current?.abort()
-    abortRef.current = ctrl
-    setLoading(true)
-    setError(null)
-    api
-      .get<{ files: GitFileEntry[]; gitStartSha: string | null }>(
-        `/sessions/${encodeURIComponent(sessionId)}/git/session-files`,
-        { signal: ctrl.signal },
-      )
-      .then((res) => {
-        if (ctrl.signal.aborted) return
-        setData(res.files)
-        setGitStartSha(res.gitStartSha)
-        setLoading(false)
-      })
-      .catch((err: Error) => {
-        if (ctrl.signal.aborted) return
-        setError(err.message)
-        setData(null)
-        setGitStartSha(null)
-        setLoading(false)
-      })
-    return () => { ctrl.abort() }
-  }, [sessionId, enabled, tick])
-
-  const refresh = useCallback(() => { setTick((n) => n + 1) }, [])
-
-  useGitWsRefresh(sessionId, enabled, refresh)
-
-  return { data, loading, error, refresh, gitStartSha }
-}

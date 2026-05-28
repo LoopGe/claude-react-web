@@ -20,6 +20,7 @@
 
 import {
   query,
+  getSessionInfo,
   type Options,
   type PermissionMode,
   type Query,
@@ -33,7 +34,8 @@ import { createPushable, type Pushable } from './pushable.js'
 import type { SessionMeta, SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
 import type { MpStore } from './mp-store.js'
-import { invalidateRecapCache } from './recap.js'
+import { RecapManager } from './recap.js'
+import type { SessionPhase, SessionRecap } from './session-types.js'
 import { tryCaptureGitHead } from './git.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
@@ -91,6 +93,11 @@ export class SessionManager {
   private processMonitor: ProcessMonitor
   private spawnWrapper?: (opts: import('@anthropic-ai/claude-agent-sdk').SpawnOptions) => import('@anthropic-ai/claude-agent-sdk').SpawnedProcess
   private permBroker: PermissionBroker
+  /** Owns recap lifecycle for every session. Public so the recap route
+   *  can call requestGenerate() without going through a wrapper method —
+   *  the route is the only HTTP surface for recap, and proxying through
+   *  SessionManager would just re-export the same throw semantics. */
+  recapManager: RecapManager
   /** Cached result of buildAnthropicEnv(). Invalidated when config.authToken
    *  or config.baseUrl change (detected lazily on each call). */
   private cachedEnv?: NodeJS.ProcessEnv
@@ -117,6 +124,24 @@ export class SessionManager {
     // Process monitor — real-time CLI exit detection
     this.processMonitor = new ProcessMonitor((info) => this.handleProcessExit(info))
     this.spawnWrapper = this.processMonitor.createSpawnWrapper()
+
+    // RecapManager — owns the lifecycle (pending → ready/error) for the
+    // session.recap field. Hooks back into this manager via the deps
+    // interface so the module never imports SessionManager directly.
+    this.recapManager = new RecapManager({
+      getPhase: (id) => {
+        const s = this.sessions.get(id)
+        if (!s) return 'unknown'
+        return this.phaseOf(s)
+      },
+      getHistory: (id) => this.getHistory(id),
+      setRecap: (id, recap) => {
+        const s = this.sessions.get(id)
+        if (!s) return
+        s.recap = recap
+      },
+      broadcastRecap: (id, recap) => this.broadcastSessionRecap(id, recap),
+    })
 
     console.log(
       `[session-manager] initialized — permissionTimeoutMs=${this.permissionTimeoutMs}, ` +
@@ -373,7 +398,7 @@ export class SessionManager {
    *  - Refuses to resume terminated sessions; the SDK can't continue past
    *    a `result` message anyway.
    */
-  resume(id: string): SessionInfo {
+  async resume(id: string): Promise<SessionInfo> {
     const live = this.sessions.get(id)
     if (live) return this.info(live)
     if (!this.store) {
@@ -401,6 +426,18 @@ export class SessionManager {
         `session ${id} has no conversation data on disk — it cannot be resumed (the first turn never completed)`,
       )
     }
+    // Same disk-vs-memory mismatch as fork(): the persisted meta says
+    // the session is resumable, but if the SDK's jsonl was deleted out
+    // of band the CLI subprocess will error with "No conversation found
+    // with session ID: <uuid>" the moment we hand it `resume: id`.
+    // Catch it here, mark terminated, and let the user clean up.
+    if (!(await this.hasSdkTranscript(meta))) {
+      this.markTranscriptMissing(meta, 'resume')
+      throw new HttpError(
+        410,
+        `session ${id}'s SDK transcript file is missing on disk — it cannot be resumed. The session has been marked terminated; delete it from the sidebar.`,
+      )
+    }
     const resumeOpts: Options = {
       resume: id,
       cwd: meta.cwd,
@@ -415,6 +452,67 @@ export class SessionManager {
       betas: meta.betas as Options['betas'],
     }
     return this.spawn(id, resumeOpts)
+  }
+
+  /** Probe the SDK's on-disk transcript for a session.
+   *
+   *  `lastTurnAt` only proves *we once observed a `result` for this id in
+   *  this process*. It does NOT prove the SDK's `~/.claude/projects/<dir>/
+   *  <id>.jsonl` is still on disk — the user could have deleted the file,
+   *  switched machines via a synced sessions.json, etc. Both `fork()` and
+   *  `resume()` will hand the SDK a `resume: id` and watch the CLI
+   *  subprocess error out with "No conversation found with session ID:
+   *  <uuid>" the moment the file is missing.
+   *
+   *  `getSessionInfo({ dir })` reads exactly the file the CLI would, so
+   *  this is the authoritative probe — no need to recreate the SDK's
+   *  cwd-encoding ourselves. When `dir` is omitted the SDK scans every
+   *  project directory, which matches the CLI's own resume-by-id
+   *  fallback. Returns false on any error (file missing, permission
+   *  denied, etc.) so callers can refuse the operation uniformly. */
+  private async hasSdkTranscript(meta: { id: string; cwd?: string }): Promise<boolean> {
+    const opts = meta.cwd ? { dir: meta.cwd } : undefined
+    try {
+      const info = await getSessionInfo(meta.id, opts)
+      if (!info) {
+        // Distinguish "file genuinely missing" (info===undefined) from
+        // "SDK threw" (caught below). The former is the common case
+        // (user/tool deleted the jsonl); the latter is interesting
+        // because it means the SDK itself misbehaved and we want a
+        // breadcrumb to chase it. Including cwd in both — the SDK
+        // encodes the cwd into the on-disk path, so a wrong cwd is the
+        // first thing to check next time.
+        console.warn(
+          `[session ${meta.id}] hasSdkTranscript: getSessionInfo returned undefined ` +
+          `(cwd=${meta.cwd ?? '<none>'}) — jsonl is missing on disk`,
+        )
+      }
+      return !!info
+    } catch (err) {
+      console.warn(
+        `[session ${meta.id}] hasSdkTranscript: getSessionInfo threw ` +
+        `(cwd=${meta.cwd ?? '<none>'}):`,
+        err,
+      )
+      return false
+    }
+  }
+
+  /** Mark a persisted session as terminated due to a missing SDK
+   *  transcript and broadcast the update. Used by `fork()` and
+   *  `resume()` when the on-disk jsonl has gone away under our feet.
+   *  `caller` is "fork" or "resume" so post-mortem log greps can tell
+   *  which path tripped. */
+  private markTranscriptMissing(meta: SessionMeta, caller: 'fork' | 'resume'): void {
+    console.warn(
+      `[session ${meta.id}] marking terminated:transcript_missing via ${caller} ` +
+      `(cwd=${meta.cwd ?? '<none>'}, lastTurnAt=${meta.lastTurnAt ?? 'none'}, ` +
+      `messageCount=${meta.messageCount})`,
+    )
+    meta.terminated = true
+    meta.terminatedReason = 'transcript_missing'
+    this.store?.upsert(meta)
+    this.broadcastGlobal({ kind: 'update', session: this.infoFromMeta(meta) })
   }
 
   /** Fork a session: spawn a new session whose transcript is initialised
@@ -433,7 +531,7 @@ export class SessionManager {
    *  `result` message, so forking earlier fails with `No conversation
    *  found with session ID: <uuid>` from the CLI. `lastTurnAt` is our
    *  ground-truth signal (set only by the pump on a real `result`). */
-  fork(id: string): SessionInfo {
+  async fork(id: string): Promise<SessionInfo> {
     const live = this.sessions.get(id)
     const meta = live ?? this.store?.get(id)
     if (!meta) throw new HttpError(404, `session ${id} not found`)
@@ -441,6 +539,41 @@ export class SessionManager {
       throw new HttpError(
         400,
         `session ${id} has no completed turns yet — send at least one message and wait for the reply before forking`,
+      )
+    }
+    // The lastTurnAt guard above only proves we once saw a `result` in
+    // memory; it doesn't prove the SDK's transcript file is still on
+    // disk. Without this probe a missing jsonl spawns a doomed Query
+    // whose CLI subprocess errors with "No conversation found with
+    // session ID: <uuid>" — confusing for the user (the fork panel
+    // opens, then crashes a beat later). Mark the source terminated so
+    // the sidebar dims it and the user can clear it out.
+    if (!(await this.hasSdkTranscript(meta))) {
+      // Mark the persisted meta so reloads / sidebar refreshes show the
+      // session as terminated. We don't unload a live source here: the
+      // user might still want to scroll its in-memory history one more
+      // time, and the next resume attempt will re-trip this same guard.
+      const persisted: SessionMeta = this.store?.get(id) ?? {
+        id: meta.id,
+        createdAt: meta.createdAt,
+        lastActivityAt: meta.lastActivityAt,
+        cwd: meta.cwd,
+        model: meta.model,
+        permissionMode: meta.permissionMode,
+        title: meta.title,
+        betas: meta.betas,
+        // SessionMeta tracks messageCount; the live Session tracks
+        // history. Use whichever applies. (`meta` is one or the other.)
+        messageCount: live ? live.history.length : (meta as SessionMeta).messageCount,
+        terminated: true,
+        terminatedReason: 'transcript_missing',
+        lastTurnAt: meta.lastTurnAt,
+        gitStartSha: meta.gitStartSha,
+      }
+      this.markTranscriptMissing(persisted, 'fork')
+      throw new HttpError(
+        410,
+        `session ${id}'s SDK transcript file is missing on disk — it cannot be forked. The session has been marked terminated; delete it from the sidebar.`,
       )
     }
     const title = meta.title ? `${meta.title} (fork)` : undefined
@@ -518,6 +651,7 @@ export class SessionManager {
       history: [],
       contextUsageSubscribers: new Set(),
       gitStatusSubscribers: new Set(),
+      recapSubscribers: new Set(),
       abortController,
       pumpTask: Promise.resolve(),
       running: true,
@@ -647,8 +781,9 @@ export class SessionManager {
     // User is actively interacting — reset the auto-resume counter so a
     // future idle timeout gets fresh attempts.
     this.autoResumeCounts.delete(s)
-    // Invalidate the recap cache — a new message means the cached summary is stale.
-    invalidateRecapCache(s.id)
+    // Invalidate the stored recap — a new message means it's stale.
+    // The next idle window triggers a fresh generation.
+    this.recapManager.invalidate(s.id)
     // Guard against concurrent unload(): if the session was removed from
     // the map between the initial running check and here, persisting would
     // overwrite the terminal state written by unload().
@@ -882,6 +1017,25 @@ export class SessionManager {
     return this.subscribePushableSet(s, s.gitStatusSubscribers, 'git', 20)
   }
 
+  /** AsyncIterable of recap-update events for one session. Returns the
+   *  current recap snapshot alongside the iterable so a freshly-attached
+   *  tab sees existing state without having to wait for the next
+   *  transition. Null when the session is unknown. */
+  subscribeSessionRecap(id: string): {
+    iterable: AsyncIterable<unknown>
+    snapshot: SessionRecap | undefined
+    unsubscribe: () => void
+  } | null {
+    const s = this.sessions.get(id)
+    if (!s) return null
+    const sub = this.subscribePushableSet(s, s.recapSubscribers, 'recap', 20)
+    return {
+      iterable: sub.iterable,
+      snapshot: s.recap,
+      unsubscribe: sub.unsubscribe,
+    }
+  }
+
   /** Shared implementation for subscribeContextUsage / subscribeGitStatus.
    *  Creates a per-subscriber pushable, registers it in the given set, and
    *  returns the iterable + cleanup function. */
@@ -914,6 +1068,28 @@ export class SessionManager {
     for (const sub of s.gitStatusSubscribers) {
       try { sub.push(frame) } catch { /* subscriber dead — skip */ }
     }
+  }
+
+  /** Broadcast a recap-update payload to per-session subscribers AND
+   *  fan out a global session-update so the sidebar (which mirrors
+   *  SessionInfo.recap onto its session cards) stays in sync without
+   *  needing a separate frame. Called by the RecapManager via the
+   *  broadcastRecap dep. `recap` is undefined to mean "cleared" — both
+   *  the per-session frame and the SessionInfo projection encode that
+   *  as undefined. */
+  private broadcastSessionRecap(id: string, recap: SessionRecap | undefined): void {
+    const s = this.sessions.get(id)
+    if (!s) return
+    // Per-session recap channel — drives live UI on the active panel.
+    if (s.recapSubscribers.size > 0) {
+      const frame = { kind: 'session-recap-update' as const, sessionId: id, recap }
+      for (const sub of s.recapSubscribers) {
+        try { sub.push(frame) } catch { /* subscriber dead — skip */ }
+      }
+    }
+    // Global session-update — sidebar / other tabs see the new recap
+    // through the same SessionInfo projection used everywhere else.
+    this.broadcastGlobal({ kind: 'update', session: this.info(s) })
   }
 
   /**
@@ -950,10 +1126,11 @@ export class SessionManager {
   async delete(id: string): Promise<void> {
     await this.unload(id, { terminate: true, reason: 'deleted' })
     this.store?.remove(id)
-    // Drop any cached recap — otherwise a new session that happens to
+    // Drop any stored recap — otherwise a new session that happens to
     // reuse this id (rare, but possible under --state-dir swaps) would
-    // see the old summary.
-    invalidateRecapCache(id)
+    // see the old summary. unload() already calls invalidate() but we
+    // do it again here as a safety net for delete-without-unload paths.
+    this.recapManager.invalidate(id)
     this.broadcastGlobal({ kind: 'removed', id })
   }
 
@@ -1006,7 +1183,12 @@ export class SessionManager {
       this.broadcastGlobal({ kind: 'update', session: this.info(s) })
     }
     this.sessions.delete(id)
-    invalidateRecapCache(id)
+    // Clear the recap state. The session is no longer in the manager's
+    // map so getPhase will return 'unknown' from inside the manager —
+    // we still call invalidate() to end any subscribers and clear the
+    // legacy in-flight slot. Recap is in-memory only, so dropping the
+    // session here is the end of the line for it.
+    this.recapManager.invalidate(id)
     this.writeStore(s)
   }
 
@@ -1059,26 +1241,6 @@ export class SessionManager {
   getHistory(id: string): SDKMessage[] | null {
     const s = this.sessions.get(id)
     return s ? s.history.slice() : null
-  }
-
-  /** Append a synthetic recap message to a session's history, replacing
-   *  any existing recap message. Broadcasts to all subscribers so live
-   *  clients see it immediately. Returns false if the session is not
-   *  live (dormant sessions can't receive recap messages). */
-  appendRecap(id: string, recapMsg: SDKMessage | Record<string, unknown>): boolean {
-    const s = this.sessions.get(id)
-    if (!s) return false
-    // Remove any existing recap message — there should be at most one.
-    const existingIdx = s.history.findIndex(
-      (m) => (m as Record<string, unknown>).type === 'recap',
-    )
-    if (existingIdx >= 0) s.history.splice(existingIdx, 1)
-    const msg = recapMsg as SDKMessage
-    pushBounded(s.history, msg, this.historyCap)
-    for (const sub of s.subscribers.values()) sub.push(msg)
-    s.lastActivityAt = Date.now()
-    this.persist(s)
-    return true
   }
 
   async shutdown(): Promise<void> {
@@ -1169,7 +1331,27 @@ export class SessionManager {
       lastTurnAt: s.lastTurnAt,
       gitStartSha: s.gitStartSha,
       pendingPermissionCount: s.pending.size,
+      phase: this.phaseOf(s),
+      recap: s.recap,
     }
+  }
+
+  /** Coarse-grained lifecycle phase. Single source of truth for
+   *  client-side gates that today re-derive the same state from the
+   *  primitives (working / running / terminated / queueDepth /
+   *  pending permissions). The recap auto-fire timer is the first
+   *  caller, but anything else that wants "is the session quiet right
+   *  now?" should read `phase` rather than re-implementing the rule. */
+  phaseOf(s: Session): SessionPhase {
+    if (s.terminated) return 'terminated'
+    if (!s.running) return 'dormant'
+    // Any in-flight assistant turn, queued user input, or unanswered
+    // tool-permission prompt counts as "working" — none of those are
+    // safe moments to summarise the conversation.
+    if (s.pendingTurns > 0) return 'working'
+    if (s.input.queueDepth > 0) return 'working'
+    if (s.pending.size > 0) return 'working'
+    return 'idle'
   }
 
   /** Project a persisted meta into the SessionInfo shape. Dormant sessions
@@ -1196,6 +1378,12 @@ export class SessionManager {
       gitStartSha: meta.gitStartSha,
       // A dormant Query holds no canUseTool callbacks; pending is always 0.
       pendingPermissionCount: 0,
+      // Terminated stays terminated; everything else is dormant. Recap
+      // is in-memory only (per spec — no persistence), so dormant
+      // sessions always come back without one until the user resumes
+      // and the recapManager rebuilds it.
+      phase: meta.terminated ? 'terminated' : 'dormant',
+      recap: undefined,
     }
   }
 

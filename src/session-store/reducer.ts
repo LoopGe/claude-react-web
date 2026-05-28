@@ -6,9 +6,15 @@ import {
   getPlanToolUseIds,
   getSubagentStarts,
   getToolResultIds,
+  getToolResultOutcomes,
+  getToolUseStarts,
   toTranscriptItem,
 } from './normalize'
-import { extractQuestionAnswers, getQuestionToolUseIds } from '../utils/question-answers'
+import {
+  extractQuestionAnswers,
+  getQuestionToolUseIds,
+  parseQuestionAnswersMessage,
+} from '../utils/question-answers'
 
 export function reduceSessionState(state: SessionState, action: SessionAction): SessionState {
   switch (action.type) {
@@ -43,20 +49,74 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
       return { ...state, permissionPending, pidToToolUseId }
     }
     case 'PERMISSION_RESOLVED': {
-      const permissionPending = new Map(state.permissionPending)
-      permissionPending.delete(action.id)
-      const pidToToolUseId = new Map(state.pidToToolUseId)
-      const permissionDecisions = new Map(state.permissionDecisions)
-      const planStatus = new Map(state.planStatus)
+      // Allocate fresh Maps lazily — most PERMISSION_RESOLVED frames
+      // arrive for permissions we already cleaned up locally (the user
+      // optimistically decided), so cloning four Maps unconditionally
+      // burns CPU and breaks reference equality for selectors that
+      // depend on stable Map identity (e.g. PlanCard memoization).
+      let permissionPending = state.permissionPending
+      let pidToToolUseId = state.pidToToolUseId
+      let permissionDecisions = state.permissionDecisions
+      let planStatus = state.planStatus
+      let questionAnswers = state.questionAnswers
+      let changed = false
+      if (permissionPending.has(action.id)) {
+        permissionPending = new Map(permissionPending)
+        permissionPending.delete(action.id)
+        changed = true
+      }
       const toolUseId = pidToToolUseId.get(action.id)
       if (toolUseId) {
+        permissionDecisions = new Map(permissionDecisions)
         permissionDecisions.set(toolUseId, action.decision.behavior)
+        // Cap entries — a session with thousands of approved tool runs
+        // (long autonomous agent loops) would otherwise grow this Map
+        // forever. Keys are tool_use_ids that have already been
+        // surfaced in the UI; evicting the oldest just means a
+        // (typically already-scrolled-out-of-view) plan/tool card no
+        // longer flips its badge from "pending" to "approved/rejected"
+        // on a future scroll-back. Maps preserve insertion order, so
+        // keys().next() is the oldest.
+        const PERMISSION_DECISIONS_CAP = 1024
+        while (permissionDecisions.size > PERMISSION_DECISIONS_CAP) {
+          const oldest = permissionDecisions.keys().next().value
+          if (oldest === undefined) break
+          permissionDecisions.delete(oldest)
+        }
+        changed = true
         if (planStatus.has(toolUseId)) {
+          planStatus = new Map(planStatus)
           planStatus.set(toolUseId, action.decision.behavior === 'allow' ? 'approved' : 'rejected')
         }
+        // AskUserQuestion answers ride on the resolution `message` field
+        // (built by server/permission-helpers.ts:formatQuestionAnswers).
+        // Normally the JSON answers payload also lands as a tool_result
+        // block on a follow-up user message — extractQuestionAnswers in
+        // updateIndexes() parses that and replaces the pending entry.
+        // But the SDK does not always echo a corresponding tool_result
+        // through the Query stream after a canUseTool deny+message
+        // short-circuit, which leaves the inline QuestionCard rendering
+        // 'pending' forever even though the user already answered.
+        // Decoding the same JSON here closes that gap — questionAnswers
+        // flips from [] to the parsed entries the moment the resolution
+        // frame lands, independent of whether tool_result follows.
+        // Scope: only when we previously seeded a pending entry for
+        // this toolUseId (i.e. it really was an AskUserQuestion call).
+        if (questionAnswers.has(toolUseId) && action.decision.message) {
+          const parsed = parseQuestionAnswersMessage(action.decision.message)
+          if (parsed.length > 0) {
+            questionAnswers = new Map(questionAnswers)
+            questionAnswers.set(toolUseId, parsed)
+          }
+        }
       }
-      pidToToolUseId.delete(action.id)
-      return { ...state, permissionPending, pidToToolUseId, permissionDecisions, planStatus }
+      if (pidToToolUseId.has(action.id)) {
+        pidToToolUseId = new Map(pidToToolUseId)
+        pidToToolUseId.delete(action.id)
+        changed = true
+      }
+      if (!changed) return state
+      return { ...state, permissionPending, pidToToolUseId, permissionDecisions, planStatus, questionAnswers }
     }
     case 'CONTEXT_USAGE':
       return { ...state, contextUsage: action.usage }
@@ -268,27 +328,6 @@ function updateTranscript(state: SessionState, message: SdkMessage): SessionStat
   const item = toTranscriptItem(message, prev)
   if (!item) return state
 
-  // Recaps are unique — at most one card per session. The server enforces
-  // this in appendRecap() by splicing out any prior recap before pushing
-  // the new one, but the broadcast that follows is just a normal `message`
-  // frame, so without mirroring the rule here every session switch that
-  // re-fires the idle recap fetch would stack a fresh card on top of the
-  // one we restored from localStorage. Filter ALL existing recaps (not just
-  // the latest) so legacy duplicates already cached pre-fix self-heal.
-  if ((item.msg as { type?: string }).type === 'recap') {
-    const filteredItems = state.items.filter(
-      (it) => (it.msg as { type?: string }).type !== 'recap',
-    )
-    const filteredMessages = state.messages.filter(
-      (m) => (m as { type?: string }).type !== 'recap',
-    )
-    return {
-      ...state,
-      items: [...filteredItems, item],
-      messages: [...filteredMessages, item.msg],
-    }
-  }
-
   if (
     item.msg.type === 'system' &&
     item.msg.subtype === 'api_retry' &&
@@ -312,7 +351,42 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
   let planStatus = state.planStatus
   let planContent = state.planContent
   let questionAnswers = state.questionAnswers
+  let toolStatus = state.toolStatus
   let activeSubagents = state.activeSubagents
+
+  // Generic tool status — seed 'running' for every tool_use the assistant
+  // emits (excluding ones with their own status map: Plan/Subagent/Question).
+  const toolStarts = getToolUseStarts(message)
+  if (toolStarts.length > 0) {
+    toolStatus = new Map(toolStatus)
+    for (const id of toolStarts) {
+      // Don't clobber a status that's already terminal — could happen in
+      // theory if a duplicate tool_use lands during replay.
+      if (!toolStatus.has(id)) toolStatus.set(id, 'running')
+    }
+    changed = true
+  }
+
+  // Flip to 'success' or 'error' when the matching tool_result lands.
+  // Most user messages don't carry tool_results, so defer the Map clone
+  // until we actually have a status to update — same trick as the
+  // subagent branch below.
+  if (message.type === 'user' && toolStatus.size > 0) {
+    const outcomes = getToolResultOutcomes(message)
+    if (outcomes.length > 0) {
+      let touched = false
+      for (const { toolUseId, outcome } of outcomes) {
+        const prev = toolStatus.get(toolUseId)
+        if (!prev || prev === outcome) continue
+        if (!touched) {
+          if (toolStatus === state.toolStatus) toolStatus = new Map(toolStatus)
+          touched = true
+        }
+        toolStatus.set(toolUseId, outcome)
+      }
+      if (touched) changed = true
+    }
+  }
 
   const planIds = getPlanToolUseIds(message)
   if (planIds.length > 0) {
@@ -449,7 +523,9 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
     }
   }
 
-  return changed ? { ...state, planStatus, planContent, questionAnswers, activeSubagents } : state
+  return changed
+    ? { ...state, planStatus, planContent, questionAnswers, toolStatus, activeSubagents }
+    : state
 }
 
 function updateLiveTurn(state: SessionState, message: SdkMessage): SessionState {

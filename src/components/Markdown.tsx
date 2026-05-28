@@ -11,59 +11,9 @@ import { memo, useMemo, useState, useRef } from 'react'
 import type { ComponentPropsWithoutRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { createLowlight } from 'lowlight'
 import { ErrorBoundary } from './ErrorBoundary'
 import { rehypeHighlightQuery } from '../search'
-
-// Register only the languages most commonly seen in Claude responses.
-// Each language adds ~2-8 KB to the bundle.
-import javascript from 'highlight.js/lib/languages/javascript'
-import typescript from 'highlight.js/lib/languages/typescript'
-import python from 'highlight.js/lib/languages/python'
-import bash from 'highlight.js/lib/languages/bash'
-import json from 'highlight.js/lib/languages/json'
-import xml from 'highlight.js/lib/languages/xml'
-import css from 'highlight.js/lib/languages/css'
-import java from 'highlight.js/lib/languages/java'
-import cpp from 'highlight.js/lib/languages/cpp'
-import go from 'highlight.js/lib/languages/go'
-import rust from 'highlight.js/lib/languages/rust'
-import sql from 'highlight.js/lib/languages/sql'
-import markdown from 'highlight.js/lib/languages/markdown'
-import yaml from 'highlight.js/lib/languages/yaml'
-import ruby from 'highlight.js/lib/languages/ruby'
-import swift from 'highlight.js/lib/languages/swift'
-import kotlin from 'highlight.js/lib/languages/kotlin'
-import csharp from 'highlight.js/lib/languages/csharp'
-import php from 'highlight.js/lib/languages/php'
-import htmlLang from 'highlight.js/lib/languages/xml'  // xml covers html
-import diff from 'highlight.js/lib/languages/diff'
-import dockerfile from 'highlight.js/lib/languages/dockerfile'
-import makefile from 'highlight.js/lib/languages/makefile'
-import ini from 'highlight.js/lib/languages/ini'
-import properties from 'highlight.js/lib/languages/properties'
-
-const lowlight = createLowlight({
-  javascript, typescript, python, bash, json, xml,
-  css, java, cpp, go, rust, sql, markdown, yaml,
-  ruby, swift, kotlin, csharp, php, html: htmlLang,
-  diff, dockerfile, makefile, ini, properties,
-})
-
-lowlight.registerAlias({
-  javascript: ['js', 'jsx'],
-  typescript: ['ts', 'tsx'],
-  python: ['py'],
-  bash: ['sh', 'shell', 'zsh'],
-  cpp: ['c', 'c++'],
-  markdown: ['md'],
-  yaml: ['yml'],
-  ruby: ['rb'],
-  rust: ['rs'],
-  csharp: ['cs'],
-  ini: ['toml'],
-  go: ['protobuf'],  // close enough for proto
-})
+import { lowlight } from '../utils/lowlight-instance'
 
 /** Minimal hast-like node shape. Uses a loose type rather than importing
  *  hast's full union to keep the plugin self-contained. */
@@ -151,8 +101,17 @@ const MarkdownInner = memo(function MarkdownInner({ text, searchQuery }: { text:
   // that span inline boundaries (e.g. "**hello** world" → query
   // "hello world") are highlighted, which the previous per-text-node
   // implementation could not reach.
+  //
+  // Important: `rehypeHighlightQuery(q)` already returns the transformer
+  // `(tree) => void`, NOT an attacher. unified expects each entry in
+  // `rehypePlugins` to be an attacher (a function it calls *with no
+  // tree*, expecting a transformer back). Passing the transformer
+  // directly makes unified call it as `transformer()`, which threw
+  // inside walkSearchable and was silently swallowed by <ErrorBoundary>
+  // — the UI rendered fine but no <mark>s ever appeared. We wrap it in
+  // a one-line attacher so unified gets the shape it expects.
   const rehypePlugins = useMemo(
-    () => q ? [rehypeHighlightLite, rehypeHighlightQuery(q)] : [rehypeHighlightLite],
+    () => q ? [rehypeHighlightLite, () => rehypeHighlightQuery(q)] : [rehypeHighlightLite],
     [q],
   )
 

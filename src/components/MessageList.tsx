@@ -11,12 +11,13 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { Markdown } from './Markdown'
 import { ToolUseBlock } from './ToolUseBlock'
-import { PlanStatusProvider, PlanContentProvider } from '../hooks/usePlanStatus'
+import { PlanStatusProvider, PlanContentProvider, ToolStatusProvider } from '../hooks/usePlanStatus'
 import { QuestionAnswersProvider } from '../hooks/useQuestionAnswers'
 import type { SdkMessage, Block } from '../types'
+import type { SessionRecap } from '../../shared/session-info'
 import { formatTokens, formatElapsed, formatJson } from '../utils/format'
 import { useLocalStorage } from '../hooks/useLocalStorage'
-import type { ActiveSubagent, PlanStatus, TranscriptItem } from '../session-store/types'
+import type { ActiveSubagent, PlanStatus, ToolStatus, TranscriptItem } from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { truncate } from '../utils/text'
 import { getBlocks } from '../session-store/normalize'
@@ -26,6 +27,13 @@ export type { ActiveSubagent } from '../session-store/types'
 
 interface Props {
   items: TranscriptItem[]
+  /** Server-pushed AI session recap. Lives on session.recap (NOT in the
+   *  history). When present, rendered as a card pinned to the bottom of
+   *  the transcript (after items, before the streaming footer) so it
+   *  reads as the latest "narrator" entry. Three states drive the chrome:
+   *  pending → loading skeleton, ready → summary + stats, error → retry
+   *  hint. Undefined means "no recap to show". */
+  recap?: SessionRecap
   /** When true, include `system` messages (init/status/etc.) in the
    *  rendered list. Errors (`subtype === 'error'`) are always shown
    *  regardless — those carry actual failure info users need to see. */
@@ -47,6 +55,9 @@ interface Props {
   /** Parsed AskUserQuestion answers keyed by tool_use_id. Empty array
    *  means pending (tool_use seen, answer not yet submitted). */
   questionAnswers?: ReadonlyMap<string, QuestionAnswerEntry[]>
+  /** Generic tool lifecycle (running/success/error) keyed by tool_use_id.
+   *  Drives the status badge on each ToolUseBlock card. */
+  toolStatus?: ReadonlyMap<string, ToolStatus>
   /** Current search query. When non-empty, matching text inside messages
    *  is highlighted. */
   searchQuery?: string
@@ -84,6 +95,7 @@ interface RenderableItem {
 const EMPTY_PLAN_STATUS: ReadonlyMap<string, PlanStatus> = new Map()
 const EMPTY_PLAN_CONTENT: ReadonlyMap<string, string> = new Map()
 const EMPTY_QUESTION_ANSWERS: ReadonlyMap<string, QuestionAnswerEntry[]> = new Map()
+const EMPTY_TOOL_STATUS: ReadonlyMap<string, ToolStatus> = new Map()
 
 /** Distance from the bottom (px) within which we treat the user as
  *  "still at the bottom" for follow-mode and the jump-to-bottom button.
@@ -95,7 +107,7 @@ const EMPTY_QUESTION_ANSWERS: ReadonlyMap<string, QuestionAnswerEntry[]> = new M
  *  (so re-entering the band restores follow-mode). */
 const NEAR_BOTTOM_PX = 200
 
-export const MessageList = memo(function MessageList({ items, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, searchQuery, searchActiveMsgIdx, parentToolUseIdFilter }: Props) {
+export const MessageList = memo(function MessageList({ items, recap, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, searchQuery, searchActiveMsgIdx, parentToolUseIdFilter }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -417,16 +429,30 @@ export const MessageList = memo(function MessageList({ items, showSystemEvents =
     </div>
   ), [pendingInterruptRef, searchQuery, activeVirtIdx])
 
-  const virtuosoComponents = useMemo(() => ({
-    Footer: streamingContent != null
-      ? () => <StreamingFooter content={streamingContent} />
-      : undefined,
-  }), [streamingContent])
+  // Footer combines two optional rows pinned to the bottom of the
+  // transcript: the streaming-typing bubble (live token deltas) and the
+  // session-recap card. They're rendered together — phase-wise the recap
+  // only fires when the session is idle, but the server doesn't enforce
+  // that on the broadcast side, so we don't gate either on the other.
+  const virtuosoComponents = useMemo(() => {
+    const hasStreaming = streamingContent != null
+    const hasRecap = recap != null
+    if (!hasStreaming && !hasRecap) return {}
+    return {
+      Footer: () => (
+        <>
+          {hasStreaming && <StreamingFooter content={streamingContent} />}
+          {hasRecap && <RecapFooter recap={recap} />}
+        </>
+      ),
+    }
+  }, [streamingContent, recap])
 
   return (
     <PlanStatusProvider value={planStatus}>
     <PlanContentProvider value={planContent}>
     <QuestionAnswersProvider value={questionAnswers}>
+    <ToolStatusProvider value={toolStatus}>
     <div className="chat-messages-wrap">
       <div className="chat-messages">
         {renderableItems.length === 0 ? (
@@ -461,6 +487,7 @@ export const MessageList = memo(function MessageList({ items, showSystemEvents =
         </button>
       )}
     </div>
+    </ToolStatusProvider>
     </QuestionAnswersProvider>
     </PlanContentProvider>
     </PlanStatusProvider>
@@ -533,13 +560,6 @@ const MessageView = memo(function MessageView({
   // Stable `msg` reference (the store hands us immutable items) →
   // stable `blocks` → stable `block` props → memos hit.
   const blocks = useMemo(() => getBlocks(msg), [msg])
-
-  // Synthetic recap message — see useSessionRecap. Rendered as its own
-  // chrome-distinct card so the user can tell it's an AI summary, not a
-  // real assistant turn.
-  if (type === 'recap') {
-    return <RecapMessageView msg={msg} />
-  }
 
   if (type === 'user') {
     const userContent = extractUserText(msg)
@@ -901,84 +921,87 @@ function CompactSummary({ text }: { text: string }) {
   )
 }
 
-/** Inline rendering for the synthetic recap message produced by
- *  useSessionRecap. Three states (loading / ready / error) drive the
- *  chrome; ready state shows the AI summary plus stats. The structure
- *  mirrors the previous SessionRecapBanner, but lives inside the
- *  transcript so it scrolls with the conversation instead of floating. */
-function RecapMessageView({ msg }: { msg: SdkMessage }) {
-  const m = msg as {
-    state?: 'loading' | 'ready' | 'error'
-    error?: string
-    recap?: {
-      summary: string
-      stats: {
-        userTurns: number
-        assistantTurns: number
-        totalCostUsd: number
-        durationMs: number
-        toolsUsed: string[]
-      }
-    }
-  }
-  const state = m.state ?? 'loading'
-
-  if (state === 'loading') {
+/** Rendering for the session.recap field, driven by its 3-state
+ *  status discriminator from the shared SessionRecap type:
+ *    pending → loading skeleton (LLM call in flight)
+ *    ready   → AI summary + stats
+ *    error   → failure message (Alt+R retries)
+ *
+ *  The card is anchored at the bottom of the transcript via Virtuoso's
+ *  Footer slot — see virtuosoComponents above. It is NOT a synthetic
+ *  SDK message; the previous design (recap as a `type:'recap'` message
+ *  spliced into history) was replaced because:
+ *    1. recap is metadata about the session, not part of the
+ *       conversation tape.
+ *    2. recapManager's lifecycle (in-memory only, invalidated on every
+ *       conversation mutation) is incompatible with the persistent
+ *       message ring's append-only semantics.
+ */
+const RecapFooter = memo(function RecapFooter({ recap }: { recap: SessionRecap }) {
+  if (recap.status === 'pending') {
     return (
-      <div className="msg recap-msg recap-msg--loading" role="note" aria-label="Generating session recap">
-        <div className="msg-header">
-          <span>✨ Session recap</span>
-        </div>
-        <div className="msg-body recap-msg-loading-body">
-          <span className="recap-msg-loading-bar" aria-hidden />
-          <span>Summarising the last few minutes…</span>
+      <div className="virtuoso-footer-wrapper">
+        <div className="msg recap-msg recap-msg--loading" role="note" aria-label="Generating session recap">
+          <div className="msg-header">
+            <span>✨ Session recap</span>
+          </div>
+          <div className="msg-body recap-msg-loading-body">
+            <span className="recap-msg-loading-bar" aria-hidden />
+            <span>Summarising the last few minutes…</span>
+          </div>
         </div>
       </div>
     )
   }
 
-  if (state === 'error') {
+  if (recap.status === 'error') {
     return (
-      <div className="msg recap-msg recap-msg--error" role="note">
-        <div className="msg-header">
-          <span>⚠️ Recap unavailable</span>
+      <div className="virtuoso-footer-wrapper">
+        <div className="msg recap-msg recap-msg--error" role="note">
+          <div className="msg-header">
+            <span>⚠️ Recap unavailable</span>
+          </div>
+          <div className="msg-body">{recap.error ?? 'Unknown error'}</div>
         </div>
-        <div className="msg-body">{m.error ?? 'Unknown error'}</div>
       </div>
     )
   }
 
-  const recap = m.recap
-  if (!recap) return null
+  // status === 'ready' — summary and stats may still legitimately be
+  // missing if the server constructed the ready frame defensively;
+  // bail rather than render a half-card.
+  if (!recap.summary || !recap.stats) return null
   const { summary, stats } = recap
 
   return (
-    <div className="msg recap-msg" role="note" aria-label="Session recap">
-      <div className="msg-header">
-        <span>✨ Session recap</span>
-      </div>
-      <div className="msg-body">
-        <Markdown text={summary} />
-        <div className="recap-msg-stats">
-          {stats.userTurns > 0 && (
-            <span className="recap-msg-stat">
-              💬 {stats.userTurns} turn{stats.userTurns === 1 ? '' : 's'}
-            </span>
-          )}
-          {stats.totalCostUsd > 0 && (
-            <span className="recap-msg-stat">💰 {formatCost(stats.totalCostUsd)}</span>
-          )}
-          {stats.durationMs > 0 && (
-            <span className="recap-msg-stat">⏱ {formatElapsed(stats.durationMs)}</span>
-          )}
-          {stats.toolsUsed.length > 0 && (
-            <span className="recap-msg-stat">🔧 {stats.toolsUsed.length} tool{stats.toolsUsed.length === 1 ? '' : 's'}</span>
-          )}
+    <div className="virtuoso-footer-wrapper">
+      <div className="msg recap-msg" role="note" aria-label="Session recap">
+        <div className="msg-header">
+          <span>✨ Session recap</span>
+        </div>
+        <div className="msg-body">
+          <Markdown text={summary} />
+          <div className="recap-msg-stats">
+            {stats.userTurns > 0 && (
+              <span className="recap-msg-stat">
+                💬 {stats.userTurns} turn{stats.userTurns === 1 ? '' : 's'}
+              </span>
+            )}
+            {stats.totalCostUsd > 0 && (
+              <span className="recap-msg-stat">💰 {formatCost(stats.totalCostUsd)}</span>
+            )}
+            {stats.durationMs > 0 && (
+              <span className="recap-msg-stat">⏱ {formatElapsed(stats.durationMs)}</span>
+            )}
+            {stats.toolsUsed.length > 0 && (
+              <span className="recap-msg-stat">🔧 {stats.toolsUsed.length} tool{stats.toolsUsed.length === 1 ? '' : 's'}</span>
+            )}
+          </div>
         </div>
       </div>
     </div>
   )
-}
+})
 
 function formatCost(usd: number): string {
   if (usd === 0) return '$0'

@@ -12,16 +12,18 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useLocalStorage } from './hooks/useLocalStorage'
 import { usePanelColumnResize } from './hooks/usePanelColumnResize'
 import { useSidebarResize } from './hooks/useSidebarResize'
-import { useNotifications } from './hooks/useNotifications'
+import { useSessionNotifications } from './hooks/useSessionNotifications'
+import { useTheme } from './hooks/useTheme'
 import { useWsHub, useWsHubStatus } from './hooks/useWsHub'
 import type { WsServerFrame } from './ws-types'
 import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, SidebarSection } from './types'
 import { PERMISSION_MODES } from './types'
-import { ACCENT_COLORS, ACCENT_COLOR_KEY, SESSION_COLORS_KEY, buildSessionAccentMap } from './theme'
+import { ACCENT_COLORS } from './theme'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { SetupPage } from './components/SetupPage'
 import { ThemeToggle } from './components/ThemeToggle'
-import { applyTheme, getStoredTheme, onSystemThemeChange, toggleTheme, type Theme } from './utils/theme'
+import { UpdateBanner } from './components/UpdateBanner'
+import { useUpdateInfo } from './hooks/useUpdateInfo'
 
 // Lazy-load heavy modal/overlay components that are only shown on demand.
 // This keeps the initial bundle lean — the user pays the download cost
@@ -47,17 +49,6 @@ import {
 import type { Defaults, ConfigResponse } from './types/config'
 import { notificationTooltip } from './utils/notifications'
 import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
-
-/** Read the session-accent-color map from localStorage. Used in both
- *  the color-menu handler and the new-session handler. */
-function readSessionColors(): Record<string, string> {
-  try {
-    const raw = window.localStorage.getItem(SESSION_COLORS_KEY)
-    return raw ? (JSON.parse(raw) ?? {}) : {}
-  } catch {
-    return {}
-  }
-}
 
 export function App() {
   const [isConfigured, setIsConfigured] = useState<boolean | null>(null)
@@ -90,26 +81,18 @@ export function App() {
   const [helpOpen, setHelpOpen] = useState(false)
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false)
   const [opError, setOpError] = useState<string | null>(null)
-  // Theme state — persisted in localStorage, applied via data-theme on <html>.
-  const [theme, setTheme] = useState<Theme>(getStoredTheme)
-  // Apply theme on mount and whenever it changes. applyTheme() resolves
-  // 'system' to 'dark'/'light' before writing the data-theme attribute.
-  useEffect(() => {
-    applyTheme(theme)
-  }, [theme])
-  // Subscribe to OS theme changes so 'system' mode stays in sync when
-  // the user switches their OS preference.
-  useEffect(() => {
-    if (theme !== 'system') return
-    return onSystemThemeChange(() => {
-      applyTheme('system')
-      // Force a re-render so children pick up the resolved value.
-      setTheme('system')
-    })
-  }, [theme])
-  const handleToggleTheme = useCallback(() => {
-    setTheme((prev) => toggleTheme(prev))
-  }, [])
+  // Theme + accent (global + per-session). Lives in its own hook so
+  // App.tsx isn't on the hook for the OS-theme subscription, accent
+  // CSS-var sync, and the React-19-unmount-race write-through pattern.
+  const {
+    theme,
+    toggleThemeNext,
+    accentColor,
+    setAccentColor,
+    sessionColors,
+    sessionAccentMap,
+    handleSessionColorChange,
+  } = useTheme()
   /** Ids currently being resumed — briefly disables the item so a double-
    *  click doesn't fire two POSTs. */
   const [resuming, setResuming] = useState<Set<string>>(new Set())
@@ -143,44 +126,8 @@ export function App() {
   /** Show SDK bookkeeping messages (system/init, system/status, …) in
    *  the transcript. Off by default — they're noise for normal use,
    *  but invaluable when debugging tool wiring or context compaction. */
-  const [accentColor, setAccentColor] = useLocalStorage<string>(ACCENT_COLOR_KEY, ACCENT_COLORS[0].accent)
-  /** Per-session accent overrides. Keys are session ids; values are accent
-   *  hex strings from ACCENT_COLORS. Missing entries fall back to the
-   *  global accentColor. */
-  const [sessionColors, setSessionColors] = useLocalStorage<Record<string, string>>(SESSION_COLORS_KEY, {})
   const [showSystemEvents, setShowSystemEvents] = useLocalStorage<boolean>(SHOW_SYSTEM_EVENTS_KEY, false)
   const { sidebarWidth: effectiveSidebarWidth, sidebarResize, setSidebarWidth } = useSidebarResize({ minPx: sidebarMinPx, maxPx: sidebarMaxPx })
-
-  // Sync the chosen accent colour into :root CSS custom properties so the
-  // entire stylesheet picks up the change without any further wiring.
-  useEffect(() => {
-    const root = document.documentElement.style
-    root.setProperty('--accent', accentColor)
-    const preset = ACCENT_COLORS.find((c) => c.accent === accentColor)
-    root.setProperty('--accent-strong', preset?.strong ?? accentColor)
-  }, [accentColor])
-
-  /** Pre-computed per-session accent CSS overrides. Stable references
-   *  so ChatPanel's React.memo can skip unchanged panels. */
-  const sessionAccentMap = useMemo(() => buildSessionAccentMap(sessionColors), [sessionColors])
-
-  const handleSessionColorChange = useCallback((id: string, color: string | undefined) => {
-    // Bypass the React state updater. Opening the context menu is
-    // the only way this fires, and clicking a colour unmounts the
-    // menu in the same tick — React 19 may then discard a setState
-    // updater whose resulting state "won't matter" after unmount,
-    // exactly like the rememberIn bug. Write through directly,
-    // then sync React state for the still-mounted SessionList.
-    const curr = readSessionColors()
-    if (color) curr[id] = color
-    else delete curr[id]
-    try {
-      window.localStorage.setItem(SESSION_COLORS_KEY, JSON.stringify(curr))
-    } catch {
-      /* storage full / disabled — in-memory state still reflects it */
-    }
-    setSessionColors(curr)
-  }, [setSessionColors])
 
   const [gitPanelOpenFor, setGitPanelOpenFor] = useState<string | null>(null)
   // Open/close handlers enforce mutual exclusion between Settings and
@@ -200,6 +147,13 @@ export function App() {
 
   const { gridTemplate, onDividerMouseDown, draggingDivider, bodyRef, setPanelRatios } = usePanelColumnResize({ openIds, panelMinRatio })
 
+  // Update checker — gated on isConfigured so we don't probe before
+  // the setup wizard finishes (the npm registry shouldn't see traffic
+  // from a server that can't yet talk to Claude either way). Shared
+  // between the top-of-page banner and the About tab in
+  // GlobalSettingsModal so "Check now" propagates instantly.
+  const updateInfo = useUpdateInfo(isConfigured === true)
+
   useEffect(() => {
     void api
       .get<ConfigResponse>('/config')
@@ -213,19 +167,10 @@ export function App() {
       .catch(() => setIsConfigured(true))
   }, [])
 
-  // Desktop notifications. The hook itself is inert until the user enables
-  // them (bell button in the header); we just wire a ref-based edge
-  // detector here so the SSE handler can fire a notify() when a turn
-  // finishes in the background. Using refs (not reactive state) avoids
-  // re-creating the session-event handler map on every render.
-  const notifications = useNotifications()
-  const notifyRef = useRef(notifications.notify)
-  useEffect(() => {
-    notifyRef.current = notifications.notify
-  })
-  /** Last-seen working flag per session. We notify when this flips from
-   *  true to false (= a turn just completed). */
-  const prevWorkingRef = useRef<Map<string, boolean>>(new Map())
+  // Desktop notifications: refs declared first, then the hook wires
+  // the working-flag edge detector + permission gate. See
+  // useSessionNotifications for the visibility gate, the seed semantics,
+  // and why the maybe* callbacks read the refs (not reactive deps).
   const openIdsRef = useRef(openIds)
   const focusedIdRef = useRef(focusedId)
   const sessionsRef = useRef(sessions)
@@ -265,73 +210,13 @@ export function App() {
   newSessionDialogOpenRef.current = newSessionDialogOpen
   /* eslint-enable react-hooks/refs */
 
-  /** Fire a notification when Claude is waiting on a tool-permission
-   *  approval in a session the user isn't actively watching. Same
-   *  visibility rules as maybeNotify below — users actively looking at
-   *  a panel will see the overlay dialog without needing a desktop
-   *  interruption. `tag` ends in ':perm' so it doesn't collide with the
-   *  session's turn-complete notification. */
-  const maybePermissionNotify = useCallback((sessionId: string, toolLabel: string) => {
-    // Use hasFocus() rather than visibilityState: the tab can be "visible"
-    // (foreground tab) while the browser window itself is minimized, behind
-    // another app (Alt-Tab), or the screen is locked. In all those cases
-    // hasFocus() correctly returns false, so we still fire the notification.
-    const windowFocused = typeof document !== 'undefined' && document.hasFocus()
-    const isFocused = focusedIdRef.current === sessionId
-    if (windowFocused && isFocused) return
-
-    // Look up a friendly title — fall back to id prefix when we haven't
-    // seen the session in the list yet (unlikely but possible during
-    // startup races).
-    const sessionsNow = sessionsRef.current
-    const session = sessionsNow.find((s) => s.id === sessionId)
-    const title = session?.title ?? sessionId.slice(0, 8)
-
-    notifyRef.current({
-      title: `⚠ ${title} needs permission`,
-      body: `Approve or deny: ${toolLabel}`,
-      tag: `${sessionId}:perm`,
-      // Permission notifications are actionable — the user must respond
-      // for the turn to continue. Keep the toast visible until they
-      // dismiss it, and DON'T mark it silent (Windows Action Center
-      // suppresses silent toasts from this kind of "background" page).
-      requireInteraction: true,
-      onClick: () => {
-        handleSelectRef.current(sessionId)
-      },
-    })
-  }, [])
-
-  /** Called from the SSE update handler with the server's latest session
-   *  snapshot. Fires a notification iff: working flipped true→false AND
-   *  (window is not focused OR session is not the current focused panel). */
-  const maybeNotify = useCallback((s: SessionInfo) => {
-    const prev = prevWorkingRef.current.get(s.id) ?? false
-    prevWorkingRef.current.set(s.id, s.working)
-    if (!(prev && !s.working)) return // only trigger on the falling edge
-
-    const windowFocused = typeof document !== 'undefined' && document.hasFocus()
-    const isFocused = focusedIdRef.current === s.id
-    if (windowFocused && isFocused) return // user is watching it — no need
-
-    const title = s.title ?? s.id.slice(0, 8)
-    notifyRef.current({
-      title: `✓ ${title}`,
-      body: s.error ? `Errored: ${s.error}` : 'Turn complete',
-      tag: s.id,
-      // Status update — quiet to avoid sound spam when several
-      // sessions complete back-to-back. Accepts the Windows-Action-
-      // -Center-silent-suppression tradeoff because the user can
-      // see completion state in the sidebar anyway.
-      silent: true,
-      onClick: () => {
-        // Delegate to the full sidebar-card navigation logic so notification
-        // clicks get the same behaviour: group switching, dormant resume,
-        // and unread-dot clearing.
-        handleSelectRef.current(s.id)
-      },
-    })
-  }, [])
+  // Notification coordinator: working-flag edge detector + permission
+  // gate, both gated on `document.hasFocus() && focusedId === sessionId`.
+  // The hook owns notifyRef + prevWorkingRef internally; App keeps only
+  // the bell-button-facing `notifications` slice and the three
+  // session-event callbacks the WS hub effect calls into.
+  const { notifications, maybeNotify, maybePermissionNotify, seedWorkingState, pruneSession } =
+    useSessionNotifications({ focusedIdRef, sessionsRef, handleSelectRef })
 
   // Single push-based subscription to the server's session list. All
   // events now ride on the shared WebSocket hub — one connection per
@@ -425,7 +310,7 @@ export function App() {
           // Seed the edge-detector so a session that spawns already
           // working doesn't fire a notification on its first true→false
           // transition when the user is still watching it.
-          prevWorkingRef.current.set(frame.session.id, frame.session.working)
+          seedWorkingState(frame.session.id, frame.session.working)
           break
         }
         case 'session-removed': {
@@ -438,6 +323,32 @@ export function App() {
             if (!(frame.id in prev)) return prev
             const next = { ...prev }
             delete next[frame.id]
+            return next
+          })
+          // Drop the notification edge-detector entry too. Long-lived
+          // tabs that watch many short sessions over hours otherwise
+          // grow that Map without bound.
+          pruneSession(frame.id)
+          break
+        }
+        case 'session-recap-update': {
+          // Per-session recap transition. The same data also rides on
+          // session-update (RecapManager broadcasts both), but this
+          // dedicated frame is smaller and arrives in the same turn the
+          // recap state actually changed — useful for the specific
+          // recap UI that gates on session.recap.status. Patch just the
+          // recap field so unrelated SessionInfo references stay
+          // referentially stable.
+          setSessions((prev) => {
+            const i = prev.findIndex((s) => s.id === frame.sessionId)
+            if (i < 0) return prev
+            const cur = prev[i]
+            // No-op when recap is referentially identical (guards the
+            // "session-update arrived first with the same recap"
+            // case — both frames re-render but the second is wasted).
+            if (cur.recap === frame.recap) return prev
+            const next = prev.slice()
+            next[i] = { ...cur, recap: frame.recap }
             return next
           })
           break
@@ -463,7 +374,7 @@ export function App() {
       }
     })
     return off
-  }, [hub, maybeNotify, maybePermissionNotify, setLastSeenTurn, setSidebarOrder, setGroups])
+  }, [hub, maybeNotify, maybePermissionNotify, seedWorkingState, pruneSession, setLastSeenTurn, setSidebarOrder, setGroups])
 
   // Hub status → reconnecting banner is now derived via `displayedError`
   // (useMemo above) — no effect needed.
@@ -604,23 +515,16 @@ export function App() {
           setLastSeenTurn((prev) => ({ ...prev, [res.session.id]: res.session.lastTurnAt ?? Date.now() }))
         }
         if (accent) {
-          // Save the chosen accent under the new id. Direct localStorage
-          // write + setState (same pattern as the color-menu handler) so
-          // the write can't be dropped by a pending unmount.
-          const curr = readSessionColors()
-          curr[res.session.id] = accent
-          try {
-            window.localStorage.setItem(SESSION_COLORS_KEY, JSON.stringify(curr))
-          } catch {
-            /* ignore storage failure */
-          }
-          setSessionColors(curr)
+          // Save the chosen accent under the new id. The hook's handler
+          // does the localStorage-then-setState dance that survives a
+          // dialog unmount in the same tick.
+          handleSessionColorChange(res.session.id, accent)
         }
       } catch (e) {
         setOpError((e as Error).message)
       }
     },
-    [setSessionColors, handleAddToGroup, activeGroupId, openSession, setLastSeenTurn],
+    [handleSessionColorChange, handleAddToGroup, activeGroupId, openSession, setLastSeenTurn],
   )
 
   const handleFork = useCallback(
@@ -677,12 +581,9 @@ export function App() {
         await api.delete(`/sessions/${id}`)
         closeSession(id)
         // Clean up per-session accent so it doesn't linger in storage.
-        setSessionColors((prev) => {
-          if (!(id in prev)) return prev
-          const next = { ...prev }
-          delete next[id]
-          return next
-        })
+        // Passing `undefined` deletes the entry through the same
+        // localStorage-merge path the colour-menu uses.
+        handleSessionColorChange(id, undefined)
         // Remove deleted session from any group it belongs to so the
         // group's session count stays accurate.
         setGroups((prev) =>
@@ -698,7 +599,7 @@ export function App() {
         setOpError((e as Error).message)
       }
     },
-    [closeSession, setGroups, setSessionColors],
+    [closeSession, setGroups, handleSessionColorChange],
   )
 
   /** Create a fresh session with the same config, then delete the old one.
@@ -1247,7 +1148,14 @@ export function App() {
     refreshConfigResponse().catch((err) => {
       console.error('Post-save /config refresh failed:', err)
     })
-  }, [refreshConfigResponse])
+    // Also re-probe the registry: the user may have just edited the
+    // updateCheckRegistry field in the About tab, and the cached
+    // snapshot would still reflect the previous URL (or `disabled`)
+    // until the cache TTL expires. A force refresh here makes "save"
+    // feel responsive — the banner / About tab reflect the new URL
+    // before the modal is fully closed.
+    updateInfo.refresh()
+  }, [refreshConfigResponse, updateInfo])
 
   if (isConfigured === null) {
     return (
@@ -1376,7 +1284,7 @@ export function App() {
                 />
               ))}
             </div>
-            <ThemeToggle theme={theme} onToggle={handleToggleTheme} />
+            <ThemeToggle theme={theme} onToggle={toggleThemeNext} />
             <button
               className="btn btn-icon"
               onClick={() => setGlobalSettingsOpen(true)}
@@ -1400,6 +1308,8 @@ export function App() {
         >
           {displayedError ?? ''}
         </div>
+
+        <UpdateBanner info={updateInfo.info} />
 
         <div
           ref={bodyRef}
@@ -1510,6 +1420,10 @@ export function App() {
           <GlobalSettingsModal
             onClose={() => setGlobalSettingsOpen(false)}
             onSaved={handleGlobalSettingsSaved}
+            updateInfo={updateInfo.info}
+            updateRefreshing={updateInfo.refreshing}
+            updateError={updateInfo.error}
+            onRefreshUpdate={updateInfo.refresh}
           />
         </Suspense>
       )}

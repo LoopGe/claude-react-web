@@ -1,81 +1,36 @@
-// Session recap route: AI-generated summary.
+// Session recap route — phase-checked RPC.
 //
-// Successful recaps and failures are both persisted as a synthetic
-// `type: 'recap'` message in the session history (state:'ready' or
-// state:'error'). The message is broadcast over WS so all live tabs
-// see it. The HTTP body mirrors what was persisted so callers that
-// don't subscribe still know what happened.
+// The HTTP route is now a thin wrapper around `recapManager.requestGenerate`.
+// The manager owns the lifecycle, in-flight dedup, and broadcast; this
+// route's only jobs are:
+//   1. Translate request → manager call
+//   2. Surface the manager's HttpError throws (404/409/410/412) so the
+//      client can distinguish "still working" from "dormant" from "gone"
+//      without re-deriving phase from primitives.
+//   3. Return the resulting SessionRecap as JSON for callers that don't
+//      subscribe to the WS channel (and as a fallback for the same call's
+//      own client when the broadcast lands after the HTTP response).
+//
+// Recap is not a synthetic message in the transcript any more — clients
+// render it from `session.recap` (live updates ride the
+// `session-recap-update` WS frame). We do NOT splice anything into the
+// session history here.
 
 import { Hono } from 'hono'
 import { SessionManager } from '../session-manager.js'
-import { generateRecap, updateRecapCacheAfterAppend } from '../recap.js'
-
-interface ErrorRecapBody {
-  state: 'error'
-  error: string
-  generatedAt: number
-}
 
 export function buildRecapRouter(sm: SessionManager): Hono {
   const app = new Hono()
 
   app.post('/sessions/:id/recap', async (c) => {
     const id = c.req.param('id')
-    sm.get(id) // throws 404 if not found
-    const history = sm.getHistory(id)
-
-    // Dormant session — history was GC'd from memory. Can't summarise
-    // and can't broadcast (no live subscribers, appendRecap would no-op).
-    // Surface the reason in the response body. The client's loading
-    // splice clears on response; the user sees no transcript update,
-    // which matches the pre-change behaviour for dormant sessions.
-    if (!history) {
-      const body: ErrorRecapBody = {
-        state: 'error',
-        error: 'Session is dormant — resume it to generate a recap.',
-        generatedAt: Date.now(),
-      }
-      return c.json(body)
-    }
-
-    try {
-      const result = await generateRecap(history, id)
-      const recapMsg = {
-        type: 'recap',
-        uuid: `recap:${id}:${result.generatedAt}`,
-        session_id: id,
-        recap: result,
-        state: 'ready',
-      }
-      sm.appendRecap(id, recapMsg)
-      // After appending, the history has grown by one and the last
-      // message UUID is now the recap's UUID. Bump the cache fingerprint
-      // so the next request hits the cache instead of re-calling the LLM.
-      const updatedHistory = sm.getHistory(id)
-      if (updatedHistory) {
-        const lastMsg = updatedHistory[updatedHistory.length - 1] as Record<string, unknown> | undefined
-        updateRecapCacheAfterAppend(id, updatedHistory.length, (lastMsg?.uuid as string) ?? '')
-      }
-      return c.json(result)
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err)
-      console.warn(`[recap] generation failed for ${id}:`, errMsg)
-      const generatedAt = Date.now()
-      // Persist the error as a state:'error' recap message so all live
-      // subscribers see "⚠️ Recap unavailable" instead of a stuck loading
-      // bar. appendRecap replaces any prior recap message — a successful
-      // retry will overwrite this card.
-      const recapMsg = {
-        type: 'recap',
-        uuid: `recap:${id}:${generatedAt}`,
-        session_id: id,
-        state: 'error',
-        error: errMsg,
-      }
-      sm.appendRecap(id, recapMsg)
-      const body: ErrorRecapBody = { state: 'error', error: errMsg, generatedAt }
-      return c.json(body)
-    }
+    // requestGenerate throws HttpError(404/409/410/412) for the
+    // unrecoverable phases — the global onError hook in buildApiRouter
+    // translates those into the matching HTTP responses. The client gates
+    // on phase before firing, so a 409 here means a race (the user
+    // started a turn between the client's gate and the server's check).
+    const recap = await sm.recapManager.requestGenerate(id)
+    return c.json(recap)
   })
 
   return app

@@ -345,9 +345,12 @@ export const Composer = memo(function Composer({
       : terminatedReason === 'query_ended' ? 'Connection closed'
       : terminatedReason === 'process_killed' ? 'Process killed'
       : terminatedReason === 'process_exited' ? 'Process exited'
+      : terminatedReason === 'spawn_failed' ? 'CLI failed to start'
       : terminatedReason === 'init_stuck' ? 'Init timed out'
       : terminatedReason === 'stuck' ? 'Session unresponsive'
       : terminatedReason === 'deleted' ? 'Session deleted'
+      : terminatedReason === 'transcript_missing' ? 'Transcript file missing'
+      : terminatedReason === 'no_data' ? 'No conversation data on disk'
       : null
     return (
       <div className="session-ended">

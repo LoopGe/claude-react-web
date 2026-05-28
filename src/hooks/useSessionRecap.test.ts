@@ -1,3 +1,20 @@
+// Tests for the phase-driven recap hook.
+//
+// The hook is a pure timer + POST trigger, fed by `session.phase`,
+// `session.lastTurnAt`, and `session.recap` (all server-pushed). It
+// fires POST /sessions/:id/recap exactly when:
+//   - phase === 'idle'
+//   - lastTurnAt is set
+//   - session.recap is undefined (no fresh one already covers it)
+//   - and the 5-minute idle window has elapsed (or fires immediately
+//     when already past it)
+//
+// Anything that breaks one of those is a no-op. Manual refresh()
+// bypasses the timer but still requires lastTurnAt.
+//
+// We do NOT test the server's phase gate here (covered by recap.test.ts);
+// the hook trusts what's on session.phase.
+
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 
@@ -13,8 +30,26 @@ vi.mock('./useApi', () => ({
 
 // Import AFTER mock.
 import { useSessionRecap } from './useSessionRecap'
+import type { SessionInfo } from '../types'
 
 // ── Helpers ────────────────────────────────────────────────────────
+
+/** Build a minimal SessionInfo for the hook. Only the four fields the
+ *  hook reads (id, phase, lastTurnAt, recap) actually matter — the rest
+ *  satisfy the type. */
+function buildSession(partial: Partial<SessionInfo> & Pick<SessionInfo, 'phase'>): SessionInfo {
+  return {
+    id: 's1',
+    createdAt: 0,
+    lastActivityAt: 0,
+    subscribers: 1,
+    messageCount: 0,
+    running: true,
+    terminated: false,
+    working: false,
+    ...partial,
+  }
+}
 
 // ── Tests ──────────────────────────────────────────────────────────
 
@@ -30,33 +65,90 @@ describe('useSessionRecap', () => {
     vi.restoreAllMocks()
   })
 
-  // ── Idle-trigger gate ─────────────────────────────────────────
+  // ── Phase gate ────────────────────────────────────────────────
+
+  it('does NOT fetch when phase is not idle, even past the threshold', async () => {
+    const now = Date.now()
+    vi.setSystemTime(now)
+
+    renderHook(() =>
+      useSessionRecap(
+        buildSession({ phase: 'working', lastTurnAt: now - 10 * 60_000 }),
+      ),
+    )
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(mockPost).not.toHaveBeenCalled()
+  })
 
   it('does NOT fetch when the session has no completed turn yet', () => {
-    const { result } = renderHook(() => useSessionRecap('s1', undefined))
+    renderHook(() => useSessionRecap(buildSession({ phase: 'idle' })))
     expect(mockPost).not.toHaveBeenCalled()
-    expect(result.current.loadingMessage).toBeNull()
   })
+
+  it('does NOT fetch when phase is dormant', async () => {
+    const now = Date.now()
+    vi.setSystemTime(now)
+
+    renderHook(() =>
+      useSessionRecap(
+        buildSession({ phase: 'dormant', lastTurnAt: now - 10 * 60_000 }),
+      ),
+    )
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(mockPost).not.toHaveBeenCalled()
+  })
+
+  it('does NOT fetch when phase is terminated', async () => {
+    const now = Date.now()
+    vi.setSystemTime(now)
+
+    renderHook(() =>
+      useSessionRecap(
+        buildSession({ phase: 'terminated', lastTurnAt: now - 10 * 60_000 }),
+      ),
+    )
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(mockPost).not.toHaveBeenCalled()
+  })
+
+  // ── Idle-trigger threshold ────────────────────────────────────
 
   it('does NOT fetch when the session is still under 5 minutes idle', () => {
     const now = Date.now()
     vi.setSystemTime(now)
 
-    // Last turn 1 minute ago — far from idle.
-    const { result } = renderHook(() => useSessionRecap('s1', now - 60_000))
+    renderHook(() =>
+      useSessionRecap(
+        buildSession({ phase: 'idle', lastTurnAt: now - 60_000 }),
+      ),
+    )
 
     expect(mockPost).not.toHaveBeenCalled()
-    expect(result.current.loadingMessage).toBeNull()
   })
 
-  it('fetches immediately on mount when already idle ≥ 5 minutes', async () => {
+  it('fetches immediately when already idle ≥ 5 minutes', async () => {
     const now = Date.now()
     vi.setSystemTime(now)
 
-    const lastTurn = now - 10 * 60_000 // 10 minutes ago
-    const { result } = renderHook(() => useSessionRecap('s1', lastTurn))
+    renderHook(() =>
+      useSessionRecap(
+        buildSession({ phase: 'idle', lastTurnAt: now - 10 * 60_000 }),
+      ),
+    )
 
-    // doFetch is deferred via setTimeout(fn, 0) — advance to trigger it
+    // Timer fires synchronously at remaining=0; flush microtasks.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0)
     })
@@ -66,99 +158,158 @@ describe('useSessionRecap', () => {
       undefined,
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
-    // After fetch completes, loading message clears.
-    expect(result.current.loadingMessage).toBeNull()
   })
 
   it('schedules a timer and fires once the 5-minute idle threshold is reached', async () => {
     const now = Date.now()
     vi.setSystemTime(now)
 
-    // Last turn 2 minutes ago — 3 more minutes to wait.
+    // 2 minutes since the last turn — 3 more minutes to wait.
     const lastTurn = now - 2 * 60_000
-    const { result } = renderHook(() => useSessionRecap('s1', lastTurn))
+    renderHook(() =>
+      useSessionRecap(buildSession({ phase: 'idle', lastTurnAt: lastTurn })),
+    )
 
     expect(mockPost).not.toHaveBeenCalled()
-    expect(result.current.loadingMessage).toBeNull()
 
-    // Advance to just before the threshold — still nothing.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3 * 60_000 - 1)
     })
     expect(mockPost).not.toHaveBeenCalled()
 
-    // Cross the threshold.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2)
     })
     expect(mockPost).toHaveBeenCalledTimes(1)
   })
 
-  it('resets the timer when a newer lastTurnAt arrives (e.g. user sent a message)', async () => {
+  // ── Re-render reactions ──────────────────────────────────────
+
+  it('cancels the timer when phase flips away from idle (user starts a turn)', async () => {
     const now = Date.now()
     vi.setSystemTime(now)
 
-    // Initial mount: 4 min idle, would fire in 1 min.
-    const lastTurn1 = now - 4 * 60_000
+    const lastTurn = now - 4 * 60_000
     const { rerender } = renderHook(
-      ({ ts }: { ts: number }) => useSessionRecap('s1', ts),
-      { initialProps: { ts: lastTurn1 } },
+      ({ phase }: { phase: SessionInfo['phase'] }) =>
+        useSessionRecap(buildSession({ phase, lastTurnAt: lastTurn })),
+      { initialProps: { phase: 'idle' as SessionInfo['phase'] } },
     )
 
-    // Advance 30 seconds — about to fire.
+    // 30 s in — about to fire in another minute.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(30_000)
     })
     expect(mockPost).not.toHaveBeenCalled()
 
-    // User sends a new message → lastTurnAt jumps to now.
+    // User starts typing → server flips phase to 'working'.
+    rerender({ phase: 'working' })
+
+    // Past where the original timer would have fired.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2 * 60_000)
+    })
+    expect(mockPost).not.toHaveBeenCalled()
+  })
+
+  it('reschedules from the new lastTurnAt when the user sends a message', async () => {
+    const now = Date.now()
+    vi.setSystemTime(now)
+
+    const { rerender } = renderHook(
+      ({ ts }: { ts: number }) =>
+        useSessionRecap(buildSession({ phase: 'idle', lastTurnAt: ts })),
+      { initialProps: { ts: now - 4 * 60_000 } },
+    )
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+    expect(mockPost).not.toHaveBeenCalled()
+
+    // New turn lands; lastTurnAt jumps forward.
     vi.setSystemTime(now + 30_000)
     rerender({ ts: now + 30_000 })
 
-    // Advance another minute. The OLD timer would have fired by now,
-    // but it should have been cancelled by the rerender.
+    // Old timer would have fired by now — it shouldn't have.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_000)
     })
     expect(mockPost).not.toHaveBeenCalled()
 
-    // Now wait the full 5 minutes from the new turn.
+    // Wait the full 5 minutes from the new turn.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5 * 60_000)
     })
     expect(mockPost).toHaveBeenCalledTimes(1)
   })
 
-  // ── Error handling ────────────────────────────────────────────
+  // ── recap-already-covers-it gate ─────────────────────────────
 
-  it('clears loading state when the fetch fails', async () => {
+  it('does NOT auto-fetch when session.recap is already set (any status)', async () => {
     const now = Date.now()
     vi.setSystemTime(now)
-    mockPost.mockRejectedValueOnce(new Error('network error'))
 
-    const { result } = renderHook(() => useSessionRecap('s1', now - 10 * 60_000))
+    for (const status of ['pending', 'ready', 'error'] as const) {
+      mockPost.mockClear()
+      renderHook(() =>
+        useSessionRecap(
+          buildSession({
+            phase: 'idle',
+            lastTurnAt: now - 10 * 60_000,
+            recap: { status, generatedAt: now },
+          }),
+        ),
+      )
 
-    // doFetch is deferred via setTimeout — advance to trigger it.
-    // Loading state and fetch settlement happen in the same act() batch,
-    // so we verify the fetch was initiated and loading clears after error.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(mockPost).not.toHaveBeenCalled()
+    }
+  })
+
+  it('auto-fetches when recap is cleared (server invalidated it)', async () => {
+    const now = Date.now()
+    vi.setSystemTime(now)
+
+    const { rerender } = renderHook(
+      ({ recap }: { recap: SessionInfo['recap'] }) =>
+        useSessionRecap(
+          buildSession({
+            phase: 'idle',
+            lastTurnAt: now - 10 * 60_000,
+            recap,
+          }),
+        ),
+      { initialProps: { recap: { status: 'ready' as const, generatedAt: now } as SessionInfo['recap'] } },
+    )
+
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0)
     })
+    expect(mockPost).not.toHaveBeenCalled()
 
-    expect(mockPost).toHaveBeenCalledWith('/sessions/s1/recap', undefined, expect.objectContaining({ signal: expect.any(AbortSignal) }))
-
-    // Loading message should clear after error.
-    expect(result.current.loadingMessage).toBeNull()
+    // Server invalidated (e.g. user sent a new message that mutated history).
+    rerender({ recap: undefined })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(mockPost).toHaveBeenCalledTimes(1)
   })
 
-  // ── refresh ──────────────────────────────────────────────────
+  // ── refresh() ────────────────────────────────────────────────
 
-  it('refresh fetches a new recap on demand', async () => {
+  it('refresh fetches on demand even before the 5-minute window', async () => {
     const now = Date.now()
     vi.setSystemTime(now)
 
-    const lastTurn = now - 60_000 // 1 min idle — would not auto-fire
-    const { result } = renderHook(() => useSessionRecap('s1', lastTurn))
+    const { result } = renderHook(() =>
+      useSessionRecap(
+        buildSession({ phase: 'idle', lastTurnAt: now - 60_000 }),
+      ),
+    )
 
     expect(mockPost).not.toHaveBeenCalled()
 
@@ -175,81 +326,38 @@ describe('useSessionRecap', () => {
   })
 
   it('refresh is a no-op when the session has no completed turn', async () => {
-    const { result } = renderHook(() => useSessionRecap('s1', undefined))
-
-    await act(async () => {
-      result.current.refresh()
-      await vi.advanceTimersByTimeAsync(0)
-    })
-
-    expect(mockPost).not.toHaveBeenCalled()
-  })
-
-  // ── hasFreshRecap gate ───────────────────────────────────────
-  //
-  // Regression: switching back to an idle session re-fired the recap
-  // fetch on every mount. Server cache returned the same uuid, the
-  // broadcast was applied without dedup, and the transcript stacked
-  // identical recap cards on every switch. The gate stops the auto-fire
-  // when the transcript already covers the current lastTurnAt.
-
-  it('does NOT auto-fetch when hasFreshRecap is true', async () => {
-    const now = Date.now()
-    vi.setSystemTime(now)
-
-    const lastTurn = now - 10 * 60_000 // 10 min idle — would normally fire
-    renderHook(() => useSessionRecap('s1', lastTurn, true))
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0)
-    })
-
-    expect(mockPost).not.toHaveBeenCalled()
-  })
-
-  it('auto-fetches once hasFreshRecap flips back to false (recap evicted / staled)', async () => {
-    const now = Date.now()
-    vi.setSystemTime(now)
-
-    const lastTurn = now - 10 * 60_000
-    const { rerender } = renderHook(
-      ({ fresh }: { fresh: boolean }) =>
-        useSessionRecap('s1', lastTurn, fresh),
-      { initialProps: { fresh: true } },
+    const { result } = renderHook(() =>
+      useSessionRecap(buildSession({ phase: 'idle' })),
     )
 
-    // Initially gated.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0)
-    })
-    expect(mockPost).not.toHaveBeenCalled()
-
-    // The cached recap got pruned (e.g. items rebuilt without it) — gate flips.
-    rerender({ fresh: false })
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0)
-    })
-    expect(mockPost).toHaveBeenCalledTimes(1)
-  })
-
-  it('manual refresh fires even when hasFreshRecap is true', async () => {
-    const now = Date.now()
-    vi.setSystemTime(now)
-
-    const lastTurn = now - 10 * 60_000
-    const { result } = renderHook(() => useSessionRecap('s1', lastTurn, true))
-
-    // Auto-path is gated.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0)
-    })
-    expect(mockPost).not.toHaveBeenCalled()
-
-    // Explicit user refresh ignores the gate.
     await act(async () => {
       result.current.refresh()
       await vi.advanceTimersByTimeAsync(0)
     })
+
+    expect(mockPost).not.toHaveBeenCalled()
+  })
+
+  it('refresh fires even when phase is not idle (server returns 409, we tolerate that)', async () => {
+    // The hook does NOT gate refresh() on phase — defence-in-depth lives
+    // server-side. The user pressing Alt+R during a turn is unusual but
+    // shouldn't be silently swallowed.
+    const now = Date.now()
+    vi.setSystemTime(now)
+
+    mockPost.mockRejectedValueOnce(new Error('409 Conflict'))
+
+    const { result } = renderHook(() =>
+      useSessionRecap(
+        buildSession({ phase: 'working', lastTurnAt: now - 60_000 }),
+      ),
+    )
+
+    await act(async () => {
+      result.current.refresh()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
     expect(mockPost).toHaveBeenCalledTimes(1)
   })
 
@@ -257,24 +365,30 @@ describe('useSessionRecap', () => {
     const now = Date.now()
     vi.setSystemTime(now)
 
-    // Use a not-yet-idle session so no auto-fetch fires.
-    const lastTurn = now - 60_000 // 1 min idle
-    const { result } = renderHook(() => useSessionRecap('s1', lastTurn))
+    const { result } = renderHook(() =>
+      useSessionRecap(
+        buildSession({ phase: 'idle', lastTurnAt: now - 60_000 }),
+      ),
+    )
 
-    // First refresh: hangs forever.
-    mockPost.mockReturnValueOnce(new Promise(() => {}))
+    let firstAbortSignal: AbortSignal | undefined
+    mockPost.mockImplementationOnce((_url: string, _body: unknown, opts: { signal?: AbortSignal }) => {
+      firstAbortSignal = opts?.signal
+      return new Promise(() => {})
+    })
+
     await act(async () => {
       result.current.refresh()
     })
-    expect(result.current.loadingMessage?.state).toBe('loading')
 
-    // Trigger another refresh — should abort the first.
+    expect(firstAbortSignal?.aborted).toBe(false)
+
     mockPost.mockResolvedValueOnce({})
     await act(async () => {
       result.current.refresh()
       await vi.advanceTimersByTimeAsync(0)
     })
-    // Loading message clears after second fetch completes.
-    expect(result.current.loadingMessage).toBeNull()
+
+    expect(firstAbortSignal?.aborted).toBe(true)
   })
 })

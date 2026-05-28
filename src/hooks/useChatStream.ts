@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { getSessionLastMessageUuid, getSessionStore, useSessionField } from '../session-store/selectors'
 import { sessionStoreRegistry } from '../session-store/registry'
 import { clearAllSessionStorage } from '../session-store/store'
-import type { ActiveSubagent, ActivePhase, PlanStatus, TranscriptItem } from '../session-store/types'
+import type { ActiveSubagent, ActivePhase, PlanStatus, ToolStatus, TranscriptItem } from '../session-store/types'
 import { useWsHub, useWsHubStatus } from './useWsHub'
 import type { WsServerFrame } from '../ws-types'
 import type { PermissionRequest, PermissionResolved, SdkMessage, SkillFrontmatter } from '../types'
@@ -42,6 +42,7 @@ export interface ChatStream {
   planStatus: ReadonlyMap<string, PlanStatus>
   planContent: ReadonlyMap<string, string>
   questionAnswers: ReadonlyMap<string, import('../utils/question-answers').QuestionAnswerEntry[]>
+  toolStatus: ReadonlyMap<string, ToolStatus>
   activeSubagents: ActiveSubagent[]
   subagentIndex: ReadonlyMap<string, ActiveSubagent>
   replayReady: boolean
@@ -93,6 +94,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   const planStatus = useSessionField(sessionId, 'planStatus')
   const planContent = useSessionField(sessionId, 'planContent')
   const questionAnswers = useSessionField(sessionId, 'questionAnswers')
+  const toolStatus = useSessionField(sessionId, 'toolStatus')
   const activeSubagents = useSessionField(sessionId, 'activeSubagents')
   const subagentIndex = useSessionField(sessionId, 'subagentIndex')
   const replayReady = useSessionField(sessionId, 'replayReady')
@@ -115,7 +117,25 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     let replayMessages: SdkMessage[] = []
     let replayPermissions: PermissionRequest[] = []
     let replaying = false
-    const pendingLive: SdkMessage[] = []
+    // All live frames that arrive between `replay` and `replay-done` are
+    // buffered here. We can't dispatch them immediately because
+    // REPLAY_REPLACE (fired at replay-done) takes the third branch in
+    // replayReplace() — `createInitialSessionState` — which wipes the
+    // permissionPending/permissionDecisions/contextUsage/error fields a
+    // direct dispatch would have set. The buffer is a sequence of
+    // already-shaped store actions so we can flush them in arrival order
+    // immediately after REPLAY_REPLACE.
+    type PendingAction =
+      | { type: 'MESSAGE'; message: SdkMessage }
+      | { type: 'PERMISSION_REQUEST'; request: PermissionRequest }
+      | {
+          type: 'PERMISSION_RESOLVED'
+          id: string
+          decision: { behavior: 'allow' | 'deny'; persisted: boolean; message?: string }
+        }
+      | { type: 'CONTEXT_USAGE'; usage: ContextUsage }
+      | { type: 'ERROR'; message: string | null }
+    const pendingLive: PendingAction[] = []
 
     const off = hub.addSessionListener(sessionId, (frame: WsServerFrame) => {
       switch (frame.kind) {
@@ -124,7 +144,12 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
             replaying = true
             replayMessages = []
             replayPermissions = []
-            pendingLive.length = 0
+            // Note: do NOT reset pendingLive here. It's freshly created on
+            // mount and we never re-enter replay-mode from a clean state
+            // without first going through replay-done (which empties it).
+            // Wiping it here would drop live frames that legitimately
+            // accumulated during a chunked replay where the server emits
+            // a follow-up `replay` frame mid-stream.
           }
           replayMessages.push(...(frame.messages as SdkMessage[]))
           if (frame.permissions?.length) {
@@ -140,7 +165,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
           }
           const actions = [
             { type: 'REPLAY_REPLACE', messages: replayMessages, permissions: replayPermissions } as const,
-            ...pendingLive.map((message) => ({ type: 'MESSAGE', message } as const)),
+            ...pendingLive,
           ]
           store.dispatchMany(actions)
           const lastUuid = getSessionLastMessageUuid(sessionId)
@@ -154,7 +179,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
         case 'message': {
           const message = frame.message as SdkMessage
           if (replaying) {
-            pendingLive.push(message)
+            pendingLive.push({ type: 'MESSAGE', message })
           } else {
             store.dispatch({ type: 'MESSAGE', message })
             const lastUuid = getSessionLastMessageUuid(sessionId)
@@ -163,8 +188,16 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
           break
         }
         case 'permission-request': {
+          // The external onRequest handler runs immediately either way —
+          // it drives modal state outside the store and shouldn't be
+          // delayed by the replay window. The store action is buffered
+          // during replay so REPLAY_REPLACE doesn't wipe it.
           permsRef.current.onRequest(frame.payload)
-          store.dispatch({ type: 'PERMISSION_REQUEST', request: frame.payload })
+          if (replaying) {
+            pendingLive.push({ type: 'PERMISSION_REQUEST', request: frame.payload })
+          } else {
+            store.dispatch({ type: 'PERMISSION_REQUEST', request: frame.payload })
+          }
           break
         }
         case 'permission-resolved': {
@@ -173,15 +206,30 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
             ...frame.decision,
           }
           permsRef.current.onResolved(resolved)
-          store.dispatch({ type: 'PERMISSION_RESOLVED', id: frame.id, decision: frame.decision })
+          if (replaying) {
+            pendingLive.push({ type: 'PERMISSION_RESOLVED', id: frame.id, decision: frame.decision })
+          } else {
+            store.dispatch({ type: 'PERMISSION_RESOLVED', id: frame.id, decision: frame.decision })
+          }
           break
         }
-        case 'context-usage':
-          store.dispatch({ type: 'CONTEXT_USAGE', usage: frame.usage as ContextUsage })
+        case 'context-usage': {
+          const usage = frame.usage as ContextUsage
+          if (replaying) {
+            pendingLive.push({ type: 'CONTEXT_USAGE', usage })
+          } else {
+            store.dispatch({ type: 'CONTEXT_USAGE', usage })
+          }
           break
-        case 'error':
-          store.dispatch({ type: 'ERROR', message: frame.message })
+        }
+        case 'error': {
+          if (replaying) {
+            pendingLive.push({ type: 'ERROR', message: frame.message })
+          } else {
+            store.dispatch({ type: 'ERROR', message: frame.message })
+          }
           break
+        }
         default:
           break
       }
@@ -245,6 +293,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       planStatus,
       planContent,
       questionAnswers,
+      toolStatus,
       activeSubagents,
       subagentIndex,
       replayReady,
@@ -254,6 +303,6 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       reset,
       clearError,
     }),
-    [items, messages, queuedAhead, displayedError, contextUsage, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, activeSubagents, subagentIndex, replayReady, trackSentTurn, insertUserMessage, rollbackUserMessage, reset, clearError],
+    [items, messages, queuedAhead, displayedError, contextUsage, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, activeSubagents, subagentIndex, replayReady, trackSentTurn, insertUserMessage, rollbackUserMessage, reset, clearError],
   )
 }

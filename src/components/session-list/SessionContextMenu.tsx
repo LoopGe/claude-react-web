@@ -74,7 +74,12 @@ export function SessionContextMenu({
       // "No conversation found with session ID" when we hand it resume:id.
       // lastTurnAt is set only when a real `result` comes back from the
       // pump, so it's a reliable ground truth.
-      disabled: !session.lastTurnAt,
+      //
+      // Also disable for terminated sessions — the server's fork() probes
+      // disk and marks the source terminated when the jsonl is gone (e.g.
+      // user manually cleaned it up, machine migration). Re-clicking after
+      // that point would just re-trip the same 410.
+      disabled: !session.lastTurnAt || session.terminated,
       onClick: () => onFork(anchor.id),
     },
     {

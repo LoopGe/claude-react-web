@@ -35,6 +35,12 @@ interface ConfigFile {
   baseUrl?: string
   /** Write logs to a file in `<stateDir>/logs/`. Default: false. */
   logToFile?: boolean
+  /** npm registry URL the update checker probes. Empty / unset disables
+   *  the update check entirely (banner stays hidden, About tab shows
+   *  "disabled"). No default — this package is published on a private
+   *  registry, so guessing npmjs.org would just produce 404s. The user
+   *  configures it explicitly in the About tab. */
+  updateCheckRegistry?: string
 }
 
 export interface ServerConfig {
@@ -52,11 +58,19 @@ export interface ServerConfig {
   readonly authToken?: string
   readonly baseUrl: string
   readonly logToFile: boolean
+  /** Empty string when the user hasn't configured a registry — the update
+   *  checker treats that as "disabled". Stored as a string (not optional)
+   *  so callers can do plain `if (config.updateCheckRegistry)` without
+   *  defending against undefined. */
+  readonly updateCheckRegistry: string
 }
 
-/** Current server config. Frozen after loadConfig() — reads are safe,
- *  writes throw at runtime. */
-export let config: ServerConfig = Object.freeze<ServerConfig>({
+/** Hardcoded defaults. Captured as its own constant so applyParsedConfig
+ *  can rebuild from defaults each load — that way removing a key from
+ *  config.json (or PUT /api/config sending {key: ''}) actually reverts
+ *  to the default instead of silently retaining the previously-loaded
+ *  value in memory. */
+const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   modelList: Object.freeze([
     'anthropic/claude-sonnet-4-20250514',
     'claude-opus-4-20250514',
@@ -73,7 +87,12 @@ export let config: ServerConfig = Object.freeze<ServerConfig>({
   authToken: undefined,
   baseUrl: 'https://api.anthropic.com',
   logToFile: false,
+  updateCheckRegistry: '',
 })
+
+/** Current server config. Frozen after loadConfig() — reads are safe,
+ *  writes throw at runtime. */
+export let config: ServerConfig = DEFAULTS
 
 /** Return the configured auth token or throw. Use at request time so a
  *  missing token surfaces as an HTTP 500 rather than a silent fallback. */
@@ -150,9 +169,16 @@ export async function loadConfig(stateDir: string): Promise<void> {
 
 /** Merge a parsed config.json object into the in-memory config.
  *  Extracted from loadConfig() so doUpdateConfigFile() can skip the
- *  second disk read after writing an update. */
+ *  second disk read after writing an update.
+ *
+ *  Crucially we rebuild from `DEFAULTS`, not the current `config`. If
+ *  the user removes a key from config.json (or PUT /api/config sends
+ *  `{key: null}` / `{key: ''}` to clear it), `existing` will lack that
+ *  key and the merged result must fall back to the hardcoded default.
+ *  Building from `config` would carry the stale loaded value forward,
+ *  making cleared keys behave like "no change". */
 function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): void {
-  const merged: ServerConfig = { ...config }
+  const merged: ServerConfig = { ...DEFAULTS }
 
   if (Array.isArray(file_.modelList) && file_.modelList.length > 0) {
     const models = file_.modelList.filter((m) => typeof m === 'string' && m.trim())
@@ -209,6 +235,18 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): v
     console.log(`[config] logToFile: ${file_.logToFile}`)
   }
 
+  if (typeof file_.updateCheckRegistry === 'string') {
+    // Don't normalize trailing slashes here — the user may have a server
+    // with a quirky path component (e.g. an artifactory path that ends
+    // in `/api/npm/mi-npm`). We pass the value through to the fetcher
+    // verbatim and let it concatenate `/<package>/latest`.
+    const trimmed = file_.updateCheckRegistry.trim()
+    ;(merged as { updateCheckRegistry: string }).updateCheckRegistry = trimmed
+    if (trimmed) {
+      console.log(`[config] updateCheckRegistry: ${trimmed}`)
+    }
+  }
+
   config = Object.freeze(merged)
 
   // Enable or disable file logging based on the loaded config.
@@ -231,6 +269,7 @@ export const WRITABLE_CONFIG_KEYS = [
   'maxOpenPanels',
   'workingStuckMs',
   'logToFile',
+  'updateCheckRegistry',
 ] as const
 
 /**

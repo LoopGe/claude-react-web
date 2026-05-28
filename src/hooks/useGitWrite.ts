@@ -53,10 +53,10 @@ export interface UseGitWriteReturn {
   stashDrop: (index: number) => Promise<DropResult>
   createBranch: (name: string, checkout: boolean, autoStash?: boolean) => Promise<BranchResult>
   checkout: (branch: string, autoStash: boolean) => Promise<CheckoutResult>
-  /** AI commit-message generation. The server runs the gitStartSha…HEAD
-   *  diff through Anthropic and returns a conventional-commit message.
-   *  Returns `fallback: true` when the API call failed and the server
-   *  produced a synthesised `chore:` message instead. */
+  /** AI commit-message generation. The server pipes the *staged* diff
+   *  (`git diff --cached`) through Anthropic and returns a Conventional
+   *  Commit message. Returns `fallback: true` when the API call failed
+   *  and the server produced a synthesised `chore:` message instead. */
   generateCommitMessage: () => Promise<{ message: string; fallback?: boolean }>
   /** Set of in-flight op keys. Stable identity per render — caller
    *  passes individual key strings to disable specific buttons. */
@@ -129,9 +129,14 @@ export function useGitWrite(sessionId: string | undefined): UseGitWriteReturn {
 
   const commit = useCallback((message: string, amend: boolean) => {
     ensureSession()
+    // Amend rewrites the previous commit's SHA — the server gates it
+    // behind confirm:true (same as discard / abort / stash-drop). The
+    // GitPanel already surfaces a ConfirmDialog before calling here, so
+    // sending confirm:true is the contract we promised.
+    const body = amend ? { message, amend, confirm: true } : { message, amend }
     return run(
       amend ? 'commit:amend' : 'commit',
-      () => api.post<WriteResult>(`${base}/commit`, { message, amend }),
+      () => api.post<WriteResult>(`${base}/commit`, body),
     )
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, run])

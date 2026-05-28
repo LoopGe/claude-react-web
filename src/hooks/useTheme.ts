@@ -1,51 +1,99 @@
-// Theme and accent colour management.
+// Theme + accent-colour management.
 //
-// Encapsulates: theme (dark/light/system), global accent colour,
-// per-session accent overrides, and system-event toggle.
+// Encapsulates: light/dark/system theme, global accent colour, and
+// per-session accent overrides (which the SessionList colour picker
+// + the New-session dialog feed into).
+//
+// Three things this hook deliberately does NOT own:
+//   - showSystemEvents: a debug toggle, not a theme concern.
+//   - notifications: separate concern, separate hook.
+//   - keyboard shortcuts: ditto.
+//
+// Returned `sessionAccentMap` is a Map (referentially stable across
+// renders that don't change `sessionColors`), not a per-call function.
+// ChatPanel is React.memo'd on its props, so a new accent style per
+// render would defeat that — stable map identity preserves the bail-out.
 
-import { useCallback, useEffect, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useLocalStorage } from './useLocalStorage'
-import { ACCENT_COLORS, ACCENT_COLOR_KEY, SESSION_COLORS_KEY } from '../theme'
-import { SHOW_SYSTEM_EVENTS_KEY } from '../constants/storageKeys'
+import {
+  ACCENT_COLORS,
+  ACCENT_COLOR_KEY,
+  SESSION_COLORS_KEY,
+  buildSessionAccentMap,
+} from '../theme'
+import type { CSSProperties } from 'react'
 import { applyTheme, getStoredTheme, onSystemThemeChange, toggleTheme, type Theme } from '../utils/theme'
 
 export interface UseThemeResult {
   theme: Theme
-  handleToggleTheme: () => void
+  toggleThemeNext: () => void
   accentColor: string
   setAccentColor: (v: string) => void
+  /** Raw per-session accent map (id → hex). Exposed so consumers that
+   *  need a direct lookup (e.g. SessionList passing the current swatch
+   *  to its colour-picker context menu) don't have to allocate over
+   *  the pre-computed `sessionAccentMap`. */
   sessionColors: Record<string, string>
-  setSessionColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
-  sessionAccentStyle: (sessionId: string) => CSSProperties | undefined
+  /** Stable Map of per-session accent overrides. Use `.get(sessionId)`
+   *  in render to retrieve the inline `CSSProperties` (or undefined
+   *  when no override exists — caller passes that through to the
+   *  panel root and the global `--accent` cascade applies). */
+  sessionAccentMap: ReadonlyMap<string, CSSProperties>
+  /** Apply (or clear with `color === undefined`) a per-session accent
+   *  override. Writes through localStorage directly before calling
+   *  setState — see in-body comment for the React-19 unmount race
+   *  this guards against. */
   handleSessionColorChange: (id: string, color: string | undefined) => void
-  showSystemEvents: boolean
-  setShowSystemEvents: (v: boolean | ((prev: boolean) => boolean)) => void
+}
+
+/** Read the session-accent map from localStorage. Used inside
+ *  `handleSessionColorChange` to merge with the latest persisted state
+ *  rather than the React snapshot, which can be stale when the menu
+ *  unmounts in the same tick. */
+function readSessionColors(): Record<string, string> {
+  try {
+    const raw = window.localStorage.getItem(SESSION_COLORS_KEY)
+    return raw ? (JSON.parse(raw) ?? {}) : {}
+  } catch {
+    return {}
+  }
 }
 
 export function useTheme(): UseThemeResult {
-  // Theme state — persisted in localStorage, applied via data-theme on <html>.
+  // --- Light/dark/system theme --------------------------------------------
   const [theme, setTheme] = useState<Theme>(getStoredTheme)
-  // Apply theme on mount and whenever it changes.
+  // Apply theme on mount and whenever it changes. applyTheme() resolves
+  // 'system' to 'dark'/'light' before writing the data-theme attribute.
   useEffect(() => {
     applyTheme(theme)
   }, [theme])
-  // Subscribe to OS theme changes so 'system' mode stays in sync.
+  // Subscribe to OS theme changes so 'system' mode stays in sync when the
+  // user switches their OS preference.
   useEffect(() => {
     if (theme !== 'system') return
     return onSystemThemeChange(() => {
       applyTheme('system')
+      // Force a re-render so children pick up the resolved value.
       setTheme('system')
     })
   }, [theme])
-  const handleToggleTheme = useCallback(() => {
+  const toggleThemeNext = useCallback(() => {
     setTheme((prev) => toggleTheme(prev))
   }, [])
 
-  const [accentColor, setAccentColor] = useLocalStorage<string>(ACCENT_COLOR_KEY, ACCENT_COLORS[0].accent)
-  const [sessionColors, setSessionColors] = useLocalStorage<Record<string, string>>(SESSION_COLORS_KEY, {})
-  const [showSystemEvents, setShowSystemEvents] = useLocalStorage<boolean>(SHOW_SYSTEM_EVENTS_KEY, false)
+  // --- Accent colour ------------------------------------------------------
+  const [accentColor, setAccentColor] = useLocalStorage<string>(
+    ACCENT_COLOR_KEY,
+    ACCENT_COLORS[0].accent,
+  )
+  const [sessionColors, setSessionColors] = useLocalStorage<Record<string, string>>(
+    SESSION_COLORS_KEY,
+    {},
+  )
 
-  // Sync the chosen accent colour into :root CSS custom properties.
+  // Sync the chosen accent colour into :root CSS custom properties so the
+  // entire stylesheet picks up the change without any further wiring.
   useEffect(() => {
     const root = document.documentElement.style
     root.setProperty('--accent', accentColor)
@@ -53,48 +101,42 @@ export function useTheme(): UseThemeResult {
     root.setProperty('--accent-strong', preset?.strong ?? accentColor)
   }, [accentColor])
 
-  const sessionAccentStyle = useCallback(
-    (sessionId: string): CSSProperties | undefined => {
-      const hex = sessionColors[sessionId]
-      if (!hex) return undefined
-      const preset = ACCENT_COLORS.find((c) => c.accent === hex)
-      return { '--accent': hex, '--accent-strong': preset?.strong ?? hex } as CSSProperties
-    },
+  // Pre-computed per-session accent CSS overrides. Stable references so
+  // ChatPanel's React.memo can skip unchanged panels — recomputing only
+  // when sessionColors itself changes.
+  const sessionAccentMap = useMemo(
+    () => buildSessionAccentMap(sessionColors),
     [sessionColors],
   )
 
-  const handleSessionColorChange = useCallback((id: string, color: string | undefined) => {
-    // Bypass the React state updater — see comment in original App.tsx.
-    // React 19 may discard a setState updater whose resulting state
-    // "won't matter" after unmount. Write through directly, then sync.
-    const curr: Record<string, string> = (() => {
+  const handleSessionColorChange = useCallback(
+    (id: string, color: string | undefined) => {
+      // Bypass the React state updater. Opening the context menu is the
+      // only way this fires, and clicking a colour unmounts the menu in
+      // the same tick — React 19 may then discard a setState updater
+      // whose resulting state "won't matter" after unmount, exactly like
+      // the rememberIn bug. Write through directly, then sync React state
+      // for the still-mounted SessionList.
+      const curr = readSessionColors()
+      if (color) curr[id] = color
+      else delete curr[id]
       try {
-        const raw = window.localStorage.getItem(SESSION_COLORS_KEY)
-        return raw ? (JSON.parse(raw) ?? {}) : {}
+        window.localStorage.setItem(SESSION_COLORS_KEY, JSON.stringify(curr))
       } catch {
-        return {}
+        /* storage full / disabled — in-memory state still reflects it */
       }
-    })()
-    if (color) curr[id] = color
-    else delete curr[id]
-    try {
-      window.localStorage.setItem(SESSION_COLORS_KEY, JSON.stringify(curr))
-    } catch {
-      /* storage full / disabled — in-memory state still reflects it */
-    }
-    setSessionColors(curr)
-  }, [setSessionColors])
+      setSessionColors(curr)
+    },
+    [setSessionColors],
+  )
 
   return {
     theme,
-    handleToggleTheme,
+    toggleThemeNext,
     accentColor,
     setAccentColor,
     sessionColors,
-    setSessionColors,
-    sessionAccentStyle,
+    sessionAccentMap,
     handleSessionColorChange,
-    showSystemEvents,
-    setShowSystemEvents,
   }
 }

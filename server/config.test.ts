@@ -88,11 +88,27 @@ describe('config', () => {
     expect(config.modelList).toEqual(['valid', 'also-valid'])
   })
 
-  it('loadConfig ignores empty modelList array', async () => {
-    const beforeModels = [...config.modelList]
+  it('loadConfig reverts modelList to defaults when config.json sets it to []', async () => {
+    // Empty / missing modelList in config.json must NOT silently keep
+    // the previously-loaded list — that was a real bug where clearing a
+    // key via PUT /api/config didn't actually take effect because
+    // applyParsedConfig built `merged` from the in-memory config rather
+    // than from defaults. Now an explicit empty array reverts to the
+    // hardcoded defaults.
+    // First load a custom list so we can prove the revert actually moves.
+    writeFileSync(
+      join(dir, 'config.json'),
+      JSON.stringify({ modelList: ['custom-a', 'custom-b'] }),
+    )
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.modelList).toEqual(['custom-a', 'custom-b'])
+
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ modelList: [] }))
     await loadConfig(dir)
-    expect(config.modelList).toEqual(beforeModels)
+    // Defaults — match the hardcoded list in config.ts:DEFAULTS.
+    expect(config.modelList.length).toBeGreaterThan(0)
+    expect(config.modelList).not.toEqual(['custom-a', 'custom-b'])
   })
 
   it('loadConfig ignores empty recapModel string', async () => {
@@ -167,11 +183,18 @@ describe('config', () => {
     expect(config.maxOpenPanels).toBe(2)
   })
 
-  it('loadConfig ignores zero maxOpenPanels', async () => {
-    const before = config.maxOpenPanels
+  it('loadConfig reverts maxOpenPanels to default when config.json sets it to 0', async () => {
+    // Same revert-to-default semantics as modelList: an explicit zero
+    // means "no override", which falls back to the hardcoded default
+    // (3) — not silently retaining whatever was in memory before.
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxOpenPanels: 5 }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.maxOpenPanels).toBe(5)
+
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxOpenPanels: 0 }))
     await loadConfig(dir)
-    expect(config.maxOpenPanels).toBe(before)
+    expect(config.maxOpenPanels).toBe(3)
   })
 
   it('updateConfigFile keeps the queue alive after a write failure', async () => {

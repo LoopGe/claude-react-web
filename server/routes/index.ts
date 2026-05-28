@@ -16,6 +16,7 @@ import { buildHealthRouter } from './health-routes.js'
 import { buildMarketplaceRouter } from './marketplace.js'
 import { buildMpRouter } from './mp-marketplace.js'
 import { buildGitWriteRouter } from './git-write.js'
+import { buildUpdateRouter } from './update-routes.js'
 
 /** Parse JSON body, returning 400 on malformed input instead of silently
  *  falling back to an empty object. */
@@ -57,6 +58,9 @@ export function buildApiRouter(
     app.route('/', buildMpRouter(sm, mpStore))
   }
   app.route('/', buildGitWriteRouter(sm))
+  // Update checker — exposes GET /update-info for the in-app upgrade
+  // prompt. Stateless, so no SessionManager or store dependency.
+  app.route('/', buildUpdateRouter())
 
   return app
 }

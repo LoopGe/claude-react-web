@@ -49,14 +49,14 @@ export function buildSessionRouter(sm: SessionManager): Hono {
   })
 
   // Resume a dormant session.
-  app.post('/sessions/:id/resume', (c) => {
-    const info = sm.resume(c.req.param('id'))
+  app.post('/sessions/:id/resume', async (c) => {
+    const info = await sm.resume(c.req.param('id'))
     return c.json({ session: info })
   })
 
   // Fork a session.
-  app.post('/sessions/:id/fork', (c) => {
-    const info = sm.fork(c.req.param('id'))
+  app.post('/sessions/:id/fork', async (c) => {
+    const info = await sm.fork(c.req.param('id'))
     return c.json({ session: info }, 201)
   })
 

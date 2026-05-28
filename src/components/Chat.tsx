@@ -293,34 +293,14 @@ export const Chat = memo(function Chat({
     onLiveMessageCount?.(stream.messages.length)
   }, [stream.messages.length, onLiveMessageCount])
 
-  // Session recap — auto-fired after 5 minutes of session idle. Returns
-  // a synthetic message we splice into the transcript so the recap reads
-  // as part of the conversation rather than a floating overlay. The hook
-  // resets whenever lastTurnAt advances (i.e. user sent a new message).
-  //
-  // hasFreshRecap gates the auto-fire path: when items already contain a
-  // ready/error recap that covers the current lastTurnAt, switching back
-  // to this session must NOT re-POST /recap. Without this gate, the
-  // server's cached recap (same uuid) gets re-broadcast every switch and
-  // duplicate cards stack up. An 'error' recap also counts as fresh —
-  // the user retries via Alt+R, not by switching panels.
-  const hasFreshRecap = useMemo(() => {
-    if (!session.lastTurnAt) return false
-    for (const it of stream.items) {
-      const m = it.msg as {
-        type?: string
-        state?: string
-        recap?: { generatedAt?: number }
-      }
-      if (m.type !== 'recap') continue
-      if (m.state !== 'ready' && m.state !== 'error') continue
-      if (m.state === 'error') return true
-      const ga = m.recap?.generatedAt
-      if (typeof ga === 'number' && ga >= session.lastTurnAt) return true
-    }
-    return false
-  }, [stream.items, session.lastTurnAt])
-  const recap = useSessionRecap(session.id, session.lastTurnAt, hasFreshRecap)
+  // Session recap — phase-driven auto-generation. The hook reads
+  // session.phase + session.lastTurnAt + session.recap (all kept current
+  // by App-level WS frames) and schedules a single POST /recap when the
+  // session has been idle for IDLE_THRESHOLD_MS with no fresh recap
+  // covering it. The recap object lives on session.recap (broadcast via
+  // session-recap-update / session-update); we render it via
+  // <MessageList recap={session.recap}> below.
+  const recap = useSessionRecap(session)
 
   // Composer snippets — owned at this (panel) level so the manager and
   // save-prompt dialogs can render as siblings of settings-overlay /
@@ -366,25 +346,6 @@ export const Chat = memo(function Chat({
     }, 3000)
     pendingDismissTimers.current.add(timerId)
   }, [])
-
-  // Splice the recap loading message into the transcript when a fetch
-  // is in flight. Once the server-generated recap arrives via the stream
-  // (type: 'recap', state: 'ready' OR 'error'), the loading card is no
-  // longer needed — error cards replace the bar the same way ready cards do.
-  const itemsWithRecapLoading = useMemo(() => {
-    if (!recap.loadingMessage) return stream.items
-    const hasRecap = stream.items.some(
-      (i) => i.msg.type === 'recap' && (i.msg.state === 'ready' || i.msg.state === 'error'),
-    )
-    if (hasRecap) return stream.items
-    return [...stream.items, {
-      id: recap.loadingMessage.uuid,
-      msg: recap.loadingMessage,
-      plainText: null,
-      isCompactSummary: false,
-      hiddenByDefault: false,
-    }]
-  }, [stream.items, recap.loadingMessage])
 
   // Pull out the specific functions/values we actually use downstream.
   // Putting the whole hook object in a dep list re-creates callbacks every
@@ -624,7 +585,8 @@ export const Chat = memo(function Chat({
 
       <SubagentProvider value={subagentCtxValue}>
         <MessageList
-          items={itemsWithRecapLoading}
+          items={stream.items}
+          recap={session.recap}
           showSystemEvents={showSystemEvents}
           pendingInterruptRef={pendingInterruptRef}
           replayReady={stream.replayReady}
@@ -632,6 +594,7 @@ export const Chat = memo(function Chat({
           planStatus={stream.planStatus}
           planContent={stream.planContent}
           questionAnswers={stream.questionAnswers}
+          toolStatus={stream.toolStatus}
           searchQuery={searchOpen ? debouncedQuery : ''}
           searchActiveMsgIdx={searchMatches[searchActiveIdx] ?? -1}
         />

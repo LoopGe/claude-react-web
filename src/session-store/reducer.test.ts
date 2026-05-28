@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { reduceSessionState } from './reducer'
 import { createInitialSessionState } from './types'
-import type { SdkMessage } from '../types'
+import type { PermissionRequest, SdkMessage } from '../types'
 
 const hasId = (ids: ReadonlySet<string>, id: string) => ids.has(id)
 const isEmpty = (ids: ReadonlySet<string>) => ids.size === 0
@@ -109,101 +109,10 @@ describe('reducer: optimistic user message + server echo', () => {
   })
 })
 
-describe('reducer: recap dedup', () => {
-  // Regression: switching to an idle session would re-fire the recap
-  // fetch; the server's broadcast of the new recap was appended on top
-  // of the prior recap restored from localStorage, so each session
-  // switch stacked another duplicate card.
-  function applyRecap(
-    state: ReturnType<typeof createInitialSessionState>,
-    uuid: string,
-    summary: string,
-    state_: 'ready' | 'loading' | 'error' = 'ready',
-  ): ReturnType<typeof createInitialSessionState> {
-    const message = {
-      type: 'recap',
-      uuid,
-      session_id: 's1',
-      state: state_,
-      recap: { summary, stats: {} },
-    } as unknown as SdkMessage
-    return reduceSessionState(state, { type: 'MESSAGE', message })
-  }
-
-  it('replaces an existing recap card when a new recap message arrives', () => {
-    let state = createInitialSessionState('s1')
-    state = applyRecap(state, 'recap:s1:111', 'old summary')
-    expect(state.items.length).toBe(1)
-
-    state = applyRecap(state, 'recap:s1:222', 'new summary')
-    // Still one card — the old one is gone, the new one took its place.
-    expect(state.items.length).toBe(1)
-    expect(state.items[0].id).toBe('recap:s1:222')
-    expect(state.messages.length).toBe(1)
-    expect((state.messages[0] as { uuid: string }).uuid).toBe('recap:s1:222')
-  })
-
-  it('preserves non-recap messages when replacing the recap', () => {
-    let state = createInitialSessionState('s1')
-    // user → assistant → recap → another user turn
-    state = applyServerEcho(state, 'hi', 'u-1')
-    state = applyRecap(state, 'recap:s1:111', 'old')
-    state = applyServerEcho(state, 'follow up', 'u-2')
-    expect(state.items.length).toBe(3)
-
-    state = applyRecap(state, 'recap:s1:222', 'new')
-    // recap card replaced, the two user turns survive, recap moves to tail
-    expect(state.items.length).toBe(3)
-    const ids = state.items.map((i) => i.id)
-    expect(ids).toContain('u-1')
-    expect(ids).toContain('u-2')
-    expect(ids).toContain('recap:s1:222')
-    expect(ids).not.toContain('recap:s1:111')
-  })
-
-  it('self-heals legacy duplicate recaps (multiple stale recaps in cached items)', () => {
-    // Simulates localStorage cache from before the fix: three stale recap
-    // cards already in items. A single new recap broadcast must collapse
-    // all of them to one.
-    let state = createInitialSessionState('s1')
-    state = applyRecap(state, 'recap:s1:1', 's1')
-    state = applyRecap(state, 'recap:s1:2', 's2')
-    // Bypass the dedup to seed a third stale recap manually — mimic what
-    // a buggy persisted state could look like on hydrate.
-    state = {
-      ...state,
-      items: [
-        ...state.items,
-        {
-          id: 'recap:s1:3',
-          msg: {
-            type: 'recap',
-            uuid: 'recap:s1:3',
-            session_id: 's1',
-            state: 'ready',
-            recap: { summary: 's3', stats: {} },
-          } as unknown as SdkMessage,
-          plainText: null,
-          isCompactSummary: false,
-          hiddenByDefault: false,
-        },
-      ],
-      messages: [
-        ...state.messages,
-        {
-          type: 'recap',
-          uuid: 'recap:s1:3',
-        } as unknown as SdkMessage,
-      ],
-    }
-    expect(state.items.filter((i) => (i.msg as { type?: string }).type === 'recap').length).toBe(2)
-
-    state = applyRecap(state, 'recap:s1:fresh', 'fresh')
-    const recapItems = state.items.filter((i) => (i.msg as { type?: string }).type === 'recap')
-    expect(recapItems.length).toBe(1)
-    expect(recapItems[0].id).toBe('recap:s1:fresh')
-  })
-})
+// Note: the prior `reducer: recap dedup` block was deleted along with the
+// synthetic-recap-message path. session.recap is now a top-level field on
+// SessionInfo (broadcast via session-recap-update / session-update), not
+// an entry in the items array — there's nothing for the reducer to dedup.
 
 describe('reducer: ROLLBACK_OPTIMISTIC_USER_MESSAGE', () => {
   it('removes the optimistic placeholder when POST fails', () => {
@@ -236,5 +145,141 @@ describe('reducer: ROLLBACK_OPTIMISTIC_USER_MESSAGE', () => {
     })
     expect(state).toBe(before)
     expect(state.items[0].id).toBe('real-xyz')
+  })
+})
+
+describe('reducer: PERMISSION_RESOLVED → questionAnswers (AskUserQuestion)', () => {
+  // Regression: the inline QuestionCard used to remain stuck on 'pending'
+  // even after the user submitted answers via QuestionDialog, because
+  // updateIndexes() only flips questionAnswers when a parsable
+  // tool_result arrives via MESSAGE — but the SDK does not always echo
+  // a follow-up tool_result through the Query stream after canUseTool
+  // deny+message short-circuits. Decoding the JSON in PERMISSION_RESOLVED
+  // closes that gap.
+  function seedQuestion(state: ReturnType<typeof createInitialSessionState>, toolUseId: string) {
+    const msg: SdkMessage = {
+      type: 'assistant',
+      uuid: `a-${toolUseId}`,
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: toolUseId,
+            name: 'AskUserQuestion',
+            input: { questions: [{ question: 'OK?', options: [{ label: 'Yes' }] }] },
+          },
+        ],
+      },
+    } as unknown as SdkMessage
+    return reduceSessionState(state, { type: 'MESSAGE', message: msg })
+  }
+
+  function seedPendingPermission(
+    state: ReturnType<typeof createInitialSessionState>,
+    pid: string,
+    toolUseId: string,
+  ): ReturnType<typeof createInitialSessionState> {
+    const request: PermissionRequest = {
+      kind: 'question',
+      id: pid,
+      toolName: 'AskUserQuestion',
+      questions: [{ question: 'OK?', options: [{ label: 'Yes' }] }],
+      toolUseID: toolUseId,
+      createdAt: 0,
+    }
+    return reduceSessionState(state, { type: 'PERMISSION_REQUEST', request })
+  }
+
+  it('parses the JSON answers payload from decision.message into questionAnswers', () => {
+    let state = createInitialSessionState('s1')
+    state = seedQuestion(state, 'tu_q')
+    expect(state.questionAnswers.get('tu_q')).toEqual([])
+
+    state = seedPendingPermission(state, 'pid-1', 'tu_q')
+
+    state = reduceSessionState(state, {
+      type: 'PERMISSION_RESOLVED',
+      id: 'pid-1',
+      decision: {
+        behavior: 'deny',
+        persisted: false,
+        message: JSON.stringify({
+          note: 'User answers from AskUserQuestion (...)',
+          answers: [{ question: 'OK?', answer: 'Yes' }],
+        }),
+      },
+    })
+    expect(state.questionAnswers.get('tu_q')).toEqual([{ question: 'OK?', answer: 'Yes' }])
+  })
+
+  it('encodes a skipped question as answer: null and renders as skipped', () => {
+    let state = createInitialSessionState('s1')
+    state = seedQuestion(state, 'tu_q')
+    state = seedPendingPermission(state, 'pid-1', 'tu_q')
+
+    state = reduceSessionState(state, {
+      type: 'PERMISSION_RESOLVED',
+      id: 'pid-1',
+      decision: {
+        behavior: 'deny',
+        persisted: false,
+        message: JSON.stringify({
+          answers: [{ question: 'OK?', answer: null }],
+        }),
+      },
+    })
+    const entries = state.questionAnswers.get('tu_q')
+    expect(entries).toEqual([{ question: 'OK?', answer: null }])
+  })
+
+  it('leaves questionAnswers unchanged when the message is not parseable JSON', () => {
+    // Plain-deny path (non-question tools): decision.message is a free-form
+    // human-readable string, not JSON. Must not corrupt question state.
+    let state = createInitialSessionState('s1')
+    state = seedQuestion(state, 'tu_q')
+    state = seedPendingPermission(state, 'pid-1', 'tu_q')
+    const before = state.questionAnswers
+
+    state = reduceSessionState(state, {
+      type: 'PERMISSION_RESOLVED',
+      id: 'pid-1',
+      decision: {
+        behavior: 'deny',
+        persisted: false,
+        message: 'aborted',
+      },
+    })
+    expect(state.questionAnswers).toBe(before)
+  })
+
+  it('does not touch questionAnswers when the toolUseId was never seeded as a question', () => {
+    // Plain Bash deny: pidToToolUseId points at tu_bash but
+    // questionAnswers has no entry for it — the parsing branch must
+    // be gated on existing entry, otherwise an unrelated tool deny
+    // could spuriously create one.
+    let state = createInitialSessionState('s1')
+    const bashRequest: PermissionRequest = {
+      kind: 'permission',
+      id: 'pid-bash',
+      toolName: 'Bash',
+      input: { command: 'rm -rf /' },
+      toolUseID: 'tu_bash',
+      createdAt: 0,
+    }
+    state = reduceSessionState(state, { type: 'PERMISSION_REQUEST', request: bashRequest })
+
+    state = reduceSessionState(state, {
+      type: 'PERMISSION_RESOLVED',
+      id: 'pid-bash',
+      decision: {
+        behavior: 'deny',
+        persisted: false,
+        // Even if the message happened to look like JSON, we must not
+        // touch questionAnswers — this is a regular tool deny.
+        message: JSON.stringify({ answers: [{ question: 'X', answer: 'Y' }] }),
+      },
+    })
+    expect(state.questionAnswers.has('tu_bash')).toBe(false)
   })
 })

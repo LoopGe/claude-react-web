@@ -137,6 +137,23 @@ export interface WsGitStatusChanged {
   sessionId: string
 }
 
+/** Per-session recap state mutation (pending / ready / error / cleared).
+ *  Carries the full SessionRecap shape (or undefined to mean "cleared by
+ *  invalidate"). The same shape rides on SessionInfo for full session
+ *  updates; this dedicated frame exists so live tabs see the lifecycle
+ *  transitions (pending → ready) without the server having to fan out a
+ *  whole SessionInfo object on every recap step.
+ *
+ *  Recap is parameterised because the browser uses an inline copy of the
+ *  SessionRecap shape (no SDK dependency); the server pulls it through
+ *  shared/session-info. */
+export interface WsSessionRecapUpdate<Recap> {
+  kind: 'session-recap-update'
+  sessionId: string
+  /** Undefined means the recap was invalidated (e.g. a new turn arrived). */
+  recap?: Recap
+}
+
 /** Heartbeat reply. */
 export interface WsPong {
   kind: 'pong'
@@ -153,7 +170,7 @@ export interface WsError {
   sessionId?: string
 }
 
-export type WsServerFrame<Session, Msg, Perm, Decision> =
+export type WsServerFrame<Session, Msg, Perm, Decision, Recap> =
   | WsSessionsSnapshot<Session>
   | WsSessionUpdate<Session>
   | WsSessionCreated<Session>
@@ -166,6 +183,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision> =
   | WsPermissionResolved<Decision>
   | WsContextUsage
   | WsGitStatusChanged
+  | WsSessionRecapUpdate<Recap>
   | WsPong
   | WsError
 

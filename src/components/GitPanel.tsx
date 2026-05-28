@@ -19,8 +19,8 @@
 // All destructive operations (discard, drop, abort, amend, force
 // checkout) are gated by <ConfirmDialog>.
 
-import { memo, useMemo, useState } from 'react'
-import { useGitDiff, useGitLog, useGitBranches, useGitStashes, useSessionFiles } from '../hooks/useGitStatus'
+import { memo, useState } from 'react'
+import { useGitDiff, useGitLog, useGitBranches, useGitStashes } from '../hooks/useGitStatus'
 import { useGitWrite } from '../hooks/useGitWrite'
 import { ConfirmDialog } from './ConfirmDialog'
 import { useErrorToast } from '../hooks/useErrorToast'
@@ -63,18 +63,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   const [toastError, showError, clearError] = useErrorToast()
   const [confirm, setConfirm] = useState<ConfirmState | null>(null)
   const [confirmBusy, setConfirmBusy] = useState(false)
-  // Commit message state lives at the GitPanel level (not inside the
-  // CommitSection) so the "This session" generate button can populate
-  // it without prop-drilling a setter through unrelated subtrees.
   const [commitMessage, setCommitMessage] = useState('')
-  // "This session" file list — only fetched when status indicates a
-  // running repo, since gitStartSha is meaningless otherwise. Drives
-  // the top-of-panel section AND the ✨ badges in the regular sections.
-  const sessionFiles = useSessionFiles(sessionId, status?.isRepo === true)
-  const sessionPaths = useMemo(() => {
-    if (!sessionFiles.data) return new Set<string>()
-    return new Set(sessionFiles.data.map((f) => f.path))
-  }, [sessionFiles.data])
 
   // Helper used inside event handlers: run a write op and translate
   // any rejection into a toast. Returns void so callers can `void run(...)`.
@@ -260,47 +249,10 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         </div>
       )}
 
-      <ThisSessionSection
-        sessionFiles={sessionFiles.data}
-        gitStartSha={sessionFiles.gitStartSha}
-        loading={sessionFiles.loading}
-        writeOps={writeOps}
-        commitMessage={commitMessage}
-        setCommitMessage={setCommitMessage}
-        onError={(label, err) => showError(`${label}: ${err}`)}
-        askConfirm={askThenRun}
-      />
-
-      <Section
-        title="Staged"
-        count={status.staged.length}
-        defaultOpen={status.staged.length > 0}
-        actions={status.staged.length > 0 ? (
-          <button
-            className="git-section-action"
-            onClick={(e) => { e.preventDefault(); unstageAll(status.staged) }}
-            disabled={writeOps.busyOps.size > 0}
-          >Unstage all</button>
-        ) : null}
-      >
-        {status.staged.length === 0 ? (
-          <EmptyHint>No staged changes</EmptyHint>
-        ) : (
-          status.staged.map((f) => (
-            <FileRow
-              key={'s:' + f.path}
-              file={f}
-              cwd={cwd}
-              staged
-              inSession={sessionPaths.has(f.path)}
-              writeOps={writeOps}
-              onError={(label, err) => showError(`${label}: ${err}`)}
-              askConfirm={askThenRun}
-            />
-          ))
-        )}
-      </Section>
-
+      {/* Section order: Changes (unstaged) is what the user is iterating
+          on, so it sits at the top. Staged sits next — the holding pen
+          on the way to commit. Untracked is collapsed by default;
+          new files only matter once the user wants to add them. */}
       <Section
         title="Changes"
         count={status.unstaged.length}
@@ -329,7 +281,35 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
               file={f}
               cwd={cwd}
               staged={false}
-              inSession={sessionPaths.has(f.path)}
+              writeOps={writeOps}
+              onError={(label, err) => showError(`${label}: ${err}`)}
+              askConfirm={askThenRun}
+            />
+          ))
+        )}
+      </Section>
+
+      <Section
+        title="Staged"
+        count={status.staged.length}
+        defaultOpen={status.staged.length > 0}
+        actions={status.staged.length > 0 ? (
+          <button
+            className="git-section-action"
+            onClick={(e) => { e.preventDefault(); unstageAll(status.staged) }}
+            disabled={writeOps.busyOps.size > 0}
+          >Unstage all</button>
+        ) : null}
+      >
+        {status.staged.length === 0 ? (
+          <EmptyHint>No staged changes</EmptyHint>
+        ) : (
+          status.staged.map((f) => (
+            <FileRow
+              key={'s:' + f.path}
+              file={f}
+              cwd={cwd}
+              staged
               writeOps={writeOps}
               onError={(label, err) => showError(`${label}: ${err}`)}
               askConfirm={askThenRun}
@@ -357,7 +337,6 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
             <UntrackedRow
               key={'?:' + f.path}
               file={f}
-              inSession={sessionPaths.has(f.path)}
               writeOps={writeOps}
               onError={(label, err) => showError(`${label}: ${err}`)}
               askConfirm={askThenRun}
@@ -368,8 +347,11 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
 
       <CommitSection
         canAmend={true}
+        hasStaged={status.staged.length > 0}
         commit={writeOps.commit}
+        generateCommitMessage={writeOps.generateCommitMessage}
         busy={writeOps.busyOps.has('commit') || writeOps.busyOps.has('commit:amend')}
+        generateBusy={writeOps.busyOps.has('commit-message')}
         message={commitMessage}
         setMessage={setCommitMessage}
         onError={(err) => showError(`Commit: ${err}`)}
@@ -455,16 +437,12 @@ interface FileRowProps {
   file: GitFileEntry
   cwd: string | undefined
   staged: boolean
-  /** True when this file also appears in the "This session" set —
-   *  drives the ✨ badge so the user can tell at a glance which
-   *  changes were touched during the current conversation. */
-  inSession?: boolean
   writeOps: ReturnType<typeof useGitWrite>
   onError: (label: string, err: string) => void
   askConfirm: (state: Omit<ConfirmState, 'onConfirm'>, fn: () => Promise<unknown>, errLabel: string) => void
 }
 
-function FileRow({ file, cwd, staged, inSession, writeOps, onError, askConfirm }: FileRowProps) {
+function FileRow({ file, cwd, staged, writeOps, onError, askConfirm }: FileRowProps) {
   const [open, setOpen] = useState(false)
   const { data: diff, loading, error } = useGitDiff(cwd, file.path, staged, open)
 
@@ -484,7 +462,6 @@ function FileRow({ file, cwd, staged, inSession, writeOps, onError, askConfirm }
         >
           <span className={`git-file-status status-${file.status}`}>{file.status}</span>
           <span className="git-file-path">
-            {inSession && <span className="git-file-session-badge" title="Changed during this session">✨</span>}
             {file.renamedFrom && (
               <span className="git-file-renamed-from">{file.renamedFrom} → </span>
             )}
@@ -566,13 +543,12 @@ function FileRow({ file, cwd, staged, inSession, writeOps, onError, askConfirm }
 
 interface UntrackedRowProps {
   file: GitFileEntry
-  inSession?: boolean
   writeOps: ReturnType<typeof useGitWrite>
   onError: (label: string, err: string) => void
   askConfirm: (state: Omit<ConfirmState, 'onConfirm'>, fn: () => Promise<unknown>, errLabel: string) => void
 }
 
-function UntrackedRow({ file, inSession, writeOps, onError, askConfirm }: UntrackedRowProps) {
+function UntrackedRow({ file, writeOps, onError, askConfirm }: UntrackedRowProps) {
   const stageBusy = writeOps.busyOps.has(`stage:${file.path}`)
   const discardBusy = writeOps.busyOps.has(`discard:${file.path}`)
   const anyBusy = stageBusy || discardBusy
@@ -582,7 +558,6 @@ function UntrackedRow({ file, inSession, writeOps, onError, askConfirm }: Untrac
         <span className="git-file-row-toggle untracked-static" title={file.path}>
           <span className="git-file-status status-?">?</span>
           <span className="git-file-path">
-            {inSession && <span className="git-file-session-badge" title="Changed during this session">✨</span>}
             {file.path}
           </span>
         </span>
@@ -667,18 +642,33 @@ const DiffView = memo(function DiffView({ text, truncated, totalLines }: DiffVie
 
 interface CommitSectionProps {
   canAmend: boolean
+  /** Whether anything is currently staged. Drives the Generate button's
+   *  disabled state — the AI message is only meaningful when there's
+   *  a staged diff to summarise; an empty staged area would 400 from
+   *  the server and confuse the user. */
+  hasStaged: boolean
   commit: ReturnType<typeof useGitWrite>['commit']
+  generateCommitMessage: ReturnType<typeof useGitWrite>['generateCommitMessage']
   busy: boolean
-  /** Lifted from this component to GitPanel so the "This session"
-   *  Generate button can populate the textarea without prop-drilling
-   *  a setter through unrelated subtrees. */
+  generateBusy: boolean
   message: string
   setMessage: (m: string) => void
   onError: (err: string) => void
   askConfirm: (state: Omit<ConfirmState, 'onConfirm'>, fn: () => Promise<unknown>, errLabel: string) => void
 }
 
-function CommitSection({ canAmend, commit, busy, message, setMessage, onError, askConfirm }: CommitSectionProps) {
+function CommitSection({
+  canAmend,
+  hasStaged,
+  commit,
+  generateCommitMessage,
+  busy,
+  generateBusy,
+  message,
+  setMessage,
+  onError,
+  askConfirm,
+}: CommitSectionProps) {
   async function doCommit(amend: boolean) {
     if (!amend && !message.trim()) {
       onError('Commit message required')
@@ -692,10 +682,43 @@ function CommitSection({ canAmend, commit, busy, message, setMessage, onError, a
     }
   }
 
+  async function doGenerate() {
+    try {
+      const r = await generateCommitMessage()
+      setMessage(r.message)
+      if (r.fallback) {
+        onError(
+          'Used a local fallback message — Anthropic API was unreachable. Edit before committing.',
+        )
+      }
+    } catch (e) {
+      onError((e as Error).message)
+    }
+  }
+
   return (
-    <details className="git-panel-section" open={false}>
+    <details className="git-panel-section" open={hasStaged}>
       <summary>
         <span className="git-panel-section-title">Commit</span>
+        <span
+          className="git-panel-section-actions"
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <button
+            className="git-section-action"
+            type="button"
+            disabled={generateBusy || busy || !hasStaged}
+            onClick={(e) => { e.preventDefault(); void doGenerate() }}
+            title={
+              hasStaged
+                ? 'Generate a Conventional Commit message from the staged diff'
+                : 'Stage some changes first to generate a commit message'
+            }
+          >
+            {generateBusy ? '…' : '✨ Generate'}
+          </button>
+        </span>
       </summary>
       <div className="git-panel-section-body git-commit-form">
         <textarea
@@ -1036,172 +1059,3 @@ function formatRelative(ms: number): string {
   return `${yyyy}-${mm}-${dd}`
 }
 
-// ── This-session section ──────────────────────────────────────────────
-//
-// The headline view: every file changed since the user started talking
-// to Claude, plus two action buttons:
-//   - ✨ Generate: ask the model for a conventional commit message,
-//     populate the existing Commit textarea
-//   - Commit Claude's changes: stage all session files, generate the
-//     message if the textarea is empty, then preview-and-commit behind
-//     a ConfirmDialog so the user can sanity-check before history is
-//     written.
-//
-// Hidden entirely when the session has no anchor (gitStartSha is null —
-// session was started outside a git repo, or HEAD was unborn/detached
-// at spawn time).
-
-interface ThisSessionSectionProps {
-  sessionFiles: GitFileEntry[] | null
-  gitStartSha: string | null
-  loading: boolean
-  writeOps: ReturnType<typeof useGitWrite>
-  commitMessage: string
-  setCommitMessage: (m: string) => void
-  onError: (label: string, err: string) => void
-  askConfirm: (state: Omit<ConfirmState, 'onConfirm'>, fn: () => Promise<unknown>, errLabel: string) => void
-}
-
-function ThisSessionSection({
-  sessionFiles,
-  gitStartSha,
-  loading,
-  writeOps,
-  commitMessage,
-  setCommitMessage,
-  onError,
-  askConfirm,
-}: ThisSessionSectionProps) {
-  // Hide entirely when:
-  //  - we have no anchor (non-git session)
-  //  - the fetch is still settling and we have no data yet (avoid a
-  //    flash of an empty section then content)
-  //  - nothing has changed since spawn (no point dedicating UI to it)
-  if (!gitStartSha) return null
-  if (!sessionFiles && !loading) return null
-  if (sessionFiles && sessionFiles.length === 0) return null
-
-  const generateBusy = writeOps.busyOps.has('commit-message')
-  const stageBusy = sessionFiles?.some((f) => writeOps.busyOps.has(`stage:${f.path}`)) ?? false
-  const commitBusy = writeOps.busyOps.has('commit') || writeOps.busyOps.has('commit:amend')
-
-  async function generate() {
-    try {
-      const r = await writeOps.generateCommitMessage()
-      setCommitMessage(r.message)
-      if (r.fallback) {
-        onError(
-          'Generate commit message',
-          'Used a local fallback message — Anthropic API was unreachable. Edit before committing.',
-        )
-      }
-    } catch (e) {
-      onError('Generate commit message', (e as Error).message)
-    }
-  }
-
-  function commitAll() {
-    const files = sessionFiles ?? []
-    if (files.length === 0) {
-      onError('Commit Claude\'s changes', 'No session files to commit.')
-      return
-    }
-    askConfirm(
-      {
-        title: 'Commit all session changes?',
-        message: (
-          <>
-            <p>This will stage and commit:</p>
-            <ul className="commit-claudes-files">
-              {files.slice(0, 20).map((f) => (
-                <li key={f.path}><code>{f.path}</code></li>
-              ))}
-              {files.length > 20 && <li>… {files.length - 20} more</li>}
-            </ul>
-            <p>With message:</p>
-            <pre className="commit-claudes-preview">{commitMessage.trim() || '(generating…)'}</pre>
-          </>
-        ),
-        confirmLabel: 'Stage & commit',
-      },
-      async () => {
-        // If textarea is empty, generate now. We do this inside the
-        // confirm callback so the dialog above shows the placeholder
-        // text — but we also want to ensure the message we actually
-        // commit with is non-empty. Re-fetch if needed.
-        let message = commitMessage
-        if (!message.trim()) {
-          const r = await writeOps.generateCommitMessage()
-          message = r.message
-          setCommitMessage(message)
-        }
-        await writeOps.stage(files.map((f) => f.path))
-        await writeOps.commit(message, false)
-        setCommitMessage('')
-      },
-      'Commit Claude\'s changes',
-    )
-  }
-
-  return (
-    <details className="git-panel-section git-this-session" open>
-      <summary>
-        <span className="git-panel-section-title">This session</span>
-        <span className="git-panel-section-count">{sessionFiles?.length ?? '·'}</span>
-        <span
-          className="git-panel-section-actions"
-          onClick={(e) => e.stopPropagation()}
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          <button
-            className="git-section-action"
-            disabled={generateBusy || !sessionFiles || sessionFiles.length === 0}
-            onClick={(e) => { e.preventDefault(); void generate() }}
-            title="Generate a conventional-commit message from the diff"
-          >
-            {generateBusy ? '…' : '✨ Generate'}
-          </button>
-          <button
-            className="git-section-action"
-            disabled={generateBusy || stageBusy || commitBusy || !sessionFiles || sessionFiles.length === 0}
-            onClick={(e) => { e.preventDefault(); commitAll() }}
-            title="Stage all session files and commit (with confirmation)"
-          >
-            Commit Claude&apos;s changes
-          </button>
-        </span>
-      </summary>
-      <div className="git-panel-section-body">
-        {loading && !sessionFiles && (
-          <div className="git-section-empty">Loading session changes…</div>
-        )}
-        {sessionFiles && sessionFiles.map((f) => (
-          <div key={'session:' + f.path} className="git-file-row session-static">
-            <div className="git-file-row-line">
-              <span className="git-file-row-toggle untracked-static" title={f.path}>
-                <span className={`git-file-status status-${f.status}`}>{f.status}</span>
-                <span className="git-file-path">
-                  <span className="git-file-session-badge" aria-hidden>✨</span>
-                  {f.renamedFrom && (
-                    <span className="git-file-renamed-from">{f.renamedFrom} → </span>
-                  )}
-                  {f.path}
-                </span>
-                {(f.insertions != null || f.deletions != null) && (
-                  <span className="git-file-changes">
-                    {f.insertions != null && f.insertions > 0 && (
-                      <span className="git-file-additions">+{f.insertions}</span>
-                    )}
-                    {f.deletions != null && f.deletions > 0 && (
-                      <span className="git-file-deletions">-{f.deletions}</span>
-                    )}
-                  </span>
-                )}
-              </span>
-            </div>
-          </div>
-        ))}
-      </div>
-    </details>
-  )
-}
