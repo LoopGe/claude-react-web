@@ -11,7 +11,7 @@ import { formatBytes } from '../utils/format'
 import type { Attachment } from '../hooks/useAttachments'
 import type { InputHistoryApi } from '../hooks/useInputHistory'
 import type { ComposerSnippet, ComposerSnippetsApi } from '../hooks/useComposerSnippets'
-import { useErrorToast } from '../hooks/useErrorToast'
+import { useToast } from '../hooks/useToast'
 import type { PastedImage, SlashCommand } from '../types'
 import { CommandPicker } from './CommandPicker'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
@@ -117,7 +117,9 @@ export const Composer = memo(function Composer({
   // whatever the textarea reports later.
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
   const [savedSelection, setSavedSelection] = useState<{ start: number; end: number }>({ start: 0, end: 0 })
-  const [clipboardError, showClipboardError, clearClipboardError] = useErrorToast()
+  // Clipboard hint failures (cut/copy/paste from the context menu) now
+  // surface as global toasts instead of an inline footer.
+  const toast = useToast()
 
   // ---- Slash command picker state ----
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -219,9 +221,9 @@ export const Composer = memo(function Composer({
       await navigator.clipboard.writeText(sel)
       insertAtSavedSelection('')
     } catch {
-      showClipboardError('Cut failed — use Ctrl+X instead.')
+      toast.error('Cut failed — use Ctrl+X instead.')
     }
-  }, [savedSelection, input, insertAtSavedSelection, showClipboardError])
+  }, [savedSelection, input, insertAtSavedSelection, toast])
 
   const handleCopy = useCallback(async () => {
     const { start, end } = savedSelection
@@ -230,18 +232,18 @@ export const Composer = memo(function Composer({
     try {
       await navigator.clipboard.writeText(sel)
     } catch {
-      showClipboardError('Copy failed — use Ctrl+C instead.')
+      toast.error('Copy failed — use Ctrl+C instead.')
     }
-  }, [savedSelection, input, showClipboardError])
+  }, [savedSelection, input, toast])
 
   const handlePaste = useCallback(async () => {
     try {
       const text = await navigator.clipboard.readText()
       if (text) insertAtSavedSelection(text)
     } catch {
-      showClipboardError('Paste failed — use Ctrl+V instead.')
+      toast.error('Paste failed — use Ctrl+V instead.')
     }
-  }, [insertAtSavedSelection, showClipboardError])
+  }, [insertAtSavedSelection, toast])
 
   const handleSelectAll = useCallback(() => {
     requestAnimationFrame(() => {
@@ -586,12 +588,6 @@ export const Composer = memo(function Composer({
         <ContextMenu x={menuPos.x} y={menuPos.y} items={menuItems} onClose={closeMenu} />
       )}
 
-      {clipboardError && (
-        <div className="error-toast">
-          {clipboardError}
-          <button className="error-toast-dismiss" onClick={clearClipboardError}>✕</button>
-        </div>
-      )}
     </div>
   )
 })

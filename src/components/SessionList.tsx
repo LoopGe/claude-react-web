@@ -5,8 +5,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { isInAppDrag, readDragPayload } from '../hooks/useDragPayload'
 import { api } from '../hooks/useApi'
-import { useErrorToast } from '../hooks/useErrorToast'
-import { useSuccessToast } from '../hooks/useSuccessToast'
+import { useToast } from '../hooks/useToast'
 import { buildSessionAccentMap } from '../theme'
 import type { NewSessionForm, SessionGroup, SessionInfo, SidebarSection } from '../types'
 import { NewSessionDialog } from './session-list/NewSessionDialog'
@@ -165,10 +164,9 @@ export const SessionList = memo(function SessionList({
   const [prefilledCwd, setPrefilledCwd] = useState<string | undefined>(undefined)
   /** Visual highlight while a file is being dragged over the button. */
   const [dropZoneActive, setDropZoneActive] = useState(false)
-  /** Error message from a failed folder-drop resolution. Shown inline
-   *  below the "New session" button and auto-clears after 5 seconds. */
-  const [folderDropError, showFolderDropError, clearFolderDropError] = useErrorToast()
-  const [successMsg, showSuccess, clearSuccess] = useSuccessToast()
+  /** Global toast hub. `showFolderDropError` becomes `toast.error(...)`
+   *  and the previous inline `successMsg` banner becomes `toast.success(...)`. */
+  const toast = useToast()
   // --- Confirm / Prompt dialog state (replaces window.confirm / window.prompt) ---
   type ConfirmState = {
     title: string
@@ -332,7 +330,7 @@ export const SessionList = memo(function SessionList({
       setPrefilledCwd(res.cwd)
       setShowDialog(true)
     } catch (err) {
-      showFolderDropError(`Couldn't use that folder: ${(err as Error).message}`)
+      toast.error(`Couldn't use that folder: ${(err as Error).message}`)
     }
   }
 
@@ -435,18 +433,6 @@ export const SessionList = memo(function SessionList({
         >
           + New session
         </button>
-        {folderDropError && (
-          <div className="error-toast">
-            {folderDropError}
-            <button className="error-toast-dismiss" onClick={clearFolderDropError}>✕</button>
-          </div>
-        )}
-        {successMsg && (
-          <div className="success-toast">
-            {successMsg}
-            <button className="success-toast-dismiss" onClick={clearSuccess}>✕</button>
-          </div>
-        )}
         {/* Filter input — visible only when there are at least a handful
             of sessions. Below that the filter is more friction than help. */}
         {sessions.length > 3 && (
@@ -698,7 +684,7 @@ export const SessionList = memo(function SessionList({
         groups={groups}
         onAddToGroup={onAddToGroup}
         maxOpen={maxOpen}
-        onShowSuccess={showSuccess}
+        onShowSuccess={toast.success}
         onAskConfirm={handleAskConfirm}
       />}
 

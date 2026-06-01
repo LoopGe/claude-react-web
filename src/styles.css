@@ -4107,10 +4107,9 @@ mark.search-hl {
   border-radius: 2px;
   padding: 0 1px;
 }
-.search-active-msg {
-  outline: 2px solid var(--warn);
-  outline-offset: 2px;
-  border-radius: 6px;
+mark.search-hl.search-hl-active {
+  background: var(--warn);
+  color: var(--bg);
 }
 
 /* ── Per-message copy button ───────────────────────────────────── */
@@ -4160,62 +4159,169 @@ mark.search-hl {
   opacity: 0.7;
 }
 
-/* ── Error toast (replaces window.alert) ───────────────────────── */
+/* ── Global toast host ─────────────────────────────────────────────
+   Fixed-position column anchored to the bottom-right. New toasts append
+   to the bottom (visually stacking up from the corner). Each toast has
+   a slide-in animation and an explicit ✕ button. Stickies (durationMs
+   === 0 in useToast) have no auto-dismiss, so the ✕ is always present.
+   Colours go through CSS variables so the light theme picks them up
+   without overrides. The host itself is `pointer-events: none` so an
+   empty stack never blocks clicks; individual toasts re-enable pointer
+   events for their own buttons. */
 
-.error-toast {
+.toast-host {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 9000;
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 8px;
-  padding: 6px 10px;
-  background: color-mix(in srgb, var(--danger) 15%, var(--bg-elev));
-  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--border));
-  border-radius: 6px;
-  color: var(--danger);
-  font-size: 12px;
-  margin: 4px 8px;
-  flex-shrink: 0;
+  width: min(380px, calc(100vw - 32px));
+  pointer-events: none;
 }
-.error-toast-dismiss {
-  margin-left: auto;
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  pointer-events: auto;
+  /* slide in from the right; respects prefers-reduced-motion below */
+  animation: toast-slide-in 180ms ease-out;
+}
+
+.toast-error {
+  background: color-mix(in srgb, var(--danger) 14%, var(--bg-elev-2));
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+  color: var(--fg);
+}
+.toast-error .toast-icon { color: var(--danger); }
+
+.toast-success {
+  background: color-mix(in srgb, var(--ok) 14%, var(--bg-elev-2));
+  border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
+  color: var(--fg);
+}
+.toast-success .toast-icon { color: var(--ok); }
+
+.toast-info {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev-2));
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  color: var(--fg);
+}
+.toast-info .toast-icon { color: var(--accent); }
+
+.toast-icon {
+  flex-shrink: 0;
+  font-size: 14px;
+  line-height: 1.4;
+  font-weight: 600;
+}
+
+.toast-message {
+  flex: 1;
+  word-break: break-word;
+}
+
+/* Whole-message click target (used when onClick is set without
+   actionLabel). Inherits the parent's text colour so the toast still
+   reads as a notification, not a hyperlink — but adds an underline on
+   hover/focus to signal interactivity, plus a focus ring for keyboard
+   users. */
+.toast-message-button {
+  flex: 1;
+  word-break: break-word;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.toast-message-button:hover,
+.toast-message-button:focus-visible {
+  text-decoration: underline;
+}
+.toast-message-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Dedicated action button (used when both onClick and actionLabel are
+   set). Tints with the toast's kind colour so an "Open" button on a
+   success toast picks up green, on an error picks up red, etc. — the
+   --kind-tint variable is set per-kind below. */
+.toast-action {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid color-mix(in srgb, var(--kind-tint, var(--accent)) 50%, var(--border));
+  background: color-mix(in srgb, var(--kind-tint, var(--accent)) 18%, transparent);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.toast-action:hover {
+  background: color-mix(in srgb, var(--kind-tint, var(--accent)) 30%, transparent);
+  border-color: color-mix(in srgb, var(--kind-tint, var(--accent)) 70%, var(--border));
+}
+.toast-action:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--kind-tint, var(--accent)) 70%, transparent);
+  outline-offset: 1px;
+}
+
+/* Per-kind tint propagation for .toast-action. Keeps the action button's
+   colour in sync with the surrounding toast variant. */
+.toast-error { --kind-tint: var(--danger); }
+.toast-success { --kind-tint: var(--ok); }
+.toast-info { --kind-tint: var(--accent); }
+
+.toast-dismiss {
+  flex-shrink: 0;
+  margin-left: 4px;
   padding: 0 4px;
   background: none;
   border: none;
-  color: var(--danger);
+  color: var(--fg-muted);
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13px;
+  line-height: 1.4;
   opacity: 0.7;
 }
-.error-toast-dismiss:hover {
+.toast-dismiss:hover {
   opacity: 1;
+  color: var(--fg);
 }
 
-/* ── Success toast ────────────────────────────────────────────── */
+@keyframes toast-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
 
-.success-toast {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  background: color-mix(in srgb, var(--ok) 15%, var(--bg-elev));
-  border: 1px solid color-mix(in srgb, var(--ok) 30%, var(--border));
-  border-radius: 6px;
-  color: var(--ok);
-  font-size: 12px;
-  margin: 4px 8px;
-  flex-shrink: 0;
-}
-.success-toast-dismiss {
-  margin-left: auto;
-  padding: 0 4px;
-  background: none;
-  border: none;
-  color: var(--ok);
-  cursor: pointer;
-  font-size: 14px;
-  opacity: 0.7;
-}
-.success-toast-dismiss:hover {
-  opacity: 1;
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
 }
 
 /* ─────────────────────────────────────────────────────────────────
@@ -4557,24 +4663,9 @@ mark.search-hl {
    .btn-primary / .btn-danger family for dialog buttons.
    */
 
-/* Inline error toast inside the panel — sits between the header and
-   the first section. Auto-dismisses after a few seconds (the hook owns
-   the timer); the ✕ provides immediate dismiss. */
-.git-panel-toast {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  background: var(--msg-error-bg);
-  color: var(--msg-error-fg);
-  border-bottom: 1px solid var(--msg-error-border);
-  font-size: 12px;
-  flex-shrink: 0;
-}
-.git-panel-toast > span:first-child {
-  flex: 1;
-  white-space: pre-wrap;
-}
+/* (Git op error toasts are now rendered by the global ToastHost; see
+   the .toast-host block higher in this file. No git-panel-toast class
+   is required.) */
 
 /* Banner action buttons sit to the right of the warning text. */
 .git-banner-action {
@@ -4988,6 +5079,20 @@ mark.search-hl {
   background: color-mix(in srgb, var(--ok) 12%, var(--bg-elev));
   color: var(--ok);
 }
+/* Inline dismiss button for marketplace error/info banners. Inherits the
+   surrounding text colour so it matches the banner's tint without a
+   per-banner override. */
+.marketplace-dismiss {
+  margin-left: auto;
+  padding: 0 4px;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  opacity: 0.7;
+}
+.marketplace-dismiss:hover { opacity: 1; }
 .marketplace-row {
   display: flex;
   gap: 8px;

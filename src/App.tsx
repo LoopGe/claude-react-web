@@ -14,6 +14,7 @@ import { usePanelColumnResize } from './hooks/usePanelColumnResize'
 import { useSidebarResize } from './hooks/useSidebarResize'
 import { useSessionNotifications } from './hooks/useSessionNotifications'
 import { useTheme } from './hooks/useTheme'
+import { useToast } from './hooks/useToast'
 import { useWsHub, useWsHubStatus } from './hooks/useWsHub'
 import type { WsServerFrame } from './ws-types'
 import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, SidebarSection } from './types'
@@ -80,7 +81,12 @@ export function App() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false)
-  const [opError, setOpError] = useState<string | null>(null)
+  // Operational errors and one-shot notifications go through the global
+  // toast hub (mounted in main.tsx). Use `toast.error(...)` for anything
+  // a user can dismiss/scan; persistent connection state (Reconnecting…)
+  // is rendered separately as an inline banner — it's a status, not a
+  // notification.
+  const toast = useToast()
   // Theme + accent (global + per-session). Lives in its own hook so
   // App.tsx isn't on the hook for the OS-theme subscription, accent
   // CSS-var sync, and the React-19-unmount-race write-through pattern.
@@ -225,19 +231,14 @@ export function App() {
   // exhaustion we used to hit with three concurrent chats.
   const hub = useWsHub()
 
-  // Derive displayed error from operational error + hub status without
-  // calling setState inside an effect (avoids react-hooks/set-state-in-effect).
-  // Status comes from its own context (useWsHubStatus) so hub identity
-  // stays stable across status flips — prevents effect teardown/rebuild.
+  // Hub-status banner: shown when the WebSocket is reconnecting. This is
+  // a persistent status (it stays up as long as we're disconnected) so
+  // it's rendered as an inline banner, NOT a toast — toasts auto-dismiss
+  // and "we're still offline" is exactly the message the user needs to
+  // keep seeing. Status comes from its own context (useWsHubStatus) so
+  // hub identity stays stable across status flips.
   const hubStatus = useWsHubStatus()
-  const displayedError = useMemo(() => {
-    if (hubStatus === 'reconnecting')
-      return opError === null || opError === 'Reconnecting to server…'
-        ? 'Reconnecting to server…'
-        : opError
-    if (hubStatus === 'online') return opError === 'Reconnecting to server…' ? null : opError
-    return opError
-  }, [opError, hubStatus])
+  const reconnectingBanner = hubStatus === 'reconnecting' ? 'Reconnecting to server…' : null
 
   useEffect(() => {
     const off = hub.addListener((frame: WsServerFrame) => {
@@ -376,8 +377,8 @@ export function App() {
     return off
   }, [hub, maybeNotify, maybePermissionNotify, seedWorkingState, pruneSession, setLastSeenTurn, setSidebarOrder, setGroups])
 
-  // Hub status → reconnecting banner is now derived via `displayedError`
-  // (useMemo above) — no effect needed.
+  // Hub status → reconnecting banner is derived inline (single ternary
+  // above) — no effect needed.
 
   // When the window regains focus, bump the currently-focused session's
   // lastSeenTurn to its latest lastTurnAt. Without this, a turn that
@@ -484,7 +485,6 @@ export function App() {
 
   const handleCreate = useCallback(
     async (form: NewSessionForm) => {
-      setOpError(null)
       // `accent` and `groupId` are frontend-only fields — don't forward them to the SDK.
       const { accent, groupId, ...rest } = form
       try {
@@ -521,15 +521,14 @@ export function App() {
           handleSessionColorChange(res.session.id, accent)
         }
       } catch (e) {
-        setOpError((e as Error).message)
+        toast.error(`Couldn't create session: ${(e as Error).message}`)
       }
     },
-    [handleSessionColorChange, handleAddToGroup, activeGroupId, openSession, setLastSeenTurn],
+    [handleSessionColorChange, handleAddToGroup, activeGroupId, openSession, setLastSeenTurn, toast],
   )
 
   const handleFork = useCallback(
     async (id: string) => {
-      setOpError(null)
       try {
         const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/fork`, {})
         // Open the forked session right away so the user can see the
@@ -540,10 +539,10 @@ export function App() {
         const sourceGroup = groups.find((g) => g.sessionIds.includes(id))
         if (sourceGroup) handleAddToGroup(res.session.id, sourceGroup.id)
       } catch (e) {
-        setOpError(`Couldn't fork session: ${(e as Error).message}`)
+        toast.error(`Couldn't fork session: ${(e as Error).message}`)
       }
     },
-    [openSession, groups, handleAddToGroup],
+    [openSession, groups, handleAddToGroup, toast],
   )
 
   /** Create a brand-new empty session that reuses the source session's
@@ -576,7 +575,6 @@ export function App() {
 
   const handleDelete = useCallback(
     async (id: string) => {
-      setOpError(null)
       try {
         await api.delete(`/sessions/${id}`)
         closeSession(id)
@@ -596,10 +594,10 @@ export function App() {
         // Server pushes a `removed` event on the global SSE, which
         // re-prunes session state — no need to GET /sessions here.
       } catch (e) {
-        setOpError((e as Error).message)
+        toast.error(`Couldn't delete session: ${(e as Error).message}`)
       }
     },
-    [closeSession, setGroups, handleSessionColorChange],
+    [closeSession, setGroups, handleSessionColorChange, toast],
   )
 
   /** Create a fresh session with the same config, then delete the old one.
@@ -620,7 +618,7 @@ export function App() {
         groupId: sourceGroup?.id ?? fallbackGroup?.id,
       }
       // Create first — if this fails, the old session stays intact.
-      // handleCreate already sets opError on failure (never re-throws).
+      // handleCreate already surfaces failure via toast (never re-throws).
       await handleCreate(form)
       // Only delete the old session after the new one is confirmed created.
       await handleDelete(id)
@@ -666,7 +664,21 @@ export function App() {
         setSessions((prev) => prev.map((p) => (p.id === id ? res.session : p)))
         afterSuccess(res)
       } catch (e) {
-        setOpError((e as Error).message)
+        const msg = (e as Error).message
+        // The 410 "transcript file is missing" path also flips the
+        // session to terminated server-side and broadcasts a session-
+        // update; the panel's bottom-of-composer "session ended"
+        // banner already explains that, so a global toast would just
+        // duplicate the message. Silently swallow this one variant.
+        if (!/transcript file is missing/i.test(msg)) {
+          // Add an "Open" action so the user can jump to the session
+          // even though the resume failed (the panel still mounts as
+          // a dormant card, useful for retry / delete).
+          toast.error(`Couldn't resume session: ${msg}`, {
+            actionLabel: 'Open',
+            onClick: () => { void handleSelectRef.current(id) },
+          })
+        }
       } finally {
         setResuming((prev) => {
           const next = new Set(prev)
@@ -675,7 +687,7 @@ export function App() {
         })
       }
     },
-    [setOpError],
+    [toast],
   )
 
   /** Select a session. Dormant (not running, not terminated) sessions are
@@ -1097,12 +1109,20 @@ export function App() {
         live = res.session
         updateSession(res.session)
       } catch (err) {
-        setOpError((err as Error).message)
+        const msg = (err as Error).message
+        // Same rationale as `resumeSession`: transcript-missing already
+        // surfaces in the panel via the terminated banner.
+        if (!/transcript file is missing/i.test(msg)) {
+          toast.error(`Couldn't resume session: ${msg}`, {
+            actionLabel: 'Open',
+            onClick: () => { void handleSelectRef.current(sidebarId) },
+          })
+        }
         return
       }
     }
     openAtSlot(sidebarId, targetSlotId, live?.lastTurnAt)
-  }, [updateSession, openAtSlot])
+  }, [updateSession, openAtSlot, toast])
 
   const refreshConfigResponse = useCallback(async () => {
     const r = await api.get<ConfigResponse>('/config')
@@ -1296,17 +1316,17 @@ export function App() {
           </div>
         </header>
 
-        {/* Always-mounted live region — see `.error-bar-empty` in
-            styles.css for the rationale. The visible bar appears only
-            when `displayedError` is set; the rest of the time the
-            element collapses to a 1×1 sr-only square so a screen reader
-            still observes the content mutation when an error arrives. */}
+        {/* Reconnecting banner — kept inline (not toast) because it's a
+            persistent status, not a one-shot notification. Auto-dismiss
+            would defeat the purpose. The element stays permanently
+            mounted as a live region so screen readers observe the
+            transition; collapses to an sr-only 1×1 when not active. */}
         <div
-          className={`error-bar${displayedError ? '' : ' error-bar-empty'}`}
+          className={`error-bar${reconnectingBanner ? '' : ' error-bar-empty'}`}
           role="alert"
           aria-live="polite"
         >
-          {displayedError ?? ''}
+          {reconnectingBanner ?? ''}
         </div>
 
         <UpdateBanner info={updateInfo.info} />

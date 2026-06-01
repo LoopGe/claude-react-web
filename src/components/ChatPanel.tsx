@@ -7,7 +7,7 @@ import type { CSSProperties } from 'react'
 import { Chat } from './Chat'
 import { ContextMenu } from './ContextMenu'
 import { api } from '../hooks/useApi'
-import { useErrorToast } from '../hooks/useErrorToast'
+import { useToast } from '../hooks/useToast'
 import { isInAppDrag, readDragPayload, setDragPayload } from '../hooks/useDragPayload'
 import { useGitStatus } from '../hooks/useGitStatus'
 import { statusClass, statusLabel, shortenModel } from '../utils/session-status'
@@ -147,8 +147,9 @@ export const ChatPanel = memo(function ChatPanel({
    *  over dark-theme styling; the native control's dropdown surface
    *  can't be restyled across browsers. */
   const [permMenu, setPermMenu] = useState<{ x: number; y: number } | null>(null)
-  /** Inline error toast replacing window.alert for model/permission failures. */
-  const [panelError, showError, clearError] = useErrorToast()
+  /** Global toast hub. Model/permission failures used to render an
+   *  inline panel banner; they now surface as right-bottom toasts. */
+  const toast = useToast()
   // Datalist for the inline model chip. We only start fetching when the
   // user clicks to edit (or has already opened it once on this panel) —
   // no need to ping /sessions/:id/models + /config for every panel that
@@ -177,7 +178,7 @@ export const ChatPanel = memo(function ChatPanel({
       { model: session.model },
       `Couldn't change model`,
       onSessionUpdate,
-      showError,
+      toast.error,
     )
   }
 
@@ -190,7 +191,7 @@ export const ChatPanel = memo(function ChatPanel({
       { permissionMode: session.permissionMode },
       `Couldn't change permission mode`,
       onSessionUpdate,
-      showError,
+      toast.error,
     )
   }
 
@@ -431,12 +432,6 @@ export const ChatPanel = memo(function ChatPanel({
           </div>
         )}
       </div>
-      {panelError && (
-        <div className="error-toast">
-          {panelError}
-          <button className="error-toast-dismiss" onClick={clearError}>✕</button>
-        </div>
-      )}
       <div className="chat-panel-body">
         {session.running || session.terminated ? (
           <Chat

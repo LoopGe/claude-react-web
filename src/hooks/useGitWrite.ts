@@ -4,7 +4,8 @@
 //   - Tracks an op-key in `busyOps` so the UI can disable per-button
 //     spinners (e.g. busyOps.has('stage:src/foo.ts') → grey out that
 //     row's stage button only).
-//   - Re-throws API errors so the caller can pipe them into useErrorToast.
+//   - Re-throws API errors so the caller can pipe them into useToast
+//     (or any other notification surface).
 //   - Returns the response payload (not just void) so the caller can
 //     consume server-fresh status / branches / stashes WITHOUT waiting
 //     for the WS refresh to land. This eliminates the 50-100ms flicker

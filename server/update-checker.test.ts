@@ -106,6 +106,30 @@ describe('checkForUpdates', () => {
     expect(getCachedUpdateInfo()).toBe(info)
   })
 
+  it('uses a literal slash in scoped names so Artifactory accepts the URL', async () => {
+    // Regression: encoding `/` to `%2F` makes Artifactory's npm endpoint
+    // return 404 on the dist-tag path (`…/<scope>%2F<name>/latest`).
+    // Every registry we care about accepts the literal-slash form, so we
+    // send that instead. See update-checker.ts for the full story.
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ version: '0.0.0' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await checkForUpdates(true)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    // mock.calls[0] is the argument tuple; vitest infers an empty
+    // tuple for parameter-less mocks (the closure here doesn't accept
+    // args), so we cast through `unknown[]` to read the URL slot.
+    const args = fetchMock.mock.calls[0] as unknown as unknown[]
+    const url = args[0] as string
+    expect(url).not.toContain('%2F')
+    expect(url).toContain('/@mi/claude-react-web/latest')
+  })
+
   it('dedupes concurrent in-flight probes', async () => {
     let resolved = 0
     const fetchMock = vi.fn(

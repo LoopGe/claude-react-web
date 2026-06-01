@@ -32,9 +32,10 @@ import { TodoChecklist } from './TodoChecklist'
 import { useComposerSnippets } from '../hooks/useComposerSnippets'
 import { useSessionRecap } from '../hooks/useSessionRecap'
 import { MessageSearch } from './MessageSearch'
+import { countMatches } from '../search'
 import { ContextMenu } from './ContextMenu'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
-import { useSuccessToast } from '../hooks/useSuccessToast'
+import { useToast } from '../hooks/useToast'
 import type { AgentInfo, PermissionRequest, SessionInfo, SlashCommand } from '../types'
 import type { GitStatusResponse } from '../../shared/git-types'
 
@@ -240,21 +241,33 @@ export const Chat = memo(function Chat({
   // ── In-chat search ──────────────────────────────────────────
   const [searchOpen, setSearchOpen] = useState(false)
   const [exportMenuPos, setExportMenuPos] = useState<{ x: number; y: number } | null>(null)
-  const [exportSuccess, showExportSuccess, clearExportSuccess] = useSuccessToast()
+  // Export-success feedback now goes through the global toast hub.
+  const toast = useToast()
   const [searchQuery, setSearchQuery] = useState('')
   const debouncedQuery = useDebouncedValue(searchQuery, 200)
   const [searchActiveIdx, setSearchActiveIdx] = useState(0)
-  /** Indices into transcript items that match the current search query.
-   *  Uses the canonical `plainText` field — same view the rehype
-   *  highlighter reconstructs at render time, so the counter and
-   *  the visible <mark>s describe the same text. */
+  /** Flat list of text-level matches across the transcript. Each entry
+   *  records the transcript item it lives in plus its local index
+   *  within that item (0-based, so the third "foo" inside item #5 is
+   *  `{ itemIdx: 5, matchInItem: 2 }`). The array length is the total
+   *  hit count shown in the search bar.
+   *
+   *  We carry the per-item index alongside the global one so the
+   *  active-mark highlighter can colour the precise `<mark>` the user
+   *  is currently on — without it, "next match" jumps inside the same
+   *  message would be invisible (same outline, no scroll change).
+   *
+   *  Matching uses the canonical `plainText` field — same view the
+   *  rehype highlighter reconstructs at render time, so the counter
+   *  and the visible <mark>s describe the same text. */
   const searchMatches = useMemo(() => {
-    if (!debouncedQuery) return [] as number[]
-    const q = debouncedQuery.toLowerCase()
-    const out: number[] = []
+    if (!debouncedQuery) return [] as Array<{ itemIdx: number; matchInItem: number }>
+    const out: Array<{ itemIdx: number; matchInItem: number }> = []
     for (let i = 0; i < stream.items.length; i++) {
       const text = stream.items[i]?.plainText
-      if (text && text.toLowerCase().includes(q)) out.push(i)
+      if (!text) continue
+      const n = countMatches(text, debouncedQuery)
+      for (let k = 0; k < n; k++) out.push({ itemIdx: i, matchInItem: k })
     }
     return out
   }, [stream.items, debouncedQuery])
@@ -555,7 +568,7 @@ export const Chat = memo(function Chat({
               icon: '📄',
               onClick: () => {
                 exportConversation(stream.messages, session.title ?? session.id.slice(0, 8))
-                showExportSuccess('Exported as Markdown')
+                toast.success('Exported as Markdown')
               },
             },
             {
@@ -563,7 +576,7 @@ export const Chat = memo(function Chat({
               icon: '{}',
               onClick: () => {
                 exportConversationJson(stream.messages, session.title ?? session.id.slice(0, 8))
-                showExportSuccess('Exported as JSON')
+                toast.success('Exported as JSON')
               },
             },
           ]}
@@ -596,7 +609,8 @@ export const Chat = memo(function Chat({
           questionAnswers={stream.questionAnswers}
           toolStatus={stream.toolStatus}
           searchQuery={searchOpen ? debouncedQuery : ''}
-          searchActiveMsgIdx={searchMatches[searchActiveIdx] ?? -1}
+          searchActiveMsgIdx={searchMatches[searchActiveIdx]?.itemIdx ?? -1}
+          searchActiveMatchInItem={searchMatches[searchActiveIdx]?.matchInItem ?? -1}
         />
       </SubagentProvider>
 
@@ -614,13 +628,6 @@ export const Chat = memo(function Chat({
       >
         {error ?? ''}
       </div>
-      {exportSuccess && (
-        <div className="success-toast" style={{ margin: '4px 18px' }}>
-          {exportSuccess}
-          <button className="success-toast-dismiss" onClick={clearExportSuccess}>✕</button>
-        </div>
-      )}
-
       {/* The queue bar is only interesting when the user has queued extra
           turns on top of the one currently running — a single pending
           turn is already covered by the thinking bubble in the

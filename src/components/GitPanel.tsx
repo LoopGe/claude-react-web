@@ -23,7 +23,7 @@ import { memo, useState } from 'react'
 import { useGitDiff, useGitLog, useGitBranches, useGitStashes } from '../hooks/useGitStatus'
 import { useGitWrite } from '../hooks/useGitWrite'
 import { ConfirmDialog } from './ConfirmDialog'
-import { useErrorToast } from '../hooks/useErrorToast'
+import { useToast } from '../hooks/useToast'
 import type {
   GitFileEntry,
   GitStatusResponse,
@@ -60,7 +60,10 @@ interface ConfirmState {
 
 export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading, error, onRefresh, onClose }: Props) {
   const writeOps = useGitWrite(sessionId)
-  const [toastError, showError, clearError] = useErrorToast()
+  // Git op failures used to render an in-panel error strip; they now
+  // surface as global toasts so the user sees them even if they've
+  // already moved off the Git overlay.
+  const toast = useToast()
   const [confirm, setConfirm] = useState<ConfirmState | null>(null)
   const [confirmBusy, setConfirmBusy] = useState(false)
   const [commitMessage, setCommitMessage] = useState('')
@@ -72,7 +75,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
       await fn()
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      showError(`${label}: ${msg}`)
+      toast.error(`${label}: ${msg}`)
     }
   }
 
@@ -88,7 +91,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
           await fn()
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
-          showError(`${errLabel}: ${msg}`)
+          toast.error(`${errLabel}: ${msg}`)
         } finally {
           setConfirmBusy(false)
           setConfirm(null)
@@ -201,13 +204,6 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         <button className="git-panel-icon-btn" onClick={onClose} title="Close">✕</button>
       </header>
 
-      {toastError && (
-        <div className="git-panel-toast" role="alert">
-          <span>{toastError}</span>
-          <button className="git-panel-icon-btn" onClick={clearError} title="Dismiss">✕</button>
-        </div>
-      )}
-
       {inProgress && (
         <div className="git-panel-banner" role="alert">
           <span>⚠ {status.state} in progress</span>
@@ -282,7 +278,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
               cwd={cwd}
               staged={false}
               writeOps={writeOps}
-              onError={(label, err) => showError(`${label}: ${err}`)}
+              onError={(label, err) => toast.error(`${label}: ${err}`)}
               askConfirm={askThenRun}
             />
           ))
@@ -311,7 +307,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
               cwd={cwd}
               staged
               writeOps={writeOps}
-              onError={(label, err) => showError(`${label}: ${err}`)}
+              onError={(label, err) => toast.error(`${label}: ${err}`)}
               askConfirm={askThenRun}
             />
           ))
@@ -338,7 +334,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
               key={'?:' + f.path}
               file={f}
               writeOps={writeOps}
-              onError={(label, err) => showError(`${label}: ${err}`)}
+              onError={(label, err) => toast.error(`${label}: ${err}`)}
               askConfirm={askThenRun}
             />
           ))
@@ -354,7 +350,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         generateBusy={writeOps.busyOps.has('commit-message')}
         message={commitMessage}
         setMessage={setCommitMessage}
-        onError={(err) => showError(`Commit: ${err}`)}
+        onError={(err) => toast.error(`Commit: ${err}`)}
         askConfirm={askThenRun}
       />
 
@@ -362,14 +358,14 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         sessionId={sessionId}
         currentBranch={status.detached ? null : status.branch}
         writeOps={writeOps}
-        onError={(label, err) => showError(`${label}: ${err}`)}
+        onError={(label, err) => toast.error(`${label}: ${err}`)}
         askConfirm={askThenRun}
       />
 
       <StashesSection
         sessionId={sessionId}
         writeOps={writeOps}
-        onError={(label, err) => showError(`${label}: ${err}`)}
+        onError={(label, err) => toast.error(`${label}: ${err}`)}
         askConfirm={askThenRun}
       />
 

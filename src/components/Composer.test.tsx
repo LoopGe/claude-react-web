@@ -1,8 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, fireEvent } from '@testing-library/react'
+import type { ReactElement } from 'react'
+import { render as rtlRender, fireEvent } from '@testing-library/react'
 import { Composer } from './Composer'
+import { ToastProvider } from './ToastProvider'
 import type { SlashCommand } from '../types'
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
+
+// Composer calls useToast() for clipboard-fail hints, so every test
+// render needs a ToastProvider in scope. Wrapping at the test-helper
+// layer keeps the individual cases focused on Composer behaviour.
+function render(ui: ReactElement) {
+  return rtlRender(<ToastProvider>{ui}</ToastProvider>)
+}
 
 const noop = vi.fn()
 const noopAsync = async () => {}

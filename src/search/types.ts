@@ -11,11 +11,12 @@ export interface Range {
 }
 
 /** A search match against a single TranscriptItem.
- *  `itemIdx` is the index in the unfiltered `items[]` array (so the same
- *  pointer the existing scrollToIndex / search-active-msg highlight is
- *  already consuming).  `count` is the number of `Range`s that matched
- *  the message — used to build the global "N matches" total without
- *  forcing every consumer to recompute ranges. */
+ *  `itemIdx` is the index in the unfiltered `items[]` array (the same
+ *  pointer scrollToIndex consumes; the per-mark active highlight lives
+ *  on `mark.search-hl-active` inside the rendered message).  `count` is
+ *  the number of `Range`s that matched the message — used to build the
+ *  global "N matches" total without forcing every consumer to recompute
+ *  ranges. */
 export interface SearchHit {
   itemIdx: number
   count: number

@@ -1,5 +1,5 @@
 import { createInitialSessionState, type SessionAction, type SessionSnapshot, type SessionState, type TranscriptItem } from './types'
-import { reduceSessionState } from './reducer'
+import { rebuildIndexesFromMessages, reduceSessionState } from './reducer'
 import { extractMessagePlainText } from '../search'
 import type { SdkMessage } from '../types'
 
@@ -167,13 +167,25 @@ export class SessionStore {
     // Try to restore from localStorage cache first
     const cached = loadFromStorage(sessionId)
     if (cached && cached.messages.length > 0) {
-      this.state = {
+      // Only `messages`/`items` are persisted — the lifecycle index
+      // maps (toolStatus, planStatus, planContent, questionAnswers,
+      // activeSubagents) are derived state and start empty after
+      // hydrate. We MUST replay the cached messages through
+      // updateIndexes() to rebuild them; otherwise every cached
+      // tool_use card renders 'running' forever (useToolStatus
+      // defaults to 'running' for unknown ids, and the live-replay
+      // path only sees frames AFTER lastMessageUuid). This was the
+      // "older Grep/Read cards stuck spinning after several turns"
+      // bug — cards from previous turns lived in the cached items
+      // but their toolStatus entries had been thrown away.
+      const seeded: SessionState = {
         ...createInitialSessionState(sessionId),
         items: cached.messages,
         messages: cached.rawMessages as SessionState['messages'],
         lastMessageUuid: cached.lastMessageUuid,
         replayReady: true, // Treat cached data as "replayed"
       }
+      this.state = rebuildIndexesFromMessages(seeded, seeded.messages)
       this.snapshot = this.buildSnapshot(this.state)
     } else {
       this.state = createInitialSessionState(sessionId)

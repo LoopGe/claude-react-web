@@ -21,6 +21,7 @@ import type { ActiveSubagent, PlanStatus, ToolStatus, TranscriptItem } from '../
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { truncate } from '../utils/text'
 import { getBlocks } from '../session-store/normalize'
+import { countMatches, extractPlainText } from '../search'
 
 /** Re-export type for backward compatibility (types don't affect Fast Refresh). */
 export type { ActiveSubagent } from '../session-store/types'
@@ -65,6 +66,14 @@ interface Props {
    *  scrolled into view and visually highlighted as the active search
    *  result. -1 means no active result. */
   searchActiveMsgIdx?: number
+  /** Local match index inside the active item — i.e. for the message
+   *  pointed at by `searchActiveMsgIdx`, this names which of its
+   *  matches is the user's current navigation target. Lets the
+   *  renderer style ONE specific `<mark>` differently (warn-coloured
+   *  background) instead of just "the whole message". -1 / undefined
+   *  means "no active match in this item" (or the active hit lives in
+   *  a different item). */
+  searchActiveMatchInItem?: number
   /** Filter mode for parent_tool_use_id:
    *  - undefined / null: only show root messages (parent_tool_use_id == null).
    *    This is the default for the main transcript — subagent-internal
@@ -107,7 +116,7 @@ const EMPTY_TOOL_STATUS: ReadonlyMap<string, ToolStatus> = new Map()
  *  (so re-entering the band restores follow-mode). */
 const NEAR_BOTTOM_PX = 200
 
-export const MessageList = memo(function MessageList({ items, recap, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, searchQuery, searchActiveMsgIdx, parentToolUseIdFilter }: Props) {
+export const MessageList = memo(function MessageList({ items, recap, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -413,21 +422,31 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
     }
   }, [FOLLOW_DEBOUNCE_MS])
 
-  const activeVirtIdx = searchActiveMsgIdx != null && searchActiveMsgIdx >= 0
-    ? (itemToVirtIdx.get(searchActiveMsgIdx) ?? -1)
-    : -1
-
-  const itemContent = useCallback((index: number, item: RenderableItem) => (
-    <div className={`virtuoso-item-wrapper${index === activeVirtIdx ? ' search-active-msg' : ''}`}>
-      <MessageView
-        msg={item.msg}
-        isCompactSummary={item.isCompactSummary}
-        interruptedRef={pendingInterruptRef}
-        searchQuery={searchQuery}
-        sending={item.sending}
-      />
-    </div>
-  ), [pendingInterruptRef, searchQuery, activeVirtIdx])
+  const itemContent = useCallback((_index: number, item: RenderableItem) => {
+    // Only pipe `activeMatchInItem` into the message that actually
+    // contains the active navigation target. Every other message gets
+    // `undefined` so its <mark>s render at the default colour. This
+    // is what lets the user visually tell "next match" jumps from one
+    // hit to another even within the same message — without per-match
+    // resolution we'd be stuck at message granularity.
+    const isActiveItem =
+      searchActiveMsgIdx != null &&
+      searchActiveMsgIdx >= 0 &&
+      item.itemIndex === searchActiveMsgIdx
+    const activeMatchInItem = isActiveItem ? searchActiveMatchInItem : undefined
+    return (
+      <div className="virtuoso-item-wrapper">
+        <MessageView
+          msg={item.msg}
+          isCompactSummary={item.isCompactSummary}
+          interruptedRef={pendingInterruptRef}
+          searchQuery={searchQuery}
+          activeMatchInItem={activeMatchInItem}
+          sending={item.sending}
+        />
+      </div>
+    )
+  }, [pendingInterruptRef, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem])
 
   // Footer combines two optional rows pinned to the bottom of the
   // transcript: the streaming-typing bubble (live token deltas) and the
@@ -527,12 +546,21 @@ const MessageView = memo(function MessageView({
   isCompactSummary,
   interruptedRef,
   searchQuery,
+  activeMatchInItem,
   sending,
 }: {
   msg: SdkMessage
   isCompactSummary?: boolean
   interruptedRef?: React.RefObject<boolean>
   searchQuery?: string
+  /** Local match index inside this message — when set, the Markdown
+   *  renderer marks the Nth `<mark>` as the active navigation target.
+   *  Caller computes the index per-message and passes `undefined` (or
+   *  -1) for messages that aren't the user's current focus. For
+   *  multi-block assistant messages we walk the blocks here and rebase
+   *  the index into per-block coordinates so each Markdown only sees
+   *  the local sub-index. */
+  activeMatchInItem?: number
   /** When true, render the user bubble with a "sending" spinner.
    *  Only meaningful for type='user' messages — propagated from the
    *  TranscriptItem's optimistic-placeholder flag. */
@@ -641,7 +669,7 @@ const MessageView = memo(function MessageView({
               ))}
             </div>
           )}
-          {userContent && <Markdown text={userContent} searchQuery={searchQuery} />}
+          {userContent && <Markdown text={userContent} searchQuery={searchQuery} activeMatchIdx={activeMatchInItem} />}
         </div>
       </div>
     )
@@ -659,6 +687,33 @@ const MessageView = memo(function MessageView({
       .filter((b) => b.type === 'text' && typeof b.text === 'string')
       .map((b) => b.text as string)
       .join('\n\n')
+    // Active-match plumbing for multi-text-block assistant messages.
+    // Each text block runs its OWN rehype highlighter, so we have to
+    // rebase the message-local match index into per-block coordinates:
+    // figure out how many matches each text block contributes and pass
+    // the correct sub-index to the one containing the active hit. Other
+    // blocks get `undefined` so their <mark>s render at the default
+    // colour. We compute per-block counts on the same `extractPlainText`
+    // view the highlighter uses, so the sums line up with what the
+    // user can actually navigate to.
+    const blockActiveIdx = useMemo(() => {
+      const out: Array<number | undefined> = blocks.map(() => undefined)
+      const q = searchQuery?.trim()
+      if (!q || activeMatchInItem == null || activeMatchInItem < 0) return out
+      let remaining = activeMatchInItem
+      for (let i = 0; i < blocks.length; i++) {
+        const b = blocks[i]
+        if (b.type !== 'text' || typeof b.text !== 'string') continue
+        const n = countMatches(extractPlainText(b.text), q)
+        if (n === 0) continue
+        if (remaining < n) {
+          out[i] = remaining
+          break
+        }
+        remaining -= n
+      }
+      return out
+    }, [blocks, searchQuery, activeMatchInItem])
     return (
       <div className={`msg assistant${isSubagent ? ' subagent' : ''}`}>
         {assistantText && (
@@ -677,7 +732,7 @@ const MessageView = memo(function MessageView({
         </div>
         <div className="msg-body">
           {blocks.map((b, i) => (
-            <BlockView key={i} block={b} searchQuery={searchQuery} />
+            <BlockView key={i} block={b} searchQuery={searchQuery} activeMatchIdx={blockActiveIdx[i]} />
           ))}
         </div>
       </div>
@@ -1019,9 +1074,9 @@ function formatCost(usd: number): string {
 // stable across `searchQuery` changes. (Without that wrapper this memo
 // would silently miss for string-content messages, since `getBlocks`
 // returns a fresh `[{type:'text', text}]` on every call for strings.)
-const BlockView = memo(function BlockView({ block, searchQuery }: { block: Block; searchQuery?: string }) {
+const BlockView = memo(function BlockView({ block, searchQuery, activeMatchIdx }: { block: Block; searchQuery?: string; activeMatchIdx?: number }) {
   if (block.type === 'text' && typeof block.text === 'string') {
-    return <Markdown text={block.text} searchQuery={searchQuery} />
+    return <Markdown text={block.text} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />
   }
   if (block.type === 'image') {
     const source = block.source as { type: string; data?: string; media_type?: string } | undefined

@@ -81,18 +81,18 @@ function rehypeHighlightLite() {
   }
 }
 
-export const Markdown = memo(function Markdown({ text, searchQuery }: { text: string; searchQuery?: string }) {
+export const Markdown = memo(function Markdown({ text, searchQuery, activeMatchIdx }: { text: string; searchQuery?: string; activeMatchIdx?: number }) {
   // Fall back to a <pre>-rendered raw text if anything inside react-markdown
   // (or our rehype plugins) throws — prevents one bad message from blanking
   // the whole transcript.
   return (
     <ErrorBoundary fallback={<pre className="md md-fallback">{text}</pre>}>
-      <MarkdownInner text={text} searchQuery={searchQuery} />
+      <MarkdownInner text={text} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />
     </ErrorBoundary>
   )
 })
 
-const MarkdownInner = memo(function MarkdownInner({ text, searchQuery }: { text: string; searchQuery?: string }) {
+const MarkdownInner = memo(function MarkdownInner({ text, searchQuery, activeMatchIdx }: { text: string; searchQuery?: string; activeMatchIdx?: number }) {
   const q = searchQuery?.trim()
 
   // Build the plugin array once per query change.  The search
@@ -110,9 +110,15 @@ const MarkdownInner = memo(function MarkdownInner({ text, searchQuery }: { text:
   // inside walkSearchable and was silently swallowed by <ErrorBoundary>
   // — the UI rendered fine but no <mark>s ever appeared. We wrap it in
   // a one-line attacher so unified gets the shape it expects.
+  //
+  // `activeMatchIdx` (when set) tells the highlighter which of the
+  // matches inside THIS markdown source is the user's current
+  // navigation target. The caller is expected to map "global active
+  // hit" → "local match index inside this block" before passing it
+  // here. Undefined / out-of-range silently means "no active mark".
   const rehypePlugins = useMemo(
-    () => q ? [rehypeHighlightLite, () => rehypeHighlightQuery(q)] : [rehypeHighlightLite],
-    [q],
+    () => q ? [rehypeHighlightLite, () => rehypeHighlightQuery(q, activeMatchIdx)] : [rehypeHighlightLite],
+    [q, activeMatchIdx],
   )
 
   return (

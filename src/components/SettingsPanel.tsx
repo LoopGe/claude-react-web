@@ -3,7 +3,7 @@
 
 import { memo, useEffect, useMemo, useState } from 'react'
 import { api } from '../hooks/useApi'
-import { useSuccessToast } from '../hooks/useSuccessToast'
+import { useToast } from '../hooks/useToast'
 import type { AgentInfo, McpServerConfigMeta, McpServerStatus, ModelInfo, PermissionMode, Plugin, SessionInfo, SlashCommand } from '../types'
 import { PERMISSION_MODES } from '../types'
 import { McpInstaller } from './McpInstaller'
@@ -30,9 +30,11 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
   const [globalMcpNames, setGlobalMcpNames] = useState<Set<string>>(new Set())
   const [showMcpInstaller, setShowMcpInstaller] = useState(false)
   const [mcpInstallerEdit, setMcpInstallerEdit] = useState<McpServerConfigMeta | undefined>(undefined)
-  const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [successMsg, showSuccess, clearSuccess] = useSuccessToast()
+  // All settings success/error feedback rides on the global toast hub.
+  // The previous in-panel `err` state and the inline success banner have
+  // been removed in favour of right-bottom toasts.
+  const toast = useToast()
   const [reloadedPlugins, setReloadedPlugins] = useState<Plugin[]>([])
   const [showMarketplace, setShowMarketplace] = useState(false)
 
@@ -116,13 +118,12 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
 
   const runAndRefresh = async (fn: () => Promise<{ session: SessionInfo }>) => {
     setBusy(true)
-    setErr(null)
     try {
       const r = await fn()
       onSessionUpdate(r.session)
-      showSuccess('Settings applied')
+      toast.success('Settings applied')
     } catch (e) {
-      setErr((e as Error).message)
+      toast.error(`Couldn't apply settings: ${(e as Error).message}`)
     } finally {
       setBusy(false)
     }
@@ -139,7 +140,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
     try {
       parsed = JSON.parse(settingsText || '{}')
     } catch (e) {
-      setErr(`Invalid JSON: ${(e as Error).message}`)
+      toast.error(`Invalid JSON: ${(e as Error).message}`)
       return
     }
     await runAndRefresh(() =>
@@ -155,34 +156,31 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
   }
 
   const reconnectMcp = async (name: string) => {
-    setErr(null)
     try {
       await api.post(`/sessions/${session.id}/mcp/${encodeURIComponent(name)}/reconnect`)
       await refreshMcp()
     } catch (e) {
-      setErr((e as Error).message)
+      toast.error(`Couldn't reconnect MCP: ${(e as Error).message}`)
     }
   }
 
   const toggleMcp = async (name: string, enabled: boolean) => {
-    setErr(null)
     try {
       await api.post(`/sessions/${session.id}/mcp/${encodeURIComponent(name)}/toggle`, { enabled })
       await refreshMcp()
     } catch (e) {
-      setErr((e as Error).message)
+      toast.error(`Couldn't toggle MCP: ${(e as Error).message}`)
     }
   }
 
   const reloadPlugins = async () => {
-    setErr(null)
     try {
       const res = await api.post<{ result: { plugins?: Plugin[] } }>(`/sessions/${session.id}/plugins/reload`)
       if (res.result?.plugins) setReloadedPlugins(res.result.plugins)
       await refreshMcp()
       onPluginsReloaded?.()
     } catch (e) {
-      setErr((e as Error).message)
+      toast.error(`Couldn't reload plugins: ${(e as Error).message}`)
     }
   }
 
@@ -235,22 +233,9 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
         </button>
       </h3>
 
-      {/* Always-mounted live region — see `.error-bar-empty` in styles.css.
-          The region stays in the DOM so screen readers reliably announce
-          settings-save failures. */}
-      <div
-        className={`error-bar${err ? '' : ' error-bar-empty'}`}
-        role="alert"
-        aria-live="polite"
-      >
-        {err ?? ''}
-      </div>
-      {successMsg && (
-        <div className="success-toast" style={{ margin: '4px 18px' }}>
-          {successMsg}
-          <button className="success-toast-dismiss" onClick={clearSuccess}>✕</button>
-        </div>
-      )}
+      {/* All settings feedback (success/error) flows through the global
+          toast hub now (see ToastHost). The toast itself is the live
+          region; screen readers pick up the role=alert from there. */}
 
       <div className="settings-section">
         <h4>Read-only (set at create)</h4>

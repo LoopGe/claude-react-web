@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { reduceSessionState } from './reducer'
+import { rebuildIndexesFromMessages, reduceSessionState } from './reducer'
 import { createInitialSessionState } from './types'
 import {
   extractToolUseId,
@@ -238,6 +238,31 @@ describe('reducer: toolStatus lifecycle', () => {
       message: assistant([toolUse('Bash', 'tu_bash')], 'a-2'),
     })
     expect(state.toolStatus.get('tu_bash')).toBe('success')
+  })
+
+  it('rebuilds toolStatus from cached messages on hydration', () => {
+    // Regression: when the SessionStore restored items+messages from
+    // localStorage, only those two fields were re-populated — toolStatus
+    // (and the other index maps) started empty. useToolStatus then
+    // returned the default 'running' for every cached tool_use card,
+    // so older Read/Grep/Bash cards spun forever after a page reload
+    // even though the conversation had moved on.
+    //
+    // The fix is the rebuildIndexesFromMessages() helper, called from
+    // SessionStore's constructor after loadFromStorage. This test
+    // exercises the helper directly.
+    const cachedMessages = [
+      assistant([toolUse('Bash', 'tu_bash'), toolUse('Read', 'tu_read')], 'a-1'),
+      user([toolResult('tu_bash')], 'r-1'),
+      user([toolResult('tu_read', { isError: true, content: 'ENOENT' })], 'r-2'),
+      assistant([toolUse('Grep', 'tu_grep')], 'a-2'),
+      // No tool_result for tu_grep yet — it really is still running.
+    ]
+    const seeded = createInitialSessionState('s1')
+    const state = rebuildIndexesFromMessages(seeded, cachedMessages)
+    expect(state.toolStatus.get('tu_bash')).toBe('success')
+    expect(state.toolStatus.get('tu_read')).toBe('error')
+    expect(state.toolStatus.get('tu_grep')).toBe('running')
   })
 
   it('returns the same state when the result toolUseId is unknown', () => {

@@ -346,6 +346,36 @@ function updateTranscript(state: SessionState, message: SdkMessage): SessionStat
   }
 }
 
+/** Replay a list of cached messages through `updateIndexes()` to
+ *  reconstruct the lifecycle index maps (`toolStatus`, `planStatus`,
+ *  `planContent`, `questionAnswers`, `activeSubagents`).
+ *
+ *  Used by `SessionStore` on hydration: only `messages`/`items` are
+ *  persisted to localStorage (the indexes are derived state). Without
+ *  this rebuild, every cached tool_use card would render the default
+ *  "running" badge forever — `useToolStatus` falls back to 'running'
+ *  for any toolUseId not in the map, and the seeding step that puts it
+ *  there only runs on live `MESSAGE` actions, not on hydrate. The
+ *  symptom we hit was older Read/Grep/Bash cards stuck on the spinner
+ *  after a page reload even though the conversation had moved on.
+ *
+ *  We deliberately bypass `updateTranscript` — the items array is
+ *  already populated from the cache; we only need the index side
+ *  effects. Calling `applyMessage` here would double-append items.
+ *
+ *  Note: skips `liveTurn` and `pendingUserMessageIds` work too, which is
+ *  fine — those are ephemeral and re-derived from the live stream. */
+export function rebuildIndexesFromMessages(
+  state: SessionState,
+  messages: readonly SdkMessage[],
+): SessionState {
+  let next = state
+  for (const message of messages) {
+    next = updateIndexes(next, message)
+  }
+  return next
+}
+
 function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
   let changed = false
   let planStatus = state.planStatus

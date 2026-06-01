@@ -282,13 +282,13 @@ export function MarketplaceBrowser({ onClose, onInstalled }: Props) {
         {err && (
           <div className="marketplace-error">
             <span>{err}</span>
-            <button className="error-toast-dismiss" onClick={() => setErr(null)}>✕</button>
+            <button className="marketplace-dismiss" onClick={() => setErr(null)}>✕</button>
           </div>
         )}
         {info && !err && (
           <div className="marketplace-info">
             <span>{info}</span>
-            <button className="error-toast-dismiss" onClick={() => setInfo(null)}>✕</button>
+            <button className="marketplace-dismiss" onClick={() => setInfo(null)}>✕</button>
           </div>
         )}
 
