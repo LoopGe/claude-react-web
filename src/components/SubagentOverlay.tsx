@@ -7,7 +7,8 @@
 import { memo, useEffect } from 'react'
 import { MessageList } from './MessageList'
 import { formatElapsed } from '../utils/format'
-import type { ActiveSubagent, TranscriptItem } from '../session-store/types'
+import type { ActiveSubagent, PlanStatus, ToolStatus, TranscriptItem } from '../session-store/types'
+import type { QuestionAnswerEntry } from '../utils/question-answers'
 
 interface Props {
   /** Stack of toolUseIds: stack[0] is the outermost subagent the user
@@ -20,6 +21,17 @@ interface Props {
   onClose: () => void
   onPop: () => void
   showSystemEvents?: boolean
+  /** Tool/plan/question lifecycle maps. These MUST be forwarded to the
+   *  nested MessageList — it builds its OWN status context providers, so
+   *  without them every tool card inside a drilled-in subagent reads the
+   *  empty-default provider and useToolStatus() falls back to 'running'
+   *  forever (the "tool stuck running" bug). The reducer already seeds
+   *  subagent-internal tool ids (it ignores parent_tool_use_id), so the
+   *  data exists — it just has to reach this MessageList. */
+  toolStatus?: ReadonlyMap<string, ToolStatus>
+  planStatus?: ReadonlyMap<string, PlanStatus>
+  planContent?: ReadonlyMap<string, string>
+  questionAnswers?: ReadonlyMap<string, QuestionAnswerEntry[]>
 }
 
 
@@ -30,6 +42,10 @@ export const SubagentOverlay = memo(function SubagentOverlay({
   onClose,
   onPop,
   showSystemEvents,
+  toolStatus,
+  planStatus,
+  planContent,
+  questionAnswers,
 }: Props) {
   const currentId = stack[stack.length - 1]
   const current = currentId ? index.get(currentId) : undefined
@@ -127,6 +143,10 @@ export const SubagentOverlay = memo(function SubagentOverlay({
             items={items}
             parentToolUseIdFilter={currentId}
             showSystemEvents={showSystemEvents}
+            toolStatus={toolStatus}
+            planStatus={planStatus}
+            planContent={planContent}
+            questionAnswers={questionAnswers}
             replayReady
           />
         </div>

@@ -565,10 +565,9 @@ export function App() {
       const source = sessions.find((s) => s.id === id)
       if (!source) return
       const sourceGroup = groups.find((g) => g.sessionIds.includes(id))
-      // Inherit the source's group. If the source is ungrouped, fall
-      // back to the first group with room. groupId may be undefined
-      // (the new session will be ungrouped).
-      const fallbackGroup = groups.find((g) => g.sessionIds.length < maxOpen)
+      // Inherit the source's group only. If the source is ungrouped, the
+      // copy stays ungrouped too — never silently drop it into some other
+      // group that happens to have room.
       const form: NewSessionForm = {
         cwd: source.cwd,
         model: source.model,
@@ -578,11 +577,11 @@ export function App() {
         // when copied. Without this, "new like this" silently downgrades
         // the window.
         betas: source.betas,
-        groupId: sourceGroup?.id ?? fallbackGroup?.id,
+        groupId: sourceGroup?.id,
       }
       await handleCreate(form)
     },
-    [sessions, groups, maxOpen, handleCreate],
+    [sessions, groups, handleCreate],
   )
 
   /** The irreversible part: actually hit the server (which kills the Query
@@ -689,7 +688,6 @@ export function App() {
       const source = sessions.find((s) => s.id === id)
       if (!source) return
       const sourceGroup = groups.find((g) => g.sessionIds.includes(id))
-      const fallbackGroup = groups.find((g) => g.sessionIds.length < maxOpen)
       const form: NewSessionForm = {
         cwd: source.cwd,
         model: source.model,
@@ -697,7 +695,9 @@ export function App() {
         // Preserve beta flags (notably `context-1m-...`) so restart
         // doesn't silently drop the window from 1M back to 200k.
         betas: source.betas,
-        groupId: sourceGroup?.id ?? fallbackGroup?.id,
+        // Inherit the source's group only. An ungrouped session restarts
+        // as ungrouped — don't drop it into an arbitrary group with room.
+        groupId: sourceGroup?.id,
       }
       // Create first — if this fails, the old session stays intact.
       // handleCreate already surfaces failure via toast (never re-throws).
@@ -707,7 +707,7 @@ export function App() {
       // confusing (the replacement session already exists).
       await performDelete(id)
     },
-    [sessions, groups, maxOpen, handleCreate, performDelete],
+    [sessions, groups, handleCreate, performDelete],
   )
 
   /** Activate a group: replace main-area panels with the group's sessions. */

@@ -364,15 +364,33 @@ function unregisterStoreForDebug(sessionId: string, store: SessionStore): void {
   if (set.size === 0) debugStores.delete(sessionId)
 }
 
+interface ToolEntryDump {
+  toolUseId: string
+  status: string
+  toolName: string | null
+  /** A tool_result block with this exact tool_use_id exists somewhere in
+   *  the message log. */
+  hasToolResultInLog: boolean
+  /** The is_error flag on that tool_result (null when no result found). */
+  resultIsError: boolean | null
+  /** The parent_tool_use_id of the user frame carrying the tool_result
+   *  (null = main-thread / undefined field; string = subagent-internal).
+   *  Critical for diagnosing the pump-drop failure mode: if a result
+   *  exists ONLY on disk but never reached the live reducer, the live
+   *  message log won't contain it at all. */
+  resultParentToolUseId: string | null | 'no-result'
+  diagnosis: string
+}
+
 interface ToolStatusDump {
   sessionId: string
   total: number
-  running: Array<{
-    toolUseId: string
-    toolName: string | null
-    hasToolResultInLog: boolean
-    diagnosis: string
-  }>
+  /** Quick counts so the headline failure mode is visible at a glance. */
+  counts: { running: number; success: number; error: number }
+  /** Every non-success tool entry, with per-id result analysis. The
+   *  previous version only analyzed 'running' entries — useless once the
+   *  turn-end sweep has flipped lingering 'running' tools to 'error'. */
+  problems: ToolEntryDump[]
   all: Record<string, string>
 }
 
@@ -382,11 +400,20 @@ function dumpToolStatus(): ToolStatusDump[] {
     for (const store of stores) {
       const state = store.getState()
       const messages = state.messages
-      const running: ToolStatusDump['running'] = []
+      const counts = { running: 0, success: 0, error: 0 }
+      for (const status of state.toolStatus.values()) {
+        if (status === 'running') counts.running++
+        else if (status === 'success') counts.success++
+        else if (status === 'error') counts.error++
+      }
+      const problems: ToolEntryDump[] = []
       for (const [id, status] of state.toolStatus) {
-        if (status !== 'running') continue
+        // 'success' is the healthy terminal state — skip it.
+        if (status === 'success') continue
         let toolName: string | null = null
         let hasResult = false
+        let resultIsError: boolean | null = null
+        let resultParent: string | null | 'no-result' = 'no-result'
         for (const m of messages) {
           const content = m.message?.content
           if (!Array.isArray(content)) continue
@@ -394,21 +421,44 @@ function dumpToolStatus(): ToolStatusDump[] {
             if (b.type === 'tool_use' && (b.id === id || b.tool_use_id === id)) {
               toolName = typeof b.name === 'string' ? b.name : null
             }
-            if (b.type === 'tool_result' && b.tool_use_id === id) hasResult = true
+            if (b.type === 'tool_result' && b.tool_use_id === id) {
+              hasResult = true
+              resultIsError = b.is_error === true
+              const parent = (m as Record<string, unknown>).parent_tool_use_id
+              resultParent = typeof parent === 'string' ? parent : null
+            }
           }
         }
-        running.push({
+        let diagnosis: string
+        if (!hasResult) {
+          diagnosis =
+            'NO tool_result in live message log — either the result never arrived ' +
+            '(interrupt / disconnect / process died) OR the pump dropped it as an ' +
+            'echoed user frame (parent_tool_use_id == null). Compare with the on-disk ' +
+            'transcript: if the result IS on disk but missing here, it is a pump-drop bug.'
+        } else if (status === 'error' && resultIsError === false) {
+          diagnosis =
+            'ID-MISMATCH / FLIP-FAILURE: a SUCCESS tool_result exists in the log but the ' +
+            'status is error — the reducer did not flip it (id extraction mismatch in ' +
+            'normalize.ts, or the result message reached the reducer out of band).'
+        } else if (status === 'error' && resultIsError === true) {
+          diagnosis = 'Genuine tool failure — tool_result carried is_error: true.'
+        } else {
+          diagnosis = `status=${status} with hasResult=${hasResult} isError=${resultIsError}`
+        }
+        problems.push({
           toolUseId: id,
+          status,
           toolName,
           hasToolResultInLog: hasResult,
-          diagnosis: hasResult
-            ? 'ID-MISMATCH: tool_result exists in log but did not flip status — check normalize.ts id extraction'
-            : 'NO tool_result in log — result never arrived (interrupt / disconnect / process died)',
+          resultIsError,
+          resultParentToolUseId: resultParent,
+          diagnosis,
         })
       }
       const all: Record<string, string> = {}
       for (const [id, status] of state.toolStatus) all[id] = status
-      out.push({ sessionId, total: state.toolStatus.size, running, all })
+      out.push({ sessionId, total: state.toolStatus.size, counts, problems, all })
     }
   }
   console.log('[toolStatus dump]', out)

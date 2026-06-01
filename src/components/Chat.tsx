@@ -811,6 +811,10 @@ export const Chat = memo(function Chat({
             onClose={closeSubagent}
             onPop={popSubagent}
             showSystemEvents={showSystemEvents}
+            toolStatus={stream.toolStatus}
+            planStatus={stream.planStatus}
+            planContent={stream.planContent}
+            questionAnswers={stream.questionAnswers}
           />
         </SubagentProvider>
       )}
