@@ -31,6 +31,7 @@
 import pkg from '../package.json' with { type: 'json' }
 import type { UpdateInfo } from '../shared/update-info.js'
 import { config } from './config.js'
+import { detectInstallMethod } from './install-method.js'
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000  // 6h between successful probes
 const FAILED_RETRY_MS = 5 * 60 * 1000    // 5 min between retries after failure
@@ -44,6 +45,8 @@ const CURRENT_VERSION: string = pkg.version
 
 let cached: UpdateInfo = {
   current: CURRENT_VERSION,
+  packageName: PACKAGE_NAME,
+  installMethod: detectInstallMethod(),
   hasUpdate: false,
   source: 'npm',
 }
@@ -170,6 +173,8 @@ export async function checkForUpdates(force = false): Promise<UpdateInfo> {
   if (!registry) {
     cached = {
       current: CURRENT_VERSION,
+      packageName: PACKAGE_NAME,
+      installMethod: detectInstallMethod(),
       hasUpdate: false,
       source: 'npm',
       disabled: true,
@@ -206,6 +211,9 @@ export async function checkForUpdates(force = false): Promise<UpdateInfo> {
       const latest = await fetchLatestFromNpm(PACKAGE_NAME, registry)
       cached = {
         current: CURRENT_VERSION,
+        packageName: PACKAGE_NAME,
+        installMethod: detectInstallMethod(),
+        registry,
         latest,
         hasUpdate: isVersionNewer(CURRENT_VERSION, latest),
         checkedAt: Date.now(),
@@ -214,6 +222,9 @@ export async function checkForUpdates(force = false): Promise<UpdateInfo> {
     } catch (err) {
       cached = {
         current: CURRENT_VERSION,
+        packageName: PACKAGE_NAME,
+        installMethod: detectInstallMethod(),
+        registry,
         // Preserve the previously-known `latest` so a transient network
         // failure doesn't make the UI suddenly forget there's an update
         // available. Skip if the previous snapshot was a `disabled`
@@ -239,6 +250,8 @@ export async function checkForUpdates(force = false): Promise<UpdateInfo> {
 export function __resetUpdateCheckerForTests(): void {
   cached = {
     current: CURRENT_VERSION,
+    packageName: PACKAGE_NAME,
+    installMethod: detectInstallMethod(),
     hasUpdate: false,
     source: 'npm',
   }

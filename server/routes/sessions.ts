@@ -96,6 +96,27 @@ export function buildSessionRouter(sm: SessionManager): Hono {
     return c.json({ ok: true })
   })
 
+  // Paginated history (lazy-load older messages from disk).
+  //
+  // Query params:
+  //   before — disk index to page backwards from (exclusive). Omit for the
+  //            newest page. Pass the previous response's `startIndex` to walk
+  //            further back.
+  //   limit  — page size (default 200, clamped server-side to [1, 1000]).
+  //
+  // Returns { messages, totalCount, startIndex, hasMore }. Messages are in
+  // chronological order and shape-compatible with live SDK messages.
+  app.get('/sessions/:id/history', async (c) => {
+    const id = c.req.param('id')
+    const beforeRaw = c.req.query('before')
+    const beforeUuid = c.req.query('beforeUuid') || undefined
+    const limitRaw = c.req.query('limit')
+    const before = beforeRaw != null && /^\d+$/.test(beforeRaw) ? Number(beforeRaw) : undefined
+    const limit = limitRaw != null && /^\d+$/.test(limitRaw) ? Number(limitRaw) : 200
+    const page = await sm.getHistoryPage(id, { before, beforeUuid, limit })
+    return c.json(page)
+  })
+
   // Interrupt
   app.post('/sessions/:id/interrupt', async (c) => {
     await sm.interrupt(c.req.param('id'))

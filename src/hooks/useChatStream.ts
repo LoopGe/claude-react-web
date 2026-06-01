@@ -1,11 +1,35 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getSessionLastMessageUuid, getSessionStore, useSessionField } from '../session-store/selectors'
 import { sessionStoreRegistry } from '../session-store/registry'
 import { clearAllSessionStorage } from '../session-store/store'
 import type { ActiveSubagent, ActivePhase, PlanStatus, ToolStatus, TranscriptItem } from '../session-store/types'
 import { useWsHub, useWsHubStatus } from './useWsHub'
+import { api } from './useApi'
 import type { WsServerFrame } from '../ws-types'
 import type { PermissionRequest, PermissionResolved, SdkMessage, SkillFrontmatter } from '../types'
+
+/** Disk-stable message types whose uuid matches between the in-memory ring
+ *  and the on-disk transcript. User PROMPT uuids are minted server-side at
+ *  send() time and do NOT match disk, so they can't anchor the first page.
+ *  assistant / system frames (and tool_result-bearing user frames) carry
+ *  SDK-native uuids that are identical on disk. */
+function diskStableUuid(msg: SdkMessage): string | null {
+  if (typeof msg.uuid !== 'string') return null
+  if (msg.type === 'assistant' || msg.type === 'system') return msg.uuid
+  // tool_result-bearing user frames have parent_tool_use_id set and a
+  // native uuid; plain prompts have parent_tool_use_id null.
+  if (msg.type === 'user' && (msg as Record<string, unknown>).parent_tool_use_id != null) {
+    return msg.uuid
+  }
+  return null
+}
+
+interface HistoryPageResponse {
+  messages: SdkMessage[]
+  totalCount: number
+  startIndex: number
+  hasMore: boolean
+}
 
 export interface ContextUsage {
   totalTokens?: number
@@ -59,6 +83,16 @@ export interface ChatStream {
   rollbackUserMessage: (pendingId: string) => void
   reset: () => void
   clearError: () => void
+  /** Lazy-load the previous page of history from disk and prepend it.
+   *  No-op while a load is in flight or when there's nothing older.
+   *  Resolves to the number of messages prepended (0 when none). */
+  loadOlder: () => Promise<number>
+  /** True when there may be older messages on disk before the first one
+   *  currently displayed. Starts true (unknown) and becomes false once a
+   *  page reports hasMore=false. */
+  hasOlder: boolean
+  /** True while a loadOlder() request is in flight. */
+  loadingOlder: boolean
 }
 
 export interface PermissionHandlers {
@@ -134,6 +168,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
           decision: { behavior: 'allow' | 'deny'; persisted: boolean; message?: string }
         }
       | { type: 'CONTEXT_USAGE'; usage: ContextUsage }
+      | { type: 'MESSAGE_CONSUMED'; uuid: string; consumedAt: number }
       | { type: 'ERROR'; message: string | null }
     const pendingLive: PendingAction[] = []
 
@@ -222,6 +257,18 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
           }
           break
         }
+        case 'message-consumed': {
+          // Flip the matching user bubble from "queued" to "consumed". If
+          // the message itself hasn't arrived yet (frame raced ahead), the
+          // reducer no-ops and the message's own broadcast / next replay
+          // carries consumedAt, so it self-heals.
+          if (replaying) {
+            pendingLive.push({ type: 'MESSAGE_CONSUMED', uuid: frame.uuid, consumedAt: frame.consumedAt })
+          } else {
+            store.dispatch({ type: 'MESSAGE_CONSUMED', uuid: frame.uuid, consumedAt: frame.consumedAt })
+          }
+          break
+        }
         case 'error': {
           if (replaying) {
             pendingLive.push({ type: 'ERROR', message: frame.message })
@@ -279,6 +326,73 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     store.dispatch({ type: 'ERROR', message: null })
   }, [store])
 
+  // --- Lazy history paging (scroll-up) ---------------------------------
+  // hasOlder/loadingOlder are React state (drive UI). The cursor index and
+  // in-flight guard are refs (don't need to trigger renders). Reset whenever
+  // the session changes.
+  const [hasOlder, setHasOlder] = useState(true)
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  // Disk index to page before next time (the previous response's startIndex).
+  // null means "first page — anchor by uuid instead".
+  const cursorRef = useRef<number | null>(null)
+  const inFlightRef = useRef(false)
+
+  useEffect(() => {
+    // New session: reset paging state. The setState calls are intentional —
+    // paging UI state is derived from `sessionId` and must reset when it
+    // changes; there's no render-time value to compute it from. The reset
+    // runs once per session switch (not every render), so the cascading-
+    // render concern the rule guards against doesn't apply here.
+    cursorRef.current = null
+    inFlightRef.current = false
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setHasOlder(true)
+    setLoadingOlder(false)
+  }, [sessionId])
+
+  const loadOlder = useCallback(async (): Promise<number> => {
+    if (inFlightRef.current) return 0
+    inFlightRef.current = true
+    setLoadingOlder(true)
+    try {
+      const params = new URLSearchParams({ limit: '200' })
+      if (cursorRef.current != null) {
+        // Subsequent pages: page strictly before the last startIndex.
+        params.set('before', String(cursorRef.current))
+      } else {
+        // First page: anchor on the oldest disk-stable message on screen.
+        // Scan current items front-to-back for the first uuid the disk
+        // transcript will recognise (assistant/system/tool_result user).
+        const current = store.getState().items
+        let anchor: string | null = null
+        for (const it of current) {
+          const u = diskStableUuid(it.msg)
+          if (u) { anchor = u; break }
+        }
+        if (anchor) params.set('beforeUuid', anchor)
+        // If no anchor exists (e.g. transcript is only user prompts so far),
+        // omit both — the server returns the newest page, and dedup-by-uuid
+        // in the reducer drops anything already shown.
+      }
+
+      const page = await api.get<HistoryPageResponse>(
+        `/sessions/${sessionId}/history?${params.toString()}`,
+      )
+      cursorRef.current = page.startIndex
+      setHasOlder(page.hasMore)
+      if (page.messages.length === 0) return 0
+      store.dispatch({ type: 'PREPEND_MESSAGES', messages: page.messages })
+      return page.messages.length
+    } catch {
+      // Network/parse error — leave hasOlder as-is so the user can retry by
+      // scrolling again. Don't surface to the error banner (non-fatal).
+      return 0
+    } finally {
+      inFlightRef.current = false
+      setLoadingOlder(false)
+    }
+  }, [sessionId, store])
+
   return useMemo(
     () => ({
       items,
@@ -302,7 +416,10 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       rollbackUserMessage,
       reset,
       clearError,
+      loadOlder,
+      hasOlder,
+      loadingOlder,
     }),
-    [items, messages, queuedAhead, displayedError, contextUsage, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, activeSubagents, subagentIndex, replayReady, trackSentTurn, insertUserMessage, rollbackUserMessage, reset, clearError],
+    [items, messages, queuedAhead, displayedError, contextUsage, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, activeSubagents, subagentIndex, replayReady, trackSentTurn, insertUserMessage, rollbackUserMessage, reset, clearError, loadOlder, hasOlder, loadingOlder],
   )
 }

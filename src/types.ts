@@ -155,6 +155,15 @@ export interface SdkMessage {
    *  messages restored from the CLI's on-disk log after a server restart —
    *  the UI hides the timestamp when undefined rather than guessing. */
   receivedAt?: number
+  /** Wall-clock ms when the SDK actually read this user message off its input
+   *  queue (i.e. started processing the turn), as opposed to `receivedAt`
+   *  which is when the server accepted it over HTTP. The gap is how long the
+   *  turn sat queued behind an in-flight turn. Stamped server-side onto the
+   *  same object in the history ring, so it rides along on replay — a
+   *  reconnecting client sees it already set on consumed messages. Only
+   *  meaningful on top-level user messages; absent (undefined) means the
+   *  message is still queued and hasn't been picked up yet. */
+  consumedAt?: number
   // `message` is present on user/assistant. For user: { role: 'user', content: string }.
   // For assistant: { role: 'assistant', content: ContentBlock[] } (Anthropic SDK shape).
   message?: {

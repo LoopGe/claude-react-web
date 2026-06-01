@@ -61,6 +61,10 @@ export function App() {
   // False until the first sessions-snapshot frame arrives over WS. Drives a
   // sidebar skeleton so "No sessions yet" doesn't flash before the list loads.
   const [sessionsLoaded, setSessionsLoaded] = useState(false)
+  /** Sessions queued for deletion but still within the Undo grace window.
+   *  Hidden from the sidebar optimistically; the real delete fires when the
+   *  timer lapses (or is cancelled by Undo). */
+  const [pendingDeleteIds, setPendingDeleteIds] = useState<Set<string>>(new Set())
   /** Ordered list of open session ids (oldest first). Length ≤ maxOpen. */
   const [openIds, setOpenIds] = useState<string[]>([])
   /** Which of the open panels is currently focused (controls settings
@@ -581,7 +585,12 @@ export function App() {
     [sessions, groups, maxOpen, handleCreate],
   )
 
-  const handleDelete = useCallback(
+  /** The irreversible part: actually hit the server (which kills the Query
+   *  subprocess and erases persistence) and clean up local references.
+   *  Used directly by Restart (create-then-delete) where an Undo toast
+   *  would be nonsensical, and by the delayed path below once the undo
+   *  window lapses. */
+  const performDelete = useCallback(
     async (id: string) => {
       try {
         await api.delete(`/sessions/${id}`)
@@ -608,6 +617,71 @@ export function App() {
     [closeSession, setGroups, handleSessionColorChange, toast],
   )
 
+  /** Pending delete timers keyed by session id. The server delete is
+   *  irreversible (kills the subprocess + erases persistence), so "undo"
+   *  can only work as a Gmail-style grace period: hide the session from
+   *  the sidebar immediately, fire the real delete after a delay, and let
+   *  the user cancel the timer within the window. */
+  const pendingDeleteTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+
+  /** Cancel a queued delete (Undo). Restores the card by clearing the
+   *  optimistic-hide id. */
+  const cancelPendingDelete = useCallback((id: string) => {
+    const timer = pendingDeleteTimers.current.get(id)
+    if (timer) {
+      clearTimeout(timer)
+      pendingDeleteTimers.current.delete(id)
+    }
+    setPendingDeleteIds((prev) => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
+  }, [])
+
+  const handleDelete = useCallback(
+    (id: string) => {
+      // Already queued? Ignore the repeat click.
+      if (pendingDeleteTimers.current.has(id)) return
+      const session = sessions.find((s) => s.id === id)
+      const label = session?.title ?? id.slice(0, 8)
+      // Optimistically hide the card so the sidebar reflects the intent
+      // instantly — the actual API call is deferred.
+      setPendingDeleteIds((prev) => new Set(prev).add(id))
+      const UNDO_MS = 5000
+      const timer = setTimeout(() => {
+        pendingDeleteTimers.current.delete(id)
+        setPendingDeleteIds((prev) => {
+          if (!prev.has(id)) return prev
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+        void performDelete(id)
+      }, UNDO_MS)
+      pendingDeleteTimers.current.set(id, timer)
+      toast.info(`Deleted "${label}"`, {
+        actionLabel: 'Undo',
+        durationMs: UNDO_MS,
+        onClick: () => cancelPendingDelete(id),
+      })
+    },
+    [sessions, performDelete, cancelPendingDelete, toast],
+  )
+
+  // Clear any queued delete timers on unmount so a pending timer can't fire
+  // after the component is gone. Note this ABANDONS the queued delete (the
+  // session survives) rather than committing it — a page close cancels the
+  // pending intent, which is the safe default for an irreversible action.
+  useEffect(() => {
+    const timers = pendingDeleteTimers.current
+    return () => {
+      for (const t of timers.values()) clearTimeout(t)
+      timers.clear()
+    }
+  }, [])
+
   /** Create a fresh session with the same config, then delete the old one.
    *  Create-first ensures the old session is preserved if creation fails. */
   const handleRestart = useCallback(
@@ -629,9 +703,11 @@ export function App() {
       // handleCreate already surfaces failure via toast (never re-throws).
       await handleCreate(form)
       // Only delete the old session after the new one is confirmed created.
-      await handleDelete(id)
+      // Use the immediate path — an Undo toast on a restart would be
+      // confusing (the replacement session already exists).
+      await performDelete(id)
     },
-    [sessions, groups, maxOpen, handleCreate, handleDelete],
+    [sessions, groups, maxOpen, handleCreate, performDelete],
   )
 
   /** Activate a group: replace main-area panels with the group's sessions. */
@@ -940,7 +1016,12 @@ export function App() {
    *  not listed falls back to the server's lastActivityAt sort. Ids in the
    *  saved order but no longer present on the server are dropped. */
   const orderedSessions = useMemo(() => {
-    const byId = new Map(sessions.map((s) => [s.id, s]))
+    // Sessions in the Undo grace window are hidden from the sidebar but
+    // still live on the server until the timer commits the delete.
+    const visible = pendingDeleteIds.size
+      ? sessions.filter((s) => !pendingDeleteIds.has(s.id))
+      : sessions
+    const byId = new Map(visible.map((s) => [s.id, s]))
     const ordered: SessionInfo[] = []
     const seen = new Set<string>()
     for (const id of sidebarOrder) {
@@ -950,14 +1031,17 @@ export function App() {
         seen.add(id)
       }
     }
-    for (const s of sessions) if (!seen.has(s.id)) ordered.push(s)
+    for (const s of visible) if (!seen.has(s.id)) ordered.push(s)
     return ordered
-  }, [sessions, sidebarOrder])
+  }, [sessions, sidebarOrder, pendingDeleteIds])
 
   /** Grouped sidebar view: groups -> ungrouped. Sessions not in any group
    *  appear in the "Ungrouped" section at the bottom. */
   const sidebarSections = useMemo((): SidebarSection[] => {
-    const byId = new Map(sessions.map((s) => [s.id, s]))
+    const visible = pendingDeleteIds.size
+      ? sessions.filter((s) => !pendingDeleteIds.has(s.id))
+      : sessions
+    const byId = new Map(visible.map((s) => [s.id, s]))
 
     // 1. Group sections.
     const sections: SidebarSection[] = []
@@ -976,7 +1060,7 @@ export function App() {
 
     // 2. Ungrouped sessions (not in any group).
     const ungrouped: SessionInfo[] = []
-    for (const s of sessions) {
+    for (const s of visible) {
       if (!groupedIds.has(s.id)) ungrouped.push(s)
     }
     if (ungrouped.length > 0) {
@@ -984,7 +1068,7 @@ export function App() {
     }
 
     return sections
-  }, [sessions, groups])
+  }, [sessions, groups, pendingDeleteIds])
 
   /** Reorder callback wired to the sidebar's DnD. Moves `draggedId` so it
    *  lands either before or after `targetId`. Dropping on itself is a
@@ -1485,6 +1569,8 @@ export function App() {
             updateRefreshing={updateInfo.refreshing}
             updateError={updateInfo.error}
             onRefreshUpdate={updateInfo.refresh}
+            updating={updateInfo.updating}
+            onUpdate={updateInfo.update}
           />
         </Suspense>
       )}

@@ -26,7 +26,22 @@ export interface Pushable<T> {
   readonly queueDepth: number
 }
 
-export function createPushable<T>(label = 'pushable', maxDepth?: number): Pushable<T> {
+export function createPushable<T>(
+  label = 'pushable',
+  maxDepth?: number,
+  /** Called exactly once per item the moment a consumer takes it off the
+   *  queue — i.e. when the SDK actually reads a turn, not when it was
+   *  pushed. Fires on BOTH consumption paths: the `next()` queue-shift
+   *  (item was buffered, consumer caught up) AND the `push()` direct
+   *  hand-off (consumer was already blocked in next(), item bypassed the
+   *  queue). Wrapped in try/catch internally so a throwing callback can
+   *  never wedge the SDK's iter.next(). */
+  onConsume?: (item: T) => void,
+): Pushable<T> {
+  const notifyConsume = (item: T) => {
+    if (!onConsume) return
+    try { onConsume(item) } catch { /* never let a consume hook break iteration */ }
+  }
   const id = `${label}#${++pushableSeq}`
   const queue: T[] = []
   let waiter: ((value: IteratorResult<T>) => void) | null = null
@@ -46,6 +61,10 @@ export function createPushable<T>(label = 'pushable', maxDepth?: number): Pushab
         waiter = null
         debugLog(`[${id}] push #${pushCallCount} → resolved waiter directly (queue was empty, consumer was waiting)`)
         w({ value: item, done: false })
+        // Direct hand-off path: the consumer was blocked in next() and this
+        // item bypassed the queue entirely. It IS being consumed right now,
+        // so fire the consume hook here too (not just in next()).
+        notifyConsume(item)
       } else {
         queue.push(item)
         // When a maxDepth is set, drop the oldest item to prevent
@@ -82,6 +101,10 @@ export function createPushable<T>(label = 'pushable', maxDepth?: number): Pushab
           if (queue.length) {
             const item = queue.shift()!
             debugLog(`[${id}] next #${nextCallCount} → resolved from queue (queue depth now: ${queue.length})`)
+            // Queue-shift path: the item was buffered while the consumer was
+            // busy and is only now being read. This is the common "sent
+            // mid-turn" case.
+            notifyConsume(item)
             return Promise.resolve({ value: item, done: false })
           }
           if (ended) {

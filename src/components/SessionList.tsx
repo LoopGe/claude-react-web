@@ -14,7 +14,7 @@ import { SessionCard } from './session-list/SessionCard'
 import { ConfirmDialog } from './ConfirmDialog'
 import { PromptDialog } from './PromptDialog'
 import { ContextMenu } from './ContextMenu'
-import { IconX } from './icons/ToolIcons'
+import { IconX, IconChevronRight, IconChevronDown, IconSquare, IconPencil, IconTrash } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
 import { Virtuoso } from 'react-virtuoso'
 
@@ -408,6 +408,53 @@ export const SessionList = memo(function SessionList({
     />
   ), [openIdSlotMap, openIdSet, focusedId, resumingIds, unread, draggingId, dropHint, renamingId, accentStyleMap, onSelect, onDelete, handleCardContextMenu, handleCardDragStart, handleCardDragEnd, handleSetDropHint, handleClearDropHint, onReorder, onReorderInGroup, renameDraft, handleRenameDraftChange, commitRename, cancelRename, startRename, handleAskConfirm])
 
+  /** Resolve which ordered list a session belongs to and, when it lives in
+   *  a group, that group's id. The flat view orders `visibleSessions`; the
+   *  grouped view splits across sections. Returns the sibling list (in
+   *  display order) plus the containing groupId (undefined for the flat
+   *  view or the Ungrouped section). */
+  const resolveSiblings = useCallback(
+    (id: string): { list: SessionInfo[]; groupId?: string } | null => {
+      if (filteredSections.length > 0) {
+        for (const sec of filteredSections) {
+          if (sec.sessions.some((s) => s.id === id)) {
+            return {
+              list: sec.sessions,
+              groupId: sec.kind === 'group' ? sec.group.id : undefined,
+            }
+          }
+        }
+        return null
+      }
+      return visibleSessions.some((s) => s.id === id) ? { list: visibleSessions } : null
+    },
+    [filteredSections, visibleSessions],
+  )
+
+  /** Keyboard-accessible reorder. Moves `id` one step up/down within its
+   *  current section by delegating to the same handlers drag-and-drop uses
+   *  — so the two paths stay behaviourally identical. */
+  const handleMove = useCallback(
+    (id: string, direction: 'up' | 'down') => {
+      const sib = resolveSiblings(id)
+      if (!sib) return
+      const idx = sib.list.findIndex((s) => s.id === id)
+      if (idx < 0) return
+      if (direction === 'up') {
+        if (idx === 0) return
+        const target = sib.list[idx - 1]
+        if (sib.groupId && onReorderInGroup) onReorderInGroup(id, target.id, 'before', sib.groupId)
+        else onReorder?.(id, target.id, 'before')
+      } else {
+        if (idx >= sib.list.length - 1) return
+        const target = sib.list[idx + 1]
+        if (sib.groupId && onReorderInGroup) onReorderInGroup(id, target.id, 'after', sib.groupId)
+        else onReorder?.(id, target.id, 'after')
+      }
+    },
+    [resolveSiblings, onReorder, onReorderInGroup],
+  )
+
   /** Determine whether a group's sessions currently occupy the main-area
    *  panels (i.e. its sessions match `openIds`). Used for the active highlight. */
   const isGroupActive = (group: SessionGroup): boolean => {
@@ -580,7 +627,7 @@ export const SessionList = memo(function SessionList({
                       aria-expanded={!collapsed}
                       aria-label={collapsed ? `Expand group ${sec.group.name}` : `Collapse group ${sec.group.name}`}
                     >
-                      {collapsed ? '▶' : '▼'}
+                      {collapsed ? <IconChevronRight size={13} /> : <IconChevronDown size={13} />}
                     </button>
                     <span className="group-header-name">{sec.group.name}</span>
                     <span className="group-header-count">{sec.sessions.length}</span>
@@ -657,7 +704,7 @@ export const SessionList = memo(function SessionList({
               return (
                 <div key="ungrouped" className="session-section session-section-ungrouped">
                   <div className="session-section-header ungrouped-header">
-                    <span className="ungrouped-header-icon">☐</span>
+                    <span className="ungrouped-header-icon"><IconSquare size={12} /></span>
                     <span className="group-header-name">Ungrouped</span>
                     <span className="group-header-count">{sec.sessions.length}</span>
                   </div>
@@ -683,7 +730,12 @@ export const SessionList = memo(function SessionList({
           )}
       </div>
 
-      {menu && <SessionContextMenu
+      {menu && (() => {
+        const sib = resolveSiblings(menu.id)
+        const idx = sib ? sib.list.findIndex((s) => s.id === menu.id) : -1
+        const canMoveUp = !!onReorder && idx > 0
+        const canMoveDown = !!onReorder && idx >= 0 && idx < (sib?.list.length ?? 0) - 1
+        return <SessionContextMenu
         anchor={menu}
         session={sessions.find((s) => s.id === menu.id)}
         isOpen={openIdSet.has(menu.id)}
@@ -691,6 +743,9 @@ export const SessionList = memo(function SessionList({
         onRename={(s) => startRename(s)}
         onClosePanel={(id) => onClosePanel?.(id)}
         onDelete={(id) => onDelete(id)}
+        onMove={handleMove}
+        canMoveUp={canMoveUp}
+        canMoveDown={canMoveDown}
         onFork={(id) => onFork?.(id)}
         onNewLikeThis={(id) => onNewLikeThis?.(id)}
         onRestart={(id) => onRestart?.(id)}
@@ -701,7 +756,8 @@ export const SessionList = memo(function SessionList({
         maxOpen={maxOpen}
         onShowSuccess={toast.success}
         onAskConfirm={handleAskConfirm}
-      />}
+      />
+      })()}
 
       {showDialog && (
         <NewSessionDialog
@@ -735,7 +791,7 @@ export const SessionList = memo(function SessionList({
             items={[
               {
                 label: 'Rename group…',
-                icon: '✎',
+                icon: <IconPencil size={14} />,
                 onClick: () => {
                   setPromptState({
                     title: 'Rename group',
@@ -752,7 +808,7 @@ export const SessionList = memo(function SessionList({
               },
               {
                 label: 'Delete group',
-                icon: '🗑',
+                icon: <IconTrash size={14} />,
                 danger: true,
                 onClick: () => {
                   setConfirmState({

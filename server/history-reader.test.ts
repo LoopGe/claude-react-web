@@ -1,0 +1,149 @@
+import { describe, it, expect } from 'vitest'
+import { paginateJsonl } from './history-reader.js'
+
+// Build a JSONL transcript string from line objects.
+function jsonl(lines: Array<Record<string, unknown>>): string {
+  return lines.map((l) => JSON.stringify(l)).join('\n')
+}
+
+const SID = 'sess-1'
+
+describe('paginateJsonl — filtering', () => {
+  it('keeps user/assistant and drops attachment/last-prompt/ai-title/queue-operation', () => {
+    const raw = jsonl([
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'hi' } },
+      { type: 'attachment', uuid: 'a1', attachment: {} },
+      { type: 'assistant', uuid: 'as1', message: { role: 'assistant', content: [] } },
+      { type: 'last-prompt', lastPrompt: 'x' },
+      { type: 'ai-title', aiTitle: 'T' },
+      { type: 'queue-operation', operation: 'add' },
+    ])
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    expect(page.totalCount).toBe(2)
+    expect((page.messages as Array<{ uuid: string }>).map((m) => m.uuid)).toEqual(['u1', 'as1'])
+  })
+
+  it('drops isMeta and isSidechain lines', () => {
+    const raw = jsonl([
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'real' } },
+      { type: 'user', uuid: 'm1', isMeta: true, message: { role: 'user', content: 'meta' } },
+      { type: 'assistant', uuid: 's1', isSidechain: true, message: { role: 'assistant', content: [] } },
+    ])
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    expect(page.totalCount).toBe(1)
+    expect((page.messages[0] as { uuid: string }).uuid).toBe('u1')
+  })
+
+  it('keeps only error/compact_boundary/api_retry system subtypes', () => {
+    const raw = jsonl([
+      { type: 'system', subtype: 'error', uuid: 'e1' },
+      { type: 'system', subtype: 'compact_boundary', uuid: 'c1' },
+      { type: 'system', subtype: 'api_retry', uuid: 'r1' },
+      { type: 'system', subtype: 'init', uuid: 'i1' },
+      { type: 'system', subtype: 'status', uuid: 'st1' },
+    ])
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    expect((page.messages as Array<{ uuid: string }>).map((m) => m.uuid)).toEqual(['e1', 'c1', 'r1'])
+  })
+
+  it('tolerates blank lines and corrupt rows', () => {
+    const raw = [
+      JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'a' } }),
+      '',
+      '{ not valid json',
+      JSON.stringify({ type: 'assistant', uuid: 'as1', message: { role: 'assistant', content: [] } }),
+    ].join('\n')
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    expect(page.totalCount).toBe(2)
+  })
+})
+
+describe('paginateJsonl — normalization', () => {
+  it('sets parent_tool_use_id to the tool_use_id for tool_result user lines', () => {
+    const raw = jsonl([
+      {
+        type: 'user',
+        uuid: 'tr1',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-42', content: 'ok' }] },
+      },
+    ])
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    expect((page.messages[0] as { parent_tool_use_id: string }).parent_tool_use_id).toBe('tool-42')
+  })
+
+  it('sets parent_tool_use_id null for real prompts and assistants', () => {
+    const raw = jsonl([
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'plain prompt' } },
+      { type: 'assistant', uuid: 'as1', message: { role: 'assistant', content: [] } },
+    ])
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    const msgs = page.messages as Array<{ parent_tool_use_id: string | null }>
+    expect(msgs[0].parent_tool_use_id).toBeNull()
+    expect(msgs[1].parent_tool_use_id).toBeNull()
+  })
+
+  it('falls back to the sessionId arg when the line has no session id', () => {
+    const raw = jsonl([{ type: 'user', uuid: 'u1', message: { role: 'user', content: 'x' } }])
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    expect((page.messages[0] as { session_id: string }).session_id).toBe(SID)
+  })
+
+  it('does NOT include receivedAt (disk-restored history hides the timestamp)', () => {
+    const raw = jsonl([{ type: 'user', uuid: 'u1', message: { role: 'user', content: 'x' } }])
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    expect('receivedAt' in (page.messages[0] as object)).toBe(false)
+  })
+})
+
+describe('paginateJsonl — pagination', () => {
+  // 5 renderable messages: indices 0..4
+  const raw = jsonl([
+    { type: 'user', uuid: 'u0', message: { role: 'user', content: '0' } },
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [] } },
+    { type: 'user', uuid: 'u2', message: { role: 'user', content: '2' } },
+    { type: 'assistant', uuid: 'a3', message: { role: 'assistant', content: [] } },
+    { type: 'user', uuid: 'u4', message: { role: 'user', content: '4' } },
+  ])
+
+  it('returns the newest page by default and reports hasMore', () => {
+    const page = paginateJsonl(raw, SID, { limit: 2 })
+    expect(page.totalCount).toBe(5)
+    expect(page.startIndex).toBe(3)
+    expect(page.hasMore).toBe(true)
+    expect((page.messages as Array<{ uuid: string }>).map((m) => m.uuid)).toEqual(['a3', 'u4'])
+  })
+
+  it('pages backwards via `before` (previous startIndex)', () => {
+    const first = paginateJsonl(raw, SID, { limit: 2 }) // startIndex 3
+    const second = paginateJsonl(raw, SID, { limit: 2, before: first.startIndex })
+    expect(second.startIndex).toBe(1)
+    expect(second.hasMore).toBe(true)
+    expect((second.messages as Array<{ uuid: string }>).map((m) => m.uuid)).toEqual(['a1', 'u2'])
+    const third = paginateJsonl(raw, SID, { limit: 2, before: second.startIndex })
+    expect(third.startIndex).toBe(0)
+    expect(third.hasMore).toBe(false)
+    expect((third.messages as Array<{ uuid: string }>).map((m) => m.uuid)).toEqual(['u0'])
+  })
+
+  it('anchors on beforeUuid (page strictly before that message)', () => {
+    const page = paginateJsonl(raw, SID, { limit: 10, beforeUuid: 'a3' })
+    // a3 is index 3 → return [0,3): u0,a1,u2
+    expect((page.messages as Array<{ uuid: string }>).map((m) => m.uuid)).toEqual(['u0', 'a1', 'u2'])
+    expect(page.hasMore).toBe(false)
+  })
+
+  it('falls back to newest page when beforeUuid is not found', () => {
+    const page = paginateJsonl(raw, SID, { limit: 2, beforeUuid: 'does-not-exist' })
+    expect(page.startIndex).toBe(3)
+    expect((page.messages as Array<{ uuid: string }>).map((m) => m.uuid)).toEqual(['a3', 'u4'])
+  })
+
+  it('clamps limit and handles empty transcript', () => {
+    expect(paginateJsonl('', SID, { limit: 100 })).toEqual({
+      messages: [],
+      totalCount: 0,
+      startIndex: 0,
+      hasMore: false,
+    })
+  })
+})

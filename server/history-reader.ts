@@ -1,0 +1,201 @@
+// Reads a session's FULL historical transcript from the SDK's on-disk JSONL
+// file and serves it back in offset-paginated pages so the frontend can
+// lazy-load messages that have already been evicted from the in-memory ring
+// (see session-manager.ts HISTORY_CAP).
+//
+// Why we parse the JSONL ourselves instead of using the SDK's
+// `getSessionMessages()`:
+//   That helper reconstructs the conversation by walking the parentUuid
+//   chain backwards from a single leaf. Real transcripts have FRACTURED
+//   chains (compaction / resume insert new roots), so it returns only the
+//   last connected segment — empirically 4 of 1439 messages on a long
+//   session. The raw file, by contrast, is append-only and already in
+//   chronological order, which is exactly the order we render in. So we
+//   read lines in file order and filter to the renderable subset.
+//
+// Normalization contract — the page we return must be shape-compatible with
+// the SDKMessage objects the live pump broadcasts, because the frontend
+// renders both through the same path:
+//   - keep:   user / assistant (not isMeta, not isSidechain) and
+//             system with subtype error|compact_boundary|api_retry
+//   - drop:   attachment / last-prompt / ai-title / queue-operation /
+//             isMeta / isSidechain (subagent inner stream) / everything else
+//   - parent_tool_use_id: disk lines DON'T carry this field, but the
+//             frontend's main-view filter (MessageList) hides any message
+//             whose parent_tool_use_id != null (tool_result content is
+//             surfaced via ToolCard, not as a raw bubble). So we replicate
+//             the live shape: a user line containing a tool_result block
+//             gets parent_tool_use_id = that tool_use_id; real prompts and
+//             assistant messages get null.
+//   - receivedAt: intentionally omitted. The frontend treats absent
+//             receivedAt as "disk-restored" and hides the timestamp header
+//             (see src/session-store/normalize.ts).
+
+import { readFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import path from 'node:path'
+import { glob } from 'node:fs/promises'
+
+export interface HistoryPage {
+  /** Renderable messages in chronological order, normalized to the live
+   *  SDKMessage wire shape. */
+  messages: unknown[]
+  /** Total number of renderable messages in the transcript. */
+  totalCount: number
+  /** Disk index of the first message in `messages` (0-based). */
+  startIndex: number
+  /** True when there are older messages before `startIndex`. */
+  hasMore: boolean
+}
+
+interface RawLine {
+  type?: string
+  subtype?: string
+  uuid?: string
+  sessionId?: string
+  session_id?: string
+  isMeta?: boolean
+  isSidechain?: boolean
+  message?: { role?: string; content?: unknown }
+  [k: string]: unknown
+}
+
+const KEEP_SYSTEM_SUBTYPES = new Set(['error', 'compact_boundary', 'api_retry'])
+
+/** Locate the transcript file for a session id. Session ids are globally
+ *  unique UUIDs, so we glob across all project dirs rather than recreating
+ *  the SDK's cwd→dirname encoding ourselves (which CLAUDE.md forbids
+ *  duplicating). Returns null if no file exists. */
+async function findTranscriptFile(sessionId: string): Promise<string | null> {
+  const pattern = path
+    .join(homedir(), '.claude', 'projects', '*', `${sessionId}.jsonl`)
+    .replace(/\\/g, '/')
+  try {
+    for await (const match of glob(pattern)) {
+      return match // first hit — ids are unique
+    }
+  } catch {
+    // glob unavailable / IO error — fall through to null
+  }
+  return null
+}
+
+/** Extract the tool_use_id from a user message whose content carries a
+ *  tool_result block. Returns null for real user prompts. */
+function toolResultParentId(content: unknown): string | null {
+  if (!Array.isArray(content)) return null
+  for (const block of content) {
+    const b = block as { type?: string; tool_use_id?: unknown }
+    if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
+      return b.tool_use_id
+    }
+  }
+  return null
+}
+
+/** True if a raw JSONL line should appear in the rendered transcript. */
+function isRenderable(o: RawLine): boolean {
+  if (o.isMeta || o.isSidechain) return false
+  if (o.type === 'user' || o.type === 'assistant') return true
+  if (o.type === 'system' && typeof o.subtype === 'string' && KEEP_SYSTEM_SUBTYPES.has(o.subtype)) {
+    return true
+  }
+  return false
+}
+
+/** Normalize a raw JSONL line into the live SDKMessage wire shape. */
+function normalize(o: RawLine, sessionId: string): unknown {
+  const parent = o.type === 'user' ? toolResultParentId(o.message?.content) : null
+  return {
+    type: o.type,
+    ...(typeof o.subtype === 'string' ? { subtype: o.subtype } : {}),
+    uuid: o.uuid,
+    session_id: o.session_id ?? o.sessionId ?? sessionId,
+    message: o.message,
+    parent_tool_use_id: parent,
+  }
+}
+
+/**
+ * Read a page of historical messages from disk.
+ *
+ * Offset semantics: the renderable messages form a chronological array of
+ * length `totalCount` (index 0 = oldest). We return the `limit` messages
+ * ending just before the resolved end index:  slice[max(0, end-limit), end).
+ *
+ * The end index is resolved in priority order:
+ *   1. `beforeUuid` — find that uuid's disk index and page strictly before
+ *      it. Used for the FIRST page: the frontend passes the oldest message
+ *      currently on screen that has a disk-stable uuid (assistant /
+ *      system / tool_result-bearing user). User PROMPT uuids are minted
+ *      server-side at send() time and never match disk, which is why we
+ *      anchor on a disk-stable type. If the uuid isn't found, fall through
+ *      to the newest page.
+ *   2. `before` — an explicit disk index (used for subsequent pages: pass
+ *      the previous response's `startIndex`).
+ *   3. neither → `totalCount` (newest page).
+ *
+ * Returns an empty page (totalCount 0) when the transcript file doesn't
+ * exist yet — e.g. a session that never completed a turn.
+ */
+export async function readHistoryPage(
+  sessionId: string,
+  opts: { before?: number; beforeUuid?: string; limit: number },
+): Promise<HistoryPage> {
+  const file = await findTranscriptFile(sessionId)
+  if (!file) {
+    return { messages: [], totalCount: 0, startIndex: 0, hasMore: false }
+  }
+
+  let raw: string
+  try {
+    raw = await readFile(file, 'utf8')
+  } catch {
+    return { messages: [], totalCount: 0, startIndex: 0, hasMore: false }
+  }
+
+  return paginateJsonl(raw, sessionId, opts)
+}
+
+/** Pure core of readHistoryPage: parse JSONL text, filter to the renderable
+ *  subset, and paginate. Exported for unit testing without touching the
+ *  filesystem. */
+export function paginateJsonl(
+  raw: string,
+  sessionId: string,
+  opts: { before?: number; beforeUuid?: string; limit: number },
+): HistoryPage {
+  const renderable: RawLine[] = []
+  for (const line of raw.split('\n')) {
+    if (!line) continue
+    let parsed: RawLine
+    try {
+      parsed = JSON.parse(line) as RawLine
+    } catch {
+      continue // tolerate a torn final line / corrupt row
+    }
+    if (isRenderable(parsed)) renderable.push(parsed)
+  }
+
+  const total = renderable.length
+  const limit = Math.max(1, Math.min(opts.limit, 1000))
+
+  let end = total
+  if (opts.beforeUuid) {
+    const idx = renderable.findIndex((o) => o.uuid === opts.beforeUuid)
+    // Found → page strictly before it. Not found → newest page (default).
+    if (idx >= 0) end = idx
+  } else if (opts.before != null) {
+    end = Math.max(0, Math.min(opts.before, total))
+  }
+
+  const start = Math.max(0, end - limit)
+  const slice = renderable.slice(start, end)
+
+  return {
+    messages: slice.map((o) => normalize(o, sessionId)),
+    totalCount: total,
+    startIndex: start,
+    hasMore: start > 0,
+  }
+}

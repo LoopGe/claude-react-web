@@ -1,6 +1,13 @@
 import { ContextMenu, type ContextMenuItem } from '../ContextMenu'
 import { ACCENT_COLORS } from '../../theme'
 import type { SessionGroup, SessionInfo } from '../../types'
+import {
+  IconPencil,
+  IconTrash,
+  IconFolder,
+  IconArrowUp,
+  IconArrowDown,
+} from '../icons/ToolIcons'
 
 export interface SessionContextMenuProps {
   anchor: { x: number; y: number; id: string }
@@ -10,6 +17,13 @@ export interface SessionContextMenuProps {
   onRename: (s: SessionInfo) => void
   onClosePanel: (id: string) => void
   onDelete: (id: string) => void
+  /** Keyboard-accessible alternative to drag-reorder. Moves the session
+   *  one step up/down within its current sidebar section. `canMoveUp` /
+   *  `canMoveDown` reflect whether a neighbour exists in that direction
+   *  (false at the section edges). */
+  onMove?: (id: string, direction: 'up' | 'down') => void
+  canMoveUp?: boolean
+  canMoveDown?: boolean
   /** Fork the session: POSTs /sessions/:id/fork on the server, which
    *  spawns a new Query seeded from this session's transcript. The new
    *  session appears in the sidebar via the global created event. */
@@ -48,6 +62,9 @@ export function SessionContextMenu({
   onRename,
   onClosePanel,
   onDelete,
+  onMove,
+  canMoveUp,
+  canMoveDown,
   onFork,
   onNewLikeThis,
   onRestart,
@@ -63,7 +80,7 @@ export function SessionContextMenu({
   const items: ContextMenuItem[] = [
     {
       label: 'Rename',
-      icon: '✎',
+      icon: <IconPencil size={14} />,
       onClick: () => onRename(session),
     },
     {
@@ -106,6 +123,25 @@ export function SessionContextMenu({
         onRestart(anchor.id)
       },
     },
+    // Keyboard-accessible reorder (drag-and-drop alternative). Only shown
+    // when a move handler is wired and at least one direction is possible.
+    ...(onMove && (canMoveUp || canMoveDown)
+      ? [
+          { label: '' } as ContextMenuItem,
+          {
+            label: 'Move up',
+            icon: <IconArrowUp size={14} />,
+            disabled: !canMoveUp,
+            onClick: () => onMove(anchor.id, 'up'),
+          } as ContextMenuItem,
+          {
+            label: 'Move down',
+            icon: <IconArrowDown size={14} />,
+            disabled: !canMoveDown,
+            onClick: () => onMove(anchor.id, 'down'),
+          } as ContextMenuItem,
+        ]
+      : []),
     { label: '' }, // separator before group actions
     // --- Group actions (exclusive membership — session is in at most one group) ---
     ...(() => {
@@ -146,7 +182,7 @@ export function SessionContextMenu({
     },
     {
       label: 'Copy working directory',
-      icon: '📁',
+      icon: <IconFolder size={14} />,
       disabled: !session.cwd,
       onClick: () => {
         if (session.cwd) {
@@ -188,7 +224,7 @@ export function SessionContextMenu({
     { label: '' }, // separator
     {
       label: 'Delete session',
-      icon: '🗑',
+      icon: <IconTrash size={14} />,
       danger: true,
       onClick: () => {
         // Ask for confirmation when there's conversation history at stake.

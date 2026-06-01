@@ -9,6 +9,7 @@ import {
   getToolResultOutcomes,
   getToolUseStarts,
   toTranscriptItem,
+  topLevelUserPromptSignature,
 } from './normalize'
 import {
   extractQuestionAnswers,
@@ -21,6 +22,8 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
   switch (action.type) {
     case 'REPLAY_REPLACE':
       return replayReplace(state, action.messages, action.permissions)
+    case 'PREPEND_MESSAGES':
+      return prependMessages(state, action.messages)
     case 'MESSAGE':
       return applyMessage(state, action.message)
     case 'OPTIMISTIC_USER_MESSAGE':
@@ -121,6 +124,8 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
     }
     case 'CONTEXT_USAGE':
       return { ...state, contextUsage: action.usage }
+    case 'MESSAGE_CONSUMED':
+      return applyMessageConsumed(state, action.uuid, action.consumedAt)
     case 'ERROR':
       return { ...state, error: action.message }
     case 'TRACK_SENT_TURN':
@@ -182,6 +187,113 @@ function replayReplace(
   return { ...state, replayReady: true }
 }
 
+/** Prepend a chronological batch of older messages (loaded from disk on
+ *  scroll-up) ahead of the current transcript.
+ *
+ *  Correctness notes:
+ *   - Dedup by uuid: a message already present (e.g. the boundary message
+ *     the frontend used as its paging cursor, or overlap after a reconnect)
+ *     is skipped so we never render it twice.
+ *   - Content dedup for TOP-LEVEL USER PROMPTS: these can't be deduped by
+ *     uuid because the server mints a fresh uuid for the in-memory copy
+ *     while the pump drops the SDK's echo, so the on-disk copy carries a
+ *     different (SDK) uuid (see topLevelUserPromptSignature). Paging anchors
+ *     on the first disk-stable item (assistant/system) and reads strictly
+ *     before it, so the disk page's TRAILING prompt run is exactly the
+ *     on-screen LEADING prompt run — the same logical messages. We match
+ *     those two runs element-wise from the boundary inward and drop the
+ *     overlap, so a genuinely-older but textually-identical prompt further
+ *     back is still preserved.
+ *   - We build TranscriptItems for the older batch in order, threading the
+ *     `prev` item so compact-summary detection (which looks at the previous
+ *     item) works within the batch. The last older item becomes `prev` for
+ *     the FIRST existing item — but we deliberately do NOT recompute the
+ *     existing items: their isCompactSummary was already settled when they
+ *     first arrived, and the only cross-boundary case (an existing first
+ *     item that is a user message immediately after a compact_boundary we
+ *     just prepended) is vanishingly rare and self-heals on next replay.
+ *   - Indexes (toolStatus/planStatus/…) are updated by running ONLY the
+ *     older batch through updateIndexes — NOT a full rebuild. A full rebuild
+ *     would clobber statuses that were set out-of-band (e.g. an ExitPlanMode
+ *     plan flipped to 'approved' via PERMISSION_RESOLVED without a
+ *     tool_result). The older batch's ids are disjoint from the live tail,
+ *     so additive indexing is both sufficient and non-destructive. */
+function prependMessages(state: SessionState, older: SdkMessage[]): SessionState {
+  if (older.length === 0) return state
+
+  const existingIds = new Set<string>()
+  for (const it of state.items) existingIds.add(it.id)
+
+  // How many trailing prompts of the incoming disk batch are the SAME
+  // logical messages as the leading prompts already on screen (the uuid
+  // boundary that uuid-dedup can't bridge — see the doc comment). Match the
+  // batch's trailing prompt run against the on-screen leading prompt run
+  // element-wise, from the boundary inward, by content signature.
+  const overlap = countPromptOverlap(older, state.items)
+  const batch = overlap > 0 ? older.slice(0, older.length - overlap) : older
+
+  const newItems: typeof state.items = []
+  const newMessages: SdkMessage[] = []
+  let prev = undefined as (typeof state.items)[number] | undefined
+  for (const msg of batch) {
+    const uuid = typeof msg.uuid === 'string' ? msg.uuid : null
+    if (uuid && existingIds.has(uuid)) continue
+    const item = toTranscriptItem(msg, prev)
+    if (!item) continue
+    newItems.push(item)
+    newMessages.push(item.msg)
+    existingIds.add(item.id)
+    prev = item
+  }
+
+  if (newItems.length === 0) return state
+
+  let next: SessionState = {
+    ...state,
+    items: [...newItems, ...state.items],
+    messages: [...newMessages, ...state.messages],
+  }
+  // Additive index update over just the prepended batch.
+  next = rebuildIndexesFromMessages(next, newMessages)
+  return next
+}
+
+/** Count how many trailing top-level user prompts of an incoming disk page
+ *  (`older`) are the same logical messages as the leading top-level prompts
+ *  already on screen (`items`).
+ *
+ *  Paging anchors on the first disk-stable message (assistant/system) and
+ *  reads strictly before it, so the user prompts shown ABOVE that anchor are
+ *  re-returned at the END of the disk page — the prompt closest to the
+ *  anchor is `older[last]` on disk and the last item of the on-screen
+ *  leading run in memory. Those prompts carry different uuids on disk vs in
+ *  memory (server-minted vs SDK), so we compare by content signature.
+ *
+ *  Both runs are anchored at the boundary and grow AWAY from it in opposite
+ *  array directions, so we must align them boundary-first: find the length
+ *  of the on-screen leading prompt run, then walk inward from the anchor —
+ *  `older[last-n]` against `items[K-1-n]`. Stop at the first mismatch (or a
+ *  non-prompt on the batch side), so an older but textually-identical prompt
+ *  further back in history is never falsely dropped. */
+function countPromptOverlap(older: SdkMessage[], items: SessionState['items']): number {
+  // Length of the contiguous top-level-prompt run at the START of the
+  // on-screen transcript (i.e. the prompts sitting above the paging anchor).
+  let leadRun = 0
+  while (leadRun < items.length && topLevelUserPromptSignature(items[leadRun].msg) != null) {
+    leadRun++
+  }
+  let n = 0
+  while (n < older.length && n < leadRun) {
+    const batchSig = topLevelUserPromptSignature(older[older.length - 1 - n])
+    if (batchSig == null) break // batch tail is no longer a top-level prompt
+    // items[leadRun - 1 - n] is within the leading run, so its signature is
+    // guaranteed non-null — only the content needs to match.
+    if (batchSig !== topLevelUserPromptSignature(items[leadRun - 1 - n].msg)) break
+    n++
+  }
+  return n
+}
+
 function applyOptimisticUserMessage(state: SessionState, message: SdkMessage): SessionState {
   const item = toTranscriptItem(message, state.items[state.items.length - 1])
   if (!item) return state
@@ -218,6 +330,35 @@ function applyOptimisticUserMessage(state: SessionState, message: SdkMessage): S
     messages: [...state.messages, optimisticItem.msg],
     pendingUserMessageIds: next,
   }
+}
+
+/** Flip a queued user message to 'consumed' when the live message-consumed
+ *  frame arrives. Matches by uuid. No-op when the message isn't present yet
+ *  (the frame raced ahead of the message broadcast) or is already consumed —
+ *  in the race case the message will carry consumedAt on its own broadcast /
+ *  the next replay, so we self-heal without tracking pending uuids. Mutates
+ *  the message object's consumedAt in place (consistent with the server,
+ *  where history and the live frame share one reference) and rebuilds just
+ *  the affected TranscriptItem so deliveryStatus re-derives. */
+function applyMessageConsumed(state: SessionState, uuid: string, consumedAt: number): SessionState {
+  const idx = state.items.findIndex((it) => it.id === uuid)
+  if (idx < 0) return state
+  const item = state.items[idx]
+  if (item.deliveryStatus === 'consumed') return state
+  // Stamp the underlying message so a later re-derivation (and any code
+  // reading msg.consumedAt directly) agrees. Build a new msg object rather
+  // than mutating the cached one, keeping the store's items immutable.
+  const nextMsg: SdkMessage = { ...item.msg, consumedAt }
+  const items = state.items.slice()
+  items[idx] = { ...item, msg: nextMsg, deliveryStatus: 'consumed' }
+  // Keep the parallel `messages` array's object reference in sync so a
+  // later REPLAY/PREPEND that reads msg.consumedAt is consistent.
+  const mIdx = state.messages.findIndex(
+    (m) => (typeof m.uuid === 'string' ? m.uuid : null) === uuid,
+  )
+  const messages = mIdx >= 0 ? state.messages.slice() : state.messages
+  if (mIdx >= 0) messages[mIdx] = nextMsg
+  return { ...state, items, messages }
 }
 
 function applyMessage(state: SessionState, message: SdkMessage): SessionState {

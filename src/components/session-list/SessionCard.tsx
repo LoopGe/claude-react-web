@@ -10,7 +10,7 @@ import { shortenPath } from '../../utils/paths'
 import { statusLabel } from '../../utils/session-status'
 import type { SessionInfo } from '../../types'
 import { Tooltip } from '../Tooltip'
-import { IconX, IconFolder } from '../icons/ToolIcons'
+import { IconX, IconFolder, IconAlertTriangle } from '../icons/ToolIcons'
 import { PermissionModeIcon, permissionModeLabel } from '../permission-mode-display'
 
 export interface SessionCardProps {
@@ -264,19 +264,19 @@ export const SessionCard = memo(function SessionCard({
       </div>
       {s.error && (
         <div className="session-item-error" title={s.error}>
-          ⚠ {s.error}
+          <IconAlertTriangle size={12} aria-hidden />
+          <span>{s.error}</span>
         </div>
       )}
       <div className="session-item-cwd" title={s.cwd ?? ''}>
         <IconFolder size={12} aria-hidden />
         <span>{s.cwd ? shortenPath(s.cwd) : '(no cwd)'}</span>
       </div>
-      <div className="session-item-meta">
-        {s.model ?? 'default'} · {s.permissionMode ?? 'default'}
-      </div>
       <div className="session-item-row">
         <span className="session-item-meta">
-          {s.messageCount} msgs · {s.subscribers} viewer{s.subscribers === 1 ? '' : 's'}
+          <span className="session-item-model">{s.model ?? 'default'}</span>
+          {' · '}{s.messageCount} msg{s.messageCount === 1 ? '' : 's'}
+          {s.subscribers > 0 && ` · ${s.subscribers} viewer${s.subscribers === 1 ? '' : 's'}`}
         </span>
         <Tooltip label="Delete session" placement="left">
           <button

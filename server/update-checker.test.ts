@@ -92,6 +92,16 @@ describe('checkForUpdates', () => {
     expect(info.error).toBeUndefined()
     expect(info.checkedAt).toBeTypeOf('number')
     expect(info.current).toBe(getCurrentVersion())
+    // installMethod must be populated on every snapshot so the client can
+    // decide whether to offer the in-app update button.
+    expect(['global', 'npx', 'unknown']).toContain(info.installMethod)
+  })
+
+  it('populates installMethod on the disabled snapshot too', async () => {
+    __setConfigForTest({ updateCheckRegistry: '' })
+    const info = await checkForUpdates(true)
+    expect(info.disabled).toBe(true)
+    expect(['global', 'npx', 'unknown']).toContain(info.installMethod)
   })
 
   it('records a stringified error when the registry rejects the request', async () => {

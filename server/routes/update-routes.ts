@@ -10,9 +10,20 @@
 // `GET /api/update-info?force=1` — awaits a fresh probe and returns the
 //                                  result (still capped at the
 //                                  update-checker's 5s fetch timeout).
+// `POST /api/update`             — performs an in-place `npm i -g
+//                                  <pkg>@latest` when this process was
+//                                  launched from a global install. For npx
+//                                  / dev runs it short-circuits and tells
+//                                  the client to fall back to the
+//                                  copy-command. Never auto-restarts — the
+//                                  response signals `restartRequired`.
 
 import { Hono } from 'hono'
 import { checkForUpdates, getCachedUpdateInfo } from '../update-checker.js'
+import { detectInstallMethod } from '../install-method.js'
+import { runNpmInstall } from '../npm-install.js'
+import { HttpError } from '../errors.js'
+import type { UpdateActionResult } from '../../shared/update-info.js'
 
 export function buildUpdateRouter(): Hono {
   const app = new Hono()
@@ -39,6 +50,39 @@ export function buildUpdateRouter(): Hono {
        * try/catch — nothing to do here. */
     })
     return c.json({ ...cached, checking: true })
+  })
+
+  app.post('/update', async (c) => {
+    const installMethod = detectInstallMethod()
+
+    // Only a global install can be upgraded in place. For npx / dev runs
+    // there's no persistent install to replace, so tell the client to use
+    // the copy-command fallback instead of spawning a doomed install.
+    if (installMethod !== 'global') {
+      const result: UpdateActionResult = {
+        performed: false,
+        installMethod,
+        fallbackToCopyCommand: true,
+      }
+      return c.json(result)
+    }
+
+    // Use server-trusted values — the package name we were built as and the
+    // configured registry — never anything from the request body. Keeps the
+    // npm argv free of any client-supplied input.
+    const info = getCachedUpdateInfo()
+    if (info.disabled || !info.packageName) {
+      throw new HttpError(400, 'update checks are not configured')
+    }
+
+    await runNpmInstall(info.packageName, info.registry)
+    const result: UpdateActionResult = {
+      performed: true,
+      installMethod: 'global',
+      restartRequired: true,
+      latest: info.latest,
+    }
+    return c.json(result)
   })
 
   return app

@@ -15,10 +15,9 @@
 
 import { useState } from 'react'
 import type { UpdateInfo } from '../../shared/update-info'
+import { buildUpgradeCommand } from '../utils/upgrade-command'
 
 const DISMISS_KEY = 'claude-react-web:update-banner-dismissed-version'
-
-const UPGRADE_COMMAND = 'npx claude-react-web@latest'
 
 interface Props {
   info: UpdateInfo | null
@@ -34,11 +33,24 @@ export function UpdateBanner({ info }: Props) {
       key={info.latest}
       current={info.current}
       latest={info.latest}
+      packageName={info.packageName}
+      registry={info.registry}
     />
   )
 }
 
-function UpdateBannerInner({ current, latest }: { current: string; latest: string }) {
+function UpdateBannerInner({
+  current,
+  latest,
+  packageName,
+  registry,
+}: {
+  current: string
+  latest: string
+  packageName: string
+  registry?: string
+}) {
+  const UPGRADE_COMMAND = buildUpgradeCommand(packageName, registry)
   const [dismissed, setDismissed] = useState<boolean>(() => {
     if (typeof sessionStorage === 'undefined') return false
     return sessionStorage.getItem(DISMISS_KEY) === latest

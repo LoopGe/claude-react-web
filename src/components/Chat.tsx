@@ -621,6 +621,9 @@ export const Chat = memo(function Chat({
           searchQuery={searchOpen ? debouncedQuery : ''}
           searchActiveMsgIdx={searchMatches[searchActiveIdx]?.itemIdx ?? -1}
           searchActiveMatchInItem={searchMatches[searchActiveIdx]?.matchInItem ?? -1}
+          loadOlder={stream.loadOlder}
+          hasOlder={stream.hasOlder}
+          loadingOlder={stream.loadingOlder}
         />
       </SubagentProvider>
 

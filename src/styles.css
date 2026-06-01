@@ -1078,9 +1078,11 @@ body.resizing-col * {
   background: none;
   border: none;
   padding: 0;
-  font-size: 10px;
-  width: 14px;
-  text-align: center;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--fg-muted);
   flex-shrink: 0;
   cursor: pointer;
@@ -1155,7 +1157,9 @@ body.resizing-col * {
   gap: 6px;
 }
 .ungrouped-header-icon {
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--fg-muted);
 }
 .session-item {
   display: flex;
@@ -1232,12 +1236,21 @@ body.resizing-col * {
 /* Error summary line — truncated one-liner under the title, full text
    available via the badge + this line's own tooltip. */
 .session-item-error {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-size: 12px;
   color: var(--danger);
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   margin-top: 2px;
+}
+.session-item-error svg {
+  flex-shrink: 0;
+}
+.session-item-error > :last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Per-panel permission overlay. Unlike the full-screen modal it used to
@@ -1505,6 +1518,10 @@ body.resizing-col * {
 .session-item-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .session-item-id { font-family: var(--mono); font-size: 12px; color: var(--fg-muted); }
 .session-item-meta { font-size: 12px; color: var(--fg-muted); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The model is the most useful at-a-glance datum in the meta row — lift it
+   above the muted msg/viewer counts so the eye lands on it first. Derived
+   from theme tokens (no hardcoded hex) so light/dark both adapt. */
+.session-item-model { color: color-mix(in srgb, var(--fg) 65%, var(--fg-muted)); }
 .session-item-cwd {
   display: flex;
   gap: 5px;
@@ -1611,6 +1628,26 @@ body.resizing-col * {
 
 /* Floating "scroll to bottom" button — visible only when the user has
    scrolled up. Shows a count badge when new messages arrived meanwhile. */
+.chat-older-history {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 12px;
+  min-height: 32px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.chat-older-history-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chat-older-history-hint {
+  opacity: 0.6;
+}
+
 .chat-jump-to-bottom {
   position: absolute;
   right: 16px;
@@ -1926,6 +1963,41 @@ body.resizing-col * {
    the acknowledged state. Restored when the spinner is removed. */
 .msg.user.msg-sending {
   opacity: 0.75;
+}
+/* Queued state: the server has the message but the SDK is still finishing
+   the current turn, so it sits in the input queue. Mirrors the sending
+   indicator shape (small chip in the header) but uses a pulsing dot rather
+   than a spinner — it's a passive "waiting" state, not active work. */
+.msg-queued-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+.msg-queued-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: msg-queued-pulse 1.4s ease-in-out infinite;
+}
+.msg-queued-label {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+@keyframes msg-queued-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+/* Slightly dim a queued bubble so it reads as "not yet being worked on",
+   distinct from both the in-flight (sending) and acknowledged states. */
+.msg.user.msg-queued {
+  opacity: 0.85;
 }
 /* User message — right-aligned chat bubble. We shrink the bubble below
    the column width and pin it to the right edge with align-self, which
@@ -5860,7 +5932,13 @@ mark.search-hl.search-hl-active {
   border-radius: 4px;
   font-size: 12px;
   line-height: 1.4;
-  white-space: nowrap;
+  /* Allow long lines to wrap within max-width. Previously `nowrap`
+     forced lines wider than max-width (e.g. the git chip's multi-stat
+     tooltip) to overflow past the bubble's background, making the
+     background look narrower than the text. `normal` keeps short hints
+     on one line while wrapping the long ones inside the box. */
+  white-space: normal;
+  overflow-wrap: break-word;
   max-width: 280px;
   pointer-events: none;
   opacity: 0;

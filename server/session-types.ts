@@ -136,6 +136,12 @@ export interface Session {
    *  session-pump on mutating tool_results and by git-write routes on
    *  user-initiated mutations. */
   gitStatusSubscribers: Set<Pushable<unknown>>
+  /** Per-subscriber pushables for `message-consumed` signal frames.
+   *  Carries { uuid, consumedAt } each time the SDK reads a user turn off
+   *  the input queue. Mirrors gitStatusSubscribers (signal-shaped, small
+   *  payload). Each WS subscriber gets its own pushable so a slow tab
+   *  can't block another tab's updates. */
+  messageStatusSubscribers: Set<Pushable<unknown>>
   /** Per-subscriber pushables for `session-recap-update` frames.
    *  Mirrors gitStatusSubscribers; carries the SessionRecap payload
    *  (or undefined to mean cleared). Driven by RecapManager.invalidate
@@ -179,6 +185,10 @@ export function endAllSubscribers(s: Session): void {
     try { sub.end() } catch { /* subscriber dead — skip */ }
   }
   s.gitStatusSubscribers.clear()
+  for (const sub of s.messageStatusSubscribers) {
+    try { sub.end() } catch { /* subscriber dead — skip */ }
+  }
+  s.messageStatusSubscribers.clear()
   for (const sub of s.recapSubscribers) {
     try { sub.end() } catch { /* subscriber dead — skip */ }
   }
@@ -253,6 +263,10 @@ export interface SessionBroadcaster {
   }
   subscribeContextUsage(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null
   subscribeGitStatus(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null
+  /** Per-session subscription for `message-consumed` signal frames.
+   *  Returns null when the session is unknown (callers short-circuit).
+   *  Mirrors subscribeGitStatus. */
+  subscribeMessageStatus(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null
   /** Per-session recap subscription. Returns the current recap snapshot
    *  alongside the live iterable so a freshly-subscribed tab sees the
    *  current state without waiting for the next transition. Null when

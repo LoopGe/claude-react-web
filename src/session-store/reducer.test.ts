@@ -283,3 +283,122 @@ describe('reducer: PERMISSION_RESOLVED → questionAnswers (AskUserQuestion)', (
     expect(state.questionAnswers.has('tu_bash')).toBe(false)
   })
 })
+
+describe('PREPEND_MESSAGES', () => {
+  function userMsg(uuid: string, content: string): SdkMessage {
+    return { type: 'user', uuid, message: { role: 'user', content }, parent_tool_use_id: null } as unknown as SdkMessage
+  }
+  function assistantMsg(uuid: string, text: string): SdkMessage {
+    return {
+      type: 'assistant',
+      uuid,
+      message: { role: 'assistant', content: [{ type: 'text', text }] },
+      parent_tool_use_id: null,
+    } as unknown as SdkMessage
+  }
+
+  it('unshifts older messages ahead of the current transcript in order', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('live-1', 'newest') })
+    state = reduceSessionState(state, {
+      type: 'PREPEND_MESSAGES',
+      messages: [userMsg('old-1', 'a'), assistantMsg('old-2', 'b')],
+    })
+    expect(state.items.map((i) => i.id)).toEqual(['old-1', 'old-2', 'live-1'])
+    expect(state.messages.map((m) => m.uuid)).toEqual(['old-1', 'old-2', 'live-1'])
+  })
+
+  it('dedupes by uuid against messages already present', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: assistantMsg('shared', 'x') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('live', 'y') })
+    // The page overlaps on 'shared' (the cursor anchor) plus a genuinely older one.
+    state = reduceSessionState(state, {
+      type: 'PREPEND_MESSAGES',
+      messages: [userMsg('older', 'z'), assistantMsg('shared', 'x')],
+    })
+    // 'shared' must not be duplicated; 'older' is inserted at the front.
+    expect(state.items.map((i) => i.id)).toEqual(['older', 'shared', 'live'])
+  })
+
+  it('is a no-op for an empty batch', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('live', 'y') })
+    const before = state
+    state = reduceSessionState(state, { type: 'PREPEND_MESSAGES', messages: [] })
+    expect(state).toBe(before)
+  })
+
+  it('rebuilds tool status for prepended tool_use/tool_result pairs', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('live', 'y') })
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'old-asst',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tool-1', name: 'Read', input: {} }] },
+      parent_tool_use_id: null,
+    } as unknown as SdkMessage
+    const toolResult: SdkMessage = {
+      type: 'user',
+      uuid: 'old-result',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'ok' }] },
+      parent_tool_use_id: 'tool-1',
+    } as unknown as SdkMessage
+    state = reduceSessionState(state, { type: 'PREPEND_MESSAGES', messages: [toolUse, toolResult] })
+    expect(state.toolStatus.get('tool-1')).toBe('success')
+  })
+
+  // The in-memory prompt carries a server-minted uuid; the on-disk copy of
+  // the SAME prompt carries the SDK's uuid (the pump drops the SDK's echo).
+  // uuid dedup can't bridge that, so the leading prompt(s) above the paging
+  // anchor must be deduped by content instead — otherwise they render twice.
+  it('dedupes a leading prompt across the server/SDK uuid boundary by content', () => {
+    let state = createInitialSessionState('s')
+    // On screen: prompt (server uuid) → assistant reply (SDK uuid, the anchor).
+    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('server-uuid', 'hello') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: assistantMsg('asst-1', 'hi') })
+    // Disk page read strictly before the anchor: re-returns the prompt with
+    // its DIFFERENT (SDK) uuid, plus a genuinely-older message.
+    state = reduceSessionState(state, {
+      type: 'PREPEND_MESSAGES',
+      messages: [assistantMsg('older-asst', 'earlier'), userMsg('sdk-uuid', 'hello')],
+    })
+    // 'hello' must appear exactly once (not duplicated under two uuids).
+    const helloCount = state.items.filter(
+      (i) => i.msg.type === 'user' && i.msg.message?.content === 'hello',
+    ).length
+    expect(helloCount).toBe(1)
+    expect(state.items.map((i) => i.id)).toEqual(['older-asst', 'server-uuid', 'asst-1'])
+  })
+
+  it('dedupes multiple consecutive leading prompts at the boundary', () => {
+    let state = createInitialSessionState('s')
+    // Two queued prompts, then the assistant reply (anchor).
+    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('srv-a', 'first') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('srv-b', 'second') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: assistantMsg('asst', 'reply') })
+    // Disk re-returns both prompts (SDK uuids) at the page tail.
+    state = reduceSessionState(state, {
+      type: 'PREPEND_MESSAGES',
+      messages: [userMsg('disk-a', 'first'), userMsg('disk-b', 'second')],
+    })
+    // Both deduped — order and count unchanged.
+    expect(state.items.map((i) => i.id)).toEqual(['srv-a', 'srv-b', 'asst'])
+  })
+
+  it('preserves a genuinely-older prompt with identical text further back', () => {
+    let state = createInitialSessionState('s')
+    // On screen: one prompt above the anchor.
+    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('srv-dup', 'repeat') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: assistantMsg('asst', 'reply') })
+    // Disk page: an OLDER 'repeat' prompt (different turn) followed by the
+    // boundary 'repeat'. Only the boundary one (page tail) overlaps; the
+    // older one must survive.
+    state = reduceSessionState(state, {
+      type: 'PREPEND_MESSAGES',
+      messages: [userMsg('disk-old', 'repeat'), userMsg('disk-boundary', 'repeat')],
+    })
+    // disk-old is prepended; disk-boundary is deduped against srv-dup.
+    expect(state.items.map((i) => i.id)).toEqual(['disk-old', 'srv-dup', 'asst'])
+  })
+})

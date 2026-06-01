@@ -57,7 +57,8 @@ import {
 import { HttpError } from './errors.js'
 import { PermissionBroker } from './permission-broker.js'
 import { debugLog } from './debug.js'
-import { pushBounded, stampReceivedAt } from './history-utils.js'
+import { pushBounded, stampReceivedAt, stampConsumedAt } from './history-utils.js'
+import { readHistoryPage, type HistoryPage } from './history-reader.js'
 
 // Re-export types so existing importers continue to work.
 export {
@@ -594,7 +595,16 @@ export class SessionManager {
 
   /** Shared spawn path for create() and resume(). */
   private spawn(id: string, opts: Options): SessionInfo {
-    const input = createPushable<SDKUserMessage>(`input-${id.slice(0, 8)}`)
+    // The consume hook looks the session up by id at call time rather than
+    // closing over the `session` object — `session` is built a few lines
+    // below, after the input pushable, so it isn't in scope here. By the
+    // time the SDK actually reads a turn the session is long-since in the
+    // map, so the lookup always resolves.
+    const input = createPushable<SDKUserMessage>(
+      `input-${id.slice(0, 8)}`,
+      undefined,
+      (msg) => this.onInputConsumed(id, msg),
+    )
     const fullOpts: Options = { ...opts }
     // Remember the user-requested permission mode before we strip it
     // from the SDK options. The session's own state ends up holding it.
@@ -652,6 +662,7 @@ export class SessionManager {
       history: [],
       contextUsageSubscribers: new Set(),
       gitStatusSubscribers: new Set(),
+      messageStatusSubscribers: new Set(),
       recapSubscribers: new Set(),
       abortController,
       pumpTask: Promise.resolve(),
@@ -1019,6 +1030,19 @@ export class SessionManager {
     return this.subscribePushableSet(s, s.gitStatusSubscribers, 'git', 20)
   }
 
+  /** AsyncIterable of `message-consumed` signal frames for one session.
+   *  Mirrors subscribeGitStatus. Each frame carries the uuid + consumedAt
+   *  of a user message the SDK has just read off the input queue, so the
+   *  client can flip its bubble from "queued" to "consumed". A small
+   *  maxDepth is fine: the durable truth lives on the message object's
+   *  `consumedAt` (replayed on reconnect), so a dropped live frame self-
+   *  heals on the next replay. */
+  subscribeMessageStatus(id: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null {
+    const s = this.sessions.get(id)
+    if (!s) return null
+    return this.subscribePushableSet(s, s.messageStatusSubscribers, 'msgstat', 50)
+  }
+
   /** AsyncIterable of recap-update events for one session. Returns the
    *  current recap snapshot alongside the iterable so a freshly-attached
    *  tab sees existing state without having to wait for the next
@@ -1068,6 +1092,44 @@ export class SessionManager {
     if (s.gitStatusSubscribers.size === 0) return
     const frame = { kind: 'git-status-changed' as const, sessionId: id }
     for (const sub of s.gitStatusSubscribers) {
+      try { sub.push(frame) } catch { /* subscriber dead — skip */ }
+    }
+  }
+
+  /** Consume hook wired into each session's input pushable (see spawn /
+   *  autoResume). Fires the instant the SDK reads a turn off the queue —
+   *  either because it was buffered while a previous turn ran, or handed
+   *  off directly to a blocked consumer. We:
+   *    1. Filter to top-level user messages. Tool results and sub-agent
+   *       outputs flow through the same Query stream but never through
+   *       THIS pushable, so in practice everything here is a user turn;
+   *       the guard is defence-in-depth and mirrors the pump's drop rule.
+   *    2. Stamp `consumedAt` on the message object. Because the input
+   *       pushable and the history ring hold the SAME object reference
+   *       (dispatchUserMessage pushes one object to both), this stamp is
+   *       immediately visible on the historical copy — so a reconnecting
+   *       client replays it as already-consumed with zero extra storage.
+   *    3. Broadcast a live `message-consumed` signal so currently-attached
+   *       tabs flip the bubble without waiting for a replay. */
+  private onInputConsumed(id: string, msg: SDKUserMessage): void {
+    if (msg.type !== 'user') return
+    if ((msg as { parent_tool_use_id?: string | null }).parent_tool_use_id != null) return
+    const consumedAt = stampConsumedAt(msg)
+    const uuid = (msg as { uuid?: string }).uuid
+    if (typeof uuid !== 'string') return
+    this.broadcastMessageConsumed(id, uuid, consumedAt)
+  }
+
+  /** Push a `message-consumed` signal to every subscriber of the session.
+   *  No-op when the session is unknown or has no subscribers. The durable
+   *  state lives on the message's `consumedAt` (replayed on reconnect);
+   *  this frame only drives the live flip. */
+  private broadcastMessageConsumed(id: string, uuid: string, consumedAt: number): void {
+    const s = this.sessions.get(id)
+    if (!s) return
+    if (s.messageStatusSubscribers.size === 0) return
+    const frame = { kind: 'message-consumed' as const, sessionId: id, uuid, consumedAt }
+    for (const sub of s.messageStatusSubscribers) {
       try { sub.push(frame) } catch { /* subscriber dead — skip */ }
     }
   }
@@ -1243,6 +1305,24 @@ export class SessionManager {
   getHistory(id: string): SDKMessage[] | null {
     const s = this.sessions.get(id)
     return s ? s.history.slice() : null
+  }
+
+  /** Offset-paginated read of a session's FULL transcript from disk, used by
+   *  the frontend to lazy-load messages evicted from the in-memory ring.
+   *  Works for dormant sessions too — reads the JSONL directly and does not
+   *  require the session to be live. The session must exist in the store
+   *  (404 otherwise); a session that never wrote a transcript returns an
+   *  empty page. */
+  async getHistoryPage(
+    id: string,
+    opts: { before?: number; beforeUuid?: string; limit: number },
+  ): Promise<HistoryPage> {
+    // Require the session to be known (live or persisted) so we don't serve
+    // arbitrary uuids off disk.
+    if (!this.sessions.has(id) && !this.store?.get(id)) {
+      throw new HttpError(404, 'session not found')
+    }
+    return readHistoryPage(id, opts)
   }
 
   async shutdown(): Promise<void> {
@@ -1478,8 +1558,13 @@ export class SessionManager {
     session.input.end()
     session.abortController.abort()
 
-    // Create fresh input and abort controller
-    const newInput = createPushable<SDKUserMessage>(`input-${session.id.slice(0, 8)}`)
+    // Create fresh input and abort controller. Re-wire the same consume
+    // hook so message-consumed frames keep flowing after an auto-resume.
+    const newInput = createPushable<SDKUserMessage>(
+      `input-${session.id.slice(0, 8)}`,
+      undefined,
+      (msg) => this.onInputConsumed(session.id, msg),
+    )
     const newAbort = new AbortController()
 
     // Unregister old signal from ProcessMonitor, register new one

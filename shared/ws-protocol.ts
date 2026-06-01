@@ -137,6 +137,24 @@ export interface WsGitStatusChanged {
   sessionId: string
 }
 
+/** Signal frame: "the SDK just read this user message off the input
+ *  queue". Fires the moment a queued turn is actually consumed (begins
+ *  processing), as opposed to when it was accepted over HTTP. The client
+ *  flips the corresponding message bubble from "queued" to "consumed".
+ *
+ *  This is a live-only convenience: the durable truth is the `consumedAt`
+ *  field stamped onto the message itself, which rides along on replay. A
+ *  client that misses this frame (slow tab, drop) self-heals on the next
+ *  reconnect/replay. */
+export interface WsMessageConsumed {
+  kind: 'message-consumed'
+  sessionId: string
+  /** UUID of the user message that was consumed. */
+  uuid: string
+  /** Epoch ms the SDK read it off the queue. */
+  consumedAt: number
+}
+
 /** Per-session recap state mutation (pending / ready / error / cleared).
  *  Carries the full SessionRecap shape (or undefined to mean "cleared by
  *  invalidate"). The same shape rides on SessionInfo for full session
@@ -183,6 +201,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap> =
   | WsPermissionResolved<Decision>
   | WsContextUsage
   | WsGitStatusChanged
+  | WsMessageConsumed
   | WsSessionRecapUpdate<Recap>
   | WsPong
   | WsError

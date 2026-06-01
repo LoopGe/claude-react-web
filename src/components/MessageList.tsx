@@ -84,6 +84,15 @@ interface Props {
    *  - string: only show messages whose parent_tool_use_id matches.
    *    Used by SubagentOverlay to render one subagent's inner conversation. */
   parentToolUseIdFilter?: string | null
+  /** Lazy-load the previous page of history from disk and prepend it.
+   *  Only wired for the main transcript (not subagent overlays). When
+   *  provided AND `hasOlder` is true, scrolling to the top triggers it. */
+  loadOlder?: () => Promise<number>
+  /** Whether older history may exist on disk before the first shown message.
+   *  Gates the scroll-to-top trigger and the "loading older" affordance. */
+  hasOlder?: boolean
+  /** True while a loadOlder() request is in flight (drives the top spinner). */
+  loadingOlder?: boolean
 }
 
 /** An item in the Virtuoso data array. Pre-computing isCompactSummary
@@ -98,6 +107,10 @@ interface RenderableItem {
    *  "sending" spinner. Cleared automatically by the reducer when the
    *  server's broadcast lands and the optimistic gets swapped out. */
   sending?: boolean
+  /** Queue-delivery state of a top-level user turn ('queued' = waiting
+   *  behind an in-flight turn, 'consumed' = SDK has started processing).
+   *  Undefined for everything else. Drives the queued/processing chip. */
+  deliveryStatus?: 'queued' | 'consumed'
 }
 
 /** Stable empty-Map sentinels. Using `= new Map()` in the parameter
@@ -118,7 +131,7 @@ const EMPTY_TOOL_STATUS: ReadonlyMap<string, ToolStatus> = new Map()
  *  (so re-entering the band restores follow-mode). */
 const NEAR_BOTTOM_PX = 200
 
-export const MessageList = memo(function MessageList({ items, recap, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter }: Props) {
+export const MessageList = memo(function MessageList({ items, recap, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -173,11 +186,62 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
           isCompactSummary: item.isCompactSummary,
           itemIndex: i,
           sending: item.sending,
+          deliveryStatus: item.deliveryStatus,
         })
       }
     }
     return out
   }, [items, showSystemEvents, parentToolUseIdFilter])
+
+  // --- Reverse infinite scroll: keep the viewport anchored on prepend ----
+  // Virtuoso requires `firstItemIndex` to decrease by exactly the number of
+  // items prepended, in the SAME render that grows `data` at the front —
+  // otherwise the viewport jumps. We detect a front-prepend by checking
+  // whether the previous first renderable message moved to a later index.
+  //
+  // Computed during render (refs, not state) so `firstItemIndex` and `data`
+  // commit together. The `msg === prev` short-circuit makes this a no-op on
+  // ordinary appends/streaming; the findIndex only runs on the rare prepend
+  // or full-rebuild render. If a discarded concurrent render mutates the
+  // ref, the next real render self-corrects (prev still matches) — worst
+  // case a single missed adjustment, never compounding drift.
+  const INITIAL_FIRST_ITEM_INDEX = 1_000_000
+  const firstItemIndexRef = useRef(INITIAL_FIRST_ITEM_INDEX)
+  const prevFirstMsgRef = useRef<SdkMessage | null>(null)
+  const first = renderableItems.length > 0 ? renderableItems[0].msg : null
+  // Reading and mutating these refs DURING render is deliberate and required:
+  // Virtuoso needs `firstItemIndex` to commit in the SAME render that grows
+  // `data` at the front, which a post-render effect can't guarantee (the
+  // viewport would jump for one frame). The mutation is idempotent w.r.t. the
+  // current render and self-corrects on the next one (see the block comment
+  // above), so it's safe despite the rule. Disabled narrowly for this block.
+  /* eslint-disable react-hooks/refs */
+  if (first == null) {
+    // Empty list (session switch / cleared) — reset the anchor.
+    firstItemIndexRef.current = INITIAL_FIRST_ITEM_INDEX
+    prevFirstMsgRef.current = null
+  } else if (prevFirstMsgRef.current == null) {
+    prevFirstMsgRef.current = first
+  } else if (first !== prevFirstMsgRef.current) {
+    const movedTo = renderableItems.findIndex((r) => r.msg === prevFirstMsgRef.current)
+    if (movedTo > 0) {
+      // `movedTo` items were inserted ahead of the previous first item.
+      firstItemIndexRef.current -= movedTo
+    } else if (movedTo < 0) {
+      // Previous first item is gone (replay rebuild / reset) — re-anchor.
+      firstItemIndexRef.current = INITIAL_FIRST_ITEM_INDEX
+    }
+    prevFirstMsgRef.current = first
+  }
+  const firstItemIndex = firstItemIndexRef.current
+  /* eslint-enable react-hooks/refs */
+
+  // Fires when the user scrolls to the top. Pull the previous page of
+  // history from disk if there's more and we're not already loading.
+  const startReached = useCallback(() => {
+    if (!loadOlder || !hasOlder || loadingOlder) return
+    void loadOlder()
+  }, [loadOlder, hasOlder, loadingOlder])
 
   // Reverse map: full items[] index → Virtuoso (renderableItems) index.
   // Needed because search indices reference the full, unfiltered list.
@@ -445,6 +509,7 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
           searchQuery={searchQuery}
           activeMatchInItem={activeMatchInItem}
           sending={item.sending}
+          deliveryStatus={item.deliveryStatus}
         />
       </div>
     )
@@ -458,16 +523,23 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
   const virtuosoComponents = useMemo(() => {
     const hasStreaming = streamingContent != null
     const hasRecap = recap != null
-    if (!hasStreaming && !hasRecap) return {}
-    return {
-      Footer: () => (
+    // The Header slot shows a "loading older history" affordance pinned to
+    // the top. Only relevant for the main transcript (loadOlder provided).
+    const showOlderHeader = loadOlder != null && (loadingOlder || hasOlder)
+    const components: Record<string, () => React.ReactElement> = {}
+    if (showOlderHeader) {
+      components.Header = () => <OlderHistoryHeader loading={loadingOlder} />
+    }
+    if (hasStreaming || hasRecap) {
+      components.Footer = () => (
         <>
           {hasStreaming && <StreamingFooter content={streamingContent} />}
           {hasRecap && <RecapFooter recap={recap} />}
         </>
-      ),
+      )
     }
-  }, [streamingContent, recap])
+    return components
+  }, [streamingContent, recap, loadOlder, loadingOlder, hasOlder])
 
   return (
     <PlanStatusProvider value={planStatus}>
@@ -487,9 +559,11 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
             ref={virtuosoRef}
             scrollerRef={scrollerRefCb}
             data={renderableItems}
+            firstItemIndex={firstItemIndex}
             initialTopMostItemIndex={renderableItems.length > 0 ? renderableItems.length - 1 : 0}
             followOutput={followOutput}
             atBottomStateChange={atBottomStateChange}
+            startReached={startReached}
             itemContent={itemContent}
             components={virtuosoComponents}
             alignToBottom
@@ -512,6 +586,25 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
     </QuestionAnswersProvider>
     </PlanContentProvider>
     </PlanStatusProvider>
+  )
+})
+
+/** Top-of-transcript affordance for reverse infinite scroll. Renders a
+ *  spinner while a page is loading, or a thin idle marker when older
+ *  history exists but hasn't been requested yet (scrolling up triggers
+ *  the fetch via Virtuoso's startReached). */
+const OlderHistoryHeader = memo(function OlderHistoryHeader({ loading }: { loading: boolean }) {
+  return (
+    <div className="chat-older-history" aria-live="polite">
+      {loading ? (
+        <span className="chat-older-history-loading">
+          <IconZap size={13} aria-hidden />
+          Loading earlier messages…
+        </span>
+      ) : (
+        <span className="chat-older-history-hint">Scroll up for earlier messages</span>
+      )}
+    </div>
   )
 })
 
@@ -553,6 +646,7 @@ const MessageView = memo(function MessageView({
   searchQuery,
   activeMatchInItem,
   sending,
+  deliveryStatus,
 }: {
   msg: SdkMessage
   isCompactSummary?: boolean
@@ -570,6 +664,12 @@ const MessageView = memo(function MessageView({
    *  Only meaningful for type='user' messages — propagated from the
    *  TranscriptItem's optimistic-placeholder flag. */
   sending?: boolean
+  /** Queue-delivery state of a top-level user turn. 'queued' renders a
+   *  "queued" chip (the SDK is busy and hasn't read this turn yet);
+   *  'consumed' renders a brief "processing" chip; undefined renders
+   *  nothing. Mutually exclusive with `sending` in practice (sending is
+   *  the pre-ack optimistic state, deliveryStatus is post-ack). */
+  deliveryStatus?: 'queued' | 'consumed'
 }) {
   const type = msg.type
 
@@ -675,8 +775,16 @@ const MessageView = memo(function MessageView({
 
     // Real user message
     const imageBlocks = blocks.filter((b) => b.type === 'image')
+    // Show the "queued" chip only while the turn is genuinely waiting behind
+    // an in-flight turn: server-acknowledged (deliveryStatus === 'queued')
+    // and not still in the optimistic pre-ack 'sending' state. Once the SDK
+    // consumes it (deliveryStatus flips to 'consumed') the chip disappears —
+    // we deliberately do NOT render a persistent 'consumed/processing' chip,
+    // since every message ends up consumed and that would clutter the whole
+    // transcript. The chip vanishing IS the "now being processed" signal.
+    const showQueued = !sending && deliveryStatus === 'queued'
     return (
-      <div className={`msg user${sending ? ' msg-sending' : ''}`}>
+      <div className={`msg user${sending ? ' msg-sending' : ''}${showQueued ? ' msg-queued' : ''}`}>
         <button
           className="msg-copy-btn"
           onClick={() => void copyToClipboard(userContent ?? '')}
@@ -696,6 +804,16 @@ const MessageView = memo(function MessageView({
             >
               <span className="msg-sending-spinner" aria-hidden />
               <span className="msg-sending-label">sending…</span>
+            </span>
+          )}
+          {showQueued && (
+            <span
+              className="msg-queued-indicator"
+              title="Queued — the assistant is finishing the current turn; this message will be picked up next"
+              aria-label="Queued, waiting for the current turn to finish"
+            >
+              <span className="msg-queued-dot" aria-hidden />
+              <span className="msg-queued-label">queued</span>
             </span>
           )}
         </div>

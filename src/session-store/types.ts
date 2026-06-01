@@ -25,6 +25,17 @@ export interface TranscriptItem {
    *  bubble. Cleared automatically when the broadcast lands and the
    *  reducer swaps in the real TranscriptItem (which has no `sending`). */
   sending?: boolean
+  /** Delivery state of a top-level user turn relative to the SDK input
+   *  queue. Undefined for non-user messages, optimistic placeholders, and
+   *  disk-restored history (no server timestamps to reason about).
+   *   - 'queued'   — server accepted it (receivedAt set) but the SDK hasn't
+   *                  read it off the queue yet (no consumedAt). It's waiting
+   *                  behind an in-flight turn.
+   *   - 'consumed' — the SDK has read it (consumedAt set); the turn is being
+   *                  processed.
+   *  Derived purely from the message's receivedAt/consumedAt in
+   *  toTranscriptItem so it stays correct across replay without extra state. */
+  deliveryStatus?: 'queued' | 'consumed'
 }
 
 export type SubagentStatus = 'running' | 'done' | 'rejected' | 'interrupted'
@@ -120,6 +131,11 @@ export interface SessionState {
 
 export type SessionAction =
   | { type: 'REPLAY_REPLACE'; messages: SdkMessage[]; permissions: PermissionRequest[] }
+  /** Prepend older messages fetched from disk (lazy-load on scroll-up).
+   *  Messages are in chronological order (oldest first) and are unshifted
+   *  ahead of the current transcript. Deduped by uuid against what's
+   *  already present. */
+  | { type: 'PREPEND_MESSAGES'; messages: SdkMessage[] }
   | { type: 'MESSAGE'; message: SdkMessage }
   | { type: 'OPTIMISTIC_USER_MESSAGE'; message: SdkMessage }
   /** Roll back the most recent optimistic user message (POST failed
@@ -133,6 +149,9 @@ export type SessionAction =
       decision: { behavior: 'allow' | 'deny'; persisted: boolean; message?: string }
     }
   | { type: 'CONTEXT_USAGE'; usage: ContextUsage }
+  /** The SDK read a queued user turn off its input queue. Flips the
+   *  matching message's deliveryStatus from 'queued' to 'consumed'. */
+  | { type: 'MESSAGE_CONSUMED'; uuid: string; consumedAt: number }
   | { type: 'ERROR'; message: string | null }
   | { type: 'TRACK_SENT_TURN' }
   | { type: 'LIVE_TURN_FLUSH' }

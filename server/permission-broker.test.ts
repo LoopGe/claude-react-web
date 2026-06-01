@@ -18,6 +18,7 @@ function makeFakeSession(overrides: Partial<Session> = {}): Session {
     history: [],
     contextUsageSubscribers: new Set(),
     gitStatusSubscribers: new Set(),
+    messageStatusSubscribers: new Set(),
     recapSubscribers: new Set(),
     abortController: ac,
     pumpTask: Promise.resolve(),

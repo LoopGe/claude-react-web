@@ -9,6 +9,22 @@
 export interface UpdateInfo {
   /** Always present: the version baked into this build (from package.json). */
   current: string
+  /** The canonical npm package name (from package.json `name`). The UI uses
+   *  this to build the upgrade command so a scoped name (e.g.
+   *  `@mi/claude-react-web`) is reflected verbatim instead of a hardcoded
+   *  unscoped guess. */
+  packageName: string
+  /** How this server process was launched, detected at runtime. The client
+   *  uses it to decide whether an in-app update is feasible: only `'global'`
+   *  installs can be upgraded in place via `npm i -g`. For `'npx'` /
+   *  `'unknown'` the UI falls back to showing the copy-command. */
+  installMethod: 'global' | 'npx' | 'unknown'
+  /** The configured `updateCheckRegistry` the server probed. Echoed back so
+   *  the UI can append `--registry=<…>` to the upgrade command — this
+   *  package lives on a private registry, so a bare `npx <pkg>@latest`
+   *  would hit the public registry and 404. Undefined when update checks
+   *  are disabled (no registry configured). */
+  registry?: string
   /** Latest version pulled from the npm registry's `latest` dist-tag.
    *  Undefined when the registry hasn't been queried yet, or the query
    *  failed (see `error`). */
@@ -36,4 +52,23 @@ export interface UpdateInfo {
    *  Distinct from `error` because "no registry configured" isn't a
    *  failure to surface — it's an explicit opt-out. */
   disabled?: boolean
+}
+
+/** Result of POST /api/update — the in-app "Update now" action. */
+export interface UpdateActionResult {
+  /** True when an install actually ran and succeeded. False when we
+   *  short-circuited (non-global install) — see `fallbackToCopyCommand`. */
+  performed: boolean
+  /** The detected install method at action time. */
+  installMethod: 'global' | 'npx' | 'unknown'
+  /** True when no install was performed because the install method can't be
+   *  upgraded in place (npx / unknown). The client should show / focus the
+   *  copy-command instead. */
+  fallbackToCopyCommand?: boolean
+  /** True after a successful install — the running process is still the old
+   *  version, so the user must restart to apply the update. */
+  restartRequired?: boolean
+  /** The version we installed `@latest` resolved to, when known (echoed from
+   *  the cached UpdateInfo.latest). Purely informational for the toast. */
+  latest?: string
 }

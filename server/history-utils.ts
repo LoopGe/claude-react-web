@@ -34,3 +34,25 @@ export function stampReceivedAt(msg: unknown): void {
     ;(msg as { receivedAt?: number }).receivedAt = Date.now()
   }
 }
+
+/**
+ * Stamp the wall-clock time the SDK actually CONSUMED a user message off the
+ * input queue (as opposed to `receivedAt`, which is when the server first
+ * accepted it from the HTTP layer). The gap between the two is exactly how
+ * long the message sat queued behind an in-flight turn.
+ *
+ * Stamped in place on the same object that lives in the history ring, so the
+ * "consumed" state rides along on replay for free — a reconnecting client
+ * sees `consumedAt` already set on historical messages and renders them as
+ * delivered without needing the live `message-consumed` frame. Added only
+ * when absent so a message that somehow flows through twice keeps its first
+ * consumption time. Returns the stamped value so the caller can broadcast it
+ * without re-reading.
+ */
+export function stampConsumedAt(msg: unknown): number {
+  const m = msg as { consumedAt?: number }
+  if (m && typeof m === 'object' && m.consumedAt == null) {
+    m.consumedAt = Date.now()
+  }
+  return (m as { consumedAt?: number }).consumedAt ?? Date.now()
+}

@@ -39,6 +39,7 @@ export function toTranscriptItem(msg: SdkMessage, prev: TranscriptItem | undefin
     // Server-stamped wall-clock time (see SdkMessage.receivedAt). Undefined
     // for disk-restored history — the header hides the timestamp then.
     receivedAt: typeof msg.receivedAt === 'number' ? msg.receivedAt : undefined,
+    deliveryStatus: deriveDeliveryStatus(msg),
   }
 
   if (msg.type === 'system' && msg.subtype === 'api_retry' && prev?.msg.type === 'system' && prev.msg.subtype === 'api_retry') {
@@ -46,6 +47,48 @@ export function toTranscriptItem(msg: SdkMessage, prev: TranscriptItem | undefin
   }
 
   return item
+}
+
+/** Classify a top-level user message's queue-delivery state from its
+ *  server timestamps. See TranscriptItem.deliveryStatus for the contract.
+ *
+ *  Only top-level user turns (parent_tool_use_id == null) are classified —
+ *  tool_result and sub-agent user frames never sit in the input queue, so
+ *  they get undefined. A user message with no `receivedAt` (disk-restored
+ *  history, or an optimistic local insert that hasn't been server-echoed)
+ *  also returns undefined: we have no server-side queue signal to show. */
+function deriveDeliveryStatus(msg: SdkMessage): 'queued' | 'consumed' | undefined {
+  if (msg.type !== 'user') return undefined
+  if ((msg as { parent_tool_use_id?: string | null }).parent_tool_use_id != null) return undefined
+  if (typeof msg.consumedAt === 'number') return 'consumed'
+  // Only call it "queued" once the server has acknowledged it (receivedAt).
+  // Without that, an optimistic placeholder would flash a "queued" badge
+  // before the server has even seen it.
+  if (typeof msg.receivedAt === 'number') return 'queued'
+  return undefined
+}
+
+/** Content signature of a TOP-LEVEL user prompt, used to dedup the same
+ *  logical prompt across the uuid boundary between the in-memory ring and
+ *  the on-disk transcript.
+ *
+ *  Why this exists: the server mints a fresh `randomUUID()` for every user
+ *  prompt it broadcasts/stores (session-manager.ts), while the pump DROPS
+ *  the SDK's echoed copy (session-pump.ts). So the in-memory prompt carries
+ *  a server uuid and the on-disk copy of the *same* prompt carries the SDK's
+ *  uuid — uuid dedup can never connect them. When scroll-up paging re-reads
+ *  those leading prompts from disk, we fall back to matching their content.
+ *
+ *  Returns null for anything that ISN'T a top-level user prompt (assistant,
+ *  system, tool_result-bearing user frames) — those have disk-stable uuids
+ *  and are deduped by uuid, and a null here also marks the end of the
+ *  contiguous leading-prompt run the caller scans. */
+export function topLevelUserPromptSignature(msg: SdkMessage): string | null {
+  if (msg.type !== 'user') return null
+  if ((msg as { parent_tool_use_id?: string | null }).parent_tool_use_id != null) return null
+  // Empty string (image-only prompt with no text) is a valid signature: the
+  // on-disk copy of the same prompt also extracts to '', so they still match.
+  return extractMessagePlainText(msg) ?? ''
 }
 
 export function getBlocks(msg: SdkMessage): Block[] {

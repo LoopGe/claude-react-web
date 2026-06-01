@@ -216,6 +216,8 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
       let ctxIter: AsyncIterator<unknown> | null = null
       let gitSub: { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null = null
       let gitIter: AsyncIterator<unknown> | null = null
+      let msgStatSub: { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null = null
+      let msgStatIter: AsyncIterator<unknown> | null = null
       let recapSub:
         | { iterable: AsyncIterable<unknown>; snapshot: unknown; unsubscribe: () => void }
         | null = null
@@ -229,6 +231,8 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
         ctxIter = ctxSub?.iterable[Symbol.asyncIterator]() ?? null
         gitSub = sm.subscribeGitStatus(sessionId)
         gitIter = gitSub?.iterable[Symbol.asyncIterator]() ?? null
+        msgStatSub = sm.subscribeMessageStatus(sessionId)
+        msgStatIter = msgStatSub?.iterable[Symbol.asyncIterator]() ?? null
         recapSub = sm.subscribeSessionRecap(sessionId)
         recapIter = recapSub?.iterable[Symbol.asyncIterator]() ?? null
 
@@ -304,12 +308,14 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
           permSub?.unsubscribe()
           ctxSub?.unsubscribe()
           gitSub?.unsubscribe()
+          msgStatSub?.unsubscribe()
           recapSub?.unsubscribe()
-          // Return the context-usage / git-status / recap iterators so
-          // their pushable waiters resolve with done:true instead of
-          // hanging the driver.
+          // Return the context-usage / git-status / msg-status / recap
+          // iterators so their pushable waiters resolve with done:true
+          // instead of hanging the driver.
           if (ctxIter) void ctxIter.return?.()
           if (gitIter) void gitIter.return?.()
+          if (msgStatIter) void msgStatIter.return?.()
           if (recapIter) void recapIter.return?.()
         }
 
@@ -322,6 +328,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
             | { kind: 'perm'; result: IteratorResult<unknown> }
             | { kind: 'ctx'; result: IteratorResult<unknown> }
             | { kind: 'git'; result: IteratorResult<unknown> }
+            | { kind: 'msgstat'; result: IteratorResult<unknown> }
             | { kind: 'recap'; result: IteratorResult<unknown> }
 
           const tag = async (
@@ -333,15 +340,17 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
           let permP: Promise<Tagged> | null = tag('perm', permIter)
           let ctxP: Promise<Tagged> | null = ctxIter ? tag('ctx', ctxIter) : null
           let gitP: Promise<Tagged> | null = gitIter ? tag('git', gitIter) : null
+          let msgStatP: Promise<Tagged> | null = msgStatIter ? tag('msgstat', msgStatIter) : null
           let recapP: Promise<Tagged> | null = recapIter ? tag('recap', recapIter) : null
 
           try {
-            while (!stopped && (msgP || permP || ctxP || gitP || recapP)) {
+            while (!stopped && (msgP || permP || ctxP || gitP || msgStatP || recapP)) {
               const pending: Promise<Tagged>[] = []
               if (msgP) pending.push(msgP)
               if (permP) pending.push(permP)
               if (ctxP) pending.push(ctxP)
               if (gitP) pending.push(gitP)
+              if (msgStatP) pending.push(msgStatP)
               if (recapP) pending.push(recapP)
               const winner = await Promise.race(pending)
               if (winner.kind === 'msg') {
@@ -392,6 +401,24 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
                   queue.enqueue({ kind: 'git-status-changed', sessionId })
                   gitP = tag('git', gitIter!)
                 }
+              } else if (winner.kind === 'msgstat') {
+                // message-consumed signal — value carries { kind, sessionId,
+                // uuid, consumedAt }. Re-emit with our own sessionId for
+                // symmetry with the other channels; forward uuid/consumedAt
+                // verbatim so the client can flip the matching bubble.
+                if (winner.result.done) msgStatP = null
+                else {
+                  const v = winner.result.value as { uuid?: string; consumedAt?: number }
+                  if (typeof v.uuid === 'string' && typeof v.consumedAt === 'number') {
+                    queue.enqueue({
+                      kind: 'message-consumed',
+                      sessionId,
+                      uuid: v.uuid,
+                      consumedAt: v.consumedAt,
+                    })
+                  }
+                  msgStatP = tag('msgstat', msgStatIter!)
+                }
               } else {
                 // session-recap-update — payload from broadcastSessionRecap
                 // is { kind, sessionId, recap? }. Re-emit with our own
@@ -432,6 +459,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
         permSub?.unsubscribe()
         ctxSub?.unsubscribe()
         gitSub?.unsubscribe()
+        msgStatSub?.unsubscribe()
         recapSub?.unsubscribe()
         queue.enqueue({ kind: 'error', sessionId, message: (err as Error).message })
       }

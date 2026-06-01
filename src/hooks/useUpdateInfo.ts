@@ -12,7 +12,11 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './useApi'
-import type { UpdateInfo } from '../../shared/update-info'
+import type { UpdateActionResult, UpdateInfo } from '../../shared/update-info'
+
+/** Server allows up to 120s for `npm i -g`; give the client request room
+ *  beyond that so it doesn't time out before npm does. */
+const UPDATE_TIMEOUT_MS = 130_000
 
 interface UseUpdateInfo {
   info: UpdateInfo | null
@@ -23,12 +27,18 @@ interface UseUpdateInfo {
   refreshing: boolean
   error: string | null
   refresh: () => void
+  /** True while POST /api/update is in flight. */
+  updating: boolean
+  /** Trigger the in-app update. Resolves with the action result, or throws
+   *  on failure (caller surfaces the error). */
+  update: () => Promise<UpdateActionResult>
 }
 
 export function useUpdateInfo(enabled: boolean): UseUpdateInfo {
   const [info, setInfo] = useState<UpdateInfo | null>(null)
   const [loading, setLoading] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [updating, setUpdating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // Track whether a fetch is in flight so concurrent refresh() calls
   // (rapid clicks on Check-now) don't pile up. We also remember whether
@@ -115,5 +125,27 @@ export function useUpdateInfo(enabled: boolean): UseUpdateInfo {
     void fetchInfo(true)
   }, [fetchInfo])
 
-  return { info, loading, refreshing, error, refresh }
+  const updatingRef = useRef(false)
+  const update = useCallback(async (): Promise<UpdateActionResult> => {
+    // Guard against double-clicks driving two POSTs (the server also rejects
+    // concurrent installs with 409, but this avoids the round-trip).
+    if (updatingRef.current) {
+      throw new Error('update already in progress')
+    }
+    updatingRef.current = true
+    if (mountedRef.current) {
+      setUpdating(true)
+      setError(null)
+    }
+    try {
+      return await api.post<UpdateActionResult>('/update', undefined, {
+        timeoutMs: UPDATE_TIMEOUT_MS,
+      })
+    } finally {
+      updatingRef.current = false
+      if (mountedRef.current) setUpdating(false)
+    }
+  }, [])
+
+  return { info, loading, refreshing, error, refresh, updating, update }
 }

@@ -385,3 +385,57 @@ export function IconRefresh(props: IconProps) {
     </Icon>
   )
 }
+
+export function IconChevronRight(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="m9 6 6 6-6 6" />
+    </Icon>
+  )
+}
+
+export function IconChevronDown(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="m6 9 6 6 6-6" />
+    </Icon>
+  )
+}
+
+export function IconArrowUp(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 20V4" />
+      <path d="m7 9 5-5 5 5" />
+    </Icon>
+  )
+}
+
+export function IconTrash(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M4 7h16" />
+      <path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+      <path d="M6 7v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7" />
+      <path d="M10 11v6M14 11v6" />
+    </Icon>
+  )
+}
+
+export function IconAlertTriangle(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M10.3 4.3 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0Z" />
+      <path d="M12 9v4" />
+      <path d="M12 17h.01" />
+    </Icon>
+  )
+}
+
+export function IconSquare(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="4" y="4" width="16" height="16" rx="2" />
+    </Icon>
+  )
+}

@@ -18,11 +18,16 @@ function toApiError(res: Response, body: unknown): ApiError {
   return err
 }
 
-export async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function apiRequest<T>(
+  path: string,
+  init: RequestInit = {},
+  opts: { timeoutMs?: number } = {},
+): Promise<T> {
   // Merge caller-supplied signal with our timeout signal. When either
   // fires the request is aborted.
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const timeoutController = new AbortController()
-  const timeoutId = setTimeout(() => timeoutController.abort(), DEFAULT_TIMEOUT_MS)
+  const timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs)
 
   // If the caller already provided a signal, propagate its abort to our
   // controller so either source can cancel the fetch.
@@ -59,7 +64,7 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
     if (err instanceof Error && err.name === 'AbortError') {
       const reason = callerSignal?.aborted
         ? 'Request cancelled'
-        : `Request timed out after ${DEFAULT_TIMEOUT_MS / 1000}s`
+        : `Request timed out after ${timeoutMs / 1000}s`
       const timeoutErr = new Error(reason) as ApiError
       timeoutErr.status = 0
       throw timeoutErr
@@ -76,8 +81,12 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
 export const api = {
   get: <T>(path: string, opts?: { signal?: AbortSignal }) =>
     apiRequest<T>(path, { signal: opts?.signal }),
-  post: <T>(path: string, body?: unknown, opts?: { signal?: AbortSignal }) =>
-    apiRequest<T>(path, { method: 'POST', body: body == null ? undefined : JSON.stringify(body), signal: opts?.signal }),
+  post: <T>(path: string, body?: unknown, opts?: { signal?: AbortSignal; timeoutMs?: number }) =>
+    apiRequest<T>(
+      path,
+      { method: 'POST', body: body == null ? undefined : JSON.stringify(body), signal: opts?.signal },
+      { timeoutMs: opts?.timeoutMs },
+    ),
   put: <T>(path: string, body?: unknown) =>
     apiRequest<T>(path, { method: 'PUT', body: body == null ? undefined : JSON.stringify(body) }),
   patch: <T>(path: string, body?: unknown) =>

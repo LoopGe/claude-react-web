@@ -4,10 +4,12 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../hooks/useApi'
 import { formatBytes } from '../utils/format'
+import { buildUpgradeCommand } from '../utils/upgrade-command'
 import type { FullServerConfig } from '../types/config'
 import type { McpServerConfigMeta } from '../types'
 import { useFocusTrap } from '../hooks/useFocusTrap'
-import type { UpdateInfo } from '../../shared/update-info'
+import { useToast } from '../hooks/useToast'
+import type { UpdateActionResult, UpdateInfo } from '../../shared/update-info'
 
 // MarketplaceTab pulls in catalog-rendering UI; McpInstaller is a heavy
 // modal-within-modal. Both are only opened on demand from inside the
@@ -40,6 +42,10 @@ interface Props {
   updateRefreshing?: boolean
   updateError?: string | null
   onRefreshUpdate?: () => void
+  /** True while an in-app update (POST /api/update) is running. */
+  updating?: boolean
+  /** Trigger the in-app update; resolves with the action result. */
+  onUpdate?: () => Promise<UpdateActionResult>
 }
 
 export function GlobalSettingsModal({
@@ -49,6 +55,8 @@ export function GlobalSettingsModal({
   updateRefreshing,
   updateError,
   onRefreshUpdate,
+  updating,
+  onUpdate,
 }: Props) {
   const [tab, setTab] = useState<Tab>('api')
   const [loading, setLoading] = useState(true)
@@ -312,6 +320,8 @@ export function GlobalSettingsModal({
                   onRefresh={onRefreshUpdate}
                   registry={updateCheckRegistry}
                   onRegistryChange={setUpdateCheckRegistry}
+                  updating={!!updating}
+                  onUpdate={onUpdate}
                 />
               )}
             </>
@@ -789,6 +799,8 @@ function AboutTab({
   onRefresh,
   registry,
   onRegistryChange,
+  updating,
+  onUpdate,
 }: {
   info: UpdateInfo | null
   refreshing: boolean
@@ -798,7 +810,15 @@ function AboutTab({
    *  Save button fires `handleSave`. Empty string means "disable". */
   registry: string
   onRegistryChange: (v: string) => void
+  updating: boolean
+  onUpdate?: () => Promise<UpdateActionResult>
 }) {
+  const toast = useToast()
+  // Error from the most recent in-app update attempt (POST /api/update),
+  // shown inline below the Update button. Separate from the registry probe
+  // error above.
+  const [updateError, setUpdateError] = useState<string | null>(null)
+
   // Formatted "last checked" — relative time tends to read as fresher
   // than an absolute date for a quick "did this just check?" glance.
   const checkedAtLabel = info?.checkedAt ? formatRelative(info.checkedAt) : 'never'
@@ -812,6 +832,29 @@ function AboutTab({
   const disabled = !!info?.disabled
   const upToDate =
     !!info && !info.checking && !info.hasUpdate && info.latest && !displayError && !disabled
+  // An in-app update can only replace a global install. For npx / dev runs
+  // there's nothing to upgrade in place, so we show only the copy-command.
+  const canUpdateInApp = hasUpdate && info?.installMethod === 'global' && !!onUpdate
+
+  const runUpdate = async () => {
+    if (!onUpdate) return
+    setUpdateError(null)
+    try {
+      const res = await onUpdate()
+      if (res.performed) {
+        toast.success(
+          `Updated to ${res.latest ?? 'the latest version'} — restart the server to apply.`,
+        )
+        onRefresh?.()
+      } else {
+        // Server declined to install (npx / unknown). Point the user at the
+        // copy-command instead.
+        toast.info('In-app update isn’t available for this install — copy the command below.')
+      }
+    } catch (e) {
+      setUpdateError(e instanceof Error ? e.message : String(e))
+    }
+  }
 
   return (
     <div>
@@ -866,10 +909,13 @@ function AboutTab({
           )}
         </div>
       </Field>
-      {hasUpdate && (
-        <Field label="Upgrade command" hint="If you installed globally, use `npm i -g claude-react-web@latest`.">
+      {hasUpdate && info && (
+        <Field
+          label="Upgrade command"
+          hint={`If you installed globally, use \`${buildUpgradeCommand(info.packageName, info.registry, true)}\`.`}
+        >
           <div style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>
-            npx claude-react-web@latest
+            {buildUpgradeCommand(info.packageName, info.registry)}
           </div>
         </Field>
       )}
@@ -878,15 +924,30 @@ function AboutTab({
           Could not reach the registry: {displayError}
         </div>
       )}
-      <div style={{ marginTop: 16 }}>
+      {updateError && (
+        <div className="modal-error" style={{ marginTop: 8 }}>
+          Update failed: {updateError}
+        </div>
+      )}
+      <div style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
         <button
           className="btn"
           onClick={onRefresh}
-          disabled={refreshing || !onRefresh || disabled}
+          disabled={refreshing || !onRefresh || disabled || updating}
           title={disabled ? 'Set a registry URL above and Save first.' : undefined}
         >
           {refreshing ? 'Checking…' : 'Check now'}
         </button>
+        {canUpdateInApp && (
+          <button
+            className="btn btn-primary"
+            onClick={() => void runUpdate()}
+            disabled={updating || refreshing}
+            title="Run `npm i -g …@latest` on the server, then restart to apply."
+          >
+            {updating ? 'Updating…' : 'Update now'}
+          </button>
+        )}
       </div>
     </div>
   )

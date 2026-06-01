@@ -52,6 +52,7 @@ function makeStubBroadcaster(): SessionBroadcaster & { calls: string[] } {
     subscribePermissions: () => { throw new Error('not used') },
     subscribeContextUsage: () => null,
     subscribeGitStatus: () => null,
+    subscribeMessageStatus: () => null,
     broadcastGitStatusChanged(id: string) {
       calls.push(id)
     },

@@ -11,8 +11,9 @@ import type { CSSProperties } from 'react'
 export interface ContextMenuItem {
   /** Shown in the menu. Falsy = render a separator instead. */
   label?: string
-  /** Optional leading glyph / icon character. */
-  icon?: string
+  /** Optional leading glyph / icon. A string renders as a glyph; an
+   *  element (e.g. an SVG icon component) renders inline. */
+  icon?: React.ReactNode
   /** Inline style applied to the icon span (e.g. per-item colour). */
   iconStyle?: CSSProperties
   onClick?: () => void

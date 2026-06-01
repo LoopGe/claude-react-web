@@ -73,4 +73,50 @@ describe('createPushable', () => {
     p.end()
     expect(p.closed).toBe(true)
   })
+
+  describe('onConsume hook', () => {
+    it('fires on the queue-shift path (item buffered, then read)', async () => {
+      const consumed: number[] = []
+      const p = createPushable<number>('t', undefined, (x) => consumed.push(x))
+      // Push BEFORE next() — items sit in the queue and are shifted on read.
+      p.push(1)
+      p.push(2)
+      expect(consumed).toEqual([]) // not consumed until read
+      const it = p.iterable[Symbol.asyncIterator]()
+      await it.next()
+      expect(consumed).toEqual([1])
+      await it.next()
+      expect(consumed).toEqual([1, 2])
+    })
+
+    it('fires on the direct hand-off path (consumer parked, then push)', async () => {
+      const consumed: string[] = []
+      const p = createPushable<string>('t', undefined, (x) => consumed.push(x))
+      const it = p.iterable[Symbol.asyncIterator]()
+      // next() parks first → push delivers directly to the waiter, bypassing
+      // the queue. The hook must still fire on this path.
+      const pending = it.next()
+      p.push('direct')
+      await pending
+      expect(consumed).toEqual(['direct'])
+    })
+
+    it('does not fire on push after end()', async () => {
+      const consumed: number[] = []
+      const p = createPushable<number>('t', undefined, (x) => consumed.push(x))
+      p.end()
+      p.push(7)
+      expect(consumed).toEqual([])
+    })
+
+    it('a throwing hook never breaks iteration', async () => {
+      const p = createPushable<number>('t', undefined, () => {
+        throw new Error('hook boom')
+      })
+      p.push(5)
+      const it = p.iterable[Symbol.asyncIterator]()
+      // The throw is swallowed internally; next() still resolves normally.
+      expect(await it.next()).toEqual({ value: 5, done: false })
+    })
+  })
 })
