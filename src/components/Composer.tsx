@@ -15,6 +15,7 @@ import { useToast } from '../hooks/useToast'
 import type { PastedImage, SlashCommand } from '../types'
 import { CommandPicker } from './CommandPicker'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
+import { IconPaperclip, IconX } from './icons/ToolIcons'
 
 interface Props {
   input: string
@@ -374,7 +375,9 @@ export const Composer = memo(function Composer({
           <div className="attachments">
             {attachments.map((a) => (
               <span key={a.path} className="attachment-chip" title={a.path}>
-                <span className="attachment-chip-name">📎 {a.name}</span>
+                <span className="attachment-chip-name">
+                  <IconPaperclip size={12} aria-hidden /> {a.name}
+                </span>
                 <span className="attachment-chip-size">{formatBytes(a.size)}</span>
                 <button
                   type="button"
@@ -382,7 +385,7 @@ export const Composer = memo(function Composer({
                   onClick={() => onRemoveAttachment(a.path)}
                   aria-label={`Remove ${a.name}`}
                 >
-                  ✕
+                  <IconX size={12} />
                 </button>
               </span>
             ))}
@@ -393,14 +396,14 @@ export const Composer = memo(function Composer({
           <div className="image-previews">
             {pastedImages.map((img) => (
               <div key={img.id} className="image-preview-card">
-                <img src={img.previewUrl} alt={img.mediaType} />
+                <img src={img.previewUrl} alt="Pasted image" />
                 <button
                   type="button"
                   className="image-preview-remove"
                   onClick={() => onRemovePastedImage(img.id)}
                   aria-label="Remove image"
                 >
-                  ✕
+                  <IconX size={12} />
                 </button>
               </div>
             ))}
@@ -409,10 +412,11 @@ export const Composer = memo(function Composer({
         <textarea
           ref={textareaRef}
           className="textarea"
+          aria-label="Message input"
           placeholder={
             dragOver
               ? 'Drop files to attach…'
-              : 'Send a message (Enter = send, Shift+Enter = newline, ↑/↓ history, 📎 to attach)'
+              : 'Send a message (Enter = send, Shift+Enter = newline, ↑/↓ history)'
           }
           value={input}
           onContextMenu={handleTextareaContextMenu}
@@ -555,8 +559,9 @@ export const Composer = memo(function Composer({
           onClick={openFilePicker}
           disabled={disabled || uploading || !canAttach}
           title={canAttach ? 'Attach files' : 'Attach disabled: session has no cwd'}
+          aria-label="Attach files"
         >
-          📎
+          <IconPaperclip size={16} />
         </button>
         <button className="btn btn-primary" onClick={onSend} disabled={!canSend}>
           {sending ? 'Sending…' : 'Send'}
@@ -574,6 +579,8 @@ export const Composer = memo(function Composer({
         ref={fileInputRef}
         type="file"
         multiple
+        aria-hidden
+        tabIndex={-1}
         style={{ display: 'none' }}
         onChange={(e) => {
           const files = e.target.files ? Array.from(e.target.files) : []

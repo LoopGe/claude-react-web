@@ -11,7 +11,7 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { Session, SessionBroadcaster } from './session-types.js'
 import { endAllSubscribers } from './session-types.js'
 import { debugLog } from './debug.js'
-import { pushBounded } from './history-utils.js'
+import { pushBounded, stampReceivedAt } from './history-utils.js'
 import { mutatingToolUseId, scheduleGitBroadcast } from './git-broadcast.js'
 import { createLogger } from './log.js'
 
@@ -145,6 +145,11 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // future silence triggers fresh detection rather than immediately
         // escalating to unload.
         session.autoInterruptedAt = undefined
+        // Stamp the moment we first observed this message. Set once and only
+        // if absent (the SDK type has no such field, so it's never preset)
+        // so the value travels unchanged through both the history ring and
+        // live subscriber broadcast — replay and live paths share this object.
+        stampReceivedAt(msg)
         pushBounded(session.history, msg, deps.historyCap)
         for (const sub of session.subscribers.values()) {
           try { sub.push(msg) } catch { /* subscriber dead — don't break broadcast to others */ }
@@ -214,6 +219,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
       error: session.error,
       uuid: randomUUID(),
       session_id: session.id,
+      receivedAt: Date.now(),
     } as unknown as SDKMessage
     for (const sub of session.subscribers.values()) {
       try { sub.push(synthetic) } catch { /* subscriber dead — skip */ }

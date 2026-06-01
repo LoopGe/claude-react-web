@@ -3,7 +3,7 @@
  *  placeholder when the session's Query isn't live. */
 
 import { memo, useState } from 'react'
-import type { CSSProperties } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import { Chat } from './Chat'
 import { ContextMenu } from './ContextMenu'
 import { Tooltip } from './Tooltip'
@@ -14,6 +14,8 @@ import { useGitStatus } from '../hooks/useGitStatus'
 import { statusClass, statusLabel, shortenModel } from '../utils/session-status'
 import { useModelOptions } from '../hooks/useModelOptions'
 import { shortenPath } from '../utils/paths'
+import { IconSettings, IconX } from './icons/ToolIcons'
+import { PermissionModeIcon, permissionModeLabel } from './permission-mode-display'
 import type { PermissionMode, SessionInfo } from '../types'
 import { PERMISSION_MODES } from '../types'
 import type { GitStatus } from '../../shared/git-types'
@@ -33,8 +35,11 @@ function gitChipText(s: GitStatus): string {
   return segments.join(' ')
 }
 
-/** Chip tooltip — verbose form for users who hover before clicking. */
-function gitChipTitle(s: GitStatus): string {
+/** Chip tooltip — verbose form for users who hover before clicking.
+ *  Returns a ReactNode (one <div> per line) rather than a `\n`-joined
+ *  string: newlines inside HTML text collapse to spaces, so the multi-
+ *  line intent was previously lost in the Tooltip bubble. */
+function gitChipTitle(s: GitStatus): ReactNode {
   const lines = [
     `Branch: ${s.detached ? 'detached HEAD' : (s.branch ?? 'unknown')}`,
     s.upstream ? `Upstream: ${s.upstream}` : 'No upstream configured',
@@ -43,7 +48,7 @@ function gitChipTitle(s: GitStatus): string {
   lines.push(`State: ${s.state}`)
   lines.push(`Staged: ${s.staged.length} · Unstaged: ${s.unstaged.length} · Untracked: ${s.untracked.length}`)
   lines.push('Click to open Git panel')
-  return lines.join('\n')
+  return lines.map((line, i) => <div key={i}>{line}</div>)
 }
 
 /** Optimistic-update helper: POST to `apiPath`, update session on success,
@@ -278,16 +283,12 @@ export const ChatPanel = memo(function ChatPanel({
           </span>
         </Tooltip>
         {isNonDefaultMode && (
-          <Tooltip label={`Permission mode: ${permMode}`} placement="bottom">
+          <Tooltip label={`Permission mode: ${permissionModeLabel(permMode)}`} placement="bottom">
             <span
               className={`chat-panel-mode-badge mode-${permMode}`}
-              aria-label={permMode}
+              aria-label={`Permission mode: ${permissionModeLabel(permMode)}`}
             >
-              {permMode === 'plan' && '🗒 '}
-              {permMode === 'bypassPermissions' && '⚡ '}
-              {permMode === 'dontAsk' && '⚡ '}
-              {permMode === 'acceptEdits' && '✏️ '}
-              {permMode === 'auto' && '🤖 '}
+              <PermissionModeIcon mode={permMode} />
               {permMode}
             </span>
           </Tooltip>
@@ -402,7 +403,7 @@ export const ChatPanel = memo(function ChatPanel({
             }}
             aria-label="Open settings"
           >
-            ⚙
+            <IconSettings size={16} />
           </button>
         </Tooltip>
         <Tooltip label="Close this panel (Alt+W) · session stays alive" placement="bottom">
@@ -414,7 +415,7 @@ export const ChatPanel = memo(function ChatPanel({
             }}
             aria-label="Close panel"
           >
-            ✕
+            <IconX size={16} />
           </button>
         </Tooltip>
         </div>

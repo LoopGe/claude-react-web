@@ -78,13 +78,24 @@ export function DirectoryPicker({ initialPath, onPick, onClose }: Props) {
     void loadList(draft.trim(), showHidden)
   }
 
-  // Close on Escape
+  // Close on Escape. Registered in the CAPTURE phase + stopImmediatePropagation
+  // so the picker wins the Escape regardless of listener registration order.
+  // Without this, App's global Escape chain (registered at mount, i.e. before
+  // this picker) fires first and closes the whole NewSessionDialog underneath
+  // instead of just dismissing the picker. Capture beats bubble, so we get the
+  // event first and stop it from reaching the dialog's local handler and the
+  // global chain. This makes Escape ownership consistent: the topmost open
+  // overlay always handles it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') {
+        e.stopImmediatePropagation()
+        e.preventDefault()
+        onClose()
+      }
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
   }, [onClose])
 
   const crumbs = buildCrumbs(path)

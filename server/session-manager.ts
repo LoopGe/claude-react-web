@@ -57,7 +57,7 @@ import {
 import { HttpError } from './errors.js'
 import { PermissionBroker } from './permission-broker.js'
 import { debugLog } from './debug.js'
-import { pushBounded } from './history-utils.js'
+import { pushBounded, stampReceivedAt } from './history-utils.js'
 
 // Re-export types so existing importers continue to work.
 export {
@@ -286,6 +286,7 @@ export class SessionManager {
       error: errorMsg,
       uuid: randomUUID(),
       session_id: sessionId,
+      receivedAt: Date.now(),
     } as unknown as SDKMessage
     for (const sub of s.subscribers.values()) sub.push(synthetic)
     endAllSubscribers(s)
@@ -769,6 +770,7 @@ export class SessionManager {
     // Broadcast + record locally — the SDK's output stream doesn't echo
     // user messages back, so without this step the client would never
     // see its own sent text.
+    stampReceivedAt(userMsg)
     pushBounded(s.history, userMsg, this.historyCap)
     for (const sub of s.subscribers.values()) sub.push(userMsg)
     s.lastActivityAt = Date.now()

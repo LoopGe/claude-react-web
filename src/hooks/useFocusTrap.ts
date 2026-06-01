@@ -16,9 +16,11 @@ const DISABLED_EXCLUDING_SELECTOR =
  */
 export function useFocusTrap(
   ref: RefObject<HTMLElement | null>,
-  opts?: { restoreFocus?: boolean; excludeDisabled?: boolean },
+  opts?: { restoreFocus?: boolean; excludeDisabled?: boolean; active?: boolean },
 ): void {
+  const active = opts?.active ?? true
   useEffect(() => {
+    if (!active) return
     const previouslyFocused = opts?.restoreFocus
       ? (document.activeElement as HTMLElement | null)
       : null
@@ -45,5 +47,5 @@ export function useFocusTrap(
       previouslyFocused?.focus?.()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [active])
 }

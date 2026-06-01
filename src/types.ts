@@ -149,6 +149,12 @@ export interface SdkMessage {
   subtype?: string
   uuid?: string
   session_id?: string
+  /** Wall-clock ms when the server first observed this message (stamped in
+   *  session-pump / pushToSession before it enters the history ring). Travels
+   *  with the message over both replay and live WS frames. Absent for
+   *  messages restored from the CLI's on-disk log after a server restart —
+   *  the UI hides the timestamp when undefined rather than guessing. */
+  receivedAt?: number
   // `message` is present on user/assistant. For user: { role: 'user', content: string }.
   // For assistant: { role: 'assistant', content: ContentBlock[] } (Anthropic SDK shape).
   message?: {

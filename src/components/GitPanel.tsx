@@ -24,6 +24,8 @@ import { useGitDiff, useGitLog, useGitBranches, useGitStashes } from '../hooks/u
 import { useGitWrite } from '../hooks/useGitWrite'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Tooltip } from './Tooltip'
+import { IconX } from './icons/ToolIcons'
+import { Skeleton } from './Skeleton'
 import { useToast } from '../hooks/useToast'
 import type {
   GitFileEntry,
@@ -112,7 +114,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
             <button className="git-panel-icon-btn" onClick={onRefresh} aria-label="Refresh">⟳</button>
           </Tooltip>
           <Tooltip label="Close" placement="bottom">
-            <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close">✕</button>
+            <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={15} /></button>
           </Tooltip>
         </header>
         <div className="git-panel-empty">
@@ -130,7 +132,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
           <span className="git-panel-branch">⎇ git</span>
           <span className="git-panel-spacer" />
           <Tooltip label="Close" placement="bottom">
-            <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close">✕</button>
+            <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={15} /></button>
           </Tooltip>
         </header>
         <div className="git-panel-empty">
@@ -147,7 +149,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
           <span className="git-panel-branch">⎇ …</span>
           <span className="git-panel-spacer" />
           <Tooltip label="Close" placement="bottom">
-            <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close">✕</button>
+            <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={15} /></button>
           </Tooltip>
         </header>
         <div className="git-panel-empty">
@@ -922,7 +924,7 @@ function BranchesSection({ sessionId, currentBranch, writeOps, onError, askConfi
             >Create</button>
           </div>
         )}
-        {branches.loading && <div className="git-section-empty">Loading branches…</div>}
+        {branches.loading && <Skeleton rows={3} className="git-section-skeleton" />}
         {branches.error && <div className="git-section-empty git-commits-error">{branches.error}</div>}
         {branches.data && branches.data.length === 0 && (
           <div className="git-section-empty">No local branches</div>
@@ -993,7 +995,7 @@ function StashesSection({ sessionId, writeOps, onError, askConfirm }: StashesSec
         </span>
       </summary>
       <div className="git-panel-section-body">
-        {stashes.loading && <div className="git-section-empty">Loading…</div>}
+        {stashes.loading && <Skeleton rows={2} className="git-section-skeleton" />}
         {stashes.error && <div className="git-section-empty git-commits-error">{stashes.error}</div>}
         {stashes.data && stashes.data.length === 0 && (
           <div className="git-section-empty">No stashes</div>

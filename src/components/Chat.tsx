@@ -35,6 +35,8 @@ import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
 import { ContextMenu } from './ContextMenu'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
+import { IconSearch, IconDownload, IconClock } from './icons/ToolIcons'
+import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
 import type { AgentInfo, PermissionRequest, SessionInfo, SlashCommand } from '../types'
 import type { GitStatusResponse } from '../../shared/git-types'
@@ -491,6 +493,14 @@ export const Chat = memo(function Chat({
   // Set to true when interrupt() fires; the next `result` message renders
   // as "interrupted" and resets this to false.
   const pendingInterruptRef = useRef(false)
+  // Focus traps for the two in-panel overlays. The settings overlay is
+  // always mounted (toggled via CSS .hidden), so the trap is gated on
+  // `settingsOpen`; the git overlay only mounts when open. `active`
+  // arms/disarms the trap and restores focus to the trigger on close.
+  const settingsOverlayRef = useRef<HTMLDivElement>(null)
+  const gitOverlayRef = useRef<HTMLDivElement>(null)
+  useFocusTrap(settingsOverlayRef, { restoreFocus: true, active: !!settingsOpen })
+  useFocusTrap(gitOverlayRef, { restoreFocus: true, active: !!gitPanelOpen })
 
   const interrupt = useCallback(async () => {
     try {
@@ -538,7 +548,7 @@ export const Chat = memo(function Chat({
             title="Search messages (Ctrl+F)"
             aria-label="Search messages"
           >
-            🔍
+            <IconSearch size={16} />
           </button>
           <button
             className="chat-panel-header-btn"
@@ -551,7 +561,7 @@ export const Chat = memo(function Chat({
             title="Export conversation"
             aria-label="Export conversation"
           >
-            📥
+            <IconDownload size={16} />
           </button>
         </>,
         headerButtonsRef,
@@ -633,9 +643,10 @@ export const Chat = memo(function Chat({
           turn is already covered by the thinking bubble in the
           transcript. Show it once queuedAhead > 1. */}
       {session.working && stream.queuedAhead > 1 && (
-        <div className="queue-bar">
+        <div className="queue-bar" role="status" aria-live="polite">
+          <IconClock size={14} aria-hidden />
           <span>
-            ⏳ {stream.queuedAhead - 1} more message{stream.queuedAhead - 1 === 1 ? '' : 's'} queued, will send automatically.
+            {stream.queuedAhead - 1} more message{stream.queuedAhead - 1 === 1 ? '' : 's'} queued, will send automatically.
           </span>
         </div>
       )}
@@ -744,9 +755,10 @@ export const Chat = memo(function Chat({
       })()}
 
       <div
+        ref={settingsOverlayRef}
         className={`settings-overlay${settingsOpen ? '' : ' hidden'}`}
         role="dialog"
-        aria-modal="false"
+        aria-modal={settingsOpen ? 'true' : 'false'}
         aria-label="Session settings"
         onMouseDown={(e) => {
           if (e.target === e.currentTarget) onCloseSettings?.()
@@ -765,9 +777,10 @@ export const Chat = memo(function Chat({
 
       {gitPanelOpen && (
         <div
+          ref={gitOverlayRef}
           className="git-overlay"
           role="dialog"
-          aria-modal="false"
+          aria-modal="true"
           aria-label="Git"
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) onCloseGitPanel?.()

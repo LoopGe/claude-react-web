@@ -15,6 +15,11 @@ export interface TranscriptItem {
   plainText: string | null
   isCompactSummary: boolean
   hiddenByDefault: boolean
+  /** Wall-clock ms when the message was first observed (server-stamped via
+   *  SdkMessage.receivedAt, or Date.now() for optimistic local sends).
+   *  Undefined for history restored from disk after a server restart — the
+   *  header timestamp is hidden in that case. */
+  receivedAt?: number
   /** True for optimistic placeholders that haven't been replaced by the
    *  server-side broadcast yet — drives the "sending" spinner on the user
    *  bubble. Cleared automatically when the broadcast lands and the

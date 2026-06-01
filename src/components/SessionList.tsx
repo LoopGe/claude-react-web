@@ -14,10 +14,15 @@ import { SessionCard } from './session-list/SessionCard'
 import { ConfirmDialog } from './ConfirmDialog'
 import { PromptDialog } from './PromptDialog'
 import { ContextMenu } from './ContextMenu'
+import { IconX } from './icons/ToolIcons'
+import { Skeleton } from './Skeleton'
 import { Virtuoso } from 'react-virtuoso'
 
 interface Props {
   sessions: SessionInfo[]
+  /** False until the first WS sessions-snapshot lands. Drives the sidebar
+   *  skeleton so "No sessions yet" doesn't flash during initial load. */
+  sessionsLoaded?: boolean
   /** All sessions currently open in the chat grid (0-maxOpen). Any item whose
    *  id is in here is rendered as "open" in the sidebar (distinct from
    *  "focused" — the single panel receiving keyboard input). */
@@ -102,6 +107,7 @@ interface Props {
 
 export const SessionList = memo(function SessionList({
   sessions,
+  sessionsLoaded,
   openIds,
   focusedId,
   defaults,
@@ -440,6 +446,7 @@ export const SessionList = memo(function SessionList({
             <input
               className="input"
               type="text"
+              aria-label="Filter sessions"
               placeholder="Filter by title / cwd / id…"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
@@ -452,7 +459,7 @@ export const SessionList = memo(function SessionList({
                 aria-label="Clear filter"
                 title="Clear"
               >
-                ✕
+                <IconX size={13} />
               </button>
             )}
           </div>
@@ -460,8 +467,9 @@ export const SessionList = memo(function SessionList({
         {/* Group pills — horizontal row of clickable group chips. */}
         <div className="group-pills">
           {groups.map((g) => (
-            <span
+            <button
               key={g.id}
+              type="button"
               className="group-pill"
               title={`Activate "${g.name}" (${g.sessionIds.length} sessions) · right-click for options`}
               onClick={() => onActivateGroup(g.id)}
@@ -473,12 +481,13 @@ export const SessionList = memo(function SessionList({
             >
               {g.name}
               <span className="group-pill-count">{g.sessionIds.length}</span>
-            </span>
+            </button>
           ))}
           {showNewGroupInput ? (
             <input
               ref={newGroupInputRef}
               className="group-pill-input"
+              aria-label="New group name"
               placeholder="Group name…"
               value={newGroupName}
               onChange={(e) => setNewGroupName(e.target.value)}
@@ -524,9 +533,13 @@ export const SessionList = memo(function SessionList({
       </div>
       <div className="session-list">
           {sessions.length === 0 ? (
-            <div style={{ color: 'var(--fg-muted)', fontSize: 12, textAlign: 'center', padding: 20 }}>
-              No sessions yet.
-            </div>
+            sessionsLoaded === false ? (
+              <Skeleton rows={5} className="sidebar-skeleton" />
+            ) : (
+              <div className="sidebar-empty-note">
+                No sessions yet.
+              </div>
+            )
           ) : filteredSections.length > 0 ? (
           // ── Sectioned view (groups exist) ──
           filteredSections.map((sec) => {
@@ -564,6 +577,8 @@ export const SessionList = memo(function SessionList({
                       className="group-collapse-arrow"
                       onClick={(e) => { e.stopPropagation(); onToggleGroupCollapse(sec.group.id) }}
                       title={collapsed ? 'Expand group' : 'Collapse group'}
+                      aria-expanded={!collapsed}
+                      aria-label={collapsed ? `Expand group ${sec.group.name}` : `Collapse group ${sec.group.name}`}
                     >
                       {collapsed ? '▶' : '▼'}
                     </button>
@@ -655,7 +670,7 @@ export const SessionList = memo(function SessionList({
             return null
           })
           ) : visibleSessions.length === 0 ? (
-            <div style={{ color: 'var(--fg-muted)', fontSize: 12, textAlign: 'center', padding: 20 }}>
+            <div className="sidebar-empty-note">
               No sessions match "{filter}".
             </div>
           ) : (

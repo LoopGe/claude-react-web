@@ -16,6 +16,40 @@ export function formatElapsed(ms: number): string {
   return `${h}:${pad(m)}:${pad(sec)}`
 }
 
+/** Clock time to the second, e.g. "14:23:05". Locale-aware (24h vs 12h
+ *  follows the user's locale) but always includes seconds. Used for the
+ *  compact timestamp shown inline in message headers. */
+export function formatClockTime(ms: number | undefined | null): string {
+  if (ms == null) return ''
+  try {
+    return new Date(ms).toLocaleTimeString(undefined, {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    })
+  } catch {
+    return ''
+  }
+}
+
+/** Full date + time to the second for the hover tooltip, e.g.
+ *  "Jun 1, 2026, 14:23:05". Locale-aware. */
+export function formatFullTimestamp(ms: number | undefined | null): string {
+  if (ms == null) return ''
+  try {
+    return new Date(ms).toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    })
+  } catch {
+    return ''
+  }
+}
+
 /** Pretty-print a value as indented JSON, falling back to String(). */
 export function formatJson(v: unknown): string {
   try {

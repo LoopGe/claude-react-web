@@ -14,3 +14,23 @@ export function pushBounded<T>(arr: T[], item: T, cap: number): void {
     arr.length = cap
   }
 }
+
+/**
+ * Stamp the wall-clock time the server first observed a message, in place.
+ *
+ * The SDK's message type has no timestamp, so the client can't tell when a
+ * message arrived — and stamping it client-side would mislabel replayed
+ * history as "now". We stamp here, once, before the message enters the
+ * history ring; because the ring and the live subscriber broadcast share the
+ * same object reference, the value rides along on both the replay and live
+ * paths with no extra plumbing.
+ *
+ * `receivedAt` is added defensively (only when absent) so a message that
+ * somehow flows through twice keeps its original time. Typed loosely because
+ * the field isn't part of the upstream SDKMessage shape.
+ */
+export function stampReceivedAt(msg: unknown): void {
+  if (msg && typeof msg === 'object' && (msg as { receivedAt?: number }).receivedAt == null) {
+    ;(msg as { receivedAt?: number }).receivedAt = Date.now()
+  }
+}

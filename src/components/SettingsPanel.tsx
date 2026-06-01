@@ -2,12 +2,14 @@
 // can only be set at session creation are shown read-only at the top.
 
 import { lazy, memo, Suspense, useEffect, useMemo, useState } from 'react'
+import type { CSSProperties } from 'react'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
 import type { AgentInfo, McpServerConfigMeta, McpServerStatus, ModelInfo, PermissionMode, Plugin, SessionInfo, SlashCommand } from '../types'
 import { PERMISSION_MODES } from '../types'
 import { FlagSettingsEditor } from './FlagSettingsEditor'
 import { ContextBar } from './ContextBar'
+import { Skeleton } from './Skeleton'
 
 // MarketplaceBrowser and McpInstaller are heavy modal-within-modal
 // components opened only on user intent (Browse plugins / Add MCP).
@@ -39,6 +41,9 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
   const [showMcpInstaller, setShowMcpInstaller] = useState(false)
   const [mcpInstallerEdit, setMcpInstallerEdit] = useState<McpServerConfigMeta | undefined>(undefined)
   const [busy, setBusy] = useState(false)
+  // True until the initial models/MCP/usage fetch settles. Drives skeleton
+  // placeholders so the lists don't flash "No MCP servers" before data lands.
+  const [loadingMeta, setLoadingMeta] = useState(true)
   // All settings success/error feedback rides on the global toast hub.
   // The previous in-panel `err` state and the inline success banner have
   // been removed in favour of right-bottom toasts.
@@ -120,6 +125,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
       if (gcResult.status === 'fulfilled') {
         setGlobalMcpNames(new Set(gcResult.value.servers.map((s) => s.name)))
       }
+      setLoadingMeta(false)
     })()
     return () => { ac.abort() }
   }, [session.id, session.running])
@@ -233,13 +239,13 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
   }, [commands, agents, reloadedPlugins])
 
   return (
-    <aside className="settings-panel">
-      <h3>
-        Session settings
+    <aside className="settings-panel" aria-label="Session settings">
+      <div className="settings-panel-header">
+        <h3>Session settings</h3>
         <button className="btn btn-sm" onClick={onClose}>
           Close
         </button>
-      </h3>
+      </div>
 
       {/* All settings feedback (success/error) flows through the global
           toast hub now (see ToastHost). The toast itself is the live
@@ -303,7 +309,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
           onChange={setSettingsText}
           disabled={busy || session.terminated}
         />
-        <button className="btn btn-primary" onClick={applySettings} disabled={busy || session.terminated} style={{ alignSelf: 'flex-start' }}>
+        <button className="btn btn-primary settings-apply-btn" onClick={applySettings} disabled={busy || session.terminated}>
           Apply settings
         </button>
       </div>
@@ -312,54 +318,54 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
         <h4>Context usage</h4>
         <ContextBar usage={usage} />
         {usage?.skills && (
-          <details style={{ marginTop: 6 }}>
-            <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--fg-muted)' }}>
+          <details className="settings-detail">
+            <summary>
               Skills: {usage.skills.includedSkills}/{usage.skills.totalSkills} loaded, {formatTokens(usage.skills.tokenCount)}
             </summary>
-            <div style={{ marginTop: 4 }}>
+            <div className="settings-detail-body">
               {usage.skills.skillFrontmatter?.map((s) => (
-                <div key={s.name} style={{ fontSize: 12, padding: '2px 0', display: 'flex', gap: 6 }}>
-                  <code style={{ fontWeight: 500 }}>{s.name}</code>
-                  <span style={{ color: 'var(--fg-muted)', fontSize: 11 }}>{s.source}</span>
-                  <span style={{ marginLeft: 'auto', color: 'var(--fg-muted)', fontSize: 11 }}>{formatTokens(s.tokens)}</span>
+                <div key={s.name} className="settings-kv-row">
+                  <code>{s.name}</code>
+                  <span className="settings-kv-source">{s.source}</span>
+                  <span className="settings-kv-tokens">{formatTokens(s.tokens)}</span>
                 </div>
               ))}
             </div>
           </details>
         )}
         {usage?.agents && (
-          <details style={{ marginTop: 4 }}>
-            <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--fg-muted)' }}>
+          <details className="settings-detail settings-detail-tight">
+            <summary>
               Agents: {usage.agents.agents?.length ?? 0}, {formatTokens(usage.agents.tokenCount)}
             </summary>
-            <div style={{ marginTop: 4 }}>
+            <div className="settings-detail-body">
               {usage.agents.agents?.map((a, i) => (
-                <div key={i} style={{ fontSize: 12, padding: '2px 0', display: 'flex', gap: 6 }}>
-                  <code style={{ fontWeight: 500 }}>{a.agentType}</code>
-                  <span style={{ color: 'var(--fg-muted)', fontSize: 11 }}>{a.source}</span>
-                  <span style={{ marginLeft: 'auto', color: 'var(--fg-muted)', fontSize: 11 }}>{formatTokens(a.tokens)}</span>
+                <div key={i} className="settings-kv-row">
+                  <code>{a.agentType}</code>
+                  <span className="settings-kv-source">{a.source}</span>
+                  <span className="settings-kv-tokens">{formatTokens(a.tokens)}</span>
                 </div>
               ))}
             </div>
           </details>
         )}
-        <details style={{ marginTop: 6 }}>
-          <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--fg-muted)' }}>Raw data</summary>
-          <pre className="tool-input" style={{ maxHeight: 200, overflow: 'auto', marginTop: 6 }}>
+        <details className="settings-detail">
+          <summary>Raw data</summary>
+          <pre className="tool-input settings-raw-pre">
             {usage ? formatJson(usage) : '—'}
           </pre>
         </details>
       </div>
 
       <div className="settings-section">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h4 style={{ margin: 0 }}>Plugins</h4>
+        <div className="settings-section-head">
+          <h4>Plugins</h4>
           <button className="btn btn-sm" onClick={reloadPlugins} disabled={busy || session.terminated}>
             Reload plugins
           </button>
         </div>
         {pluginGroups.length === 0 && !commands.length && (
-          <div style={{ color: 'var(--fg-muted)', fontSize: 13, marginTop: 6 }}>No plugins loaded</div>
+          <div className="settings-note">No plugins loaded</div>
         )}
         {pluginGroups.map(([key, group]) => (
           <PluginCard
@@ -375,9 +381,9 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
       </div>
 
       <div className="settings-section">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h4 style={{ margin: 0 }}>MCP servers</h4>
-          <div style={{ display: 'flex', gap: 6 }}>
+        <div className="settings-section-head">
+          <h4>MCP servers</h4>
+          <div className="settings-section-head-actions">
             <button
               className="btn btn-sm"
               onClick={() => { setMcpInstallerEdit(undefined); setShowMcpInstaller(true) }}
@@ -386,7 +392,8 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
             </button>
           </div>
         </div>
-        {mcp.length === 0 && <div style={{ color: 'var(--fg-muted)', fontSize: 13, marginTop: 6 }}>No MCP servers</div>}
+        {loadingMeta && mcp.length === 0 && <Skeleton rows={2} />}
+        {!loadingMeta && mcp.length === 0 && <div className="settings-empty-note">No MCP servers</div>}
         {mcp.map((srv) => (
           <McpServerCard
             key={srv.name}
@@ -400,13 +407,13 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
       </div>
 
       <div className="settings-section">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h4 style={{ margin: 0 }}>Marketplace</h4>
+        <div className="settings-section-head">
+          <h4>Marketplace</h4>
           <button className="btn btn-sm" onClick={() => setShowMarketplace(true)}>
             Browse plugins
           </button>
         </div>
-        <div style={{ color: 'var(--fg-muted)', fontSize: 13, marginTop: 6 }}>
+        <div className="settings-note">
           Browse and install plugins from registered marketplaces.
         </div>
       </div>
@@ -438,18 +445,7 @@ function ReadOnlyField({ label, value, mono }: { label: string; value: string; m
     <div className="settings-field">
       <label>{label}</label>
       <div
-        style={{
-          background: 'var(--bg)',
-          border: '1px solid var(--border)',
-          padding: '6px 8px',
-          borderRadius: 6,
-          fontFamily: mono ? 'var(--mono)' : undefined,
-          fontSize: mono ? 12 : undefined,
-          color: 'var(--fg-muted)',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
+        className={`settings-readonly-value${mono ? ' mono' : ''}`}
         title={value}
       >
         {value}
@@ -494,23 +490,20 @@ function PluginCard({
   const dotColor = isBuiltin || enabled ? 'var(--plugin-active)' : 'var(--plugin-inactive)'
 
   return (
-    <div style={{ border: '1px solid var(--border)', borderRadius: 6, marginTop: 8, overflow: 'hidden' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: 'var(--bg)' }}>
-        <span style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor, flexShrink: 0 }} />
-        <span style={{ fontWeight: 500, fontSize: 13, flex: 1 }}>{name}</span>
+    <div className="settings-card">
+      <div className="settings-card-head">
+        <span className="settings-card-dot" style={{ '--dot': dotColor } as CSSProperties} />
+        <span className="settings-card-name">{name}</span>
         {plugin?.source && (
-          <span style={{ fontSize: 10, color: 'var(--fg-muted)', padding: '1px 4px', border: '1px solid var(--border)', borderRadius: 3 }}>
-            {plugin.source}
-          </span>
+          <span className="settings-card-badge">{plugin.source}</span>
         )}
-        <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+        <span className="settings-card-meta">
           {commands.length} skill{commands.length !== 1 ? 's' : ''}
           {agents.length > 0 && `, ${agents.length} agent${agents.length !== 1 ? 's' : ''}`}
         </span>
         {!isBuiltin && sessionId && (
           <button
-            className="btn"
-            style={{ padding: '1px 6px', fontSize: 11 }}
+            className="btn btn-xs"
             onClick={toggle}
             disabled={disabled || toggling}
           >
@@ -518,38 +511,32 @@ function PluginCard({
           </button>
         )}
         {(commands.length > 0 || agents.length > 0) && (
-          <button className="btn" style={{ padding: '1px 6px', fontSize: 11 }} onClick={() => setExpanded(!expanded)}>
+          <button className="btn btn-xs" onClick={() => setExpanded(!expanded)}>
             {expanded ? '▲' : '▼'}
           </button>
         )}
       </div>
       {plugin?.path && (
-        <div style={{ padding: '2px 10px', fontSize: 11, color: 'var(--fg-muted)', fontFamily: 'var(--mono)', background: 'var(--bg)' }}>
-          {plugin.path}
-        </div>
+        <div className="settings-card-path">{plugin.path}</div>
       )}
       {expanded && (
-        <div style={{ padding: '4px 10px 8px', background: 'var(--bg)' }}>
+        <div className="settings-card-body">
           {commands.length > 0 && (
-            <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--fg-muted)', marginBottom: 2 }}>Skills</div>
+            <div className="settings-card-grouplabel">Skills</div>
           )}
           {commands.map((cmd) => (
-            <div key={cmd.name} style={{ fontSize: 12, padding: '2px 0', display: 'flex', gap: 6, alignItems: 'baseline' }}>
-              <code style={{ fontWeight: 500 }}>/{cmd.name}</code>
-              <span style={{ color: 'var(--fg-muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {cmd.description}
-              </span>
+            <div key={cmd.name} className="settings-card-item">
+              <code>/{cmd.name}</code>
+              <span className="settings-card-desc">{cmd.description}</span>
             </div>
           ))}
           {agents.length > 0 && (
-            <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--fg-muted)', marginTop: 4, marginBottom: 2 }}>Agents</div>
+            <div className="settings-card-grouplabel spaced">Agents</div>
           )}
           {agents.map((agent) => (
-            <div key={agent.name} style={{ fontSize: 12, padding: '2px 0', display: 'flex', gap: 6, alignItems: 'baseline' }}>
-              <code style={{ fontWeight: 500 }}>{agent.name}</code>
-              <span style={{ color: 'var(--fg-muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {agent.description}
-              </span>
+            <div key={agent.name} className="settings-card-item">
+              <code>{agent.name}</code>
+              <span className="settings-card-desc">{agent.description}</span>
             </div>
           ))}
         </div>
@@ -589,59 +576,51 @@ function McpServerCard({
   const canEnable = server.status === 'disabled'
 
   return (
-    <div style={{ border: '1px solid var(--border)', borderRadius: 6, marginTop: 8, overflow: 'hidden' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: 'var(--bg)' }}>
-        <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
-        <span style={{ fontWeight: 500, fontSize: 13, flex: 1 }}>
+    <div className="settings-card">
+      <div className="settings-card-head">
+        <span className="settings-card-dot" style={{ '--dot': color } as CSSProperties} />
+        <span className="settings-card-name">
           {server.name}
           {isGlobal && (
-            <span style={{ fontSize: 10, color: 'var(--accent)', marginLeft: 6, fontWeight: 400, padding: '1px 4px', border: '1px solid var(--accent)', borderRadius: 3 }}>
-              global
-            </span>
+            <span className="settings-card-badge global">global</span>
           )}
         </span>
         {server.tools && (
-          <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>{server.tools.length} tool{server.tools.length !== 1 ? 's' : ''}</span>
+          <span className="settings-card-meta">{server.tools.length} tool{server.tools.length !== 1 ? 's' : ''}</span>
         )}
         {canReconnect && (
-          <button className="btn" style={{ padding: '1px 6px', fontSize: 11 }} onClick={() => onReconnect(server.name)} disabled={disabled}>
+          <button className="btn btn-xs" onClick={() => onReconnect(server.name)} disabled={disabled}>
             Reconnect
           </button>
         )}
         {canDisable && (
-          <button className="btn" style={{ padding: '1px 6px', fontSize: 11 }} onClick={() => onToggle(server.name, false)} disabled={disabled}>
+          <button className="btn btn-xs" onClick={() => onToggle(server.name, false)} disabled={disabled}>
             Disable
           </button>
         )}
         {canEnable && (
-          <button className="btn" style={{ padding: '1px 6px', fontSize: 11 }} onClick={() => onToggle(server.name, true)} disabled={disabled}>
+          <button className="btn btn-xs" onClick={() => onToggle(server.name, true)} disabled={disabled}>
             Enable
           </button>
         )}
         {server.tools && server.tools.length > 0 && (
-          <button
-            className="btn"
-            style={{ padding: '1px 6px', fontSize: 11 }}
-            onClick={() => setExpanded(!expanded)}
-          >
+          <button className="btn btn-xs" onClick={() => setExpanded(!expanded)}>
             {expanded ? '▲' : '▼'}
           </button>
         )}
       </div>
       {server.error && (
-        <div style={{ padding: '4px 10px', fontSize: 12, color: 'var(--danger)', background: 'var(--bg)' }}>
-          {server.error}
-        </div>
+        <div className="settings-card-error">{server.error}</div>
       )}
       {expanded && server.tools && (
-        <div style={{ padding: '4px 10px 8px', background: 'var(--bg)' }}>
+        <div className="settings-card-body">
           {server.tools.map((t) => (
-            <div key={t.name} style={{ fontSize: 12, padding: '2px 0', display: 'flex', gap: 6, alignItems: 'baseline' }}>
-              <code style={{ fontWeight: 500 }}>{t.name}</code>
-              {t.annotations?.readOnly && <span style={{ fontSize: 10, color: 'var(--ok)' }}>read-only</span>}
-              {t.annotations?.destructive && <span style={{ fontSize: 10, color: 'var(--danger)' }}>destructive</span>}
-              {t.annotations?.openWorld && <span style={{ fontSize: 10, color: 'var(--warn)' }}>open-world</span>}
-              {t.description && <span style={{ color: 'var(--fg-muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.description}</span>}
+            <div key={t.name} className="settings-card-item">
+              <code>{t.name}</code>
+              {t.annotations?.readOnly && <span className="settings-tag readonly">read-only</span>}
+              {t.annotations?.destructive && <span className="settings-tag destructive">destructive</span>}
+              {t.annotations?.openWorld && <span className="settings-tag openworld">open-world</span>}
+              {t.description && <span className="settings-card-desc">{t.description}</span>}
             </div>
           ))}
         </div>

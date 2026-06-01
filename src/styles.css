@@ -760,6 +760,31 @@ body.resizing-col * {
   padding: 2px 6px;
   border-radius: 4px;
 }
+.empty-state-icon {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 4px;
+  color: var(--accent);
+  opacity: 0.85;
+}
+.empty-state-cta {
+  margin-top: 8px;
+  padding: 9px 18px;
+  font-weight: 600;
+}
+.empty-state-hint {
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.empty-state-hint kbd {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
 
 /* ── Prompt dialog input ─────────────────────────────────────── */
 
@@ -1849,6 +1874,25 @@ body.resizing-col * {
   align-items: center;
   gap: 8px;
 }
+/* Inline message timestamp — pushed to the right edge of the header.
+   Tabular figures so the seconds digit doesn't shift the layout as it
+   ticks. Lowercase (the header is uppercased) and de-emphasised so the
+   time reads as metadata, not content. */
+.msg-timestamp {
+  flex-shrink: 0;
+  font-size: 10px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--fg-muted);
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+/* Push the role label hard left so the timestamp (wrapped in a Tooltip's
+   .tt-wrap) and any sending indicator settle on the right edge. The header
+   was previously justify-content: space-between with exactly two children;
+   now there are up to three, so an explicit auto margin is clearer. */
+.msg-header > span:first-child { margin-right: auto; }
 /* "Sending…" indicator on the user bubble while the server hasn't
    acknowledged yet. Replaced with no indicator (this entire row is
    removed) the moment the broadcast lands. */
@@ -2626,15 +2670,17 @@ body.resizing-col * {
   flex-direction: column;
   min-height: 0;
 }
-.settings-panel h3 {
-  margin: 0;
+.settings-panel-header {
   padding: 14px 16px;
   border-bottom: 1px solid var(--border);
-  font-size: 14px;
-  font-weight: 600;
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+.settings-panel-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
 }
 .settings-section {
   padding: 14px 16px;
@@ -5880,5 +5926,216 @@ mark.search-hl.search-hl-active {
   .tt-wrap:focus-within > .tt-bubble {
     transform: none !important;
   }
+}
+
+/* ── Loading skeletons ─────────────────────────────────────────────
+ * Shimmering placeholder bars shown while async sections fetch. The
+ * gradient sweeps left→right via background-position; reduced-motion
+ * users get a static muted bar (rule below). */
+.skeleton-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px 0;
+}
+.skeleton-row {
+  height: 14px;
+  border-radius: 5px;
+  background: linear-gradient(
+    90deg,
+    var(--bg-elev-2) 0%,
+    var(--bg-elev-3) 40%,
+    var(--bg-elev-2) 80%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.3s ease-in-out infinite;
+}
+/* Vary row widths so the block reads as content, not a solid box. */
+.skeleton-row:nth-child(3n + 1) { width: 92%; }
+.skeleton-row:nth-child(3n + 2) { width: 76%; }
+.skeleton-row:nth-child(3n + 3) { width: 85%; }
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-row {
+    animation: none;
+    background: var(--bg-elev-2);
+  }
+}
+.sidebar-skeleton { padding: 10px 12px; }
+.git-section-skeleton { padding: 6px 4px; }
+.skeleton-group.git-section-skeleton .skeleton-row { height: 12px; }
+
+/* Muted "no items" notes shared by sidebar + settings empty states.
+   Replaces inline style objects so spacing/colour live with the theme. */
+.sidebar-empty-note,
+.settings-empty-note {
+  color: var(--fg-muted);
+  font-size: 12px;
+  text-align: center;
+  padding: 20px;
+}
+.settings-empty-note {
+  font-size: 13px;
+  text-align: left;
+  padding: 6px 0 0;
+}
+
+/* ── Settings panel cards (Plugin / MCP server) ────────────────────
+ * Shared chrome extracted from inline styles. The status dot's colour
+ * is dynamic (status-driven), passed via the --dot custom property so
+ * components still reference theme tokens, not raw hex. */
+.settings-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.settings-section-head h4 { margin: 0; }
+.settings-section-head-actions { display: flex; gap: 6px; }
+.settings-apply-btn { align-self: flex-start; }
+.settings-note {
+  color: var(--fg-muted);
+  font-size: 13px;
+  margin-top: 6px;
+}
+.settings-detail { margin-top: 6px; }
+.settings-detail-tight { margin-top: 4px; }
+.settings-detail > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.settings-detail-body { margin-top: 4px; }
+.settings-raw-pre {
+  max-height: 200px;
+  overflow: auto;
+  margin-top: 6px;
+}
+.settings-kv-row {
+  font-size: 12px;
+  padding: 2px 0;
+  display: flex;
+  gap: 6px;
+}
+.settings-kv-row code { font-weight: 500; }
+.settings-kv-source { color: var(--fg-muted); font-size: 11px; }
+.settings-kv-tokens { margin-left: auto; color: var(--fg-muted); font-size: 11px; }
+
+.settings-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+.settings-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg);
+}
+.settings-card-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dot, var(--fg-muted));
+  flex-shrink: 0;
+}
+.settings-card-name {
+  font-weight: 500;
+  font-size: 13px;
+  flex: 1;
+}
+.settings-card-badge {
+  font-size: 10px;
+  color: var(--fg-muted);
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+.settings-card-badge.global {
+  color: var(--accent);
+  border-color: var(--accent);
+  margin-left: 6px;
+  font-weight: 400;
+}
+.settings-card-meta {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.settings-card-path {
+  padding: 2px 10px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  background: var(--bg);
+}
+.settings-card-body {
+  padding: 4px 10px 8px;
+  background: var(--bg);
+}
+.settings-card-grouplabel {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  margin-bottom: 2px;
+}
+.settings-card-grouplabel.spaced { margin-top: 4px; }
+.settings-card-item {
+  font-size: 12px;
+  padding: 2px 0;
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.settings-card-item code { font-weight: 500; }
+.settings-card-desc {
+  color: var(--fg-muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-card-error {
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--danger);
+  background: var(--bg);
+}
+.settings-tag { font-size: 10px; }
+.settings-tag.readonly { color: var(--ok); }
+.settings-tag.destructive { color: var(--danger); }
+.settings-tag.openworld { color: var(--warn); }
+.btn-xs { padding: 1px 6px; font-size: 11px; }
+.settings-readonly-value {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+  border-radius: 6px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-readonly-value.mono {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+/* New-session dialog: width + small icon close button (was inline). */
+.modal-new-session { width: min(560px, 92vw); }
+.btn-icon-sm {
+  padding: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.modal-footer-actions { display: flex; gap: 8px; }
+.session-item-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 

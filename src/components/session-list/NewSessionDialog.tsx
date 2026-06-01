@@ -1,5 +1,7 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { DirectoryPicker } from '../DirectoryPicker'
+import { IconX } from '../icons/ToolIcons'
+import { useFocusTrap } from '../../hooks/useFocusTrap'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { api } from '../../hooks/useApi'
 import { shortenPath } from '../../utils/paths'
@@ -47,6 +49,11 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
   const [accent, setAccent] = useState<string | undefined>(undefined)
   const [groupId, setGroupId] = useState<string>(activeGroupId ?? '')
   const [showPicker, setShowPicker] = useState(false)
+  // Guards against double-submit: the parent unmounts this dialog on
+  // success, but a slow create call would otherwise let an impatient
+  // user click "Create" twice and spawn duplicate sessions.
+  const [submitting, setSubmitting] = useState(false)
+  const dialogRef = useRef<HTMLDivElement>(null)
 
   // Advanced options
   const [effort, setEffort] = useState('')
@@ -129,6 +136,8 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
   }
 
   const submit = () => {
+    if (submitting) return
+    setSubmitting(true)
     rememberModel(model)
     rememberCwd(cwd)
 
@@ -188,6 +197,10 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
     return () => window.removeEventListener('keydown', onKey)
   }, [onCancel, showPicker])
 
+  // Trap Tab focus inside the dialog and restore focus to the trigger on
+  // close, matching PermissionDialog / QuestionDialog behaviour.
+  useFocusTrap(dialogRef, { restoreFocus: true })
+
   // Fetch global MCP servers when dialog opens
   useEffect(() => {
     const ac = new AbortController()
@@ -238,11 +251,11 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
         aria-modal="true"
         onMouseDown={(e) => e.target === e.currentTarget && onCancel()}
       >
-        <div className="modal" style={{ width: 'min(560px, 92vw)' }}>
+        <div className="modal modal-new-session" ref={dialogRef}>
           <div className="modal-header">
             <h3>New session</h3>
-            <button className="btn" onClick={onCancel} style={{ padding: '2px 10px' }}>
-              ✕
+            <button className="btn btn-icon-sm" onClick={onCancel} aria-label="Close dialog">
+              <IconX size={15} />
             </button>
           </div>
 
@@ -285,7 +298,7 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
                         title="Forget this path"
                         aria-label={`Forget ${p}`}
                       >
-                        ✕
+                        <IconX size={11} />
                       </button>
                     </span>
                   ))}
@@ -351,7 +364,7 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
                           title="Forget this model"
                           aria-label={`Forget ${m}`}
                         >
-                          ✕
+                          <IconX size={11} />
                         </button>
                       </span>
                     ))}
@@ -606,12 +619,12 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
 
           <div className="modal-footer">
             <span className="hint">Press Esc or click outside to cancel.</span>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button className="btn" onClick={onCancel}>
+            <div className="modal-footer-actions">
+              <button className="btn" onClick={onCancel} disabled={submitting}>
                 Cancel
               </button>
-              <button className="btn btn-primary" onClick={submit}>
-                Create
+              <button className="btn btn-primary" onClick={submit} disabled={submitting}>
+                {submitting ? 'Creating…' : 'Create'}
               </button>
             </div>
           </div>

@@ -265,6 +265,67 @@ describe('reducer: toolStatus lifecycle', () => {
     expect(state.toolStatus.get('tu_grep')).toBe('running')
   })
 
+  it('reconciles a lingering running tool to error when the turn ends', () => {
+    // The bug: a tool_use seeds 'running', but its tool_result never
+    // arrives (user interrupted, or the SDK aborted the turn). The
+    // `result` frame means the turn is over, so the result will never
+    // come — without a sweep the badge spins on 'running' forever.
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: assistant([toolUse('Bash', 'tu_bash')]),
+    })
+    expect(state.toolStatus.get('tu_bash')).toBe('running')
+
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: { type: 'result', uuid: 'res-1' } as unknown as SdkMessage,
+    })
+    expect(state.toolStatus.get('tu_bash')).toBe('error')
+  })
+
+  it('leaves terminal tool statuses untouched at turn end', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: assistant([toolUse('Bash', 'tu_bash'), toolUse('Read', 'tu_read')]),
+    })
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: user([toolResult('tu_bash')], 'r-1'),
+    })
+    // tu_read still running; tu_bash already success.
+    const before = state.toolStatus
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: { type: 'result', uuid: 'res-1' } as unknown as SdkMessage,
+    })
+    expect(state.toolStatus.get('tu_bash')).toBe('success')
+    expect(state.toolStatus.get('tu_read')).toBe('error')
+    // A fresh Map was allocated (a running entry was swept).
+    expect(state.toolStatus).not.toBe(before)
+  })
+
+  it('keeps toolStatus identity-stable on result when nothing is running', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: assistant([toolUse('Bash', 'tu_bash')]),
+    })
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: user([toolResult('tu_bash')], 'r-1'),
+    })
+    const before = state.toolStatus
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: { type: 'result', uuid: 'res-1' } as unknown as SdkMessage,
+    })
+    // No running entry to sweep → Map reference preserved (no spurious
+    // re-render cascade off snapshot identity).
+    expect(state.toolStatus).toBe(before)
+  })
+
   it('returns the same state when the result toolUseId is unknown', () => {
     // Defensive: a tool_result for an id we never seeded should not
     // create a stale entry — that would fool the UI into showing a

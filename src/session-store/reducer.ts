@@ -15,6 +15,7 @@ import {
   getQuestionToolUseIds,
   parseQuestionAnswersMessage,
 } from '../utils/question-answers'
+import { toolDebug, toolDebugEnabled } from './debug'
 
 export function reduceSessionState(state: SessionState, action: SessionAction): SessionState {
   switch (action.type) {
@@ -201,8 +202,14 @@ function applyOptimisticUserMessage(state: SessionState, message: SdkMessage): S
   // Mark the optimistic item as 'sending' so the user bubble can render
   // a spinner. The flag clears automatically when the server's broadcast
   // arrives and applyMessage swaps this item out for the real one (the
-  // replaced TranscriptItem has no `sending` field).
-  const optimisticItem = { ...item, sending: true }
+  // replaced TranscriptItem has no `sending` field). Stamp receivedAt
+  // locally so the timestamp shows immediately; when the server echo
+  // replaces this item it carries the authoritative server time.
+  const optimisticItem = {
+    ...item,
+    sending: true,
+    receivedAt: item.receivedAt ?? Date.now(),
+  }
   const next = new Set(state.pendingUserMessageIds)
   next.add(optimisticItem.id)
   return {
@@ -295,8 +302,32 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   next = updateIndexes(next, message)
 
   if (message.type === 'result') {
+    // Reconcile any tool still marked 'running' at turn end. A `result`
+    // frame means the turn is definitively over — within a normal turn
+    // every tool_result lands BEFORE the result, so anything still
+    // 'running' here is orphaned: its tool_result will never arrive
+    // (the user interrupted, or the SDK aborted the turn after emitting
+    // the tool_use). Without this sweep the card's status badge spins on
+    // 'running' forever, since useToolStatus() defaults unknown/lingering
+    // ids to 'running'. Mirror the activeSubagents reset below. Only
+    // clone the Map when there's actually a running entry to flip so
+    // result frames for tool-free turns stay identity-stable.
+    let sweptToolStatus = next.toolStatus
+    const swept = toolDebugEnabled() ? [] as string[] : null
+    for (const [id, status] of next.toolStatus) {
+      if (status !== 'running') continue
+      if (sweptToolStatus === next.toolStatus) sweptToolStatus = new Map(next.toolStatus)
+      sweptToolStatus.set(id, 'error')
+      if (swept) swept.push(id)
+    }
+    if (swept && swept.length > 0) {
+      toolDebug('SWEEP running→error at turn end (result frame)', { ids: swept })
+    } else {
+      toolDebug('result frame — no running tools to sweep', {})
+    }
     next = {
       ...next,
+      toolStatus: sweptToolStatus,
       // Reset to 0 (not decrement). The SDK can merge multiple queued
       // user messages into a single assistant turn, so N sends might
       // produce M < N result frames — decrementing per-result then
@@ -394,6 +425,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
       // theory if a duplicate tool_use lands during replay.
       if (!toolStatus.has(id)) toolStatus.set(id, 'running')
     }
+    toolDebug('seed running', { ids: toolStarts, total: toolStatus.size })
     changed = true
   }
 
@@ -405,14 +437,33 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
     const outcomes = getToolResultOutcomes(message)
     if (outcomes.length > 0) {
       let touched = false
+      // Only allocated when diagnostics are on — keeps the hot path free.
+      const orphans = toolDebugEnabled() ? [] as string[] : null
       for (const { toolUseId, outcome } of outcomes) {
         const prev = toolStatus.get(toolUseId)
-        if (!prev || prev === outcome) continue
+        // No seeded entry for this result's tool_use_id. Either the
+        // result is for an excluded tool (Plan/Subagent/Question — fine),
+        // or the id genuinely doesn't match any tool_use we seeded — the
+        // latter is the "id-mismatch" failure mode that strands a card on
+        // 'running' forever. We can't tell the two apart here, so log it
+        // for offline diagnosis rather than guessing.
+        if (!prev) {
+          if (orphans) orphans.push(toolUseId)
+          continue
+        }
+        if (prev === outcome) continue
         if (!touched) {
           if (toolStatus === state.toolStatus) toolStatus = new Map(toolStatus)
           touched = true
         }
         toolStatus.set(toolUseId, outcome)
+        toolDebug('flip', { id: toolUseId, from: prev, to: outcome })
+      }
+      if (orphans && orphans.length > 0) {
+        toolDebug('ORPHAN result (no matching seeded tool_use)', {
+          ids: orphans,
+          seededIds: Array.from(toolStatus.keys()),
+        })
       }
       if (touched) changed = true
     }

@@ -164,6 +164,7 @@ export class SessionStore {
   private cachedRunningSubagents: SessionSnapshot['activeSubagents'] = []
 
   constructor(sessionId: string) {
+    registerStoreForDebug(sessionId, this)
     // Try to restore from localStorage cache first
     const cached = loadFromStorage(sessionId)
     if (cached && cached.messages.length > 0) {
@@ -241,6 +242,7 @@ export class SessionStore {
   }
 
   destroy(): void {
+    unregisterStoreForDebug(this.state.sessionId, this)
     // Persist messages to localStorage before tearing down so they survive
     // idle pruning and page reloads.
     this.save()
@@ -320,5 +322,101 @@ export class SessionStore {
       lastMessageUuid: state.lastMessageUuid,
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// On-demand debug dump
+// ---------------------------------------------------------------------------
+//
+// When a tool card is visibly stuck on 'running', you don't need to reproduce
+// anything or trawl localStorage — just open the DevTools console and run:
+//
+//     __crwDumpToolStatus()
+//
+// It prints, per live session, every toolStatus entry plus a focused list of
+// the ones still 'running'. For each stuck id it tries to find the originating
+// tool_use (so you see the tool name) and reports whether a tool_result with
+// that id exists anywhere in the message log. That single dump distinguishes
+// the failure modes:
+//   • running + NO tool_result in log  → result never arrived (interrupt /
+//     disconnect / process died). The reducer's turn-end sweep only helps if
+//     a `result` frame later lands.
+//   • running + tool_result EXISTS in log → id-mismatch: the result is there
+//     but its tool_use_id didn't match the seeded id (normalize.ts bug).
+//
+// Paste the output back and we can name the root cause with certainty.
+
+const debugStores = new Map<string, Set<SessionStore>>()
+
+function registerStoreForDebug(sessionId: string, store: SessionStore): void {
+  let set = debugStores.get(sessionId)
+  if (!set) {
+    set = new Set()
+    debugStores.set(sessionId, set)
+  }
+  set.add(store)
+}
+
+function unregisterStoreForDebug(sessionId: string, store: SessionStore): void {
+  const set = debugStores.get(sessionId)
+  if (!set) return
+  set.delete(store)
+  if (set.size === 0) debugStores.delete(sessionId)
+}
+
+interface ToolStatusDump {
+  sessionId: string
+  total: number
+  running: Array<{
+    toolUseId: string
+    toolName: string | null
+    hasToolResultInLog: boolean
+    diagnosis: string
+  }>
+  all: Record<string, string>
+}
+
+function dumpToolStatus(): ToolStatusDump[] {
+  const out: ToolStatusDump[] = []
+  for (const [sessionId, stores] of debugStores) {
+    for (const store of stores) {
+      const state = store.getState()
+      const messages = state.messages
+      const running: ToolStatusDump['running'] = []
+      for (const [id, status] of state.toolStatus) {
+        if (status !== 'running') continue
+        let toolName: string | null = null
+        let hasResult = false
+        for (const m of messages) {
+          const content = m.message?.content
+          if (!Array.isArray(content)) continue
+          for (const b of content as Array<Record<string, unknown>>) {
+            if (b.type === 'tool_use' && (b.id === id || b.tool_use_id === id)) {
+              toolName = typeof b.name === 'string' ? b.name : null
+            }
+            if (b.type === 'tool_result' && b.tool_use_id === id) hasResult = true
+          }
+        }
+        running.push({
+          toolUseId: id,
+          toolName,
+          hasToolResultInLog: hasResult,
+          diagnosis: hasResult
+            ? 'ID-MISMATCH: tool_result exists in log but did not flip status — check normalize.ts id extraction'
+            : 'NO tool_result in log — result never arrived (interrupt / disconnect / process died)',
+        })
+      }
+      const all: Record<string, string> = {}
+      for (const [id, status] of state.toolStatus) all[id] = status
+      out.push({ sessionId, total: state.toolStatus.size, running, all })
+    }
+  }
+  console.log('[toolStatus dump]', out)
+  return out
+}
+
+if (typeof window !== 'undefined') {
+  ;(window as unknown as { __crwDumpToolStatus?: () => ToolStatusDump[] }).__crwDumpToolStatus =
+    dumpToolStatus
 }
 

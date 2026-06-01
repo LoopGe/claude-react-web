@@ -10,6 +10,8 @@ import { shortenPath } from '../../utils/paths'
 import { statusLabel } from '../../utils/session-status'
 import type { SessionInfo } from '../../types'
 import { Tooltip } from '../Tooltip'
+import { IconX, IconFolder } from '../icons/ToolIcons'
+import { PermissionModeIcon, permissionModeLabel } from '../permission-mode-display'
 
 export interface SessionCardProps {
   session: SessionInfo
@@ -166,7 +168,7 @@ export const SessionCard = memo(function SessionCard({
       onKeyDown={(e) => !isResuming && (e.key === 'Enter' || e.key === ' ') && onSelect(s.id)}
     >
       <div className="session-item-row">
-        <strong style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <strong className="session-item-title">
           {pendingCount > 0 && (
             <Tooltip
               label={`${pendingCount} permission request${pendingCount === 1 ? '' : 's'} awaiting decision`}
@@ -198,17 +200,13 @@ export const SessionCard = memo(function SessionCard({
               </span>
             </Tooltip>
           )}
-          {(s.permissionMode ?? 'default') !== 'default' && (
-            <Tooltip label={s.permissionMode ?? ''} placement="right">
+          {(s.permissionMode ?? 'default') !== 'default' && s.permissionMode && (
+            <Tooltip label={permissionModeLabel(s.permissionMode)} placement="right">
               <span
                 className={`session-item-mode-badge mode-${s.permissionMode}`}
-                aria-label={s.permissionMode}
+                aria-label={`Permission mode: ${permissionModeLabel(s.permissionMode)}`}
               >
-                {s.permissionMode === 'plan' && '🗒'}
-                {s.permissionMode === 'bypassPermissions' && '⚡'}
-                {s.permissionMode === 'dontAsk' && '⚡'}
-                {s.permissionMode === 'acceptEdits' && '✏️'}
-                {s.permissionMode === 'auto' && '🤖'}
+                <PermissionModeIcon mode={s.permissionMode} size={12} />
               </span>
             </Tooltip>
           )}
@@ -246,6 +244,9 @@ export const SessionCard = memo(function SessionCard({
         <span
           className={`session-item-badge ${s.error ? 'err' : s.running ? 'running' : ''} ${working ? 'working' : ''}`}
           title={s.error ?? (s.terminated && s.terminatedReason ? statusLabel(s) : '')}
+          aria-label={`Status: ${
+            s.error ? 'error' : s.terminated ? 'ended' : isResuming ? 'resuming' : working ? 'working' : s.running ? 'live' : 'dormant'
+          }`}
         >
           {working && <span className="session-item-working-dot" aria-hidden />}
           {s.error
@@ -267,7 +268,7 @@ export const SessionCard = memo(function SessionCard({
         </div>
       )}
       <div className="session-item-cwd" title={s.cwd ?? ''}>
-        <span aria-hidden>📁</span>
+        <IconFolder size={12} aria-hidden />
         <span>{s.cwd ? shortenPath(s.cwd) : '(no cwd)'}</span>
       </div>
       <div className="session-item-meta">
@@ -297,7 +298,7 @@ export const SessionCard = memo(function SessionCard({
               onDelete(s.id)
             }}
           >
-            ✕
+            <IconX size={13} />
           </button>
         </Tooltip>
       </div>

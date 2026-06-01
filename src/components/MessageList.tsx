@@ -15,12 +15,14 @@ import { PlanStatusProvider, PlanContentProvider, ToolStatusProvider } from '../
 import { QuestionAnswersProvider } from '../hooks/useQuestionAnswers'
 import type { SdkMessage, Block } from '../types'
 import type { SessionRecap } from '../../shared/session-info'
-import { formatTokens, formatElapsed, formatJson } from '../utils/format'
+import { formatTokens, formatElapsed, formatJson, formatClockTime, formatFullTimestamp } from '../utils/format'
+import { Tooltip } from './Tooltip'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import type { ActiveSubagent, PlanStatus, ToolStatus, TranscriptItem } from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { truncate } from '../utils/text'
 import { getBlocks } from '../session-store/normalize'
+import { IconCopy, IconArrowDown, IconZap } from './icons/ToolIcons'
 import { countMatches, extractPlainText } from '../search'
 
 /** Re-export type for backward compatibility (types don't affect Fast Refresh). */
@@ -499,10 +501,10 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
           type="button"
           className="chat-jump-to-bottom"
           onClick={jumpToBottom}
-          aria-label="Scroll to latest messages"
+          aria-label={unseenCount > 0 ? `Scroll to latest — ${unseenCount} new message${unseenCount === 1 ? '' : 's'}` : 'Scroll to latest messages'}
         >
-          ⬇
-          {unseenCount > 0 && <span className="chat-jump-to-bottom-count">{unseenCount}</span>}
+          <IconArrowDown size={16} aria-hidden />
+          {unseenCount > 0 && <span className="chat-jump-to-bottom-count" aria-hidden>{unseenCount}</span>}
         </button>
       )}
     </div>
@@ -517,7 +519,10 @@ const StreamingFooter = memo(function StreamingFooter({ content }: { content: st
   return (
     <div className="virtuoso-footer-wrapper">
       <div className="msg msg-assistant streaming-msg">
-        <div className="msg-body assistant-body">
+        {/* aria-live polite + non-atomic so screen readers announce
+            newly appended streaming text rather than re-reading the whole
+            block on every token delta (rule: aria-live for live output). */}
+        <div className="msg-body assistant-body" aria-live="polite" aria-atomic="false">
           <Markdown text={content} />
           <span className="streaming-cursor" />
         </div>
@@ -589,6 +594,38 @@ const MessageView = memo(function MessageView({
   // stable `blocks` → stable `block` props → memos hit.
   const blocks = useMemo(() => getBlocks(msg), [msg])
 
+  // Active-match plumbing for multi-text-block assistant messages.
+  // Each text block runs its OWN rehype highlighter, so we have to
+  // rebase the message-local match index into per-block coordinates:
+  // figure out how many matches each text block contributes and pass
+  // the correct sub-index to the one containing the active hit. Other
+  // blocks get `undefined` so their <mark>s render at the default
+  // colour. We compute per-block counts on the same `extractPlainText`
+  // view the highlighter uses, so the sums line up with what the
+  // user can actually navigate to.
+  // NOTE: this hook MUST stay at the top level (before any conditional
+  // `return`), even though only the assistant branch consumes it —
+  // calling it inside `if (type === 'assistant')` changes the hook
+  // count between renders of different message types (React error #310).
+  const blockActiveIdx = useMemo(() => {
+    const out: Array<number | undefined> = blocks.map(() => undefined)
+    const q = searchQuery?.trim()
+    if (!q || activeMatchInItem == null || activeMatchInItem < 0) return out
+    let remaining = activeMatchInItem
+    for (let i = 0; i < blocks.length; i++) {
+      const b = blocks[i]
+      if (b.type !== 'text' || typeof b.text !== 'string') continue
+      const n = countMatches(extractPlainText(b.text), q)
+      if (n === 0) continue
+      if (remaining < n) {
+        out[i] = remaining
+        break
+      }
+      remaining -= n
+    }
+    return out
+  }, [blocks, searchQuery, activeMatchInItem])
+
   if (type === 'user') {
     const userContent = extractUserText(msg)
     const toolBlocks = blocks.filter((b) => b.type === 'tool_result')
@@ -646,10 +683,11 @@ const MessageView = memo(function MessageView({
           title="Copy message"
           aria-label="Copy message"
         >
-          📋
+          <IconCopy size={13} />
         </button>
         <div className="msg-header">
           <span>you</span>
+          <MessageTimestamp ms={msg.receivedAt} />
           {sending && (
             <span
               className="msg-sending-indicator"
@@ -687,33 +725,6 @@ const MessageView = memo(function MessageView({
       .filter((b) => b.type === 'text' && typeof b.text === 'string')
       .map((b) => b.text as string)
       .join('\n\n')
-    // Active-match plumbing for multi-text-block assistant messages.
-    // Each text block runs its OWN rehype highlighter, so we have to
-    // rebase the message-local match index into per-block coordinates:
-    // figure out how many matches each text block contributes and pass
-    // the correct sub-index to the one containing the active hit. Other
-    // blocks get `undefined` so their <mark>s render at the default
-    // colour. We compute per-block counts on the same `extractPlainText`
-    // view the highlighter uses, so the sums line up with what the
-    // user can actually navigate to.
-    const blockActiveIdx = useMemo(() => {
-      const out: Array<number | undefined> = blocks.map(() => undefined)
-      const q = searchQuery?.trim()
-      if (!q || activeMatchInItem == null || activeMatchInItem < 0) return out
-      let remaining = activeMatchInItem
-      for (let i = 0; i < blocks.length; i++) {
-        const b = blocks[i]
-        if (b.type !== 'text' || typeof b.text !== 'string') continue
-        const n = countMatches(extractPlainText(b.text), q)
-        if (n === 0) continue
-        if (remaining < n) {
-          out[i] = remaining
-          break
-        }
-        remaining -= n
-      }
-      return out
-    }, [blocks, searchQuery, activeMatchInItem])
     // Suppress assistant messages with no visible content. The SDK can emit
     // a standalone assistant message whose only block is an empty
     // (signature-only) thinking block — BlockView renders it as null, but
@@ -739,12 +750,13 @@ const MessageView = memo(function MessageView({
             title="Copy message"
             aria-label="Copy message"
           >
-            📋
+            <IconCopy size={13} />
           </button>
         )}
         <div className="msg-header">
           <span>{isSubagent ? 'subagent' : 'assistant'}</span>
-          {msg.error && <span style={{ color: 'var(--danger)' }}>{msg.error as string}</span>}
+          <MessageTimestamp ms={msg.receivedAt} />
+          {msg.error && <span className="msg-header-error">{msg.error as string}</span>}
         </div>
         <div className="msg-body">
           {blocks.map((b, i) => (
@@ -808,6 +820,21 @@ const MessageView = memo(function MessageView({
     </div>
   )
 })
+
+/** Inline message timestamp shown in the header. Renders the clock time
+ *  (HH:MM:SS) with the full date+time on hover. Returns null when the
+ *  message has no server-stamped time (e.g. history restored from disk
+ *  after a server restart) so we never show a misleading value. */
+function MessageTimestamp({ ms }: { ms: number | undefined }) {
+  if (ms == null) return null
+  return (
+    <Tooltip label={formatFullTimestamp(ms)} placement="top">
+      <time className="msg-timestamp" dateTime={new Date(ms).toISOString()}>
+        {formatClockTime(ms)}
+      </time>
+    </Tooltip>
+  )
+}
 
 /** Recap / compact-boundary marker.
  *
@@ -1268,7 +1295,7 @@ export function WorkingBubble({
       </span>
       {tokenRate != null && tokenRate > 0 && (
         <span className="working-rate">
-          ⚡ {tokenRate} tok/s
+          <IconZap size={11} aria-hidden /> {tokenRate} tok/s
         </span>
       )}
       {hasSubagents && (

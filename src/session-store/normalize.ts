@@ -36,6 +36,9 @@ export function toTranscriptItem(msg: SdkMessage, prev: TranscriptItem | undefin
       prev.msg.subtype === 'compact_boundary',
     ),
     hiddenByDefault,
+    // Server-stamped wall-clock time (see SdkMessage.receivedAt). Undefined
+    // for disk-restored history — the header hides the timestamp then.
+    receivedAt: typeof msg.receivedAt === 'number' ? msg.receivedAt : undefined,
   }
 
   if (msg.type === 'system' && msg.subtype === 'api_retry' && prev?.msg.type === 'system' && prev.msg.subtype === 'api_retry') {

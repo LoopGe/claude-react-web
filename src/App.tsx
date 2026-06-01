@@ -21,6 +21,7 @@ import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, Sidebar
 import { PERMISSION_MODES } from './types'
 import { ACCENT_COLORS } from './theme'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { IconSettings, IconBell, IconBellOff, IconBot } from './components/icons/ToolIcons'
 import { ThemeToggle } from './components/ThemeToggle'
 import { UpdateBanner } from './components/UpdateBanner'
 import { useUpdateInfo } from './hooks/useUpdateInfo'
@@ -57,6 +58,9 @@ import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
 export function App() {
   const [isConfigured, setIsConfigured] = useState<boolean | null>(null)
   const [sessions, setSessions] = useState<SessionInfo[]>([])
+  // False until the first sessions-snapshot frame arrives over WS. Drives a
+  // sidebar skeleton so "No sessions yet" doesn't flash before the list loads.
+  const [sessionsLoaded, setSessionsLoaded] = useState(false)
   /** Ordered list of open session ids (oldest first). Length ≤ maxOpen. */
   const [openIds, setOpenIds] = useState<string[]>([])
   /** Which of the open panels is currently focused (controls settings
@@ -248,6 +252,7 @@ export function App() {
       switch (frame.kind) {
         case 'sessions-snapshot': {
           setSessions(frame.sessions)
+          setSessionsLoaded(true)
           // Reconcile open/focused against whatever the server reports.
           const ids = new Set(frame.sessions.map((s) => s.id))
           setOpenIds((prev) => prev.filter((id) => ids.has(id)))
@@ -889,6 +894,14 @@ export function App() {
         {
           combo: 'escape',
           handler: () => {
+            // Escape ownership is two-tier:
+            //   1. Focus-trapped dialogs (PermissionDialog, QuestionDialog) and
+            //      nested overlays (DirectoryPicker) handle Escape LOCALLY and
+            //      stop propagation — they need custom semantics (deny / skip /
+            //      dismiss-just-this-layer) and must NOT fall through to the
+            //      "interrupt session" branch below.
+            //   2. Every other non-trapping overlay routes through this single
+            //      ordered chain so there's one place that defines precedence.
             // Priority: CommandPalette > ShortcutHelp > NewSessionDialog > per-panel Git overlay > Settings overlay > Interrupt.
             // Git is checked before Settings because it's the more recently
             // introduced overlay and tends to be what the user wants to
@@ -1219,6 +1232,7 @@ export function App() {
         </div>
         <SessionList
           sessions={orderedSessions}
+          sessionsLoaded={sessionsLoaded}
           openIds={openIds}
           focusedId={focusedId}
           defaults={defaults}
@@ -1303,7 +1317,7 @@ export function App() {
               disabled={notifications.permission === 'unsupported'}
               aria-label="Toggle desktop notifications"
             >
-              {notifications.enabled ? '🔔' : '🔕'}
+              {notifications.enabled ? <IconBell size={16} /> : <IconBellOff size={16} />}
             </button>
             <div className="btn btn-icon accent-picker" role="radiogroup" aria-label="Accent colour">
               {ACCENT_COLORS.map((c) => (
@@ -1326,7 +1340,7 @@ export function App() {
               title="Global Settings"
               aria-label="Global Settings"
             >
-              ⚙
+              <IconSettings size={16} />
             </button>
           </div>
         </header>
@@ -1364,10 +1378,22 @@ export function App() {
         >
           {openSessions.length === 0 ? (
             <div className="empty-state">
+              <div className="empty-state-icon" aria-hidden>
+                <IconBot size={48} />
+              </div>
               <h2>Start a new session</h2>
               <p>
-                Use the left sidebar to create a chat session. Each session is a live Claude Agent SDK{' '}
-                <code>Query</code>. Up to {maxOpen} can be open at once.
+                Each session is a live Claude Agent SDK <code>Query</code>. Up to {maxOpen} can be
+                open at once.
+              </p>
+              <button
+                className="btn btn-primary empty-state-cta"
+                onClick={() => setNewSessionDialogOpen(true)}
+              >
+                Create your first session
+              </button>
+              <p className="empty-state-hint">
+                or press <kbd>Ctrl</kbd>+<kbd>K</kbd> for the command palette
               </p>
             </div>
           ) : (
