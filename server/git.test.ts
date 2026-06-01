@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { rmSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs'
+import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { buildGitRouter } from './git-routes.js'
 import {
@@ -81,16 +82,20 @@ describe('git-routes', () => {
     dir = tempDir('git')
   })
   afterEach(() => {
-    // On Windows, git can briefly hold handles on .git/index or pack
-    // files after the test command returns; the OS rejects rmSync with
-    // EPERM. Retry with backoff so flaky cleanup doesn't fail the suite,
-    // and swallow the final failure (the OS will reap the temp dir
-    // eventually) — a stale tmpdir is not worth a red CI run.
-    try {
-      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
-    } catch (err) {
-      console.warn('[git.test] could not remove tmp dir:', dir, (err as Error).message)
-    }
+    // On Windows, git briefly holds handles on .git/index or pack files
+    // after the command returns, so a synchronous rmSync hits EPERM and
+    // its retry/backoff would block the test thread for up to 2s PER test
+    // — across the whole suite that added tens of seconds of pure waiting.
+    //
+    // Each test uses a fresh mkdtemp dir, so a lingering tmpdir never
+    // affects another test's correctness. Fire the removal off
+    // asynchronously and don't await it: the cleanup still happens (with
+    // retries for the EPERM window) but never stalls the run. Any final
+    // failure is swallowed — the OS reaps the temp dir eventually.
+    const target = dir
+    void rm(target, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }).catch(
+      () => {},
+    )
   })
 
   describe('GET /api/git/status', () => {

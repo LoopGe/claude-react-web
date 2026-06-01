@@ -9,6 +9,7 @@ import { isInAppDrag, readDragPayload, setDragPayload } from '../../hooks/useDra
 import { shortenPath } from '../../utils/paths'
 import { statusLabel } from '../../utils/session-status'
 import type { SessionInfo } from '../../types'
+import { Tooltip } from '../Tooltip'
 
 export interface SessionCardProps {
   session: SessionInfo
@@ -167,40 +168,49 @@ export const SessionCard = memo(function SessionCard({
       <div className="session-item-row">
         <strong style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {pendingCount > 0 && (
-            <span
-              className="session-item-perm-badge"
-              title={`${pendingCount} permission request${pendingCount === 1 ? '' : 's'} awaiting decision`}
-              aria-label={`${pendingCount} pending permission${pendingCount === 1 ? '' : 's'}`}
+            <Tooltip
+              label={`${pendingCount} permission request${pendingCount === 1 ? '' : 's'} awaiting decision`}
+              placement="right"
             >
-              {pendingCount > 9 ? '9+' : pendingCount}
-            </span>
+              <span
+                className="session-item-perm-badge"
+                aria-label={`${pendingCount} pending permission${pendingCount === 1 ? '' : 's'}`}
+              >
+                {pendingCount > 9 ? '9+' : pendingCount}
+              </span>
+            </Tooltip>
           )}
           {hasUnread && <span className="session-item-unread" aria-label="unread" />}
           {isOpen && (
-            <span
-              className={`session-item-slot ${isFocused ? 'focused' : ''}`}
-              title={
+            <Tooltip
+              label={
                 isFocused
                   ? `Focused (slot ${slotIdx + 1}) · Ctrl+${slotIdx + 1} to refocus`
                   : `Open in slot ${slotIdx + 1} · Ctrl+${slotIdx + 1} to focus`
               }
-              aria-label={isFocused ? `focused slot ${slotIdx + 1}` : `open slot ${slotIdx + 1}`}
+              placement="right"
             >
-              {slotIdx + 1}
-            </span>
+              <span
+                className={`session-item-slot ${isFocused ? 'focused' : ''}`}
+                aria-label={isFocused ? `focused slot ${slotIdx + 1}` : `open slot ${slotIdx + 1}`}
+              >
+                {slotIdx + 1}
+              </span>
+            </Tooltip>
           )}
           {(s.permissionMode ?? 'default') !== 'default' && (
-            <span
-              className={`session-item-mode-badge mode-${s.permissionMode}`}
-              title={s.permissionMode}
-              aria-label={s.permissionMode}
-            >
-              {s.permissionMode === 'plan' && '🗒'}
-              {s.permissionMode === 'bypassPermissions' && '⚡'}
-              {s.permissionMode === 'dontAsk' && '⚡'}
-              {s.permissionMode === 'acceptEdits' && '✏️'}
-              {s.permissionMode === 'auto' && '🤖'}
-            </span>
+            <Tooltip label={s.permissionMode ?? ''} placement="right">
+              <span
+                className={`session-item-mode-badge mode-${s.permissionMode}`}
+                aria-label={s.permissionMode}
+              >
+                {s.permissionMode === 'plan' && '🗒'}
+                {s.permissionMode === 'bypassPermissions' && '⚡'}
+                {s.permissionMode === 'dontAsk' && '⚡'}
+                {s.permissionMode === 'acceptEdits' && '✏️'}
+                {s.permissionMode === 'auto' && '🤖'}
+              </span>
+            </Tooltip>
           )}
           {isRenaming ? (
             <input
@@ -267,27 +277,29 @@ export const SessionCard = memo(function SessionCard({
         <span className="session-item-meta">
           {s.messageCount} msgs · {s.subscribers} viewer{s.subscribers === 1 ? '' : 's'}
         </span>
-        <button
-          className="session-item-delete"
-          onClick={(e) => {
-            e.stopPropagation()
-            if (s.messageCount > 0 && onAskConfirm) {
-              const title = s.title ?? s.id.slice(0, 8)
-              onAskConfirm({
-                title: 'Delete session?',
-                message: <p>Delete &ldquo;{title}&rdquo;? This permanently removes the conversation.</p>,
-                confirmLabel: 'Delete',
-                destructive: true,
-                onConfirm: () => onDelete(s.id),
-              })
-              return
-            }
-            onDelete(s.id)
-          }}
-          title="Delete session"
-        >
-          ✕
-        </button>
+        <Tooltip label="Delete session" placement="left">
+          <button
+            className="session-item-delete"
+            aria-label="Delete session"
+            onClick={(e) => {
+              e.stopPropagation()
+              if (s.messageCount > 0 && onAskConfirm) {
+                const title = s.title ?? s.id.slice(0, 8)
+                onAskConfirm({
+                  title: 'Delete session?',
+                  message: <p>Delete &ldquo;{title}&rdquo;? This permanently removes the conversation.</p>,
+                  confirmLabel: 'Delete',
+                  destructive: true,
+                  onConfirm: () => onDelete(s.id),
+                })
+                return
+              }
+              onDelete(s.id)
+            }}
+          >
+            ✕
+          </button>
+        </Tooltip>
       </div>
     </div>
   )

@@ -6,6 +6,7 @@
 //   3. ✕ button still dismisses without firing onClick (so a user can
 //      kill the notification without triggering the jump action).
 
+import { useEffect, useRef } from 'react'
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { ToastProvider } from './ToastProvider'
@@ -14,10 +15,19 @@ import { useToast } from '../hooks/useToast'
 
 function Harness({ onMount }: { onMount: (toast: ReturnType<typeof useToast>) => void }) {
   const toast = useToast()
-  // Fire once on mount so each test only schedules its own toast.
-  // useEffect would also work but a render-time call is fine for tests
-  // that mount-then-assert.
-  onMount(toast)
+  // Fire exactly once, AFTER the first render commits. Calling onMount
+  // during render is NOT safe: onMount pushes a toast (setToasts in the
+  // provider), which re-renders this child, which calls onMount again →
+  // an infinite render loop that pins the CPU and hangs the test worker.
+  // A mount effect with a ref guard schedules the toast once and lets the
+  // render settle. testing-library flushes effects inside act(), so the
+  // toast is present by the time render() returns.
+  const fired = useRef(false)
+  useEffect(() => {
+    if (fired.current) return
+    fired.current = true
+    onMount(toast)
+  }, [toast, onMount])
   return <ToastHost />
 }
 

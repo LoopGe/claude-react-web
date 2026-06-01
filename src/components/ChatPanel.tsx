@@ -6,6 +6,7 @@ import { memo, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Chat } from './Chat'
 import { ContextMenu } from './ContextMenu'
+import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
 import { isInAppDrag, readDragPayload, setDragPayload } from '../hooks/useDragPayload'
@@ -249,41 +250,47 @@ export const ChatPanel = memo(function ChatPanel({
         }}
       >
         <div className="chat-panel-header-row1">
-        <span
-          className={`chat-panel-slot ${focused ? 'focused' : ''}`}
-          title={`Slot ${slot} · Ctrl+${slot} to focus`}
-          aria-label={`slot ${slot}`}
-        >
-          {slot}
-        </span>
-        <span
-          className={`chat-panel-status ${statusClass(session)}`}
-          title={statusLabel(session)}
-          aria-label={statusLabel(session)}
-        />
-        {hasUnread && !focused && (
+        <Tooltip label={`Slot ${slot} · Ctrl+${slot} to focus`} placement="bottom">
           <span
-            className="chat-panel-unread"
-            title="New turn completed while this panel wasn't focused"
-            aria-label="unread"
-          />
-        )}
-        <span className="chat-panel-title" title={session.cwd ?? ''}>
-          {session.title ?? session.id.slice(0, 8)}
-        </span>
-        {isNonDefaultMode && (
-          <span
-            className={`chat-panel-mode-badge mode-${permMode}`}
-            title={`Permission mode: ${permMode}`}
-            aria-label={permMode}
+            className={`chat-panel-slot ${focused ? 'focused' : ''}`}
+            aria-label={`slot ${slot}`}
           >
-            {permMode === 'plan' && '🗒 '}
-            {permMode === 'bypassPermissions' && '⚡ '}
-            {permMode === 'dontAsk' && '⚡ '}
-            {permMode === 'acceptEdits' && '✏️ '}
-            {permMode === 'auto' && '🤖 '}
-            {permMode}
+            {slot}
           </span>
+        </Tooltip>
+        <Tooltip label={statusLabel(session)} placement="bottom">
+          <span
+            className={`chat-panel-status ${statusClass(session)}`}
+            aria-label={statusLabel(session)}
+          />
+        </Tooltip>
+        {hasUnread && !focused && (
+          <Tooltip label="New turn completed while this panel wasn't focused" placement="bottom">
+            <span
+              className="chat-panel-unread"
+              aria-label="unread"
+            />
+          </Tooltip>
+        )}
+        <Tooltip label={session.cwd ?? ''} placement="bottom" disabled={!session.cwd}>
+          <span className="chat-panel-title">
+            {session.title ?? session.id.slice(0, 8)}
+          </span>
+        </Tooltip>
+        {isNonDefaultMode && (
+          <Tooltip label={`Permission mode: ${permMode}`} placement="bottom">
+            <span
+              className={`chat-panel-mode-badge mode-${permMode}`}
+              aria-label={permMode}
+            >
+              {permMode === 'plan' && '🗒 '}
+              {permMode === 'bypassPermissions' && '⚡ '}
+              {permMode === 'dontAsk' && '⚡ '}
+              {permMode === 'acceptEdits' && '✏️ '}
+              {permMode === 'auto' && '🤖 '}
+              {permMode}
+            </span>
+          </Tooltip>
         )}
         <div className="chat-panel-meta">
           {editingModel ? (
@@ -309,65 +316,68 @@ export const ChatPanel = memo(function ChatPanel({
               }}
             />
           ) : (
-            <button
-              type="button"
-              className="chat-panel-chip"
-              disabled={chipsDisabled}
-              title={`Model: ${session.model ?? 'default'} · click to change`}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation()
-                setModelDraft(session.model ?? '')
-                setEditingModel(true)
-              }}
-            >
-              <span className="chat-panel-chip-label">model</span>
-              <span className="chat-panel-chip-value">{shortenModel(session.model)}</span>
-            </button>
+            <Tooltip label={`Model: ${session.model ?? 'default'} · click to change`} placement="bottom">
+              <button
+                type="button"
+                className="chat-panel-chip"
+                disabled={chipsDisabled}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setModelDraft(session.model ?? '')
+                  setEditingModel(true)
+                }}
+              >
+                <span className="chat-panel-chip-label">model</span>
+                <span className="chat-panel-chip-value">{shortenModel(session.model)}</span>
+              </button>
+            </Tooltip>
           )}
           <datalist id="chat-panel-model-datalist">
             {modelOptions.map((m) => (
               <option key={m} value={m} />
             ))}
           </datalist>
-          <button
-            type="button"
-            className="chat-panel-chip"
-            disabled={chipsDisabled}
-            title={`Permission mode: ${session.permissionMode ?? 'default'} · click to change`}
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation()
-              const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
-              setPermMenu({ x: rect.left, y: rect.bottom + 4 })
-            }}
-          >
-            <span className="chat-panel-chip-label">mode</span>
-            <span className="chat-panel-chip-value">{session.permissionMode ?? 'default'}</span>
-          </button>
+          <Tooltip label={`Permission mode: ${session.permissionMode ?? 'default'} · click to change`} placement="bottom">
+            <button
+              type="button"
+              className="chat-panel-chip"
+              disabled={chipsDisabled}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation()
+                const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
+                setPermMenu({ x: rect.left, y: rect.bottom + 4 })
+              }}
+            >
+              <span className="chat-panel-chip-label">mode</span>
+              <span className="chat-panel-chip-value">{session.permissionMode ?? 'default'}</span>
+            </button>
+          </Tooltip>
           {/* Git chip — surfaces branch + dirty/ahead/behind/untracked
               counts at a glance. Hidden when the cwd isn't a git repo
               (so non-git sessions don't get visual noise) or while the
               status fetch is still settling and we have no data yet. */}
           {gitStatus.data && gitStatus.data.isRepo === true && (
-            <button
-              type="button"
-              className={[
-                'chat-panel-chip',
-                'git-chip',
-                gitStatus.data.state !== 'clean' && gitStatus.data.state !== 'dirty' ? 'conflict' : '',
-                gitStatus.data.state === 'dirty' ? 'dirty' : '',
-              ].filter(Boolean).join(' ')}
-              title={gitChipTitle(gitStatus.data)}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation()
-                onOpenGitPanel(session.id)
-              }}
-            >
-              <span className="chat-panel-chip-label">⎇</span>
-              <span className="chat-panel-chip-value">{gitChipText(gitStatus.data)}</span>
-            </button>
+            <Tooltip label={gitChipTitle(gitStatus.data)} placement="bottom">
+              <button
+                type="button"
+                className={[
+                  'chat-panel-chip',
+                  'git-chip',
+                  gitStatus.data.state !== 'clean' && gitStatus.data.state !== 'dirty' ? 'conflict' : '',
+                  gitStatus.data.state === 'dirty' ? 'dirty' : '',
+                ].filter(Boolean).join(' ')}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onOpenGitPanel(session.id)
+                }}
+              >
+                <span className="chat-panel-chip-label">⎇</span>
+                <span className="chat-panel-chip-value">{gitChipText(gitStatus.data)}</span>
+              </button>
+            </Tooltip>
           )}
         </div>
         {permMenu && (
@@ -383,51 +393,61 @@ export const ChatPanel = memo(function ChatPanel({
           />
         )}
         <div ref={setHeaderBtnEl} className="chat-panel-header-buttons" />
-        <button
-          className="chat-panel-settings"
-          onClick={(e) => {
-            e.stopPropagation()
-            onOpenSettings(session.id)
-          }}
-          title="Session settings"
-          aria-label="Open settings"
-        >
-          ⚙
-        </button>
-        <button
-          className="chat-panel-close"
-          onClick={(e) => {
-            e.stopPropagation()
-            onClose(session.id)
-          }}
-          title="Close this panel (Alt+W) · session stays alive"
-          aria-label="Close panel"
-        >
-          ✕
-        </button>
+        <Tooltip label="Session settings" placement="bottom">
+          <button
+            className="chat-panel-settings"
+            onClick={(e) => {
+              e.stopPropagation()
+              onOpenSettings(session.id)
+            }}
+            aria-label="Open settings"
+          >
+            ⚙
+          </button>
+        </Tooltip>
+        <Tooltip label="Close this panel (Alt+W) · session stays alive" placement="bottom">
+          <button
+            className="chat-panel-close"
+            onClick={(e) => {
+              e.stopPropagation()
+              onClose(session.id)
+            }}
+            aria-label="Close panel"
+          >
+            ✕
+          </button>
+        </Tooltip>
         </div>
         {session.error && (
-          <div className="chat-panel-error" title={session.error}>
-            ⚠ {session.error}
-          </div>
+          <Tooltip label={session.error}>
+            <div className="chat-panel-error">
+              ⚠ {session.error}
+            </div>
+          </Tooltip>
         )}
         {/* Second header row — secondary metadata. Muted colour, smaller
             font, skipped when there's literally nothing to show. */}
         {(session.cwd || effectiveMessageCount > 0) && (
           <div className="chat-panel-header-row2">
             {session.cwd && (
-              <span className="chat-panel-cwd" title={session.cwd}>
-                📁 {shortenPath(session.cwd)}
-              </span>
+              <Tooltip label={session.cwd} placement="bottom">
+                <span className="chat-panel-cwd">
+                  📁 {shortenPath(session.cwd)}
+                </span>
+              </Tooltip>
             )}
-            <span className="chat-panel-msgcount" title={`${effectiveMessageCount} messages`}>
-              {effectiveMessageCount} {effectiveMessageCount === 1 ? 'msg' : 'msgs'}
-            </span>
-            {session.working && (
-              <span className="chat-panel-working-indicator" title="Assistant is working on a turn">
-                <span className="chat-panel-working-dot" aria-hidden />
-                working…
+            <Tooltip label={`${effectiveMessageCount} messages`} placement="bottom">
+              <span className="chat-panel-msgcount">
+                {effectiveMessageCount} {effectiveMessageCount === 1 ? 'msg' : 'msgs'}
               </span>
+            </Tooltip>
+            {session.working && (
+              <Tooltip label="Assistant is working on a turn" placement="bottom">
+                <span className="chat-panel-working-indicator">
+                  <span className="chat-panel-working-dot" aria-hidden />
+                  working…
+                </span>
+              </Tooltip>
             )}
           </div>
         )}

@@ -1,15 +1,24 @@
 // Global application settings modal. Edits config.json fields and manages
 // MCP server configs. All changes are persisted server-side on Save.
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../hooks/useApi'
 import { formatBytes } from '../utils/format'
 import type { FullServerConfig } from '../types/config'
 import type { McpServerConfigMeta } from '../types'
-import { McpInstaller } from './McpInstaller'
-import { MarketplaceTab } from './MarketplaceTab'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import type { UpdateInfo } from '../../shared/update-info'
+
+// MarketplaceTab pulls in catalog-rendering UI; McpInstaller is a heavy
+// modal-within-modal. Both are only opened on demand from inside the
+// settings dialog, so we load them lazily so the global-settings chunk
+// isn't carrying their weight on every open.
+const McpInstaller = lazy(() =>
+  import('./McpInstaller').then((m) => ({ default: m.McpInstaller })),
+)
+const MarketplaceTab = lazy(() =>
+  import('./MarketplaceTab').then((m) => ({ default: m.MarketplaceTab })),
+)
 
 type Tab = 'api' | 'models' | 'server' | 'mcp' | 'marketplace' | 'logs' | 'about'
 
@@ -289,7 +298,11 @@ export function GlobalSettingsModal({
                   onToggle={toggleMcpServer}
                 />
               )}
-              {tab === 'marketplace' && <MarketplaceTab />}
+              {tab === 'marketplace' && (
+                <Suspense fallback={<div className="lazy-tab-loading">Loading marketplace…</div>}>
+                  <MarketplaceTab />
+                </Suspense>
+              )}
               {tab === 'logs' && <LogsTab />}
               {tab === 'about' && (
                 <AboutTab
@@ -316,11 +329,13 @@ export function GlobalSettingsModal({
         </div>
 
         {showMcpInstaller && (
-          <McpInstaller
-            server={mcpInstallerEdit}
-            onSave={() => { setShowMcpInstaller(false); setMcpInstallerEdit(undefined); void refreshMcp() }}
-            onClose={() => { setShowMcpInstaller(false); setMcpInstallerEdit(undefined) }}
-          />
+          <Suspense fallback={null}>
+            <McpInstaller
+              server={mcpInstallerEdit}
+              onSave={() => { setShowMcpInstaller(false); setMcpInstallerEdit(undefined); void refreshMcp() }}
+              onClose={() => { setShowMcpInstaller(false); setMcpInstallerEdit(undefined) }}
+            />
+          </Suspense>
         )}
       </div>
     </div>

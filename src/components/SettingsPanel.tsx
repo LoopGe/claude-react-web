@@ -1,15 +1,23 @@
 // Right-side settings drawer. Focuses on mid-session controls — options that
 // can only be set at session creation are shown read-only at the top.
 
-import { memo, useEffect, useMemo, useState } from 'react'
+import { lazy, memo, Suspense, useEffect, useMemo, useState } from 'react'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
 import type { AgentInfo, McpServerConfigMeta, McpServerStatus, ModelInfo, PermissionMode, Plugin, SessionInfo, SlashCommand } from '../types'
 import { PERMISSION_MODES } from '../types'
-import { McpInstaller } from './McpInstaller'
 import { FlagSettingsEditor } from './FlagSettingsEditor'
 import { ContextBar } from './ContextBar'
-import { MarketplaceBrowser } from './MarketplaceBrowser'
+
+// MarketplaceBrowser and McpInstaller are heavy modal-within-modal
+// components opened only on user intent (Browse plugins / Add MCP).
+// Lazy-load both so SettingsPanel itself stays thin.
+const McpInstaller = lazy(() =>
+  import('./McpInstaller').then((m) => ({ default: m.McpInstaller })),
+)
+const MarketplaceBrowser = lazy(() =>
+  import('./MarketplaceBrowser').then((m) => ({ default: m.MarketplaceBrowser })),
+)
 import { formatTokens, formatJson } from '../utils/format'
 import type { ContextUsage } from '../hooks/useChatStream'
 
@@ -404,18 +412,22 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
       </div>
 
       {showMarketplace && (
-        <MarketplaceBrowser
-          onClose={() => setShowMarketplace(false)}
-          onInstalled={() => { onPluginsReloaded?.() }}
-        />
+        <Suspense fallback={null}>
+          <MarketplaceBrowser
+            onClose={() => setShowMarketplace(false)}
+            onInstalled={() => { onPluginsReloaded?.() }}
+          />
+        </Suspense>
       )}
 
       {showMcpInstaller && (
-        <McpInstaller
-          server={mcpInstallerEdit}
-          onSave={handleMcpInstallerSave}
-          onClose={() => { setShowMcpInstaller(false); setMcpInstallerEdit(undefined) }}
-        />
+        <Suspense fallback={null}>
+          <McpInstaller
+            server={mcpInstallerEdit}
+            onSave={handleMcpInstallerSave}
+            onClose={() => { setShowMcpInstaller(false); setMcpInstallerEdit(undefined) }}
+          />
+        </Suspense>
       )}
     </aside>
   )

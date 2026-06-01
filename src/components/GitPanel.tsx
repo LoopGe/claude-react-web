@@ -23,6 +23,7 @@ import { memo, useState } from 'react'
 import { useGitDiff, useGitLog, useGitBranches, useGitStashes } from '../hooks/useGitStatus'
 import { useGitWrite } from '../hooks/useGitWrite'
 import { ConfirmDialog } from './ConfirmDialog'
+import { Tooltip } from './Tooltip'
 import { useToast } from '../hooks/useToast'
 import type {
   GitFileEntry,
@@ -107,8 +108,12 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         <header className="git-panel-header">
           <span className="git-panel-branch">⎇ git</span>
           <span className="git-panel-spacer" />
-          <button className="git-panel-icon-btn" onClick={onRefresh} title="Refresh">⟳</button>
-          <button className="git-panel-icon-btn" onClick={onClose} title="Close">✕</button>
+          <Tooltip label="Refresh" placement="bottom">
+            <button className="git-panel-icon-btn" onClick={onRefresh} aria-label="Refresh">⟳</button>
+          </Tooltip>
+          <Tooltip label="Close" placement="bottom">
+            <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close">✕</button>
+          </Tooltip>
         </header>
         <div className="git-panel-empty">
           <p className="git-panel-error">{error}</p>
@@ -124,7 +129,9 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         <header className="git-panel-header">
           <span className="git-panel-branch">⎇ git</span>
           <span className="git-panel-spacer" />
-          <button className="git-panel-icon-btn" onClick={onClose} title="Close">✕</button>
+          <Tooltip label="Close" placement="bottom">
+            <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close">✕</button>
+          </Tooltip>
         </header>
         <div className="git-panel-empty">
           <p>Not a git repository.</p>
@@ -139,7 +146,9 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         <header className="git-panel-header">
           <span className="git-panel-branch">⎇ …</span>
           <span className="git-panel-spacer" />
-          <button className="git-panel-icon-btn" onClick={onClose} title="Close">✕</button>
+          <Tooltip label="Close" placement="bottom">
+            <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close">✕</button>
+          </Tooltip>
         </header>
         <div className="git-panel-empty">
           <p>Loading git status…</p>
@@ -183,25 +192,33 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   return (
     <aside className="git-panel" role="region" aria-label="Git">
       <header className="git-panel-header">
-        <span className="git-panel-branch" title={status.upstream ? `tracking ${status.upstream}` : 'no upstream'}>
-          ⎇ {status.detached ? 'detached' : (status.branch ?? 'unknown')}
-        </span>
-        {(status.ahead > 0 || status.behind > 0) && (
-          <span className="git-panel-syncs" title={`${status.ahead} ahead · ${status.behind} behind`}>
-            {status.ahead > 0 && <>↑{status.ahead}</>}
-            {status.behind > 0 && <> ↓{status.behind}</>}
+        <Tooltip label={status.upstream ? `tracking ${status.upstream}` : 'no upstream'} placement="bottom">
+          <span className="git-panel-branch">
+            ⎇ {status.detached ? 'detached' : (status.branch ?? 'unknown')}
           </span>
+        </Tooltip>
+        {(status.ahead > 0 || status.behind > 0) && (
+          <Tooltip label={`${status.ahead} ahead · ${status.behind} behind`} placement="bottom">
+            <span className="git-panel-syncs">
+              {status.ahead > 0 && <>↑{status.ahead}</>}
+              {status.behind > 0 && <> ↓{status.behind}</>}
+            </span>
+          </Tooltip>
         )}
         <span className="git-panel-spacer" />
-        <button
-          className="git-panel-icon-btn"
-          onClick={onRefresh}
-          disabled={loading}
-          title={loading ? 'Refreshing…' : 'Refresh'}
-        >
-          {loading ? '…' : '⟳'}
-        </button>
-        <button className="git-panel-icon-btn" onClick={onClose} title="Close">✕</button>
+        <Tooltip label={loading ? 'Refreshing…' : 'Refresh'} placement="bottom">
+          <button
+            className="git-panel-icon-btn"
+            onClick={onRefresh}
+            disabled={loading}
+            aria-label="Refresh"
+          >
+            {loading ? '…' : '⟳'}
+          </button>
+        </Tooltip>
+        <Tooltip label="Close" placement="bottom">
+          <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close">✕</button>
+        </Tooltip>
       </header>
 
       {inProgress && (
@@ -477,46 +494,52 @@ function FileRow({ file, cwd, staged, writeOps, onError, askConfirm }: FileRowPr
         </button>
         <div className="git-file-actions">
           {staged ? (
-            <button
-              type="button"
-              className="git-action-btn"
-              title="Unstage"
-              disabled={anyBusy}
-              onClick={async () => {
-                try { await writeOps.unstage([file.path]) } catch (e) { onError('Unstage', (e as Error).message) }
-              }}
-            >−</button>
-          ) : (
-            <>
+            <Tooltip label="Unstage" placement="left">
               <button
                 type="button"
                 className="git-action-btn"
-                title="Stage"
+                aria-label="Unstage"
                 disabled={anyBusy}
                 onClick={async () => {
-                  try { await writeOps.stage([file.path]) } catch (e) { onError('Stage', (e as Error).message) }
+                  try { await writeOps.unstage([file.path]) } catch (e) { onError('Unstage', (e as Error).message) }
                 }}
-              >+</button>
-              <button
-                type="button"
-                className="git-action-btn danger"
-                title="Discard changes"
-                disabled={anyBusy}
-                onClick={() =>
-                  askConfirm(
-                    {
-                      title: 'Discard changes?',
-                      message: (
-                        <>Revert <code>{file.path}</code> to its committed state. This cannot be undone.</>
-                      ),
-                      confirmLabel: 'Discard',
-                      destructive: true,
-                    },
-                    () => writeOps.discard([file.path], false),
-                    'Discard',
-                  )
-                }
-              >↺</button>
+              >−</button>
+            </Tooltip>
+          ) : (
+            <>
+              <Tooltip label="Stage" placement="left">
+                <button
+                  type="button"
+                  className="git-action-btn"
+                  aria-label="Stage"
+                  disabled={anyBusy}
+                  onClick={async () => {
+                    try { await writeOps.stage([file.path]) } catch (e) { onError('Stage', (e as Error).message) }
+                  }}
+                >+</button>
+              </Tooltip>
+              <Tooltip label="Discard changes" placement="left">
+                <button
+                  type="button"
+                  className="git-action-btn danger"
+                  aria-label="Discard changes"
+                  disabled={anyBusy}
+                  onClick={() =>
+                    askConfirm(
+                      {
+                        title: 'Discard changes?',
+                        message: (
+                          <>Revert <code>{file.path}</code> to its committed state. This cannot be undone.</>
+                        ),
+                        confirmLabel: 'Discard',
+                        destructive: true,
+                      },
+                      () => writeOps.discard([file.path], false),
+                      'Discard',
+                    )
+                  }
+                >↺</button>
+              </Tooltip>
             </>
           )}
         </div>
@@ -558,19 +581,22 @@ function UntrackedRow({ file, writeOps, onError, askConfirm }: UntrackedRowProps
           </span>
         </span>
         <div className="git-file-actions">
-          <button
-            type="button"
-            className="git-action-btn"
-            title="Stage"
-            disabled={anyBusy}
-            onClick={async () => {
-              try { await writeOps.stage([file.path]) } catch (e) { onError('Stage', (e as Error).message) }
-            }}
-          >+</button>
+          <Tooltip label="Stage" placement="left">
+            <button
+              type="button"
+              className="git-action-btn"
+              aria-label="Stage"
+              disabled={anyBusy}
+              onClick={async () => {
+                try { await writeOps.stage([file.path]) } catch (e) { onError('Stage', (e as Error).message) }
+              }}
+            >+</button>
+          </Tooltip>
+          <Tooltip label="Delete from disk" placement="left">
           <button
             type="button"
             className="git-action-btn danger"
-            title="Delete from disk"
+            aria-label="Delete from disk"
             disabled={anyBusy}
             onClick={() =>
               askConfirm(
@@ -590,6 +616,7 @@ function UntrackedRow({ file, writeOps, onError, askConfirm }: UntrackedRowProps
               )
             }
           >×</button>
+          </Tooltip>
         </div>
       </div>
     </div>
@@ -904,18 +931,22 @@ function BranchesSection({ sessionId, currentBranch, writeOps, onError, askConfi
           const isCurrent = b.name === currentBranch
           const busy = writeOps.busyOps.has(`checkout:${b.name}`)
           return (
-            <button
+            <Tooltip
               key={b.name}
-              type="button"
-              className={`git-branch-row ${isCurrent ? 'current' : ''}`}
-              disabled={isCurrent || busy}
-              onClick={() => tryCheckout(b.name)}
-              title={b.upstream ? `tracks ${b.upstream}` : 'no upstream'}
+              label={b.upstream ? `tracks ${b.upstream}` : 'no upstream'}
+              placement="left"
             >
-              <span className="git-branch-mark">{isCurrent ? '✓' : ' '}</span>
-              <span className="git-branch-name">{b.name}</span>
-              {b.upstream && <span className="git-branch-upstream">→ {b.upstream}</span>}
-            </button>
+              <button
+                type="button"
+                className={`git-branch-row ${isCurrent ? 'current' : ''}`}
+                disabled={isCurrent || busy}
+                onClick={() => tryCheckout(b.name)}
+              >
+                <span className="git-branch-mark">{isCurrent ? '✓' : ' '}</span>
+                <span className="git-branch-name">{b.name}</span>
+                {b.upstream && <span className="git-branch-upstream">→ {b.upstream}</span>}
+              </button>
+            </Tooltip>
           )
         })}
       </div>
@@ -975,37 +1006,41 @@ function StashesSection({ sessionId, writeOps, onError, askConfirm }: StashesSec
               <code className="git-stash-ref">{s.ref}</code>
               <span className="git-stash-message">{s.message}</span>
               <div className="git-stash-actions">
-                <button
-                  className="git-action-btn"
-                  disabled={popBusy || dropBusy}
-                  onClick={async () => {
-                    try { await writeOps.stashPop(s.index) }
-                    catch (err) { onError('Pop stash', (err as Error).message) }
-                  }}
-                  title="Pop (apply and remove)"
-                >pop</button>
-                <button
-                  className="git-action-btn danger"
-                  disabled={popBusy || dropBusy}
-                  onClick={() =>
-                    askConfirm(
-                      {
-                        title: 'Drop this stash?',
-                        message: (
-                          <>
-                            <p>Permanently remove <code>{s.ref}</code>.</p>
-                            <p><strong>This cannot be undone.</strong></p>
-                          </>
-                        ),
-                        confirmLabel: 'Drop',
-                        destructive: true,
-                      },
-                      () => writeOps.stashDrop(s.index),
-                      'Drop stash',
-                    )
-                  }
-                  title="Drop (delete)"
-                >drop</button>
+                <Tooltip label="Pop (apply and remove)" placement="left">
+                  <button
+                    className="git-action-btn"
+                    disabled={popBusy || dropBusy}
+                    onClick={async () => {
+                      try { await writeOps.stashPop(s.index) }
+                      catch (err) { onError('Pop stash', (err as Error).message) }
+                    }}
+                    aria-label="Pop stash"
+                  >pop</button>
+                </Tooltip>
+                <Tooltip label="Drop (delete)" placement="left">
+                  <button
+                    className="git-action-btn danger"
+                    disabled={popBusy || dropBusy}
+                    onClick={() =>
+                      askConfirm(
+                        {
+                          title: 'Drop this stash?',
+                          message: (
+                            <>
+                              <p>Permanently remove <code>{s.ref}</code>.</p>
+                              <p><strong>This cannot be undone.</strong></p>
+                            </>
+                          ),
+                          confirmLabel: 'Drop',
+                          destructive: true,
+                        },
+                        () => writeOps.stashDrop(s.index),
+                        'Drop stash',
+                      )
+                    }
+                    aria-label="Drop stash"
+                  >drop</button>
+                </Tooltip>
               </div>
             </div>
           )

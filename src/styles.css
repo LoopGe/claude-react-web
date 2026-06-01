@@ -451,7 +451,7 @@ body.resizing-col * {
   align-items: center;
   gap: 12px;
   padding: 2px 10px 6px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--fg-muted);
   min-width: 0;
 }
@@ -594,7 +594,7 @@ body.resizing-col * {
   background: color-mix(in srgb, var(--danger) 16%, transparent);
   color: var(--danger);
   padding: 3px 10px;
-  font-size: 11px;
+  font-size: 12px;
   font-family: var(--mono);
   border-top: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
   overflow: hidden;
@@ -626,7 +626,7 @@ body.resizing-col * {
   background: transparent;
   border-radius: 4px;
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
   font-family: var(--mono);
   color: var(--fg);
   cursor: pointer;
@@ -644,7 +644,7 @@ body.resizing-col * {
 }
 .chat-panel-chip-label {
   color: var(--fg-muted);
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.02em;
   text-transform: lowercase;
 }
@@ -664,7 +664,7 @@ body.resizing-col * {
   color: var(--fg);
   border: 1px solid var(--accent);
   border-radius: 4px;
-  font-size: 11px;
+  font-size: 12px;
   font-family: var(--mono);
   padding: 2px 6px;
   width: 180px;
@@ -785,6 +785,17 @@ body.resizing-col * {
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: msg-sending-spin 0.8s linear infinite;
+}
+
+/* Inline fallback for lazy-loaded tab/panel content (e.g. Marketplace
+   inside global settings). Quiet by design: a single loading line
+   without a spinner so the existing modal frame stays calm while the
+   chunk hydrates. */
+.lazy-tab-loading {
+  padding: 24px 16px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  text-align: center;
 }
 
 .error-bar {
@@ -1074,7 +1085,7 @@ body.resizing-col * {
   flex-direction: column;
 }
 .group-empty {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--fg-muted);
   padding: 4px 12px 8px 32px;
   font-style: italic;
@@ -1196,7 +1207,7 @@ body.resizing-col * {
 /* Error summary line — truncated one-liner under the title, full text
    available via the badge + this line's own tooltip. */
 .session-item-error {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--danger);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1468,11 +1479,11 @@ body.resizing-col * {
 }
 .session-item-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .session-item-id { font-family: var(--mono); font-size: 12px; color: var(--fg-muted); }
-.session-item-meta { font-size: 11.5px; color: var(--fg-muted); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-item-meta { font-size: 12px; color: var(--fg-muted); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-item-cwd {
   display: flex;
   gap: 5px;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--fg-muted);
   font-family: var(--mono);
   overflow: hidden;
@@ -1484,7 +1495,7 @@ body.resizing-col * {
   flex: 1;
 }
 .session-item-badge {
-  font-size: 10.5px;
+  font-size: 11px;
   padding: 1px 6px;
   border-radius: 10px;
   background: var(--bg-elev);
@@ -1621,7 +1632,7 @@ body.resizing-col * {
 .ctx-bar-label {
   display: flex;
   justify-content: space-between;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--fg-muted);
   font-family: var(--mono);
 }
@@ -1629,7 +1640,7 @@ body.resizing-col * {
 .ctx-bar-pct { color: var(--fg-muted); }
 .ctx-bar-model {
   margin-left: 6px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--fg-muted);
   opacity: 0.7;
   max-width: 120px;
@@ -1725,7 +1736,7 @@ body.resizing-col * {
 }
 .attachment-chip-size {
   color: var(--fg-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 .attachment-chip-remove {
   background: transparent;
@@ -1764,7 +1775,7 @@ body.resizing-col * {
   padding: 2px 0;
   color: var(--fg-muted);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12px;
   position: relative;
 }
 .msg.recap::before,
@@ -2009,7 +2020,7 @@ body.resizing-col * {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: 12px;
   font-family: var(--mono);
   color: var(--fg-muted);
   animation: working-bubble-pulse 1.8s ease-in-out infinite;
@@ -2034,7 +2045,7 @@ body.resizing-col * {
 .working-timer {
   color: var(--accent);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
@@ -2048,7 +2059,7 @@ body.resizing-col * {
 .working-rate {
   color: var(--fg-muted);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
@@ -2099,7 +2110,7 @@ body.resizing-col * {
   border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
   border-radius: 999px;
   padding: 2px 10px 2px 7px;
-  font-size: 11px;
+  font-size: 12px;
   font-family: var(--mono);
   color: var(--fg-muted);
   white-space: nowrap;
@@ -2128,13 +2139,13 @@ body.resizing-col * {
 }
 .subagent-chip-timer {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
 .subagent-chip-open {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--fg-muted);
   flex-shrink: 0;
   margin-left: 2px;
@@ -2150,7 +2161,7 @@ body.resizing-col * {
 }
 /* "+N more" badge when subagents overflow the max-chip limit. */
 .subagent-overflow {
-  font-size: 11px;
+  font-size: 12px;
   font-family: var(--mono);
   color: var(--fg-muted);
   background: color-mix(in srgb, var(--fg-muted) 8%, transparent);
@@ -2206,7 +2217,7 @@ body.resizing-col * {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: 12px;
   font-family: var(--mono);
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
@@ -2282,7 +2293,7 @@ body.resizing-col * {
   gap: 2px;
 }
 .subagent-overlay-breadcrumb {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--fg-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -2297,7 +2308,7 @@ body.resizing-col * {
   text-overflow: ellipsis;
 }
 .subagent-overlay-status {
-  font-size: 11px;
+  font-size: 12px;
   font-family: var(--mono);
   color: var(--fg-muted);
 }
@@ -2641,7 +2652,7 @@ body.resizing-col * {
 }
 .settings-field { display: flex; flex-direction: column; gap: 4px; }
 .settings-field label { font-size: 12px; color: var(--fg-muted); }
-.settings-field .hint { font-size: 11px; color: var(--fg-muted); }
+.settings-field .hint { font-size: 12px; color: var(--fg-muted); }
 
 /* Flag settings editor tabs */
 .fse-tabs {
@@ -2836,7 +2847,7 @@ body.resizing-col * {
   gap: 10px;
   flex-wrap: wrap;
 }
-.modal-footer .hint { font-size: 11px; color: var(--fg-muted); }
+.modal-footer .hint { font-size: 12px; color: var(--fg-muted); }
 
 /* Global settings modal */
 .global-settings-modal {
@@ -3027,7 +3038,7 @@ body.resizing-col * {
 }
 .todo-panel-count {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--fg-muted);
   background: var(--bg);
   padding: 1px 6px;
@@ -3189,7 +3200,7 @@ details.bash-tool-collapsible > summary {
 }
 details.bash-tool-collapsible > summary::-webkit-details-marker { display: none; }
 .bash-tool-fold-hint {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--fg-muted);
   font-style: italic;
   margin-left: 14px; /* align with command after the $ prompt + gap */
@@ -3688,7 +3699,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
   background: transparent;
   border: none;
   color: var(--fg-muted);
-  font-size: 11px;
+  font-size: 12px;
   cursor: pointer;
   padding: 2px 0;
   text-decoration: underline dotted;
@@ -3992,11 +4003,6 @@ details.question-inline-card[open] > summary {
 .recap-msg {
   border: 1px dashed color-mix(in srgb, var(--accent) 40%, transparent);
   background: color-mix(in srgb, var(--accent) 6%, transparent);
-  animation: recap-fade-in 0.25s ease-out;
-}
-@keyframes recap-fade-in {
-  from { opacity: 0; transform: translateY(-4px); }
-  to   { opacity: 1; transform: translateY(0); }
 }
 .recap-msg--error {
   border-color: color-mix(in srgb, var(--danger) 40%, transparent);
@@ -4470,7 +4476,7 @@ mark.search-hl.search-hl-active {
 .git-panel-section-title { flex: 1; }
 .git-panel-section-count {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--fg-muted);
   background: var(--bg-elev-2);
   padding: 0 6px;
@@ -4622,7 +4628,7 @@ mark.search-hl.search-hl-active {
 .git-commit-hash {
   font-family: var(--mono);
   color: var(--accent);
-  font-size: 11px;
+  font-size: 12px;
 }
 .git-commit-subject {
   color: var(--fg);
@@ -4632,7 +4638,7 @@ mark.search-hl.search-hl-active {
 }
 .git-commit-meta {
   color: var(--fg-muted);
-  font-size: 11px;
+  font-size: 12px;
   white-space: nowrap;
 }
 .git-commits-empty {
@@ -4880,7 +4886,7 @@ mark.search-hl.search-hl-active {
 }
 .git-branch-upstream {
   color: var(--fg-muted);
-  font-size: 11px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -4898,7 +4904,7 @@ mark.search-hl.search-hl-active {
 .git-stash-ref {
   font-family: var(--mono);
   color: var(--accent);
-  font-size: 11px;
+  font-size: 12px;
   white-space: nowrap;
 }
 .git-stash-message {
@@ -5126,7 +5132,7 @@ mark.search-hl.search-hl-active {
   white-space: nowrap;
 }
 .marketplace-meta-time {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--fg-muted);
   margin-top: 2px;
 }
@@ -5199,12 +5205,12 @@ mark.search-hl.search-hl-active {
   font-size: 13px;
 }
 .marketplace-plugin-version {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--fg-muted);
   font-family: var(--mono);
 }
 .marketplace-plugin-status {
-  font-size: 11px;
+  font-size: 12px;
   padding: 1px 6px;
   border-radius: 3px;
   border: 1px solid currentColor;
@@ -5225,7 +5231,7 @@ mark.search-hl.search-hl-active {
   line-height: 1.4;
 }
 .marketplace-plugin-author {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--fg-muted);
   margin-top: 2px;
 }
@@ -5775,6 +5781,104 @@ mark.search-hl.search-hl-active {
   *::after {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+}
+
+/* ── Tooltip primitive ─────────────────────────────────────────────
+ *
+ * Replaces native `title=""` for elements that need:
+ *   - Keyboard accessibility (focus-visible triggers)
+ *   - Themed styling consistent with the app
+ *   - Predictable cross-platform rendering (native title is OS-styled
+ *     and inconsistent on mobile)
+ *
+ * The bubble is hidden by default via opacity + visibility so it
+ * still participates in `aria-describedby` lookups for AT users.
+ * `pointer-events: none` keeps it from blocking clicks on adjacent UI.
+ *
+ * `.tt-wrap` is `inline-flex` so trigger children align naturally
+ * with surrounding text without inheriting block-level layout.
+ */
+.tt-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.tt-bubble {
+  position: absolute;
+  z-index: 100;
+  padding: 4px 8px;
+  background: var(--bg-elev-3, var(--bg-elev-2));
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  max-width: 280px;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(2px);
+  transition: opacity 80ms ease-out, transform 80ms ease-out, visibility 80ms;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+}
+.tt-wrap:hover > .tt-bubble,
+.tt-wrap:focus-within > .tt-bubble {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+/* Placement: top (default) — bubble above trigger */
+.tt-top > .tt-bubble {
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translate(-50%, 2px);
+}
+.tt-top:hover > .tt-bubble,
+.tt-top:focus-within > .tt-bubble {
+  transform: translate(-50%, 0);
+}
+/* Placement: bottom */
+.tt-bottom > .tt-bubble {
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translate(-50%, -2px);
+}
+.tt-bottom:hover > .tt-bubble,
+.tt-bottom:focus-within > .tt-bubble {
+  transform: translate(-50%, 0);
+}
+/* Placement: left */
+.tt-left > .tt-bubble {
+  right: calc(100% + 6px);
+  top: 50%;
+  transform: translate(2px, -50%);
+}
+.tt-left:hover > .tt-bubble,
+.tt-left:focus-within > .tt-bubble {
+  transform: translate(0, -50%);
+}
+/* Placement: right */
+.tt-right > .tt-bubble {
+  left: calc(100% + 6px);
+  top: 50%;
+  transform: translate(-2px, -50%);
+}
+.tt-right:hover > .tt-bubble,
+.tt-right:focus-within > .tt-bubble {
+  transform: translate(0, -50%);
+}
+
+/* Reduced motion: snap to position without slide animation */
+@media (prefers-reduced-motion: reduce) {
+  .tt-bubble {
+    transition: opacity 0.01ms, visibility 0.01ms !important;
+    transform: none !important;
+  }
+  .tt-wrap:hover > .tt-bubble,
+  .tt-wrap:focus-within > .tt-bubble {
+    transform: none !important;
   }
 }
 

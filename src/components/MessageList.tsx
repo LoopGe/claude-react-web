@@ -714,6 +714,22 @@ const MessageView = memo(function MessageView({
       }
       return out
     }, [blocks, searchQuery, activeMatchInItem])
+    // Suppress assistant messages with no visible content. The SDK can emit
+    // a standalone assistant message whose only block is an empty
+    // (signature-only) thinking block — BlockView renders it as null, but
+    // the surrounding card would still paint an empty "✦ assistant" shell.
+    // A block counts as visible if it's a tool_use, an image, non-empty
+    // text, or non-empty thinking. Keep the card if the message carries an
+    // error so failures stay visible.
+    const hasVisibleContent =
+      Boolean(msg.error) ||
+      blocks.some((b) => {
+        if (b.type === 'tool_use' || b.type === 'image') return true
+        if (b.type === 'text') return typeof b.text === 'string' && b.text.trim().length > 0
+        if (b.type === 'thinking') return typeof b.thinking === 'string' && b.thinking.trim().length > 0
+        return true // unknown block types: render rather than silently drop
+      })
+    if (!hasVisibleContent) return null
     return (
       <div className={`msg assistant${isSubagent ? ' subagent' : ''}`}>
         {assistantText && (
@@ -1100,6 +1116,12 @@ const BlockView = memo(function BlockView({ block, searchQuery, activeMatchIdx }
     return <div className="tool-input">[image: invalid]</div>
   }
   if (block.type === 'thinking' && typeof block.thinking === 'string') {
+    // Empty thinking blocks carry no visible text — the model emitted a
+    // (signature-only) thinking block for a turn that needed no reasoning
+    // (common for trivial continuation prompts under interleaved thinking).
+    // Rendering an empty "thinking (0 chars)" <details> is pure noise, so
+    // skip it entirely.
+    if (block.thinking.trim().length === 0) return null
     return (
       <details style={{ color: 'var(--fg-muted)', margin: '4px 0' }}>
         <summary style={{ cursor: 'pointer' }}>thinking ({block.thinking.length} chars)</summary>

@@ -21,7 +21,6 @@ import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, Sidebar
 import { PERMISSION_MODES } from './types'
 import { ACCENT_COLORS } from './theme'
 import { ErrorBoundary } from './components/ErrorBoundary'
-import { SetupPage } from './components/SetupPage'
 import { ThemeToggle } from './components/ThemeToggle'
 import { UpdateBanner } from './components/UpdateBanner'
 import { useUpdateInfo } from './hooks/useUpdateInfo'
@@ -29,9 +28,13 @@ import { useUpdateInfo } from './hooks/useUpdateInfo'
 // Lazy-load heavy modal/overlay components that are only shown on demand.
 // This keeps the initial bundle lean — the user pays the download cost
 // only when they actually open the palette, settings, or help modal.
+//
+// SetupPage is also lazy: only first-time / unconfigured users hit it,
+// and it pulls in ~1150 lines of UI that returning users never see.
 const CommandPalette = lazy(() => import('./components/CommandPalette').then((m) => ({ default: m.CommandPalette })))
 const ShortcutHelp = lazy(() => import('./components/ShortcutHelp').then((m) => ({ default: m.ShortcutHelp })))
 const GlobalSettingsModal = lazy(() => import('./components/GlobalSettingsModal').then((m) => ({ default: m.GlobalSettingsModal })))
+const SetupPage = lazy(() => import('./components/SetupPage').then((m) => ({ default: m.SetupPage })))
 
 import {
   SIDEBAR_ORDER_KEY,
@@ -1184,7 +1187,19 @@ export function App() {
       </div>
     )
   }
-  if (!isConfigured) return <SetupPage onConfigured={handleConfigured} />
+  if (!isConfigured) {
+    return (
+      <Suspense
+        fallback={
+          <div className="app-loading">
+            <div className="app-loading-spinner" />
+          </div>
+        }
+      >
+        <SetupPage onConfigured={handleConfigured} />
+      </Suspense>
+    )
+  }
 
   return (
     <ErrorBoundary>

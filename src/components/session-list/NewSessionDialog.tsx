@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { DirectoryPicker } from '../DirectoryPicker'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { api } from '../../hooks/useApi'
@@ -6,7 +6,12 @@ import { shortenPath } from '../../utils/paths'
 import { ACCENT_COLORS } from '../../theme'
 import type { McpServerConfigMeta, NewSessionForm, PermissionMode, SessionGroup } from '../../types'
 import { PERMISSION_MODES } from '../../types'
-import { McpInstaller } from '../McpInstaller'
+
+// McpInstaller is only opened when the user clicks "Add MCP" from inside
+// this dialog. Lazy-load to keep NewSessionDialog itself lean.
+const McpInstaller = lazy(() =>
+  import('../McpInstaller').then((m) => ({ default: m.McpInstaller })),
+)
 import { ONE_M_CONTEXT_BETA } from '../../constants/contextSteps'
 import { RECENT_MODELS_KEY, RECENT_MODELS_CAP_KEY, RECENT_MODELS_CAP_DEFAULT, RECENT_CWDS_KEY, RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT } from '../../constants/recentKeys'
 
@@ -625,11 +630,13 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
       )}
 
       {showMcpInstaller && (
-        <McpInstaller
-          server={mcpInstallerEdit}
-          onSave={handleMcpInstallerSave}
-          onClose={() => { setShowMcpInstaller(false); setMcpInstallerEdit(undefined) }}
-        />
+        <Suspense fallback={null}>
+          <McpInstaller
+            server={mcpInstallerEdit}
+            onSave={handleMcpInstallerSave}
+            onClose={() => { setShowMcpInstaller(false); setMcpInstallerEdit(undefined) }}
+          />
+        </Suspense>
       )}
     </>
   )
