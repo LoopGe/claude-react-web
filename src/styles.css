@@ -4833,6 +4833,19 @@ mark.search-hl.search-hl-active {
 .git-file-deletions {
   color: var(--danger);
 }
+
+/* Aggregate +N −M totals in the panel header and section summaries. */
+.git-panel-total-changes,
+.git-section-change-totals {
+  display: inline-flex;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.git-section-change-totals {
+  margin-left: 6px;
+}
 .git-file-arrow {
   color: var(--fg-muted);
   font-size: 10px;

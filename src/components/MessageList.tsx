@@ -204,7 +204,15 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
       } else {
         if (parent !== parentToolUseIdFilter) continue
       }
-      if (showSystemEvents || !item.hiddenByDefault) {
+      // Drop messages MessageView would render as null (merged tool_result
+      // frames, subagent heartbeats, empty assistant shells). Otherwise each
+      // leaves an empty `.virtuoso-item-wrapper` whose padding doubles the
+      // gap after every tool call. Kept in lockstep with MessageView via the
+      // shared willRenderEmpty.
+      if (
+        (showSystemEvents || !item.hiddenByDefault) &&
+        !willRenderEmpty(item.msg, item.isCompactSummary, toolResults)
+      ) {
         out.push({
           id: item.id,
           msg: item.msg,
@@ -217,7 +225,7 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
       }
     }
     return out
-  }, [items, showSystemEvents, parentToolUseIdFilter])
+  }, [items, showSystemEvents, parentToolUseIdFilter, toolResults])
 
   // --- Reverse infinite scroll: keep the viewport anchored on prepend ----
   // Virtuoso requires `firstItemIndex` to decrease by exactly the number of
@@ -887,7 +895,9 @@ const MessageView = memo(function MessageView({
       // Nothing left to show? Don't draw an empty card. This covers both
       // subagent heartbeat frames (no text, no result) AND the common new
       // case where every tool_result has been merged into its card.
-      if (!hasOrphanResults && !userContent) return null
+      // Delegated to willRenderEmpty so renderableItems drops these BEFORE
+      // they become empty Virtuoso items (see that fn's comment).
+      if (willRenderEmpty(msg, isCompactSummary, mergedToolResults)) return null
       // 'subagent' only for a genuine subagent frame with no orphan result
       // to show; everything else (orphan results, or a merged-only
       // tool-result frame carrying stray text) reads as 'tool result'.
@@ -981,18 +991,9 @@ const MessageView = memo(function MessageView({
     // a standalone assistant message whose only block is an empty
     // (signature-only) thinking block — BlockView renders it as null, but
     // the surrounding card would still paint an empty "✦ assistant" shell.
-    // A block counts as visible if it's a tool_use, an image, non-empty
-    // text, or non-empty thinking. Keep the card if the message carries an
-    // error so failures stay visible.
-    const hasVisibleContent =
-      Boolean(msg.error) ||
-      blocks.some((b) => {
-        if (b.type === 'tool_use' || b.type === 'image') return true
-        if (b.type === 'text') return typeof b.text === 'string' && b.text.trim().length > 0
-        if (b.type === 'thinking') return typeof b.thinking === 'string' && b.thinking.trim().length > 0
-        return true // unknown block types: render rather than silently drop
-      })
-    if (!hasVisibleContent) return null
+    // The visibility rule lives in willRenderEmpty so renderableItems can
+    // drop these before they become empty Virtuoso items (see that fn).
+    if (willRenderEmpty(msg, isCompactSummary, mergedToolResults)) return null
     return (
       <div className={`msg assistant${isSubagent ? ' subagent' : ''}`}>
         {assistantText && (
@@ -1461,6 +1462,58 @@ function extractUserText(msg: SdkMessage): string | null {
     return text || null
   }
   return null
+}
+
+/** Would `MessageView` render nothing for this message? Mirrors the two
+ *  `return null` branches inside MessageView (the merged-tool-result /
+ *  subagent-heartbeat case and the no-visible-content assistant case) so
+ *  `renderableItems` can drop these messages BEFORE they become Virtuoso
+ *  items — otherwise each one leaves an empty `.virtuoso-item-wrapper`
+ *  that still carries `padding-bottom: 14px`, doubling the visible gap
+ *  after every tool call. MUST stay in lockstep with MessageView's null
+ *  logic; both call this so they can't drift. */
+function willRenderEmpty(
+  msg: SdkMessage,
+  isCompactSummary: boolean | undefined,
+  mergedToolResults: ReadonlyMap<string, ToolResultEntry>,
+): boolean {
+  const type = msg.type
+  // Only user / assistant frames ever render empty; everything else
+  // (system / result / …) always paints something. Skip block parsing.
+  if (type !== 'user' && type !== 'assistant') return false
+
+  const blocks = getBlocks(msg)
+
+  if (type === 'user') {
+    // Compact summary always renders a CompactSummary card.
+    if (isCompactSummary) return false
+    const userContent = extractUserText(msg)
+    const allToolBlocks = blocks.filter((b) => b.type === 'tool_result')
+    const toolBlocks = allToolBlocks.filter(
+      (b) => typeof b.tool_use_id !== 'string' || !mergedToolResults.has(b.tool_use_id),
+    )
+    const isSubagent = (msg as Record<string, unknown>).parent_tool_use_id != null
+    const isToolResult = allToolBlocks.length > 0
+    const hasOrphanResults = toolBlocks.length > 0
+    if (isToolResult || isSubagent) {
+      // Mirror of MessageView's user-branch null check — empty iff there's
+      // neither an orphan result to draw nor any stray user text.
+      return !hasOrphanResults && !userContent
+    }
+    // Real user message — always rendered.
+    return false
+  }
+
+  // assistant — mirror of MessageView's `hasVisibleContent` check.
+  const hasVisibleContent =
+    Boolean(msg.error) ||
+    blocks.some((b) => {
+      if (b.type === 'tool_use' || b.type === 'image') return true
+      if (b.type === 'text') return typeof b.text === 'string' && b.text.trim().length > 0
+      if (b.type === 'thinking') return typeof b.thinking === 'string' && b.thinking.trim().length > 0
+      return true
+    })
+  return !hasVisibleContent
 }
 
 

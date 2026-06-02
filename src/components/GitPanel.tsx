@@ -50,6 +50,24 @@ interface Props {
   onClose: () => void
 }
 
+/** Aggregate insertion/deletion counts across a set of file entries. */
+interface ChangeTotals {
+  insertions: number
+  deletions: number
+}
+
+/** Sum the per-file numstat counts into a single total. Files without
+ *  counts (untracked, binary) contribute zero. */
+function sumChanges(files: GitFileEntry[]): ChangeTotals {
+  let insertions = 0
+  let deletions = 0
+  for (const f of files) {
+    insertions += f.insertions ?? 0
+    deletions += f.deletions ?? 0
+  }
+  return { insertions, deletions }
+}
+
 /** Confirmation dialog state — driven by file-row and section actions
  *  that need user sign-off before mutating. The whole structure gets
  *  cleared on confirm or cancel. */
@@ -162,6 +180,12 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   // ── Repo state ──────────────────────────────────────────────────
   const inProgress = status.state !== 'clean' && status.state !== 'dirty'
 
+  // Aggregate line-change totals across every changed file. Staged and
+  // unstaged are separate diffs, so a file that's both staged AND further
+  // modified contributes from both buckets — that matches what the user
+  // sees if they expand each section. Untracked files have no diff counts.
+  const totals = sumChanges([...status.staged, ...status.unstaged])
+
   // Section action helpers — each builds a Promise then routes errors to
   // the toast or, for destructive ones, to a ConfirmDialog.
   function stageAll(files: GitFileEntry[]) {
@@ -204,6 +228,17 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
             <span className="git-panel-syncs">
               {status.ahead > 0 && <>↑{status.ahead}</>}
               {status.behind > 0 && <> ↓{status.behind}</>}
+            </span>
+          </Tooltip>
+        )}
+        {(totals.insertions > 0 || totals.deletions > 0) && (
+          <Tooltip
+            label={`${totals.insertions} insertion${totals.insertions === 1 ? '' : 's'}, ${totals.deletions} deletion${totals.deletions === 1 ? '' : 's'} across all changes`}
+            placement="bottom"
+          >
+            <span className="git-panel-total-changes">
+              {totals.insertions > 0 && <span className="git-file-additions">+{totals.insertions}</span>}
+              {totals.deletions > 0 && <span className="git-file-deletions">−{totals.deletions}</span>}
             </span>
           </Tooltip>
         )}
@@ -271,6 +306,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
       <Section
         title="Changes"
         count={status.unstaged.length}
+        changeTotals={sumChanges(status.unstaged)}
         defaultOpen={status.unstaged.length > 0}
         actions={status.unstaged.length > 0 ? (
           <>
@@ -307,6 +343,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
       <Section
         title="Staged"
         count={status.staged.length}
+        changeTotals={sumChanges(status.staged)}
         defaultOpen={status.staged.length > 0}
         actions={status.staged.length > 0 ? (
           <button
@@ -416,13 +453,22 @@ interface SectionProps {
   children: React.ReactNode
   /** Optional buttons rendered to the right of the section title. */
   actions?: React.ReactNode
+  /** Aggregate line-change counts for this section's files, shown as a
+   *  +N −M badge beside the count. Omitted for sections without diffs. */
+  changeTotals?: ChangeTotals
 }
 
-function Section({ title, count, defaultOpen, children, actions }: SectionProps) {
+function Section({ title, count, defaultOpen, children, actions, changeTotals }: SectionProps) {
   return (
     <details className="git-panel-section" open={defaultOpen}>
       <summary>
         <span className="git-panel-section-title">{title}</span>
+        {changeTotals && (changeTotals.insertions > 0 || changeTotals.deletions > 0) && (
+          <span className="git-section-change-totals">
+            {changeTotals.insertions > 0 && <span className="git-file-additions">+{changeTotals.insertions}</span>}
+            {changeTotals.deletions > 0 && <span className="git-file-deletions">−{changeTotals.deletions}</span>}
+          </span>
+        )}
         {count !== null && <span className="git-panel-section-count">{count}</span>}
         {actions && (
           // Stop the click from bubbling into <summary> (which would

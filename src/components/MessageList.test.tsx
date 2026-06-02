@@ -134,4 +134,81 @@ describe('MessageList', () => {
     )
     expect(container.textContent).toContain('something broke')
   })
+
+  describe('empty-message filtering (willRenderEmpty)', () => {
+    it('drops a tool_result frame whose result was merged into its tool card', () => {
+      // The assistant emits a tool_use; the user frame carrying its
+      // tool_result is fully merged (toolResults has the id), so it should
+      // produce NO Virtuoso item — no empty wrapper, no doubled gap.
+      const msgs = [
+        makeMsg('assistant', {
+          message: { content: [{ type: 'tool_use', id: 'tu-1', name: 'Bash', input: {} }] },
+        }),
+        makeMsg('user', {
+          message: { content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: 'done' }] },
+        }),
+      ]
+      const { container } = render(
+        <MessageList
+          items={toItems(msgs as SdkMessage[])}
+          replayReady
+          toolStatus={new Map([['tu-1', 'success' as const]])}
+          toolResults={new Map([['tu-1', { content: 'done', isError: false }]])}
+        />,
+      )
+      // Exactly one rendered item (the assistant tool card).
+      const wrapper = container.querySelector('[data-testid="virtuoso-mock"]')
+      const rows = wrapper ? Array.from(wrapper.children).filter((c) => c.querySelector('.virtuoso-item-wrapper')) : []
+      expect(rows.length).toBe(1)
+    })
+
+    it('keeps an orphan tool_result frame (id not in toolResults)', () => {
+      // tool_use_id never matched a seeded card → standalone bubble must stay.
+      const msgs = [
+        makeMsg('user', {
+          message: { content: [{ type: 'tool_result', tool_use_id: 'orphan', content: 'orphan out' }] },
+        }),
+      ]
+      const { container } = render(
+        <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+      )
+      expect(container.textContent).toContain('tool result')
+    })
+
+    it('drops an assistant frame with only an empty (signature-only) thinking block', () => {
+      const msgs = [
+        makeMsg('assistant', {
+          message: { content: [{ type: 'thinking', thinking: '' }] },
+        }),
+      ]
+      const { container } = render(
+        <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+      )
+      const wrapper = container.querySelector('[data-testid="virtuoso-mock"]')
+      const rows = wrapper ? Array.from(wrapper.children).filter((c) => c.querySelector('.virtuoso-item-wrapper')) : []
+      expect(rows.length).toBe(0)
+    })
+
+    it('keeps an assistant frame that carries an error even with no visible blocks', () => {
+      const msgs = [
+        makeMsg('assistant', { message: { content: [] }, error: 'boom' }),
+      ]
+      const { container } = render(
+        <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+      )
+      const wrapper = container.querySelector('[data-testid="virtuoso-mock"]')
+      const rows = wrapper ? Array.from(wrapper.children).filter((c) => c.querySelector('.virtuoso-item-wrapper')) : []
+      expect(rows.length).toBe(1)
+    })
+
+    it('keeps a real user message', () => {
+      const msgs = [
+        makeMsg('user', { message: { content: [{ type: 'text', text: 'hi there' }] } }),
+      ]
+      const { container } = render(
+        <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+      )
+      expect(container.textContent).toContain('hi there')
+    })
+  })
 })

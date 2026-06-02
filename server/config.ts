@@ -9,7 +9,10 @@
 
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
-import { enableFileLogging, disableFileLogging } from './log.js'
+import {
+  enableFileLogging, disableFileLogging, setLogConfig,
+  LOG_LEVELS, LOG_LEVEL_FROM_ENV, LOG_SCOPES_FROM_ENV, type LogLevel,
+} from './log.js'
 
 /** Schema for config.json */
 interface ConfigFile {
@@ -41,6 +44,13 @@ interface ConfigFile {
   accessToken?: string
   /** Write logs to a file in `<stateDir>/logs/`. Default: false. */
   logToFile?: boolean
+  /** Persisted runtime log level. Restored on boot UNLESS the LOG_LEVEL env
+   *  var (or DEBUG_SESSION) is set, in which case env wins as a per-launch
+   *  override. Written by PUT /api/log. */
+  logLevel?: string
+  /** Persisted runtime scope filter (null / [] = all scopes). Restored on
+   *  boot unless the LOG_SCOPES env var is set. Written by PUT /api/log. */
+  logScopes?: string[] | null
   /** npm registry URL the update checker probes. Empty / unset disables
    *  the update check entirely (banner stays hidden, About tab shows
    *  "disabled"). No default — this package is published on a private
@@ -271,6 +281,25 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): v
   } else {
     disableFileLogging()
   }
+
+  // Restore persisted log level / scopes. Env vars are a per-launch override
+  // and win over the persisted value, so only restore the dimensions that
+  // weren't set via env. setLogConfig only touches the fields we pass.
+  const logUpdate: { level?: LogLevel; scopes?: string[] | null } = {}
+  if (!LOG_LEVEL_FROM_ENV
+    && typeof file_.logLevel === 'string'
+    && LOG_LEVELS.includes(file_.logLevel as LogLevel)) {
+    logUpdate.level = file_.logLevel as LogLevel
+  }
+  if (!LOG_SCOPES_FROM_ENV && file_.logScopes !== undefined) {
+    if (file_.logScopes === null
+      || (Array.isArray(file_.logScopes) && file_.logScopes.every((s) => typeof s === 'string'))) {
+      logUpdate.scopes = file_.logScopes
+    }
+  }
+  if (logUpdate.level !== undefined || logUpdate.scopes !== undefined) {
+    setLogConfig(logUpdate)
+  }
 }
 
 /** Mutable fields the client is allowed to update via PUT /api/config. */
@@ -285,6 +314,8 @@ export const WRITABLE_CONFIG_KEYS = [
   'maxOpenPanels',
   'workingStuckMs',
   'logToFile',
+  'logLevel',
+  'logScopes',
   'updateCheckRegistry',
 ] as const
 

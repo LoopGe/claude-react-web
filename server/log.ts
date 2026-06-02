@@ -55,6 +55,16 @@ const DEBUG_SESSION_FORCED =
   process.env.DEBUG_SESSION === '1' || process.env.DEBUG_SESSION === 'true'
 const DEFAULT_LEVEL: LogLevel = DEBUG_SESSION_FORCED ? 'debug' : 'info'
 
+/** True when the boot-time level/scopes came from an explicit env var (or
+ *  the DEBUG_SESSION back-compat flag). When set, env wins over any value
+ *  persisted in config.json — env is a per-launch override. config.ts reads
+ *  these to decide whether to restore persisted log settings on boot. */
+export const LOG_LEVEL_FROM_ENV =
+  (typeof process.env.LOG_LEVEL === 'string' && process.env.LOG_LEVEL.trim() !== '') ||
+  DEBUG_SESSION_FORCED
+export const LOG_SCOPES_FROM_ENV =
+  typeof process.env.LOG_SCOPES === 'string' && process.env.LOG_SCOPES.trim() !== ''
+
 interface ResolvedConfig {
   level: LogLevel
   scopes: ReadonlySet<string> | null

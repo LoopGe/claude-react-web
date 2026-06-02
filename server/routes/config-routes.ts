@@ -95,9 +95,10 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
   })
 
   // ── Runtime log config ─────────────────────────────────────────────
-  // In-memory only — does NOT persist across restarts. Boot-time defaults
-  // come from LOG_LEVEL / LOG_SCOPES env vars. The UI exposes this so a
-  // user can flip levels mid-debug without restarting the server.
+  // Applied to the in-memory logger immediately AND persisted to config.json
+  // so the chosen level/scopes survive restarts. Boot-time precedence:
+  // LOG_LEVEL / LOG_SCOPES env vars (per-launch override) > persisted
+  // config.json value > built-in default ('info' / all scopes).
   app.get('/log', (c) => {
     return c.json({
       ...getLogConfig(),
@@ -127,6 +128,15 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
       update.scopes = body.scopes
     }
     const next = setLogConfig(update)
+    // Persist so the choice survives restarts. Mirror the in-memory keys
+    // onto the config.json keys (logLevel / logScopes). Only write the
+    // dimensions the caller actually touched.
+    if (configDir && (update.level !== undefined || update.scopes !== undefined)) {
+      const persist: Record<string, unknown> = {}
+      if (update.level !== undefined) persist.logLevel = next.level
+      if (update.scopes !== undefined) persist.logScopes = next.scopes
+      await updateConfigFile(configDir, persist)
+    }
     return c.json({ ...next, availableLevels: LOG_LEVELS })
   })
 
