@@ -71,6 +71,21 @@ export type PlanStatus = 'pending' | 'approved' | 'rejected'
  *  generic tool, and AskUserQuestion doesn't have a meaningful "error". */
 export type ToolStatus = 'running' | 'success' | 'error'
 
+/** Captured tool_result payload, keyed by tool_use_id.
+ *
+ *  Lets the originating tool_use card render its result inline at the
+ *  bottom of the same card (instead of as a separate "tool result"
+ *  bubble further down the transcript). `content` is the raw
+ *  tool_result block content (string or block array) so the shared
+ *  preview/truncation logic in ToolResultDetails can format it the same
+ *  way the standalone bubble used to. `isError` mirrors the SDK's
+ *  is_error flag (also reflected in ToolStatus, but kept here so the
+ *  result renderer doesn't need a second lookup). */
+export interface ToolResultEntry {
+  content: unknown
+  isError: boolean
+}
+
 export type ActivePhase =
   | 'thinking'
   | 'writing'
@@ -126,6 +141,11 @@ export interface SessionState {
    *  but for Bash / Read / Grep / Edit / Write / etc. this map is the
    *  single source of truth. */
   toolStatus: Map<string, ToolStatus>
+  /** Captured tool_result payloads keyed by tool_use_id. Populated only
+   *  for ids already present in `toolStatus` (i.e. generic tool cards —
+   *  Plan/Question/Subagent are excluded because they own their result
+   *  rendering). Drives the inline result section on each ToolCard. */
+  toolResults: Map<string, ToolResultEntry>
   activeSubagents: Map<string, ActiveSubagent>
 }
 
@@ -175,6 +195,9 @@ export interface SessionSnapshot {
   questionAnswers: ReadonlyMap<string, QuestionAnswerEntry[]>
   /** Generic tool lifecycle by tool_use_id (running/success/error). */
   toolStatus: ReadonlyMap<string, ToolStatus>
+  /** Captured tool_result payloads by tool_use_id — drives the inline
+   *  result section rendered at the bottom of each generic ToolCard. */
+  toolResults: ReadonlyMap<string, ToolResultEntry>
   /** Currently-running subagents only — drives the WorkingBubble chip row. */
   activeSubagents: ActiveSubagent[]
   /** Full index (running + completed) keyed by toolUseId. Used by the
@@ -204,6 +227,7 @@ export function createInitialSessionState(sessionId: string): SessionState {
     planContent: new Map(),
     questionAnswers: new Map(),
     toolStatus: new Map(),
+    toolResults: new Map(),
     activeSubagents: new Map(),
   }
 }

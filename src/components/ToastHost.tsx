@@ -25,9 +25,9 @@ const KIND_LABEL: Record<ToastKind, string> = {
 }
 
 const KIND_ICON: Record<ToastKind, ReactNode> = {
-  error: <IconAlertTriangle size={15} />,
-  success: <IconCheckCircle size={15} />,
-  info: <IconInfo size={15} />,
+  error: <IconAlertTriangle size={14} />,
+  success: <IconCheckCircle size={14} />,
+  info: <IconInfo size={14} />,
 }
 
 export function ToastHost() {
@@ -85,7 +85,7 @@ export function ToastHost() {
               onClick={() => dismiss(t.id)}
               aria-label={`Dismiss ${KIND_LABEL[t.kind]}`}
             >
-              <IconX size={13} />
+              <IconX size={12} />
             </button>
           </div>
         )

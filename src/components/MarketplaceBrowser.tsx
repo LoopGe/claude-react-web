@@ -283,13 +283,13 @@ export function MarketplaceBrowser({ onClose, onInstalled }: Props) {
         {err && (
           <div className="marketplace-error">
             <span>{err}</span>
-            <button className="marketplace-dismiss" onClick={() => setErr(null)} aria-label="Dismiss"><IconX size={13} /></button>
+            <button className="marketplace-dismiss" onClick={() => setErr(null)} aria-label="Dismiss"><IconX size={12} /></button>
           </div>
         )}
         {info && !err && (
           <div className="marketplace-info">
             <span>{info}</span>
-            <button className="marketplace-dismiss" onClick={() => setInfo(null)} aria-label="Dismiss"><IconX size={13} /></button>
+            <button className="marketplace-dismiss" onClick={() => setInfo(null)} aria-label="Dismiss"><IconX size={12} /></button>
           </div>
         )}
 
@@ -451,7 +451,7 @@ export function MarketplaceBrowser({ onClose, onInstalled }: Props) {
                       className={`marketplace-plugin-status ${p.enabled ? 'enabled' : 'disabled'}`}
                       title={p.enabled ? 'Plugin is enabled' : 'Plugin is installed but disabled'}
                     >
-                      {p.enabled ? <IconCircleDot size={11} /> : <IconCircle size={11} />} {p.enabled ? 'enabled' : 'disabled'}
+                      {p.enabled ? <IconCircleDot size={12} /> : <IconCircle size={12} />} {p.enabled ? 'enabled' : 'disabled'}
                     </span>
                   )}
                   <div className="marketplace-plugin-actions">

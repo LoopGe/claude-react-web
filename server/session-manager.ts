@@ -616,6 +616,20 @@ export class SessionManager {
     // "can't transition into bypassPermissions" constraint on top.
     fullOpts.permissionMode = undefined
 
+    // Pin the SDK's session_id to OUR id so the on-disk transcript filename
+    // (~/.claude/projects/<sanitized-cwd>/<session_id>.jsonl) always equals
+    // `id`. Without this the CLI auto-generates its own UUID, our id never
+    // matches any file, and hasSdkTranscript()/resume()/fork() +
+    // history-reader lookups all probe a path that never existed — which is
+    // how a live source got mis-flagged "transcript missing" and killed on
+    // fork. SDK rule: sessionId is rejected alongside `resume` UNLESS
+    // forkSession is also set. So set it for create (no resume) and for fork
+    // (resume + forkSession, where `id` is the fork's fresh UUID), but NOT
+    // for plain resume — resume preserves the existing session_id anyway.
+    if (!fullOpts.resume || fullOpts.forkSession) {
+      fullOpts.sessionId = id
+    }
+
     // Create the AbortController BEFORE query() so we can pass it to the
     // SDK. This ensures the same AbortSignal flows through to
     // spawnClaudeCodeProcess, allowing ProcessMonitor to correlate

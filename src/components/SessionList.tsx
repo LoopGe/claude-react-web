@@ -506,7 +506,7 @@ export const SessionList = memo(function SessionList({
                 aria-label="Clear filter"
                 title="Clear"
               >
-                <IconX size={13} />
+                <IconX size={12} />
               </button>
             )}
           </div>
@@ -627,7 +627,7 @@ export const SessionList = memo(function SessionList({
                       aria-expanded={!collapsed}
                       aria-label={collapsed ? `Expand group ${sec.group.name}` : `Collapse group ${sec.group.name}`}
                     >
-                      {collapsed ? <IconChevronRight size={13} /> : <IconChevronDown size={13} />}
+                      {collapsed ? <IconChevronRight size={12} /> : <IconChevronDown size={12} />}
                     </button>
                     <span className="group-header-name">{sec.group.name}</span>
                     <span className="group-header-count">{sec.sessions.length}</span>

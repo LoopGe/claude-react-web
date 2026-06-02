@@ -3,6 +3,7 @@ import { rebuildIndexesFromMessages, reduceSessionState } from './reducer'
 import { createInitialSessionState } from './types'
 import {
   extractToolUseId,
+  getToolResultEntries,
   getToolResultOutcomes,
   getToolUseStarts,
 } from './normalize'
@@ -94,6 +95,16 @@ describe('getToolUseStarts', () => {
     expect(getToolUseStarts(msg)).toEqual(['tu_bash'])
   })
 
+  it('excludes EnterPlanMode (renders as inline marker, no status badge)', () => {
+    const msg = assistant([
+      toolUse('EnterPlanMode', 'tu_enter'),
+      toolUse('Bash', 'tu_bash'),
+    ])
+    // EnterPlanMode is not in PLAN_TOOL_NAMES but is explicitly excluded so it
+    // never gets a generic running badge next to its inline marker.
+    expect(getToolUseStarts(msg)).toEqual(['tu_bash'])
+  })
+
   it('excludes Agent / Task / Explore (SUBAGENT_TOOL_NAMES)', () => {
     const msg = assistant([
       toolUse('Agent', 'tu_agent'),
@@ -165,6 +176,143 @@ describe('getToolResultOutcomes', () => {
   it('returns empty for non-user messages', () => {
     const msg = assistant([toolUse('Bash', 'tu_bash')])
     expect(getToolResultOutcomes(msg)).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// getToolResultEntries — carries content + is_error through
+// ---------------------------------------------------------------------------
+
+describe('getToolResultEntries', () => {
+  it('carries content and isError for each tool_result', () => {
+    const msg = user([
+      toolResult('tu_a', { content: 'hello' }),
+      toolResult('tu_b', { isError: true, content: 'boom' }),
+    ])
+    expect(getToolResultEntries(msg)).toEqual([
+      { toolUseId: 'tu_a', content: 'hello', isError: false },
+      { toolUseId: 'tu_b', content: 'boom', isError: true },
+    ])
+  })
+
+  it('preserves array (block) content shape', () => {
+    const content = [{ type: 'text', text: 'line' }]
+    const msg = user([toolResult('tu_a', { content })])
+    expect(getToolResultEntries(msg)).toEqual([
+      { toolUseId: 'tu_a', content, isError: false },
+    ])
+  })
+
+  it('ignores non-string tool_use_id and non-user messages', () => {
+    const bad = { type: 'tool_result', tool_use_id: 123, content: 'ok' } as unknown as Block
+    expect(getToolResultEntries(user([bad]))).toEqual([])
+    expect(getToolResultEntries(assistant([toolUse('Bash', 'tu_bash')]))).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Reducer integration — toolResults map lifecycle
+// ---------------------------------------------------------------------------
+
+describe('reducer: toolResults lifecycle', () => {
+  it('captures the result payload for a seeded generic tool', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: assistant([toolUse('Bash', 'tu_bash')]),
+    })
+    // No result yet.
+    expect(state.toolResults.has('tu_bash')).toBe(false)
+
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: user([toolResult('tu_bash', { content: 'stdout here' })], 'r-1'),
+    })
+    expect(state.toolResults.get('tu_bash')).toEqual({ content: 'stdout here', isError: false })
+  })
+
+  it('marks isError true when the result fails', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: assistant([toolUse('Read', 'tu_read')]),
+    })
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: user([toolResult('tu_read', { isError: true, content: 'ENOENT' })], 'r-2'),
+    })
+    expect(state.toolResults.get('tu_read')).toEqual({ content: 'ENOENT', isError: true })
+  })
+
+  it('does NOT capture results for excluded tools (Plan/Subagent/Question)', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: assistant([
+        toolUse('ExitPlanMode', 'tu_plan'),
+        toolUse('Agent', 'tu_agent'),
+        toolUse('AskUserQuestion', 'tu_q'),
+        toolUse('Bash', 'tu_bash'),
+      ]),
+    })
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: user([
+        toolResult('tu_plan', { content: 'plan body' }),
+        toolResult('tu_agent', { content: 'agent output' }),
+        toolResult('tu_q', { content: 'answers' }),
+        toolResult('tu_bash', { content: 'ok' }),
+      ], 'r-1'),
+    })
+    // Only the generic Bash tool's result is captured — the bespoke-card
+    // tools own their own result rendering.
+    expect(state.toolResults.has('tu_plan')).toBe(false)
+    expect(state.toolResults.has('tu_agent')).toBe(false)
+    expect(state.toolResults.has('tu_q')).toBe(false)
+    expect(state.toolResults.get('tu_bash')).toEqual({ content: 'ok', isError: false })
+  })
+
+  it('ignores an orphan result whose tool_use was never seeded', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: assistant([toolUse('Bash', 'tu_bash')]),
+    })
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: user([toolResult('tu_unknown', { content: 'orphan' })], 'r-x'),
+    })
+    // Not stored — the UI renders it as a standalone orphan bubble instead.
+    expect(state.toolResults.has('tu_unknown')).toBe(false)
+  })
+
+  it('rebuilds toolResults from cached messages on hydration', () => {
+    const cachedMessages = [
+      assistant([toolUse('Bash', 'tu_bash'), toolUse('Read', 'tu_read')], 'a-1'),
+      user([toolResult('tu_bash', { content: 'done' })], 'r-1'),
+      user([toolResult('tu_read', { isError: true, content: 'ENOENT' })], 'r-2'),
+      assistant([toolUse('Grep', 'tu_grep')], 'a-2'),
+      // No tool_result for tu_grep yet.
+    ]
+    const seeded = createInitialSessionState('s1')
+    const state = rebuildIndexesFromMessages(seeded, cachedMessages)
+    expect(state.toolResults.get('tu_bash')).toEqual({ content: 'done', isError: false })
+    expect(state.toolResults.get('tu_read')).toEqual({ content: 'ENOENT', isError: true })
+    expect(state.toolResults.has('tu_grep')).toBe(false)
+  })
+
+  it('keeps toolResults identity-stable when nothing matches', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: assistant([toolUse('Bash', 'tu_bash')]),
+    })
+    const before = state.toolResults
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: user([toolResult('tu_unknown', { content: 'orphan' })], 'r-x'),
+    })
+    expect(state.toolResults).toBe(before)
   })
 })
 

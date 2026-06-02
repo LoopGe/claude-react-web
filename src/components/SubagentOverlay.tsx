@@ -8,7 +8,7 @@ import { memo, useEffect } from 'react'
 import { MessageList } from './MessageList'
 import { formatElapsed } from '../utils/format'
 import { IconX } from './icons/ToolIcons'
-import type { ActiveSubagent, PlanStatus, ToolStatus, TranscriptItem } from '../session-store/types'
+import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 
 interface Props {
@@ -30,6 +30,10 @@ interface Props {
    *  subagent-internal tool ids (it ignores parent_tool_use_id), so the
    *  data exists — it just has to reach this MessageList. */
   toolStatus?: ReadonlyMap<string, ToolStatus>
+  /** Captured tool_result payloads — forwarded so subagent-internal tool
+   *  cards merge their results inline too (the reducer seeds those ids
+   *  regardless of parent_tool_use_id). */
+  toolResults?: ReadonlyMap<string, ToolResultEntry>
   planStatus?: ReadonlyMap<string, PlanStatus>
   planContent?: ReadonlyMap<string, string>
   questionAnswers?: ReadonlyMap<string, QuestionAnswerEntry[]>
@@ -44,6 +48,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
   onPop,
   showSystemEvents,
   toolStatus,
+  toolResults,
   planStatus,
   planContent,
   questionAnswers,
@@ -145,6 +150,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
             parentToolUseIdFilter={currentId}
             showSystemEvents={showSystemEvents}
             toolStatus={toolStatus}
+            toolResults={toolResults}
             planStatus={planStatus}
             planContent={planContent}
             questionAnswers={questionAnswers}

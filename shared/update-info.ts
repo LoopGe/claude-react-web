@@ -7,8 +7,19 @@
 // `error` to decide whether to render the banner or an About-tab notice.
 
 export interface UpdateInfo {
-  /** Always present: the version baked into this build (from package.json). */
+  /** Always present: the version baked into this build (from package.json).
+   *  This is the version of the *running process* — it never changes for the
+   *  lifetime of the process, even after an in-app update rewrites the
+   *  package on disk. */
   current: string
+  /** The version read from the *on-disk* package.json at request time. After
+   *  an in-app `npm i -g …@latest`, the package on disk is upgraded while the
+   *  running process still reports the old `current`; this field reflects the
+   *  new on-disk version immediately. When `installed` is strictly newer than
+   *  `current`, an update has been applied and is pending a restart. Undefined
+   *  when the on-disk package.json couldn't be located (e.g. unusual install
+   *  layout) — the UI then falls back to showing only `current`. */
+  installed?: string
   /** The canonical npm package name (from package.json `name`). The UI uses
    *  this to build the upgrade command so a scoped name (e.g.
    *  `@mi/claude-react-web`) is reflected verbatim instead of a hardcoded
@@ -71,4 +82,65 @@ export interface UpdateActionResult {
   /** The version we installed `@latest` resolved to, when known (echoed from
    *  the cached UpdateInfo.latest). Purely informational for the toast. */
   latest?: string
+  /** The version read from the on-disk package.json *after* the install
+   *  completed. This is the authoritative "what actually got written" value —
+   *  the client compares it to the pre-update running version to confirm the
+   *  upgrade landed. Undefined when the on-disk package.json couldn't be read. */
+  installedVersion?: string
+  /** True when the post-install on-disk version is strictly newer than the
+   *  running version — i.e. the update verifiably landed on disk and a restart
+   *  will apply it. False when the on-disk version is unchanged (npm reported
+   *  "up to date" / install was a no-op) or couldn't be confirmed. */
+  updateApplied?: boolean
+}
+
+// ── Version comparison ───────────────────────────────────────────────
+//
+// Lives here (not in the server) so both ends compare versions identically.
+// The server uses it to compute `hasUpdate` / `updateApplied`; the client
+// uses it to decide whether the on-disk `installed` is genuinely ahead of the
+// running `current` (a "restart to apply" state) rather than a downgrade.
+
+interface ParsedSemver {
+  major: number
+  minor: number
+  patch: number
+  prerelease: boolean
+}
+
+function parseSemver(v: string): ParsedSemver | null {
+  // Match `<major>.<minor>.<patch>` followed optionally by `-prerelease`
+  // and/or `+build`. Per semver, build metadata (`+build…`) MUST be
+  // ignored for ordering — only `-pre…` marks a prerelease. We don't
+  // validate the prerelease token's contents — its mere presence is
+  // enough to skip the comparison.
+  const m = /^(\d+)\.(\d+)\.(\d+)(?:-([^+]+))?(?:\+.+)?$/.exec(v.trim())
+  if (!m) return null
+  const major = Number(m[1])
+  const minor = Number(m[2])
+  const patch = Number(m[3])
+  if (!Number.isFinite(major) || !Number.isFinite(minor) || !Number.isFinite(patch)) {
+    return null
+  }
+  return { major, minor, patch, prerelease: !!m[4] }
+}
+
+/** Compare two semver-ish version strings using only their numeric
+ *  major.minor.patch segments. Pre-release suffixes (`-rc.1`, `-beta`)
+ *  on EITHER side make the version count as "not newer" — we never
+ *  prompt users to upgrade to a pre-release, and we never count being
+ *  on a pre-release as "ahead of" the stable channel.
+ *
+ *  Returns true iff `latest` is strictly newer than `current`. Returns
+ *  false on parse failure (malformed inputs are treated as "not newer"
+ *  rather than throwing — a registry serving garbage shouldn't break
+ *  the UI). */
+export function isVersionNewer(current: string, latest: string): boolean {
+  const a = parseSemver(current)
+  const b = parseSemver(latest)
+  if (!a || !b) return false
+  if (a.prerelease || b.prerelease) return false
+  if (b.major !== a.major) return b.major > a.major
+  if (b.minor !== a.minor) return b.minor > a.minor
+  return b.patch > a.patch
 }

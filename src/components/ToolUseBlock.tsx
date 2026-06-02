@@ -11,9 +11,13 @@
 // (PlanCard's pending/approved/rejected, QuestionCard's pending/answered
 // /skipped, SubagentCard's child-conversation drill-in):
 //
-//   - ExitPlanMode / EnterPlanMode → PlanCard
+//   - ExitPlanMode                 → PlanCard (plan proposal, review lifecycle)
 //   - AskUserQuestion              → QuestionCard
 //   - Agent / Task / Explore       → SubagentCard
+//
+// EnterPlanMode is NOT a bespoke-card tool despite the similar name — it is the
+// plan-mode ENTRY signal (empty input, nothing to review) and renders as a
+// lightweight inline marker (EnterPlanModeMarker), distinct from ExitPlanMode.
 //
 // Everything else routes through TOOL_VIEWS at the bottom of the file.
 //
@@ -49,7 +53,7 @@ import {
   IconWebSearch,
 } from './icons/ToolIcons'
 import { formatJson } from '../utils/format'
-import { SUBAGENT_TOOL_NAMES, PLAN_TOOL_NAMES } from '../constants/toolNames'
+import { SUBAGENT_TOOL_NAMES, PLAN_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME } from '../constants/toolNames'
 import { QUESTION_TOOL_NAME, type QuestionAnswerEntry } from '../utils/question-answers'
 import { truncate } from '../utils/text'
 import { splitFilePath, shortenDir, detectLanguage } from '../utils/file-display'
@@ -100,7 +104,14 @@ export const ToolUseBlock = memo(function ToolUseBlock({ block }: { block: Block
   const input = block.input as Record<string, unknown> | undefined
   const id = extractToolUseId(block)
 
-  // ExitPlanMode / EnterPlanMode → bespoke PlanCard (own lifecycle).
+  // EnterPlanMode → lightweight inline marker. It only signals "the model is
+  // about to start planning" (empty input, no plan to show) — NOT a plan
+  // proposal, so it must NOT render a PlanCard. Check before PLAN_TOOL_NAMES.
+  if (name === ENTER_PLAN_MODE_TOOL_NAME) {
+    return <EnterPlanModeMarker />
+  }
+
+  // ExitPlanMode → bespoke PlanCard (own pending/approved/rejected lifecycle).
   if (name && PLAN_TOOL_NAMES.has(name)) {
     return <PlanCard input={input} toolUseId={id} />
   }
@@ -179,7 +190,30 @@ function FilePathTitle({
 }
 
 // ---------------------------------------------------------------------------
-// ExitPlanMode / EnterPlanMode
+// EnterPlanMode
+// ---------------------------------------------------------------------------
+
+/**
+ * Lightweight inline marker for the EnterPlanMode tool. The model emits this
+ * when it is about to start planning — the input is empty and there is nothing
+ * to approve, so this is intentionally NOT a card with a body or status badge.
+ * It reads as a thin divider-style cue ("Entered plan mode") so the transcript
+ * shows the mode transition without the noise of an empty Plan proposal card.
+ */
+function EnterPlanModeMarker() {
+  return (
+    <div className="enter-plan-marker" role="note" aria-label="Claude entered plan mode">
+      <span className="enter-plan-marker-icon" aria-hidden>
+        <IconClipboardList size={13} />
+      </span>
+      <span className="enter-plan-marker-label">Entered plan mode</span>
+      <span className="enter-plan-marker-sub">Claude is planning before acting</span>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ExitPlanMode
 // ---------------------------------------------------------------------------
 
 /**
@@ -189,8 +223,8 @@ function FilePathTitle({
  * is unreadable for that. `allowedPrompts` (the prompt-permission
  * rules the SDK proposes when approving) gets a small chip row.
  *
- * Both `ExitPlanMode` (current SDK name) and the legacy `EnterPlanMode`
- * route here — the input shape is the same in practice.
+ * Only `ExitPlanMode` (the plan PROPOSAL) routes here. `EnterPlanMode` is a
+ * separate, semantically-opposite tool and renders as EnterPlanModeMarker.
  *
  * Wrapped in <details> so long plans (the common case) collapse by
  * default once they've been resolved. Pending plans auto-expand —
@@ -243,7 +277,7 @@ const PlanCard = memo(function PlanCard({
       <summary>
         <div className="plan-card-header">
           <span className="plan-card-icon" aria-hidden>
-            <IconClipboardList size={15} />
+            <IconClipboardList size={14} />
           </span>
           <span className="plan-card-title">Plan proposal</span>
           <span className={`plan-card-status ${status}`} title={statusTitle}>
@@ -340,7 +374,7 @@ const QuestionCard = memo(function QuestionCard({
       <summary>
         <div className="question-inline-header">
           <span className="question-inline-icon" aria-hidden>
-            <IconMessageQuestion size={15} />
+            <IconMessageQuestion size={14} />
           </span>
           <span className="question-inline-title">
             {questions.length === 1 ? 'Question for you' : `${questions.length} questions for you`}
@@ -774,7 +808,7 @@ function TodoWriteView({ input, toolUseId }: ToolViewProps) {
           return (
             <li key={i} className={`inline-todo-item ${cls}`}>
               <span className="inline-todo-icon" aria-hidden>
-                <Icon size={13} />
+                <Icon size={12} />
               </span>
               <span className="inline-todo-text">{content}</span>
             </li>
@@ -1141,7 +1175,7 @@ function WebFetchToolView({ input, toolUseId }: ToolViewProps) {
       onClick={(e) => e.stopPropagation()}
     >
       {url}
-      <IconExternalLink size={11} />
+      <IconExternalLink size={12} />
     </a>
   ) : (
     <>
@@ -1277,7 +1311,7 @@ function NotebookEditToolView({ input, toolUseId }: ToolViewProps) {
     >
       {isDelete ? (
         <div className="notebook-edit-deleted">
-          <IconAlertCircle size={13} /> cell deleted
+          <IconAlertCircle size={12} /> cell deleted
         </div>
       ) : (
         <div className="diff-block-inner">

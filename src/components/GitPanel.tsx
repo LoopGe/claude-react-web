@@ -114,7 +114,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
             <button className="git-panel-icon-btn" onClick={onRefresh} aria-label="Refresh">⟳</button>
           </Tooltip>
           <Tooltip label="Close" placement="bottom">
-            <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={15} /></button>
+            <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={14} /></button>
           </Tooltip>
         </header>
         <div className="git-panel-empty">
@@ -132,7 +132,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
           <span className="git-panel-branch">⎇ git</span>
           <span className="git-panel-spacer" />
           <Tooltip label="Close" placement="bottom">
-            <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={15} /></button>
+            <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={14} /></button>
           </Tooltip>
         </header>
         <div className="git-panel-empty">
@@ -149,7 +149,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
           <span className="git-panel-branch">⎇ …</span>
           <span className="git-panel-spacer" />
           <Tooltip label="Close" placement="bottom">
-            <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={15} /></button>
+            <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={14} /></button>
           </Tooltip>
         </header>
         <div className="git-panel-empty">
@@ -225,7 +225,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
 
       {inProgress && (
         <div className="git-panel-banner" role="alert">
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconAlertTriangle size={13} /> {status.state} in progress</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconAlertTriangle size={12} /> {status.state} in progress</span>
           <span className="git-panel-spacer" />
           {status.state === 'merging' && (
             <button
@@ -741,7 +741,7 @@ function CommitSection({
                 : 'Stage some changes first to generate a commit message'
             }
           >
-            {generateBusy ? '…' : <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconSparkles size={13} /> Generate</span>}
+            {generateBusy ? '…' : <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconSparkles size={12} /> Generate</span>}
           </button>
         </span>
       </summary>

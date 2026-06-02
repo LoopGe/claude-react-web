@@ -11,6 +11,7 @@ import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
 import { isInAppDrag, readDragPayload, setDragPayload } from '../hooks/useDragPayload'
 import { useGitStatus } from '../hooks/useGitStatus'
+import { useIsMobile } from '../hooks/useIsMobile'
 import { statusClass, statusLabel, shortenModel } from '../utils/session-status'
 import { useModelOptions } from '../hooks/useModelOptions'
 import { shortenPath } from '../utils/paths'
@@ -149,6 +150,9 @@ export const ChatPanel = memo(function ChatPanel({
   onOpenSnippetsManager,
   onSaveCurrentAsSnippet,
 }: ChatPanelProps) {
+  // Panel swap via drag is a multi-panel desktop affordance; mobile is
+  // single-panel and touch can't HTML5-drag, so disable it there.
+  const isMobile = useIsMobile()
   /** State (not ref) so that Chat re-renders once the portal target mounts. */
   const [headerBtnEl, setHeaderBtnEl] = useState<HTMLDivElement | null>(null)
   const [dropActive, setDropActive] = useState(false)
@@ -264,8 +268,9 @@ export const ChatPanel = memo(function ChatPanel({
         className="chat-panel-header"
         // The header is the drag handle for panel swaps — the body stays
         // non-draggable so textarea text selection and scrolling work.
-        draggable
+        draggable={!isMobile}
         onDragStart={(e) => {
+          if (isMobile) return
           setDragPayload(e, { kind: 'main-panel', id: session.id })
         }}
       >
@@ -437,7 +442,7 @@ export const ChatPanel = memo(function ChatPanel({
         {session.error && (
           <Tooltip label={session.error}>
             <div className="chat-panel-error">
-              <IconAlertTriangle size={12} style={{ verticalAlign: '-2px', marginRight: 4, flexShrink: 0 }} />
+              <IconAlertTriangle size={12} style={{ marginRight: 4, flexShrink: 0 }} />
               {session.error}
             </div>
           </Tooltip>

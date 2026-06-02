@@ -234,7 +234,7 @@ export function QuestionDialog({ request, onSubmit, onSkipAll, onSubmitted, init
       <div className="perm-card">
         <div className="modal-header">
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span aria-hidden style={{ display: 'inline-flex' }}><IconMessageCircle size={18} /></span>
+            <span aria-hidden style={{ display: 'inline-flex' }}><IconMessageCircle size={16} /></span>
             Claude is asking
           </h3>
         </div>
@@ -421,7 +421,7 @@ function AnsweredBlock({ question, answer }: { question: QuestionSpec; answer: s
     <div className="question-block question-block-answered">
       <div className="question-header">
         {question.header && <span className="question-chip">{question.header}</span>}
-        <span className="question-answered-badge"><IconCheck size={13} /> answered</span>
+        <span className="question-answered-badge"><IconCheck size={12} /> answered</span>
       </div>
       <div className="question-text">{question.question}</div>
       <div className="question-answer-display">{answerText}</div>

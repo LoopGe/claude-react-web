@@ -82,9 +82,12 @@ describe('computePlanStatus', () => {
     expect(out.get('tu_1')).toBe('rejected')
   })
 
-  it('also matches the legacy EnterPlanMode tool name', () => {
+  it('does NOT treat EnterPlanMode as a plan proposal', () => {
+    // EnterPlanMode is the plan-mode ENTRY signal (empty input, nothing to
+    // review) — semantically opposite to ExitPlanMode. It must not appear in
+    // the plan-status map, so its tool_use stays out of PlanCard rendering.
     const out = computePlanStatus([asstWithToolUse('EnterPlanMode', 'tu_1')])
-    expect(out.get('tu_1')).toBe('pending')
+    expect(out.has('tu_1')).toBe(false)
   })
 
   it('tracks multiple plans in one transcript independently', () => {

@@ -11,16 +11,16 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { Markdown } from './Markdown'
 import { ToolUseBlock } from './ToolUseBlock'
-import { PlanStatusProvider, PlanContentProvider, ToolStatusProvider } from '../hooks/usePlanStatus'
+import { PlanStatusProvider, PlanContentProvider, ToolStatusProvider, ToolResultProvider, useToolResults } from '../hooks/usePlanStatus'
+import { ToolResultDetails } from './ToolCard'
 import { QuestionAnswersProvider } from '../hooks/useQuestionAnswers'
 import type { SdkMessage, Block } from '../types'
 import type { SessionRecap } from '../../shared/session-info'
 import { formatTokens, formatElapsed, formatJson, formatClockTime, formatFullTimestamp } from '../utils/format'
 import { Tooltip } from './Tooltip'
 import { useLocalStorage } from '../hooks/useLocalStorage'
-import type { ActiveSubagent, PlanStatus, ToolStatus, TranscriptItem } from '../session-store/types'
+import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
-import { truncate } from '../utils/text'
 import { getBlocks } from '../session-store/normalize'
 import { IconCopy, IconArrowDown, IconZap, IconSparkles, IconAlertTriangle, IconMessageCircle, IconDollar, IconClock, IconWrench, IconUser, IconExternalLink } from './icons/ToolIcons'
 import { countMatches, extractPlainText } from '../search'
@@ -61,6 +61,10 @@ interface Props {
   /** Generic tool lifecycle (running/success/error) keyed by tool_use_id.
    *  Drives the status badge on each ToolUseBlock card. */
   toolStatus?: ReadonlyMap<string, ToolStatus>
+  /** Captured tool_result payloads keyed by tool_use_id. Each generic
+   *  tool card renders its own result inline; the standalone "tool result"
+   *  bubble is suppressed for any tool_use_id present here. */
+  toolResults?: ReadonlyMap<string, ToolResultEntry>
   /** Current search query. When non-empty, matching text inside messages
    *  is highlighted. */
   searchQuery?: string
@@ -100,6 +104,9 @@ interface Props {
  *  `itemIndex` maps back to the original items[] position for search
  *  result scrolling (search indices reference the full, unfiltered list). */
 interface RenderableItem {
+  /** Stable per-message id (SdkMessage uuid, or a synthetic fallback).
+   *  Drives the new-message entrance-animation gate — see knownIdsRef. */
+  id: string
   msg: SdkMessage
   isCompactSummary: boolean
   itemIndex: number
@@ -111,6 +118,10 @@ interface RenderableItem {
    *  behind an in-flight turn, 'consumed' = SDK has started processing).
    *  Undefined for everything else. Drives the queued/processing chip. */
   deliveryStatus?: 'queued' | 'consumed'
+  /** Wall-clock ms when first observed. Carried from the TranscriptItem so
+   *  the entrance-animation gate can tell a live arrival (timestamp present)
+   *  from disk-restored history (undefined). */
+  receivedAt?: number
 }
 
 /** Stable empty-Map sentinels. Using `= new Map()` in the parameter
@@ -120,6 +131,7 @@ const EMPTY_PLAN_STATUS: ReadonlyMap<string, PlanStatus> = new Map()
 const EMPTY_PLAN_CONTENT: ReadonlyMap<string, string> = new Map()
 const EMPTY_QUESTION_ANSWERS: ReadonlyMap<string, QuestionAnswerEntry[]> = new Map()
 const EMPTY_TOOL_STATUS: ReadonlyMap<string, ToolStatus> = new Map()
+const EMPTY_TOOL_RESULTS: ReadonlyMap<string, ToolResultEntry> = new Map()
 
 /** Distance from the bottom (px) within which we treat the user as
  *  "still at the bottom" for follow-mode and the jump-to-bottom button.
@@ -131,7 +143,19 @@ const EMPTY_TOOL_STATUS: ReadonlyMap<string, ToolStatus> = new Map()
  *  (so re-entering the band restores follow-mode). */
 const NEAR_BOTTOM_PX = 200
 
-export const MessageList = memo(function MessageList({ items, recap, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false }: Props) {
+/** Entrance-animation gate tunables (see the gate block in MessageList).
+ *  MAX_ENTER_BATCH — only animate when the tail grows by at most this many
+ *    ids at once; a larger jump means a bulk load (replay / page), not a
+ *    live trickle.
+ *  ENTER_MAX_AGE_MS — a tail id only animates if its receivedAt is within
+ *    this window of now; filters disk-restored history whose timestamps are
+ *    stale even if it somehow reaches the tail path.
+ *  KNOWN_IDS_CAP — hard bound on the seen-id set for very long sessions. */
+const MAX_ENTER_BATCH = 4
+const ENTER_MAX_AGE_MS = 10_000
+const KNOWN_IDS_CAP = 4000
+
+export const MessageList = memo(function MessageList({ items, recap, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -182,11 +206,13 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
       }
       if (showSystemEvents || !item.hiddenByDefault) {
         out.push({
+          id: item.id,
           msg: item.msg,
           isCompactSummary: item.isCompactSummary,
           itemIndex: i,
           sending: item.sending,
           deliveryStatus: item.deliveryStatus,
+          receivedAt: item.receivedAt,
         })
       }
     }
@@ -235,6 +261,74 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
   }
   const firstItemIndex = firstItemIndexRef.current
   /* eslint-enable react-hooks/refs */
+
+  // --- New-message entrance animation gate -------------------------------
+  // Goal: play a one-shot "rise + blur-in" on messages that genuinely just
+  // ARRIVED live — never on the initial replay, session switches, loadOlder
+  // history prepends, the optimistic→echo user-message swap, or Virtuoso
+  // re-mounting an off-screen row as the user scrolls.
+  //
+  // The discriminator is "a small batch of previously-unseen ids appended at
+  // the TAIL of a non-empty list, each stamped with a recent wall-clock
+  // receivedAt". That single rule excludes every non-arrival case:
+  //   - initial replay / session switch → grows from empty (prevLen 0) or
+  //     adds many ids at once → skipped by the prevLen>0 + batch-size guards.
+  //   - loadOlder prepend → ids appear at the FRONT, not at indices >=
+  //     prevLen → not tail-appends → skipped.
+  //   - optimistic→echo swap → in-place replace at an existing index, list
+  //     length unchanged → no index >= prevLen → skipped (the optimistic
+  //     insert already animated the pop).
+  //   - showSystemEvents toggle → inserts in the middle / re-adds known ids,
+  //     and the ids were already seen → skipped.
+  //   - scroll re-mount → id already in knownIdsRef and already consumed from
+  //     enterIdsRef → skipped.
+  // receivedAt recency disambiguates a freshly-typed first message (animate)
+  // from a replayed single-message session (history timestamp is stale).
+  const knownIdsRef = useRef<Set<string>>(new Set())
+  const enterIdsRef = useRef<Set<string>>(new Set())
+  const prevLenRef = useRef(0)
+  /* eslint-disable react-hooks/refs -- ref reads/writes during render commit
+     the enter-set together with `data`, mirroring the firstItemIndex block. */
+  {
+    const prevLen = prevLenRef.current
+    const curLen = renderableItems.length
+    // Tail-append candidates: ids at index >= prevLen that we've never seen.
+    // Only consider when growing a non-empty list by a small delta (live
+    // arrivals trickle in 1–2 at a time; bulk loads add many at once).
+    const delta = curLen - prevLen
+    const armed = replayReady && prevLen > 0 && delta > 0 && delta <= MAX_ENTER_BATCH
+    if (armed) {
+      // eslint-disable-next-line react-hooks/purity -- Date.now() gates animation recency; a stale value at worst skips one animation, never corrupts state.
+      const now = Date.now()
+      for (let i = prevLen; i < curLen; i++) {
+        const it = renderableItems[i]
+        if (knownIdsRef.current.has(it.id)) continue
+        if (typeof it.receivedAt === 'number' && now - it.receivedAt < ENTER_MAX_AGE_MS) {
+          enterIdsRef.current.add(it.id)
+        }
+      }
+    }
+    // Always record every current id so a later in-place swap / re-mount of
+    // the same message is recognised as already-seen and never re-animates.
+    for (const it of renderableItems) knownIdsRef.current.add(it.id)
+    // Bound the set so a multi-thousand-message session doesn't leak ids.
+    if (knownIdsRef.current.size > KNOWN_IDS_CAP) {
+      const live = new Set(renderableItems.map((it) => it.id))
+      for (const id of enterIdsRef.current) live.add(id)
+      knownIdsRef.current = live
+    }
+    prevLenRef.current = curLen
+  }
+  /* eslint-enable react-hooks/refs */
+
+  // Consume an entrance flag exactly once: clear it from the set when the
+  // animation ends and strip the class off the DOM node directly, so a
+  // scroll-driven re-mount of the same row can't replay it.
+  const handleEnterAnimationEnd = useCallback((e: React.AnimationEvent<HTMLDivElement>) => {
+    const id = e.currentTarget.dataset.enterId
+    if (id) enterIdsRef.current.delete(id)
+    e.currentTarget.classList.remove('msg-enter')
+  }, [])
 
   // Fires when the user scrolls to the top. Pull the previous page of
   // history from disk if there's more and we're not already loading.
@@ -500,8 +594,16 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
       searchActiveMsgIdx >= 0 &&
       item.itemIndex === searchActiveMsgIdx
     const activeMatchInItem = isActiveItem ? searchActiveMatchInItem : undefined
+    // One-shot entrance animation for genuinely-new arrivals. The flag is
+    // set during render (gate block above) and cleared on animationend, so a
+    // scroll-driven re-mount of the same row renders without the class.
+    const isEntering = enterIdsRef.current.has(item.id)
     return (
-      <div className="virtuoso-item-wrapper">
+      <div
+        className={isEntering ? 'virtuoso-item-wrapper msg-enter' : 'virtuoso-item-wrapper'}
+        data-enter-id={isEntering ? item.id : undefined}
+        onAnimationEnd={isEntering ? handleEnterAnimationEnd : undefined}
+      >
         <MessageView
           msg={item.msg}
           isCompactSummary={item.isCompactSummary}
@@ -513,7 +615,7 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
         />
       </div>
     )
-  }, [pendingInterruptRef, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem])
+  }, [pendingInterruptRef, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, handleEnterAnimationEnd])
 
   // Footer combines two optional rows pinned to the bottom of the
   // transcript: the streaming-typing bubble (live token deltas) and the
@@ -546,6 +648,7 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
     <PlanContentProvider value={planContent}>
     <QuestionAnswersProvider value={questionAnswers}>
     <ToolStatusProvider value={toolStatus}>
+    <ToolResultProvider value={toolResults}>
     <div className="chat-messages-wrap">
       <div className="chat-messages">
         {renderableItems.length === 0 ? (
@@ -582,6 +685,7 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
         </button>
       )}
     </div>
+    </ToolResultProvider>
     </ToolStatusProvider>
     </QuestionAnswersProvider>
     </PlanContentProvider>
@@ -598,7 +702,7 @@ const OlderHistoryHeader = memo(function OlderHistoryHeader({ loading }: { loadi
     <div className="chat-older-history" aria-live="polite">
       {loading ? (
         <span className="chat-older-history-loading">
-          <IconZap size={13} aria-hidden />
+          <IconZap size={12} aria-hidden />
           Loading earlier messages…
         </span>
       ) : (
@@ -734,9 +838,22 @@ const MessageView = memo(function MessageView({
     return out
   }, [blocks, searchQuery, activeMatchInItem])
 
+  // Set of tool_use_ids whose results have been merged into a tool card.
+  // Read unconditionally (hooks rule) even though only the user branch
+  // uses it to decide which tool_result blocks to suppress.
+  const mergedToolResults = useToolResults()
+
   if (type === 'user') {
     const userContent = extractUserText(msg)
-    const toolBlocks = blocks.filter((b) => b.type === 'tool_result')
+    // Tool results that have been merged into their originating tool card
+    // are suppressed here (rendered inline by ToolCard instead). Only
+    // ORPHAN results — whose tool_use_id never matched a seeded generic
+    // card — fall through to the standalone bubble below, so no result is
+    // ever silently dropped.
+    const allToolBlocks = blocks.filter((b) => b.type === 'tool_result')
+    const toolBlocks = allToolBlocks.filter(
+      (b) => typeof b.tool_use_id !== 'string' || !mergedToolResults.has(b.tool_use_id),
+    )
 
     // Synthetic "conversation summary" frame that the SDK injects right
     // after compact_boundary. It has role=user because the model will
@@ -760,14 +877,23 @@ const MessageView = memo(function MessageView({
     // Real user input always has neither: parent_tool_use_id is null
     // AND content is either a string or an array of text blocks.
     const isSubagent = (msg as Record<string, unknown>).parent_tool_use_id != null
-    const isToolResult = toolBlocks.length > 0
+    // `allToolBlocks` decides "is this a synthetic tool-result frame" (so
+    // it never falls through to the real-user path even when every result
+    // was merged into a card); `toolBlocks` (orphans only) decides what to
+    // actually draw in the fallback bubble.
+    const isToolResult = allToolBlocks.length > 0
+    const hasOrphanResults = toolBlocks.length > 0
     if (isToolResult || isSubagent) {
-      // Nothing visible? Don't draw an empty card — subagent heartbeat
-      // frames sometimes carry no text and no tool_result.
-      if (toolBlocks.length === 0 && !userContent) return null
-      const label = isToolResult ? 'tool result' : 'subagent'
+      // Nothing left to show? Don't draw an empty card. This covers both
+      // subagent heartbeat frames (no text, no result) AND the common new
+      // case where every tool_result has been merged into its card.
+      if (!hasOrphanResults && !userContent) return null
+      // 'subagent' only for a genuine subagent frame with no orphan result
+      // to show; everything else (orphan results, or a merged-only
+      // tool-result frame carrying stray text) reads as 'tool result'.
+      const label = isSubagent && !hasOrphanResults ? 'subagent' : 'tool result'
       return (
-        <div className={`msg tool-result${isSubagent && !isToolResult ? ' subagent' : ''}`}>
+        <div className={`msg tool-result${isSubagent && !hasOrphanResults ? ' subagent' : ''}`}>
           <div className="msg-header">
             <span>{label}</span>
           </div>
@@ -799,7 +925,7 @@ const MessageView = memo(function MessageView({
           title="Copy message"
           aria-label="Copy message"
         >
-          <IconCopy size={13} />
+          <IconCopy size={12} />
         </button>
         <div className="msg-header">
           <span><IconUser size={12} /> you</span>
@@ -876,7 +1002,7 @@ const MessageView = memo(function MessageView({
             title="Copy message"
             aria-label="Copy message"
           >
-            <IconCopy size={13} />
+            <IconCopy size={12} />
           </button>
         )}
         <div className="msg-header">
@@ -894,16 +1020,40 @@ const MessageView = memo(function MessageView({
   }
 
   if (type === 'result') {
-    const label = isInterrupted ? 'interrupted' : 'result'
-    const cost = typeof msg.total_cost_usd === 'number' ? ` · $${msg.total_cost_usd.toFixed(4)}` : ''
-    const dur = typeof msg.duration_ms === 'number' ? ` · ${Math.round(msg.duration_ms)}ms` : ''
+    const cost = typeof msg.total_cost_usd === 'number' ? `$${msg.total_cost_usd.toFixed(4)}` : ''
+    const durMs = typeof msg.duration_ms === 'number' ? Math.round(msg.duration_ms) : null
+    // Render sub-second durations as ms, ≥1s as one-decimal seconds — a
+    // bare "1234ms" reads slower than "1.2s" at a glance.
+    const dur = durMs == null ? '' : durMs >= 1000 ? `${(durMs / 1000).toFixed(1)}s` : `${durMs}ms`
     const turns =
-      typeof msg.num_turns === 'number' ? ` · ${msg.num_turns} turn${msg.num_turns === 1 ? '' : 's'}` : ''
+      typeof msg.num_turns === 'number' ? `${msg.num_turns} turn${msg.num_turns === 1 ? '' : 's'}` : ''
+    // Token usage from the SDK's result payload. `input_tokens` is the
+    // turn-accumulated prompt total and — per the Anthropic API — does NOT
+    // include cache tokens, so the true input volume sums all three input
+    // buckets. `output_tokens` is what the model actually generated.
+    const usage = (msg as {
+      usage?: {
+        input_tokens?: number
+        output_tokens?: number
+        cache_read_input_tokens?: number | null
+        cache_creation_input_tokens?: number | null
+      }
+    }).usage
+    const inTok = usage
+      ? (usage.input_tokens ?? 0) +
+        (usage.cache_read_input_tokens ?? 0) +
+        (usage.cache_creation_input_tokens ?? 0)
+      : 0
+    const outTok = usage?.output_tokens ?? 0
+    const tokens = inTok > 0 || outTok > 0 ? `${formatTokens(inTok)} in · ${formatTokens(outTok)} out` : ''
+    const meta = [turns, dur, tokens, cost].filter(Boolean).join(' · ')
     return (
-      <div className={`msg result${isInterrupted ? ' interrupted' : ''}`}>
-        <div className="msg-header">
-          <span>{label}{turns}{dur}{cost}</span>
-        </div>
+      <div
+        className={`msg result${isInterrupted ? ' interrupted' : ''}`}
+        aria-label={isInterrupted ? 'turn interrupted' : 'turn complete'}
+      >
+        <span className="result-mark" aria-hidden="true">{isInterrupted ? '⊘' : '✓'}</span>
+        {meta && <span className="result-meta">{meta}</span>}
       </div>
     )
   }
@@ -1292,50 +1442,13 @@ const BlockView = memo(function BlockView({ block, searchQuery, activeMatchIdx }
   )
 })
 
-// Memoised for the same reason as BlockView — when `searchQuery` changes
-// every MessageView re-renders, and we don't want to rebuild every
-// expanded tool-result `<details>` (which can contain thousands of chars
-// of pre-formatted output) just because the user hit a key in search.
+// Standalone orphan-result bubble: a tool_result whose tool_use_id never
+// matched a seeded generic tool card (so it couldn't be merged inline).
+// Delegates formatting to the shared ToolResultDetails (also used by
+// ToolCard) so the preview/truncation stays identical across both sites.
 const ToolResultBlock = memo(function ToolResultBlock({ block }: { block: Block }) {
-  const content = block.content
-  const preview = toolResultPreview(content)
-  const body =
-    typeof content === 'string'
-      ? truncate(content, 4000)
-      : (() => {
-          const blocks = Array.isArray(content) ? (content as Block[]) : []
-          const texts = blocks
-            .map((b) => {
-              if (b.type === 'text' && typeof b.text === 'string') return b.text
-              return formatJson(b)
-            })
-            .join('\n\n')
-          return truncate(texts || formatJson(content), 4000)
-        })()
-  return (
-    <details className="tool-result-details">
-      <summary className="tool-result-summary">{preview}</summary>
-      <div className="tool-input">{body}</div>
-    </details>
-  )
+  return <ToolResultDetails content={block.content} />
 })
-
-/** One-line preview for the collapsed <summary>.
- *  Keeps the transcript scannable when many tool results are present. */
-function toolResultPreview(content: unknown): string {
-  if (typeof content === 'string') {
-    const line = content.split('\n')[0] ?? content
-    return line ? truncate(line, 120) : '(empty)'
-  }
-  const blocks = Array.isArray(content) ? (content as Block[]) : []
-  if (blocks.length === 0) return '(empty)'
-  const first = blocks[0]
-  if (first.type === 'text' && typeof first.text === 'string') {
-    const line = first.text.split('\n')[0] ?? first.text
-    return line ? truncate(line, 120) : '(empty result)'
-  }
-  return `[${first.type}]`
-}
 
 function extractUserText(msg: SdkMessage): string | null {
   const content = msg.message?.content
@@ -1432,7 +1545,7 @@ export const WorkingBubble = memo(function WorkingBubble({
       <ElapsedTimer startedAt={startedAt} className="working-timer" />
       {tokenRate != null && tokenRate > 0 && (
         <span className="working-rate">
-          <IconZap size={11} aria-hidden /> {tokenRate} tok/s
+          <IconZap size={12} aria-hidden /> {tokenRate} tok/s
         </span>
       )}
       {hasSubagents && (

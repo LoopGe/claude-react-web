@@ -1,27 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getSessionLastMessageUuid, getSessionStore, useSessionField } from '../session-store/selectors'
 import { sessionStoreRegistry } from '../session-store/registry'
+import { isDiskStableMsg } from '../session-store/normalize'
 import { clearAllSessionStorage } from '../session-store/store'
-import type { ActiveSubagent, ActivePhase, PlanStatus, ToolStatus, TranscriptItem } from '../session-store/types'
+import type { ActiveSubagent, ActivePhase, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
 import { useWsHub, useWsHubStatus } from './useWsHub'
 import { api } from './useApi'
 import type { WsServerFrame } from '../ws-types'
 import type { PermissionRequest, PermissionResolved, SdkMessage, SkillFrontmatter } from '../types'
 
-/** Disk-stable message types whose uuid matches between the in-memory ring
- *  and the on-disk transcript. User PROMPT uuids are minted server-side at
- *  send() time and do NOT match disk, so they can't anchor the first page.
- *  assistant / system frames (and tool_result-bearing user frames) carry
- *  SDK-native uuids that are identical on disk. */
+/** The disk-stable uuid of a message, or null. A message whose uuid matches
+ *  between the in-memory ring and the on-disk transcript can anchor the first
+ *  history page; plain user PROMPT uuids are minted server-side at send() time
+ *  and do NOT match disk, so they return null. The type-level rule lives in
+ *  isDiskStableMsg. (The reducer's front-trim uses the stricter isTrimBoundary
+ *  — this scan can tolerate loose matches because it walks past them to a real
+ *  one, but a forced boundary cannot. See isTrimBoundary's doc comment.) */
 function diskStableUuid(msg: SdkMessage): string | null {
   if (typeof msg.uuid !== 'string') return null
-  if (msg.type === 'assistant' || msg.type === 'system') return msg.uuid
-  // tool_result-bearing user frames have parent_tool_use_id set and a
-  // native uuid; plain prompts have parent_tool_use_id null.
-  if (msg.type === 'user' && (msg as Record<string, unknown>).parent_tool_use_id != null) {
-    return msg.uuid
-  }
-  return null
+  return isDiskStableMsg(msg) ? msg.uuid : null
 }
 
 interface HistoryPageResponse {
@@ -67,6 +64,7 @@ export interface ChatStream {
   planContent: ReadonlyMap<string, string>
   questionAnswers: ReadonlyMap<string, import('../utils/question-answers').QuestionAnswerEntry[]>
   toolStatus: ReadonlyMap<string, ToolStatus>
+  toolResults: ReadonlyMap<string, ToolResultEntry>
   activeSubagents: ActiveSubagent[]
   subagentIndex: ReadonlyMap<string, ActiveSubagent>
   replayReady: boolean
@@ -129,6 +127,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   const planContent = useSessionField(sessionId, 'planContent')
   const questionAnswers = useSessionField(sessionId, 'questionAnswers')
   const toolStatus = useSessionField(sessionId, 'toolStatus')
+  const toolResults = useSessionField(sessionId, 'toolResults')
   const activeSubagents = useSessionField(sessionId, 'activeSubagents')
   const subagentIndex = useSessionField(sessionId, 'subagentIndex')
   const replayReady = useSessionField(sessionId, 'replayReady')
@@ -408,6 +407,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       planContent,
       questionAnswers,
       toolStatus,
+      toolResults,
       activeSubagents,
       subagentIndex,
       replayReady,
@@ -420,6 +420,6 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       hasOlder,
       loadingOlder,
     }),
-    [items, messages, queuedAhead, displayedError, contextUsage, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, activeSubagents, subagentIndex, replayReady, trackSentTurn, insertUserMessage, rollbackUserMessage, reset, clearError, loadOlder, hasOlder, loadingOlder],
+    [items, messages, queuedAhead, displayedError, contextUsage, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, replayReady, trackSentTurn, insertUserMessage, rollbackUserMessage, reset, clearError, loadOlder, hasOlder, loadingOlder],
   )
 }

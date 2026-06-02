@@ -255,7 +255,7 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
           <div className="modal-header">
             <h3>New session</h3>
             <button className="btn btn-icon-sm" onClick={onCancel} aria-label="Close dialog">
-              <IconX size={15} />
+              <IconX size={14} />
             </button>
           </div>
 
@@ -298,7 +298,7 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
                         title="Forget this path"
                         aria-label={`Forget ${p}`}
                       >
-                        <IconX size={11} />
+                        <IconX size={12} />
                       </button>
                     </span>
                   ))}
@@ -364,7 +364,7 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
                           title="Forget this model"
                           aria-label={`Forget ${m}`}
                         >
-                          <IconX size={11} />
+                          <IconX size={12} />
                         </button>
                       </span>
                     ))}
@@ -591,7 +591,7 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
                             title="Edit server"
                             aria-label="Edit server"
                           >
-                            <IconPencil size={13} />
+                            <IconPencil size={12} />
                           </button>
                         </label>
                       ))}

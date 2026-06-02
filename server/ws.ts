@@ -24,6 +24,7 @@
 import type { IncomingMessage, Server as HttpServer } from 'node:http'
 import type { Socket } from 'node:net'
 import { WebSocketServer, type WebSocket } from 'ws'
+import { isUpgradeAuthorized } from './auth.js'
 import type { SessionBroadcaster } from './session-types.js'
 import {
   WS_PATH,
@@ -161,6 +162,15 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
     // different prefix, if reverse-proxied) can continue.
     const url = req.url ?? ''
     if (!url.startsWith(WS_PATH)) return
+    // Web access gate: reject the upgrade before the handshake when the
+    // request lacks a valid token. The browser WS carries the crw_token
+    // cookie automatically (same-origin), so an authenticated page just
+    // works; a direct connection without the token is refused.
+    if (!isUpgradeAuthorized(req)) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+      socket.destroy()
+      return
+    }
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit('connection', ws, req)
     })

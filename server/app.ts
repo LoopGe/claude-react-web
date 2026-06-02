@@ -8,6 +8,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { SessionManager } from './session-manager.js'
+import { buildAuthMiddleware } from './auth.js'
 import { createErrorHandler } from './errors.js'
 import { buildApiRouter } from './routes/index.js'
 import { buildFsRouter } from './fs-routes.js'
@@ -109,6 +110,13 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
     maxSize: MAX_BODY_BYTES,
     onError: (c) => c.json({ error: 'request body too large' }, 413),
   }))
+
+  // Web access gate. No-op unless auth is enabled (set by cli.ts when
+  // bound to a non-loopback host or when an access token is configured).
+  // Runs after CORS + body-limit, before logging + routes + static, so an
+  // unauthenticated request never reaches the API, the WS, or the client
+  // bundle.
+  app.use('*', buildAuthMiddleware())
 
   const httpLog = createLogger('http')
   app.use('*', async (c, next) => {

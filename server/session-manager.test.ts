@@ -203,6 +203,10 @@ describe('SessionManager', () => {
     expect(info.cwd).toBe('/tmp')
     expect(mockHandles).toHaveLength(1)
     expect(mockHandles[0].options.resume).toBeUndefined()
+    // Pin the SDK session_id to our id so the on-disk transcript filename
+    // matches `id` (the bug this guards against: SDK auto-generated its own
+    // UUID, so our id matched no jsonl and fork/resume probes failed).
+    expect(mockHandles[0].options.sessionId).toBe(info.id)
   })
 
   it('global stream emits `created` on spawn and `update` on subsequent changes', async () => {
@@ -395,6 +399,10 @@ describe('SessionManager', () => {
     expect(mockHandles[1].options.resume).toBe(info.id)
     expect(mockHandles[1].options.cwd).toBe('/tmp')
     expect(mockHandles[1].options.model).toBe('m1')
+    // Plain resume must NOT set sessionId — the SDK rejects sessionId
+    // alongside resume unless forkSession is also set, and resume preserves
+    // the existing session_id on its own anyway.
+    expect(mockHandles[1].options.sessionId).toBeUndefined()
   })
 
   it('resume() is idempotent when the session is already live', async () => {
@@ -486,6 +494,11 @@ describe('SessionManager', () => {
     expect(mockHandles[1].options.cwd).toBe('/tmp')
     expect(mockHandles[1].options.model).toBe('m1')
     expect(forked.title).toBe('parent (fork)')
+    // The fork pins the SDK session_id to the fork's fresh id (allowed by the
+    // SDK only because forkSession is set alongside resume). This makes the
+    // fork's transcript land at <forkedId>.jsonl instead of an SDK-chosen
+    // name that our id would never match.
+    expect(mockHandles[1].options.sessionId).toBe(forked.id)
   })
 
   it('fork() works on dormant (unloaded) sessions too', async () => {

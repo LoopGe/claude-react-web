@@ -11,6 +11,7 @@ import type { McpServerConfigMeta } from '../types'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
 import type { UpdateActionResult, UpdateInfo } from '../../shared/update-info'
+import { isVersionNewer } from '../../shared/update-info'
 
 // MarketplaceTab pulls in catalog-rendering UI; McpInstaller is a heavy
 // modal-within-modal. Both are only opened on demand from inside the
@@ -780,7 +781,7 @@ function LogsTab() {
       {err && <div className="modal-error" style={{ marginTop: 12 }}>{err}</div>}
       {savedAt && !err && (
         <div style={{ marginTop: 8, fontSize: 12, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-          <IconCheck size={13} /> Updated
+          <IconCheck size={12} /> Updated
         </div>
       )}
     </div>
@@ -832,6 +833,13 @@ function AboutTab({
   const displayError = info?.error ?? error
   const hasUpdate = !!(info?.hasUpdate && info.latest)
   const disabled = !!info?.disabled
+  // The on-disk package was upgraded but the running process is still the old
+  // build (in-app update applied, restart pending). Uses the same version
+  // comparison as the server's `updateApplied` so the two ends agree — a
+  // strict "installed is newer than running", NOT a bare inequality (which
+  // would also fire on a downgrade and mislabel it "newer version").
+  const restartPending =
+    !!info?.installed && !!info.current && isVersionNewer(info.current, info.installed)
   const upToDate =
     !!info && !info.checking && !info.hasUpdate && info.latest && !displayError && !disabled
   // An in-app update can only replace a global install. For npx / dev runs
@@ -844,9 +852,22 @@ function AboutTab({
     try {
       const res = await onUpdate()
       if (res.performed) {
-        toast.success(
-          `Updated to ${res.latest ?? 'the latest version'} — restart the server to apply.`,
-        )
+        if (res.updateApplied) {
+          // The on-disk package was verifiably upgraded — tell the user the
+          // exact version that landed and that a restart applies it.
+          toast.success(
+            `Installed ${res.installedVersion ?? res.latest ?? 'the latest version'} on disk — restart the server to apply.`,
+          )
+        } else {
+          // Install ran but the on-disk version didn't advance — npm reported
+          // the package was already current (a no-op), or the on-disk version
+          // couldn't be confirmed. Either way, nothing to restart for.
+          toast.info(
+            res.installedVersion
+              ? `Already on the latest version (${res.installedVersion}).`
+              : 'Install completed, but the new version could not be confirmed on disk.',
+          )
+        }
         onRefresh?.()
       } else {
         // Server declined to install (npx / unknown). Point the user at the
@@ -863,11 +884,37 @@ function AboutTab({
       <Field label="Project">
         <div style={{ fontSize: 13 }}>claude-react-web</div>
       </Field>
-      <Field label="Current version">
+      <Field
+        label="Running version"
+        hint={restartPending ? undefined : 'The version of the currently running server process.'}
+      >
         <div style={{ fontSize: 13, fontFamily: 'var(--mono)' }}>
           {info?.current ?? '—'}
         </div>
       </Field>
+      {restartPending && (
+        <Field
+          label="Installed on disk"
+          hint="A newer version was installed but the running server is still the old one."
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 13, fontFamily: 'var(--mono)' }}>
+              {info?.installed}
+            </span>
+            <span
+              style={{
+                fontSize: 11,
+                padding: '2px 8px',
+                borderRadius: 10,
+                background: 'var(--ok)',
+                color: 'var(--on-accent)',
+              }}
+            >
+              restart to apply
+            </span>
+          </div>
+        </Field>
+      )}
       <Field
         label="Update registry"
         hint="npm registry probed for the `latest` dist-tag. Leave empty to disable update checks. Changes take effect after Save."
@@ -902,7 +949,7 @@ function AboutTab({
             </span>
           )}
           {upToDate && (
-            <span style={{ fontSize: 12, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconCheck size={13} /> up to date</span>
+            <span style={{ fontSize: 12, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconCheck size={12} /> up to date</span>
           )}
           {disabled && (
             <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>

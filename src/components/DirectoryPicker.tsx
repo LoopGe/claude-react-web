@@ -204,8 +204,8 @@ export function DirectoryPicker({ initialPath, onPick, onClose }: Props) {
             </button>
             <button
               className="btn btn-primary"
-              onClick={() => onPick(path)}
-              disabled={!path}
+              onClick={() => onPick((draft.trim() || path))}
+              disabled={!draft.trim() && !path}
             >
               Select this folder
             </button>

@@ -6,8 +6,16 @@
 // than a tree-shaken dependency.
 //
 // All icons share the same shape: 14×14 viewBox 24, stroke-based
-// (currentColor), stroke-width 1.75, round caps/joins. Inheriting `color`
-// from the parent means a single CSS variable can theme the whole set.
+// (currentColor), round caps/joins. Inheriting `color` from the parent
+// means a single CSS variable can theme the whole set.
+//
+// Stroke width is *size-aware*: because every icon draws in a 24-unit
+// viewBox but renders at 11–18px, a fixed stroke-width lands on a
+// fractional device-pixel width (e.g. 1.75 × 14/24 ≈ 1.02px) and the
+// antialiaser smears it into a soft, gray line. We instead solve for the
+// stroke that renders at a constant ~1.5 CSS px at the icon's actual size,
+// so a 12px and an 18px icon carry the same crisp optical weight. Callers
+// can still override via the `strokeWidth` prop.
 //
 // Source: Lucide icon outlines (MIT-licensed) traced for a consistent
 // optical weight at 14px — the size every tool card uses.
@@ -18,12 +26,22 @@ type IconProps = Omit<SVGProps<SVGSVGElement>, 'children' | 'strokeWidth'> & {
   size?: number
 }
 
+// Target rendered stroke width in CSS pixels. 1.5px reads crisp at the
+// sizes this set uses without looking heavy. Never let the solved stroke
+// drop below this in viewBox units, so very large icons don't go hairline.
+const TARGET_STROKE_PX = 1.5
+
 function Icon({
   size = 14,
   children,
-  strokeWidth = 1.75,
+  strokeWidth,
+  style,
   ...rest
 }: IconProps & { strokeWidth?: number; children: React.ReactNode }) {
+  // Solve for the viewBox stroke that renders at TARGET_STROKE_PX once the
+  // 24-unit viewBox is scaled down to `size` px: stroke × (size/24) = target.
+  const resolvedStroke =
+    strokeWidth ?? Math.max(TARGET_STROKE_PX, (TARGET_STROKE_PX * 24) / size)
   return (
     <svg
       width={size}
@@ -31,10 +49,17 @@ function Icon({
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth={strokeWidth}
+      strokeWidth={resolvedStroke}
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden
+      // A bare inline <svg> sits on the text baseline, so it appears to sag
+      // below adjacent text by its descender gap (the reason call sites grew
+      // one-off `verticalAlign: '-2px'` patches). Shifting down 0.125em aligns
+      // the icon's optical center to the text x-height in inline contexts;
+      // flex/grid parents ignore vertical-align and center via align-items,
+      // so this is harmless there. Caller-supplied style still wins.
+      style={{ verticalAlign: '-0.125em', ...style }}
       {...rest}
     >
       {children}
@@ -572,6 +597,16 @@ export function IconLock(props: IconProps) {
     <Icon {...props}>
       <rect x="4" y="10" width="16" height="11" rx="2" />
       <path d="M8 10V7a4 4 0 0 1 8 0v3" />
+    </Icon>
+  )
+}
+
+export function IconMenu(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M4 6h16" />
+      <path d="M4 12h16" />
+      <path d="M4 18h16" />
     </Icon>
   )
 }

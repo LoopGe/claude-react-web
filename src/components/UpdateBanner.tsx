@@ -97,7 +97,7 @@ function UpdateBannerInner({
         onClick={copy}
         title="Copy upgrade command to clipboard"
       >
-        {copied ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>Copied <IconCheck size={13} /></span> : 'Copy'}
+        {copied ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>Copied <IconCheck size={12} /></span> : 'Copy'}
       </button>
       <button
         type="button"

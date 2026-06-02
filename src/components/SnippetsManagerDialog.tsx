@@ -198,7 +198,7 @@ export function SnippetsManagerDialog({ api, onClose }: Props) {
                           disabled={i === 0}
                           onClick={() => api.move(i, -1)}
                         >
-                          <IconArrowUp size={13} />
+                          <IconArrowUp size={12} />
                         </button>
                         <button
                           type="button"
@@ -208,7 +208,7 @@ export function SnippetsManagerDialog({ api, onClose }: Props) {
                           disabled={i === api.snippets.length - 1}
                           onClick={() => api.move(i, 1)}
                         >
-                          <IconArrowDown size={13} />
+                          <IconArrowDown size={12} />
                         </button>
                         <button
                           type="button"

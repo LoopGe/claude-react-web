@@ -6,6 +6,7 @@
 import { memo, useEffect, useRef } from 'react'
 import type { CSSProperties } from 'react'
 import { isInAppDrag, readDragPayload, setDragPayload } from '../../hooks/useDragPayload'
+import { useIsMobile } from '../../hooks/useIsMobile'
 import { shortenPath } from '../../utils/paths'
 import { statusLabel } from '../../utils/session-status'
 import type { SessionInfo } from '../../types'
@@ -93,6 +94,9 @@ export const SessionCard = memo(function SessionCard({
   onAskConfirm,
 }: SessionCardProps) {
   const renameInputRef = useRef<HTMLInputElement>(null)
+  // HTML5 drag-and-drop is effectively unsupported on touch (iOS Safari in
+  // particular), so disable card reordering on mobile.
+  const isMobile = useIsMobile()
 
   // Auto-focus + select the inline rename input when it appears.
   useEffect(() => {
@@ -131,7 +135,7 @@ export const SessionCard = memo(function SessionCard({
       role="button"
       tabIndex={0}
       aria-disabled={isResuming}
-      draggable={!isResuming && !!onReorder}
+      draggable={!isMobile && !isResuming && !!onReorder}
       onDragStart={(e) => {
         if (!onReorder) return
         onDragStart(e, s.id)
@@ -298,7 +302,7 @@ export const SessionCard = memo(function SessionCard({
               onDelete(s.id)
             }}
           >
-            <IconX size={13} />
+            <IconX size={12} />
           </button>
         </Tooltip>
       </div>

@@ -1,6 +1,6 @@
 import type { Block, PermissionRequest, SdkMessage } from '../types'
 import type { ActiveSubagent, PlanStatus, TranscriptItem } from './types'
-import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES } from '../constants/toolNames'
+import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME } from '../constants/toolNames'
 import { extractMessagePlainText } from '../search'
 /** Strings the SDK / canUseTool deny path uses to mean "user said no".
  *  Matched against tool_result.content text — case-insensitive substring
@@ -16,6 +16,50 @@ export const REJECTION_NEEDLES = [
 
 export function shouldHideByDefault(msg: SdkMessage): boolean {
   return msg.type === 'system' && msg.subtype !== 'error' && msg.subtype !== 'compact_boundary' && msg.subtype !== 'api_retry'
+}
+
+/** True when this message's uuid is identical on disk and in the in-memory
+ *  ring — i.e. it can anchor a history page request and is safe as a trim
+ *  boundary. assistant / system frames and tool_result-bearing user frames
+ *  (parent_tool_use_id != null) carry SDK-native uuids that match disk. Plain
+ *  top-level user prompts do NOT — their uuids are minted server-side at
+ *  send() time, so they're excluded. Shared by useChatStream's history paging
+ *  anchor and the reducer's front-trim boundary alignment. */
+export function isDiskStableMsg(msg: SdkMessage): boolean {
+  if (msg.type === 'assistant' || msg.type === 'system') return true
+  if (msg.type === 'user' && (msg as Record<string, unknown>).parent_tool_use_id != null) return true
+  return false
+}
+
+/** Subtypes the server persists for `system` frames (server/history-reader.ts
+ *  KEEP_SYSTEM_SUBTYPES). Other system frames (init, …) are broadcast live but
+ *  never written to disk, so they can't anchor a history page. */
+const PERSISTED_SYSTEM_SUBTYPES = new Set(['error', 'compact_boundary', 'api_retry'])
+
+/** True when this message is a SAFE front-trim boundary — i.e. it is
+ *  guaranteed to exist on disk AND is not a plain top-level user prompt.
+ *
+ *  Stricter than isDiskStableMsg, and deliberately so: trimFront FORCES the
+ *  chosen frame to become items[0], and items[0] is what loadOlder()'s first
+ *  page anchors `beforeUuid` on. If that uuid isn't on disk the server falls
+ *  back to the newest page and reverse-paging silently stalls. isDiskStableMsg
+ *  is too loose for this — it accepts ALL system subtypes (the server only
+ *  persists error/compact_boundary/api_retry) and all parent_tool_use_id != null
+ *  user frames (subagent-internal sidechain frames, which the server drops as
+ *  isSidechain). It's fine as the paging-anchor SCAN predicate because the scan
+ *  walks past loose matches to a real one; it is NOT safe as a forced boundary.
+ *
+ *  We accept only: main-thread assistant frames (parent_tool_use_id == null —
+ *  sidechain assistant frames carry a non-null parent and are dropped from
+ *  disk) and the three persisted system subtypes. Both carry SDK-native uuids
+ *  that match disk, and neither is a plain user prompt (so countPromptOverlap's
+ *  leading-prompt run stays empty → no duplicate-prompt resurfacing). Every
+ *  real turn ends with a main-thread assistant frame, so a boundary always
+ *  exists within the recent tail. */
+export function isTrimBoundary(msg: SdkMessage): boolean {
+  if (msg.type === 'assistant' && (msg as Record<string, unknown>).parent_tool_use_id == null) return true
+  if (msg.type === 'system' && PERSISTED_SYSTEM_SUBTYPES.has(msg.subtype as string)) return true
+  return false
 }
 
 export function toTranscriptItem(msg: SdkMessage, prev: TranscriptItem | undefined): TranscriptItem | null {
@@ -160,6 +204,10 @@ export function getToolResultIds(msg: SdkMessage): string[] {
 const TOOL_STATUS_EXCLUDE = new Set<string>([
   ...PLAN_TOOL_NAMES,
   ...SUBAGENT_TOOL_NAMES,
+  // EnterPlanMode renders as a standalone inline marker (no card), so it must
+  // not also seed a generic running/success badge. PLAN_TOOL_NAMES no longer
+  // includes it, so exclude it explicitly here.
+  ENTER_PLAN_MODE_TOOL_NAME,
   'AskUserQuestion',
 ])
 
@@ -189,6 +237,26 @@ export function getToolResultOutcomes(
     if (block.type !== 'tool_result' || typeof block.tool_use_id !== 'string') continue
     const isError = (block as Record<string, unknown>).is_error === true
     out.push({ toolUseId: block.tool_use_id, outcome: isError ? 'error' : 'success' })
+  }
+  return out
+}
+
+/** Per-tool_result payload: the raw content + is_error flag, keyed by
+ *  tool_use_id. Used by the reducer to populate `toolResults` so the
+ *  originating tool_use card can render its result inline. Same scan as
+ *  `getToolResultOutcomes`, but carries `content` through so the UI can
+ *  format it. Callers gate which ids they actually keep (the reducer only
+ *  stores ids already seeded in `toolStatus`, which excludes
+ *  Plan/Question/Subagent). */
+export function getToolResultEntries(
+  msg: SdkMessage,
+): Array<{ toolUseId: string; content: unknown; isError: boolean }> {
+  if (msg.type !== 'user') return []
+  const out: Array<{ toolUseId: string; content: unknown; isError: boolean }> = []
+  for (const block of getBlocks(msg)) {
+    if (block.type !== 'tool_result' || typeof block.tool_use_id !== 'string') continue
+    const isError = (block as Record<string, unknown>).is_error === true
+    out.push({ toolUseId: block.tool_use_id, content: block.content, isError })
   }
   return out
 }

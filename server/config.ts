@@ -33,6 +33,12 @@ interface ConfigFile {
   /** API endpoint. Defaults to the official one. Override to point at a
    *  proxy / relay. No trailing slash expected; trimmed during load. */
   baseUrl?: string
+  /** Shared WEB ACCESS token (NOT the Anthropic key above). When set, the
+   *  web UI requires this token to access REST + WebSocket. Used as the
+   *  startup initial value; the effective auth state lives in auth.ts's
+   *  holder, not in the frozen config. Intentionally NOT in
+   *  WRITABLE_CONFIG_KEYS — the UI must not be able to rewrite it. */
+  accessToken?: string
   /** Write logs to a file in `<stateDir>/logs/`. Default: false. */
   logToFile?: boolean
   /** npm registry URL the update checker probes. Empty / unset disables
@@ -57,6 +63,9 @@ export interface ServerConfig {
    *  `requireAuthToken()` throws if accessed before that. */
   readonly authToken?: string
   readonly baseUrl: string
+  /** Shared web access token loaded from config.json. Empty when unset.
+   *  Read once at startup by cli.ts; the live auth state lives in auth.ts. */
+  readonly accessToken: string
   readonly logToFile: boolean
   /** Empty string when the user hasn't configured a registry — the update
    *  checker treats that as "disabled". Stored as a string (not optional)
@@ -86,6 +95,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   maxOpenPanels: 3,
   authToken: undefined,
   baseUrl: 'https://api.anthropic.com',
+  accessToken: '',
   logToFile: false,
   updateCheckRegistry: '',
 })
@@ -228,6 +238,12 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): v
     const trimmed = file_.baseUrl.trim().replace(/\/+$/, '')
     ;(merged as { baseUrl: string }).baseUrl = trimmed
     console.log(`[config] baseUrl: ${trimmed}`)
+  }
+
+  if (typeof file_.accessToken === 'string' && file_.accessToken.trim()) {
+    ;(merged as { accessToken: string }).accessToken = file_.accessToken.trim()
+    // Never log the token value — just confirm a web access token is set.
+    console.log('[config] accessToken (web access): configured')
   }
 
   if (typeof file_.logToFile === 'boolean') {

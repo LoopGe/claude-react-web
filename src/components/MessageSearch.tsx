@@ -143,7 +143,7 @@ export function MessageSearch({ open, onClose, onNavigate, totalResults, onQuery
         ↓
       </button>
       <button className="btn message-search-close" onClick={onClose} title="Close (Esc)" aria-label="Close">
-        <IconX size={13} />
+        <IconX size={12} />
       </button>
     </div>
   )

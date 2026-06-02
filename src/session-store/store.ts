@@ -324,6 +324,7 @@ export class SessionStore {
       planContent: state.planContent,
       questionAnswers: state.questionAnswers,
       toolStatus: state.toolStatus,
+      toolResults: state.toolResults,
       activeSubagents: this.getRunningSubagents(state.activeSubagents),
       subagentIndex: state.activeSubagents,
       lastMessageUuid: state.lastMessageUuid,

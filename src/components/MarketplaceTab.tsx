@@ -307,7 +307,7 @@ function MarketplaceCard({
           aria-label={expanded ? 'Collapse' : 'Expand'}
           aria-expanded={expanded}
         >
-          {expanded ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
+          {expanded ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
         </button>
         <div style={{ flex: 1, overflow: 'hidden' }}>
           <div style={{ fontWeight: 500, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

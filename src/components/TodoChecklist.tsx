@@ -46,21 +46,17 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working }: 
   const { todos, source } = result
   const done = todos.every((t) => t.status === 'completed')
   if (done) {
-    // TodoWrite is a per-turn full snapshot: while the assistant is still
-    // working we keep the (all-done) list visible because the next snapshot
-    // for the new task hasn't landed yet — hiding then re-showing would
-    // flicker.
-    //
-    // Task* is ONE cumulative session-wide list (verified against the real
-    // CLI: a later turn mutates earlier tasks by their original #id rather
-    // than re-creating them). So once every task is terminal the list is
-    // effectively archived — hide it even while working. Otherwise the moment
-    // the user sends the next message (working flips true) the stale all-done
-    // list pops back up until the model happens to create a fresh task. The
-    // panel re-appears on its own as soon as a genuinely non-terminal task
-    // exists, because then `done` is false and we never reach here.
-    if (source === 'task') return null
-    if (!working) return null
+    // An all-done list still showing here means it's the CURRENT batch (for
+    // Task*, stale-completed tasks were already filtered out during
+    // reconstruction; for TodoWrite it's the latest snapshot). We keep it up
+    // briefly so the user sees the finished ✔ state:
+    //   - Task*: cleanup is driven by the next USER message, not completion.
+    //     A finished batch lingers until then; once a new turn starts the
+    //     stale filter empties the list and the panel disappears on its own.
+    //     So we never force-hide here regardless of `working`.
+    //   - TodoWrite: a per-turn full snapshot. Keep visible while working
+    //     (next snapshot hasn't landed); hide when idle and all done.
+    if (source === 'todowrite' && !working) return null
   }
 
   const doneCount = todos.filter((t) => t.status === 'completed').length
@@ -77,7 +73,7 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working }: 
         {todos.map((t, i) => (
           <li key={i} className={`todo-item todo-${t.status}`}>
             <span className="todo-icon" aria-hidden>
-              {t.status === 'completed' ? <IconCheck size={13} /> : t.status === 'in_progress' ? <IconCircleDot size={13} /> : <IconCircle size={13} />}
+              {t.status === 'completed' ? <IconCheck size={12} /> : t.status === 'in_progress' ? <IconCircleDot size={12} /> : <IconCircle size={12} />}
             </span>
             <span className="todo-text">
               {t.status === 'in_progress' && t.activeForm ? t.activeForm : t.content}
@@ -179,12 +175,16 @@ function sanitizeTodos(raw: unknown[]): Todo[] {
 // ---------------------------------------------------------------------------
 
 /** Internal accumulator — superset of Todo with the server-assigned id and
- *  the raw status (which has more states than the 3 the UI renders). */
+ *  the raw status (which has more states than the 3 the UI renders).
+ *  `lastTouched` is the index of the message that last created/updated this
+ *  task; used to decide whether a completed task is "stale" (predates the
+ *  latest user turn) and should be cleaned up. */
 interface TaskState {
   id: string
   subject: string
   status: 'pending' | 'in_progress' | 'completed' | 'cancelled'
   activeForm?: string
+  lastTouched: number
 }
 
 /** The task tools' four mutating verbs. `Task`/`TaskOutput`/`TaskStop` are
@@ -217,12 +217,26 @@ function extractFromTaskEvents(messages: SdkMessage[]): Todo[] | null {
     }
   }
 
+  // Index of the most recent genuine user-INPUT message (text/image the user
+  // typed — NOT a tool_result, which the SDK also wraps in a `user` frame).
+  // This is the cleanup boundary: a completed task whose last create/update
+  // predates this turn belongs to a previous request the user has moved on
+  // from, so it's stale and gets cleaned up. Tasks touched at or after this
+  // point are part of the current request and stay visible (so a just-
+  // finished task lingers with its ✔ until the user sends the next message).
+  let lastUserInputIdx = -1
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (isUserInputMessage(messages[i])) { lastUserInputIdx = i; break }
+  }
+
   // 2) Walk assistant tool_use blocks in order, folding create/update into
   //    a Map keyed by numeric id. Map preserves insertion (creation) order.
+  //    `idx` is the message index, recorded as each task's lastTouched.
   const tasks = new Map<string, TaskState>()
   let sawAny = false
 
-  for (const msg of messages) {
+  for (let idx = 0; idx < messages.length; idx++) {
+    const msg = messages[idx]
     if (msg.type !== 'assistant') continue
     const content = msg.message?.content
     if (!Array.isArray(content)) continue
@@ -246,6 +260,7 @@ function extractFromTaskEvents(messages: SdkMessage[]): Todo[] | null {
           subject: str(input?.subject) ?? '(no subject)',
           status: normalizeStatus(str(input?.status)) ?? 'pending',
           activeForm: str(input?.activeForm),
+          lastTouched: idx,
         })
         continue
       }
@@ -267,6 +282,7 @@ function extractFromTaskEvents(messages: SdkMessage[]): Todo[] | null {
           id,
           subject: str(input?.subject) ?? `Task #${id}`,
           status: 'pending',
+          lastTouched: idx,
         }
         if (input && 'subject' in input) {
           const s = str(input.subject)
@@ -277,6 +293,7 @@ function extractFromTaskEvents(messages: SdkMessage[]): Todo[] | null {
         }
         const ns = normalizeStatus(rawStatus)
         if (ns) next.status = ns
+        next.lastTouched = idx
         tasks.set(id, next)
       }
     }
@@ -284,32 +301,43 @@ function extractFromTaskEvents(messages: SdkMessage[]): Todo[] | null {
 
   if (!sawAny) return null
 
-  // 3) Project to the UI's Todo shape. 'cancelled' maps to 'completed' for
-  //    the 3-state UI (it's resolved — won't be worked on); this also makes
-  //    it count toward the done/total and the all-done hide rule.
-  const all: Todo[] = []
+  // 3) Clean up stale-completed tasks. A task is dropped when it is BOTH
+  //    resolved (completed/cancelled) AND was last touched before the latest
+  //    user-input turn — i.e. it belongs to a previous request the user has
+  //    already moved past. Tasks that are still open (pending/in_progress),
+  //    or that were touched during/after the current turn, are kept. This
+  //    means a just-finished task stays on screen (with its ✔) until the
+  //    user sends their next message, instead of vanishing the instant it
+  //    completes.
+  const out: Todo[] = []
   for (const t of tasks.values()) {
-    all.push({
+    const resolved = t.status === 'completed' || t.status === 'cancelled'
+    const stale = t.lastTouched < lastUserInputIdx
+    if (resolved && stale) continue
+    out.push({
       content: t.subject,
+      // 'cancelled' maps to 'completed' for the 3-state UI (it's resolved —
+      // won't be worked on); this also makes it count toward done/total.
       status: t.status === 'cancelled' ? 'completed' : t.status,
       activeForm: t.activeForm,
     })
   }
+  return out
+}
 
-  // 4) Trim historical completed batches. Task* is one cumulative session
-  //    list that only grows, so completed tasks from earlier batches would
-  //    otherwise pile up above the current work. Anchor on the FIRST
-  //    non-terminal (pending/in_progress) task and show from there onward —
-  //    this keeps every unfinished task (we never hide outstanding work) and
-  //    any completed task interleaved within the active run, while dropping
-  //    the leading run of already-done history.
-  //
-  //    When there is no non-terminal task the whole list is terminal: return
-  //    it as-is so the caller's all-done rule archives the panel (source
-  //    'task' hides it even while working).
-  const firstActive = all.findIndex((t) => t.status !== 'completed')
-  if (firstActive <= 0) return all // -1 (all done) or 0 (already starts active)
-  return all.slice(firstActive)
+/** True for a genuine user-typed message (text and/or image blocks), false
+ *  for the `user`-typed frames the SDK uses to carry tool_results. Mirrors
+ *  the discriminator in server/session-pump.ts: a frame is input iff it
+ *  carries NO tool_result block. A string content body is plain text → input. */
+function isUserInputMessage(msg: SdkMessage): boolean {
+  if (msg.type !== 'user') return false
+  const content = msg.message?.content
+  if (typeof content === 'string') return true
+  if (!Array.isArray(content)) return false
+  for (const block of content as Record<string, unknown>[]) {
+    if (block && block.type === 'tool_result') return false
+  }
+  return true
 }
 
 /** Coerce a tool_result `content` field (string | array of text blocks |

@@ -12,11 +12,12 @@
 
 import { createContext, createElement, useContext, type ReactNode } from 'react'
 import type { PlanStatusMap } from '../utils/plan-status'
-import type { ToolStatus } from '../session-store/types'
+import type { ToolResultEntry, ToolStatus } from '../session-store/types'
 
 const Ctx = createContext<PlanStatusMap>(new Map())
 const ContentCtx = createContext<ReadonlyMap<string, string>>(new Map())
 const ToolStatusCtx = createContext<ReadonlyMap<string, ToolStatus>>(new Map())
+const ToolResultCtx = createContext<ReadonlyMap<string, ToolResultEntry>>(new Map())
 
 export function PlanStatusProvider({
   value,
@@ -52,6 +53,19 @@ export function ToolStatusProvider({
   return createElement(ToolStatusCtx.Provider, { value }, children)
 }
 
+/** Provides captured tool_result payloads keyed by tool_use_id. Mirrors
+ *  ToolStatusProvider — each generic ToolCard reads its own result by id
+ *  and renders it inline at the bottom of the card. */
+export function ToolResultProvider({
+  value,
+  children,
+}: {
+  value: ReadonlyMap<string, ToolResultEntry>
+  children: ReactNode
+}) {
+  return createElement(ToolResultCtx.Provider, { value }, children)
+}
+
 export function usePlanStatus(toolUseId: string | undefined): 'approved' | 'rejected' | 'pending' {
   const map = useContext(Ctx)
   if (!toolUseId) return 'pending'
@@ -77,4 +91,22 @@ export function useToolStatus(toolUseId: string | undefined): ToolStatus {
   const map = useContext(ToolStatusCtx)
   if (!toolUseId) return 'running'
   return map.get(toolUseId) ?? 'running'
+}
+
+/** Look up a tool's captured result by id. Returns `undefined` when the
+ *  tool_result hasn't landed yet (the card then shows only its input +
+ *  the running badge) or when the id belongs to a tool that owns its own
+ *  result rendering (Plan/Question/Subagent — never stored here). */
+export function useToolResult(toolUseId: string | undefined): ToolResultEntry | undefined {
+  const map = useContext(ToolResultCtx)
+  if (!toolUseId) return undefined
+  return map.get(toolUseId)
+}
+
+/** Read the whole tool_result map. Used by MessageView's user branch to
+ *  decide, per tool_result block, whether it's already been merged into a
+ *  card (so the standalone bubble can be suppressed) or is an orphan that
+ *  still needs its own bubble. */
+export function useToolResults(): ReadonlyMap<string, ToolResultEntry> {
+  return useContext(ToolResultCtx)
 }

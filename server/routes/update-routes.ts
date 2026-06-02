@@ -19,8 +19,14 @@
 //                                  response signals `restartRequired`.
 
 import { Hono } from 'hono'
-import { checkForUpdates, getCachedUpdateInfo } from '../update-checker.js'
+import {
+  checkForUpdates,
+  getCachedUpdateInfo,
+  getCurrentVersion,
+  isVersionNewer,
+} from '../update-checker.js'
 import { detectInstallMethod } from '../install-method.js'
+import { readInstalledVersion } from '../installed-version.js'
 import { runNpmInstall } from '../npm-install.js'
 import { HttpError } from '../errors.js'
 import type { UpdateActionResult } from '../../shared/update-info.js'
@@ -32,7 +38,11 @@ export function buildUpdateRouter(): Hono {
     const force = c.req.query('force') === '1'
     if (force) {
       const info = await checkForUpdates(true)
-      return c.json(info)
+      // Overlay the fresh on-disk version — checkForUpdates() builds its
+      // snapshot from the build-time `current`, but the route contract is to
+      // always report the live on-disk `installed` too.
+      const installed = readInstalledVersion(info.packageName)
+      return c.json(installed ? { ...info, installed } : info)
     }
     const cached = getCachedUpdateInfo()
     if (cached.checkedAt) {
@@ -76,11 +86,23 @@ export function buildUpdateRouter(): Hono {
     }
 
     await runNpmInstall(info.packageName, info.registry)
+
+    // Confirm the install actually rewrote the package on disk. The running
+    // process still reports the OLD build-time version (getCurrentVersion()),
+    // so a strictly-newer on-disk version is proof the upgrade landed and a
+    // restart will apply it. npm reporting "up to date" (a no-op install)
+    // leaves the on-disk version unchanged → updateApplied stays false.
+    const installedVersion = readInstalledVersion(info.packageName) ?? undefined
+    const updateApplied =
+      !!installedVersion && isVersionNewer(getCurrentVersion(), installedVersion)
+
     const result: UpdateActionResult = {
       performed: true,
       installMethod: 'global',
-      restartRequired: true,
+      restartRequired: updateApplied,
       latest: info.latest,
+      installedVersion,
+      updateApplied,
     }
     return c.json(result)
   })

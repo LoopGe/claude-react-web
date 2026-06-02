@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { reduceSessionState } from './reducer'
 import { createInitialSessionState } from './types'
+import { isTrimBoundary } from './normalize'
 import type { PermissionRequest, SdkMessage } from '../types'
 
 const hasId = (ids: ReadonlySet<string>, id: string) => ids.has(id)
@@ -400,5 +401,171 @@ describe('PREPEND_MESSAGES', () => {
     })
     // disk-old is prepended; disk-boundary is deduped against srv-dup.
     expect(state.items.map((i) => i.id)).toEqual(['disk-old', 'srv-dup', 'asst'])
+  })
+})
+
+describe('reducer: front-trim memory bound', () => {
+  // Mirror the reducer's constants (kept module-private there).
+  const CAP = 1000
+  const SLACK = 256
+
+  function userMsg(uuid: string, content: string): SdkMessage {
+    return { type: 'user', uuid, message: { role: 'user', content }, parent_tool_use_id: null } as unknown as SdkMessage
+  }
+  function assistantMsg(uuid: string, text: string): SdkMessage {
+    return {
+      type: 'assistant',
+      uuid,
+      message: { role: 'assistant', content: [{ type: 'text', text }] },
+      parent_tool_use_id: null,
+    } as unknown as SdkMessage
+  }
+  function toolUseMsg(uuid: string, toolUseId: string): SdkMessage {
+    return {
+      type: 'assistant',
+      uuid,
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: toolUseId, name: 'Read', input: {} }] },
+      parent_tool_use_id: null,
+    } as unknown as SdkMessage
+  }
+  function toolResultMsg(uuid: string, toolUseId: string): SdkMessage {
+    return {
+      type: 'user',
+      uuid,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: 'ok' }] },
+      parent_tool_use_id: toolUseId,
+    } as unknown as SdkMessage
+  }
+
+  /** Push n message-pairs (prompt + assistant reply) so the transcript is a
+   *  realistic mix with disk-stable boundaries interleaved. Returns state. */
+  function pushTurns(state: ReturnType<typeof createInitialSessionState>, n: number) {
+    for (let i = 0; i < n; i++) {
+      state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg(`u-${i}`, `q${i}`) })
+      state = reduceSessionState(state, { type: 'MESSAGE', message: assistantMsg(`a-${i}`, `r${i}`) })
+    }
+    return state
+  }
+
+  it('does not trim below CAP + SLACK', () => {
+    let state = createInitialSessionState('s')
+    // 600 turns = 1200 items, under the 1256 threshold.
+    state = pushTurns(state, 600)
+    expect(state.items.length).toBe(1200)
+  })
+
+  it('trims down to ~CAP once CAP + SLACK is exceeded', () => {
+    let state = createInitialSessionState('s')
+    // 700 turns = 1400 items; the append that crosses 1256 triggers a trim.
+    state = pushTurns(state, 700)
+    expect(state.items.length).toBeGreaterThanOrEqual(CAP)
+    expect(state.items.length).toBeLessThanOrEqual(CAP + SLACK)
+    expect(state.items.length).toBe(state.messages.length)
+  })
+
+  it('lands the new items[0] on a disk-persisted boundary (empty leading prompt run)', () => {
+    let state = createInitialSessionState('s')
+    state = pushTurns(state, 700)
+    // The boundary alignment guarantees items[0] is never a plain top-level
+    // prompt — so countPromptOverlap sees a zero-length leading run and can
+    // never resurface a trimmed prompt as a duplicate on the next loadOlder.
+    expect(isTrimBoundary(state.items[0].msg)).toBe(true)
+  })
+
+  it('prunes toolUseId-keyed maps to ids still referenced by retained items', () => {
+    let state = createInitialSessionState('s')
+    // An early tool pair that WILL be trimmed away.
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUseMsg('tu-old', 'tool-old') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolResultMsg('tr-old', 'tool-old') })
+    expect(state.toolStatus.get('tool-old')).toBe('success')
+    // The result payload was captured for inline rendering too.
+    expect(state.toolResults.has('tool-old')).toBe(true)
+    // Bury it under enough turns to force a trim past the early pair.
+    state = pushTurns(state, 700)
+    // A recent tool pair that must SURVIVE.
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUseMsg('tu-new', 'tool-new') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolResultMsg('tr-new', 'tool-new') })
+
+    // The old tool's status was orphaned by the trim and pruned.
+    expect(state.toolStatus.has('tool-old')).toBe(false)
+    // The live tool's status survives.
+    expect(state.toolStatus.get('tool-new')).toBe('success')
+    // toolResults is pruned/retained in lockstep with toolStatus — the
+    // trimmed tool's payload must not leak; the live tool's must survive.
+    expect(state.toolResults.has('tool-old')).toBe(false)
+    expect(state.toolResults.has('tool-new')).toBe(true)
+  })
+
+  it('preserves lastMessageUuid (points at the newest message)', () => {
+    let state = createInitialSessionState('s')
+    state = pushTurns(state, 700)
+    expect(state.lastMessageUuid).toBe('a-699')
+  })
+
+  it('does not disturb a pending optimistic placeholder at the tail', () => {
+    let state = createInitialSessionState('s')
+    state = pushTurns(state, 700)
+    // Optimistic insert lands at the END — front-trim must never touch it.
+    const optimistic: SdkMessage = {
+      type: 'user',
+      uuid: 'optimistic:tail',
+      message: { role: 'user', content: 'pending' },
+    } as unknown as SdkMessage
+    state = reduceSessionState(state, { type: 'OPTIMISTIC_USER_MESSAGE', message: optimistic })
+    expect(state.pendingUserMessageIds.has('optimistic:tail')).toBe(true)
+    expect(state.items[state.items.length - 1].id).toBe('optimistic:tail')
+  })
+
+  // --- Regression: items[0] must be a DISK-PERSISTED frame ----------------
+  // The server only writes assistant/user (non-sidechain) and system frames
+  // with subtype error|compact_boundary|api_retry. A non-persisted frame
+  // (system 'init', or a sidechain frame) at items[0] would anchor loadOlder's
+  // beforeUuid on a uuid the server can't find → silent fallback to the newest
+  // page → reverse-paging stalls. isTrimBoundary excludes those; the old
+  // isDiskStableMsg (system→true, parent!=null user→true) did not.
+  function systemInitMsg(uuid: string): SdkMessage {
+    // subtype 'init' is broadcast live but NOT persisted to disk.
+    return { type: 'system', subtype: 'init', uuid, message: {} } as unknown as SdkMessage
+  }
+
+  it('snaps PAST a non-persisted system run to the next real boundary', () => {
+    let state = createInitialSessionState('s')
+    // 100 turns (200 items), then a 200-frame system:init block (indices
+    // 200..399), then enough turns to drive several trims. The first trim's
+    // raw cut (length-1000) lands inside the init block; the old predicate
+    // would have left an 'init' frame at items[0]. isTrimBoundary must skip
+    // forward to the assistant that follows.
+    state = pushTurns(state, 100)
+    for (let i = 0; i < 200; i++) {
+      state = reduceSessionState(state, { type: 'MESSAGE', message: systemInitMsg(`init-${i}`) })
+    }
+    state = pushTurns(state, 500)
+
+    const head = state.items[0].msg
+    expect(isTrimBoundary(head)).toBe(true)
+    // Specifically: never a non-persisted system frame.
+    expect(head.type === 'system' && head.subtype === 'init').toBe(false)
+    // And no init frame survives at the very front of the retained window.
+    expect(state.items[0].msg.type).toBe('assistant')
+  })
+
+  it('skips the trim entirely when the cut zone has no safe boundary', () => {
+    // Pathological: a long unbroken run of non-persisted frames covering the
+    // whole trim zone. Cutting anywhere in it would strand reverse-paging, so
+    // trimFront must skip rather than cut unsafely — memory stays above CAP
+    // until a real boundary later re-enables trimming.
+    let state = createInitialSessionState('s')
+    state = pushTurns(state, 100) // 200 items, oldest
+    // 1200 init frames — the entire region the cut could target is unsafe.
+    for (let i = 0; i < 1200; i++) {
+      state = reduceSessionState(state, { type: 'MESSAGE', message: systemInitMsg(`init-${i}`) })
+    }
+    // 1400 items total, > CAP+SLACK, yet no trim happened (no safe boundary
+    // at/after the cut index — everything from there on is an init frame).
+    expect(state.items.length).toBe(1400)
+    // A single real boundary at the tail re-enables trimming on next append.
+    state = reduceSessionState(state, { type: 'MESSAGE', message: assistantMsg('a-real', 'reply') })
+    expect(state.items.length).toBeLessThanOrEqual(CAP + SLACK)
+    expect(isTrimBoundary(state.items[0].msg)).toBe(true)
   })
 })

@@ -113,7 +113,11 @@ describe('checkForUpdates', () => {
     const info = await checkForUpdates(true)
     expect(info.error).toMatch(/503/)
     expect(info.hasUpdate).toBe(false)
-    expect(getCachedUpdateInfo()).toBe(info)
+    // getCachedUpdateInfo() returns the cached snapshot with a fresh on-disk
+    // `installed` overlaid (so the value reflects an in-app update without
+    // waiting out the probe TTL). It's the same data, not necessarily the
+    // same object reference.
+    expect(getCachedUpdateInfo()).toMatchObject(info)
   })
 
   it('uses a literal slash in scoped names so Artifactory accepts the URL', async () => {

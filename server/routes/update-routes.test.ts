@@ -11,14 +11,16 @@ import { __resetUpdateCheckerForTests, checkForUpdates } from '../update-checker
 
 // vi.mock factories are hoisted above module-scope consts, so the mock fns
 // must be created inside vi.hoisted to avoid a TDZ ReferenceError.
-const { detectInstallMethod, runNpmInstall } = vi.hoisted(() => ({
+const { detectInstallMethod, runNpmInstall, readInstalledVersion } = vi.hoisted(() => ({
   detectInstallMethod: vi.fn<() => 'global' | 'npx' | 'unknown'>(),
   runNpmInstall:
     vi.fn<(pkg: string, registry?: string) => Promise<{ stdout: string; stderr: string }>>(),
+  readInstalledVersion: vi.fn<(expectedName: string) => string | null>(),
 }))
 
 vi.mock('../install-method.js', () => ({ detectInstallMethod }))
 vi.mock('../npm-install.js', () => ({ runNpmInstall }))
+vi.mock('../installed-version.js', () => ({ readInstalledVersion }))
 
 // Import the router AFTER the mocks are registered.
 const { buildUpdateRouter } = await import('./update-routes.js')
@@ -56,6 +58,9 @@ describe('POST /api/update', () => {
     detectInstallMethod.mockReset()
     runNpmInstall.mockReset()
     runNpmInstall.mockResolvedValue({ stdout: 'ok', stderr: '' })
+    readInstalledVersion.mockReset()
+    // Default: on-disk version matches the running build (no-op install).
+    readInstalledVersion.mockReturnValue(null)
   })
 
   it('short-circuits for npx without spawning an install', async () => {
@@ -83,6 +88,9 @@ describe('POST /api/update', () => {
   it('runs the install for a global install with server-trusted args', async () => {
     await primeUpdateInfo()
     detectInstallMethod.mockReturnValue('global')
+    // After install, the on-disk package.json reports the new version — newer
+    // than the running build — so the update verifiably landed.
+    readInstalledVersion.mockReturnValue('99.99.99')
 
     const res = await makeApp().request('/update', { method: 'POST' })
     expect(res.status).toBe(200)
@@ -92,8 +100,33 @@ describe('POST /api/update', () => {
       installMethod: 'global',
       restartRequired: true,
       latest: '99.99.99',
+      installedVersion: '99.99.99',
+      updateApplied: true,
     })
     expect(runNpmInstall).toHaveBeenCalledWith('@mi/claude-react-web', TEST_REGISTRY)
+  })
+
+  it('reports a no-op install when the on-disk version did not advance', async () => {
+    await primeUpdateInfo()
+    detectInstallMethod.mockReturnValue('global')
+    // npm reported "up to date" — on-disk version unchanged from the running
+    // build (getCurrentVersion()). updateApplied must stay false and no
+    // restart should be advertised.
+    const { getCurrentVersion } = await import('../update-checker.js')
+    readInstalledVersion.mockReturnValue(getCurrentVersion())
+
+    const res = await makeApp().request('/update', { method: 'POST' })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      performed: boolean
+      updateApplied: boolean
+      restartRequired?: boolean
+      installedVersion: string
+    }
+    expect(body.performed).toBe(true)
+    expect(body.updateApplied).toBe(false)
+    expect(body.restartRequired).toBe(false)
+    expect(body.installedVersion).toBe(getCurrentVersion())
   })
 
   it('returns 400 when update checks are disabled', async () => {

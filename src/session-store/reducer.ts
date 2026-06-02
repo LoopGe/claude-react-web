@@ -5,9 +5,11 @@ import {
   getPlanResultDecisions,
   getPlanToolUseIds,
   getSubagentStarts,
+  getToolResultEntries,
   getToolResultIds,
   getToolResultOutcomes,
   getToolUseStarts,
+  isTrimBoundary,
   toTranscriptItem,
   topLevelUserPromptSignature,
 } from './normalize'
@@ -361,6 +363,97 @@ function applyMessageConsumed(state: SessionState, uuid: string, consumedAt: num
   return { ...state, items, messages }
 }
 
+// --- Memory bound: front-trim the in-memory transcript -----------------
+// The server's history ring is capped (historyCap = 500), but the client's
+// items/messages arrays grow unbounded as long as the WS keeps pushing — a
+// long autonomous-agent session can accumulate tens of thousands of frames.
+// We keep at most MEMORY_ITEM_CAP items in memory; trimmed messages remain
+// recoverable by scrolling up (loadOlder re-reads them from disk).
+const MEMORY_ITEM_CAP = 1000
+// Hysteresis: only trim once we exceed CAP + SLACK, then drop back to CAP. So
+// trimming runs once every SLACK appends (not every message), keeping the
+// common append path allocation-free.
+const MEMORY_TRIM_SLACK = 256
+
+/** Union of every tool_use_id referenced by `items` — both the tool_use
+ *  (assistant) and tool_result (user) sides. Used to prune the toolUseId-keyed
+ *  lifecycle maps to live keys after a front-trim. */
+function collectLiveToolUseIds(items: SessionState['items']): Set<string> {
+  const live = new Set<string>()
+  for (const it of items) {
+    const m = it.msg
+    for (const id of getToolUseStarts(m)) live.add(id)
+    for (const id of getPlanToolUseIds(m)) live.add(id)
+    for (const id of getQuestionToolUseIds(m)) live.add(id)
+    for (const id of getToolResultIds(m)) live.add(id)
+  }
+  return live
+}
+
+/** Return a Map filtered to keys present in `live`, reusing the original
+ *  reference when nothing is dropped (keeps selector identity stable). */
+function pruneMapToLive<V>(map: Map<string, V>, live: Set<string>): Map<string, V> {
+  let dropped = false
+  for (const key of map.keys()) {
+    if (!live.has(key)) { dropped = true; break }
+  }
+  if (!dropped) return map
+  const next = new Map<string, V>()
+  for (const [key, value] of map) {
+    if (live.has(key)) next.set(key, value)
+  }
+  return next
+}
+
+/** Drop the oldest items/messages once the in-memory transcript exceeds
+ *  MEMORY_ITEM_CAP + MEMORY_TRIM_SLACK, bringing it back down to ~CAP.
+ *
+ *  The cut point is snapped FORWARD to the first isTrimBoundary message so the
+ *  new items[0] is both on-disk AND not a plain top-level user prompt. This
+ *  matters for two downstream consumers:
+ *    - loadOlder()'s first page anchors `beforeUuid` on items[0]. That uuid
+ *      MUST exist on disk, or the server falls back to the newest page and
+ *      reverse-paging silently stalls. isTrimBoundary (not the looser
+ *      isDiskStableMsg) guarantees a persisted frame — see its doc comment.
+ *    - countPromptOverlap() dedups the leading user-prompt run against an
+ *      incoming disk page by content signature (uuids differ disk vs memory).
+ *      A non-empty leading prompt run after a trim could resurface as
+ *      duplicates on the next loadOlder; an empty run (overlap 0) cannot.
+ *
+ *  Snapping past a long sidechain (subagent) run can keep somewhat fewer than
+ *  CAP — acceptable, and bounded because every real turn ends with a
+ *  main-thread assistant frame.
+ *
+ *  The five toolUseId-keyed lifecycle maps (toolStatus, toolResults,
+ *  planStatus, planContent, questionAnswers) are pruned to ids still
+ *  referenced by the retained items so they don't leak. permissionDecisions
+ *  self-caps at 1024 and activeSubagents clears each result frame, so neither
+ *  is touched. */
+function trimFront(state: SessionState): SessionState {
+  if (state.items.length <= MEMORY_ITEM_CAP + MEMORY_TRIM_SLACK) return state
+  let cut = state.items.length - MEMORY_ITEM_CAP
+  // Snap forward to the first disk-persisted boundary at or after `cut`.
+  while (cut < state.items.length && !isTrimBoundary(state.items[cut].msg)) cut++
+  // No safe boundary in the trim zone (pathological — e.g. an unbroken run of
+  // plain prompts / sidechain frames). Skip this round rather than cut at an
+  // unsafe point that would break reverse-paging.
+  if (cut >= state.items.length) return state
+
+  const items = state.items.slice(cut)
+  const messages = state.messages.slice(cut)
+  const live = collectLiveToolUseIds(items)
+  return {
+    ...state,
+    items,
+    messages,
+    toolStatus: pruneMapToLive(state.toolStatus, live),
+    toolResults: pruneMapToLive(state.toolResults, live),
+    planStatus: pruneMapToLive(state.planStatus, live),
+    planContent: pruneMapToLive(state.planContent, live),
+    questionAnswers: pruneMapToLive(state.questionAnswers, live),
+  }
+}
+
 function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   // When the server echoes back the user message we sent, replace the
   // optimistic placeholder IN PLACE and return early. Falling through
@@ -492,6 +585,10 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
     }
   }
 
+  // Bound in-memory growth. No-op until the transcript exceeds CAP + SLACK,
+  // so the common append path stays allocation-free.
+  next = trimFront(next)
+
   return next
 }
 
@@ -554,6 +651,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
   let planContent = state.planContent
   let questionAnswers = state.questionAnswers
   let toolStatus = state.toolStatus
+  let toolResults = state.toolResults
   let activeSubagents = state.activeSubagents
 
   // Generic tool status — seed 'running' for every tool_use the assistant
@@ -605,6 +703,29 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
           ids: orphans,
           seededIds: Array.from(toolStatus.keys()),
         })
+      }
+      if (touched) changed = true
+    }
+  }
+
+  // Capture tool_result payloads so the originating tool_use card can
+  // render the result inline (instead of a separate bubble). Only store
+  // results whose tool_use_id was seeded into `toolStatus` — that set is
+  // exactly the generic tool cards (Plan/Question/Subagent are excluded by
+  // getToolUseStarts' TOOL_STATUS_EXCLUDE and own their result rendering).
+  // Same lazy-clone discipline as the status flip above.
+  if (message.type === 'user' && toolStatus.size > 0) {
+    const entries = getToolResultEntries(message)
+    if (entries.length > 0) {
+      let touched = false
+      for (const { toolUseId, content, isError } of entries) {
+        if (!toolStatus.has(toolUseId)) continue
+        if (toolResults.has(toolUseId)) continue
+        if (!touched) {
+          if (toolResults === state.toolResults) toolResults = new Map(toolResults)
+          touched = true
+        }
+        toolResults.set(toolUseId, { content, isError })
       }
       if (touched) changed = true
     }
@@ -746,7 +867,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
   }
 
   return changed
-    ? { ...state, planStatus, planContent, questionAnswers, toolStatus, activeSubagents }
+    ? { ...state, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents }
     : state
 }
 

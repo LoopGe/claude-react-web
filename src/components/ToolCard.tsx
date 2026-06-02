@@ -17,8 +17,11 @@ import {
   IconCopy,
   IconLoader,
 } from './icons/ToolIcons'
-import { useToolStatus } from '../hooks/usePlanStatus'
-import type { ToolStatus } from '../session-store/types'
+import { useToolResult, useToolStatus } from '../hooks/usePlanStatus'
+import type { ToolResultEntry, ToolStatus } from '../session-store/types'
+import type { Block } from '../types'
+import { formatJson } from '../utils/format'
+import { truncate } from '../utils/text'
 
 // ---------------------------------------------------------------------------
 // CopyButton
@@ -153,6 +156,66 @@ export const ToolStatusBadge = memo(function ToolStatusBadge({
 })
 
 // ---------------------------------------------------------------------------
+// ToolResultDetails
+// ---------------------------------------------------------------------------
+
+/** Collapsible <details> rendering of a tool_result payload: a one-line
+ *  preview in the summary, the (truncated) full body when expanded.
+ *
+ *  Shared by two call sites so the formatting stays identical:
+ *   - inline inside ToolCard (the merged tool_use + tool_result card)
+ *   - the orphan-fallback bubble in MessageList (a tool_result whose
+ *     tool_use_id never matched a seeded card)
+ *
+ *  Memoised so search-query keystrokes (which re-render the whole
+ *  transcript) don't rebuild large pre-formatted result bodies. */
+export const ToolResultDetails = memo(function ToolResultDetails({
+  content,
+  className = '',
+}: {
+  content: unknown
+  className?: string
+}) {
+  const preview = toolResultPreview(content)
+  const body =
+    typeof content === 'string'
+      ? truncate(content, 4000)
+      : (() => {
+          const blocks = Array.isArray(content) ? (content as Block[]) : []
+          const texts = blocks
+            .map((b) => {
+              if (b.type === 'text' && typeof b.text === 'string') return b.text
+              return formatJson(b)
+            })
+            .join('\n\n')
+          return truncate(texts || formatJson(content), 4000)
+        })()
+  return (
+    <details className={`tool-result-details ${className}`.trim()}>
+      <summary className="tool-result-summary">{preview}</summary>
+      <div className="tool-input">{body}</div>
+    </details>
+  )
+})
+
+/** One-line preview for the collapsed <summary>.
+ *  Keeps the transcript scannable when many tool results are present. */
+function toolResultPreview(content: unknown): string {
+  if (typeof content === 'string') {
+    const line = content.split('\n')[0] ?? content
+    return line ? truncate(line, 120) : '(empty)'
+  }
+  const blocks = Array.isArray(content) ? (content as Block[]) : []
+  if (blocks.length === 0) return '(empty)'
+  const first = blocks[0]
+  if (first.type === 'text' && typeof first.text === 'string') {
+    const line = first.text.split('\n')[0] ?? first.text
+    return line ? truncate(line, 120) : '(empty result)'
+  }
+  return `[${first.type}]`
+}
+
+// ---------------------------------------------------------------------------
 // ToolCard
 // ---------------------------------------------------------------------------
 
@@ -199,6 +262,11 @@ export const ToolCard = memo(function ToolCard({
   className?: string
   children?: ReactNode
 }) {
+  // The originating tool_result (when it has landed) is rendered inline at
+  // the bottom of this card. `useToolResult` returns undefined while the
+  // result is still pending or for tools that own their result rendering
+  // (Plan/Question/Subagent never reach ToolCard anyway).
+  const result = useToolResult(toolUseId)
   return (
     <div className={`tool-card ${className}`.trim()}>
       <div className="tool-card-header">
@@ -212,6 +280,18 @@ export const ToolCard = memo(function ToolCard({
         {copyValue && <CopyButton getValue={copyValue} label={copyLabel} />}
       </div>
       {children != null && <div className="tool-card-body">{children}</div>}
+      {result && <ToolCardResult result={result} />}
+    </div>
+  )
+})
+
+/** Inline result section at the bottom of a merged tool card. Kept as a
+ *  tiny wrapper (rather than inlining the JSX) so the result row carries
+ *  its own container class for spacing/border and an error tint. */
+const ToolCardResult = memo(function ToolCardResult({ result }: { result: ToolResultEntry }) {
+  return (
+    <div className={`tool-card-result${result.isError ? ' tool-card-result-error' : ''}`}>
+      <ToolResultDetails content={result.content} />
     </div>
   )
 })

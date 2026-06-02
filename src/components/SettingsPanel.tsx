@@ -571,7 +571,7 @@ function PluginCard({
         )}
         {(commands.length > 0 || agents.length > 0) && (
           <button className="btn btn-xs" onClick={() => setExpanded(!expanded)} aria-label={expanded ? 'Collapse' : 'Expand'} aria-expanded={expanded}>
-            {expanded ? <IconChevronUp size={13} /> : <IconChevronDown size={13} />}
+            {expanded ? <IconChevronUp size={12} /> : <IconChevronDown size={12} />}
           </button>
         )}
       </div>
@@ -664,7 +664,7 @@ function McpServerCard({
         )}
         {server.tools && server.tools.length > 0 && (
           <button className="btn btn-xs" onClick={() => setExpanded(!expanded)} aria-label={expanded ? 'Collapse' : 'Expand'} aria-expanded={expanded}>
-            {expanded ? <IconChevronUp size={13} /> : <IconChevronDown size={13} />}
+            {expanded ? <IconChevronUp size={12} /> : <IconChevronDown size={12} />}
           </button>
         )}
       </div>

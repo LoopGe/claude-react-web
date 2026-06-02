@@ -131,6 +131,13 @@ function created(toolUseId: string, n: number, subject: string, extra: Record<st
   ]
 }
 
+/** A genuine user-input message — marks a turn boundary. Cleanup of
+ *  stale-completed Task* items is keyed on the LAST such message: tasks
+ *  finished before it are dropped; tasks touched after it stay. */
+function userMsg(text = 'next request'): SdkMessage {
+  return { type: 'user', message: { content: text } } as unknown as SdkMessage
+}
+
 describe('TodoChecklist — Task* reconstruction', () => {
   it('renders a list folded from TaskCreate events', () => {
     const msgs = [
@@ -159,8 +166,11 @@ describe('TodoChecklist — Task* reconstruction', () => {
     expect(container.querySelector('.todo-in_progress .todo-text')?.textContent).toBe('Writing tests')
   })
 
-  it('counts completed tasks and hides when all done & not working', () => {
+  it('keeps a just-finished batch visible until the next user message', () => {
+    // All done, but NO new user-input message has arrived since → current
+    // batch, not stale. The panel lingers with the ✔ state.
     const msgs = [
+      userMsg('do A and B'),
       ...created('tu1', 1, 'A'),
       ...created('tu2', 2, 'B'),
       taskUseMsg('tu3', 'TaskUpdate', { taskId: '1', status: 'completed' }),
@@ -168,8 +178,26 @@ describe('TodoChecklist — Task* reconstruction', () => {
       taskUseMsg('tu4', 'TaskUpdate', { taskId: '2', status: 'completed' }),
       taskResultMsg('tu4', 'Updated task #2 status'),
     ]
-    // Not working → all-done list hides.
     const { container } = render(<TodoChecklist messages={msgs} working={false} />)
+    expect(container.querySelector('.todo-panel')).not.toBeNull()
+    expect(container.querySelector('.todo-panel-count')?.textContent).toBe('2/2')
+  })
+
+  it('cleans up a finished batch once the user sends the next message', () => {
+    // Same finished batch, but the user has since sent a new message and the
+    // model has not created any new task → stale-completed filter empties the
+    // list → panel hidden. This is the "cleanup on next message" behaviour.
+    const msgs = [
+      userMsg('do A and B'),
+      ...created('tu1', 1, 'A'),
+      ...created('tu2', 2, 'B'),
+      taskUseMsg('tu3', 'TaskUpdate', { taskId: '1', status: 'completed' }),
+      taskResultMsg('tu3', 'Updated task #1 status'),
+      taskUseMsg('tu4', 'TaskUpdate', { taskId: '2', status: 'completed' }),
+      taskResultMsg('tu4', 'Updated task #2 status'),
+      userMsg('thanks, now something unrelated'),
+    ]
+    const { container } = render(<TodoChecklist messages={msgs} working />)
     expect(container.firstChild).toBeNull()
   })
 
@@ -186,25 +214,9 @@ describe('TodoChecklist — Task* reconstruction', () => {
     expect(container.querySelector('.todo-text')?.textContent).toBe('Keep me')
   })
 
-  it('treats cancelled as resolved, and trims it when it leads the list', () => {
-    // #1 cancelled (resolved → treated completed), #2 pending. Per the B trim
-    // rule, a leading run of resolved tasks is dropped, so only the active #2
-    // shows. (cancelled→completed mapping is still exercised: without it, #1
-    // would be a non-terminal 'cancelled' and wrongly become the anchor.)
-    const msgs = [
-      ...created('tu1', 1, 'A'),
-      ...created('tu2', 2, 'B'),
-      taskUseMsg('tu3', 'TaskUpdate', { taskId: '1', status: 'cancelled' }),
-      taskResultMsg('tu3', 'Updated task #1 status'),
-    ]
-    const { container } = render(<TodoChecklist messages={msgs} working />)
-    const texts = [...container.querySelectorAll('.todo-text')].map((n) => n.textContent)
-    expect(texts).toEqual(['B'])
-    expect(container.querySelector('.todo-panel-count')?.textContent).toBe('0/1')
-  })
-
-  it('counts a cancelled task as done when interleaved within the active run', () => {
-    // #1 in_progress (anchor), #2 cancelled. Both shown; cancelled counts done.
+  it('counts a cancelled task as done within the current batch', () => {
+    // #1 in_progress, #2 cancelled — both in the current batch (no later user
+    // message). Both shown; cancelled maps to completed for the count.
     const msgs = [
       ...created('tu1', 1, 'A'),
       ...created('tu2', 2, 'B'),
@@ -229,92 +241,64 @@ describe('TodoChecklist — Task* reconstruction', () => {
     expect(texts).toEqual(['todowrite item'])
   })
 
-  it('hides an all-done Task* list EVEN while working (archived, no pop-back)', () => {
-    // Regression: Task* is one cumulative session list. After a turn finishes
-    // every task completed, the next user message flips working=true. Without
-    // archiving, the stale all-done list would pop back up until the model
-    // creates a fresh task. It must stay hidden until a non-terminal task
-    // actually appears.
+  it('drops a finished old batch but keeps the new batch after a new message', () => {
+    // Turn 1: A, B created and completed. Then user sends a new message and
+    // the model starts a fresh task C. The old finished batch is stale →
+    // dropped; only C shows.
     const msgs = [
+      userMsg('turn 1'),
       ...created('tu1', 1, 'A'),
       ...created('tu2', 2, 'B'),
-      taskUseMsg('tu3', 'TaskUpdate', { taskId: '1', status: 'completed' }),
-      taskResultMsg('tu3', 'Updated task #1 status'),
-      taskUseMsg('tu4', 'TaskUpdate', { taskId: '2', status: 'completed' }),
-      taskResultMsg('tu4', 'Updated task #2 status'),
-    ]
-    const { container } = render(<TodoChecklist messages={msgs} working />)
-    expect(container.firstChild).toBeNull()
-  })
-
-  it('re-appears once a task goes non-terminal again (e.g. reopened next turn)', () => {
-    const msgs = [
-      ...created('tu1', 1, 'A'),
-      ...created('tu2', 2, 'B'),
-      taskUseMsg('tu3', 'TaskUpdate', { taskId: '1', status: 'completed' }),
-      taskResultMsg('tu3', 'Updated task #1 status'),
-      taskUseMsg('tu4', 'TaskUpdate', { taskId: '2', status: 'completed' }),
-      taskResultMsg('tu4', 'Updated task #2 status'),
-      // Next turn reopens A — list has a live task again, so it shows.
-      taskUseMsg('tu5', 'TaskUpdate', { taskId: '1', status: 'in_progress' }),
-      taskResultMsg('tu5', 'Updated task #1 status'),
-    ]
-    const { container } = render(<TodoChecklist messages={msgs} working />)
-    expect(container.querySelector('.todo-panel')).not.toBeNull()
-    expect(container.querySelector('.todo-panel-count')?.textContent).toBe('1/2')
-  })
-
-  it('trims a leading run of completed history, keeping the active batch', () => {
-    // #1 #2 completed (old batch), #3 in_progress, #4 pending (current batch).
-    // The leading completed run is dropped; the count reflects the shown subset.
-    const msgs = [
-      ...created('tu1', 1, 'Alpha'),
-      ...created('tu2', 2, 'Beta'),
-      ...created('tu3', 3, 'Gamma'),
-      ...created('tu4', 4, 'Delta'),
       taskUseMsg('u1', 'TaskUpdate', { taskId: '1', status: 'completed' }),
       taskResultMsg('u1', 'Updated task #1 status'),
       taskUseMsg('u2', 'TaskUpdate', { taskId: '2', status: 'completed' }),
       taskResultMsg('u2', 'Updated task #2 status'),
+      userMsg('turn 2'),
+      ...created('tu3', 3, 'C'),
       taskUseMsg('u3', 'TaskUpdate', { taskId: '3', status: 'in_progress' }),
       taskResultMsg('u3', 'Updated task #3 status'),
     ]
     const { container } = render(<TodoChecklist messages={msgs} working />)
     const texts = [...container.querySelectorAll('.todo-text')].map((n) => n.textContent)
-    // Gamma shows its activeForm? No activeForm set → falls back to content.
-    expect(texts).toEqual(['Gamma', 'Delta'])
-    // Count is over the shown subset: 0 of 2 done.
-    expect(container.querySelector('.todo-panel-count')?.textContent).toBe('0/2')
+    expect(texts).toEqual(['C'])
+    expect(container.querySelector('.todo-panel-count')?.textContent).toBe('0/1')
   })
 
-  it('keeps a completed task interleaved within the active run', () => {
-    // #1 completed (old), #2 in_progress, #3 completed (within active run).
-    // First non-terminal is #2 → show #2 and #3; drop the leading #1.
+  it('keeps an old task that gets reopened in the new turn', () => {
+    // Old batch A(done) B(done); new turn reopens A → A touched after the
+    // latest user message → not stale → shown. B stays stale → dropped.
     const msgs = [
-      ...created('tu1', 1, 'Alpha'),
-      ...created('tu2', 2, 'Beta'),
-      ...created('tu3', 3, 'Gamma'),
+      userMsg('turn 1'),
+      ...created('tu1', 1, 'A'),
+      ...created('tu2', 2, 'B'),
       taskUseMsg('u1', 'TaskUpdate', { taskId: '1', status: 'completed' }),
       taskResultMsg('u1', 'Updated task #1 status'),
-      taskUseMsg('u2', 'TaskUpdate', { taskId: '2', status: 'in_progress' }),
+      taskUseMsg('u2', 'TaskUpdate', { taskId: '2', status: 'completed' }),
       taskResultMsg('u2', 'Updated task #2 status'),
-      taskUseMsg('u3', 'TaskUpdate', { taskId: '3', status: 'completed' }),
-      taskResultMsg('u3', 'Updated task #3 status'),
+      userMsg('turn 2 — reopen A'),
+      taskUseMsg('u3', 'TaskUpdate', { taskId: '1', status: 'in_progress' }),
+      taskResultMsg('u3', 'Updated task #1 status'),
     ]
     const { container } = render(<TodoChecklist messages={msgs} working />)
     const texts = [...container.querySelectorAll('.todo-text')].map((n) => n.textContent)
-    expect(texts).toEqual(['Beta', 'Gamma'])
-    expect(container.querySelector('.todo-panel-count')?.textContent).toBe('1/2')
+    expect(texts).toEqual(['A'])
+    expect(container.querySelector('.todo-panel-count')?.textContent).toBe('0/1')
   })
 
-  it('shows the whole list when it already starts with an active task', () => {
+  it('keeps unfinished tasks from a previous turn even after a new message', () => {
+    // A finished, B still pending when the user sends turn 2. B is unfinished
+    // → never cleaned up (we never hide outstanding work). A is stale → dropped.
     const msgs = [
-      ...created('tu1', 1, 'Alpha'),
-      ...created('tu2', 2, 'Beta'),
+      userMsg('turn 1'),
+      ...created('tu1', 1, 'A'),
+      ...created('tu2', 2, 'B'),
+      taskUseMsg('u1', 'TaskUpdate', { taskId: '1', status: 'completed' }),
+      taskResultMsg('u1', 'Updated task #1 status'),
+      userMsg('turn 2'),
     ]
     const { container } = render(<TodoChecklist messages={msgs} working />)
-    expect(container.querySelectorAll('.todo-item').length).toBe(2)
-    expect(container.querySelector('.todo-panel-count')?.textContent).toBe('0/2')
+    const texts = [...container.querySelectorAll('.todo-text')].map((n) => n.textContent)
+    expect(texts).toEqual(['B'])
   })
 
   it('still shows an updated task whose create was never seen', () => {

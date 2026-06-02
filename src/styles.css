@@ -28,8 +28,6 @@
   --msg-rate-limit-bg: #2b2416;
   --msg-rate-limit-border: #5a4a25;
   --msg-rate-limit-fg: #ffe0a0;
-  --msg-result-bg: #14221c;
-  --msg-result-border: #1f3a2e;
   /* User message bubble derives its color from the theme's accent so the
      "you" side automatically follows whatever palette is active. Mixed
      with --bg / --fg so it stays a subtle tint, not a saturated block. */
@@ -94,8 +92,6 @@
   --msg-rate-limit-bg: #fdf8ef;
   --msg-rate-limit-border: #e8d4a4;
   --msg-rate-limit-fg: #8a6510;
-  --msg-result-bg: #f0faf4;
-  --msg-result-border: #b4d8c4;
   /* --msg-user-* is defined once in :root using color-mix() against the
      theme variables, so the light theme inherits a re-mixed palette
      automatically — no per-theme overrides needed. */
@@ -1862,6 +1858,35 @@ body.resizing-col * {
   max-width: 420px;
 }
 
+/* EnterPlanMode marker — a thin inline cue (NOT a card) shown when the model
+   enters plan mode. Reuses the recap accent vocabulary so it reads as a mode
+   transition rather than a tool result. All colors come from existing theme
+   variables, so it adapts to light/dark automatically. */
+.enter-plan-marker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.enter-plan-marker-icon {
+  display: inline-flex;
+  color: var(--accent);
+}
+.enter-plan-marker-label {
+  color: var(--accent);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.enter-plan-marker-sub {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Compact-summary card — the user-role "summary" frame that the SDK
    injects right after a compact_boundary. Tinted with the recap accent
    but card-shaped (not a divider) so it clearly belongs to the recap
@@ -2073,6 +2098,35 @@ body.resizing-col * {
     border-color: var(--accent);
   }
 }
+/* New-message entrance animation ("blur + rise"). Applied for one play to
+   the item wrapper of a genuinely-new live arrival (see MessageList's gate),
+   then stripped on animationend so scroll re-mounts don't replay it. The
+   class lives on .virtuoso-item-wrapper — animating the wrapper (not the
+   inner .msg) keeps the bubble's own align-self / max-width intact. The
+   wrapper already has `contain: layout style`, so the transform stays
+   isolated and can't reflow sibling messages. */
+.virtuoso-item-wrapper.msg-enter {
+  animation: msg-enter-rise 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes msg-enter-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+/* Respect reduced-motion: appear instantly, no transform/blur. */
+@media (prefers-reduced-motion: reduce) {
+  .virtuoso-item-wrapper.msg-enter {
+    animation: none;
+  }
+}
+
 .streaming-msg .assistant-body { position: relative; }
 /* In-progress streaming text is rendered as plain text (not Markdown) for
    performance; preserve newlines/wrapping and long-word breaks so it reads
@@ -2500,8 +2554,56 @@ body.resizing-col * {
 .msg.error { background: var(--msg-error-bg); border-color: var(--msg-error-border); color: var(--msg-error-fg); }
 .msg.error.rate-limit { background: var(--msg-rate-limit-bg); border-color: var(--msg-rate-limit-border); color: var(--msg-rate-limit-fg); }
 .msg.api-retry { background: var(--msg-rate-limit-bg); border-color: var(--msg-rate-limit-border); color: var(--msg-rate-limit-fg); font-family: var(--mono); font-size: 12px; }
-.msg.result { background: var(--msg-result-bg); border-color: var(--msg-result-border); }
-.msg.result.interrupted { background: var(--msg-rate-limit-bg); border-color: var(--msg-rate-limit-border); color: var(--msg-rate-limit-fg); }
+/* Turn-complete marker. NOT a card — a centered hairline divider with a
+   success tick and de-emphasised tabular metadata. Shares the .msg.recap
+   divider vocabulary so a turn boundary reads consistently with a recap /
+   plan-mode boundary. Green is reduced to the tick alone (was a full fill)
+   so it signals "done" without competing with real message content. */
+.msg.result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  background: none;
+  padding: 2px 0;
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  animation: result-fade-in 150ms ease-out;
+}
+.msg.result::before,
+.msg.result::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+  min-width: 12px;
+}
+.result-mark {
+  color: var(--ok, var(--accent));
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.result-meta {
+  white-space: nowrap;
+  /* Tabular figures so cost/duration digits share a fixed width. */
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+/* Interrupted: tint the tick + divider + metadata with the warn color
+   instead of green, so an aborted turn is distinguishable without relying
+   on the glyph alone (color-not-only). */
+.msg.result.interrupted { color: var(--msg-rate-limit-fg); }
+.msg.result.interrupted::before,
+.msg.result.interrupted::after { background: color-mix(in srgb, var(--warn, var(--danger)) 45%, var(--border)); }
+.msg.result.interrupted .result-mark { color: var(--warn, var(--danger)); }
+@keyframes result-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .msg.result { animation: none; }
+}
 
 .msg-body { word-wrap: break-word; }
 .msg-body code {
@@ -5574,6 +5676,29 @@ mark.search-hl.search-hl-active {
   font-size: 12.5px;
 }
 
+/* Inline tool_result section merged into the bottom of a tool card.
+   Sits below the card body (or directly under the header for body-less
+   cards like Read/Grep) with a separating border so the result reads as
+   a distinct zone of the same card. */
+.tool-card-result {
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  padding: 2px 6px 4px;
+}
+/* The result <details> already brings its own top margin; collapse it so
+   the section padding controls the spacing. */
+.tool-card-result > .tool-result-details {
+  margin-top: 0;
+}
+/* Error results get a subtle red tint so failures stand out at a glance
+   even while collapsed. */
+.tool-card-result-error {
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+}
+.tool-card-result-error > .tool-result-details > .tool-result-summary {
+  color: var(--danger);
+}
+
 /* File-path title block — bold filename + muted dir suffix.
  *
  * Uses inline-flex so a row of file paths in the same card body wraps
@@ -6272,5 +6397,82 @@ mark.search-hl.search-hl-active {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ============================================================
+   Mobile / narrow-viewport adaptation (≤768px)
+   ------------------------------------------------------------
+   Single-panel mode (maxOpen forced to 1 in App.tsx via
+   useIsMobile) + drawer sidebar. Keep this block last so its
+   overrides win without needing !important. The breakpoint is
+   mirrored in src/hooks/useIsMobile.ts (MOBILE_BREAKPOINT).
+   ============================================================ */
+@media (max-width: 768px) {
+  /* Sidebar leaves the grid flow and becomes a sliding drawer; the
+     single remaining column lets <main> fill the width. */
+  .app {
+    grid-template-columns: 1fr;
+    /* --app-vh is set by useVisualViewportHeight to the keyboard-excluded
+       height; falls back to 100dvh when the API is unavailable. */
+    height: var(--app-vh, 100dvh);
+  }
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(85vw, 320px);
+    z-index: 50;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    border-right: 1px solid var(--border);
+    box-shadow: 2px 0 16px rgba(0, 0, 0, 0.3);
+  }
+  .app.drawer-open .sidebar {
+    transform: translateX(0);
+  }
+  /* Drag-to-resize is meaningless for a fixed-width drawer, and its
+     absolute positioning would land off-screen. */
+  .sidebar-resizer {
+    display: none;
+  }
+
+  /* Full-screen scrim behind the open drawer. */
+  .drawer-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(0, 0, 0, 0.45);
+  }
+
+  /* Push the hamburger to the left edge; the rest of the toolbar
+     (notifications, theme, settings) stays flush-right. */
+  .main-header {
+    justify-content: flex-start;
+  }
+  .main-toolbar {
+    margin-left: auto;
+  }
+  .drawer-toggle {
+    margin-right: 4px;
+  }
+
+  /* Touch devices can't hover, so hover-revealed action buttons would be
+     permanently invisible. Make them always visible at this breakpoint. */
+  .session-item-delete,
+  .code-block:hover .code-block-copy,
+  .code-block-copy,
+  .git-file-actions {
+    opacity: 1;
+  }
+  .msg-copy-btn {
+    opacity: 0.7;
+  }
+
+  /* Enlarge icon-button hit areas to the ~44px touch-target guideline. */
+  .btn-icon {
+    min-width: 40px;
+    min-height: 40px;
+  }
 }
 

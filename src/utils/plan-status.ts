@@ -1,6 +1,6 @@
 // Helpers behind the inline plan card's status pill.
 //
-// The plan-mode tool (ExitPlanMode / EnterPlanMode legacy) emits a
+// The plan-mode PROPOSAL tool (ExitPlanMode) emits a
 // tool_use whose result determines whether the user approved the plan
 // (the SDK switched out of plan mode and replied with the plan text
 // echoed back) or kept planning (Claude got a deny message and is now

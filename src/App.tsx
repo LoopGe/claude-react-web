@@ -8,6 +8,8 @@ import { SessionList } from './components/SessionList'
 import { ChatPanel } from './components/ChatPanel'
 import { api } from './hooks/useApi'
 import { isInAppDrag, readDragPayload } from './hooks/useDragPayload'
+import { useIsMobile } from './hooks/useIsMobile'
+import { useVisualViewportHeight } from './hooks/useVisualViewportHeight'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useLocalStorage } from './hooks/useLocalStorage'
 import { useComposerSnippets } from './hooks/useComposerSnippets'
@@ -22,7 +24,7 @@ import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, Sidebar
 import { PERMISSION_MODES } from './types'
 import { ACCENT_COLORS } from './theme'
 import { ErrorBoundary } from './components/ErrorBoundary'
-import { IconSettings, IconBell, IconBellOff, IconBot, IconBug, IconBugOff } from './components/icons/ToolIcons'
+import { IconSettings, IconBell, IconBellOff, IconBot, IconBug, IconBugOff, IconMenu } from './components/icons/ToolIcons'
 import { ThemeToggle } from './components/ThemeToggle'
 import { UpdateBanner } from './components/UpdateBanner'
 import { useUpdateInfo } from './hooks/useUpdateInfo'
@@ -73,6 +75,9 @@ export function App() {
   /** Which of the open panels is currently focused (controls settings
    *  panel target + clears unread when selected). */
   const [focusedId, setFocusedId] = useState<string | null>(null)
+  /** Mobile drawer (sidebar) open state. Desktop ignores this — the sidebar
+   *  is always a static grid column there. */
+  const [drawerOpen, setDrawerOpen] = useState(false)
   /** Per-session "last turn seen by the user" timestamp. A session is
    *  unread when `lastTurnAt > lastSeenTurn[id]` AND it isn't the
    *  currently-focused panel in a focused window. Opening, focusing, or
@@ -150,7 +155,18 @@ export function App() {
    *  Shared setting because the main grid and groups should agree on
    *  capacity. Server-driven via /api/config → config.json. */
   const [serverMaxOpen, setServerMaxOpen] = useState<number>(3)
-  const maxOpen = clampMaxOpen(serverMaxOpen)
+  // True at/below the mobile breakpoint (≤768px). Drives single-panel mode
+  // and the drawer sidebar.
+  const isMobile = useIsMobile()
+  // Track the visible viewport height on mobile so the on-screen keyboard
+  // can't push the composer off-screen (writes the --app-vh CSS var).
+  useVisualViewportHeight(isMobile)
+  // `maxGroupSize` is the per-group capacity (persisted to localStorage via
+  // group membership) and must NOT be squeezed by the viewport, or narrow
+  // screens would permanently evict group members. `maxOpen` is the number
+  // of panels shown at once — forced to 1 on mobile for single-panel mode.
+  const maxGroupSize = clampMaxOpen(serverMaxOpen)
+  const maxOpen = isMobile ? 1 : maxGroupSize
 
   // Configurable layout constraints — persisted in localStorage so
   // power users can tune sidebar limits and panel minimum ratio.
@@ -251,6 +267,28 @@ export function App() {
   newSessionDialogOpenRef.current = newSessionDialogOpen
   /* eslint-enable react-hooks/refs */
 
+  // When the panel capacity shrinks (e.g. desktop → mobile resize/rotation
+  // drops maxOpen to 1), `openSession`'s eviction only gates NEW opens — it
+  // never retroactively trims already-open panels. Without this, narrowing
+  // the viewport would leave 3 panels crammed into one column. Trim down to
+  // `maxOpen`, preserving the focused panel (or the most recent one).
+  useEffect(() => {
+    setOpenIds((prev) => {
+      if (prev.length <= maxOpen) return prev
+      // Keep the most recent `maxOpen` panels, but always retain the focused
+      // one even if it's older than the cutoff.
+      const focused = focusedIdRef.current
+      const kept = prev.slice(prev.length - maxOpen)
+      if (focused && prev.includes(focused) && !kept.includes(focused)) {
+        kept[0] = focused
+      }
+      if (focused && !kept.includes(focused)) setFocusedId(kept[kept.length - 1])
+      return kept
+    })
+    // Only react to capacity changes; openIds churn is handled by openSession.
+    // (setOpenIds / setFocusedId / focusedIdRef are all stable.)
+  }, [maxOpen])
+
   // Notification coordinator: working-flag edge detector + permission
   // gate, both gated on `document.hasFocus() && focusedId === sessionId`.
   // The hook owns notifyRef + prevWorkingRef internally; App keeps only
@@ -288,23 +326,17 @@ export function App() {
           // Prune lastSeenTurn entries whose sessions are gone — keeps
           // the persisted map from growing unbounded across restarts.
           setLastSeenTurn((prev) => pruneLastSeen(prev, ids))
-          // Same idea for sidebarOrder and group.sessionIds — server is
-          // authoritative, so any id it doesn't list is dead. Without
-          // this, deleted sessions accumulate forever in localStorage.
-          setSidebarOrder((prev) => {
-            const next = prev.filter((id) => ids.has(id))
-            return next.length === prev.length ? prev : next
-          })
-          setGroups((prev) => {
-            let changed = false
-            const next = prev.map((g) => {
-              const filtered = g.sessionIds.filter((id) => ids.has(id))
-              if (filtered.length === g.sessionIds.length) return g
-              changed = true
-              return { ...g, sessionIds: filtered }
-            })
-            return changed ? next : prev
-          })
+          // NOTE: sidebarOrder and group.sessionIds are deliberately NOT
+          // pruned here. A single snapshot is not an authoritative "these
+          // are the only sessions that exist" list — a transient/incomplete
+          // snapshot (server restart mid-persist, reconnect race, a session
+          // still inside the persistence debounce window) would otherwise
+          // permanently strip a still-live session from its group/order and
+          // never re-add it. Pruning now happens on the authoritative
+          // real-time `session-removed` frame instead. Residual ids here are
+          // harmless: sidebarSections / handleActivateGroup / activeGroupId
+          // all filter sessionIds against the live `sessions` set, so an id
+          // for a session that no longer exists never renders or opens.
           break
         }
         case 'session-update': {
@@ -366,6 +398,23 @@ export function App() {
           // tabs that watch many short sessions over hours otherwise
           // grow that Map without bound.
           pruneSession(frame.id)
+          // Prune the deleted id from persisted sidebar order and group
+          // membership. This is the authoritative real-time delete signal
+          // (also fires for cross-tab deletes), so it's safe to remove here
+          // — unlike the snapshot handler, which could fire on an
+          // incomplete session list and drop still-live members.
+          setSidebarOrder((prev) =>
+            prev.includes(frame.id) ? prev.filter((id) => id !== frame.id) : prev,
+          )
+          setGroups((prev) => {
+            let changed = false
+            const next = prev.map((g) => {
+              if (!g.sessionIds.includes(frame.id)) return g
+              changed = true
+              return { ...g, sessionIds: g.sessionIds.filter((sid) => sid !== frame.id) }
+            })
+            return changed ? next : prev
+          })
           break
         }
         case 'session-recap-update': {
@@ -502,14 +551,14 @@ export function App() {
           if (g.id !== groupId) return without
           // Add to target (evict oldest if full)
           const ids = without.sessionIds
-          if (ids.length >= maxOpen) {
+          if (ids.length >= maxGroupSize) {
             return { ...without, sessionIds: [...ids.slice(1), sessionId] }
           }
           return { ...without, sessionIds: [...ids, sessionId] }
         })
       })
     },
-    [setGroups, maxOpen],
+    [setGroups, maxGroupSize],
   )
 
   /** The group whose sessions are currently open in the main grid.
@@ -867,6 +916,19 @@ export function App() {
   // without the useCallback depending on handleSelect directly.
   // eslint-disable-next-line react-hooks/refs -- intentional render-time ref sync, same rationale as the block above
   handleSelectRef.current = handleSelect
+
+  // Sidebar selection wrapper: on mobile, also close the drawer after picking
+  // a session. Memoised so SessionList's `renderCard` useCallback (which lists
+  // onSelect as a dependency) keeps a stable identity — an inline arrow here
+  // would invalidate it on every App render and re-render the whole list.
+  // `isMobile` only flips at the breakpoint, so on desktop this stays stable.
+  const handleSelectFromSidebar = useCallback(
+    (id: string) => {
+      void handleSelect(id)
+      if (isMobile) setDrawerOpen(false)
+    },
+    [handleSelect, isMobile],
+  )
 
   /** When focus changes to an open panel, bump its seen-turn so the unread
    *  dot disappears. Focusing an already-read panel is a no-op. Uses
@@ -1325,7 +1387,7 @@ export function App() {
   return (
     <ErrorBoundary>
     <div
-      className="app"
+      className={`app${isMobile && drawerOpen ? ' drawer-open' : ''}`}
       style={{ ['--sidebar-width' as string]: `${effectiveSidebarWidth}px` }}
     >
       {/* Skip link for keyboard users — first focusable element on the
@@ -1349,7 +1411,7 @@ export function App() {
           unread={unread}
           sessionColors={sessionColors}
           onSessionColorChange={handleSessionColorChange}
-          onSelect={handleSelect}
+          onSelect={handleSelectFromSidebar}
           onCreate={handleCreate}
           onDelete={handleDelete}
           onClosePanel={closeSession}
@@ -1385,6 +1447,17 @@ export function App() {
         />
       </aside>
 
+      {/* Mobile drawer backdrop. Only rendered when the drawer is open on a
+          narrow viewport; clicking it closes the drawer. Hidden entirely on
+          desktop (the sidebar is a static grid column there). */}
+      {isMobile && drawerOpen && (
+        <div
+          className="drawer-backdrop"
+          onClick={() => setDrawerOpen(false)}
+          aria-hidden
+        />
+      )}
+
       {/* tabIndex={-1} makes the landmark a programmatic focus target so
           activating the skip-link (`href="#main"`) actually moves focus
           here. Without it, the browser scrolls into view but focus stays
@@ -1392,6 +1465,19 @@ export function App() {
           defeating the whole point of the skip-link. */}
       <main className="main" id="main" tabIndex={-1} aria-label="Chat panels">
         <header className="main-header">
+          {/* Hamburger toggles the drawer sidebar. Rendered only on mobile;
+              CSS pushes it to the left edge (margin-right: auto) so the rest
+              of the toolbar stays flush-right. */}
+          {isMobile && (
+            <button
+              className="btn btn-icon drawer-toggle"
+              onClick={() => setDrawerOpen((v) => !v)}
+              aria-label="Open sessions"
+              aria-expanded={drawerOpen}
+            >
+              <IconMenu size={18} />
+            </button>
+          )}
           {/* The header used to echo the focused session's title / model /
               mode / cwd, but with up to three panels open that information
               is already visible inside each ChatPanel header — duplicating

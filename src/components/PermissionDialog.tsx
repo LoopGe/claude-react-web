@@ -109,7 +109,7 @@ export const PermissionDialog = memo(function PermissionDialog({ request, onDeci
       <div className={`perm-card ${isPlanRequest ? 'perm-card-plan' : ''}`}>
         <div className="modal-header">
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span aria-hidden style={{ display: 'inline-flex' }}>{isPlanRequest ? <IconClipboardList size={18} /> : <IconLock size={18} />}</span>
+            <span aria-hidden style={{ display: 'inline-flex' }}>{isPlanRequest ? <IconClipboardList size={16} /> : <IconLock size={16} />}</span>
             {isPlanRequest ? 'Plan ready for review' : 'Tool permission required'}
           </h3>
         </div>

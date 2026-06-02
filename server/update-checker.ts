@@ -30,8 +30,10 @@
 
 import pkg from '../package.json' with { type: 'json' }
 import type { UpdateInfo } from '../shared/update-info.js'
+import { isVersionNewer } from '../shared/update-info.js'
 import { config } from './config.js'
 import { detectInstallMethod } from './install-method.js'
+import { readInstalledVersion } from './installed-version.js'
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000  // 6h between successful probes
 const FAILED_RETRY_MS = 5 * 60 * 1000    // 5 min between retries after failure
@@ -64,54 +66,21 @@ export function getCurrentVersion(): string {
 
 /** Return the latest cached UpdateInfo without triggering a network probe.
  *  Used by the GET /api/update-info route as the "fast path" — if the
- *  cache is fresh, no fetch is performed. */
-export function getCachedUpdateInfo(): UpdateInfo {
-  return cached
-}
-
-/** Compare two semver-ish version strings using only their numeric
- *  major.minor.patch segments. Pre-release suffixes (`-rc.1`, `-beta`)
- *  on EITHER side make the version count as "not newer" — we never
- *  prompt users to upgrade to a pre-release, and we never count being
- *  on a pre-release as "ahead of" the stable channel.
+ *  cache is fresh, no fetch is performed.
  *
- *  Returns true iff `latest` is strictly newer than `current`. Returns
- *  false on parse failure (malformed inputs are treated as "not newer"
- *  rather than throwing — a registry serving garbage shouldn't break
- *  the UI). */
-export function isVersionNewer(current: string, latest: string): boolean {
-  const a = parseSemver(current)
-  const b = parseSemver(latest)
-  if (!a || !b) return false
-  if (a.prerelease || b.prerelease) return false
-  if (b.major !== a.major) return b.major > a.major
-  if (b.minor !== a.minor) return b.minor > a.minor
-  return b.patch > a.patch
+ *  The `installed` (on-disk) version is overlaid fresh on every call rather
+ *  than served from the cached snapshot: it changes the instant an in-app
+ *  update rewrites the package on disk, and we want the UI to reflect that
+ *  without waiting out the 6h registry-probe TTL. */
+export function getCachedUpdateInfo(): UpdateInfo {
+  const installed = readInstalledVersion(PACKAGE_NAME)
+  return installed ? { ...cached, installed } : cached
 }
 
-interface ParsedSemver {
-  major: number
-  minor: number
-  patch: number
-  prerelease: boolean
-}
-
-function parseSemver(v: string): ParsedSemver | null {
-  // Match `<major>.<minor>.<patch>` followed optionally by `-prerelease`
-  // and/or `+build`. Per semver, build metadata (`+build…`) MUST be
-  // ignored for ordering — only `-pre…` marks a prerelease. We don't
-  // validate the prerelease token's contents — its mere presence is
-  // enough to skip the comparison.
-  const m = /^(\d+)\.(\d+)\.(\d+)(?:-([^+]+))?(?:\+.+)?$/.exec(v.trim())
-  if (!m) return null
-  const major = Number(m[1])
-  const minor = Number(m[2])
-  const patch = Number(m[3])
-  if (!Number.isFinite(major) || !Number.isFinite(minor) || !Number.isFinite(patch)) {
-    return null
-  }
-  return { major, minor, patch, prerelease: !!m[4] }
-}
+// `isVersionNewer` now lives in shared/update-info.ts so the client compares
+// versions identically. Re-exported here to keep existing server/test imports
+// (`import { isVersionNewer } from './update-checker.js'`) working.
+export { isVersionNewer } from '../shared/update-info.js'
 
 /** Hit the configured registry's "latest" dist-tag endpoint. Returns the
  *  registry's reported version on success, or throws on any HTTP / network

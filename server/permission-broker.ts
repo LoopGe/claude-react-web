@@ -192,12 +192,25 @@ export class PermissionBroker {
           timeoutTimer,
         }), `AskUserQuestion permission request — ${questions.length} question(s)`)
       }
-      // Plan proposals are not permission requests — they require human
-      // review of the proposed plan regardless of permission mode.  This
-      // check MUST come before the bypassPermissions early-return so that
-      // even in bypass mode the user sees the plan card and can approve
-      // or reject it.
-      if (toolName === 'ExitPlanMode' || toolName === 'EnterPlanMode') {
+      // EnterPlanMode is the plan-mode ENTRY signal — the model announces it
+      // is about to start planning. Its input is empty (no plan to review), so
+      // it is NOT a permission request and must NOT raise a plan-review card.
+      // Auto-allow it (the transcript renders a lightweight inline marker).
+      // NOTE: semantically opposite to ExitPlanMode below — see
+      // src/constants/toolNames.ts (PLAN_TOOL_NAMES vs ENTER_PLAN_MODE_TOOL_NAME).
+      if (toolName === 'EnterPlanMode') {
+        return {
+          behavior: 'allow',
+          updatedInput: toolInput,
+          toolUseID: ctx.toolUseID,
+        }
+      }
+      // ExitPlanMode is a plan PROPOSAL: "I'm done planning, here's the plan —
+      // should I start executing?" It requires human review of the proposed
+      // plan regardless of permission mode. This check MUST come before the
+      // bypassPermissions early-return so that even in bypass mode the user
+      // sees the plan card and can approve or reject it.
+      if (toolName === 'ExitPlanMode') {
         return this.createPendingRequest(session, ctx, broadcastReq, broadcastRes, onPendingChanged, permissionTimeoutMs, (pid, wrappedResolve, abortHandler, timeoutTimer) => ({
           kind: 'permission' as const,
           id: pid,
