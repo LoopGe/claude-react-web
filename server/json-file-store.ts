@@ -84,6 +84,45 @@ export abstract class JsonFileStore<T> {
     if (this.index.delete(key)) this.schedule()
   }
 
+  /** Reorder the index to match `orderedKeys`. Entries whose key appears in
+   *  `orderedKeys` are placed first, in that order; any remaining entries
+   *  (keys not mentioned) are appended in their current relative order so
+   *  no data is lost on a partial/stale id list. Triggers a debounced
+   *  flush only when the order actually changes.
+   *
+   *  This exists because the base Map can't reorder via `upsert` — setting
+   *  an existing key updates in place without moving it, and a new key
+   *  always appends. Callers that expose user-controlled ordering (e.g. a
+   *  move up/down UI) use this to rebuild the sequence atomically. */
+  reorder(orderedKeys: string[]): void {
+    const seen = new Set<string>()
+    const next: Array<[string, T]> = []
+    for (const key of orderedKeys) {
+      if (seen.has(key)) continue
+      const item = this.index.get(key)
+      if (item === undefined) continue
+      seen.add(key)
+      next.push([key, item])
+    }
+    // Append any entries the caller didn't mention, preserving their order.
+    for (const [key, item] of this.index) {
+      if (seen.has(key)) continue
+      next.push([key, item])
+    }
+    // No-op if the resulting key order is identical to the current one.
+    const currentKeys = Array.from(this.index.keys())
+    let changed = next.length !== currentKeys.length
+    if (!changed) {
+      for (let i = 0; i < next.length; i++) {
+        if (next[i][0] !== currentKeys[i]) { changed = true; break }
+      }
+    }
+    if (!changed) return
+    this.index.clear()
+    for (const [key, item] of next) this.index.set(key, item)
+    this.schedule()
+  }
+
   /** Populate the index from parsed entries. Called by subclass `load()`. */
   protected initEntries(entries: T[]): void {
     for (const entry of entries) {

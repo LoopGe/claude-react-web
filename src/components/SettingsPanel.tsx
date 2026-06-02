@@ -1,7 +1,7 @@
 // Right-side settings drawer. Focuses on mid-session controls — options that
 // can only be set at session creation are shown read-only at the top.
 
-import { lazy, memo, Suspense, useEffect, useMemo, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
@@ -29,13 +29,26 @@ interface Props {
   onSessionUpdate: (s: SessionInfo) => void
   commands?: SlashCommand[]
   agents?: AgentInfo[]
+  /** Live context-usage pushed over the WebSocket (the "lite" shape from
+   *  session-pump.ts: totalTokens/maxTokens/rawMaxTokens/percentage/model).
+   *  Enough to paint ContextBar immediately, with zero blocking SDK round-
+   *  trip. The full breakdown (skills/agents/memoryFiles) is lazy-loaded
+   *  only when the user expands the detail sections. */
+  contextUsage?: ContextUsage | null
   onPluginsReloaded?: () => void
 }
 
-export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onSessionUpdate, commands = [], agents = [], onPluginsReloaded }: Props) {
+export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onSessionUpdate, commands = [], agents = [], contextUsage, onPluginsReloaded }: Props) {
   const [models, setModels] = useState<ModelInfo[]>([])
   const [settingsText, setSettingsText] = useState('{}')
-  const [usage, setUsage] = useState<ContextUsage | null>(null)
+  // Full context-usage breakdown from the (blocking) REST endpoint. Null
+  // until the user expands a detail section — see loadDetailedUsage().
+  // ContextBar itself runs off the WS-pushed `contextUsage` prop and never
+  // waits on this.
+  const [detailedUsage, setDetailedUsage] = useState<ContextUsage | null>(null)
+  const [loadingUsage, setLoadingUsage] = useState(false)
+  // One-shot guard so re-opening a <details> doesn't re-fire the request.
+  const usageFetchedRef = useRef(false)
   const [mcp, setMcp] = useState<McpServerStatus[]>([])
   const [globalMcpNames, setGlobalMcpNames] = useState<Set<string>>(new Set())
   const [showMcpInstaller, setShowMcpInstaller] = useState(false)
@@ -67,15 +80,18 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
       // Fetch server-configured models and SDK models in parallel.
       // SDK models merge depends on server config, so those two are
       // awaited together; the rest are independent fire-and-forget.
-      const [cfgResult, modelsResult, usageResult, mcpResult, gcResult] =
+      //
+      // NOTE: /context-usage is intentionally NOT fetched here. It's a
+      // blocking SDK control request that hangs the whole panel open while
+      // the subprocess is mid-turn or the proxy init handshake stalls.
+      // ContextBar runs off the WebSocket-pushed `contextUsage` prop
+      // instead (zero round-trip); the full breakdown is lazy-loaded only
+      // when a detail section is expanded — see loadDetailedUsage().
+      const [cfgResult, modelsResult, mcpResult, gcResult] =
         await Promise.allSettled([
           api.get<{ models?: string[] }>('/config', { signal: ac.signal }),
           api.get<{ models: ModelInfo[] }>(
             `/sessions/${session.id}/models`,
-            { signal: ac.signal },
-          ),
-          api.get<{ usage: unknown }>(
-            `/sessions/${session.id}/context-usage`,
             { signal: ac.signal },
           ),
           api.get<{ mcp: McpServerStatus[] }>(
@@ -116,9 +132,6 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
         }
       }
 
-      if (usageResult.status === 'fulfilled') {
-        setUsage(usageResult.value.usage as ContextUsage)
-      }
       if (mcpResult.status === 'fulfilled') {
         setMcp(mcpResult.value.mcp)
       }
@@ -129,6 +142,27 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
     })()
     return () => { ac.abort() }
   }, [session.id, session.running])
+
+  // Lazy-load the full context-usage breakdown (skills / agents /
+  // memoryFiles / mcpTools). This is the BLOCKING SDK control request we
+  // deliberately keep off the panel-open path; it only fires when the user
+  // actually expands a detail section. Fetched once per panel mount.
+  const loadDetailedUsage = useCallback(() => {
+    if (usageFetchedRef.current || !session.running) return
+    usageFetchedRef.current = true
+    setLoadingUsage(true)
+    api
+      .get<{ usage: unknown }>(`/sessions/${session.id}/context-usage`)
+      .then((r) => setDetailedUsage(r.usage as ContextUsage))
+      .catch(() => { usageFetchedRef.current = false /* allow retry */ })
+      .finally(() => setLoadingUsage(false))
+  }, [session.id, session.running])
+
+  // Merge: WS-pushed lite usage paints the bar immediately; the detailed
+  // REST payload (when loaded) supplies skills/agents/memoryFiles. The
+  // detailed payload, once present, is the more complete object, so prefer
+  // it for the bar fields too.
+  const usage: ContextUsage | null = detailedUsage ?? contextUsage ?? null
 
   const runAndRefresh = async (fn: () => Promise<{ session: SessionInfo }>) => {
     setBusy(true)
@@ -316,6 +350,10 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
 
       <div className="settings-section">
         <h4>Context usage</h4>
+        {/* ContextBar runs off the WS-pushed lite usage — paints instantly,
+            no blocking request. The detail disclosures below lazy-load the
+            full breakdown (a blocking SDK control request) only when the
+            user actually opens one. */}
         <ContextBar usage={usage} />
         {usage?.skills && (
           <details className="settings-detail">
@@ -349,10 +387,24 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
             </div>
           </details>
         )}
-        <details className="settings-detail">
-          <summary>Raw data</summary>
+        {/* Always-present disclosure: opening it triggers the lazy fetch of
+            the full breakdown. The skills/agents sections above light up
+            once it resolves (they read from the same merged `usage`). */}
+        <details
+          className="settings-detail"
+          onToggle={(e) => { if ((e.currentTarget as HTMLDetailsElement).open) loadDetailedUsage() }}
+        >
+          <summary>
+            Detailed breakdown{!detailedUsage && loadingUsage ? ' (loading…)' : ''}
+          </summary>
           <pre className="tool-input settings-raw-pre">
-            {usage ? formatJson(usage) : '—'}
+            {detailedUsage
+              ? formatJson(detailedUsage)
+              : loadingUsage
+                ? 'Loading…'
+                : usage
+                  ? formatJson(usage)
+                  : '—'}
           </pre>
         </details>
       </div>

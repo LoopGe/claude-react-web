@@ -19,6 +19,7 @@ import { PermissionModeIcon, permissionModeLabel } from './permission-mode-displ
 import type { PermissionMode, SessionInfo } from '../types'
 import { PERMISSION_MODES } from '../types'
 import type { GitStatus } from '../../shared/git-types'
+import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 
 /** Chip text generator: "main" when clean, "main ↑2 ●5 ?1" when dirty.
  *  Each suffix is suppressed at zero so the chip stays compact when the
@@ -114,6 +115,13 @@ export interface ChatPanelProps {
   onRegisterRecap?: (sessionId: string, fn: () => void) => void
   /** True while the session is being resumed from dormancy. */
   isResuming?: boolean
+  /** Global composer-snippets api (single shared instance owned by App).
+   *  Forwarded to the inner <Composer> via <Chat>. */
+  snippets: ComposerSnippetsApi
+  /** Open the global snippets manager dialog (owned by App). */
+  onOpenSnippetsManager: () => void
+  /** Capture composer text and ask App to prompt for a snippet label. */
+  onSaveCurrentAsSnippet: (content: string) => void
 }
 
 export const ChatPanel = memo(function ChatPanel({
@@ -137,6 +145,9 @@ export const ChatPanel = memo(function ChatPanel({
   onRegisterInterrupt,
   onRegisterRecap,
   isResuming,
+  snippets,
+  onOpenSnippetsManager,
+  onSaveCurrentAsSnippet,
 }: ChatPanelProps) {
   /** State (not ref) so that Chat re-renders once the portal target mounts. */
   const [headerBtnEl, setHeaderBtnEl] = useState<HTMLDivElement | null>(null)
@@ -171,7 +182,11 @@ export const ChatPanel = memo(function ChatPanel({
   // means a single fetch satisfies both consumers; the panel receives
   // status via prop drilling rather than re-fetching on open. Passing
   // session.id wires WS auto-refresh on git-status-changed frames.
-  const gitStatus = useGitStatus(session.cwd, session.id, { enabled: !!session.running && !!session.cwd })
+  // Git status is a read-only filesystem probe — it's valid whether or not
+  // the SDK subprocess is mid-turn. Gating on session.running made the chip
+  // vanish (and never return) the moment a session went idle, because the
+  // hook resets data to null when disabled. Only the cwd matters here.
+  const gitStatus = useGitStatus(session.cwd, session.id, { enabled: !!session.cwd })
 
   const commitModel = (next: string) => {
     const value = next.trim()
@@ -473,6 +488,9 @@ export const ChatPanel = memo(function ChatPanel({
             onRegisterInterrupt={onRegisterInterrupt}
             onRegisterRecap={onRegisterRecap}
             headerButtonsRef={headerBtnEl}
+            snippets={snippets}
+            onOpenSnippetsManager={onOpenSnippetsManager}
+            onSaveCurrentAsSnippet={onSaveCurrentAsSnippet}
           />
         ) : (
           <div className="empty-state">

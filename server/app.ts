@@ -13,9 +13,12 @@ import { buildApiRouter } from './routes/index.js'
 import { buildFsRouter } from './fs-routes.js'
 import { buildGitRouter } from './git-routes.js'
 import { buildMcpConfigRouter } from './mcp-routes.js'
+import { buildSnippetRouter } from './snippet-routes.js'
 import { config as serverConfig } from './config.js'
+import { createLogger } from './log.js'
 import type { SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
+import type { SnippetStore } from './snippet-store.js'
 import type { MpStore } from './mp-store.js'
 
 export interface AppOptions {
@@ -30,6 +33,9 @@ export interface AppOptions {
   /** Global MCP server config store. Mounted as /api/mcp-config and
    *  passed to SessionManager for merging into new sessions. */
   mcpConfigStore?: McpConfigStore
+  /** Composer snippet store. Mounted as /api/snippets. Persists the
+   *  user's reusable text macros to disk (previously localStorage-only). */
+  snippetStore?: SnippetStore
   /** Homegrown marketplace store. When provided, the /api/mp/* routes
    *  are mounted and SessionManager spawns inject enabled plugin paths
    *  into Options.plugins. Optional to keep existing tests / standalone
@@ -104,6 +110,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
     onError: (c) => c.json({ error: 'request body too large' }, 413),
   }))
 
+  const httpLog = createLogger('http')
   app.use('*', async (c, next) => {
     // Basic request log — helps when diagnosing CLI issues.
     // Only log API routes to avoid noise from static asset serving.
@@ -112,7 +119,10 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
     await next()
     const ms = Date.now() - start
     if (c.req.path !== '/api/health') {
-      console.log(`[${c.req.method}] ${c.req.path} → ${c.res.status} (${ms}ms)`)
+      // Route through the scoped logger (not bare console.log) so this — the
+      // highest-volume log line — actually reaches the file sink when file
+      // logging is enabled. Bare console.log bypasses writeToFile().
+      httpLog.info(`[${c.req.method}] ${c.req.path} → ${c.res.status} (${ms}ms)`)
     }
   })
 
@@ -136,6 +146,9 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
   app.route('/api/git', buildGitRouter())
   if (opts.mcpConfigStore) {
     app.route('/api/mcp-config', buildMcpConfigRouter(opts.mcpConfigStore))
+  }
+  if (opts.snippetStore) {
+    app.route('/api/snippets', buildSnippetRouter(opts.snippetStore))
   }
 
   const clientDir = resolveClientDir(opts.clientDir)

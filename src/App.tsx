@@ -10,6 +10,7 @@ import { api } from './hooks/useApi'
 import { isInAppDrag, readDragPayload } from './hooks/useDragPayload'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useLocalStorage } from './hooks/useLocalStorage'
+import { useComposerSnippets } from './hooks/useComposerSnippets'
 import { usePanelColumnResize } from './hooks/usePanelColumnResize'
 import { useSidebarResize } from './hooks/useSidebarResize'
 import { useSessionNotifications } from './hooks/useSessionNotifications'
@@ -36,6 +37,8 @@ const CommandPalette = lazy(() => import('./components/CommandPalette').then((m)
 const ShortcutHelp = lazy(() => import('./components/ShortcutHelp').then((m) => ({ default: m.ShortcutHelp })))
 const GlobalSettingsModal = lazy(() => import('./components/GlobalSettingsModal').then((m) => ({ default: m.GlobalSettingsModal })))
 const SetupPage = lazy(() => import('./components/SetupPage').then((m) => ({ default: m.SetupPage })))
+const SnippetsManagerDialog = lazy(() => import('./components/SnippetsManagerDialog').then((m) => ({ default: m.SnippetsManagerDialog })))
+const PromptDialog = lazy(() => import('./components/PromptDialog').then((m) => ({ default: m.PromptDialog })))
 
 import {
   SIDEBAR_ORDER_KEY,
@@ -122,6 +125,27 @@ export function App() {
   const [groups, setGroups] = useLocalStorage<SessionGroup[]>(GROUPS_KEY, [])
   /** Which group headers are collapsed in the sidebar. */
   const [collapsedGroups, setCollapsedGroups] = useLocalStorage<Record<string, boolean>>(COLLAPSED_GROUPS_KEY, {})
+
+  // Composer snippets — a SINGLE global instance shared by every panel
+  // (previously each Chat panel owned its own copy). Backed by the server
+  // (/api/snippets → disk) so they survive reloads and never disagree
+  // between panels. The manager + save dialogs render once at this level.
+  const snippets = useComposerSnippets()
+  const [showSnippetsManager, setShowSnippetsManager] = useState(false)
+  /** Set when the user picks "Save current input as snippet…" in a panel's
+   *  composer. Holds the textarea snapshot so later edits don't mutate the
+   *  captured content before the label is confirmed. */
+  const [pendingSnippetSave, setPendingSnippetSave] = useState<{ content: string } | null>(null)
+  const snippetsRefresh = snippets.refresh
+  const openSnippetsManager = useCallback(() => {
+    // Pull the latest from the server each time the manager opens so a
+    // stale tab re-syncs (matches the "refetch on open" sync model).
+    void snippetsRefresh()
+    setShowSnippetsManager(true)
+  }, [snippetsRefresh])
+  const saveCurrentAsSnippet = useCallback((content: string) => {
+    setPendingSnippetSave({ content })
+  }, [])
   /** Max number of chat panels open at once, and max sessions per group.
    *  Shared setting because the main grid and groups should agree on
    *  capacity. Server-driven via /api/config → config.json. */
@@ -1512,6 +1536,9 @@ export function App() {
                     onRegisterRecap={registerRecap}
                     onAcceptSidebarDrop={handleAcceptSidebarDrop}
                     isResuming={resuming.has(s.id)}
+                    snippets={snippets}
+                    onOpenSnippetsManager={openSnippetsManager}
+                    onSaveCurrentAsSnippet={saveCurrentAsSnippet}
                   />
                 </ErrorBoundary>
               )
@@ -1571,6 +1598,40 @@ export function App() {
             onRefreshUpdate={updateInfo.refresh}
             updating={updateInfo.updating}
             onUpdate={updateInfo.update}
+          />
+        </Suspense>
+      )}
+
+      {/* Composer snippet dialogs — rendered ONCE at app level (a single
+          global instance shared by every panel). Use .perm-overlay which
+          covers the viewport and centers the card. */}
+      {pendingSnippetSave && (
+        <Suspense fallback={null}>
+          <PromptDialog
+            title="Save snippet"
+            message={
+              <>
+                <p>Pick a label for this snippet. The current composer text will be saved as its content.</p>
+                <pre className="snippet-save-preview">{pendingSnippetSave.content}</pre>
+              </>
+            }
+            defaultValue=""
+            confirmLabel="Save"
+            placeholder="Snippet label"
+            onConfirm={(label) => {
+              snippets.add(label, pendingSnippetSave.content)
+              setPendingSnippetSave(null)
+            }}
+            onCancel={() => setPendingSnippetSave(null)}
+          />
+        </Suspense>
+      )}
+
+      {showSnippetsManager && (
+        <Suspense fallback={null}>
+          <SnippetsManagerDialog
+            api={snippets}
+            onClose={() => setShowSnippetsManager(false)}
           />
         </Suspense>
       )}

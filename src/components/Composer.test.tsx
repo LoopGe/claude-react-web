@@ -18,10 +18,13 @@ const noopAsync = async () => {}
 
 const stubSnippets: ComposerSnippetsApi = {
   snippets: [],
+  loading: false,
+  error: null,
   add: (label, content) => ({ id: 'stub', label, content }),
   update: noop,
   remove: noop,
   move: noop,
+  refresh: async () => {},
 }
 
 const defaultProps = {

@@ -278,9 +278,13 @@ export const Composer = memo(function Composer({
       if (el) {
         setSavedSelection({ start: el.selectionStart, end: el.selectionEnd })
       }
+      // Pull the latest snippets from the server so the menu reflects edits
+      // made in another tab/panel (cheap; matches the "refetch on open"
+      // sync model used by the manager dialog).
+      void snippets.refresh()
       setMenuPos({ x: e.clientX, y: e.clientY })
     },
-    [pickerOpen],
+    [pickerOpen, snippets],
   )
 
   const closeMenu = useCallback(() => setMenuPos(null), [])

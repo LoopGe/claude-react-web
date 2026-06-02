@@ -17,6 +17,37 @@ import { createLogger } from './log.js'
 
 const log = createLogger('pump')
 
+/** True when an SDK `user` message carries at least one `tool_result`
+ *  content block. Used to distinguish a genuine top-level user-input echo
+ *  (text/image blocks only — drop it, we already broadcast our own copy)
+ *  from a tool_result frame (forward it, the UI needs it to resolve the
+ *  tool card's status). Defensive against string content and odd shapes. */
+export function userMessageHasToolResult(msg: SDKMessage): boolean {
+  const content = (msg as { message?: { content?: unknown } }).message?.content
+  if (!Array.isArray(content)) return false
+  for (const block of content) {
+    if (block && typeof block === 'object' && (block as { type?: unknown }).type === 'tool_result') {
+      return true
+    }
+  }
+  return false
+}
+
+/** All `tool_use_id`s carried by a user message's tool_result blocks. The
+ *  originating tool_use id lives on the block, not on the message's
+ *  `parent_tool_use_id` (null for main-thread results). */
+export function toolResultIds(msg: SDKMessage): string[] {
+  const content = (msg as { message?: { content?: unknown } }).message?.content
+  if (!Array.isArray(content)) return []
+  const ids: string[] = []
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue
+    const b = block as { type?: unknown; tool_use_id?: unknown }
+    if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') ids.push(b.tool_use_id)
+  }
+  return ids
+}
+
 export interface PumpDeps {
   historyCap: number
   persist: (session: Session) => void
@@ -97,17 +128,34 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         }
         const msg = step.value
         const msgSubtype = (msg as unknown as { subtype?: string }).subtype
-        // SDK 0.3 echoes top-level user input back through the Query stream
-        // (sometimes as SDKUserMessageReplay with isReplay=true, sometimes
-        // — notably the very first turn after spawn — as a plain
-        // SDKUserMessage with no replay marker). Either way, we already
-        // broadcast our own user messages via SessionManager.send() /
-        // sendContent(), so forwarding the SDK's echo paints the bubble
-        // twice. The reliable discriminator is `parent_tool_use_id`: top-
-        // level user input has it === null, while tool results and
-        // sub-agent outputs (which we DO want to forward) have it set to
-        // the originating tool_use id.
-        if (msg.type === 'user' && (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id == null) {
+        // The SDK may echo top-level user input back through the Query
+        // stream (sometimes as SDKUserMessageReplay with isReplay=true,
+        // sometimes — notably the very first turn after spawn — as a plain
+        // SDKUserMessage with no replay marker). We already broadcast our
+        // own user messages via SessionManager.send() / sendContent(), so
+        // forwarding the SDK's echo would paint the bubble twice — we must
+        // drop it.
+        //
+        // We CANNOT key the drop on `parent_tool_use_id == null` alone:
+        // SDK 0.3.143 emits MAIN-THREAD tool_results as user frames with
+        // `parent_tool_use_id: null` too (only subagent-internal tool hops
+        // carry a non-null parent). Dropping those strands the tool card on
+        // 'running' forever — the frontend seeds 'running' from the
+        // assistant's tool_use but never sees the result to flip it (the
+        // "tool stuck running" bug). Verified against SDK 0.3.143: a Bash
+        // tool_result arrives as { type:'user', parent_tool_use_id:null,
+        // content:[tool_result] }.
+        //
+        // The robust discriminator is the CONTENT: a genuine input echo
+        // carries the user's text/image blocks and never a tool_result
+        // block, while every tool_result frame (main-thread or subagent)
+        // carries at least one. So drop only null-parent user frames that
+        // carry NO tool_result block.
+        if (
+          msg.type === 'user' &&
+          (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id == null &&
+          !userMessageHasToolResult(msg)
+        ) {
           debugLog(`[session ${session.id}] dropping echoed top-level user message uuid=${(msg as { uuid?: string }).uuid}`)
           continue
         }
@@ -128,15 +176,18 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           }
         }
         // tool_result for a mutating tool → schedule a debounced
-        // git-status-changed broadcast. SDK 0.3 wraps tool_results in a
-        // user message whose `parent_tool_use_id` is the originating
-        // tool_use id. We don't care about the result content here — just
-        // that it landed (the worktree is now in its post-mutation state).
+        // git-status-changed broadcast. The SDK wraps tool_results in a
+        // user message; the originating tool_use id is on each tool_result
+        // BLOCK (`tool_use_id`), NOT on the message's `parent_tool_use_id`
+        // (which is null for main-thread results — see the drop-filter note
+        // above). We don't care about the result content here — just that
+        // it landed (the worktree is now in its post-mutation state).
         if (msg.type === 'user') {
-          const parentId = (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id
-          if (parentId && pendingMutatingToolUses.has(parentId)) {
-            pendingMutatingToolUses.delete(parentId)
-            if (deps.broadcaster) scheduleGitBroadcast(deps.broadcaster, session.id)
+          for (const id of toolResultIds(msg)) {
+            if (pendingMutatingToolUses.has(id)) {
+              pendingMutatingToolUses.delete(id)
+              if (deps.broadcaster) scheduleGitBroadcast(deps.broadcaster, session.id)
+            }
           }
         }
         session.lastActivityAt = Date.now()

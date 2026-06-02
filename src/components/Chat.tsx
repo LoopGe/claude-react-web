@@ -23,13 +23,11 @@ import { Composer } from './Composer'
 import { ContextBar } from './ContextBar'
 import { MessageList, WorkingBubble } from './MessageList'
 import { PermissionDialog } from './PermissionDialog'
-import { PromptDialog } from './PromptDialog'
 import { QuestionDialog } from './QuestionDialog'
-import { SnippetsManagerDialog } from './SnippetsManagerDialog'
 import { SubagentOverlay } from './SubagentOverlay'
 import { SubagentProvider } from '../hooks/useSubagentContext'
 import { TodoChecklist } from './TodoChecklist'
-import { useComposerSnippets } from '../hooks/useComposerSnippets'
+import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { useSessionRecap } from '../hooks/useSessionRecap'
 import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
@@ -102,6 +100,11 @@ interface Props {
    *  When non-null, Chat portals its toolbar buttons here so they appear
    *  in the panel header row instead of occupying a separate line. */
   headerButtonsRef?: HTMLDivElement | null
+  /** Global composer-snippets api (single shared instance owned by App).
+   *  Passed straight to <Composer>; the manager + save dialogs live in App. */
+  snippets: ComposerSnippetsApi
+  onOpenSnippetsManager: () => void
+  onSaveCurrentAsSnippet: (content: string) => void
 }
 
 export const Chat = memo(function Chat({
@@ -109,6 +112,7 @@ export const Chat = memo(function Chat({
   settingsOpen, onCloseSettings,
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
   onSessionUpdate, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, headerButtonsRef,
+  snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet,
 }: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
   // The parent remounts Chat on session switch (<Chat key={session.id}>), so
@@ -157,13 +161,29 @@ export const Chat = memo(function Chat({
   }, [session.id, session.running])
 
   // Agents — fetched once per session, refreshed after plugin reload.
+  // Cached per session (like commands) so switching away and back — or a
+  // session.running flip from auto-resume — doesn't re-issue the blocking
+  // /agents control request (it's gated on the SDK init handshake, which
+  // can stall on proxy backends and hang the UI). The agents list is
+  // static for a given session, so the cache is safe until plugin reload.
   const [agents, setAgents] = useState<AgentInfo[]>([])
+  const agentsCacheRef = useRef<Map<string, AgentInfo[]>>(new Map())
   useEffect(() => {
     if (!session.running) return
+    const cached = agentsCacheRef.current.get(session.id)
+    if (cached) {
+      setAgents(cached)
+      return
+    }
     let cancelled = false
     api
       .get<{ agents: AgentInfo[] }>(`/sessions/${session.id}/agents`)
-      .then((res) => { if (!cancelled) setAgents(res.agents ?? []) })
+      .then((res) => {
+        if (cancelled) return
+        const ag = res.agents ?? []
+        agentsCacheRef.current.set(session.id, ag)
+        setAgents(ag)
+      })
       .catch(() => {})
     return () => { cancelled = true }
   }, [session.id, session.running])
@@ -182,12 +202,17 @@ export const Chat = memo(function Chat({
       .catch(() => {})
   }, [session.id, session.running])
 
-  /** Re-fetch agents list (called after plugin reload). */
+  /** Invalidate agents cache and re-fetch (called after plugin reload). */
   const refreshAgents = useCallback(() => {
+    agentsCacheRef.current.delete(session.id)
     if (!session.running) return
     api
       .get<{ agents: AgentInfo[] }>(`/sessions/${session.id}/agents`)
-      .then((res) => setAgents(res.agents ?? []))
+      .then((res) => {
+        const ag = res.agents ?? []
+        agentsCacheRef.current.set(session.id, ag)
+        setAgents(ag)
+      })
       .catch(() => {})
   }, [session.id, session.running])
 
@@ -317,23 +342,11 @@ export const Chat = memo(function Chat({
   // <MessageList recap={session.recap}> below.
   const recap = useSessionRecap(session)
 
-  // Composer snippets — owned at this (panel) level so the manager and
-  // save-prompt dialogs can render as siblings of settings-overlay /
-  // git-overlay. When mounted inside <Composer>, .perm-overlay anchored
-  // to .chat-composer's tiny strip and the dialogs were unusable.
-  // The hook persists to localStorage and syncs across instances, so
-  // calling it once here gives every panel a consistent view.
-  const snippets = useComposerSnippets()
-  const [showSnippetsManager, setShowSnippetsManager] = useState(false)
-  /** Set when the user clicked "Save current input as snippet…". Holds
-   *  the textarea snapshot so future edits don't mutate the captured
-   *  content before the user confirms a label. */
-  const [pendingSnippetSave, setPendingSnippetSave] = useState<{ content: string } | null>(null)
-  const handleOpenSnippetsManager = useCallback(() => setShowSnippetsManager(true), [])
-  const handleSaveCurrentAsSnippet = useCallback(
-    (content: string) => setPendingSnippetSave({ content }),
-    [],
-  )
+  // Composer snippets are a single GLOBAL instance owned by App and passed
+  // down via props (`snippets`, `onOpenSnippetsManager`,
+  // `onSaveCurrentAsSnippet`). The manager + save dialogs render once at
+  // App level. The only panel-local snippet behaviour is "insert at caret",
+  // which lives in <Composer>.
 
   // Track questions that have been answered but whose dialog should stay
   // visible (showing the answer inline) for a few seconds before closing.
@@ -694,8 +707,8 @@ export const Chat = memo(function Chat({
         onRecap={recap.refresh}
         canRecap={!!session.lastTurnAt}
         snippets={snippets}
-        onOpenSnippetsManager={handleOpenSnippetsManager}
-        onSaveCurrentAsSnippet={handleSaveCurrentAsSnippet}
+        onOpenSnippetsManager={onOpenSnippetsManager}
+        onSaveCurrentAsSnippet={onSaveCurrentAsSnippet}
       />
 
       {/* Pending permission dialogs + recently-answered question cards
@@ -774,6 +787,7 @@ export const Chat = memo(function Chat({
           onSessionUpdate={onSessionUpdate}
           commands={commands}
           agents={agents}
+          contextUsage={stream.contextUsage}
           onPluginsReloaded={() => { refreshCommands(); refreshAgents() }}
         />
       </div>
@@ -817,37 +831,6 @@ export const Chat = memo(function Chat({
             questionAnswers={stream.questionAnswers}
           />
         </SubagentProvider>
-      )}
-
-      {/* Snippet dialogs render as panel-level overlays. They use
-          .perm-overlay (position: absolute; inset: 0) which now anchors
-          to .chat (position: relative) instead of the tiny .chat-composer
-          strip — so they cover the whole panel like settings/git. */}
-      {pendingSnippetSave && (
-        <PromptDialog
-          title="Save snippet"
-          message={
-            <>
-              <p>Pick a label for this snippet. The current composer text will be saved as its content.</p>
-              <pre className="snippet-save-preview">{pendingSnippetSave.content}</pre>
-            </>
-          }
-          defaultValue=""
-          confirmLabel="Save"
-          placeholder="Snippet label"
-          onConfirm={(label) => {
-            snippets.add(label, pendingSnippetSave.content)
-            setPendingSnippetSave(null)
-          }}
-          onCancel={() => setPendingSnippetSave(null)}
-        />
-      )}
-
-      {showSnippetsManager && (
-        <SnippetsManagerDialog
-          api={snippets}
-          onClose={() => setShowSnippetsManager(false)}
-        />
       )}
     </div>
   )

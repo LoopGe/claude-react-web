@@ -14,9 +14,11 @@ import { loadConfig, config } from './config.js'
 import { disableFileLogging, getLogFilePath } from './log.js'
 import { SessionStore, defaultStateDir } from './persistence.js'
 import { McpConfigStore } from './mcp-config.js'
+import { SnippetStore } from './snippet-store.js'
 import { MpStore } from './mp-store.js'
 import { attachWebSocket } from './ws.js'
 import { checkForUpdates } from './update-checker.js'
+import { startEventLoopProbe } from './event-loop-probe.js'
 
 interface CliArgs {
   port: number
@@ -248,6 +250,12 @@ async function main() {
     console.log(`[cli] loaded ${mpEntries.length} marketplace(s) from ${stateDir}`)
   }
 
+  const snippetStore = new SnippetStore({ stateDir })
+  const snippets = await snippetStore.load()
+  if (snippets.length) {
+    console.log(`[cli] loaded ${snippets.length} composer snippet(s) from ${stateDir}`)
+  }
+
   const claudeBinary = resolveClaudeBinary(args.claudeBinary)
   if (claudeBinary) {
     console.log(`[cli] using claude binary: ${claudeBinary}`)
@@ -273,6 +281,7 @@ async function main() {
   const { app, sessionManager } = buildApp({
     sessionStore: store,
     mcpConfigStore: mcpStore,
+    snippetStore,
     mpStore,
     defaults: { cwd: args.cwd, model: args.model, claudeBinary },
     configDir: stateDir,
@@ -314,8 +323,14 @@ async function main() {
   // is safe.
   const wsShutdown = attachWebSocket(server as unknown as Server, sessionManager)
 
+  // Diagnostic: sample event-loop delay so a synchronous stall (which makes
+  // unrelated sessions appear to hang) shows up in the logs as a max spike.
+  // Default-on; disable with EVENT_LOOP_PROBE=0.
+  const elProbe = startEventLoopProbe()
+
   const shutdown = async (signal: string) => {
     console.log(`\n[cli] received ${signal}, shutting down...`)
+    elProbe.stop()
     try {
       await wsShutdown()
     } catch (err) {

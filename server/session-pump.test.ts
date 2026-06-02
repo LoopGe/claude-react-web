@@ -1,6 +1,80 @@
 import { describe, it, expect } from 'vitest'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { liteContextUsageFromResult } from './session-pump.js'
+import {
+  liteContextUsageFromResult,
+  toolResultIds,
+  userMessageHasToolResult,
+} from './session-pump.js'
+
+// ---------------------------------------------------------------------------
+// Drop-filter discriminators
+//
+// Regression coverage for the "tool stuck on running" bug. In SDK 0.3.143 a
+// MAIN-THREAD tool_result arrives as a `user` frame with
+// `parent_tool_use_id: null` — indistinguishable from an echoed top-level
+// user-input frame by parent alone. The pump must NOT drop tool_result
+// frames (the UI needs them to flip the tool card off 'running'), so the
+// drop decision keys on whether the message carries a tool_result block.
+// ---------------------------------------------------------------------------
+
+function userMsg(content: unknown): SDKMessage {
+  return { type: 'user', message: { role: 'user', content } } as unknown as SDKMessage
+}
+
+describe('userMessageHasToolResult', () => {
+  it('is true for a main-thread tool_result frame (parent_tool_use_id null)', () => {
+    const msg = userMsg([{ type: 'tool_result', tool_use_id: 'tu_1', content: 'ok' }])
+    expect(userMessageHasToolResult(msg)).toBe(true)
+  })
+
+  it('is false for an echoed text-only user input', () => {
+    expect(userMessageHasToolResult(userMsg('hello'))).toBe(false)
+    expect(userMessageHasToolResult(userMsg([{ type: 'text', text: 'hi' }]))).toBe(false)
+  })
+
+  it('is false for an image-only user input (multimodal, no tool_result)', () => {
+    const msg = userMsg([{ type: 'image', source: { type: 'base64', data: 'x', media_type: 'image/png' } }])
+    expect(userMessageHasToolResult(msg)).toBe(false)
+  })
+
+  it('is true when a tool_result rides alongside other blocks', () => {
+    const msg = userMsg([
+      { type: 'text', text: 'see result' },
+      { type: 'tool_result', tool_use_id: 'tu_2', content: 'done' },
+    ])
+    expect(userMessageHasToolResult(msg)).toBe(true)
+  })
+
+  it('is defensive against odd shapes', () => {
+    expect(userMessageHasToolResult({ type: 'user' } as unknown as SDKMessage)).toBe(false)
+    expect(userMessageHasToolResult(userMsg(null))).toBe(false)
+    expect(userMessageHasToolResult(userMsg([null, 42, 'x']))).toBe(false)
+  })
+})
+
+describe('toolResultIds', () => {
+  it('extracts tool_use_id from each tool_result block (not parent_tool_use_id)', () => {
+    const msg = userMsg([
+      { type: 'tool_result', tool_use_id: 'tu_a', content: 'ok' },
+      { type: 'tool_result', tool_use_id: 'tu_b', content: 'ok' },
+    ])
+    expect(toolResultIds(msg)).toEqual(['tu_a', 'tu_b'])
+  })
+
+  it('ignores non-tool_result blocks and non-string ids', () => {
+    const msg = userMsg([
+      { type: 'text', text: 'hi' },
+      { type: 'tool_result', tool_use_id: 123, content: 'ok' },
+      { type: 'tool_result', tool_use_id: 'tu_ok', content: 'ok' },
+    ])
+    expect(toolResultIds(msg)).toEqual(['tu_ok'])
+  })
+
+  it('returns empty for text-only / string content', () => {
+    expect(toolResultIds(userMsg('hello'))).toEqual([])
+    expect(toolResultIds(userMsg([{ type: 'text', text: 'x' }]))).toEqual([])
+  })
+})
 
 function makeResult(overrides: {
   usage?: Record<string, unknown>

@@ -883,24 +883,55 @@ export class SessionManager {
     return this.info(s)
   }
 
+  /** Run a delegated SDK control request and log how long it took.
+   *
+   *  These methods (supportedModels/Commands/Agents, mcpServerStatus,
+   *  getContextUsage) all forward to the CLI subprocess over the in-band
+   *  control channel. supportedModels/Commands/Agents await the one-time
+   *  init handshake; the others await a fresh control_response. On proxy
+   *  backends the init handshake can stall, and a busy/wedged subprocess
+   *  can delay control_response — either way the call (and the HTTP
+   *  request behind it) hangs with no SDK-side timeout. We don't time it
+   *  out here (callers/UI handle that), but we DO measure every call so a
+   *  slow init window or wedged subprocess is visible in the logs and can
+   *  be correlated with a recent spawn / auto-resume. */
+  private async timeSdkControl<T>(id: string, label: string, fn: () => Promise<T>): Promise<T> {
+    const startedAt = Date.now()
+    try {
+      const result = await fn()
+      const ms = Date.now() - startedAt
+      // Only the slow ones are interesting — a healthy control round-trip
+      // is single-digit ms. Warn above 1s so the noise floor stays low.
+      if (ms >= 1000) {
+        console.warn(`[session ${id}] SDK ${label} resolved in ${ms}ms (slow — check init handshake / subprocess)`)
+      } else {
+        debugLog(`[session ${id}] SDK ${label} resolved in ${ms}ms`)
+      }
+      return result
+    } catch (err) {
+      console.error(`[session ${id}] SDK ${label} rejected after ${Date.now() - startedAt}ms:`, err)
+      throw err
+    }
+  }
+
   async supportedModels(id: string) {
     const s = this.requireLive(id)
-    return s.query.supportedModels()
+    return this.timeSdkControl(id, 'supportedModels', () => s.query.supportedModels())
   }
 
   async supportedCommands(id: string) {
     const s = this.requireLive(id)
-    return s.query.supportedCommands()
+    return this.timeSdkControl(id, 'supportedCommands', () => s.query.supportedCommands())
   }
 
   async supportedAgents(id: string) {
     const s = this.requireLive(id)
-    return s.query.supportedAgents()
+    return this.timeSdkControl(id, 'supportedAgents', () => s.query.supportedAgents())
   }
 
   async mcpServerStatus(id: string) {
     const s = this.requireLive(id)
-    return s.query.mcpServerStatus()
+    return this.timeSdkControl(id, 'mcpServerStatus', () => s.query.mcpServerStatus())
   }
 
   async reconnectMcpServer(id: string, serverName: string): Promise<void> {
@@ -952,7 +983,7 @@ export class SessionManager {
 
   async contextUsage(id: string) {
     const s = this.requireLive(id)
-    return s.query.getContextUsage()
+    return this.timeSdkControl(id, 'getContextUsage', () => s.query.getContextUsage())
   }
 
   /** List pending tool-permission requests for a session. */
