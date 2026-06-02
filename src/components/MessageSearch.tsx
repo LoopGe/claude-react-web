@@ -2,6 +2,7 @@
 // matches and provides prev/next navigation. Wired at the Chat-panel level.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { IconX } from './icons/ToolIcons'
 
 interface Props {
   open: boolean
@@ -141,8 +142,8 @@ export function MessageSearch({ open, onClose, onNavigate, totalResults, onQuery
       >
         ↓
       </button>
-      <button className="btn message-search-close" onClick={onClose} title="Close (Esc)">
-        ✕
+      <button className="btn message-search-close" onClick={onClose} title="Close (Esc)" aria-label="Close">
+        <IconX size={13} />
       </button>
     </div>
   )

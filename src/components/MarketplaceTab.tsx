@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../hooks/useApi'
 import type { MpListItem, MpPluginInfo, MpParseWarning } from '../types'
+import { IconX, IconChevronDown, IconChevronRight, IconAlertTriangle } from './icons/ToolIcons'
 
 type AddState =
   | { phase: 'idle' }
@@ -303,8 +304,10 @@ function MarketplaceCard({
           style={{ padding: '0 6px', fontSize: 11, lineHeight: '20px', minWidth: 22 }}
           onClick={onToggleExpand}
           title={expanded ? 'Collapse' : 'Expand'}
+          aria-label={expanded ? 'Collapse' : 'Expand'}
+          aria-expanded={expanded}
         >
-          {expanded ? '▾' : '▸'}
+          {expanded ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
         </button>
         <div style={{ flex: 1, overflow: 'hidden' }}>
           <div style={{ fontWeight: 500, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -350,8 +353,9 @@ function MarketplaceCard({
               style={{ padding: '2px 6px', fontSize: 11 }}
               onClick={onCancelRemove}
               disabled={busy}
+              aria-label="Cancel"
             >
-              ✕
+              <IconX size={12} />
             </button>
           </div>
         )}
@@ -363,7 +367,7 @@ function MarketplaceCard({
           padding: '4px 10px', fontSize: 11, color: 'var(--fg-muted)',
           borderTop: '1px solid var(--border)', background: 'var(--bg-elev)',
         }}>
-          <span style={{ color: 'var(--warn, var(--fg-muted))' }}>⚠ {warnings.length} warning{warnings.length === 1 ? '' : 's'}:</span>{' '}
+          <span style={{ color: 'var(--warn, var(--fg-muted))', display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconAlertTriangle size={12} /> {warnings.length} warning{warnings.length === 1 ? '' : 's'}:</span>{' '}
           {warnings.slice(0, 3).map((w) => w.detail).join('; ')}
           {warnings.length > 3 ? '…' : ''}
         </div>

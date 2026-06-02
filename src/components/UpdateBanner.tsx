@@ -16,6 +16,7 @@
 import { useState } from 'react'
 import type { UpdateInfo } from '../../shared/update-info'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
+import { IconX, IconCheck } from './icons/ToolIcons'
 
 const DISMISS_KEY = 'claude-react-web:update-banner-dismissed-version'
 
@@ -96,7 +97,7 @@ function UpdateBannerInner({
         onClick={copy}
         title="Copy upgrade command to clipboard"
       >
-        {copied ? 'Copied ✓' : 'Copy'}
+        {copied ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>Copied <IconCheck size={13} /></span> : 'Copy'}
       </button>
       <button
         type="button"
@@ -105,7 +106,7 @@ function UpdateBannerInner({
         aria-label="Dismiss update notice"
         title="Dismiss until next version"
       >
-        ✕
+        <IconX size={14} />
       </button>
     </div>
   )

@@ -7,6 +7,7 @@
 import { memo, useEffect } from 'react'
 import { MessageList } from './MessageList'
 import { formatElapsed } from '../utils/format'
+import { IconX } from './icons/ToolIcons'
 import type { ActiveSubagent, PlanStatus, ToolStatus, TranscriptItem } from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 
@@ -135,7 +136,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
             title="Close (Esc)"
             aria-label="Close"
           >
-            ✕
+            <IconX size={14} />
           </button>
         </div>
         <div className="subagent-overlay-body">

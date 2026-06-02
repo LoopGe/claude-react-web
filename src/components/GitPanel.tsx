@@ -24,7 +24,7 @@ import { useGitDiff, useGitLog, useGitBranches, useGitStashes } from '../hooks/u
 import { useGitWrite } from '../hooks/useGitWrite'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Tooltip } from './Tooltip'
-import { IconX } from './icons/ToolIcons'
+import { IconX, IconSparkles, IconChevronDown, IconChevronRight, IconCheck, IconAlertTriangle } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
 import { useToast } from '../hooks/useToast'
 import type {
@@ -219,13 +219,13 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
           </button>
         </Tooltip>
         <Tooltip label="Close" placement="bottom">
-          <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close">✕</button>
+          <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={14} /></button>
         </Tooltip>
       </header>
 
       {inProgress && (
         <div className="git-panel-banner" role="alert">
-          <span>⚠ {status.state} in progress</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconAlertTriangle size={13} /> {status.state} in progress</span>
           <span className="git-panel-spacer" />
           {status.state === 'merging' && (
             <button
@@ -492,7 +492,7 @@ function FileRow({ file, cwd, staged, writeOps, onError, askConfirm }: FileRowPr
               )}
             </span>
           )}
-          <span className="git-file-arrow">{open ? '▾' : '▸'}</span>
+          <span className="git-file-arrow">{open ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}</span>
         </button>
         <div className="git-file-actions">
           {staged ? (
@@ -741,7 +741,7 @@ function CommitSection({
                 : 'Stage some changes first to generate a commit message'
             }
           >
-            {generateBusy ? '…' : '✨ Generate'}
+            {generateBusy ? '…' : <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconSparkles size={13} /> Generate</span>}
           </button>
         </span>
       </summary>
@@ -944,7 +944,7 @@ function BranchesSection({ sessionId, currentBranch, writeOps, onError, askConfi
                 disabled={isCurrent || busy}
                 onClick={() => tryCheckout(b.name)}
               >
-                <span className="git-branch-mark">{isCurrent ? '✓' : ' '}</span>
+                <span className="git-branch-mark">{isCurrent ? <IconCheck size={12} /> : ' '}</span>
                 <span className="git-branch-name">{b.name}</span>
                 {b.upstream && <span className="git-branch-upstream">→ {b.upstream}</span>}
               </button>

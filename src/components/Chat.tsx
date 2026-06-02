@@ -8,11 +8,16 @@
 // new rules flag as a cascading-render hazard. Re-mount is cheap because
 // the sessions themselves are long-lived on the server.
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { createPortal } from 'react-dom'
-import { SettingsPanel } from './SettingsPanel'
-import { GitPanel } from './GitPanel'
+// SettingsPanel and GitPanel are split into their own chunks: both are
+// per-panel overlays that many sessions never open, so keeping them out of
+// the main bundle shrinks first paint. SettingsPanel stays mounted once
+// opened (CSS-hidden when closed) to preserve its internal state, so we
+// gate its first mount on `settingsEverOpened` rather than `settingsOpen`.
+const SettingsPanel = lazy(() => import('./SettingsPanel').then((m) => ({ default: m.SettingsPanel })))
+const GitPanel = lazy(() => import('./GitPanel').then((m) => ({ default: m.GitPanel })))
 import { api } from '../hooks/useApi'
 import { useAttachments } from '../hooks/useAttachments'
 import { useChatStream } from '../hooks/useChatStream'
@@ -33,7 +38,7 @@ import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
 import { ContextMenu } from './ContextMenu'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
-import { IconSearch, IconDownload, IconClock } from './icons/ToolIcons'
+import { IconSearch, IconDownload, IconClock, IconFileText } from './icons/ToolIcons'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
 import type { AgentInfo, PermissionRequest, SessionInfo, SlashCommand } from '../types'
@@ -119,6 +124,12 @@ export const Chat = memo(function Chat({
   // this initializer runs exactly once per mount — the right place to hydrate.
   const [input, setInputState] = useState(() => readDraft(session.id))
   const [sending, setSending] = useState(false)
+  // SettingsPanel is kept mounted (CSS-hidden) once shown so its internal
+  // state survives close/reopen. We defer its first mount — and thus its
+  // lazy chunk download — until the user first opens it. Latches true and
+  // never resets for the lifetime of this Chat mount.
+  const settingsEverOpened = useRef(false)
+  if (settingsOpen) settingsEverOpened.current = true
   // Synchronous reentrancy guard. setSending is async — between two
   // rapid keypresses (e.g. Enter pressed twice within one frame), React
   // hasn't committed the state update yet, so the closure inside send()
@@ -588,7 +599,7 @@ export const Chat = memo(function Chat({
           items={[
             {
               label: 'Export as Markdown',
-              icon: '📄',
+              icon: <IconFileText size={14} />,
               onClick: () => {
                 exportConversation(stream.messages, session.title ?? session.id.slice(0, 8))
                 toast.success('Exported as Markdown')
@@ -780,16 +791,20 @@ export const Chat = memo(function Chat({
           if (e.target === e.currentTarget) onCloseSettings?.()
         }}
       >
-        <SettingsPanel
-          key={session.id}
-          session={session}
-          onClose={() => onCloseSettings?.()}
-          onSessionUpdate={onSessionUpdate}
-          commands={commands}
-          agents={agents}
-          contextUsage={stream.contextUsage}
-          onPluginsReloaded={() => { refreshCommands(); refreshAgents() }}
-        />
+        {settingsEverOpened.current && (
+          <Suspense fallback={null}>
+            <SettingsPanel
+              key={session.id}
+              session={session}
+              onClose={() => onCloseSettings?.()}
+              onSessionUpdate={onSessionUpdate}
+              commands={commands}
+              agents={agents}
+              contextUsage={stream.contextUsage}
+              onPluginsReloaded={() => { refreshCommands(); refreshAgents() }}
+            />
+          </Suspense>
+        )}
       </div>
 
       {gitPanelOpen && (
@@ -803,16 +818,18 @@ export const Chat = memo(function Chat({
             if (e.target === e.currentTarget) onCloseGitPanel?.()
           }}
         >
-          <GitPanel
-            key={session.id}
-            sessionId={session.id}
-            cwd={session.cwd}
-            status={gitStatus ?? null}
-            loading={gitLoading ?? false}
-            error={gitError ?? null}
-            onRefresh={() => onGitRefresh?.()}
-            onClose={() => onCloseGitPanel?.()}
-          />
+          <Suspense fallback={null}>
+            <GitPanel
+              key={session.id}
+              sessionId={session.id}
+              cwd={session.cwd}
+              status={gitStatus ?? null}
+              loading={gitLoading ?? false}
+              error={gitError ?? null}
+              onRefresh={() => onGitRefresh?.()}
+              onClose={() => onCloseGitPanel?.()}
+            />
+          </Suspense>
         </div>
       )}
 

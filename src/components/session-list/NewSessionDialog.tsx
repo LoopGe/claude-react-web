@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { DirectoryPicker } from '../DirectoryPicker'
-import { IconX } from '../icons/ToolIcons'
+import { IconX, IconFolder, IconPencil } from '../icons/ToolIcons'
 import { useFocusTrap } from '../../hooks/useFocusTrap'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { api } from '../../hooks/useApi'
@@ -271,8 +271,8 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
                   onChange={(e) => setCwd(e.target.value)}
                   style={{ flex: 1 }}
                 />
-                <button type="button" className="btn" onClick={() => setShowPicker(true)} title="Browse server directories">
-                  📁
+                <button type="button" className="btn" onClick={() => setShowPicker(true)} title="Browse server directories" aria-label="Browse server directories">
+                  <IconFolder size={16} />
                 </button>
               </div>
               <datalist id="recent-cwds">
@@ -589,8 +589,9 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
                               setShowMcpInstaller(true)
                             }}
                             title="Edit server"
+                            aria-label="Edit server"
                           >
-                            ✎
+                            <IconPencil size={13} />
                           </button>
                         </label>
                       ))}

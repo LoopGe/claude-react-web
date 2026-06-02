@@ -7,6 +7,9 @@ import {
   IconFolder,
   IconArrowUp,
   IconArrowDown,
+  IconX,
+  IconCircle,
+  IconCircleDot,
 } from '../icons/ToolIcons'
 
 export interface SessionContextMenuProps {
@@ -155,7 +158,7 @@ export function SessionContextMenu({
       if (sessionGroup) {
         items.push({
           label: 'Remove from group',
-          icon: '✕',
+          icon: <IconX size={14} />,
           onClick: () => onAddToGroup(anchor.id, ''),
         })
       }
@@ -197,7 +200,7 @@ export function SessionContextMenu({
       ? [
           {
             label: 'Close panel',
-            icon: '✕',
+            icon: <IconX size={14} />,
             onClick: () => onClosePanel(anchor.id),
           } as ContextMenuItem,
         ]
@@ -207,7 +210,7 @@ export function SessionContextMenu({
       (c) =>
         ({
           label: c.name,
-          icon: sessionColor === c.accent ? '◉' : '●',
+          icon: sessionColor === c.accent ? <IconCircleDot size={14} /> : <IconCircle size={14} />,
           iconStyle: { color: c.accent },
           onClick: () => onColorChange?.(c.accent),
         }) as ContextMenuItem,

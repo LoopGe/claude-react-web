@@ -15,6 +15,7 @@
 // z-index ambiguity that's not worth the complexity.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { IconPencil, IconTrash, IconArrowUp, IconArrowDown } from './icons/ToolIcons'
 import type { ComposerSnippet, ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 
@@ -193,19 +194,21 @@ export function SnippetsManagerDialog({ api, onClose }: Props) {
                           type="button"
                           className="btn btn-icon"
                           title="Move up"
+                          aria-label="Move up"
                           disabled={i === 0}
                           onClick={() => api.move(i, -1)}
                         >
-                          ▲
+                          <IconArrowUp size={13} />
                         </button>
                         <button
                           type="button"
                           className="btn btn-icon"
                           title="Move down"
+                          aria-label="Move down"
                           disabled={i === api.snippets.length - 1}
                           onClick={() => api.move(i, 1)}
                         >
-                          ▼
+                          <IconArrowDown size={13} />
                         </button>
                         <button
                           type="button"
@@ -213,7 +216,7 @@ export function SnippetsManagerDialog({ api, onClose }: Props) {
                           title="Edit"
                           onClick={() => startEdit(s)}
                         >
-                          ✎
+                          <IconPencil size={14} />
                         </button>
                         <button
                           type="button"
@@ -221,7 +224,7 @@ export function SnippetsManagerDialog({ api, onClose }: Props) {
                           title="Delete"
                           onClick={() => api.remove(s.id)}
                         >
-                          🗑
+                          <IconTrash size={14} />
                         </button>
                       </div>
                     </>

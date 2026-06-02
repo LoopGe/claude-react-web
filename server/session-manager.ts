@@ -36,7 +36,7 @@ import type { McpConfigStore } from './mcp-config.js'
 import type { MpStore } from './mp-store.js'
 import { RecapManager } from './recap.js'
 import type { SessionPhase, SessionRecap } from './session-types.js'
-import { tryCaptureGitHead } from './git.js'
+import { tryCaptureGitHead, invalidateStatusCache } from './git.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig } from './config.js'
@@ -1120,6 +1120,10 @@ export class SessionManager {
   broadcastGitStatusChanged(id: string): void {
     const s = this.sessions.get(id)
     if (!s) return
+    // Drop any cached read-route status for this cwd so the refetch the
+    // clients are about to issue recomputes from ground truth (the cache
+    // only exists to coalesce that refetch herd, never to hide a change).
+    if (s.cwd) invalidateStatusCache(s.cwd)
     if (s.gitStatusSubscribers.size === 0) return
     const frame = { kind: 'git-status-changed' as const, sessionId: id }
     for (const sub of s.gitStatusSubscribers) {

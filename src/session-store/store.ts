@@ -147,6 +147,13 @@ function loadFromStorage(sessionId: string): { messages: TranscriptItem[]; rawMe
 const SAVE_DEBOUNCE_MS = 2000
 const SAVE_MAX_DEFER_MS = 10_000
 
+/** How often the live (in-progress) assistant turn is flushed to a new
+ *  snapshot during streaming. Each flush re-renders the streaming footer,
+ *  so this directly bounds the per-second render cost of an active turn.
+ *  ~80ms (~12fps) reads as smooth for streaming prose while cutting the
+ *  render volume to roughly a third of a per-frame (33ms / 30fps) flush. */
+const LIVE_TURN_FLUSH_MS = 80
+
 export class SessionStore {
   private state: SessionState
   private snapshot: SessionSnapshot
@@ -267,7 +274,7 @@ export class SessionStore {
     this.flushTimer = window.setTimeout(() => {
       this.flushTimer = null
       this.dispatch({ type: 'LIVE_TURN_FLUSH' })
-    }, 33)
+    }, LIVE_TURN_FLUSH_MS)
   }
 
   /** Debounced save to localStorage. Fires SAVE_DEBOUNCE_MS after the last

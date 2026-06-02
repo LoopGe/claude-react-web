@@ -174,7 +174,7 @@ export const ToolStatusBadge = memo(function ToolStatusBadge({
  *
  *  When you don't have a tool_use id (e.g. for cards that own their
  *  status), pass `hideStatus` to drop the badge entirely. */
-export function ToolCard({
+export const ToolCard = memo(function ToolCard({
   icon,
   title,
   chips,
@@ -214,4 +214,4 @@ export function ToolCard({
       {children != null && <div className="tool-card-body">{children}</div>}
     </div>
   )
-}
+})

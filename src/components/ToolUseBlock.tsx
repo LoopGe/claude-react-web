@@ -30,9 +30,11 @@ import { ToolCard } from './ToolCard'
 import {
   IconAlertCircle,
   IconCheck,
+  IconCheckSquare,
   IconCircle,
   IconCircleDot,
   IconClipboardList,
+  IconSquare,
   IconExternalLink,
   IconFileCode,
   IconFileText,
@@ -140,30 +142,11 @@ export const ToolUseBlock = memo(function ToolUseBlock({ block }: { block: Block
   )
 })
 
-// Dispatch table for per-tool inline views. Defined after the component
-// declarations below — JS hoisting handles the function references.
-// New tools: declare the view, then add an entry here.
-//
-// Bash and PowerShell share BashToolView — both have the same input shape
-// (command, description, run_in_background, timeout) and the same visual
-// "shell command + chips + description" layout. The view branches on
-// `toolName` to swap the prompt glyph ($ vs >).
-const TOOL_VIEWS: Record<string, ToolInputView> = {
-  Edit: EditToolView,
-  MultiEdit: EditToolView,
-  Write: WriteToolView,
-  TodoWrite: TodoWriteView,
-  Bash: BashToolView,
-  PowerShell: BashToolView,
-  Read: ReadToolView,
-  Grep: GrepToolView,
-  Glob: GlobToolView,
-  WebFetch: WebFetchToolView,
-  WebSearch: WebSearchToolView,
-  NotebookEdit: NotebookEditToolView,
-  TaskCreate: TaskMutationView,
-  TaskUpdate: TaskMutationView,
-}
+// Dispatch table for per-tool inline views lives at the END of this file:
+// several views are now `const X = memo(...)` rather than hoisted function
+// declarations, so the map must be defined after them to avoid a
+// temporal-dead-zone reference. New tools: declare the view, then add an
+// entry to TOOL_VIEWS at the bottom.
 
 // ---------------------------------------------------------------------------
 // File-path header (shared)
@@ -213,7 +196,7 @@ function FilePathTitle({
  * default once they've been resolved. Pending plans auto-expand —
  * that's the moment the user most wants to read them.
  */
-function PlanCard({
+const PlanCard = memo(function PlanCard({
   input,
   toolUseId,
 }: {
@@ -293,7 +276,7 @@ function PlanCard({
       )}
     </details>
   )
-}
+})
 
 // ---------------------------------------------------------------------------
 // AskUserQuestion
@@ -321,7 +304,7 @@ type QuestionCardStatus = 'pending' | 'answered' | 'skipped'
  * user can read what's being asked; resolved cards collapse to a one-line
  * summary so long transcripts stay scannable.
  */
-function QuestionCard({
+const QuestionCard = memo(function QuestionCard({
   input,
   toolUseId,
 }: {
@@ -384,7 +367,7 @@ function QuestionCard({
       </div>
     </details>
   )
-}
+})
 
 function QuestionItemView({
   index,
@@ -437,7 +420,7 @@ function QuestionItemView({
               className={`question-inline-option ${selected ? 'selected' : ''}`}
             >
               <span className="question-inline-option-marker" aria-hidden>
-                {isMulti ? (selected ? '☑' : '☐') : selected ? '●' : '○'}
+                {isMulti ? (selected ? <IconCheckSquare size={14} /> : <IconSquare size={14} />) : selected ? <IconCircleDot size={14} /> : <IconCircle size={14} />}
               </span>
               <div className="question-inline-option-body">
                 <div className="question-inline-option-label">{opt.label}</div>
@@ -454,7 +437,7 @@ function QuestionItemView({
             className="question-inline-option selected question-inline-option-custom"
           >
             <span className="question-inline-option-marker" aria-hidden>
-              {isMulti ? '☑' : '●'}
+              {isMulti ? <IconCheckSquare size={14} /> : <IconCircleDot size={14} />}
             </span>
             <div className="question-inline-option-body">
               <div className="question-inline-option-label">
@@ -472,7 +455,7 @@ function QuestionItemView({
 // Edit / MultiEdit
 // ---------------------------------------------------------------------------
 
-function EditToolView({ input, toolUseId }: ToolViewProps) {
+const EditToolView = memo(function EditToolView({ input, toolUseId }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -541,13 +524,13 @@ function EditToolView({ input, toolUseId }: ToolViewProps) {
       </div>
     </ToolCard>
   )
-}
+})
 
 // ---------------------------------------------------------------------------
 // Write
 // ---------------------------------------------------------------------------
 
-function WriteToolView({ input, toolUseId }: ToolViewProps) {
+const WriteToolView = memo(function WriteToolView({ input, toolUseId }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -575,7 +558,7 @@ function WriteToolView({ input, toolUseId }: ToolViewProps) {
       </div>
     </ToolCard>
   )
-}
+})
 
 // ---------------------------------------------------------------------------
 // Shared sub-components (diff rendering)
@@ -584,7 +567,7 @@ function WriteToolView({ input, toolUseId }: ToolViewProps) {
 /** Render a single diff line with optional syntax highlighting via the
  *  shared lowlight instance. Empty / unknown-language lines fall back to
  *  plain text rather than throwing. */
-function DiffLine({
+const DiffLine = memo(function DiffLine({
   line,
   marker,
   variant,
@@ -605,9 +588,9 @@ function DiffLine({
       </span>
     </div>
   )
-}
+})
 
-function DiffChunk({
+const DiffChunk = memo(function DiffChunk({
   oldText,
   newText,
   filePath,
@@ -635,7 +618,7 @@ function DiffChunk({
       </div>
     </>
   )
-}
+})
 
 /** Render a sequence of additions (Write / NotebookEdit) with click-to-expand
  *  truncation: first MAX_PREVIEW_LINES are visible, remainder hides behind
@@ -645,7 +628,7 @@ function DiffChunk({
  *  shapes — both are content the assistant is *adding*, not replacing).
  *  If a deletion-only call site appears later, lift the marker/variant
  *  back into props rather than reintroducing a dead branch. */
-function ExpandableDiff({
+const ExpandableDiff = memo(function ExpandableDiff({
   lines,
   filePath,
 }: {
@@ -704,7 +687,7 @@ function ExpandableDiff({
       </details>
     </>
   )
-}
+})
 
 // Cache lookups: detectLanguage is cheap, but most file paths repeat across
 // many lines of the same diff so a tiny memo avoids re-walking the EXT
@@ -823,7 +806,7 @@ const BASH_SINGLE_LINE_PREVIEW = 200
  * universally recognised shell prompts and disambiguate the language
  * at a glance when both tools appear in the same transcript.
  */
-function BashToolView({ input, toolName, toolUseId }: ToolViewProps) {
+const BashToolView = memo(function BashToolView({ input, toolName, toolUseId }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -898,7 +881,7 @@ function BashToolView({ input, toolName, toolUseId }: ToolViewProps) {
       )}
     </ToolCard>
   )
-}
+})
 
 function formatBashTimeout(ms: number): string {
   if (ms >= 60_000) {
@@ -918,7 +901,7 @@ function formatBashTimeout(ms: number): string {
  * chip when offset/limit/pages are set. Reads have no body — the file path
  * + range is the entire useful payload at the tool_use stage.
  */
-function ReadToolView({ input, toolUseId }: ToolViewProps) {
+const ReadToolView = memo(function ReadToolView({ input, toolUseId }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -952,7 +935,7 @@ function ReadToolView({ input, toolUseId }: ToolViewProps) {
       className="tool-card-read"
     />
   )
-}
+})
 
 // ---------------------------------------------------------------------------
 // Grep
@@ -963,7 +946,7 @@ function ReadToolView({ input, toolUseId }: ToolViewProps) {
  * for glob/type/path/output_mode and the case/multiline/-n flags. Order
  * mirrors how a human reads `rg "pattern" --glob='*.tsx' src/`.
  */
-function GrepToolView({ input, toolUseId }: ToolViewProps) {
+const GrepToolView = memo(function GrepToolView({ input, toolUseId }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -1018,7 +1001,7 @@ function GrepToolView({ input, toolUseId }: ToolViewProps) {
       className="tool-card-grep"
     />
   )
-}
+})
 
 // ---------------------------------------------------------------------------
 // TaskCreate / TaskUpdate
@@ -1306,5 +1289,31 @@ function NotebookEditToolView({ input, toolUseId }: ToolViewProps) {
       )}
     </ToolCard>
   )
+}
+
+// Dispatch table for per-tool inline views. Defined here, after every view
+// declaration, because several views are `const X = memo(...)` and would be
+// in the temporal dead zone if referenced earlier. ToolUseBlock only reads
+// this map at render time, so the forward reference from above is safe.
+//
+// Bash and PowerShell share BashToolView — both have the same input shape
+// (command, description, run_in_background, timeout) and the same visual
+// "shell command + chips + description" layout. The view branches on
+// `toolName` to swap the prompt glyph ($ vs >).
+const TOOL_VIEWS: Record<string, ToolInputView> = {
+  Edit: EditToolView,
+  MultiEdit: EditToolView,
+  Write: WriteToolView,
+  TodoWrite: TodoWriteView,
+  Bash: BashToolView,
+  PowerShell: BashToolView,
+  Read: ReadToolView,
+  Grep: GrepToolView,
+  Glob: GlobToolView,
+  WebFetch: WebFetchToolView,
+  WebSearch: WebSearchToolView,
+  NotebookEdit: NotebookEditToolView,
+  TaskCreate: TaskMutationView,
+  TaskUpdate: TaskMutationView,
 }
 

@@ -14,7 +14,7 @@
 import { Hono } from 'hono'
 import { isAbsolute } from 'node:path'
 import { HttpError } from './errors.js'
-import { getDiff, getLog, getStatus } from './git.js'
+import { getDiff, getLog, getStatusCached } from './git.js'
 import type { GitLogResponse } from '../shared/git-types.js'
 
 export function buildGitRouter(): Hono {
@@ -35,7 +35,9 @@ export function buildGitRouter(): Hono {
   // shows a friendly message) — it's not an error.
   app.get('/status', async (c) => {
     const cwd = requireCwd(c.req.query('cwd'))
-    const result = await getStatus(cwd)
+    // Coalesce the thundering herd a single git-status-changed broadcast
+    // produces across N subscribed tabs. Invalidated on every git mutation.
+    const result = await getStatusCached(cwd)
     return c.json(result)
   })
 

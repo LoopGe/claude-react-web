@@ -6,6 +6,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../hooks/useApi'
 import type { McpServerConfigMeta, McpServerInput } from '../types'
+import { IconX } from './icons/ToolIcons'
 
 interface Props {
   /** If set, we're editing an existing server (name is locked). */
@@ -145,7 +146,7 @@ export function McpInstaller({ server, onSave, onClose }: Props) {
       <div className="modal" style={{ width: 'min(520px, 92vw)' }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h3>{isEdit ? `Edit: ${server!.name}` : 'Add MCP Server'}</h3>
-          <button className="btn" onClick={onClose} style={{ padding: '2px 10px' }}>✕</button>
+          <button className="btn" onClick={onClose} style={{ padding: '2px 10px' }} aria-label="Close"><IconX size={14} /></button>
         </div>
 
         <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 12, maxHeight: '65vh', overflowY: 'auto' }}>
@@ -313,8 +314,9 @@ function KvEditor({
               style={{ padding: '2px 6px', fontSize: 11, flexShrink: 0 }}
               onClick={() => onRemove(row.id)}
               title="Remove"
+              aria-label="Remove"
             >
-              ✕
+              <IconX size={12} />
             </button>
           </div>
         ))}

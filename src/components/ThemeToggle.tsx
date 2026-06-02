@@ -1,16 +1,18 @@
 // Toggle button for cycling through dark, light, and system themes.
 
+import type { ReactNode } from 'react'
 import type { Theme } from '../utils/theme'
+import { IconSun, IconMoon, IconMonitor } from './icons/ToolIcons'
 
 interface Props {
   theme: Theme
   onToggle: () => void
 }
 
-const LABELS: Record<Theme, { icon: string; next: Theme; title: string }> = {
-  dark: { icon: '☀', next: 'light', title: 'Currently dark · click for light' },
-  light: { icon: '🌙', next: 'system', title: 'Currently light · click for system' },
-  system: { icon: '🖥', next: 'dark', title: 'Currently system · click for dark' },
+const LABELS: Record<Theme, { icon: ReactNode; next: Theme; title: string }> = {
+  dark: { icon: <IconSun size={16} />, next: 'light', title: 'Currently dark · click for light' },
+  light: { icon: <IconMoon size={16} />, next: 'system', title: 'Currently light · click for system' },
+  system: { icon: <IconMonitor size={16} />, next: 'dark', title: 'Currently system · click for dark' },
 }
 
 export function ThemeToggle({ theme, onToggle }: Props) {

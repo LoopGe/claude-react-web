@@ -22,7 +22,7 @@ import type { ActiveSubagent, PlanStatus, ToolStatus, TranscriptItem } from '../
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { truncate } from '../utils/text'
 import { getBlocks } from '../session-store/normalize'
-import { IconCopy, IconArrowDown, IconZap } from './icons/ToolIcons'
+import { IconCopy, IconArrowDown, IconZap, IconSparkles, IconAlertTriangle, IconMessageCircle, IconDollar, IconClock, IconWrench, IconUser, IconExternalLink } from './icons/ToolIcons'
 import { countMatches, extractPlainText } from '../search'
 
 /** Re-export type for backward compatibility (types don't affect Fast Refresh). */
@@ -609,14 +609,22 @@ const OlderHistoryHeader = memo(function OlderHistoryHeader({ loading }: { loadi
 })
 
 const StreamingFooter = memo(function StreamingFooter({ content }: { content: string }) {
+  // Render the in-progress turn as PLAIN TEXT, not Markdown. The live turn
+  // flushes a growing string ~12×/second; running the full ReactMarkdown +
+  // syntax-highlight pipeline over the entire accumulated text on every
+  // flush is the dominant per-frame cost during long generations. Plain
+  // pre-wrapped text is effectively free to render and the prose reads the
+  // same. The instant the turn settles this footer disappears and the text
+  // re-renders once as a normal (memoized) Markdown assistant message — so
+  // formatting/code-highlighting "snaps in" exactly when streaming ends.
   return (
     <div className="virtuoso-footer-wrapper">
       <div className="msg msg-assistant streaming-msg">
         {/* aria-live polite + non-atomic so screen readers announce
             newly appended streaming text rather than re-reading the whole
             block on every token delta (rule: aria-live for live output). */}
-        <div className="msg-body assistant-body" aria-live="polite" aria-atomic="false">
-          <Markdown text={content} />
+        <div className="msg-body assistant-body streaming-plain" aria-live="polite" aria-atomic="false">
+          {content}
           <span className="streaming-cursor" />
         </div>
       </div>
@@ -794,7 +802,7 @@ const MessageView = memo(function MessageView({
           <IconCopy size={13} />
         </button>
         <div className="msg-header">
-          <span>you</span>
+          <span><IconUser size={12} /> you</span>
           <MessageTimestamp ms={msg.receivedAt} />
           {sending && (
             <span
@@ -1159,7 +1167,7 @@ const RecapFooter = memo(function RecapFooter({ recap }: { recap: SessionRecap }
       <div className="virtuoso-footer-wrapper">
         <div className="msg recap-msg recap-msg--loading" role="note" aria-label="Generating session recap">
           <div className="msg-header">
-            <span>✨ Session recap</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><IconSparkles size={14} /> Session recap</span>
           </div>
           <div className="msg-body recap-msg-loading-body">
             <span className="recap-msg-loading-bar" aria-hidden />
@@ -1175,7 +1183,7 @@ const RecapFooter = memo(function RecapFooter({ recap }: { recap: SessionRecap }
       <div className="virtuoso-footer-wrapper">
         <div className="msg recap-msg recap-msg--error" role="note">
           <div className="msg-header">
-            <span>⚠️ Recap unavailable</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><IconAlertTriangle size={14} /> Recap unavailable</span>
           </div>
           <div className="msg-body">{recap.error ?? 'Unknown error'}</div>
         </div>
@@ -1193,24 +1201,24 @@ const RecapFooter = memo(function RecapFooter({ recap }: { recap: SessionRecap }
     <div className="virtuoso-footer-wrapper">
       <div className="msg recap-msg" role="note" aria-label="Session recap">
         <div className="msg-header">
-          <span>✨ Session recap</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><IconSparkles size={14} /> Session recap</span>
         </div>
         <div className="msg-body">
           <Markdown text={summary} />
           <div className="recap-msg-stats">
             {stats.userTurns > 0 && (
               <span className="recap-msg-stat">
-                💬 {stats.userTurns} turn{stats.userTurns === 1 ? '' : 's'}
+                <IconMessageCircle size={12} /> {stats.userTurns} turn{stats.userTurns === 1 ? '' : 's'}
               </span>
             )}
             {stats.totalCostUsd > 0 && (
-              <span className="recap-msg-stat">💰 {formatCost(stats.totalCostUsd)}</span>
+              <span className="recap-msg-stat"><IconDollar size={12} /> {formatCost(stats.totalCostUsd)}</span>
             )}
             {stats.durationMs > 0 && (
-              <span className="recap-msg-stat">⏱ {formatElapsed(stats.durationMs)}</span>
+              <span className="recap-msg-stat"><IconClock size={12} /> {formatElapsed(stats.durationMs)}</span>
             )}
             {stats.toolsUsed.length > 0 && (
-              <span className="recap-msg-stat">🔧 {stats.toolsUsed.length} tool{stats.toolsUsed.length === 1 ? '' : 's'}</span>
+              <span className="recap-msg-stat"><IconWrench size={12} /> {stats.toolsUsed.length} tool{stats.toolsUsed.length === 1 ? '' : 's'}</span>
             )}
           </div>
         </div>
@@ -1347,7 +1355,43 @@ function extractUserText(msg: SdkMessage): string | null {
 /** Max subagent chips shown before collapsing into "+N more". */
 const MAX_VISIBLE_SUBAGENTS = 5
 
-export function WorkingBubble({
+/** Self-ticking elapsed-time text. Isolating the 1Hz interval here means
+ *  only this tiny text node re-renders each second — the parent WorkingBubble
+ *  (and its subagent chip row) stay memoized and skip the per-second commit.
+ *
+ *  `startedAt` is the turn/subagent start timestamp (ms epoch). When absent
+ *  (first frame before the server reports it) we fall back to mount time so
+ *  the timer still advances. */
+const ElapsedTimer = memo(function ElapsedTimer({
+  startedAt,
+  className,
+}: {
+  startedAt?: number
+  className?: string
+}) {
+  // eslint-disable-next-line react-hooks/purity -- Date.now() in initializer is intentional
+  const startedAtRef = useRef<number>(startedAt ?? Date.now())
+  // eslint-disable-next-line react-hooks/refs -- reading ref in state initializer for initial value
+  const [elapsedMs, setElapsedMs] = useState(() =>
+    Date.now() - startedAtRef.current,
+  )
+  useEffect(() => {
+    // Update the ref if the server provides a (new) timestamp after mount.
+    if (startedAt) startedAtRef.current = startedAt
+    const tick = () => setElapsedMs(Date.now() - startedAtRef.current)
+    tick()
+    const id = window.setInterval(tick, 1000)
+    return () => window.clearInterval(id)
+  }, [startedAt])
+
+  return (
+    <span className={className} aria-label={`elapsed ${formatElapsed(elapsedMs)}`}>
+      {formatElapsed(elapsedMs)}
+    </span>
+  )
+})
+
+export const WorkingBubble = memo(function WorkingBubble({
   startedAt,
   activeSubagents,
   tokenRate,
@@ -1363,30 +1407,7 @@ export function WorkingBubble({
    *  pointed at that subagent. */
   onOpenSubagent?: (toolUseId: string) => void
 }) {
-  // Use the server-provided turn-start timestamp when available — this
-  // survives component remounts (e.g. group switches). Fall back to
-  // Date.now() if the server hasn't provided one yet (first frame).
-  // eslint-disable-next-line react-hooks/purity -- Date.now() in initializer is intentional
-  const startedAtRef = useRef<number>(startedAt ?? Date.now())
-  // eslint-disable-next-line react-hooks/refs -- reading ref in state initializer for initial value
-  const [elapsedMs, setElapsedMs] = useState(() =>
-    startedAtRef.current ? Date.now() - startedAtRef.current : 0,
-  )
-  useEffect(() => {
-    // Update the ref if the server provides a (new) timestamp after mount.
-    if (startedAt) startedAtRef.current = startedAt
-    const tick = () => setElapsedMs(Date.now() - startedAtRef.current)
-    tick()
-    const id = window.setInterval(tick, 1000)
-    return () => window.clearInterval(id)
-  }, [startedAt])
-
   const hasSubagents = activeSubagents && activeSubagents.length > 0
-  // Anchor "now" once per render so each subagent chip below can derive
-  // its own elapsed without reading the ref inside the map callback
-  // (which lint flags as a render-time ref read).
-  // eslint-disable-next-line react-hooks/refs -- deriving a render anchor; ref tracks the turn-start timestamp
-  const nowAnchor = startedAtRef.current + elapsedMs
 
   return (
     <div
@@ -1408,9 +1429,7 @@ export function WorkingBubble({
           ? `Calling ${activePhase.name}…`
           : 'Working'}
       </span>
-      <span className="working-timer" aria-label={`elapsed ${formatElapsed(elapsedMs)}`}>
-        {formatElapsed(elapsedMs)}
-      </span>
+      <ElapsedTimer startedAt={startedAt} className="working-timer" />
       {tokenRate != null && tokenRate > 0 && (
         <span className="working-rate">
           <IconZap size={11} aria-hidden /> {tokenRate} tok/s
@@ -1420,10 +1439,10 @@ export function WorkingBubble({
         <span className="working-bar-sep" aria-hidden />
       )}
       {/* Show at most MAX_VISIBLE_SUBAGENTS chips to avoid overcrowding;
-          a "+N more" badge shows the remainder count. Each chip re-renders
-          with the bubble's 1s tick, so chip elapsed updates for free. */}
+          a "+N more" badge shows the remainder count. Each chip's elapsed
+          self-ticks via its own ElapsedTimer, so the bubble itself doesn't
+          re-render every second. */}
       {activeSubagents?.slice(0, MAX_VISIBLE_SUBAGENTS).map((a) => {
-        const subElapsed = a.startedAt ? Math.max(0, nowAnchor - a.startedAt) : null
         const clickable = !!onOpenSubagent
         const Tag = clickable ? 'button' : 'span'
         return (
@@ -1439,10 +1458,10 @@ export function WorkingBubble({
               <span />
             </span>
             <span className="subagent-chip-label">{a.label}</span>
-            {subElapsed != null && (
-              <span className="subagent-chip-timer">{formatElapsed(subElapsed)}</span>
+            {a.startedAt != null && (
+              <ElapsedTimer startedAt={a.startedAt} className="subagent-chip-timer" />
             )}
-            {clickable && <span className="subagent-chip-open" aria-hidden>↗</span>}
+            {clickable && <span className="subagent-chip-open" aria-hidden><IconExternalLink size={12} /></span>}
           </Tag>
         )
       })}
@@ -1453,5 +1472,5 @@ export function WorkingBubble({
       )}
     </div>
   )
-}
+})
 

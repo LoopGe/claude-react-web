@@ -14,6 +14,7 @@ import type { PermissionRequest } from '../types'
 import { Markdown } from './Markdown'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { PLAN_TOOL_NAMES } from '../constants/toolNames'
+import { IconClipboardList, IconLock } from './icons/ToolIcons'
 
 /** Narrowed to the permission variant of the union. The question variant
  *  is rendered by `<QuestionDialog />` instead. */
@@ -108,7 +109,7 @@ export const PermissionDialog = memo(function PermissionDialog({ request, onDeci
       <div className={`perm-card ${isPlanRequest ? 'perm-card-plan' : ''}`}>
         <div className="modal-header">
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span aria-hidden>{isPlanRequest ? '🗒' : '🔐'}</span>
+            <span aria-hidden style={{ display: 'inline-flex' }}>{isPlanRequest ? <IconClipboardList size={18} /> : <IconLock size={18} />}</span>
             {isPlanRequest ? 'Plan ready for review' : 'Tool permission required'}
           </h3>
         </div>

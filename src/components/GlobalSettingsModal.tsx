@@ -4,6 +4,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../hooks/useApi'
 import { formatBytes } from '../utils/format'
+import { IconX, IconCheck } from './icons/ToolIcons'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
 import type { FullServerConfig } from '../types/config'
 import type { McpServerConfigMeta } from '../types'
@@ -239,7 +240,7 @@ export function GlobalSettingsModal({
       >
         <div className="modal-header">
           <h3>Settings</h3>
-          <button className="btn" onClick={onClose} style={{ padding: '2px 10px' }}>✕</button>
+          <button className="btn" onClick={onClose} style={{ padding: '2px 10px' }} aria-label="Close"><IconX size={14} /></button>
         </div>
 
         {/* Tab bar */}
@@ -425,8 +426,9 @@ function ModelsTab({
                 style={{ padding: '2px 6px', fontSize: 11, flexShrink: 0 }}
                 onClick={() => onRemoveModel(m)}
                 title="Remove"
+                aria-label="Remove"
               >
-                ✕
+                <IconX size={12} />
               </button>
             </div>
           ))}
@@ -606,8 +608,8 @@ function McpCard({
             >
               Confirm
             </button>
-            <button className="btn" style={{ padding: '2px 6px', fontSize: 11 }} onClick={() => setConfirmDelete(false)}>
-              ✕
+            <button className="btn" style={{ padding: '2px 6px', fontSize: 11 }} onClick={() => setConfirmDelete(false)} aria-label="Cancel">
+              <IconX size={12} />
             </button>
           </div>
         )}
@@ -777,8 +779,8 @@ function LogsTab() {
 
       {err && <div className="modal-error" style={{ marginTop: 12 }}>{err}</div>}
       {savedAt && !err && (
-        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--ok)' }}>
-          ✓ Updated
+        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <IconCheck size={13} /> Updated
         </div>
       )}
     </div>
@@ -900,7 +902,7 @@ function AboutTab({
             </span>
           )}
           {upToDate && (
-            <span style={{ fontSize: 12, color: 'var(--ok)' }}>✓ up to date</span>
+            <span style={{ fontSize: 12, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconCheck size={13} /> up to date</span>
           )}
           {disabled && (
             <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>

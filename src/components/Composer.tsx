@@ -15,7 +15,7 @@ import { useToast } from '../hooks/useToast'
 import type { PastedImage, SlashCommand } from '../types'
 import { CommandPicker } from './CommandPicker'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
-import { IconPaperclip, IconX } from './icons/ToolIcons'
+import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings } from './icons/ToolIcons'
 
 interface Props {
   input: string
@@ -292,16 +292,16 @@ export const Composer = memo(function Composer({
   const menuItems = useMemo<ContextMenuItem[]>(() => {
     const hasSelection = savedSelection.start !== savedSelection.end
     const items: ContextMenuItem[] = [
-      { label: 'Cut', icon: '✂', onClick: () => void handleCut(), disabled: !hasSelection || disabled },
-      { label: 'Copy', icon: '📋', onClick: () => void handleCopy(), disabled: !hasSelection },
-      { label: 'Paste', icon: '📥', onClick: () => void handlePaste(), disabled: disabled },
+      { label: 'Cut', icon: <IconScissors size={14} />, onClick: () => void handleCut(), disabled: !hasSelection || disabled },
+      { label: 'Copy', icon: <IconCopy size={14} />, onClick: () => void handleCopy(), disabled: !hasSelection },
+      { label: 'Paste', icon: <IconDownload size={14} />, onClick: () => void handlePaste(), disabled: disabled },
       { label: 'Select all', onClick: handleSelectAll, disabled: input.length === 0 },
     ]
     if (onRecap) {
       items.push({})
       items.push({
         label: 'Generate recap',
-        icon: '📝',
+        icon: <IconPencil size={14} />,
         onClick: onRecap,
         disabled: !canRecap,
       })
@@ -323,7 +323,7 @@ export const Composer = memo(function Composer({
     })
     items.push({
       label: 'Manage snippets…',
-      icon: '⚙',
+      icon: <IconSettings size={14} />,
       onClick: onOpenSnippetsManager,
     })
     return items

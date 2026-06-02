@@ -13,8 +13,10 @@
 //     the message *is* the link.
 // Either way, clicking the action auto-dismisses the toast.
 
+import type { ReactNode } from 'react'
 import { type ToastKind } from '../hooks/toastContext'
 import { useToastDismiss, useToastList } from '../hooks/useToast'
+import { IconX, IconAlertTriangle, IconCheckCircle, IconInfo } from './icons/ToolIcons'
 
 const KIND_LABEL: Record<ToastKind, string> = {
   error: 'Error',
@@ -22,10 +24,10 @@ const KIND_LABEL: Record<ToastKind, string> = {
   info: 'Info',
 }
 
-const KIND_ICON: Record<ToastKind, string> = {
-  error: '⚠',
-  success: '✓',
-  info: 'ⓘ',
+const KIND_ICON: Record<ToastKind, ReactNode> = {
+  error: <IconAlertTriangle size={15} />,
+  success: <IconCheckCircle size={15} />,
+  info: <IconInfo size={15} />,
 }
 
 export function ToastHost() {
@@ -83,7 +85,7 @@ export function ToastHost() {
               onClick={() => dismiss(t.id)}
               aria-label={`Dismiss ${KIND_LABEL[t.kind]}`}
             >
-              ✕
+              <IconX size={13} />
             </button>
           </div>
         )

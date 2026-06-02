@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../hooks/useApi'
 import { buildCrumbs } from '../utils/paths'
+import { IconFolder, IconX } from './icons/ToolIcons'
 
 interface DirEntry {
   name: string
@@ -105,8 +106,8 @@ export function DirectoryPicker({ initialPath, onPick, onClose }: Props) {
       <div className="modal">
         <div className="modal-header">
           <h3>Pick a working directory</h3>
-          <button className="btn" onClick={onClose} style={{ padding: '2px 10px' }}>
-            ✕
+          <button className="btn" onClick={onClose} style={{ padding: '2px 10px' }} aria-label="Close">
+            <IconX size={14} />
           </button>
         </div>
 
@@ -186,7 +187,7 @@ export function DirectoryPicker({ initialPath, onPick, onClose }: Props) {
                 onDoubleClick={() => void loadList(e.path, showHidden)}
                 onClick={() => setDraft(e.path)}
               >
-                <span className="folder-icon">📁</span>
+                <span className="folder-icon"><IconFolder size={14} /></span>
                 <span className="folder-name">{e.name}</span>
               </button>
             ))

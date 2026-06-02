@@ -9,6 +9,7 @@ import type { AgentInfo, McpServerConfigMeta, McpServerStatus, ModelInfo, Permis
 import { PERMISSION_MODES } from '../types'
 import { FlagSettingsEditor } from './FlagSettingsEditor'
 import { ContextBar } from './ContextBar'
+import { IconChevronUp, IconChevronDown } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
 
 // MarketplaceBrowser and McpInstaller are heavy modal-within-modal
@@ -158,11 +159,17 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
       .finally(() => setLoadingUsage(false))
   }, [session.id, session.running])
 
-  // Merge: WS-pushed lite usage paints the bar immediately; the detailed
-  // REST payload (when loaded) supplies skills/agents/memoryFiles. The
-  // detailed payload, once present, is the more complete object, so prefer
-  // it for the bar fields too.
-  const usage: ContextUsage | null = detailedUsage ?? contextUsage ?? null
+  // Merge: WS-pushed lite usage paints the bar and keeps tracking every
+  // turn; the detailed REST payload (when loaded) supplies the extra
+  // breakdown sections (skills/agents/memoryFiles/mcpTools). We spread
+  // detailedUsage FIRST and contextUsage LAST so the live lite fields
+  // (totalTokens/maxTokens/percentage/model) always win — otherwise the
+  // one-shot detailed snapshot would shadow the live prop and freeze the
+  // ContextBar at the moment the user first expanded the breakdown.
+  const usage: ContextUsage | null =
+    detailedUsage || contextUsage
+      ? { ...detailedUsage, ...contextUsage }
+      : null
 
   const runAndRefresh = async (fn: () => Promise<{ session: SessionInfo }>) => {
     setBusy(true)
@@ -563,8 +570,8 @@ function PluginCard({
           </button>
         )}
         {(commands.length > 0 || agents.length > 0) && (
-          <button className="btn btn-xs" onClick={() => setExpanded(!expanded)}>
-            {expanded ? '▲' : '▼'}
+          <button className="btn btn-xs" onClick={() => setExpanded(!expanded)} aria-label={expanded ? 'Collapse' : 'Expand'} aria-expanded={expanded}>
+            {expanded ? <IconChevronUp size={13} /> : <IconChevronDown size={13} />}
           </button>
         )}
       </div>
@@ -656,8 +663,8 @@ function McpServerCard({
           </button>
         )}
         {server.tools && server.tools.length > 0 && (
-          <button className="btn btn-xs" onClick={() => setExpanded(!expanded)}>
-            {expanded ? '▲' : '▼'}
+          <button className="btn btn-xs" onClick={() => setExpanded(!expanded)} aria-label={expanded ? 'Collapse' : 'Expand'} aria-expanded={expanded}>
+            {expanded ? <IconChevronUp size={13} /> : <IconChevronDown size={13} />}
           </button>
         )}
       </div>

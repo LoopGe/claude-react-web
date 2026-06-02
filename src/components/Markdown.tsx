@@ -174,8 +174,11 @@ const MarkdownInner = memo(function MarkdownInner({ text, searchQuery, activeMat
   )
 })
 
-/** Fenced code block with language label and copy button. */
-function CodeBlock({ lang, children, ...props }: { lang?: string } & ComponentPropsWithoutRef<'pre'>) {
+/** Fenced code block with language label and copy button. Memoized so a
+ *  parent MarkdownInner re-render (e.g. search-query change that doesn't
+ *  touch this block's props) doesn't re-render every code block in the
+ *  message. */
+const CodeBlock = memo(function CodeBlock({ lang, children, ...props }: { lang?: string } & ComponentPropsWithoutRef<'pre'>) {
   const [copied, setCopied] = useState(false)
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   const preRef = useRef<HTMLPreElement>(null)
@@ -203,4 +206,4 @@ function CodeBlock({ lang, children, ...props }: { lang?: string } & ComponentPr
       <pre ref={preRef} {...props}>{children}</pre>
     </div>
   )
-}
+})

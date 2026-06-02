@@ -55,6 +55,17 @@ function renderHast(nodes: HastNode[]): ReactNode[] {
   return out
 }
 
+/** Module-level memo cache for highlighted lines. Diff lines repeat heavily
+ *  across files and messages (blank lines, `}`, `import …`, common keywords),
+ *  so caching by (language, line)摊薄掉重复高亮成本 — even when a parent
+ *  re-render or a non-memoized call site bypasses React's own memoization.
+ *
+ *  The cached value is an immutable React element tree (or null), which is
+ *  safe to reuse across many render sites. Bounded to avoid unbounded growth
+ *  on long sessions; oldest entry is evicted when the cap is hit. */
+const HIGHLIGHT_CACHE = new Map<string, ReactNode | null>()
+const HIGHLIGHT_CACHE_MAX = 2000
+
 /** Highlight a single source line with lowlight; return React children or
  *  null when nothing useful to highlight (empty line, unknown language).
  *
@@ -66,12 +77,25 @@ function renderHast(nodes: HastNode[]): ReactNode[] {
 export function highlightLineHast(language: string, line: string): ReactNode | null {
   if (!line) return null
   if (!isRegisteredLanguage(language)) return null
+
+  const cacheKey = `${language}\n${line}`
+  const cached = HIGHLIGHT_CACHE.get(cacheKey)
+  if (cached !== undefined) return cached
+
+  let value: ReactNode | null = null
   try {
     const result = lowlight.highlight(language, line)
     const children = (result.children ?? []) as HastNode[]
-    if (children.length === 0) return null
-    return <>{renderHast(children)}</>
+    value = children.length === 0 ? null : <>{renderHast(children)}</>
   } catch {
-    return null
+    value = null
   }
+
+  // Evict the oldest entry (Map preserves insertion order) when over cap.
+  if (HIGHLIGHT_CACHE.size >= HIGHLIGHT_CACHE_MAX) {
+    const oldest = HIGHLIGHT_CACHE.keys().next().value
+    if (oldest !== undefined) HIGHLIGHT_CACHE.delete(oldest)
+  }
+  HIGHLIGHT_CACHE.set(cacheKey, value)
+  return value
 }

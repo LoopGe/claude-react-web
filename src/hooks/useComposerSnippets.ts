@@ -53,6 +53,20 @@ function toClientSnippet(raw: unknown): ComposerSnippet | null {
   return { id: raw.id, label: raw.label, content: raw.content }
 }
 
+/** Swap the positions of two ids in a list, by id (not index). Returns the
+ *  list unchanged if either id is absent — so a concurrent removal of one
+ *  participant can't corrupt the order. Used by the optimistic move apply so
+ *  it composes with same-tick add/remove instead of replacing the array. */
+function swapById(list: ComposerSnippet[], a: string, b: string): ComposerSnippet[] {
+  if (a === b) return list
+  const ia = list.findIndex((s) => s.id === a)
+  const ib = list.findIndex((s) => s.id === b)
+  if (ia < 0 || ib < 0) return list
+  const next = list.slice()
+  ;[next[ia], next[ib]] = [next[ib], next[ia]]
+  return next
+}
+
 export interface ComposerSnippetsApi {
   snippets: ComposerSnippet[]
   /** True while the initial load (or migration) is in flight. */
@@ -131,16 +145,21 @@ export function useComposerSnippets(): ComposerSnippetsApi {
     return () => { cancelled = true }
   }, [refresh])
 
+  // All mutations apply via FUNCTIONAL updaters so two handlers firing in
+  // the same tick (before React commits + the snapshot effect flushes)
+  // compose instead of clobbering each other. Reverts also reconcile
+  // against current state by id — never replay a stale full snapshot, which
+  // would silently drop an unrelated concurrent mutation.
   const add = useCallback(
     (label: string, content: string): ComposerSnippet => {
       const snippet: ComposerSnippet = { id: newId(), label, content }
-      const prev = snapshotRef.current
-      setSnippets([...prev, snippet])
+      setSnippets((s) => [...s, snippet])
       void api
         .post('/snippets', { id: snippet.id, label, content })
         .then(() => setError(null))
         .catch((err) => {
-          setSnippets(prev) // revert
+          // Revert: drop only the snippet we added.
+          setSnippets((s) => s.filter((x) => x.id !== snippet.id))
           setError((err as Error).message || 'Failed to save snippet')
         })
       return snippet
@@ -150,13 +169,14 @@ export function useComposerSnippets(): ComposerSnippetsApi {
 
   const update = useCallback(
     (id: string, patch: Partial<Pick<ComposerSnippet, 'label' | 'content'>>) => {
-      const prev = snapshotRef.current
-      setSnippets(prev.map((s) => (s.id === id ? { ...s, ...patch } : s)))
+      // Capture this id's pre-patch value so a failure restores just it.
+      const before = snapshotRef.current.find((s) => s.id === id)
+      setSnippets((s) => s.map((x) => (x.id === id ? { ...x, ...patch } : x)))
       void api
         .put(`/snippets/${id}`, patch)
         .then(() => setError(null))
         .catch((err) => {
-          setSnippets(prev)
+          if (before) setSnippets((s) => s.map((x) => (x.id === id ? before : x)))
           setError((err as Error).message || 'Failed to update snippet')
         })
     },
@@ -165,13 +185,24 @@ export function useComposerSnippets(): ComposerSnippetsApi {
 
   const remove = useCallback(
     (id: string) => {
+      // Capture the removed item + its position so a failure can re-insert
+      // it where it was (best-effort; clamped if the list shifted meanwhile).
       const prev = snapshotRef.current
-      setSnippets(prev.filter((s) => s.id !== id))
+      const idx = prev.findIndex((s) => s.id === id)
+      const removed = idx >= 0 ? prev[idx] : null
+      setSnippets((s) => s.filter((x) => x.id !== id))
       void api
         .delete(`/snippets/${id}`)
         .then(() => setError(null))
         .catch((err) => {
-          setSnippets(prev)
+          if (removed) {
+            setSnippets((s) => {
+              if (s.some((x) => x.id === id)) return s // already present
+              const next = s.slice()
+              next.splice(Math.min(idx, next.length), 0, removed)
+              return next
+            })
+          }
           setError((err as Error).message || 'Failed to delete snippet')
         })
     },
@@ -180,19 +211,40 @@ export function useComposerSnippets(): ComposerSnippetsApi {
 
   const move = useCallback(
     (index: number, delta: -1 | 1) => {
+      // `index`/`delta` are positions in the rendered (click-time) list. For
+      // delta ±1 this is an adjacent swap. We identify the two participants
+      // BY ID from the click-time snapshot, then both the optimistic apply
+      // and the revert operate by id against CURRENT state — so a concurrent
+      // add/remove in the same tick is never clobbered (it just isn't one of
+      // the two swapped ids). The request payload is computed synchronously
+      // from the snapshot since the server reorder is a full-order set.
       const prev = snapshotRef.current
       const target = index + delta
       if (index < 0 || index >= prev.length) return
       if (target < 0 || target >= prev.length) return
-      const next = prev.slice()
-      const [item] = next.splice(index, 1)
-      next.splice(target, 0, item)
-      setSnippets(next)
+      const movedId = prev[index].id
+      const neighborId = prev[target].id
+
+      // Synchronous order for the request, derived from the click-time view.
+      const reqNext = prev.slice()
+      ;[reqNext[index], reqNext[target]] = [reqNext[target], reqNext[index]]
+      const orderIds = reqNext.map((s) => s.id)
+      const prevIds = prev.map((s) => s.id)
+
+      // Optimistic apply: swap the two ids wherever they currently sit.
+      setSnippets((s) => swapById(s, movedId, neighborId))
       void api
-        .put('/snippets/reorder', { ids: next.map((s) => s.id) })
+        .put('/snippets/reorder', { ids: orderIds })
         .then(() => setError(null))
         .catch((err) => {
-          setSnippets(prev)
+          // Revert: re-sort current state to the prior id order (preserves
+          // any concurrently-added snippet at the tail).
+          const rank = new Map(prevIds.map((id, i) => [id, i] as const))
+          setSnippets((s) =>
+            s
+              .slice()
+              .sort((a, b) => (rank.get(a.id) ?? Infinity) - (rank.get(b.id) ?? Infinity)),
+          )
           setError((err as Error).message || 'Failed to reorder snippets')
         })
     },

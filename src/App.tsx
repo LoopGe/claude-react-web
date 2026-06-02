@@ -22,7 +22,7 @@ import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, Sidebar
 import { PERMISSION_MODES } from './types'
 import { ACCENT_COLORS } from './theme'
 import { ErrorBoundary } from './components/ErrorBoundary'
-import { IconSettings, IconBell, IconBellOff, IconBot } from './components/icons/ToolIcons'
+import { IconSettings, IconBell, IconBellOff, IconBot, IconBug, IconBugOff } from './components/icons/ToolIcons'
 import { ThemeToggle } from './components/ThemeToggle'
 import { UpdateBanner } from './components/UpdateBanner'
 import { useUpdateInfo } from './hooks/useUpdateInfo'
@@ -1416,7 +1416,7 @@ export function App() {
               aria-label="Toggle system events"
               aria-pressed={showSystemEvents}
             >
-              {showSystemEvents ? '🐞' : '🫥'}
+              {showSystemEvents ? <IconBug size={16} /> : <IconBugOff size={16} />}
             </button>
             <button
               className={`btn btn-icon ${notifications.enabled ? 'active' : ''}`}

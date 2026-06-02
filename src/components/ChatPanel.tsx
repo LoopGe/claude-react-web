@@ -14,7 +14,7 @@ import { useGitStatus } from '../hooks/useGitStatus'
 import { statusClass, statusLabel, shortenModel } from '../utils/session-status'
 import { useModelOptions } from '../hooks/useModelOptions'
 import { shortenPath } from '../utils/paths'
-import { IconSettings, IconX } from './icons/ToolIcons'
+import { IconSettings, IconX, IconFolder, IconCheck, IconAlertTriangle } from './icons/ToolIcons'
 import { PermissionModeIcon, permissionModeLabel } from './permission-mode-display'
 import type { PermissionMode, SessionInfo } from '../types'
 import { PERMISSION_MODES } from '../types'
@@ -403,7 +403,7 @@ export const ChatPanel = memo(function ChatPanel({
             onClose={() => setPermMenu(null)}
             items={PERMISSION_MODES.map((m) => ({
               label: m,
-              icon: (session.permissionMode ?? 'default') === m ? '✓' : ' ',
+              icon: (session.permissionMode ?? 'default') === m ? <IconCheck size={14} /> : ' ',
               onClick: () => commitPermissionMode(m),
             }))}
           />
@@ -437,7 +437,8 @@ export const ChatPanel = memo(function ChatPanel({
         {session.error && (
           <Tooltip label={session.error}>
             <div className="chat-panel-error">
-              ⚠ {session.error}
+              <IconAlertTriangle size={12} style={{ verticalAlign: '-2px', marginRight: 4, flexShrink: 0 }} />
+              {session.error}
             </div>
           </Tooltip>
         )}
@@ -448,7 +449,8 @@ export const ChatPanel = memo(function ChatPanel({
             {session.cwd && (
               <Tooltip label={session.cwd} placement="bottom">
                 <span className="chat-panel-cwd">
-                  📁 {shortenPath(session.cwd)}
+                  <IconFolder size={12} />
+                  {shortenPath(session.cwd)}
                 </span>
               </Tooltip>
             )}

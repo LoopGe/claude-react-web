@@ -9,6 +9,7 @@
 import { memo, useEffect, useState } from 'react'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { formatElapsed } from '../utils/format'
+import { IconCheck, IconCircleDot, IconAlertTriangle, IconChevronRight, IconExternalLink } from './icons/ToolIcons'
 
 interface Props {
   toolUseId: string
@@ -45,10 +46,9 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
   const toolCount = record?.toolCount ?? 0
 
   const statusIcon =
-    status === 'running' ? '●'
-    : status === 'done' ? '✓'
-    : status === 'rejected' ? '⚠'
-    : '⚠'
+    status === 'running' ? <IconCircleDot size={12} />
+    : status === 'done' ? <IconCheck size={12} />
+    : <IconAlertTriangle size={12} />
 
   const handleOpen = () => {
     if (!ctx) return
@@ -63,11 +63,11 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
       disabled={!ctx}
       title={ctx ? `Open subagent details — ${label}` : 'Subagent details unavailable'}
     >
-      <span className="subagent-card-marker" aria-hidden>▸</span>
+      <span className="subagent-card-marker" aria-hidden><IconChevronRight size={12} /></span>
       <span className="subagent-card-title">Subagent</span>
       <span className="subagent-card-label">{label}</span>
       <span className="subagent-card-meta">
-        <span className="subagent-card-status" aria-label={status}>
+        <span className="subagent-card-status" aria-label={status} style={{ display: 'inline-flex', alignItems: 'center' }}>
           {statusIcon}
         </span>
         {elapsedMs != null && (
@@ -78,7 +78,7 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
             {toolCount} {toolCount === 1 ? 'tool' : 'tools'}
           </span>
         )}
-        <span className="subagent-card-open" aria-hidden>↗</span>
+        <span className="subagent-card-open" aria-hidden style={{ display: 'inline-flex', alignItems: 'center' }}><IconExternalLink size={12} /></span>
       </span>
     </button>
   )

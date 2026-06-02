@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { PERMISSION_MODES } from '../types'
+import { IconX } from './icons/ToolIcons'
 
 interface Props {
   value: string
@@ -297,8 +298,9 @@ export function FlagSettingsEditor({ value, onChange, disabled }: Props) {
                     onClick={() => removeEnvRow(row.id)}
                     disabled={disabled}
                     title="Remove row"
+                    aria-label="Remove row"
                   >
-                    ✕
+                    <IconX size={12} />
                   </button>
                 </div>
               ))}

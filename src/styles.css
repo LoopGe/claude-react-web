@@ -553,7 +553,7 @@ body.resizing-col * {
   line-height: 1.35;
 }
 
-/* Row 2 pieces: cwd (📁 + shortened path), message count, and an
+/* Row 2 pieces: cwd (folder icon + shortened path), message count, and an
    inline working… chip echoing the status dot for a stronger hint. */
 .chat-panel-cwd {
   display: inline-flex;
@@ -1323,9 +1323,10 @@ body.resizing-col * {
   background: color-mix(in srgb, var(--danger) 18%, transparent);
 }
 .ctx-menu-icon {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 14px;
-  text-align: center;
   opacity: 0.75;
 }
 .ctx-menu-label { flex: 1; }
@@ -2013,7 +2014,7 @@ body.resizing-col * {
   border-bottom-right-radius: 3px;
 }
 .msg.user .msg-header { color: var(--msg-user-header-fg); font-weight: 600; }
-.msg.user .msg-header > span:first-child::before { content: '👤 '; }
+.msg.user .msg-header > span:first-child { display: inline-flex; align-items: center; gap: 4px; }
 .msg.user .md a { color: var(--msg-user-link-fg); }
 .msg.user .md code { background: var(--msg-user-code-bg); }
 .msg.user .md pre {
@@ -2036,16 +2037,50 @@ body.resizing-col * {
 .msg.assistant .msg-header > span:first-child::before { content: '✦ '; }
 
 /* Live streaming bubble — rendered outside Virtuoso while a turn is
-   in progress. Matches assistant card styling but without the header. */
+   in progress. Matches assistant card styling but without the header.
+
+   It carries a "breathing glow" border so the in-progress turn is easy to
+   spot among settled messages: the accent border brightens and an outer
+   glow pulses in/out. Only border-color and box-shadow animate (both
+   cheap / GPU-composited), so the 80ms content flushes are unaffected.
+   All colours are theme variables (--accent / --border), so light and dark
+   themes adapt automatically. */
 .streaming-msg {
   width: auto;
   max-width: min(900px, 100%);
-  background: var(--bg-elev);
+  border: 2px solid var(--accent);
+  border-radius: 8px;
   border-bottom-left-radius: 3px;
+  background: var(--bg-elev);
   margin: 4px 0;
-  opacity: 0.9;
+  animation: stream-border-glow 1.8s ease-in-out infinite;
+}
+@keyframes stream-border-glow {
+  0%, 100% {
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+  50% {
+    border-color: var(--accent);
+    box-shadow: 0 0 12px 1px color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+}
+/* Respect reduced-motion: keep the accent border (still a clear marker) but
+   hold the pulse still. */
+@media (prefers-reduced-motion: reduce) {
+  .streaming-msg {
+    animation: none;
+    border-color: var(--accent);
+  }
 }
 .streaming-msg .assistant-body { position: relative; }
+/* In-progress streaming text is rendered as plain text (not Markdown) for
+   performance; preserve newlines/wrapping and long-word breaks so it reads
+   like prose until it settles into the formatted message. */
+.streaming-plain {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .streaming-cursor {
   display: inline-block;
   width: 2px;
@@ -2265,6 +2300,8 @@ body.resizing-col * {
   color: var(--fg-muted);
   flex-shrink: 0;
   margin-left: 2px;
+  display: inline-flex;
+  align-items: center;
 }
 .subagent-chip-clickable {
   border: 1px solid transparent;
@@ -2310,7 +2347,7 @@ body.resizing-col * {
   border-color: var(--accent);
 }
 .subagent-card:disabled { cursor: default; opacity: 0.6; }
-.subagent-card-marker { color: var(--fg-muted); flex-shrink: 0; }
+.subagent-card-marker { color: var(--fg-muted); flex-shrink: 0; display: inline-flex; align-items: center; }
 .subagent-card-title {
   font-size: 11px;
   font-weight: 600;
@@ -2943,7 +2980,7 @@ body.resizing-col * {
 }
 .modal-list-item:hover { background: var(--bg-elev-2); border-color: var(--border); }
 .modal-list-item:focus { outline: 1px solid var(--accent); }
-.folder-icon { flex-shrink: 0; }
+.folder-icon { flex-shrink: 0; display: inline-flex; align-items: center; }
 .folder-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3179,7 +3216,9 @@ body.resizing-col * {
 .todo-icon {
   flex-shrink: 0;
   width: 14px;
-  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 12px;
 }
 .todo-text {
@@ -3218,7 +3257,9 @@ body.resizing-col * {
 .inline-todo-icon {
   flex-shrink: 0;
   width: 14px;
-  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 11px;
 }
 .inline-todo-text {
@@ -3781,6 +3822,8 @@ details.plan-card-collapsible > summary > .plan-card-header {
   font-size: 16px;
   color: var(--fg-muted);
   line-height: 1.2;
+  display: inline-flex;
+  align-items: center;
 }
 .question-option.selected .question-option-marker {
   color: var(--accent);
@@ -3859,6 +3902,9 @@ details.plan-card-collapsible > summary > .plan-card-header {
   font-weight: 600;
   text-transform: none;
   letter-spacing: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .question-answer-display {
   padding: 8px 10px;
@@ -3995,6 +4041,8 @@ details.question-inline-card[open] > summary {
   color: var(--fg-muted);
   line-height: 1.2;
   margin-top: 1px;
+  display: inline-flex;
+  align-items: center;
 }
 .question-inline-option.selected .question-inline-option-marker {
   color: var(--accent);
@@ -4348,6 +4396,8 @@ mark.search-hl.search-hl-active {
   font-size: 14px;
   line-height: 1.4;
   font-weight: 600;
+  display: inline-flex;
+  align-items: center;
 }
 
 .toast-message {
@@ -4685,6 +4735,8 @@ mark.search-hl.search-hl-active {
   color: var(--fg-muted);
   font-size: 10px;
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
 }
 
 .git-file-diff-wrap {
@@ -4993,7 +5045,9 @@ mark.search-hl.search-hl-active {
 }
 .git-branch-mark {
   width: 12px;
-  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
 }
 .git-branch-name {
@@ -5333,6 +5387,9 @@ mark.search-hl.search-hl-active {
   border-radius: 3px;
   border: 1px solid currentColor;
   font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
 .marketplace-plugin-status.enabled { color: var(--ok); }
 .marketplace-plugin-status.disabled { color: var(--fg-muted); }

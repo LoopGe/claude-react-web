@@ -18,6 +18,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { Markdown } from './Markdown'
 import type { PermissionRequest, QuestionSpec } from '../types'
 import { useFocusTrap } from '../hooks/useFocusTrap'
+import { IconMessageCircle, IconCheckSquare, IconSquare, IconCircleDot, IconCircle, IconCheck } from './icons/ToolIcons'
 
 /** Narrowed to the question variant of the union. */
 type QuestionRequest = Extract<PermissionRequest, { kind: 'question' }>
@@ -233,7 +234,7 @@ export function QuestionDialog({ request, onSubmit, onSkipAll, onSubmitted, init
       <div className="perm-card">
         <div className="modal-header">
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span aria-hidden>💬</span>
+            <span aria-hidden style={{ display: 'inline-flex' }}><IconMessageCircle size={18} /></span>
             Claude is asking
           </h3>
         </div>
@@ -334,7 +335,7 @@ function QuestionBlock({ index, question, value, onSingle, onMulti, onSkip, othe
               aria-pressed={selected}
             >
               <span className="question-option-marker" aria-hidden>
-                {isMulti ? (selected ? '☑' : '☐') : selected ? '●' : '○'}
+                {isMulti ? (selected ? <IconCheckSquare size={16} /> : <IconSquare size={16} />) : selected ? <IconCircleDot size={16} /> : <IconCircle size={16} />}
               </span>
               <div className="question-option-body">
                 <div className="question-option-label">{opt.label}</div>
@@ -372,7 +373,7 @@ function QuestionBlock({ index, question, value, onSingle, onMulti, onSkip, othe
           aria-pressed={otherActive}
         >
           <span className="question-option-marker" aria-hidden>
-            {isMulti ? (otherActive ? '☑' : '☐') : otherActive ? '●' : '○'}
+            {isMulti ? (otherActive ? <IconCheckSquare size={16} /> : <IconSquare size={16} />) : otherActive ? <IconCircleDot size={16} /> : <IconCircle size={16} />}
           </span>
           <div className="question-option-body">
             <div className="question-option-label">Other</div>
@@ -420,7 +421,7 @@ function AnsweredBlock({ question, answer }: { question: QuestionSpec; answer: s
     <div className="question-block question-block-answered">
       <div className="question-header">
         {question.header && <span className="question-chip">{question.header}</span>}
-        <span className="question-answered-badge">✓ answered</span>
+        <span className="question-answered-badge"><IconCheck size={13} /> answered</span>
       </div>
       <div className="question-text">{question.question}</div>
       <div className="question-answer-display">{answerText}</div>

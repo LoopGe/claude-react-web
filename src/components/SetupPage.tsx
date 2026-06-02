@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../hooks/useApi'
 import { useNotifications } from '../hooks/useNotifications'
 import { notificationTooltip } from '../utils/notifications'
+import { IconBell, IconBellOff, IconX, IconCheck } from './icons/ToolIcons'
 
 interface Props {
   /** Called after `/config/setup` has succeeded. `openNewSession` reflects
@@ -425,7 +426,7 @@ export function SetupPage({ onConfigured }: Props) {
               {!healthChecking && health?.ok && (
                 <>
                   <div style={{ ...styles.healthRow, ...styles.healthRowOk }}>
-                    <span style={styles.healthIcon} aria-hidden="true">✓</span>
+                    <span style={styles.healthIcon} aria-hidden="true"><IconCheck size={14} /></span>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <p style={{ ...styles.hint, color: 'var(--fg)' }}>
                         Claude CLI is ready
@@ -616,7 +617,7 @@ export function SetupPage({ onConfigured }: Props) {
                         title="Remove"
                         aria-label={`Remove ${m}`}
                       >
-                        ✕
+                        <IconX size={12} />
                       </button>
                     </div>
                   ))}
@@ -711,9 +712,9 @@ export function SetupPage({ onConfigured }: Props) {
                   title={notificationTooltip(notifications.permission, notifications.enabled)}
                   disabled={notifications.permission === 'unsupported'}
                   aria-label="Toggle desktop notifications"
-                  style={{ alignSelf: 'flex-start' }}
+                  style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 6 }}
                 >
-                  {notifications.enabled ? '🔔 Enabled' : '🔕 Disabled'}
+                  {notifications.enabled ? <><IconBell size={14} /> Enabled</> : <><IconBellOff size={14} /> Disabled</>}
                 </button>
               )}
               <p style={styles.hint}>

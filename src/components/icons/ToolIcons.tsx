@@ -402,6 +402,14 @@ export function IconChevronDown(props: IconProps) {
   )
 }
 
+export function IconChevronUp(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="m6 15 6-6 6 6" />
+    </Icon>
+  )
+}
+
 export function IconArrowUp(props: IconProps) {
   return (
     <Icon {...props}>
@@ -436,6 +444,134 @@ export function IconSquare(props: IconProps) {
   return (
     <Icon {...props}>
       <rect x="4" y="4" width="16" height="16" rx="2" />
+    </Icon>
+  )
+}
+
+export function IconInfo(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5" />
+      <circle cx="12" cy="8" r="0.5" fill="currentColor" stroke="none" />
+    </Icon>
+  )
+}
+
+export function IconCheckSquare(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9" />
+      <path d="m9 11 3 3 8-8" />
+    </Icon>
+  )
+}
+
+export function IconUser(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4 20a8 8 0 0 1 16 0" />
+    </Icon>
+  )
+}
+
+export function IconBug(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="8" y="6" width="8" height="13" rx="4" />
+      <path d="M9 3.5 10.5 6M15 3.5 13.5 6" />
+      <path d="M8 11H4M8 15H4M16 11h4M16 15h4M8 8 5 6M16 8l3-2M8 18l-3 2M16 18l3 2" />
+    </Icon>
+  )
+}
+
+export function IconBugOff(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M16 9v6a4 4 0 0 1-7 2.6" />
+      <path d="M8 13v-2a4 4 0 0 1 4-4" />
+      <path d="M15 3.5 13.5 6M8 11H4M8 15H4M16 11h4M8 8 5 6M8 18l-3 2" />
+      <path d="m3 3 18 18" />
+    </Icon>
+  )
+}
+
+export function IconSparkles(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 3.5c.6 3.4 1.6 4.4 5 5-3.4.6-4.4 1.6-5 5-.6-3.4-1.6-4.4-5-5 3.4-.6 4.4-1.6 5-5Z" />
+      <path d="M18.5 14c.3 1.6.8 2.1 2.4 2.5-1.6.3-2.1.8-2.4 2.5-.3-1.7-.8-2.2-2.5-2.5 1.7-.4 2.2-.9 2.5-2.5Z" />
+    </Icon>
+  )
+}
+
+export function IconMessageCircle(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M21 11.5a8 8 0 0 1-11.7 7.1L4 20l1.4-5.3A8 8 0 1 1 21 11.5Z" />
+    </Icon>
+  )
+}
+
+export function IconDollar(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 3v18" />
+      <path d="M16 7.5a3.5 3.5 0 0 0-3.5-2.5h-1A3.25 3.25 0 0 0 11 11.5h2a3.25 3.25 0 0 1 .5 6.5h-1.5A3.5 3.5 0 0 1 8 15.5" />
+    </Icon>
+  )
+}
+
+export function IconWrench(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M14.5 6a3.5 3.5 0 0 0-4.6 4.3L4 16.2a2 2 0 0 0 2.8 2.8l5.9-5.9A3.5 3.5 0 0 0 18 9.5a3.5 3.5 0 0 0-1-2.4l-2.2 2.2-1.6-1.6L15.4 5.5A3.5 3.5 0 0 0 14.5 6Z" />
+    </Icon>
+  )
+}
+
+export function IconMoon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5Z" />
+    </Icon>
+  )
+}
+
+export function IconSun(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19" />
+    </Icon>
+  )
+}
+
+export function IconMonitor(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="3" y="4" width="18" height="12" rx="2" />
+      <path d="M8 20h8M12 16v4" />
+    </Icon>
+  )
+}
+
+export function IconScissors(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="6" cy="6" r="2.5" />
+      <circle cx="6" cy="18" r="2.5" />
+      <path d="M8 7.5 20 18M8 16.5 20 6M8.2 11.5 12 13" />
+    </Icon>
+  )
+}
+
+export function IconLock(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="4" y="10" width="16" height="11" rx="2" />
+      <path d="M8 10V7a4 4 0 0 1 8 0v3" />
     </Icon>
   )
 }
