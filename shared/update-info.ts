@@ -21,9 +21,8 @@ export interface UpdateInfo {
    *  layout) — the UI then falls back to showing only `current`. */
   installed?: string
   /** The canonical npm package name (from package.json `name`). The UI uses
-   *  this to build the upgrade command so a scoped name (e.g.
-   *  `@mi/claude-react-web`) is reflected verbatim instead of a hardcoded
-   *  unscoped guess. */
+   *  this to build the upgrade command so the actual published name (scoped
+   *  or unscoped) is reflected verbatim instead of a hardcoded guess. */
   packageName: string
   /** How this server process was launched, detected at runtime. The client
    *  uses it to decide whether an in-app update is feasible: only `'global'`

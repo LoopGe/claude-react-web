@@ -141,7 +141,7 @@ describe('checkForUpdates', () => {
     const args = fetchMock.mock.calls[0] as unknown as unknown[]
     const url = args[0] as string
     expect(url).not.toContain('%2F')
-    expect(url).toContain('/@mi/claude-react-web/latest')
+    expect(url).toContain('/claude-react-web/latest')
   })
 
   it('dedupes concurrent in-flight probes', async () => {

@@ -1,5 +1,5 @@
 {
-  "name": "@mi/claude-react-web",
+  "name": "claude-react-web",
   "version": "0.4.8",
   "description": "Local interactive chat platform powered by @anthropic-ai/claude-agent-sdk",
   "type": "module",

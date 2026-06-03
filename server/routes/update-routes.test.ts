@@ -107,7 +107,7 @@ describe('POST /api/update', () => {
       installedVersion: '99.99.99',
       updateApplied: true,
     })
-    expect(runNpmInstall).toHaveBeenCalledWith('@mi/claude-react-web', TEST_REGISTRY)
+    expect(runNpmInstall).toHaveBeenCalledWith('claude-react-web', TEST_REGISTRY)
   })
 
   it('reports a no-op install when the on-disk version did not advance', async () => {

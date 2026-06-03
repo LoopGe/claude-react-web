@@ -1,17 +1,17 @@
 // Builds the shell command shown in the update banner and the About tab.
 //
-// Two things make a hardcoded `npx claude-react-web@latest` wrong:
-//   1. The package is scoped (`@mi/claude-react-web`) — dropping the scope
-//      installs a different package.
-//   2. It lives on a private registry — without `--registry=<…>` the
-//      command hits the public registry and 404s.
+// Two things make a hardcoded `npx <name>@latest` wrong:
+//   1. The published name may change (scoped vs unscoped) — using the wrong
+//      one installs a different package or 404s.
+//   2. It may live on a private registry — without `--registry=<…>` the
+//      command hits the public registry instead.
 //
 // Both values come from the server's UpdateInfo (packageName + the
 // configured updateCheckRegistry it actually probed), so the command we
 // render matches how the user installed in the first place.
 
 /**
- * @param packageName canonical npm name, e.g. `@mi/claude-react-web`
+ * @param packageName canonical npm name, e.g. `claude-react-web`
  * @param registry    the probed registry URL; omitted/empty → no flag
  * @param global      true for the `npm i -g` form, false for `npx`
  */
