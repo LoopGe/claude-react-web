@@ -22,6 +22,7 @@ import { useLocalStorage } from '../hooks/useLocalStorage'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { getBlocks, getEnterPlanToolUseIds } from '../session-store/normalize'
+import { useSubagentContext } from '../hooks/useSubagentContext'
 import { IconCopy, IconArrowDown, IconZap, IconSparkles, IconAlertTriangle, IconMessageCircle, IconDollar, IconClock, IconWrench, IconUser, IconExternalLink } from './icons/ToolIcons'
 import { countMatches, extractPlainText } from '../search'
 
@@ -195,9 +196,25 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
     return set
   }, [items])
 
+  // Subagent (Agent/Task/Explore) results are merged inline into SubagentCard
+  // once captured (record.result set). Fold those ids into the predicate so
+  // their standalone orphan bubble is suppressed — same merge treatment as a
+  // generic tool card. Only ids whose result has actually landed count; a
+  // still-running subagent has no result bubble to suppress yet.
+  const subagentCtx = useSubagentContext()
+  const subagentResultIds = useMemo(() => {
+    const set = new Set<string>()
+    if (subagentCtx) {
+      for (const [id, record] of subagentCtx.index) {
+        if (record.result) set.add(id)
+      }
+    }
+    return set
+  }, [subagentCtx])
+
   const isResultConsumed = useMemo(
-    () => makeResultConsumed(toolResults, planStatus, questionAnswers, enterPlanIds),
-    [toolResults, planStatus, questionAnswers, enterPlanIds],
+    () => makeResultConsumed(toolResults, planStatus, questionAnswers, enterPlanIds, subagentResultIds),
+    [toolResults, planStatus, questionAnswers, enterPlanIds, subagentResultIds],
   )
 
   const renderableItems: RenderableItem[] = useMemo(() => {
@@ -753,13 +770,31 @@ const StreamingFooter = memo(function StreamingFooter({ content }: { content: st
   // back (then we leave their position alone, matching the outer transcript's
   // follow behaviour).
   const bodyRef = useRef<HTMLDivElement>(null)
+  // Whether to keep the body pinned to its latest line. Starts true and only
+  // flips false when the USER scrolls up inside the body. We deliberately do
+  // NOT infer this from the post-append scroll position: appending content
+  // below grows scrollHeight WITHOUT moving scrollTop, so the moment the body
+  // first overflows it reads as "far from the bottom" even though the user
+  // never scrolled — which previously stranded the body at the TOP and broke
+  // follow. Real scroll events fire only on user gestures (and on our own
+  // programmatic pin, which lands at distance≈0 and keeps follow on), never
+  // on plain content append, so they are the trustworthy signal.
+  const followRef = useRef(true)
   useEffect(() => {
     const el = bodyRef.current
     if (!el) return
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    // Tolerance band: treat "near the bottom" as "following" so a single
-    // appended line doesn't strand us a few px short and disable the pin.
-    if (distanceFromBottom <= 24) el.scrollTop = el.scrollHeight
+    const onScroll = () => {
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+      // Tolerance band: treat "near the bottom" as "still following".
+      followRef.current = distanceFromBottom <= 24
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
+  useEffect(() => {
+    const el = bodyRef.current
+    if (!el) return
+    if (followRef.current) el.scrollTop = el.scrollHeight
   }, [content])
 
   return (
@@ -1505,22 +1540,27 @@ function extractUserText(msg: SdkMessage): string | null {
  *   - `enterPlanIds` — EnterPlanMode has no card and no lifecycle map (it
  *     renders as a stateless marker), but the SDK still emits a tool_result
  *     for it; suppress that stray result. Collected by scanning items.
- *  Subagent (Agent/Task/Explore) ids are deliberately NOT included: their
- *  result bubble is the subagent's only surfacing in the main transcript, so
- *  it must keep rendering. Both `willRenderEmpty` and MessageView's user
- *  branch use this same predicate via ResultConsumedCtx — they can't drift
- *  because there is one shared instance per render. */
+ *   - `subagentResultIds` — Agent/Task/Explore results are merged inline into
+ *     SubagentCard once captured (ActiveSubagent.result set), so the standalone
+ *     bubble is suppressed exactly like a generic tool card. Only ids whose
+ *     result has landed are passed in — a still-running subagent has no bubble
+ *     to suppress.
+ *  Both `willRenderEmpty` and MessageView's user branch use this same predicate
+ *  via ResultConsumedCtx — they can't drift because there is one shared
+ *  instance per render. */
 function makeResultConsumed(
   toolResults: ReadonlyMap<string, ToolResultEntry>,
   planStatus: ReadonlyMap<string, PlanStatus>,
   questionAnswers: ReadonlyMap<string, QuestionAnswerEntry[]>,
   enterPlanIds: ReadonlySet<string>,
+  subagentResultIds: ReadonlySet<string>,
 ): (id: string) => boolean {
   return (id) =>
     toolResults.has(id) ||
     planStatus.has(id) ||
     questionAnswers.has(id) ||
-    enterPlanIds.has(id)
+    enterPlanIds.has(id) ||
+    subagentResultIds.has(id)
 }
 
 /** Context carrying the single result-consumed predicate instance for one

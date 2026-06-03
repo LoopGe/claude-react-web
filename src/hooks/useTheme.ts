@@ -20,6 +20,7 @@ import {
   ACCENT_COLORS,
   ACCENT_COLOR_KEY,
   SESSION_COLORS_KEY,
+  accentStrongFor,
   buildSessionAccentMap,
 } from '../theme'
 import type { CSSProperties } from 'react'
@@ -97,8 +98,7 @@ export function useTheme(): UseThemeResult {
   useEffect(() => {
     const root = document.documentElement.style
     root.setProperty('--accent', accentColor)
-    const preset = ACCENT_COLORS.find((c) => c.accent === accentColor)
-    root.setProperty('--accent-strong', preset?.strong ?? accentColor)
+    root.setProperty('--accent-strong', accentStrongFor(accentColor))
   }, [accentColor])
 
   // Pre-computed per-session accent CSS overrides. Stable references so

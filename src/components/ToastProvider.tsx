@@ -18,13 +18,13 @@ import {
  *  so a tight loop of failures can't push the column past the viewport. */
 const MAX_TOASTS = 3
 
-/** Default lifetime for `error` / `success` / `info`. Errors stay a touch
- *  longer because users tend to scan-then-read, while successes are
- *  acknowledgements that just need to register. */
+/** Default lifetime for `error` / `success` / `info`. Uniform 8s so the
+ *  progress bar reads the same across kinds; callers can still override
+ *  per-toast via `durationMs` (0 = sticky). */
 const DEFAULT_DURATIONS: Record<ToastKind, number> = {
-  error: 6000,
-  success: 3000,
-  info: 4500,
+  error: 8000,
+  success: 8000,
+  info: 8000,
 }
 
 /** Random id with a `crypto.randomUUID` fallback. The fallback path
@@ -36,20 +36,49 @@ function makeId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 }
 
+/** Per-toast countdown bookkeeping. `remaining` is recomputed on pause so
+ *  resume can re-arm with the time left, keeping the JS removal in sync
+ *  with the CSS progress bar (which pauses on hover). `startedAt` is the
+ *  wall-clock the current run began (null while paused). */
+type TimerEntry = {
+  handle: ReturnType<typeof setTimeout>
+  startedAt: number | null
+  remaining: number
+}
+
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
-  // id → timeout handle. Kept in a ref so `dismiss` and `show` can
-  // clear/reset timers without the effect re-running on every state
+  // id → timer entry. Kept in a ref so `dismiss`/`show`/`pause`/`resume`
+  // can manage timers without the effect re-running on every state
   // change. Cleared on unmount.
-  const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  const timersRef = useRef<Map<string, TimerEntry>>(new Map())
 
   const dismiss = useCallback((id: string) => {
-    const timer = timersRef.current.get(id)
-    if (timer) {
-      clearTimeout(timer)
+    const entry = timersRef.current.get(id)
+    if (entry) {
+      clearTimeout(entry.handle)
       timersRef.current.delete(id)
     }
     setToasts((prev) => prev.filter((t) => t.id !== id))
+  }, [])
+
+  const pause = useCallback((id: string) => {
+    const entry = timersRef.current.get(id)
+    if (!entry || entry.startedAt === null) return
+    clearTimeout(entry.handle)
+    const elapsed = Date.now() - entry.startedAt
+    entry.remaining = Math.max(0, entry.remaining - elapsed)
+    entry.startedAt = null
+  }, [])
+
+  const resume = useCallback((id: string) => {
+    const entry = timersRef.current.get(id)
+    if (!entry || entry.startedAt !== null) return
+    entry.startedAt = Date.now()
+    entry.handle = setTimeout(() => {
+      timersRef.current.delete(id)
+      setToasts((prev) => prev.filter((t) => t.id !== id))
+    }, entry.remaining)
   }, [])
 
   const show = useCallback(
@@ -67,20 +96,20 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         // Evicted ids also need their timers cleared.
         while (next.length > MAX_TOASTS) {
           const dropped = next.shift()!
-          const timer = timersRef.current.get(dropped.id)
-          if (timer) {
-            clearTimeout(timer)
+          const entry = timersRef.current.get(dropped.id)
+          if (entry) {
+            clearTimeout(entry.handle)
             timersRef.current.delete(dropped.id)
           }
         }
         return next
       })
       if (durationMs > 0) {
-        const timer = setTimeout(() => {
+        const handle = setTimeout(() => {
           timersRef.current.delete(id)
           setToasts((prev) => prev.filter((t) => t.id !== id))
         }, durationMs)
-        timersRef.current.set(id, timer)
+        timersRef.current.set(id, { handle, startedAt: Date.now(), remaining: durationMs })
       }
       return id
     },
@@ -92,12 +121,15 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const timers = timersRef.current
     return () => {
-      for (const t of timers.values()) clearTimeout(t)
+      for (const e of timers.values()) clearTimeout(e.handle)
       timers.clear()
     }
   }, [])
 
-  const value = useMemo<ToastContextValue>(() => ({ toasts, show, dismiss }), [toasts, show, dismiss])
+  const value = useMemo<ToastContextValue>(
+    () => ({ toasts, show, dismiss, pause, resume }),
+    [toasts, show, dismiss, pause, resume],
+  )
 
   return <ToastContext.Provider value={value}>{children}</ToastContext.Provider>
 }

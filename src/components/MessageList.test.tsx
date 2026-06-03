@@ -41,6 +41,8 @@ vi.mock('react-virtuoso', () => ({
 
 // Import AFTER mock.
 import { MessageList } from './MessageList'
+import { SubagentProvider } from '../hooks/useSubagentContext'
+import type { ActiveSubagent } from '../session-store/types'
 
 function makeMsg(type: string, overrides: Record<string, unknown> = {}): SdkMessage {
   return { type, message: { content: [] }, ...overrides } as SdkMessage
@@ -235,11 +237,11 @@ describe('MessageList', () => {
       expect(container.textContent).not.toContain('tool result')
     })
 
-    it('keeps a subagent tool_result bubble (NOT suppressed — only Plan/Question are)', () => {
-      // Regression guard: a subagent (Agent/Task/Explore) result id is in
-      // none of toolResults/planStatus/questionAnswers, so it must still
-      // surface as a standalone bubble — that bubble is the worker's only
-      // output in the main transcript.
+    it('keeps a subagent tool_result bubble when there is no SubagentProvider (fallback)', () => {
+      // Without a SubagentProvider the predicate has no subagent index to
+      // consult, so it cannot know the result was merged into a card — the
+      // safe fallback is to keep surfacing the standalone bubble rather than
+      // silently drop the worker's only output.
       const msgs = [
         makeMsg('user', {
           message: { content: [{ type: 'tool_result', tool_use_id: 'sub-1', content: 'subagent out' }] },
@@ -247,6 +249,53 @@ describe('MessageList', () => {
       ]
       const { container } = render(
         <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+      )
+      expect(container.textContent).toContain('tool result')
+    })
+
+    it('drops a subagent tool_result bubble once its result is merged into SubagentCard', () => {
+      // The subagent's result is captured on the ActiveSubagent record
+      // (record.result set), so the SubagentCard renders it inline and the
+      // standalone orphan bubble must be suppressed — same merge treatment as
+      // a generic tool card.
+      const msgs = [
+        makeMsg('user', {
+          message: { content: [{ type: 'tool_result', tool_use_id: 'sub-1', content: 'subagent out' }] },
+        }),
+      ]
+      const index = new Map<string, ActiveSubagent>([
+        ['sub-1', {
+          toolUseId: 'sub-1',
+          label: 'scout',
+          status: 'done',
+          toolCount: 0,
+          result: { content: 'subagent out', isError: false },
+        }],
+      ])
+      const { container } = render(
+        <SubagentProvider value={{ index, messages: [], open: () => {} }}>
+          <MessageList items={toItems(msgs as SdkMessage[])} replayReady />
+        </SubagentProvider>,
+      )
+      expect(container.textContent).not.toContain('tool result')
+    })
+
+    it('keeps the bubble while the subagent is still running (no result captured yet)', () => {
+      // A running subagent has no result on its record yet, so there is
+      // nothing merged into the card — the bubble (if any result arrives
+      // mid-stream) must not be suppressed prematurely.
+      const msgs = [
+        makeMsg('user', {
+          message: { content: [{ type: 'tool_result', tool_use_id: 'sub-1', content: 'subagent out' }] },
+        }),
+      ]
+      const index = new Map<string, ActiveSubagent>([
+        ['sub-1', { toolUseId: 'sub-1', label: 'scout', status: 'running', toolCount: 0 }],
+      ])
+      const { container } = render(
+        <SubagentProvider value={{ index, messages: [], open: () => {} }}>
+          <MessageList items={toItems(msgs as SdkMessage[])} replayReady />
+        </SubagentProvider>,
       )
       expect(container.textContent).toContain('tool result')
     })

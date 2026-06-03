@@ -257,6 +257,39 @@ button { cursor: pointer; }
   border-style: solid;
 }
 
+/* Custom-colour swatch: a <label> wrapping a hidden native colour input.
+   When no preset is active it shows a dashed ring + "+"; once a custom
+   colour is picked it fills with that colour like a preset swatch. */
+.accent-swatch-custom {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-style: dashed;
+  border-color: var(--fg-muted);
+}
+.accent-swatch-custom.active {
+  border-style: solid;
+}
+.accent-swatch-custom input[type='color'] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  opacity: 0;
+  cursor: pointer;
+}
+.accent-swatch-custom-plus {
+  font-size: 12px;
+  line-height: 1;
+  color: var(--fg-muted);
+  pointer-events: none;
+}
+
 /* Toolbar accent picker inherits .btn.btn-icon base styles.
    Only needs layout override for the swatch row. */
 .main-toolbar .accent-picker {
@@ -2217,7 +2250,7 @@ body.resizing-col * {
      internally; StreamingFooter pins it to the latest line as text flows
      in. The cap lifts the instant streaming ends and the text re-renders
      as a normal (unbounded) Markdown message. */
-  max-height: 40vh;
+  max-height: 20vh;
   overflow-y: auto;
 }
 .streaming-cursor {
@@ -2466,26 +2499,36 @@ body.resizing-col * {
    for Agent / Task / Explore. Whole card is a button to keep a single
    click target consistent with how the chip works in WorkingBubble. */
 .subagent-card {
+  width: 100%;
+  margin: 6px 0;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  overflow: hidden;
+  transition: border-color 0.12s;
+}
+.subagent-card:hover {
+  border-color: var(--accent);
+}
+.subagent-card-header {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
-  margin: 6px 0;
   padding: 8px 12px;
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: transparent;
+  border: none;
   font: inherit;
   text-align: left;
   cursor: pointer;
-  color: var(--fg);
-  transition: background 0.12s, border-color 0.12s;
+  color: inherit;
+  transition: background 0.12s;
 }
-.subagent-card:hover {
+.subagent-card-header:hover {
   background: var(--bg-elev-2);
-  border-color: var(--accent);
 }
-.subagent-card:disabled { cursor: default; opacity: 0.6; }
+.subagent-card-header:disabled { cursor: default; opacity: 0.6; }
 .subagent-card-marker { color: var(--fg-muted); flex-shrink: 0; display: inline-flex; align-items: center; }
 .subagent-card-title {
   font-size: 11px;
@@ -4613,20 +4656,25 @@ mark.search-hl.search-hl-active {
 
 .toast-host {
   position: fixed;
-  bottom: 16px;
-  right: 16px;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 9000;
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 8px;
   width: min(380px, calc(100vw - 32px));
   pointer-events: none;
 }
 
 .toast {
+  position: relative;
+  overflow: hidden;
   display: flex;
   align-items: flex-start;
   gap: 8px;
+  width: 100%;
   padding: 10px 12px;
   border-radius: 8px;
   font-size: 13px;
@@ -4636,9 +4684,28 @@ mark.search-hl.search-hl-active {
   color: var(--fg);
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
   pointer-events: auto;
-  /* slide in from the right; respects prefers-reduced-motion below */
+  /* slide in from the top; respects prefers-reduced-motion below */
   animation: toast-slide-in 180ms ease-out;
 }
+
+/* Countdown progress bar pinned to the toast's bottom edge. Scales from
+   full width down to 0 over the toast's lifetime; colour follows the
+   kind. Pauses in lockstep with the JS dismiss timer on hover. */
+.toast-progress {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  width: 100%;
+  transform-origin: left;
+  background: var(--accent);
+  opacity: 0.8;
+  animation: toast-progress linear forwards;
+}
+.toast-error .toast-progress { background: var(--danger); }
+.toast-success .toast-progress { background: var(--ok); }
+.toast-info .toast-progress { background: var(--accent); }
+.toast:hover .toast-progress { animation-play-state: paused; }
 
 .toast-error {
   background: color-mix(in srgb, var(--danger) 14%, var(--bg-elev-2));
@@ -4754,16 +4821,30 @@ mark.search-hl.search-hl-active {
 @keyframes toast-slide-in {
   from {
     opacity: 0;
-    transform: translateX(12px);
+    transform: translateY(-12px);
   }
   to {
     opacity: 1;
-    transform: translateX(0);
+    transform: translateY(0);
+  }
+}
+
+@keyframes toast-progress {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .toast {
+    animation: none;
+  }
+  /* Keep the bar visible as a static full-width rule rather than
+     animating it shrink; the JS timer still auto-dismisses on time. */
+  .toast-progress {
     animation: none;
   }
 }

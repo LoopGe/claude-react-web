@@ -22,6 +22,23 @@ export const ACCENT_COLORS = [
 export const ACCENT_COLOR_KEY = 'claude-react-web:accent-color'
 export const SESSION_COLORS_KEY = 'claude-react-web:session-colors'
 
+/** Resolve the `--accent-strong` value (hover / active variant) for any
+ *  accent hex. Presets carry a hand-tuned `strong`; arbitrary colours
+ *  (from the custom picker) have none, so we derive one by mixing 80% of
+ *  the accent with black — the same `color-mix()` the stylesheet already
+ *  relies on for message-bubble tints. Returned as a CSS value string,
+ *  which is valid for both `style.setProperty` and inline `style`. */
+export function accentStrongFor(hex: string): string {
+  const preset = ACCENT_COLORS.find((c) => c.accent === hex)
+  return preset?.strong ?? `color-mix(in srgb, ${hex} 80%, #000)`
+}
+
+/** True when `hex` is one of the built-in presets. Used by the picker to
+ *  decide whether the custom-colour swatch should render as active. */
+export function isPresetAccent(hex: string): boolean {
+  return ACCENT_COLORS.some((c) => c.accent === hex)
+}
+
 /** Build a `sessionId → CSSProperties` map for per-session accent overrides.
  *  Used by App.tsx (driving ChatPanel) and SessionList.tsx (driving
  *  SessionCard). Each style sets `--accent` and `--accent-strong` so a
@@ -33,8 +50,7 @@ export function buildSessionAccentMap(
   const map = new Map<string, CSSProperties>()
   if (!sessionColors) return map
   for (const [id, hex] of Object.entries(sessionColors)) {
-    const preset = ACCENT_COLORS.find((c) => c.accent === hex)
-    map.set(id, { '--accent': hex, '--accent-strong': preset?.strong ?? hex } as CSSProperties)
+    map.set(id, { '--accent': hex, '--accent-strong': accentStrongFor(hex) } as CSSProperties)
   }
   return map
 }

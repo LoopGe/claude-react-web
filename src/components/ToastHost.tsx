@@ -15,7 +15,7 @@
 
 import type { ReactNode } from 'react'
 import { type ToastKind } from '../hooks/toastContext'
-import { useToastDismiss, useToastList } from '../hooks/useToast'
+import { useToastDismiss, useToastHoverPause, useToastList } from '../hooks/useToast'
 import { IconX, IconAlertTriangle, IconCheckCircle, IconInfo } from './icons/ToolIcons'
 
 const KIND_LABEL: Record<ToastKind, string> = {
@@ -33,6 +33,7 @@ const KIND_ICON: Record<ToastKind, ReactNode> = {
 export function ToastHost() {
   const toasts = useToastList()
   const dismiss = useToastDismiss()
+  const { pause, resume } = useToastHoverPause()
 
   if (toasts.length === 0) return null
 
@@ -53,6 +54,10 @@ export function ToastHost() {
             // success/info are polite and queue behind any in-flight read.
             role={t.kind === 'error' ? 'alert' : 'status'}
             aria-live={t.kind === 'error' ? 'assertive' : 'polite'}
+            // Hover pauses the auto-dismiss countdown so users get time to
+            // read; the CSS progress bar pauses in lockstep via :hover.
+            onMouseEnter={() => pause(t.id)}
+            onMouseLeave={() => resume(t.id)}
           >
             <span className="toast-icon" aria-hidden="true">
               {KIND_ICON[t.kind]}
@@ -87,6 +92,16 @@ export function ToastHost() {
             >
               <IconX size={12} />
             </button>
+            {/* Countdown bar — only for auto-dismissing toasts. Sticky
+                toasts (durationMs === 0) show nothing. The bar's duration
+                matches the JS removal timer; both pause on hover. */}
+            {t.durationMs > 0 && (
+              <span
+                className="toast-progress"
+                style={{ animationDuration: `${t.durationMs}ms` }}
+                aria-hidden="true"
+              />
+            )}
           </div>
         )
       })}

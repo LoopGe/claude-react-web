@@ -1,5 +1,5 @@
 import { ContextMenu, type ContextMenuItem } from '../ContextMenu'
-import { ACCENT_COLORS } from '../../theme'
+import { ACCENT_COLORS, isPresetAccent } from '../../theme'
 import type { SessionGroup, SessionInfo } from '../../types'
 import {
   IconPencil,
@@ -215,6 +215,39 @@ export function SessionContextMenu({
           onClick: () => onColorChange?.(c.accent),
         }) as ContextMenuItem,
     ),
+    {
+      label: 'Custom colour…',
+      icon:
+        sessionColor && !isPresetAccent(sessionColor) ? (
+          <IconCircleDot size={14} />
+        ) : (
+          <IconCircle size={14} />
+        ),
+      iconStyle: sessionColor && !isPresetAccent(sessionColor) ? { color: sessionColor } : undefined,
+      // The menu closes on click, so we can't host a live <input> here.
+      // Instead spawn a detached native colour input and open it — the OS
+      // picker is independent of the menu's lifecycle, and onColorChange
+      // fires when the user commits a colour.
+      onClick: () => {
+        const input = document.createElement('input')
+        input.type = 'color'
+        input.value = sessionColor && !isPresetAccent(sessionColor) ? sessionColor : ACCENT_COLORS[0].accent
+        input.style.position = 'fixed'
+        input.style.opacity = '0'
+        input.style.pointerEvents = 'none'
+        document.body.appendChild(input)
+        input.addEventListener('change', () => {
+          onColorChange?.(input.value)
+          input.remove()
+        })
+        // Clean up if the picker is dismissed without a commit. `cancel`
+        // fires on dismiss; unlike `blur` it does NOT fire merely because
+        // opening the OS picker moves focus off the input, so it won't
+        // tear the input down before the user picks a colour.
+        input.addEventListener('cancel', () => input.remove())
+        input.click()
+      },
+    },
     ...(sessionColor
       ? [
           {

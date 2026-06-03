@@ -495,3 +495,73 @@ describe('reducer: toolStatus lifecycle', () => {
     expect(state.toolStatus).toBe(before.toolStatus)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Reducer integration — subagent result merge (Agent/Task/Explore)
+// ---------------------------------------------------------------------------
+
+describe('reducer: subagent result lifecycle', () => {
+  it('captures the subagent result inline and flips status to done', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: assistant([toolUse('Agent', 'tu_agent', { description: 'scout' })]),
+    })
+    const sub = state.activeSubagents.get('tu_agent')
+    expect(sub?.status).toBe('running')
+    expect(sub?.result).toBeUndefined()
+
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: user([toolResult('tu_agent', { content: 'agent output' })], 'r-1'),
+    })
+    const done = state.activeSubagents.get('tu_agent')
+    expect(done?.status).toBe('done')
+    expect(done?.result).toEqual({ content: 'agent output', isError: false })
+    expect(done?.endedAt).toBeTypeOf('number')
+  })
+
+  it('flips status to interrupted and tags isError when the result fails', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: assistant([toolUse('Task', 'tu_task')]),
+    })
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: user([toolResult('tu_task', { isError: true, content: 'boom' })], 'r-1'),
+    })
+    const sub = state.activeSubagents.get('tu_task')
+    // A failed subagent must not show a green "done" check.
+    expect(sub?.status).toBe('interrupted')
+    expect(sub?.result).toEqual({ content: 'boom', isError: true })
+  })
+
+  it('does NOT capture the subagent result in toolResults (SubagentCard owns it)', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: assistant([toolUse('Explore', 'tu_exp')]),
+    })
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: user([toolResult('tu_exp', { content: 'found it' })], 'r-1'),
+    })
+    // The generic toolResults map stays empty — the merge happens on the
+    // ActiveSubagent record, not the shared tool-card map.
+    expect(state.toolResults.has('tu_exp')).toBe(false)
+    expect(state.activeSubagents.get('tu_exp')?.result).toEqual({ content: 'found it', isError: false })
+  })
+
+  it('rebuilds the subagent result from cached messages on hydration', () => {
+    const cachedMessages = [
+      assistant([toolUse('Agent', 'tu_agent', { description: 'scout' })], 'a-1'),
+      user([toolResult('tu_agent', { content: 'agent output' })], 'r-1'),
+    ]
+    const seeded = createInitialSessionState('s1')
+    const state = rebuildIndexesFromMessages(seeded, cachedMessages)
+    const sub = state.activeSubagents.get('tu_agent')
+    expect(sub?.status).toBe('done')
+    expect(sub?.result).toEqual({ content: 'agent output', isError: false })
+  })
+})

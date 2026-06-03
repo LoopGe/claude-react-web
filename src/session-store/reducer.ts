@@ -813,30 +813,35 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
     changed = true
   }
 
-  const toolResultIds = getToolResultIds(message)
-  if (toolResultIds.length > 0 && activeSubagents.size > 0) {
+  const subagentResultEntries = getToolResultEntries(message)
+  if (subagentResultEntries.length > 0 && activeSubagents.size > 0) {
     // Don't delete on tool_result — keep the record around so the
-    // overlay can be reopened after completion. Just flip status to
-    // 'done' (or 'interrupted'/'rejected' if we can detect from content)
-    // and stamp endedAt. The "running" filter elsewhere drops them
-    // from the WorkingBubble chip row automatically.
+    // overlay can be reopened after completion. Flip status to 'done'
+    // ('interrupted' when the result carries is_error, so a failed
+    // subagent doesn't show a green check) and stamp endedAt. Also
+    // capture the result payload so SubagentCard can merge the
+    // subagent's returned output inline at the bottom of the card —
+    // mirrors the generic ToolCard merge. The "running" filter
+    // elsewhere drops completed subagents from the WorkingBubble chip
+    // row automatically.
     //
     // Most turns include tool_results unrelated to subagents, so defer
     // the Map clone until we actually have a matching id — otherwise
     // every Bash/Read/Edit hop allocates a fresh Map for nothing.
     let touched = false
     const now = Date.now()
-    for (const id of toolResultIds) {
-      const existing = activeSubagents.get(id)
+    for (const { toolUseId, content, isError } of subagentResultEntries) {
+      const existing = activeSubagents.get(toolUseId)
       if (!existing || existing.status !== 'running') continue
       if (!touched) {
         if (activeSubagents === state.activeSubagents) activeSubagents = new Map(activeSubagents)
         touched = true
       }
-      activeSubagents.set(id, {
+      activeSubagents.set(toolUseId, {
         ...existing,
-        status: 'done',
+        status: isError ? 'interrupted' : 'done',
         endedAt: now,
+        result: { content, isError },
       })
     }
     changed = changed || touched

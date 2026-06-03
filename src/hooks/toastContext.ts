@@ -34,6 +34,12 @@ export type ToastContextValue = {
   toasts: Toast[]
   show: (kind: ToastKind, message: string, opts?: PushOptions) => string
   dismiss: (id: string) => void
+  /** Pause a toast's auto-dismiss countdown (used on hover). No-op for
+   *  sticky toasts or ids with no live timer. */
+  pause: (id: string) => void
+  /** Resume a paused countdown with its remaining time. No-op if the
+   *  toast isn't paused. */
+  resume: (id: string) => void
 }
 
 /** Internal — Provider lives in components/ToastProvider.tsx, hooks in

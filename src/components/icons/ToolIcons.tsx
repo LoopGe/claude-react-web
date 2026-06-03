@@ -327,18 +327,16 @@ export function IconClock(props: IconProps) {
 }
 
 export function IconSettings(props: IconProps) {
-  // The gear's teeth reach almost to the 24-unit viewBox edges (~2.6→21.4),
-  // so at a shared `size` it reads visually larger than neighbours like the
-  // close (X) or search icons, whose geometry sits well inside the box. Scale
-  // the geometry ~0.86 around the centre (12,12) so its optical footprint
-  // matches the rest of the header set. `vectorEffect="non-scaling-stroke"`
-  // keeps the stroke at its solved weight instead of thinning with the scale.
+  // A 6-tooth gear whose teeth reach only to ~r=7 (the same optical bound as
+  // the search circle), so it sits visually level with the rest of the header
+  // set. The previous Lucide gear filled the 24-unit box edge-to-edge and
+  // needed a scale(0.86) + non-scaling-stroke patch to look right; this
+  // geometry needs neither — its stroke thins with `size` like every other
+  // icon, keeping a uniform 1.5px optical weight across the set.
   return (
     <Icon {...props}>
-      <g transform="translate(12 12) scale(0.86) translate(-12 -12)">
-        <circle cx="12" cy="12" r="3" vectorEffect="non-scaling-stroke" />
-        <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z" vectorEffect="non-scaling-stroke" />
-      </g>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M18.79 10.31L18.79 13.69L17 13.43L15.74 15.61L16.86 17.04L13.93 18.73L13.26 17.05L10.74 17.05L10.07 18.73L7.14 17.04L8.26 15.61L7 13.43L5.21 13.69L5.21 10.31L7 10.57L8.26 8.39L7.14 6.96L10.07 5.27L10.74 6.95L13.26 6.95L13.93 5.27L16.86 6.96L15.74 8.39L17 10.57Z" />
     </Icon>
   )
 }

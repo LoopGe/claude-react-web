@@ -52,6 +52,12 @@ export interface ActiveSubagent {
    *  Incremented during updateIndexes so SubagentCard doesn't need to scan
    *  the full message list on every render. */
   toolCount: number
+  /** Captured tool_result payload of the subagent call itself (the Agent/
+   *  Task/Explore result that lands on the MAIN thread). Set when the
+   *  matching tool_result arrives. Lets SubagentCard render the subagent's
+   *  returned output inline at the bottom of the card — same merge pattern
+   *  as generic ToolCard, so the standalone orphan bubble is suppressed. */
+  result?: ToolResultEntry
 }
 
 export type PlanStatus = 'pending' | 'approved' | 'rejected'

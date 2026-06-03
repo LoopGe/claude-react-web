@@ -9,6 +9,8 @@
 import { memo, useEffect, useState } from 'react'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { formatElapsed } from '../utils/format'
+import { ToolResultDetails } from './ToolCard'
+import type { ToolResultEntry } from '../session-store/types'
 import { IconCheck, IconCircleDot, IconAlertTriangle, IconChevronRight, IconExternalLink } from './icons/ToolIcons'
 
 interface Props {
@@ -27,6 +29,7 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
   const label = record?.label ?? fallbackLabel ?? 'Subagent'
   const startedAt = record?.startedAt
   const endedAt = record?.endedAt
+  const result = record?.result
   const isRunning = status === 'running'
 
   // Tick once a second while running so the elapsed display stays fresh.
@@ -56,30 +59,46 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
   }
 
   return (
-    <button
-      type="button"
-      className={`subagent-card subagent-card-${status}`}
-      onClick={handleOpen}
-      disabled={!ctx}
-      title={ctx ? `Open subagent details — ${label}` : 'Subagent details unavailable'}
-    >
-      <span className="subagent-card-marker" aria-hidden><IconChevronRight size={12} /></span>
-      <span className="subagent-card-title">Subagent</span>
-      <span className="subagent-card-label">{label}</span>
-      <span className="subagent-card-meta">
-        <span className="subagent-card-status" aria-label={status} style={{ display: 'inline-flex', alignItems: 'center' }}>
-          {statusIcon}
-        </span>
-        {elapsedMs != null && (
-          <span className="subagent-card-elapsed">{formatElapsed(elapsedMs)}</span>
-        )}
-        {toolCount > 0 && (
-          <span className="subagent-card-tools">
-            {toolCount} {toolCount === 1 ? 'tool' : 'tools'}
+    <div className={`subagent-card subagent-card-${status}`}>
+      <button
+        type="button"
+        className="subagent-card-header"
+        onClick={handleOpen}
+        disabled={!ctx}
+        title={ctx ? `Open subagent details — ${label}` : 'Subagent details unavailable'}
+      >
+        <span className="subagent-card-marker" aria-hidden><IconChevronRight size={12} /></span>
+        <span className="subagent-card-title">Subagent</span>
+        <span className="subagent-card-label">{label}</span>
+        <span className="subagent-card-meta">
+          <span className="subagent-card-status" aria-label={status} style={{ display: 'inline-flex', alignItems: 'center' }}>
+            {statusIcon}
           </span>
-        )}
-        <span className="subagent-card-open" aria-hidden style={{ display: 'inline-flex', alignItems: 'center' }}><IconExternalLink size={12} /></span>
-      </span>
-    </button>
+          {elapsedMs != null && (
+            <span className="subagent-card-elapsed">{formatElapsed(elapsedMs)}</span>
+          )}
+          {toolCount > 0 && (
+            <span className="subagent-card-tools">
+              {toolCount} {toolCount === 1 ? 'tool' : 'tools'}
+            </span>
+          )}
+          <span className="subagent-card-open" aria-hidden style={{ display: 'inline-flex', alignItems: 'center' }}><IconExternalLink size={12} /></span>
+        </span>
+      </button>
+      {result && <SubagentCardResult result={result} />}
+    </div>
+  )
+})
+
+/** Inline result section at the bottom of a merged subagent card — mirrors
+ *  ToolCard's ToolCardResult. Renders the subagent's returned output (the
+ *  Agent/Task/Explore tool_result that lands on the main thread) so the
+ *  card is the subagent's complete surfacing in the transcript and the
+ *  standalone orphan bubble can be suppressed. */
+const SubagentCardResult = memo(function SubagentCardResult({ result }: { result: ToolResultEntry }) {
+  return (
+    <div className={`tool-card-result${result.isError ? ' tool-card-result-error' : ''}`}>
+      <ToolResultDetails content={result.content} />
+    </div>
   )
 })

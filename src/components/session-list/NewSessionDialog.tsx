@@ -5,7 +5,7 @@ import { useFocusTrap } from '../../hooks/useFocusTrap'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { api } from '../../hooks/useApi'
 import { shortenPath } from '../../utils/paths'
-import { ACCENT_COLORS } from '../../theme'
+import { ACCENT_COLORS, isPresetAccent } from '../../theme'
 import type { McpServerConfigMeta, NewSessionForm, PermissionMode, SessionGroup } from '../../types'
 import { PERMISSION_MODES } from '../../types'
 
@@ -431,6 +431,26 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
                     title={c.name}
                   />
                 ))}
+                {(() => {
+                  const isCustom = accent !== undefined && !isPresetAccent(accent)
+                  return (
+                    <label
+                      className={`accent-swatch accent-swatch-custom${isCustom ? ' active' : ''}`}
+                      style={{ ['--swatch' as string]: isCustom ? accent : 'transparent' }}
+                      role="radio"
+                      aria-checked={isCustom}
+                      aria-label="Custom colour"
+                      title="Custom colour"
+                    >
+                      <input
+                        type="color"
+                        value={isCustom ? accent : ACCENT_COLORS[0].accent}
+                        onChange={(e) => setAccent(e.target.value)}
+                      />
+                      {!isCustom && <span className="accent-swatch-custom-plus" aria-hidden>+</span>}
+                    </label>
+                  )
+                })()}
               </div>
             </div>
 

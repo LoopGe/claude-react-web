@@ -35,3 +35,16 @@ export function useToastDismiss(): (id: string) => void {
   if (!ctx) throw new Error('useToastDismiss must be used inside <ToastProvider>')
   return ctx.dismiss
 }
+
+/** Pause/resume handles — used by `ToastHost` to freeze the auto-dismiss
+ *  countdown while the pointer hovers a toast (kept in sync with the CSS
+ *  progress bar's animation-play-state). */
+export function useToastHoverPause(): {
+  pause: (id: string) => void
+  resume: (id: string) => void
+} {
+  const ctx = useContext(ToastContext)
+  if (!ctx) throw new Error('useToastHoverPause must be used inside <ToastProvider>')
+  const { pause, resume } = ctx
+  return useMemo(() => ({ pause, resume }), [pause, resume])
+}
