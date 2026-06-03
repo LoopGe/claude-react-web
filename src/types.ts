@@ -20,6 +20,23 @@ export const PERMISSION_MODES: PermissionMode[] = [
  *  PermissionMode; both project to the same JSON. */
 export type SessionInfo = SessionInfoBase<PermissionMode>
 
+/** A session discoverable on disk via the /resume picker. Mirrors the
+ *  server's ResumableSession (server/session-types.ts) — manual mirror,
+ *  no automated drift check (same convention as ws-types). Spans both
+ *  sessions this app tracks (`known`) and CLI-created ones it doesn't. */
+export interface ResumableSession {
+  sessionId: string
+  title?: string
+  firstPrompt?: string
+  cwd?: string
+  createdAt?: number
+  lastModified: number
+  gitBranch?: string
+  known: boolean
+  running: boolean
+  terminated: boolean
+}
+
 /** A named collection of sessions for quick group switching. Each session
  *  belongs to at most one group (exclusive membership). Sessions not in any
  *  group are "ungrouped" and appear in a separate sidebar section. Each

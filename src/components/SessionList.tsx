@@ -75,6 +75,9 @@ interface Props {
    *  (Alt+N) can open it. Uncontrolled mode falls back to internal state. */
   newSessionDialogOpen?: boolean
   onNewSessionDialogChange?: (open: boolean) => void
+  /** Open the resume-session picker (Mod+Shift+O). Surfaces sessions on
+   *  disk — including CLI-created ones not in the sidebar. */
+  onResume?: () => void
   /** Per-session accent-colour overrides (sessionId → hex). */
   sessionColors?: Record<string, string>
   /** Set or clear a session's accent colour. Pass `undefined` to reset. */
@@ -138,6 +141,7 @@ export const SessionList = memo(function SessionList({
   onReorderInGroup,
   newSessionDialogOpen,
   onNewSessionDialogChange,
+  onResume,
   activeGroupId,
   maxOpen,
 }: Props) {
@@ -491,6 +495,16 @@ export const SessionList = memo(function SessionList({
         >
           + New session
         </button>
+        {onResume && (
+          <button
+            className="btn new-session-btn"
+            style={{ width: '100%', marginTop: 6 }}
+            onClick={onResume}
+            title="Resume a session from disk (Mod+Shift+O)"
+          >
+            Resume session…
+          </button>
+        )}
         {/* Filter input — visible only when there are at least a handful
             of sessions. Below that the filter is more friction than help. */}
         {sessions.length > 3 && (

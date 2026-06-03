@@ -40,10 +40,13 @@ const mockHandles: MockQueryHandle[] = []
 // vi.fn default (returns undefined), which makes hasSdkTranscript()
 // always report "transcript missing" and breaks every fork/resume
 // happy-path test.
-const { mockGetSessionInfo } = vi.hoisted(() => {
+const { mockGetSessionInfo, mockListSessions } = vi.hoisted(() => {
   return {
     mockGetSessionInfo: vi.fn<(id: string, opts?: { dir?: string }) => Promise<unknown>>(
       async (id) => ({ sessionId: id }),
+    ),
+    mockListSessions: vi.fn<(opts?: { dir?: string }) => Promise<unknown[]>>(
+      async () => [],
     ),
   }
 })
@@ -51,6 +54,7 @@ const { mockGetSessionInfo } = vi.hoisted(() => {
 vi.mock('@anthropic-ai/claude-agent-sdk', () => {
   return {
     getSessionInfo: (id: string, opts?: { dir?: string }) => mockGetSessionInfo(id, opts),
+    listSessions: (opts?: { dir?: string }) => mockListSessions(opts),
     query({ prompt, options }: { prompt: unknown; options: Record<string, unknown> }) {
       const queue: unknown[] = []
       let waiter: ((v: IteratorResult<unknown>) => void) | null = null
@@ -185,6 +189,8 @@ describe('SessionManager', () => {
     // override leaking past its test can't cascade into others.
     mockGetSessionInfo.mockReset()
     mockGetSessionInfo.mockImplementation(async (id) => ({ sessionId: id }))
+    mockListSessions.mockReset()
+    mockListSessions.mockImplementation(async () => [])
     dir = makeTmpDir()
     store = new SessionStore({ stateDir: dir })
     await store.load()
@@ -817,5 +823,74 @@ describe('SessionManager', () => {
     expect(resolved.behavior).toBe('deny')
     expect(resolved.message).toBe('aborted')
     expect(sm.listPending(info.id)).toHaveLength(0)
+  })
+
+  describe('listResumable', () => {
+    it('maps SDK listSessions output and annotates known/running/terminated', async () => {
+      const live = sm.create({ cwd: '/tmp/live' })
+      mockListSessions.mockResolvedValueOnce([
+        // a live session this app created
+        { sessionId: live.id, summary: 'Live one', cwd: '/tmp/live', lastModified: 300, createdAt: 100 },
+        // a session the CLI created — unknown to this app
+        { sessionId: 'cli-xyz', firstPrompt: 'Hello from CLI', cwd: '/tmp/cli', lastModified: 500 },
+        // customTitle wins over summary/firstPrompt for the display title
+        { sessionId: 'titled', customTitle: 'My Title', summary: 'ignored', lastModified: 400, gitBranch: 'main' },
+      ])
+
+      const list = await sm.listResumable()
+
+      // Sorted newest-first by lastModified: cli-xyz(500) > titled(400) > live(300)
+      expect(list.map((s) => s.sessionId)).toEqual(['cli-xyz', 'titled', live.id])
+
+      const cli = list.find((s) => s.sessionId === 'cli-xyz')!
+      expect(cli.known).toBe(false)
+      expect(cli.running).toBe(false)
+      expect(cli.title).toBe('Hello from CLI')
+
+      const liveRow = list.find((s) => s.sessionId === live.id)!
+      expect(liveRow.known).toBe(true)
+      expect(liveRow.running).toBe(true)
+      expect(liveRow.title).toBe('Live one')
+
+      const titled = list.find((s) => s.sessionId === 'titled')!
+      expect(titled.title).toBe('My Title')
+      expect(titled.gitBranch).toBe('main')
+    })
+
+    it('forwards the dir scope to the SDK', async () => {
+      await sm.listResumable({ dir: '/tmp/project' })
+      expect(mockListSessions).toHaveBeenCalledWith({ dir: '/tmp/project' })
+    })
+
+    it('degrades to an empty list when the SDK throws', async () => {
+      mockListSessions.mockRejectedValueOnce(new Error('disk gone'))
+      expect(await sm.listResumable()).toEqual([])
+    })
+  })
+
+  describe('resume() adopts unknown disk sessions', () => {
+    it('synthesises a SessionMeta from getSessionInfo and resumes', async () => {
+      mockGetSessionInfo.mockResolvedValueOnce({
+        sessionId: 'orphan',
+        cwd: '/tmp/orphan',
+        summary: 'Orphaned session',
+        lastModified: 1234,
+        createdAt: 1000,
+      })
+
+      const info = await sm.resume('orphan')
+      expect(info.id).toBe('orphan')
+      expect(info.running).toBe(true)
+      // Spawned with resume pointing at the adopted id.
+      const handle = mockHandles[mockHandles.length - 1]
+      expect(handle.options.resume).toBe('orphan')
+      // The session is now adopted into the store (known on next listing).
+      expect(store.get('orphan')).toBeTruthy()
+    })
+
+    it('404s when the session exists neither in store nor on disk', async () => {
+      mockGetSessionInfo.mockResolvedValueOnce(undefined)
+      await expect(sm.resume('ghost')).rejects.toMatchObject({ status: 404 })
+    })
   })
 })

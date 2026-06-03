@@ -4535,6 +4535,28 @@ details.question-inline-card[open] > summary {
   white-space: nowrap;
 }
 
+/* ── Resume-session picker badges ──────────────────────────────────
+   Small neutral pills on each row of ResumeSessionDialog marking
+   running / ended / CLI-origin state. Neutral by default;
+   .resume-badge-running is accent-tinted to echo the sidebar's running
+   indicator. Scoped class name (not a bare `.badge`) to avoid clashing
+   with any future generic badge. */
+.resume-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 1.4;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.resume-badge-running {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+}
+
 /* ── Inline session recap message ──────────────────────────────────
    Rendered inside the transcript by RecapMessageView, reusing the .msg
    chrome so it lines up with surrounding messages. The accent-tinted

@@ -559,6 +559,24 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
     } else {
       toolDebug('result frame — no running tools to sweep', {})
     }
+
+    // Prune only the STILL-running subagent entries at turn end. Completed
+    // records (status 'done'/'interrupted', with their result payload
+    // captured) MUST survive: SubagentCard reads them from the index to
+    // render the merged result inline, and MessageList derives
+    // subagentResultIds from `record.result` to suppress the standalone
+    // orphan tool_result bubble. Wiping the whole Map here (the old
+    // `new Map()`) stranded both — the card fell back to a bare "running"
+    // placeholder and the orphan bubble reappeared below it. A still-running
+    // entry at result time is genuinely stale (its tool_result never matched),
+    // so flip it to 'interrupted' rather than drop it, mirroring the
+    // toolStatus sweep above. Identity-stable when nothing is running.
+    let prunedSubagents = next.activeSubagents
+    for (const [id, sub] of next.activeSubagents) {
+      if (sub.status !== 'running') continue
+      if (prunedSubagents === next.activeSubagents) prunedSubagents = new Map(next.activeSubagents)
+      prunedSubagents.set(id, { ...sub, status: 'interrupted', endedAt: sub.endedAt ?? sub.startedAt })
+    }
     next = {
       ...next,
       toolStatus: sweptToolStatus,
@@ -577,11 +595,10 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
       // means the SDK has finished processing, so no server echo for
       // the user message is expected anymore.
       pendingUserMessageIds: new Set<string>(),
-      // Clear active subagents at turn end. Any entries still marked
-      // 'running' are stale — their tool_result either didn't arrive
-      // or wasn't matched. Without this, stale chips persist across
-      // turns because the Map is never pruned.
-      activeSubagents: new Map(),
+      // Prune stale 'running' subagents (see prunedSubagents above) while
+      // KEEPING completed records so their merged card + orphan-bubble
+      // suppression survive across turns and replay.
+      activeSubagents: prunedSubagents,
     }
   }
 

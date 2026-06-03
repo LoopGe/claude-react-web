@@ -72,6 +72,33 @@ export type PendingPermission = PermissionRequestSnapshot & {
  *  shared/session-info.ts so client and server cannot drift. */
 export type SessionInfo = SessionInfoBase<PermissionMode>
 
+/** A session discoverable on disk via the SDK's `listSessions()`, surfaced
+ *  to the frontend's /resume picker. Spans BOTH sessions this app created
+ *  (`known: true`) and sessions created by the `claude` CLI directly in the
+ *  same project dirs (`known: false`) — the latter are the whole point of
+ *  the picker (they're invisible in the sidebar). `running` / `terminated`
+ *  are annotated from this app's live + persisted state so the picker can
+ *  dim/disable rows that can't be resumed. */
+export interface ResumableSession {
+  sessionId: string
+  /** Best display title: customTitle ?? summary ?? firstPrompt. */
+  title?: string
+  /** First meaningful user prompt — shown as a preview/secondary line. */
+  firstPrompt?: string
+  cwd?: string
+  /** Creation time (epoch ms), from the transcript's first entry. */
+  createdAt?: number
+  /** Last-modified time (epoch ms) of the on-disk transcript. */
+  lastModified: number
+  gitBranch?: string
+  /** True when this app already tracks the session (live or persisted). */
+  known: boolean
+  /** True when the session currently has a live Query in memory. */
+  running: boolean
+  /** True when this app has marked the session terminated (cannot resume). */
+  terminated: boolean
+}
+
 /** Re-export the canonical shapes from shared so server-side modules
  *  that import them (recap manager, session manager) can pull them
  *  through `session-types.ts` like everything else. */

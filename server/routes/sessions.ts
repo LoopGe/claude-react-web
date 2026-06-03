@@ -27,6 +27,16 @@ export function buildSessionRouter(sm: SessionManager): Hono {
     return c.json({ session: info }, 201)
   })
 
+  // List sessions resumable from disk (the /resume picker). Scans
+  // ~/.claude/projects/ via the SDK, including CLI-created sessions this
+  // app never tracked. Registered BEFORE /sessions/:id so "resumable" is
+  // not captured as an :id param. Optional ?dir scopes to a project dir.
+  app.get('/sessions/resumable', async (c) => {
+    const dir = c.req.query('dir') || undefined
+    const sessions = await sm.listResumable({ dir })
+    return c.json({ sessions })
+  })
+
   // Get session info
   app.get('/sessions/:id', (c) => {
     const id = c.req.param('id')

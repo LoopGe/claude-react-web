@@ -21,10 +21,12 @@
 import {
   query,
   getSessionInfo,
+  listSessions,
   type Options,
   type PermissionMode,
   type Query,
   type SDKMessage,
+  type SDKSessionInfo,
   type SDKUserMessage,
   type Settings,
 } from '@anthropic-ai/claude-agent-sdk'
@@ -52,6 +54,7 @@ import {
   type SessionManagerOptions,
   type GlobalSessionEvent,
   type GlobalSubscriber,
+  type ResumableSession,
   endAllSubscribers,
 } from './session-types.js'
 import { HttpError } from './errors.js'
@@ -70,6 +73,7 @@ export {
   type SessionInfo,
   type SessionManagerOptions,
   type GlobalSessionEvent,
+  type ResumableSession,
 } from './session-types.js'
 export { HttpError } from './errors.js'
 
@@ -406,7 +410,12 @@ export class SessionManager {
     if (!this.store) {
       throw new HttpError(404, `session ${id} not found (no persistence configured)`)
     }
-    const meta = this.store.get(id)
+    // Fall back to adopting an unknown session: the /resume picker can
+    // surface sessions the `claude` CLI created directly (never tracked
+    // in our store). Probe the SDK's on-disk metadata and, if it exists,
+    // register a SessionMeta so the normal resume path below can run.
+    // After this first resume the session is "known" like any other.
+    const meta = this.store.get(id) ?? (await this.adoptDiskSession(id))
     if (!meta) throw new HttpError(404, `session ${id} not found`)
     if (meta.terminated) {
       throw new HttpError(410, `session ${id} has ended and cannot be resumed`)
@@ -454,6 +463,43 @@ export class SessionManager {
       betas: meta.betas as Options['betas'],
     }
     return this.spawn(id, resumeOpts)
+  }
+
+  /** Adopt a session that exists on disk but isn't in our store — i.e. one
+   *  the `claude` CLI created directly. Reads the SDK's transcript metadata
+   *  via `getSessionInfo(id)` (no `dir`, so the SDK scans every project dir,
+   *  matching its own resume-by-id fallback) and synthesises a SessionMeta
+   *  that the normal resume path can consume.
+   *
+   *  `lastTurnAt` is set to the transcript's `lastModified` (a non-null
+   *  value): the file's very existence proves at least one `result` landed,
+   *  so the downstream `!meta.lastTurnAt` "no_data" guard must pass. Returns
+   *  null when no transcript exists, so the caller falls through to 404. */
+  private async adoptDiskSession(id: string): Promise<SessionMeta | undefined> {
+    let info: SDKSessionInfo | undefined
+    try {
+      info = await getSessionInfo(id)
+    } catch (err) {
+      console.warn(`[session ${id}] adoptDiskSession: getSessionInfo threw:`, err)
+      return undefined
+    }
+    if (!info) return undefined
+    const now = Date.now()
+    const meta: SessionMeta = {
+      id,
+      createdAt: info.createdAt ?? info.lastModified ?? now,
+      lastActivityAt: info.lastModified ?? now,
+      cwd: info.cwd,
+      title: info.customTitle ?? info.summary ?? info.firstPrompt,
+      messageCount: 0,
+      terminated: false,
+      // Non-null so the no_data guard passes — the transcript file existing
+      // already proves a completed turn.
+      lastTurnAt: info.lastModified ?? now,
+    }
+    this.store?.upsert(meta)
+    console.log(`[session ${id}] adopted disk session (cwd=${info.cwd ?? '<none>'}) for resume`)
+    return meta
   }
 
   /** Probe the SDK's on-disk transcript for a session.
@@ -1324,6 +1370,50 @@ export class SessionManager {
     // sessions sitting at the top while the user works on them.
     out.sort((a, b) => b.lastActivityAt - a.lastActivityAt)
     return out
+  }
+
+  /** List sessions resumable from disk via the SDK's `listSessions()`.
+   *
+   *  Unlike `list()` (which only knows about sessions THIS app created /
+   *  persisted), this scans `~/.claude/projects/` for every transcript —
+   *  including sessions the `claude` CLI created directly in the same
+   *  project dirs, which never appear in our sidebar. That's the whole
+   *  point of the /resume picker.
+   *
+   *  Each result is annotated against our live + persisted state:
+   *    - `known`      → already in our store or in memory
+   *    - `running`    → has a live Query right now
+   *    - `terminated` → we've marked it un-resumable (e.g. transcript gone)
+   *
+   *  `dir` scopes to a project directory (and its worktrees); omit for all
+   *  projects. Sorted newest-first by `lastModified`. SDK errors degrade to
+   *  an empty list (mirrors hasSdkTranscript's fail-soft style). */
+  async listResumable(opts?: { dir?: string }): Promise<ResumableSession[]> {
+    let raw: SDKSessionInfo[]
+    try {
+      raw = await listSessions(opts?.dir ? { dir: opts.dir } : undefined)
+    } catch (err) {
+      console.warn('[session-manager] listResumable: listSessions threw:', err)
+      return []
+    }
+    const mapped = raw.map((s): ResumableSession => {
+      const live = this.sessions.get(s.sessionId)
+      const meta = this.store?.get(s.sessionId)
+      return {
+        sessionId: s.sessionId,
+        title: s.customTitle ?? s.summary ?? s.firstPrompt,
+        firstPrompt: s.firstPrompt,
+        cwd: s.cwd,
+        createdAt: s.createdAt,
+        lastModified: s.lastModified,
+        gitBranch: s.gitBranch,
+        known: !!live || !!meta,
+        running: !!live && live.running,
+        terminated: live?.terminated ?? meta?.terminated ?? false,
+      }
+    })
+    mapped.sort((a, b) => b.lastModified - a.lastModified)
+    return mapped
   }
 
   /** Cheap count of all sessions (live + persisted) without allocating

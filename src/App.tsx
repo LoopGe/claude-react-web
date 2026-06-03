@@ -37,6 +37,7 @@ import { sessionStoreRegistry } from './session-store/registry'
 // SetupPage is also lazy: only first-time / unconfigured users hit it,
 // and it pulls in ~1150 lines of UI that returning users never see.
 const CommandPalette = lazy(() => import('./components/CommandPalette').then((m) => ({ default: m.CommandPalette })))
+const ResumeSessionDialog = lazy(() => import('./components/session-list/ResumeSessionDialog').then((m) => ({ default: m.ResumeSessionDialog })))
 const ShortcutHelp = lazy(() => import('./components/ShortcutHelp').then((m) => ({ default: m.ShortcutHelp })))
 const GlobalSettingsModal = lazy(() => import('./components/GlobalSettingsModal').then((m) => ({ default: m.GlobalSettingsModal })))
 const SetupPage = lazy(() => import('./components/SetupPage').then((m) => ({ default: m.SetupPage })))
@@ -98,6 +99,8 @@ export function App() {
   const [settingsOpenFor, setSettingsOpenFor] = useState<string | null>(null)
   const [newSessionDialogOpen, setNewSessionDialogOpen] = useState(false)
   const newSessionDialogOpenRef = useRef(newSessionDialogOpen)
+  const [resumeDialogOpen, setResumeDialogOpen] = useState(false)
+  const resumeDialogOpenRef = useRef(resumeDialogOpen)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false)
@@ -265,6 +268,7 @@ export function App() {
   settingsOpenForRef.current = settingsOpenFor
   gitPanelOpenForRef.current = gitPanelOpenFor
   newSessionDialogOpenRef.current = newSessionDialogOpen
+  resumeDialogOpenRef.current = resumeDialogOpen
   /* eslint-enable react-hooks/refs */
 
   // When the panel capacity shrinks (e.g. desktop → mobile resize/rotation
@@ -1028,6 +1032,15 @@ export function App() {
           description: 'New session',
         },
         {
+          // NOT mod+shift+r: that's the browser hard-reload combo on
+          // Windows/Linux, and the dispatcher preventDefault()s every
+          // bound combo — which would silently kill hard-reload. mod+shift+o
+          // ("Open" a past session) has no browser default.
+          combo: 'mod+shift+o',
+          handler: () => setResumeDialogOpen(true),
+          description: 'Resume session…',
+        },
+        {
           combo: 'mod+k',
           handler: () => setPaletteOpen((v) => !v),
           description: 'Command palette',
@@ -1077,6 +1090,7 @@ export function App() {
             // close when they press Esc with both possible.
             if (paletteOpenRef.current) setPaletteOpen(false)
             else if (helpOpenRef.current) setHelpOpen(false)
+            else if (resumeDialogOpenRef.current) setResumeDialogOpen(false)
             else if (newSessionDialogOpenRef.current) setNewSessionDialogOpen(false)
             else if (gitPanelOpenForRef.current) setGitPanelOpenFor(null)
             else if (settingsOpenForRef.current) setSettingsOpenFor(null)
@@ -1430,6 +1444,7 @@ export function App() {
           onReorderInGroup={handleReorderInGroup}
           newSessionDialogOpen={newSessionDialogOpen}
           onNewSessionDialogChange={setNewSessionDialogOpen}
+          onResume={() => setResumeDialogOpen(true)}
           groups={groups}
           sidebarSections={sidebarSections}
           collapsedGroups={collapsedGroups}
@@ -1668,6 +1683,34 @@ export function App() {
           }}
         />
       </Suspense>
+
+      {resumeDialogOpen && (
+        <Suspense fallback={null}>
+          <ResumeSessionDialog
+            defaultCwd={defaults.cwd}
+            onResume={(id) => {
+              setResumeDialogOpen(false)
+              if (openIds.includes(id)) {
+                setFocusedId(id)
+                return
+              }
+              const known = sessions.find((s) => s.id === id)
+              if (known && !known.running && !known.terminated) {
+                // Tracked dormant session — reuse the sidebar resume flow.
+                void handleSelect(id)
+              } else if (known?.running) {
+                openSession(id, known.lastTurnAt)
+              } else {
+                // Unknown (CLI-created) or not-yet-tracked session: resume
+                // directly. The server adopts it into the store, then we
+                // open the panel. resumeSession surfaces any error toast.
+                void resumeSession(id, (res) => openSession(id, res.session.lastTurnAt))
+              }
+            }}
+            onCancel={() => setResumeDialogOpen(false)}
+          />
+        </Suspense>
+      )}
 
       <Suspense fallback={null}>
         <ShortcutHelp

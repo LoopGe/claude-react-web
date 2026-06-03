@@ -110,6 +110,66 @@ describe('reducer: optimistic user message + server echo', () => {
   })
 })
 
+describe('reducer: subagent records survive turn end (result frame)', () => {
+  const agentToolUse: SdkMessage = {
+    type: 'assistant',
+    uuid: 'a-1',
+    message: {
+      role: 'assistant',
+      content: [
+        { type: 'tool_use', id: 'tu_agent', name: 'Agent', input: { description: 'do work' } },
+      ],
+    },
+  } as unknown as SdkMessage
+
+  const agentResult: SdkMessage = {
+    type: 'user',
+    uuid: 'u-1',
+    parent_tool_use_id: null,
+    message: {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 'tu_agent', content: 'worker output' }],
+    },
+  } as unknown as SdkMessage
+
+  const resultFrame: SdkMessage = {
+    type: 'result',
+    subtype: 'success',
+    uuid: 'r-1',
+  } as unknown as SdkMessage
+
+  it('keeps a completed subagent (with merged result) after the result frame', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentResult })
+
+    // Before turn end: recorded as done, result captured for the merged card.
+    const mid = state.activeSubagents.get('tu_agent')
+    expect(mid?.status).toBe('done')
+    expect(mid?.result?.content).toBe('worker output')
+
+    // Turn ends. The record (and its result) MUST survive — otherwise
+    // SubagentCard falls back to a bare placeholder and the orphan
+    // tool_result bubble reappears below it (the bug this guards).
+    state = reduceSessionState(state, { type: 'MESSAGE', message: resultFrame })
+    const after = state.activeSubagents.get('tu_agent')
+    expect(after?.status).toBe('done')
+    expect(after?.result?.content).toBe('worker output')
+  })
+
+  it('flips a still-running subagent to interrupted at the result frame (no orphan)', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse })
+    expect(state.activeSubagents.get('tu_agent')?.status).toBe('running')
+
+    // Result frame arrives before the subagent's tool_result matched.
+    state = reduceSessionState(state, { type: 'MESSAGE', message: resultFrame })
+    const after = state.activeSubagents.get('tu_agent')
+    expect(after).toBeDefined()
+    expect(after?.status).toBe('interrupted')
+  })
+})
+
 // Note: the prior `reducer: recap dedup` block was deleted along with the
 // synthetic-recap-message path. session.recap is now a top-level field on
 // SessionInfo (broadcast via session-recap-update / session-update), not
