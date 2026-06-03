@@ -132,8 +132,25 @@ export function useLocalStorage<T>(
     if (typeof window === 'undefined') return
     try {
       window.localStorage.setItem(key, JSON.stringify(value))
-    } catch {
-      /* ignore quota / SecurityError */
+    } catch (err) {
+      // Quota exhausted (or SecurityError in private mode): the write is
+      // dropped but in-memory state still updates and notifies. Warn —
+      // never swallow silently. A full quota here means the value the user
+      // sees won't survive reload, and a silent failure makes that class
+      // of bug (e.g. a group losing a member after refresh) near-impossible
+      // to diagnose.
+      const quota =
+        err instanceof DOMException &&
+        (err.code === 22 ||
+          err.code === 1014 ||
+          err.name === 'QuotaExceededError' ||
+          err.name === 'NS_ERROR_DOM_QUOTA_REACHED')
+      console.warn(
+        `[useLocalStorage] failed to persist "${key}"` +
+          (quota ? ' — localStorage quota is full; this key was NOT saved' : '') +
+          ':',
+        err,
+      )
     }
     notifyListeners(key, value)
   }, [key, value])

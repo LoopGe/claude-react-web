@@ -15,7 +15,7 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import { statusClass, statusLabel, shortenModel } from '../utils/session-status'
 import { useModelOptions } from '../hooks/useModelOptions'
 import { shortenPath } from '../utils/paths'
-import { IconSettings, IconX, IconFolder, IconCheck, IconAlertTriangle } from './icons/ToolIcons'
+import { IconSettings, IconX, IconFolder, IconCheck, IconAlertTriangle, IconSparkles } from './icons/ToolIcons'
 import { PermissionModeIcon, permissionModeLabel } from './permission-mode-display'
 import type { PermissionMode, SessionInfo } from '../types'
 import { PERMISSION_MODES } from '../types'
@@ -302,17 +302,28 @@ export const ChatPanel = memo(function ChatPanel({
             {session.title ?? session.id.slice(0, 8)}
           </span>
         </Tooltip>
-        {isNonDefaultMode && (
-          <Tooltip label={`Permission mode: ${permissionModeLabel(permMode)}`} placement="bottom">
-            <span
-              className={`chat-panel-mode-badge mode-${permMode}`}
-              aria-label={`Permission mode: ${permissionModeLabel(permMode)}`}
-            >
-              <PermissionModeIcon mode={permMode} />
-              {permMode}
-            </span>
-          </Tooltip>
-        )}
+        {/* Permission-mode control. Doubles as the at-a-glance cue (the
+            user's eye lands on the title first) and the switch control —
+            clicking opens the mode menu. Color-coded for non-default
+            modes; muted/neutral in default mode so it reads as a quiet
+            control rather than a warning. */}
+        <Tooltip label={`Permission mode: ${permissionModeLabel(permMode)} · click to change`} placement="bottom">
+          <button
+            type="button"
+            className={`chat-panel-mode-badge mode-${permMode}`}
+            disabled={chipsDisabled}
+            aria-label={`Permission mode: ${permissionModeLabel(permMode)} · click to change`}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
+              setPermMenu({ x: rect.left, y: rect.bottom + 4 })
+            }}
+          >
+            <PermissionModeIcon mode={permMode} />
+            {permMode}
+          </button>
+        </Tooltip>
         <div className="chat-panel-meta">
           {editingModel ? (
             <input
@@ -340,8 +351,9 @@ export const ChatPanel = memo(function ChatPanel({
             <Tooltip label={`Model: ${session.model ?? 'default'} · click to change`} placement="bottom">
               <button
                 type="button"
-                className="chat-panel-chip"
+                className="chat-panel-model-badge"
                 disabled={chipsDisabled}
+                aria-label={`Model: ${session.model ?? 'default'} · click to change`}
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation()
@@ -349,8 +361,8 @@ export const ChatPanel = memo(function ChatPanel({
                   setEditingModel(true)
                 }}
               >
-                <span className="chat-panel-chip-label">model</span>
-                <span className="chat-panel-chip-value">{shortenModel(session.model)}</span>
+                <IconSparkles size={13} aria-hidden />
+                <span className="chat-panel-model-badge-value">{shortenModel(session.model)}</span>
               </button>
             </Tooltip>
           )}
@@ -359,22 +371,6 @@ export const ChatPanel = memo(function ChatPanel({
               <option key={m} value={m} />
             ))}
           </datalist>
-          <Tooltip label={`Permission mode: ${session.permissionMode ?? 'default'} · click to change`} placement="bottom">
-            <button
-              type="button"
-              className="chat-panel-chip"
-              disabled={chipsDisabled}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation()
-                const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
-                setPermMenu({ x: rect.left, y: rect.bottom + 4 })
-              }}
-            >
-              <span className="chat-panel-chip-label">mode</span>
-              <span className="chat-panel-chip-value">{session.permissionMode ?? 'default'}</span>
-            </button>
-          </Tooltip>
           {/* Git chip — surfaces branch + dirty/ahead/behind/untracked
               counts at a glance. Hidden when the cwd isn't a git repo
               (so non-git sessions don't get visual noise) or while the
@@ -384,8 +380,7 @@ export const ChatPanel = memo(function ChatPanel({
               <button
                 type="button"
                 className={[
-                  'chat-panel-chip',
-                  'git-chip',
+                  'chat-panel-git-badge',
                   gitStatus.data.state !== 'clean' && gitStatus.data.state !== 'dirty' ? 'conflict' : '',
                   gitStatus.data.state === 'dirty' ? 'dirty' : '',
                 ].filter(Boolean).join(' ')}
@@ -395,8 +390,8 @@ export const ChatPanel = memo(function ChatPanel({
                   onOpenGitPanel(session.id)
                 }}
               >
-                <span className="chat-panel-chip-label">⎇</span>
-                <span className="chat-panel-chip-value">{gitChipText(gitStatus.data)}</span>
+                <span className="chat-panel-git-badge-icon" aria-hidden>⎇</span>
+                <span className="chat-panel-git-badge-value">{gitChipText(gitStatus.data)}</span>
               </button>
             </Tooltip>
           )}

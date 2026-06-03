@@ -41,7 +41,7 @@ import { exportConversation, exportConversationJson } from '../utils/exportConve
 import { IconSearch, IconDownload, IconClock, IconFileText } from './icons/ToolIcons'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
-import type { AgentInfo, PermissionRequest, SessionInfo, SlashCommand } from '../types'
+import type { AgentInfo, SessionInfo, SlashCommand } from '../types'
 import type { GitStatusResponse } from '../../shared/git-types'
 
 
@@ -95,8 +95,7 @@ interface Props {
   onLiveMessageCount?: (count: number) => void
   /** Called once on mount so the parent can store a reference to this
    *  panel's interrupt() function. Enables the ESC shortcut in App to
-   *  trigger the same code-path as the Composer's interrupt button (which
-   *  sets pendingInterruptRef for the "interrupted" label). */
+   *  trigger the same code-path as the Composer's interrupt button. */
   onRegisterInterrupt?: (sessionId: string, fn: () => void) => void
   /** Called once on mount so the parent can store a reference to this
    *  panel's recap.refresh() function. Enables the Alt+R shortcut in App. */
@@ -359,33 +358,6 @@ export const Chat = memo(function Chat({
   // App level. The only panel-local snippet behaviour is "insert at caret",
   // which lives in <Composer>.
 
-  // Track questions that have been answered but whose dialog should stay
-  // visible (showing the answer inline) for a few seconds before closing.
-  // The permission is already resolved server-side; this just controls
-  // how long the "answer sent" card remains on screen.
-  const [answeredQuestions, setAnsweredQuestions] = useState<Map<string, { request: Extract<PermissionRequest, { kind: 'question' }>; answers: Array<string | string[] | null> }>>(() => new Map())
-  // Track pending dismiss timeouts so they can be cleaned up on unmount.
-  const pendingDismissTimers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set())
-  useEffect(() => () => {
-    for (const id of pendingDismissTimers.current) clearTimeout(id)
-  }, [])
-  const addAnsweredQuestion = useCallback((id: string, request: Extract<PermissionRequest, { kind: 'question' }>, answers: Array<string | string[] | null>) => {
-    setAnsweredQuestions((prev) => {
-      const next = new Map(prev)
-      next.set(id, { request, answers })
-      return next
-    })
-    const timerId = setTimeout(() => {
-      pendingDismissTimers.current.delete(timerId)
-      setAnsweredQuestions((prev) => {
-        const next = new Map(prev)
-        next.delete(id)
-        return next
-      })
-    }, 3000)
-    pendingDismissTimers.current.add(timerId)
-  }, [])
-
   // Pull out the specific functions/values we actually use downstream.
   // Putting the whole hook object in a dep list re-creates callbacks every
   // render and can churn child re-renders (the composer's onChange in
@@ -514,9 +486,6 @@ export const Chat = memo(function Chat({
     }
   }, [input, attachmentList, session.id, history, trackSentTurn, insertUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, pastedImages])
 
-  // Set to true when interrupt() fires; the next `result` message renders
-  // as "interrupted" and resets this to false.
-  const pendingInterruptRef = useRef(false)
   // Focus traps for the two in-panel overlays. The settings overlay is
   // always mounted (toggled via CSS .hidden), so the trap is gated on
   // `settingsOpen`; the git overlay only mounts when open. `active`
@@ -528,17 +497,16 @@ export const Chat = memo(function Chat({
 
   const interrupt = useCallback(async () => {
     try {
-      pendingInterruptRef.current = true
       await api.post(`/sessions/${session.id}/interrupt`)
     } catch (e) {
-      pendingInterruptRef.current = false
       setLocalError((e as Error).message)
     }
   }, [session.id])
 
   // Expose the interrupt callback to the parent so the ESC shortcut in
-  // App.tsx can trigger the same code-path (which sets
-  // pendingInterruptRef for the "interrupted" label).
+  // App.tsx can trigger the same code-path. The "interrupted" (⊘) result
+  // label is now derived from the SDK result message's `terminal_reason`,
+  // not from any client-side interrupt flag.
   useEffect(() => {
     onRegisterInterrupt?.(session.id, interrupt)
   }, [session.id, interrupt, onRegisterInterrupt])
@@ -635,7 +603,6 @@ export const Chat = memo(function Chat({
           items={stream.items}
           recap={session.recap}
           showSystemEvents={showSystemEvents}
-          pendingInterruptRef={pendingInterruptRef}
           replayReady={stream.replayReady}
           streamingContent={stream.streamingContent}
           planStatus={stream.planStatus}
@@ -723,8 +690,9 @@ export const Chat = memo(function Chat({
         onSaveCurrentAsSnippet={onSaveCurrentAsSnippet}
       />
 
-      {/* Pending permission dialogs + recently-answered question cards
-          that linger for a few seconds so the user sees their answer. */}
+      {/* Pending permission dialogs. The question dialog closes
+          immediately on submit — the parent drops it from the pending
+          queue optimistically (see usePermissionChannel). */}
       {(() => {
         // Active pending question — show the interactive dialog.
         const pendingHead = permissions.pending[0]
@@ -734,35 +702,14 @@ export const Chat = memo(function Chat({
               key={pendingHead.id}
               request={pendingHead}
               onSubmit={(answers) => {
-                addAnsweredQuestion(pendingHead.id, pendingHead, answers)
                 void permissions.answerQuestion(pendingHead.id, answers)
               }}
               onSkipAll={() => {
-                addAnsweredQuestion(
-                  pendingHead.id,
-                  pendingHead,
-                  pendingHead.questions.map(() => null),
-                )
                 void permissions.answerQuestion(
                   pendingHead.id,
                   pendingHead.questions.map(() => null),
                 )
               }}
-            />
-          )
-        }
-
-        // Recently-answered question card (stays for 3s showing the answer).
-        const answeredEntries = Array.from(answeredQuestions.values())
-        if (answeredEntries.length > 0) {
-          const entry = answeredEntries[answeredEntries.length - 1]
-          return (
-            <QuestionDialog
-              key={`answered:${entry.request.id}`}
-              request={entry.request}
-              onSubmit={() => {}}
-              onSkipAll={() => {}}
-              initialAnswers={entry.answers}
             />
           )
         }

@@ -175,6 +175,82 @@ describe('MessageList', () => {
       expect(container.textContent).toContain('tool result')
     })
 
+    it('drops an ExitPlanMode tool_result frame (consumed by PlanCard via planStatus)', () => {
+      // ExitPlanMode never seeds toolResults (excluded from the merge map),
+      // but its result is rendered by PlanCard. Membership in planStatus must
+      // suppress the duplicate standalone bubble.
+      const msgs = [
+        makeMsg('user', {
+          message: { content: [{ type: 'tool_result', tool_use_id: 'plan-1', content: 'the plan body' }] },
+        }),
+      ]
+      const { container } = render(
+        <MessageList
+          items={toItems(msgs as SdkMessage[])}
+          replayReady
+          planStatus={new Map([['plan-1', 'approved' as const]])}
+        />,
+      )
+      // No orphan "tool result" bubble, and the raw plan body is not duplicated.
+      expect(container.textContent).not.toContain('tool result')
+      expect(container.textContent).not.toContain('the plan body')
+    })
+
+    it('drops an AskUserQuestion tool_result frame (consumed by QuestionCard via questionAnswers)', () => {
+      // AskUserQuestion is excluded from toolResults too; its answers are
+      // rendered by QuestionCard. Membership in questionAnswers suppresses
+      // the duplicate answers-JSON bubble.
+      const msgs = [
+        makeMsg('user', {
+          message: { content: [{ type: 'tool_result', tool_use_id: 'q-1', content: 'answers json' }] },
+        }),
+      ]
+      const { container } = render(
+        <MessageList
+          items={toItems(msgs as SdkMessage[])}
+          replayReady
+          questionAnswers={new Map([['q-1', [{ question: 'Q', answer: 'A' }]]])}
+        />,
+      )
+      expect(container.textContent).not.toContain('tool result')
+      expect(container.textContent).not.toContain('answers json')
+    })
+
+    it('drops an EnterPlanMode tool_result frame (stateless marker, no lifecycle map)', () => {
+      // EnterPlanMode renders as a marker and nothing consumes its result, so
+      // its id is in NONE of the lifecycle maps. The predicate must still
+      // suppress the stray result by scanning items for the marker's id.
+      const msgs = [
+        makeMsg('assistant', {
+          message: { content: [{ type: 'tool_use', id: 'enter-1', name: 'EnterPlanMode', input: {} }] },
+        }),
+        makeMsg('user', {
+          message: { content: [{ type: 'tool_result', tool_use_id: 'enter-1', content: 'entered' }] },
+        }),
+      ]
+      const { container } = render(
+        <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+      )
+      // The marker renders, but no standalone "tool result" orphan bubble.
+      expect(container.textContent).not.toContain('tool result')
+    })
+
+    it('keeps a subagent tool_result bubble (NOT suppressed — only Plan/Question are)', () => {
+      // Regression guard: a subagent (Agent/Task/Explore) result id is in
+      // none of toolResults/planStatus/questionAnswers, so it must still
+      // surface as a standalone bubble — that bubble is the worker's only
+      // output in the main transcript.
+      const msgs = [
+        makeMsg('user', {
+          message: { content: [{ type: 'tool_result', tool_use_id: 'sub-1', content: 'subagent out' }] },
+        }),
+      ]
+      const { container } = render(
+        <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+      )
+      expect(container.textContent).toContain('tool result')
+    })
+
     it('drops an assistant frame with only an empty (signature-only) thinking block', () => {
       const msgs = [
         makeMsg('assistant', {

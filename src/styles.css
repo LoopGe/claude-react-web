@@ -519,9 +519,12 @@ body.resizing-col * {
    1. .chat-panel.mode-active tints the header background + adds a left
       border so the panel as a whole reads as "different from default".
    2. .chat-panel-mode-badge is a small pill near the title — the user's
-      eye lands on the title first, so the cue should be there too.
+      eye lands on the title first, so the cue should be there too. It is
+      also the interactive control: clicking it opens the mode menu (this
+      replaced the old separate "mode" chip in the meta strip).
    Tinted with --warn (amber) for plan, --danger for bypass/dontAsk,
-   --accent for acceptEdits/auto. */
+   --accent for acceptEdits/auto. In default mode --mode-color is unset
+   and the badge renders muted/neutral (see the rules below). */
 .chat-panel.mode-active .chat-panel-header {
   background: color-mix(in srgb, var(--mode-color, var(--warn)) 8%, var(--bg-elev));
   border-bottom-color: color-mix(in srgb, var(--mode-color, var(--warn)) 35%, var(--border));
@@ -540,13 +543,103 @@ body.resizing-col * {
   font-size: 11px;
   font-weight: 600;
   font-family: var(--mono);
-  color: var(--mode-color, var(--warn));
-  background: color-mix(in srgb, var(--mode-color, var(--warn)) 12%, transparent);
+  /* Default mode: muted, no tint — reads as a quiet control, not a
+     warning. Non-default modes override --mode-color above. */
+  color: var(--mode-color, var(--fg-muted));
+  background: transparent;
   border: none;
   border-radius: 4px;
   flex-shrink: 0;
   user-select: none;
   line-height: 1.35;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+/* Non-default modes get the tinted background; default stays transparent
+   until hover so it doesn't compete with the title. */
+.chat-panel-mode-badge.mode-plan,
+.chat-panel-mode-badge.mode-bypassPermissions,
+.chat-panel-mode-badge.mode-dontAsk,
+.chat-panel-mode-badge.mode-acceptEdits,
+.chat-panel-mode-badge.mode-auto {
+  background: color-mix(in srgb, var(--mode-color, var(--warn)) 12%, transparent);
+}
+.chat-panel-mode-badge:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--mode-color, var(--fg-muted)) 20%, transparent);
+}
+.chat-panel-mode-badge:focus-visible {
+  outline: 2px solid var(--mode-color, var(--accent));
+  outline-offset: 1px;
+}
+.chat-panel-mode-badge:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* Meta-strip badges — model + git. Both are neutral pills sharing the
+   mode badge's shape (rounded, mono, icon + value, hover/focus/disabled
+   states). They differ only in semantics:
+   - model: an arbitrary value with no risk meaning, so it stays muted.
+   - git: carries state colour (clean = muted, dirty = warn, conflict =
+     danger) the same way the mode badge colour-codes risk.
+   model click → inline editor (.chat-panel-chip-input); git click →
+   opens the Git panel. */
+.chat-panel-model-badge,
+.chat-panel-git-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 180px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  flex-shrink: 1;
+  min-width: 0;
+  user-select: none;
+  line-height: 1.35;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+.chat-panel-model-badge:hover:not(:disabled),
+.chat-panel-git-badge:hover:not(:disabled) {
+  background: var(--bg-elev-2);
+}
+.chat-panel-model-badge:focus-visible,
+.chat-panel-git-badge:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.chat-panel-model-badge:disabled,
+.chat-panel-git-badge:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.chat-panel-model-badge-value,
+.chat-panel-git-badge-value {
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-panel-model-badge:disabled .chat-panel-model-badge-value {
+  color: var(--fg-muted);
+}
+/* Git ⎇ glyph: muted, doesn't compete with the branch/status value. */
+.chat-panel-git-badge-icon {
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+/* Git state colour — mirrors the old git-chip variants. */
+.chat-panel-git-badge.dirty .chat-panel-git-badge-value {
+  color: var(--warn);
+}
+.chat-panel-git-badge.conflict .chat-panel-git-badge-value {
+  color: var(--danger);
 }
 
 /* Row 2 pieces: cwd (folder icon + shortened path), message count, and an
@@ -597,8 +690,8 @@ body.resizing-col * {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Meta strip that holds the model + permission-mode chips. Sits between
-   the panel title (left-aligned) and close button (right-aligned). */
+/* Meta strip that holds the model + git badges. Sits between the panel
+   title (left-aligned) and close button (right-aligned). */
 .chat-panel-meta {
   display: flex;
   align-items: center;
@@ -608,52 +701,8 @@ body.resizing-col * {
   flex-shrink: 1;
 }
 
-/* A header chip: minimal, no border. Two spans inside — a muted "label:"
-   prefix ("model" / "mode") and the value in foreground colour. Hover
-   reveals a subtle background to telegraph clickability without
-   crowding the header when idle. */
-.chat-panel-chip {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 4px;
-  max-width: 180px;
-  padding: 2px 8px;
-  border: none;
-  background: transparent;
-  border-radius: 4px;
-  font: inherit;
-  font-size: 12px;
-  font-family: var(--mono);
-  color: var(--fg);
-  cursor: pointer;
-  line-height: 1.35;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.chat-panel-chip:hover:not(:disabled) {
-  background: var(--bg-elev-2);
-}
-.chat-panel-chip:disabled {
-  cursor: not-allowed;
-  opacity: 0.45;
-}
-.chat-panel-chip-label {
-  color: var(--fg-muted);
-  font-size: 11px;
-  letter-spacing: 0.02em;
-  text-transform: lowercase;
-}
-.chat-panel-chip-value {
-  color: var(--fg);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.chat-panel-chip:disabled .chat-panel-chip-value { color: var(--fg-muted); }
-
-/* Inline model editor — replaces the model chip when editing. Width
-   roughly matches the chip so the layout doesn't jump when entering /
+/* Inline model editor — replaces the model badge when editing. Width
+   roughly matches the badge so the layout doesn't jump when entering /
    leaving edit mode. */
 .chat-panel-chip-input {
   background: var(--bg);
@@ -902,6 +951,24 @@ body.resizing-col * {
 }
 .update-banner-btn:hover {
   background: var(--accent-strong);
+}
+.update-banner-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* Secondary "Copy" button used when the primary "Update now" is present —
+   quieter so the in-app update reads as the main action. */
+.update-banner-btn-ghost {
+  font-size: 12px;
+  padding: 4px 10px;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--bg));
+  border-radius: 4px;
+  cursor: pointer;
+}
+.update-banner-btn-ghost:hover {
+  background: var(--btn-hover-bg);
 }
 .update-banner-close {
   display: inline-flex;
@@ -1262,6 +1329,17 @@ body.resizing-col * {
   background: color-mix(in srgb, var(--bg) 65%, transparent);
   backdrop-filter: blur(2px);
   z-index: 4;
+}
+/* useFocusTrap moves focus onto the overlay container itself (via an
+   injected tabindex=-1) instead of its first action button. Programmatic
+   focus on a -1 element won't trigger :focus-visible, but suppress any
+   default outline so the backdrop never shows a stray focus frame. The
+   container is a wrapper, not an interactive control — children keep their
+   own focus styles. */
+.git-overlay[tabindex="-1"]:focus,
+.settings-overlay[tabindex="-1"]:focus,
+.perm-overlay[tabindex="-1"]:focus {
+  outline: none;
 }
 .perm-card {
   width: min(520px, 100%);
@@ -2134,6 +2212,13 @@ body.resizing-col * {
 .streaming-plain {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  /* Cap the live bubble's height so a long in-progress turn doesn't push
+     the whole transcript off-screen. Past the cap the body scrolls
+     internally; StreamingFooter pins it to the latest line as text flows
+     in. The cap lifts the instant streaming ends and the text re-renders
+     as a normal (unbounded) Markdown message. */
+  max-height: 40vh;
+  overflow-y: auto;
 }
 .streaming-cursor {
   display: inline-block;
@@ -3311,7 +3396,11 @@ body.resizing-col * {
 }
 .todo-item {
   display: flex;
-  align-items: baseline;
+  /* center (not baseline): an SVG has no text baseline, so baseline
+     alignment pins the icon's bottom edge to the text baseline and it
+     reads as sitting too high. center aligns the icon box to the line
+     box's vertical middle. Safe here because .todo-text is nowrap. */
+  align-items: center;
   gap: 8px;
   line-height: 1.4;
 }
@@ -3322,6 +3411,11 @@ body.resizing-col * {
   align-items: center;
   justify-content: center;
   font-size: 12px;
+  /* Optical nudge: Latin glyphs sit on-centre at 0, CJK ink rides ~1px
+     high in the em box so the icon looks ~1px low. No single value
+     satisfies both — 0.5px splits the difference (sub-pixel on 1x,
+     crisp on HiDPI). */
+  transform: translateY(-0.5px);
 }
 .todo-text {
   flex: 1;
@@ -3335,7 +3429,26 @@ body.resizing-col * {
 .todo-completed .todo-text { text-decoration: line-through; }
 .todo-completed .todo-icon { color: var(--ok); }
 .todo-in_progress { color: var(--fg); }
-.todo-in_progress .todo-icon { color: var(--accent); }
+.todo-in_progress .todo-icon {
+  color: var(--accent);
+  /* Slow breathing pulse — same 2s period as the text shimmer below so
+     the two read as one synchronized "working" rhythm. */
+  animation: todo-icon-pulse 2s ease-in-out infinite;
+}
+.todo-in_progress .todo-text {
+  /* Text shimmer: an accent highlight sweeps across the label so the
+     active task visibly "moves". Reuses the project's shimmer vocabulary
+     (recap bar, skeleton rows). background-clip:text paints the gradient
+     onto the glyphs; coexists with the existing nowrap+ellipsis. */
+  background: linear-gradient(90deg,
+    var(--fg) 0%, var(--fg) 35%, var(--accent) 50%, var(--fg) 65%, var(--fg) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: todo-text-shimmer 2s linear infinite;
+}
 .todo-pending { color: var(--fg-muted); }
 .todo-pending .todo-icon { opacity: 0.5; }
 
@@ -3352,7 +3465,12 @@ body.resizing-col * {
 }
 .inline-todo-item {
   display: flex;
-  align-items: baseline;
+  /* flex-start (not baseline/center): text here can wrap to multiple
+     lines. baseline pins the icon's bottom to the text baseline (icon
+     reads too high); center would centre the icon against the whole
+     wrapped block instead of the first line. flex-start + a first-line-
+     height icon box keeps the icon aligned to line 1. */
+  align-items: flex-start;
   gap: 6px;
   line-height: 1.45;
 }
@@ -3363,6 +3481,11 @@ body.resizing-col * {
   align-items: center;
   justify-content: center;
   font-size: 11px;
+  /* Match the first text line's box height so the centred icon lands on
+     that line's optical middle, then the same 0.5px CJK/Latin nudge as
+     the sticky panel. */
+  height: calc(1.45em);
+  transform: translateY(-0.5px);
 }
 .inline-todo-text {
   flex: 1;
@@ -3372,9 +3495,54 @@ body.resizing-col * {
 .inline-todo-completed .inline-todo-text { text-decoration: line-through; }
 .inline-todo-completed .inline-todo-icon { color: var(--ok); }
 .inline-todo-in_progress { color: var(--fg); }
-.inline-todo-in_progress .inline-todo-icon { color: var(--accent); }
+.inline-todo-in_progress .inline-todo-icon {
+  color: var(--accent);
+  animation: todo-icon-pulse 2s ease-in-out infinite;
+}
+.inline-todo-in_progress .inline-todo-text {
+  background: linear-gradient(90deg,
+    var(--fg) 0%, var(--fg) 35%, var(--accent) 50%, var(--fg) 65%, var(--fg) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: todo-text-shimmer 2s linear infinite;
+}
 .inline-todo-pending { color: var(--fg-muted); }
 .inline-todo-pending .inline-todo-icon { opacity: 0.5; }
+
+/* "In progress" activity animations — shared by the sticky panel and the
+   inline card. The icon breathes and a highlight sweeps the label, both
+   on the same 2s period so they read as one rhythm. */
+@keyframes todo-icon-pulse {
+  0%, 100% { opacity: 0.55; transform: translateY(-0.5px) scale(0.9); }
+  50%      { opacity: 1;    transform: translateY(-0.5px) scale(1.12); }
+}
+@keyframes todo-text-shimmer {
+  0%   { background-position: 150% 0; }
+  100% { background-position: -50% 0; }
+}
+/* Reduced-motion: these are decorative "it's working" cues, not the only
+   status signal (icon shape + colour + bright text already differentiate
+   in_progress), so per the stylesheet's a11y policy we suppress them with
+   a targeted rule. The shimmer falls back to a solid accent label so the
+   active row still stands out without any motion. */
+@media (prefers-reduced-motion: reduce) {
+  .todo-in_progress .todo-icon,
+  .inline-todo-in_progress .inline-todo-icon {
+    animation: none;
+    transform: translateY(-0.5px);
+  }
+  .todo-in_progress .todo-text,
+  .inline-todo-in_progress .inline-todo-text {
+    animation: none;
+    background: none;
+    -webkit-text-fill-color: var(--accent);
+    color: var(--accent);
+    font-weight: 600;
+  }
+}
 
 /* --- Shared tool-input chip ------------------------------------------
    Tiny pill used by Bash/Read/Grep/Task views for modifier flags. Kept
@@ -4933,17 +5101,6 @@ mark.search-hl.search-hl-active {
   font-style: italic;
 }
 .git-commits-error { color: var(--danger); font-style: normal; }
-
-/* Header chip variants — reuse .chat-panel-chip baseline. */
-.chat-panel-chip.git-chip {
-  font-family: var(--mono);
-}
-.chat-panel-chip.git-chip.dirty .chat-panel-chip-value {
-  color: var(--warn);
-}
-.chat-panel-chip.git-chip.conflict .chat-panel-chip-value {
-  color: var(--danger);
-}
 
 /* ─────────────────────────────────────────────────────────────────
    PR2 additions — write-operation UI

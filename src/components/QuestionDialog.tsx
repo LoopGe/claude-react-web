@@ -18,7 +18,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { Markdown } from './Markdown'
 import type { PermissionRequest, QuestionSpec } from '../types'
 import { useFocusTrap } from '../hooks/useFocusTrap'
-import { IconMessageCircle, IconCheckSquare, IconSquare, IconCircleDot, IconCircle, IconCheck } from './icons/ToolIcons'
+import { IconMessageCircle, IconCheckSquare, IconSquare, IconCircleDot, IconCircle } from './icons/ToolIcons'
 
 /** Narrowed to the question variant of the union. */
 type QuestionRequest = Extract<PermissionRequest, { kind: 'question' }>
@@ -32,21 +32,14 @@ interface Props {
   /** Cancelling skips all questions (each becomes null). Lets the model
    *  continue with no guidance rather than blocking forever. */
   onSkipAll: () => void
-  /** Called after the answer has been shown inline for a moment. The
-   *  parent removes the dialog from the pending queue on this signal. */
-  onSubmitted?: () => void
-  /** When set, the dialog immediately renders in the "answered" state
-   *  showing these pre-filled answers. Used for the linger card that
-   *  stays visible after the user submits. */
-  initialAnswers?: Array<string | string[] | null>
 }
 
-export function QuestionDialog({ request, onSubmit, onSkipAll, onSubmitted, initialAnswers }: Props) {
+export function QuestionDialog({ request, onSubmit, onSkipAll }: Props) {
   // Map question index → chosen label (or array for multi-select).
   // `null` means the user hasn't chosen anything for this question yet —
   // treated as "skip" on submit.
   const [choices, setChoices] = useState<Array<string | string[] | null>>(() =>
-    initialAnswers ?? request.questions.map(() => null),
+    request.questions.map(() => null),
   )
   // Track which questions have "Other" mode active and the custom text.
   const [otherActive, setOtherActive] = useState<boolean[]>(() =>
@@ -55,20 +48,19 @@ export function QuestionDialog({ request, onSubmit, onSkipAll, onSubmitted, init
   const [otherTexts, setOtherTexts] = useState<string[]>(() =>
     request.questions.map(() => ''),
   )
+  // `busy` guards against a double-submit in the one-frame window between
+  // the click and the parent unmounting this dialog (it optimistically
+  // drops the request from the pending queue on submit).
   const [busy, setBusy] = useState(false)
-  const [submitted, setSubmitted] = useState(!!initialAnswers)
   const dialogRef = useRef<HTMLDivElement>(null)
-  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   // Refs so the Escape effect (registered once on mount) always reads
   // current values without re-registering on every render.
   const busyRef = useRef(busy)
-  const submittedRef = useRef(submitted)
   const cancelRef = useRef<() => void>(() => {})
   // Sync refs after commit so they're always current without triggering
   // re-renders (the react-hooks/refs rule forbids writing during render).
   useLayoutEffect(() => {
     busyRef.current = busy
-    submittedRef.current = submitted
   })
 
   useFocusTrap(dialogRef)
@@ -186,35 +178,28 @@ export function QuestionDialog({ request, onSubmit, onSkipAll, onSubmitted, init
     })
   }
 
-  // Cleanup the auto-close timer on unmount.
-  useEffect(() => () => { clearTimeout(timerRef.current) }, [])
-
   const submit = useCallback(() => {
-    if (busy || submitted) return
+    if (busy) return
     setBusy(true)
-    setSubmitted(true)
     onSubmit(choices)
-    timerRef.current = setTimeout(() => onSubmitted?.(), 3000)
-  }, [busy, submitted, choices, onSubmit, onSubmitted])
+  }, [busy, choices, onSubmit])
 
   const cancel = useCallback(() => {
-    if (busy || submitted) return
+    if (busy) return
     setBusy(true)
-    setSubmitted(true)
     onSkipAll()
-    timerRef.current = setTimeout(() => onSubmitted?.(), 3000)
-  }, [busy, submitted, onSkipAll, onSubmitted])
+  }, [busy, onSkipAll])
   useLayoutEffect(() => { cancelRef.current = cancel })
 
   // Escape should cancel/skip — not fall through to the global Escape
   // handler which would interrupt the session instead.
-  // Uses refs for busy/submitted/cancel so the listener is registered
-  // once on mount instead of on every render.
+  // Uses refs for busy/cancel so the listener is registered once on
+  // mount instead of on every render.
   useEffect(() => {
     const el = dialogRef.current
     if (!el) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !busyRef.current && !submittedRef.current) {
+      if (e.key === 'Escape' && !busyRef.current) {
         e.preventDefault()
         e.stopPropagation()
         cancelRef.current()
@@ -241,57 +226,46 @@ export function QuestionDialog({ request, onSubmit, onSkipAll, onSubmitted, init
 
         <div className="modal-section question-body">
           {request.questions.map((q, qIdx) => (
-            submitted ? (
-              <AnsweredBlock key={qIdx} question={q} answer={choices[qIdx]} />
-            ) : (
-              <QuestionBlock
-                key={qIdx}
-                index={qIdx}
-                question={q}
-                value={choices[qIdx]}
-                onSingle={(label) => setSingle(qIdx, label)}
-                onMulti={(label) => toggleMulti(qIdx, label)}
-                onSkip={() => skipQuestion(qIdx)}
-                otherActive={otherActive[qIdx]}
-                otherText={otherTexts[qIdx]}
-                onOtherToggle={() => toggleOther(qIdx)}
-                onOtherTextChange={(text) => setOtherText(qIdx, text)}
-              />
-            )
+            <QuestionBlock
+              key={qIdx}
+              index={qIdx}
+              question={q}
+              value={choices[qIdx]}
+              onSingle={(label) => setSingle(qIdx, label)}
+              onMulti={(label) => toggleMulti(qIdx, label)}
+              onSkip={() => skipQuestion(qIdx)}
+              otherActive={otherActive[qIdx]}
+              otherText={otherTexts[qIdx]}
+              onOtherToggle={() => toggleOther(qIdx)}
+              onOtherTextChange={(text) => setOtherText(qIdx, text)}
+            />
           ))}
         </div>
 
-        {!submitted && (
-          <div className="modal-footer" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button
-                className="btn"
-                onClick={cancel}
-                disabled={busy}
-                style={{ flex: 1 }}
-                title="Skip every question — the model will continue with no guidance"
-              >
-                Skip all
-              </button>
-              <button
-                className="btn btn-primary"
-                onClick={submit}
-                disabled={busy || !hasAnyAnswer}
-                style={{ flex: 2 }}
-              >
-                Send answers
-              </button>
-            </div>
-            <span className="hint" style={{ textAlign: 'center' }}>
-              Your answers are sent back to the model as the tool result.
-            </span>
+        <div className="modal-footer" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="btn"
+              onClick={cancel}
+              disabled={busy}
+              style={{ flex: 1 }}
+              title="Skip every question — the model will continue with no guidance"
+            >
+              Skip all
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={submit}
+              disabled={busy || !hasAnyAnswer}
+              style={{ flex: 2 }}
+            >
+              Send answers
+            </button>
           </div>
-        )}
-        {submitted && (
-          <div className="modal-footer" style={{ justifyContent: 'center' }}>
-            <span className="hint">Answer sent — waiting for Claude to respond…</span>
-          </div>
-        )}
+          <span className="hint" style={{ textAlign: 'center' }}>
+            Your answers are sent back to the model as the tool result.
+          </span>
+        </div>
       </div>
     </div>
   )
@@ -405,26 +379,6 @@ function QuestionBlock({ index, question, value, onSingle, onMulti, onSkip, othe
       >
         Skip this question
       </button>
-    </div>
-  )
-}
-
-/** Read-only block shown after the user submits their answer. */
-function AnsweredBlock({ question, answer }: { question: QuestionSpec; answer: string | string[] | null }) {
-  const answerText =
-    answer == null
-      ? '(skipped)'
-      : Array.isArray(answer)
-        ? answer.join(', ')
-        : answer
-  return (
-    <div className="question-block question-block-answered">
-      <div className="question-header">
-        {question.header && <span className="question-chip">{question.header}</span>}
-        <span className="question-answered-badge"><IconCheck size={12} /> answered</span>
-      </div>
-      <div className="question-text">{question.question}</div>
-      <div className="question-answer-display">{answerText}</div>
     </div>
   )
 }

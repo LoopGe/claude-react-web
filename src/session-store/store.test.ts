@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionStore } from './store'
 import type { SdkMessage } from '../types'
 
@@ -90,5 +90,132 @@ describe('SessionStore hydration', () => {
     const store = new SessionStore('session-no-cache')
     expect(store.getSnapshot().toolStatus.size).toBe(0)
     expect(store.getSnapshot().replayReady).toBe(false)
+  })
+})
+
+// ── Storage quota management (pruneStorageCache / persistToStorage) ──────────
+//
+// These mirror the constants in store.ts (not exported — real code never
+// reads a foreign session's key, and the budget is an internal policy):
+const STORAGE_TOTAL_BUDGET = 3.5 * 1024 * 1024
+const MAX_CACHED_SESSIONS = 20
+
+/** Seed a `claude-web-session:*` entry of approximately `bytes` size with an
+ *  explicit savedAt so eviction order is deterministic. */
+function seedCacheEntry(id: string, savedAt: number, bytes: number): void {
+  // The wrapper JSON adds a little overhead; pad `messages` to hit `bytes`.
+  const padding = 'x'.repeat(Math.max(0, bytes - 80))
+  localStorage.setItem(
+    STORAGE_PREFIX + id,
+    JSON.stringify({ v: 1, savedAt, messages: [], items: [], pad: padding }),
+  )
+}
+
+function countCacheKeys(): number {
+  let n = 0
+  for (let i = 0; i < localStorage.length; i++) {
+    if (localStorage.key(i)?.startsWith(STORAGE_PREFIX)) n++
+  }
+  return n
+}
+
+function totalCacheBytes(): number {
+  let total = 0
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i)
+    if (!k?.startsWith(STORAGE_PREFIX)) continue
+    total += (localStorage.getItem(k)?.length ?? 0) + k.length
+  }
+  return total
+}
+
+describe('SessionStore storage quota', () => {
+  // Date.now drives both the 60s prune throttle (module-scoped _lastPruneAt)
+  // and the savedAt of freshly-written entries. Mock it to a large, strictly
+  // increasing value per test so (a) the throttle never blocks a prune across
+  // tests, and (b) the session we write is always the newest → survives.
+  let clock = 10_000_000_000_000
+  beforeEach(() => {
+    localStorage.clear()
+    clock += 120_000
+    vi.spyOn(Date, 'now').mockImplementation(() => clock)
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    localStorage.clear()
+  })
+
+  it('evicts oldest entries by byte budget (count under the cap)', () => {
+    // 5 large entries (~1MB each = ~5MB total) but only 5 keys — the old
+    // count-only policy (cap 20) would evict NOTHING. The byte budget
+    // (3.5MB) must kick in.
+    const big = 1_000_000
+    seedCacheEntry('old-1', 1000, big)
+    seedCacheEntry('old-2', 2000, big)
+    seedCacheEntry('old-3', 3000, big)
+    seedCacheEntry('old-4', 4000, big)
+    seedCacheEntry('old-5', 5000, big)
+    expect(countCacheKeys()).toBe(5)
+    expect(totalCacheBytes()).toBeGreaterThan(STORAGE_TOTAL_BUDGET)
+
+    // Writing a new session triggers persistToStorage → setItem + prune.
+    const store = new SessionStore('new-session')
+    store.destroy() // forces an immediate save()
+
+    // Total is back under budget, and the newest (new-session) survived
+    // while the oldest seeded entries were evicted first.
+    expect(totalCacheBytes()).toBeLessThanOrEqual(STORAGE_TOTAL_BUDGET)
+    expect(localStorage.getItem(STORAGE_PREFIX + 'new-session')).not.toBeNull()
+    expect(localStorage.getItem(STORAGE_PREFIX + 'old-1')).toBeNull()
+  })
+
+  it('still enforces the count cap when total bytes are small', () => {
+    // 25 tiny entries — well under the byte budget but over the count cap.
+    for (let i = 0; i < 25; i++) {
+      seedCacheEntry(`tiny-${String(i).padStart(2, '0')}`, 1000 + i, 200)
+    }
+    expect(countCacheKeys()).toBe(25)
+
+    const store = new SessionStore('new-session')
+    store.destroy()
+
+    // Down to the cap (the new session counts toward it).
+    expect(countCacheKeys()).toBeLessThanOrEqual(MAX_CACHED_SESSIONS)
+    expect(localStorage.getItem(STORAGE_PREFIX + 'new-session')).not.toBeNull()
+  })
+
+  it('recovers from QuotaExceededError by force-pruning then retrying', () => {
+    // Seed entries over budget so the recovery prune has something to evict.
+    const big = 1_000_000
+    seedCacheEntry('old-1', 1000, big)
+    seedCacheEntry('old-2', 2000, big)
+    seedCacheEntry('old-3', 3000, big)
+    seedCacheEntry('old-4', 4000, big)
+
+    const realSetItem = Storage.prototype.setItem
+    let calls = 0
+    const setItemSpy = vi
+      .spyOn(Storage.prototype, 'setItem')
+      .mockImplementation(function (this: Storage, k: string, v: string) {
+        // Only the NEW session's write should fail-then-succeed; seeding
+        // already happened with the real impl before the spy was installed.
+        if (k === STORAGE_PREFIX + 'new-session') {
+          calls++
+          if (calls === 1) {
+            throw new DOMException('quota', 'QuotaExceededError')
+          }
+        }
+        return realSetItem.call(this, k, v)
+      })
+
+    const store = new SessionStore('new-session')
+    store.destroy()
+
+    // First attempt threw, recovery pruned + retried → second attempt wrote.
+    expect(calls).toBe(2)
+    expect(localStorage.getItem(STORAGE_PREFIX + 'new-session')).not.toBeNull()
+    // The force-prune evicted oldest entries to make room.
+    expect(localStorage.getItem(STORAGE_PREFIX + 'old-1')).toBeNull()
+    setItemSpy.mockRestore()
   })
 })

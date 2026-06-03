@@ -62,6 +62,36 @@ interface RawLine {
 
 const KEEP_SYSTEM_SUBTYPES = new Set(['error', 'compact_boundary', 'api_retry'])
 
+/** SDK interrupt placeholder. When the user interrupts a turn, the CLI
+ *  writes a synthetic `user` text message into the transcript — e.g.
+ *  "[Request interrupted by user]" or "[Request interrupted by user for
+ *  tool use]". The live pump never surfaces it (it's a null-parent user
+ *  frame with no tool_result, so the echo-drop filter in session-pump.ts
+ *  removes it), and the SDK itself skips it when deriving session titles
+ *  (regex `wk` in sdk.mjs). The disk-history path must filter it too, or
+ *  resume / lazy-load would render it as a bare user bubble. Mirrors the
+ *  SDK's own pattern: anchored at line start, optional trailing text
+ *  inside the brackets. */
+const INTERRUPT_PLACEHOLDER_RE = /^\s*\[Request interrupted by user[^\]]*\]\s*$/
+
+/** True when a user message's content is *only* the SDK interrupt
+ *  placeholder text. Handles both string content and the text-block array
+ *  shape; any non-text/tool_result block or extra text means it's a real
+ *  message and we keep it. */
+function isInterruptPlaceholder(content: unknown): boolean {
+  if (typeof content === 'string') return INTERRUPT_PLACEHOLDER_RE.test(content)
+  if (!Array.isArray(content)) return false
+  let sawText = false
+  for (const block of content) {
+    if (!block || typeof block !== 'object') return false
+    const b = block as { type?: unknown; text?: unknown }
+    if (b.type !== 'text' || typeof b.text !== 'string') return false
+    if (!INTERRUPT_PLACEHOLDER_RE.test(b.text)) return false
+    sawText = true
+  }
+  return sawText
+}
+
 /** Locate the transcript file for a session id. Session ids are globally
  *  unique UUIDs, so we glob across all project dirs rather than recreating
  *  the SDK's cwd→dirname encoding ourselves (which CLAUDE.md forbids
@@ -96,7 +126,13 @@ function toolResultParentId(content: unknown): string | null {
 /** True if a raw JSONL line should appear in the rendered transcript. */
 function isRenderable(o: RawLine): boolean {
   if (o.isMeta || o.isSidechain) return false
-  if (o.type === 'user' || o.type === 'assistant') return true
+  if (o.type === 'user') {
+    // Drop the SDK's interrupt placeholder (see INTERRUPT_PLACEHOLDER_RE).
+    // The live pump already filters it; mirror that here so resume /
+    // lazy-load don't render it as a stray user bubble.
+    return !isInterruptPlaceholder(o.message?.content)
+  }
+  if (o.type === 'assistant') return true
   if (o.type === 'system' && typeof o.subtype === 'string' && KEEP_SYSTEM_SUBTYPES.has(o.subtype)) {
     return true
   }

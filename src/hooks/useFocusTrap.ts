@@ -7,8 +7,21 @@ const DISABLED_EXCLUDING_SELECTOR =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
 /**
- * Trap keyboard focus inside a container element. Auto-focuses the first
- * focusable child on mount and wraps Tab/Shift+Tab at the boundaries.
+ * Trap keyboard focus inside a container element and wrap Tab/Shift+Tab at
+ * the boundaries.
+ *
+ * On activation focus is moved *into* the trap so Tab is captured, but we
+ * deliberately do NOT grab the first focusable child: for panel-style
+ * overlays (Git, Settings) the first focusable is an action button (e.g.
+ * Refresh), and auto-focusing it both highlights it and shows its tooltip,
+ * which reads as a spurious "why did it focus that?" jump. Instead:
+ *   - If something inside the container already holds focus — e.g. an
+ *     `autoFocus` input/button placed during React's commit phase, which
+ *     runs before this effect — we leave it alone. Form dialogs that want a
+ *     specific field focused keep working unchanged.
+ *   - Otherwise we focus the container element itself (making it
+ *     programmatically focusable via tabindex=-1 if needed). Focus enters
+ *     the trap without landing on any one control.
  *
  * @param ref   Ref to the container element (e.g. a dialog).
  * @param opts.restoreFocus  Save and restore `document.activeElement` on unmount.
@@ -41,7 +54,17 @@ export function useFocusTrap(
       }
     }
     el.addEventListener('keydown', handleKey)
-    el.querySelector<HTMLElement>(selector)?.focus()
+    // Only pull focus in if it isn't already inside the container. An
+    // `autoFocus` child has its focus applied during commit (before this
+    // effect), so `el.contains(activeElement)` is already true and we skip.
+    if (!el.contains(document.activeElement)) {
+      // Focus the container, not its first focusable child, so panel
+      // overlays don't spuriously highlight their first action button.
+      // A plain <div> can't receive focus without a tabindex, so set -1
+      // (keeps it out of the Tab order while allowing .focus()).
+      if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '-1')
+      el.focus()
+    }
     return () => {
       el.removeEventListener('keydown', handleKey)
       previouslyFocused?.focus?.()

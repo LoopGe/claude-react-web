@@ -24,6 +24,7 @@ import {
   getCachedUpdateInfo,
   getCurrentVersion,
   isVersionNewer,
+  probeRegistry,
 } from '../update-checker.js'
 import { detectInstallMethod } from '../install-method.js'
 import { readInstalledVersion } from '../installed-version.js'
@@ -35,6 +36,18 @@ export function buildUpdateRouter(): Hono {
   const app = new Hono()
 
   app.get('/update-info', async (c) => {
+    // `?registry=<url>` — probe a caller-supplied registry WITHOUT reading
+    // or writing the persisted config or the shared cache. The setup wizard
+    // and the About tab use this to validate a registry the user has typed
+    // but not yet saved. `registry=` (present but empty) is an explicit
+    // "test the disabled state" and yields a `disabled` snapshot; the param
+    // being absent entirely falls through to the normal cached/forced path.
+    const registryOverride = c.req.query('registry')
+    if (registryOverride !== undefined) {
+      const info = await probeRegistry(registryOverride)
+      const installed = readInstalledVersion(info.packageName)
+      return c.json(installed ? { ...info, installed } : info)
+    }
     const force = c.req.query('force') === '1'
     if (force) {
       const info = await checkForUpdates(true)

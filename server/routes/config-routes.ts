@@ -28,6 +28,7 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
       modelList?: string[]
       recapModel?: string
       commitMessageModel?: string
+      updateCheckRegistry?: string
     }>(c.req)
     if (!body.authToken?.trim()) throw new HttpError(400, 'authToken is required')
     const configPath = joinPath(configDir, 'config.json')
@@ -47,6 +48,11 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
     }
     if (typeof body.commitMessageModel === 'string') {
       existing.commitMessageModel = body.commitMessageModel.trim() || undefined
+    }
+    if (typeof body.updateCheckRegistry === 'string') {
+      // Persist verbatim (trimmed) — empty string is a valid value meaning
+      // "update checks disabled", so we write it rather than dropping it.
+      existing.updateCheckRegistry = body.updateCheckRegistry.trim()
     }
     await writeAtomic(configDir, configPath, existing)
     await loadConfig(configDir)

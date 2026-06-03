@@ -7,7 +7,11 @@ import { Hono } from 'hono'
 
 import { createErrorHandler } from '../errors.js'
 import { __setConfigForTest } from '../config.js'
-import { __resetUpdateCheckerForTests, checkForUpdates } from '../update-checker.js'
+import {
+  __resetUpdateCheckerForTests,
+  checkForUpdates,
+  getCachedUpdateInfo,
+} from '../update-checker.js'
 
 // vi.mock factories are hoisted above module-scope consts, so the mock fns
 // must be created inside vi.hoisted to avoid a TDZ ReferenceError.
@@ -149,5 +153,79 @@ describe('POST /api/update', () => {
     expect(res.status).toBe(500)
     const body = (await res.json()) as { error: string }
     expect(body.error).toMatch(/boom/)
+  })
+})
+
+describe('GET /api/update-info?registry= override', () => {
+  beforeEach(() => {
+    __resetUpdateCheckerForTests()
+    detectInstallMethod.mockReset()
+    detectInstallMethod.mockReturnValue('global')
+    readInstalledVersion.mockReset()
+    readInstalledVersion.mockReturnValue(null)
+  })
+
+  it('probes the supplied registry instead of the saved config', async () => {
+    // Saved config points at one registry; the override asks for another.
+    __setConfigForTest({ updateCheckRegistry: 'https://saved.example.com' })
+    // Type the mock's params (URL-like first arg) so `mock.calls[0][0]` is a
+    // string rather than an empty-tuple element (TS2493) below.
+    const fetchMock = vi.fn(async (_url: string | URL | Request) =>
+      new Response(JSON.stringify({ version: '42.0.0' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const res = await makeApp().request(
+      `/update-info?registry=${encodeURIComponent(TEST_REGISTRY)}`,
+    )
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { registry?: string; latest?: string }
+    expect(body.registry).toBe(TEST_REGISTRY)
+    expect(body.latest).toBe('42.0.0')
+    // The fetched URL must be built from the OVERRIDE, not the saved value.
+    expect(fetchMock.mock.calls[0]?.[0]).toContain(TEST_REGISTRY)
+    expect(fetchMock.mock.calls[0]?.[0]).not.toContain('saved.example.com')
+
+    vi.unstubAllGlobals()
+  })
+
+  it('does not mutate the shared cache', async () => {
+    __setConfigForTest({ updateCheckRegistry: '' }) // saved = disabled
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ version: '42.0.0' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    )
+
+    await makeApp().request(`/update-info?registry=${encodeURIComponent(TEST_REGISTRY)}`)
+
+    // The cache must still reflect the saved (disabled) state — the override
+    // probe is one-off and must not leak into getCachedUpdateInfo().
+    const cached = getCachedUpdateInfo()
+    expect(cached.latest).toBeUndefined()
+
+    vi.unstubAllGlobals()
+  })
+
+  it('returns a disabled snapshot for an empty registry override', async () => {
+    __setConfigForTest({ updateCheckRegistry: TEST_REGISTRY })
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    const res = await makeApp().request('/update-info?registry=')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { disabled?: boolean }
+    expect(body.disabled).toBe(true)
+    // Empty override means "test disabled" — no network probe at all.
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    vi.unstubAllGlobals()
   })
 })

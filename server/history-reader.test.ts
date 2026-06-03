@@ -34,6 +34,35 @@ describe('paginateJsonl — filtering', () => {
     expect((page.messages[0] as { uuid: string }).uuid).toBe('u1')
   })
 
+  it('drops the SDK interrupt placeholder (string and text-block forms)', () => {
+    const raw = jsonl([
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'real prompt' } },
+      { type: 'user', uuid: 'i1', message: { role: 'user', content: '[Request interrupted by user]' } },
+      { type: 'user', uuid: 'i2', message: { role: 'user', content: '[Request interrupted by user for tool use]' } },
+      {
+        type: 'user',
+        uuid: 'i3',
+        message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] },
+      },
+      { type: 'assistant', uuid: 'as1', message: { role: 'assistant', content: [] } },
+    ])
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    expect((page.messages as Array<{ uuid: string }>).map((m) => m.uuid)).toEqual(['u1', 'as1'])
+  })
+
+  it('keeps a real user message that merely mentions the interrupt text inline', () => {
+    const raw = jsonl([
+      {
+        type: 'user',
+        uuid: 'u1',
+        message: { role: 'user', content: 'why does [Request interrupted by user] show up?' },
+      },
+    ])
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    expect(page.totalCount).toBe(1)
+    expect((page.messages[0] as { uuid: string }).uuid).toBe('u1')
+  })
+
   it('keeps only error/compact_boundary/api_retry system subtypes', () => {
     const raw = jsonl([
       { type: 'system', subtype: 'error', uuid: 'e1' },

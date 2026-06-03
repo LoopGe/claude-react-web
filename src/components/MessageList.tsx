@@ -7,11 +7,11 @@
 // Filters out `stream_event` partials (the final assistant message
 // carries the complete content, so showing both just flickers).
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { Markdown } from './Markdown'
 import { ToolUseBlock } from './ToolUseBlock'
-import { PlanStatusProvider, PlanContentProvider, ToolStatusProvider, ToolResultProvider, useToolResults } from '../hooks/usePlanStatus'
+import { PlanStatusProvider, PlanContentProvider, ToolStatusProvider, ToolResultProvider } from '../hooks/usePlanStatus'
 import { ToolResultDetails } from './ToolCard'
 import { QuestionAnswersProvider } from '../hooks/useQuestionAnswers'
 import type { SdkMessage, Block } from '../types'
@@ -21,7 +21,7 @@ import { Tooltip } from './Tooltip'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
-import { getBlocks } from '../session-store/normalize'
+import { getBlocks, getEnterPlanToolUseIds } from '../session-store/normalize'
 import { IconCopy, IconArrowDown, IconZap, IconSparkles, IconAlertTriangle, IconMessageCircle, IconDollar, IconClock, IconWrench, IconUser, IconExternalLink } from './icons/ToolIcons'
 import { countMatches, extractPlainText } from '../search'
 
@@ -41,9 +41,6 @@ interface Props {
    *  rendered list. Errors (`subtype === 'error'`) are always shown
    *  regardless — those carry actual failure info users need to see. */
   showSystemEvents?: boolean
-  /** Ref set to `true` when the user fires interrupt; the next `result`
-   *  message renders as "interrupted" and resets it to `false`. */
-  pendingInterruptRef?: React.RefObject<boolean>
   /** False while the initial replay from the server is still buffering.
    *  When false, shows a loading skeleton instead of the empty-state
    *  message, preventing a flash of "no messages" on session switch. */
@@ -155,7 +152,7 @@ const MAX_ENTER_BATCH = 4
 const ENTER_MAX_AGE_MS = 10_000
 const KNOWN_IDS_CAP = 4000
 
-export const MessageList = memo(function MessageList({ items, recap, showSystemEvents = false, pendingInterruptRef, replayReady = true, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false }: Props) {
+export const MessageList = memo(function MessageList({ items, recap, showSystemEvents = false, replayReady = true, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -186,6 +183,23 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
   const [unseenCount, setUnseenCount] = useState(0)
   const unseenCountRef = useRef(0)
 
+  // EnterPlanMode has no lifecycle map (it renders as a stateless marker and
+  // nothing consumes its result), so its result ids aren't in any of the maps
+  // above. Scan items for them directly and fold them into the predicate so
+  // their stray tool_result doesn't fall through to an orphan bubble.
+  const enterPlanIds = useMemo(() => {
+    const set = new Set<string>()
+    for (const it of items) {
+      for (const id of getEnterPlanToolUseIds(it.msg)) set.add(id)
+    }
+    return set
+  }, [items])
+
+  const isResultConsumed = useMemo(
+    () => makeResultConsumed(toolResults, planStatus, questionAnswers, enterPlanIds),
+    [toolResults, planStatus, questionAnswers, enterPlanIds],
+  )
+
   const renderableItems: RenderableItem[] = useMemo(() => {
     const out: RenderableItem[] = []
     for (let i = 0; i < items.length; i++) {
@@ -211,7 +225,7 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
       // shared willRenderEmpty.
       if (
         (showSystemEvents || !item.hiddenByDefault) &&
-        !willRenderEmpty(item.msg, item.isCompactSummary, toolResults)
+        !willRenderEmpty(item.msg, item.isCompactSummary, isResultConsumed)
       ) {
         out.push({
           id: item.id,
@@ -225,7 +239,7 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
       }
     }
     return out
-  }, [items, showSystemEvents, parentToolUseIdFilter, toolResults])
+  }, [items, showSystemEvents, parentToolUseIdFilter, isResultConsumed])
 
   // --- Reverse infinite scroll: keep the viewport anchored on prepend ----
   // Virtuoso requires `firstItemIndex` to decrease by exactly the number of
@@ -615,7 +629,6 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
         <MessageView
           msg={item.msg}
           isCompactSummary={item.isCompactSummary}
-          interruptedRef={pendingInterruptRef}
           searchQuery={searchQuery}
           activeMatchInItem={activeMatchInItem}
           sending={item.sending}
@@ -623,7 +636,7 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
         />
       </div>
     )
-  }, [pendingInterruptRef, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, handleEnterAnimationEnd])
+  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, handleEnterAnimationEnd])
 
   // Footer combines two optional rows pinned to the bottom of the
   // transcript: the streaming-typing bubble (live token deltas) and the
@@ -657,6 +670,7 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
     <QuestionAnswersProvider value={questionAnswers}>
     <ToolStatusProvider value={toolStatus}>
     <ToolResultProvider value={toolResults}>
+    <ResultConsumedCtx.Provider value={isResultConsumed}>
     <div className="chat-messages-wrap">
       <div className="chat-messages">
         {renderableItems.length === 0 ? (
@@ -693,6 +707,7 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
         </button>
       )}
     </div>
+    </ResultConsumedCtx.Provider>
     </ToolResultProvider>
     </ToolStatusProvider>
     </QuestionAnswersProvider>
@@ -729,13 +744,31 @@ const StreamingFooter = memo(function StreamingFooter({ content }: { content: st
   // same. The instant the turn settles this footer disappears and the text
   // re-renders once as a normal (memoized) Markdown assistant message — so
   // formatting/code-highlighting "snaps in" exactly when streaming ends.
+
+  // The body is height-capped in CSS (.streaming-plain max-height) so a long
+  // turn can't push the transcript off-screen. Once the content exceeds the
+  // cap the body scrolls internally — but it would otherwise stay pinned at
+  // the TOP, hiding the freshly-generated tail. Pin it to the bottom on every
+  // content flush UNLESS the user has scrolled up inside the body to read
+  // back (then we leave their position alone, matching the outer transcript's
+  // follow behaviour).
+  const bodyRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = bodyRef.current
+    if (!el) return
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    // Tolerance band: treat "near the bottom" as "following" so a single
+    // appended line doesn't strand us a few px short and disable the pin.
+    if (distanceFromBottom <= 24) el.scrollTop = el.scrollHeight
+  }, [content])
+
   return (
     <div className="virtuoso-footer-wrapper">
       <div className="msg msg-assistant streaming-msg">
         {/* aria-live polite + non-atomic so screen readers announce
             newly appended streaming text rather than re-reading the whole
             block on every token delta (rule: aria-live for live output). */}
-        <div className="msg-body assistant-body streaming-plain" aria-live="polite" aria-atomic="false">
+        <div ref={bodyRef} className="msg-body assistant-body streaming-plain" aria-live="polite" aria-atomic="false">
           {content}
           <span className="streaming-cursor" />
         </div>
@@ -762,7 +795,6 @@ async function copyToClipboard(text: string): Promise<void> {
 const MessageView = memo(function MessageView({
   msg,
   isCompactSummary,
-  interruptedRef,
   searchQuery,
   activeMatchInItem,
   sending,
@@ -770,7 +802,6 @@ const MessageView = memo(function MessageView({
 }: {
   msg: SdkMessage
   isCompactSummary?: boolean
-  interruptedRef?: React.RefObject<boolean>
   searchQuery?: string
   /** Local match index inside this message — when set, the Markdown
    *  renderer marks the Nth `<mark>` as the active navigation target.
@@ -793,16 +824,16 @@ const MessageView = memo(function MessageView({
 }) {
   const type = msg.type
 
-  // Read the interrupted flag in an effect (never during render) to
-  // avoid the React anti-pattern of accessing refs in render body,
-  // which breaks under StrictMode double-render.
-  const [isInterrupted, setIsInterrupted] = useState(false)
-  useEffect(() => {
-    if (type === 'result' && interruptedRef?.current) {
-      setIsInterrupted(true)
-      interruptedRef.current = false
-    }
-  }, [type, interruptedRef])
+  // Whether this turn ended because the user interrupted it. Read directly
+  // from the SDK result message's `terminal_reason` — the subprocess's
+  // authoritative report of why the turn stopped (`aborted_streaming` /
+  // `aborted_tools` are the two user-interrupt reasons). Because it lives on
+  // `msg` itself, it survives Virtuoso unmount/remount; the old approach
+  // stored it in transient component state seeded from a one-shot ref, so a
+  // re-mounted result row lost the flag and flipped ⊘ back to ✓.
+  const isInterrupted =
+    type === 'result' &&
+    (msg.terminal_reason === 'aborted_streaming' || msg.terminal_reason === 'aborted_tools')
 
   // Memoise the block list so the child `BlockView` / `ToolResultBlock`
   // memos actually hit. `getBlocks(msg)` returns a *fresh* array (and
@@ -846,21 +877,21 @@ const MessageView = memo(function MessageView({
     return out
   }, [blocks, searchQuery, activeMatchInItem])
 
-  // Set of tool_use_ids whose results have been merged into a tool card.
-  // Read unconditionally (hooks rule) even though only the user branch
-  // uses it to decide which tool_result blocks to suppress.
-  const mergedToolResults = useToolResults()
+  // The result-consumed predicate is built ONCE by MessageList and shared via
+  // context, so willRenderEmpty (the item filter) and this render path use the
+  // exact same instance — they can't drift. Read unconditionally per
+  // rules-of-hooks even though only the user branch uses it.
+  const isResultConsumed = useResultConsumed()
 
   if (type === 'user') {
     const userContent = extractUserText(msg)
-    // Tool results that have been merged into their originating tool card
-    // are suppressed here (rendered inline by ToolCard instead). Only
-    // ORPHAN results — whose tool_use_id never matched a seeded generic
-    // card — fall through to the standalone bubble below, so no result is
-    // ever silently dropped.
+    // Tool results that have been consumed by their card (generic ToolCard
+    // inline merge, or PlanCard / QuestionCard) are suppressed here. Only
+    // ORPHAN results — whose tool_use_id matched no card — fall through to
+    // the standalone bubble below, so no result is ever silently dropped.
     const allToolBlocks = blocks.filter((b) => b.type === 'tool_result')
     const toolBlocks = allToolBlocks.filter(
-      (b) => typeof b.tool_use_id !== 'string' || !mergedToolResults.has(b.tool_use_id),
+      (b) => typeof b.tool_use_id !== 'string' || !isResultConsumed(b.tool_use_id),
     )
 
     // Synthetic "conversation summary" frame that the SDK injects right
@@ -897,7 +928,7 @@ const MessageView = memo(function MessageView({
       // case where every tool_result has been merged into its card.
       // Delegated to willRenderEmpty so renderableItems drops these BEFORE
       // they become empty Virtuoso items (see that fn's comment).
-      if (willRenderEmpty(msg, isCompactSummary, mergedToolResults)) return null
+      if (willRenderEmpty(msg, isCompactSummary, isResultConsumed)) return null
       // 'subagent' only for a genuine subagent frame with no orphan result
       // to show; everything else (orphan results, or a merged-only
       // tool-result frame carrying stray text) reads as 'tool result'.
@@ -993,7 +1024,7 @@ const MessageView = memo(function MessageView({
     // the surrounding card would still paint an empty "✦ assistant" shell.
     // The visibility rule lives in willRenderEmpty so renderableItems can
     // drop these before they become empty Virtuoso items (see that fn).
-    if (willRenderEmpty(msg, isCompactSummary, mergedToolResults)) return null
+    if (willRenderEmpty(msg, isCompactSummary, isResultConsumed)) return null
     return (
       <div className={`msg assistant${isSubagent ? ' subagent' : ''}`}>
         {assistantText && (
@@ -1464,6 +1495,45 @@ function extractUserText(msg: SdkMessage): string | null {
   return null
 }
 
+/** Predicate: has this tool_use_id's result already been consumed by a card
+ *  (or a stateless marker), so its standalone orphan bubble must be
+ *  suppressed? Four sources count:
+ *   - `toolResults` — generic tool cards (Bash/Edit/Read/…) merge the result
+ *     inline (ToolCard renders it at the bottom).
+ *   - `planStatus`  — ExitPlanMode results are rendered by PlanCard.
+ *   - `questionAnswers` — AskUserQuestion results are rendered by QuestionCard.
+ *   - `enterPlanIds` — EnterPlanMode has no card and no lifecycle map (it
+ *     renders as a stateless marker), but the SDK still emits a tool_result
+ *     for it; suppress that stray result. Collected by scanning items.
+ *  Subagent (Agent/Task/Explore) ids are deliberately NOT included: their
+ *  result bubble is the subagent's only surfacing in the main transcript, so
+ *  it must keep rendering. Both `willRenderEmpty` and MessageView's user
+ *  branch use this same predicate via ResultConsumedCtx — they can't drift
+ *  because there is one shared instance per render. */
+function makeResultConsumed(
+  toolResults: ReadonlyMap<string, ToolResultEntry>,
+  planStatus: ReadonlyMap<string, PlanStatus>,
+  questionAnswers: ReadonlyMap<string, QuestionAnswerEntry[]>,
+  enterPlanIds: ReadonlySet<string>,
+): (id: string) => boolean {
+  return (id) =>
+    toolResults.has(id) ||
+    planStatus.has(id) ||
+    questionAnswers.has(id) ||
+    enterPlanIds.has(id)
+}
+
+/** Context carrying the single result-consumed predicate instance for one
+ *  render. MessageList builds it (makeResultConsumed) and provides it; both
+ *  the item filter (willRenderEmpty, called directly with the same value) and
+ *  MessageView (via useResultConsumed) read it. The default rejects every id
+ *  — safe because a MessageView is only ever rendered inside MessageList's
+ *  provider. */
+const ResultConsumedCtx = createContext<(id: string) => boolean>(() => false)
+function useResultConsumed(): (id: string) => boolean {
+  return useContext(ResultConsumedCtx)
+}
+
 /** Would `MessageView` render nothing for this message? Mirrors the two
  *  `return null` branches inside MessageView (the merged-tool-result /
  *  subagent-heartbeat case and the no-visible-content assistant case) so
@@ -1475,7 +1545,7 @@ function extractUserText(msg: SdkMessage): string | null {
 function willRenderEmpty(
   msg: SdkMessage,
   isCompactSummary: boolean | undefined,
-  mergedToolResults: ReadonlyMap<string, ToolResultEntry>,
+  isResultConsumed: (id: string) => boolean,
 ): boolean {
   const type = msg.type
   // Only user / assistant frames ever render empty; everything else
@@ -1490,7 +1560,7 @@ function willRenderEmpty(
     const userContent = extractUserText(msg)
     const allToolBlocks = blocks.filter((b) => b.type === 'tool_result')
     const toolBlocks = allToolBlocks.filter(
-      (b) => typeof b.tool_use_id !== 'string' || !mergedToolResults.has(b.tool_use_id),
+      (b) => typeof b.tool_use_id !== 'string' || !isResultConsumed(b.tool_use_id),
     )
     const isSubagent = (msg as Record<string, unknown>).parent_tool_use_id != null
     const isToolResult = allToolBlocks.length > 0

@@ -26,7 +26,14 @@ interface UseUpdateInfo {
    *  Check-now button without blocking the banner. */
   refreshing: boolean
   error: string | null
-  refresh: () => void
+  /** Force a fresh probe. With no argument, probes the registry the server
+   *  has persisted (`?force=1`). Pass `registryOverride` to instead probe a
+   *  URL the user has typed but not yet saved (`?registry=<url>`) — used by
+   *  the setup wizard and the About tab's "Check now" so the result reflects
+   *  the in-progress edit rather than the stale saved value. An empty string
+   *  is a meaningful override ("test the disabled state"), distinct from
+   *  `undefined` (probe the saved value). */
+  refresh: (registryOverride?: string) => void
   /** True while POST /api/update is in flight. */
   updating: boolean
   /** Trigger the in-app update. Resolves with the action result, or throws
@@ -46,7 +53,11 @@ export function useUpdateInfo(enabled: boolean): UseUpdateInfo {
   // be silently joined to an unforced probe (the server rev did the
   // same fix in update-checker.ts).
   const inFlightRef = useRef<{ force: boolean; controller: AbortController } | null>(null)
-  const pendingForceRef = useRef(false)
+  // A force/override probe requested while the unforced mount probe was
+  // still in flight. We remember the override value too (not just a bool)
+  // so the escalated follow-up probes the URL the user actually typed,
+  // rather than collapsing to a plain `?force=1` against the saved value.
+  const pendingForceRef = useRef<{ override?: string } | null>(null)
   const mountedRef = useRef(true)
   useEffect(() => {
     mountedRef.current = true
@@ -59,71 +70,89 @@ export function useUpdateInfo(enabled: boolean): UseUpdateInfo {
     }
   }, [])
 
-  const fetchInfo = useCallback(async (forceArg: boolean): Promise<void> => {
-    // The pending-force escalation is implemented as a loop rather than
-    // a self-call: useCallback identifies the function via its closure,
-    // and re-referencing `fetchInfo` inside its own body trips the
-    // immutability lint (and would also pin a stale snapshot of self).
-    // Looping keeps the same observable behavior — start a forced probe
-    // immediately after the unforced one settles — without the cycle.
-    let force = forceArg
-    while (true) {
-      if (inFlightRef.current) {
-        // An unforced probe is mid-flight and the user just asked for
-        // force. Mark a pending follow-up so we re-fire once the current
-        // call settles. Multiple force clicks coalesce into a single
-        // follow-up.
-        if (force && !inFlightRef.current.force) pendingForceRef.current = true
+  const fetchInfo = useCallback(
+    async (forceArg: boolean, overrideArg?: string): Promise<void> => {
+      // The pending-force escalation is implemented as a loop rather than
+      // a self-call: useCallback identifies the function via its closure,
+      // and re-referencing `fetchInfo` inside its own body trips the
+      // immutability lint (and would also pin a stale snapshot of self).
+      // Looping keeps the same observable behavior — start a forced probe
+      // immediately after the unforced one settles — without the cycle.
+      //
+      // `override` (when not undefined) probes a caller-supplied registry
+      // URL via `?registry=<url>` instead of the saved value; it always
+      // implies a forced/blocking probe.
+      let force = forceArg
+      let override = overrideArg
+      while (true) {
+        if (inFlightRef.current) {
+          // An unforced probe is mid-flight and the user just asked for a
+          // force/override. Mark a pending follow-up so we re-fire once the
+          // current call settles. Multiple clicks coalesce into a single
+          // follow-up; the latest override wins.
+          if ((force || override !== undefined) && !inFlightRef.current.force) {
+            pendingForceRef.current = { override }
+          }
+          return
+        }
+        const controller = new AbortController()
+        inFlightRef.current = { force: force || override !== undefined, controller }
+        if (force || override !== undefined) setRefreshing(true)
+        else setLoading(true)
+        setError(null)
+        let aborted = false
+        try {
+          const path =
+            override !== undefined
+              ? `/update-info?registry=${encodeURIComponent(override)}`
+              : force
+                ? '/update-info?force=1'
+                : '/update-info'
+          const next = await api.get<UpdateInfo>(path, { signal: controller.signal })
+          if (mountedRef.current && !controller.signal.aborted) setInfo(next)
+        } catch (err) {
+          if (controller.signal.aborted) {
+            aborted = true
+          } else if (mountedRef.current) {
+            setError(err instanceof Error ? err.message : String(err))
+          }
+        } finally {
+          inFlightRef.current = null
+          if (mountedRef.current && !controller.signal.aborted) {
+            setLoading(false)
+            setRefreshing(false)
+          }
+        }
+        if (aborted) return
+        // A force/override was requested while an unforced probe was in
+        // flight — honour it now so the user actually sees a fresh hit.
+        if (pendingForceRef.current && mountedRef.current) {
+          const pending = pendingForceRef.current
+          pendingForceRef.current = null
+          force = true
+          override = pending.override
+          continue
+        }
         return
       }
-      const controller = new AbortController()
-      inFlightRef.current = { force, controller }
-      if (force) setRefreshing(true)
-      else setLoading(true)
-      setError(null)
-      let aborted = false
-      try {
-        const path = force ? '/update-info?force=1' : '/update-info'
-        const next = await api.get<UpdateInfo>(path, { signal: controller.signal })
-        if (mountedRef.current && !controller.signal.aborted) setInfo(next)
-      } catch (err) {
-        if (controller.signal.aborted) {
-          aborted = true
-        } else if (mountedRef.current) {
-          setError(err instanceof Error ? err.message : String(err))
-        }
-      } finally {
-        inFlightRef.current = null
-        if (mountedRef.current && !controller.signal.aborted) {
-          setLoading(false)
-          setRefreshing(false)
-        }
-      }
-      if (aborted) return
-      // A force was requested while an unforced probe was in flight —
-      // honour it now so the user actually sees a fresh registry hit.
-      if (pendingForceRef.current && mountedRef.current) {
-        pendingForceRef.current = false
-        force = true
-        continue
-      }
-      return
-    }
-  }, [])
+    },
+    [],
+  )
 
   useEffect(() => {
     if (!enabled) return
     // setState calls inside fetchInfo are intentional — same pattern
-    // useGitStatus uses for its mount fetch. The "cascading renders"
-    // warning is a generic heuristic; here the fetch is deliberately
+    // useGitStatus uses for its mount fetch: the fetch is deliberately
     // initiated when the dependency flips.
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional fetch on enable
     void fetchInfo(false)
   }, [enabled, fetchInfo])
 
-  const refresh = useCallback(() => {
-    void fetchInfo(true)
-  }, [fetchInfo])
+  const refresh = useCallback(
+    (registryOverride?: string) => {
+      void fetchInfo(true, registryOverride)
+    },
+    [fetchInfo],
+  )
 
   const updatingRef = useRef(false)
   const update = useCallback(async (): Promise<UpdateActionResult> => {

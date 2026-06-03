@@ -28,6 +28,7 @@ import { IconSettings, IconBell, IconBellOff, IconBot, IconBug, IconBugOff, Icon
 import { ThemeToggle } from './components/ThemeToggle'
 import { UpdateBanner } from './components/UpdateBanner'
 import { useUpdateInfo } from './hooks/useUpdateInfo'
+import { sessionStoreRegistry } from './session-store/registry'
 
 // Lazy-load heavy modal/overlay components that are only shown on demand.
 // This keeps the initial bundle lean — the user pays the download cost
@@ -239,8 +240,7 @@ export function App() {
   const handleSelectRef = useRef<(id: string) => void>(() => {})
   // Per-session interrupt callbacks registered by <Chat> components.
   // The ESC shortcut in the keyboard handler uses this to trigger the
-  // same code-path as the Composer's interrupt button (which sets
-  // pendingInterruptRef for the "interrupted" label).
+  // same code-path as the Composer's interrupt button.
   const interruptFnsRef = useRef<Map<string, () => void>>(new Map())
   const registerInterrupt = useCallback((sessionId: string, fn: () => void) => {
     interruptFnsRef.current.set(sessionId, fn)
@@ -667,6 +667,13 @@ export function App() {
       try {
         await api.delete(`/sessions/${id}`)
         closeSession(id)
+        // Purge the session's transcript cache from localStorage. Without
+        // this, deleted sessions leave orphan `claude-web-session:*` keys
+        // that accumulate forever and eat the ~5MB quota — eventually
+        // starving small but critical keys (session-groups, sidebar-order)
+        // whose writes then fail. Going through the registry destroys the
+        // in-memory store first so the idle sweep can't re-persist it.
+        sessionStoreRegistry.delete(id)
         // Clean up per-session accent so it doesn't linger in storage.
         // Passing `undefined` deletes the entry through the same
         // localStorage-merge path the colour-menu uses.
@@ -1076,9 +1083,9 @@ export function App() {
             else if (focusedIdRef.current) {
               const focused = sessionsRef.current.find((s) => s.id === focusedIdRef.current)
               if (focused?.working) {
-                // Use the registered interrupt callback (set by <Chat>)
-                // so pendingInterruptRef is set and the result message
-                // shows the "interrupted" label.
+                // Use the registered interrupt callback (set by <Chat>).
+                // The result message's "interrupted" (⊘) label is derived
+                // from the SDK `terminal_reason`, not from this call-path.
                 const fn = interruptFnsRef.current.get(focusedIdRef.current)
                 if (fn) {
                   void fn()
@@ -1552,7 +1559,11 @@ export function App() {
           {reconnectingBanner ?? ''}
         </div>
 
-        <UpdateBanner info={updateInfo.info} />
+        <UpdateBanner
+          info={updateInfo.info}
+          updating={updateInfo.updating}
+          onUpdate={updateInfo.update}
+        />
 
         <div
           ref={bodyRef}

@@ -14,17 +14,24 @@
 // the same vertical "system messaging" band without overlapping.
 
 import { useState } from 'react'
-import type { UpdateInfo } from '../../shared/update-info'
+import type { UpdateActionResult, UpdateInfo } from '../../shared/update-info'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
+import { useToast } from '../hooks/useToast'
 import { IconX, IconCheck } from './icons/ToolIcons'
 
 const DISMISS_KEY = 'claude-react-web:update-banner-dismissed-version'
 
 interface Props {
   info: UpdateInfo | null
+  /** True while POST /api/update is in flight (shared with the About tab). */
+  updating?: boolean
+  /** Trigger the in-app update. Resolves with the action result, or throws.
+   *  Omitted when the host hasn't wired the update action — the banner then
+   *  shows only the copy-command. */
+  onUpdate?: () => Promise<UpdateActionResult>
 }
 
-export function UpdateBanner({ info }: Props) {
+export function UpdateBanner({ info, updating, onUpdate }: Props) {
   if (!info || !info.hasUpdate || !info.latest) return null
   // The inner component is keyed on the latest version so a fresh
   // version remounts it — automatically resetting the local
@@ -36,6 +43,9 @@ export function UpdateBanner({ info }: Props) {
       latest={info.latest}
       packageName={info.packageName}
       registry={info.registry}
+      installMethod={info.installMethod}
+      updating={!!updating}
+      onUpdate={onUpdate}
     />
   )
 }
@@ -45,12 +55,19 @@ function UpdateBannerInner({
   latest,
   packageName,
   registry,
+  installMethod,
+  updating,
+  onUpdate,
 }: {
   current: string
   latest: string
   packageName: string
   registry?: string
+  installMethod: UpdateInfo['installMethod']
+  updating: boolean
+  onUpdate?: () => Promise<UpdateActionResult>
 }) {
+  const toast = useToast()
   const UPGRADE_COMMAND = buildUpgradeCommand(packageName, registry)
   const [dismissed, setDismissed] = useState<boolean>(() => {
     if (typeof sessionStorage === 'undefined') return false
@@ -58,7 +75,43 @@ function UpdateBannerInner({
   })
   const [copied, setCopied] = useState(false)
 
+  // An in-app update can only replace a global install. For npx / dev runs
+  // there's nothing to upgrade in place, so the button is hidden and the
+  // user falls back to the copy-command. Mirrors the About-tab gate.
+  const canUpdateInApp = installMethod === 'global' && !!onUpdate
+
   if (dismissed) return null
+
+  // Run the in-app update and surface the outcome via toast — same result
+  // handling as the GlobalSettingsModal About tab so the two entry points
+  // behave identically. On success we dismiss the banner (a restart applies
+  // the new version; nagging further adds nothing).
+  const runUpdate = () => {
+    if (!onUpdate) return
+    onUpdate().then(
+      (res) => {
+        if (res.performed) {
+          if (res.updateApplied) {
+            toast.success(
+              `Installed ${res.installedVersion ?? res.latest ?? 'the latest version'} on disk — restart the server to apply.`,
+            )
+            dismiss()
+          } else {
+            toast.info(
+              res.installedVersion
+                ? `Already on the latest version (${res.installedVersion}).`
+                : 'Install completed, but the new version could not be confirmed on disk.',
+            )
+          }
+        } else {
+          toast.info('In-app update isn’t available for this install — copy the command instead.')
+        }
+      },
+      (err: unknown) => {
+        toast.error(`Update failed: ${err instanceof Error ? err.message : String(err)}`)
+      },
+    )
+  }
 
   const dismiss = () => {
     try {
@@ -90,10 +143,21 @@ function UpdateBannerInner({
         New version available — <strong>{current}</strong> →{' '}
         <strong>{latest}</strong>
       </span>
+      {canUpdateInApp && (
+        <button
+          type="button"
+          className="update-banner-btn"
+          onClick={runUpdate}
+          disabled={updating}
+          title="Run the upgrade on the server, then restart to apply."
+        >
+          {updating ? 'Updating…' : 'Update now'}
+        </button>
+      )}
       <code className="update-banner-cmd">{UPGRADE_COMMAND}</code>
       <button
         type="button"
-        className="update-banner-btn"
+        className={canUpdateInApp ? 'update-banner-btn-ghost' : 'update-banner-btn'}
         onClick={copy}
         title="Copy upgrade command to clipboard"
       >

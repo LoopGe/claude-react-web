@@ -165,6 +165,25 @@ export function getPlanToolUseIds(msg: SdkMessage): string[] {
   return ids
 }
 
+/** Scan an assistant message for EnterPlanMode tool_use ids.
+ *
+ *  EnterPlanMode is unusual: unlike ExitPlanMode / AskUserQuestion it has
+ *  NO lifecycle map (it renders as a stateless inline marker and its
+ *  tool_result is consumed by nothing). But the SDK still emits a
+ *  tool_result for it, which would otherwise fall through to a standalone
+ *  orphan bubble. MessageList collects these ids to fold them into the
+ *  result-consumed predicate, suppressing that duplicate bubble. */
+export function getEnterPlanToolUseIds(msg: SdkMessage): string[] {
+  if (msg.type !== 'assistant') return []
+  const ids: string[] = []
+  for (const block of getBlocks(msg)) {
+    if (block.type !== 'tool_use' || block.name !== ENTER_PLAN_MODE_TOOL_NAME) continue
+    const id = extractToolUseId(block)
+    if (id) ids.push(id)
+  }
+  return ids
+}
+
 export function getSubagentStarts(msg: SdkMessage): ActiveSubagent[] {
   if (msg.type !== 'assistant') return []
   const out: ActiveSubagent[] = []

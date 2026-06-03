@@ -214,6 +214,56 @@ export async function checkForUpdates(force = false): Promise<UpdateInfo> {
   return probe
 }
 
+/** One-off probe of a caller-supplied registry URL that does NOT read or
+ *  write the module cache, and does NOT touch `config.updateCheckRegistry`.
+ *
+ *  Used by the "Check now" affordance in the setup wizard and the About
+ *  tab: there the user has TYPED a registry into the form but not yet saved
+ *  it to config. They want to validate *that* URL, not whatever the server
+ *  currently has persisted. Routing this through `checkForUpdates()` would
+ *  probe the stale saved value (and poison the shared cache with an
+ *  unsaved URL's result), which is exactly the bug this avoids.
+ *
+ *  An empty `registry` yields a `disabled` snapshot — symmetric with
+ *  `checkForUpdates()` so the UI can branch identically. */
+export async function probeRegistry(registry: string): Promise<UpdateInfo> {
+  const trimmed = registry.trim()
+  if (!trimmed) {
+    return {
+      current: CURRENT_VERSION,
+      packageName: PACKAGE_NAME,
+      installMethod: detectInstallMethod(),
+      hasUpdate: false,
+      source: 'npm',
+      disabled: true,
+    }
+  }
+  try {
+    const latest = await fetchLatestFromNpm(PACKAGE_NAME, trimmed)
+    return {
+      current: CURRENT_VERSION,
+      packageName: PACKAGE_NAME,
+      installMethod: detectInstallMethod(),
+      registry: trimmed,
+      latest,
+      hasUpdate: isVersionNewer(CURRENT_VERSION, latest),
+      checkedAt: Date.now(),
+      source: 'npm',
+    }
+  } catch (err) {
+    return {
+      current: CURRENT_VERSION,
+      packageName: PACKAGE_NAME,
+      installMethod: detectInstallMethod(),
+      registry: trimmed,
+      hasUpdate: false,
+      checkedAt: Date.now(),
+      error: err instanceof Error ? err.message : String(err),
+      source: 'npm',
+    }
+  }
+}
+
 /** Test hook — resets module state between unit tests. Not exported
  *  from the package's public surface. */
 export function __resetUpdateCheckerForTests(): void {

@@ -808,7 +808,11 @@ function AboutTab({
   info: UpdateInfo | null
   refreshing: boolean
   error: string | null
-  onRefresh?: () => void
+  /** Force a fresh probe. The optional argument lets the caller probe a
+   *  registry the user has typed but not yet saved — passed by "Check now"
+   *  so the result reflects the in-progress edit rather than the stale
+   *  saved value. */
+  onRefresh?: (registryOverride?: string) => void
   /** Pending value of `updateCheckRegistry` — saved when the modal's
    *  Save button fires `handleSave`. Empty string means "disable". */
   registry: string
@@ -981,9 +985,14 @@ function AboutTab({
       <div style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
         <button
           className="btn"
-          onClick={onRefresh}
-          disabled={refreshing || !onRefresh || disabled || updating}
-          title={disabled ? 'Set a registry URL above and Save first.' : undefined}
+          // Probe the CURRENTLY-TYPED registry, not the saved value — the
+          // user may be editing the field and wants to validate the new URL
+          // before committing it with Save. We no longer gate on the saved
+          // `disabled` snapshot; instead we gate on the live input being
+          // empty (probing an empty registry just yields `disabled` again).
+          onClick={() => onRefresh?.(registry)}
+          disabled={refreshing || !onRefresh || !registry.trim() || updating}
+          title={!registry.trim() ? 'Enter a registry URL above first.' : undefined}
         >
           {refreshing ? 'Checking…' : 'Check now'}
         </button>

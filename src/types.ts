@@ -177,6 +177,26 @@ export interface SdkMessage {
   total_cost_usd?: number
   num_turns?: number
   duration_ms?: number
+  /** Why the turn ended. Optional on both `success` and `error_*` SDK
+   *  `result` messages (the SDK declares it on both result variants). The
+   *  two `aborted_*` values mean the user interrupted the turn — the UI
+   *  renders those as an interrupted (⊘) result instead of a completed
+   *  (✓) one. This rides along on the message itself, so it survives
+   *  Virtuoso unmount/remount (unlike the old transient ref-based flag). */
+  terminal_reason?:
+    | 'blocking_limit'
+    | 'rapid_refill_breaker'
+    | 'prompt_too_long'
+    | 'image_error'
+    | 'model_error'
+    | 'aborted_streaming'
+    | 'aborted_tools'
+    | 'stop_hook_prevented'
+    | 'hook_stopped'
+    | 'tool_deferred'
+    | 'max_turns'
+    | 'completed'
+  stop_reason?: string | null
   [k: string]: unknown
 }
 

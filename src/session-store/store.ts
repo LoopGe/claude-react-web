@@ -2,11 +2,21 @@ import { createInitialSessionState, type SessionAction, type SessionSnapshot, ty
 import { rebuildIndexesFromMessages, reduceSessionState } from './reducer'
 import { extractMessagePlainText } from '../search'
 import type { SdkMessage } from '../types'
+import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME } from '../constants/toolNames'
 
 type Listener = () => void
 
 const STORAGE_PREFIX = 'claude-web-session:'
-const STORAGE_MAX_BYTES = 4 * 1024 * 1024 // 4MB per session (localStorage limit ~5MB)
+// Per-session cap. Kept well below the browser's ~5MB total localStorage
+// quota so a single large transcript can't monopolise storage and starve
+// unrelated keys (session-groups, sidebar-order, …). A session over this
+// is trimmed to its last 200 messages in persistToStorage.
+const STORAGE_MAX_BYTES = 1 * 1024 * 1024 // 1MB per session
+// Total byte budget across ALL claude-web-session:* entries. The eviction
+// pass keeps the sum under this so the cache can never fill the ~5MB quota
+// and cause QuotaExceededError on unrelated setItem calls. ~1.5MB headroom
+// is left for every other (small) key.
+const STORAGE_TOTAL_BUDGET = 3.5 * 1024 * 1024 // 3.5MB across all sessions
 const MAX_CACHED_SESSIONS = 20
 
 /** Remove a session's localStorage cache. Called on explicit delete. */
@@ -28,35 +38,53 @@ export function clearAllSessionStorage(): void {
   } catch { /* ignore */ }
 }
 
-/** Evict oldest localStorage entries when we have too many cached sessions.
+/** Evict oldest localStorage entries until BOTH constraints hold:
+ *   - total bytes across all claude-web-session:* keys <= STORAGE_TOTAL_BUDGET
+ *   - entry count <= MAX_CACHED_SESSIONS
+ *  Byte budget is the primary constraint (the count cap alone let a few
+ *  large transcripts fill the quota — the bug this fixes). Eviction is
+ *  oldest-first by `savedAt`; the session that just wrote has the newest
+ *  timestamp and sorts last, so a write never prunes itself.
+ *
  *  Throttled to run at most once per minute to avoid repeated JSON.parse
- *  overhead on every persistToStorage call. */
+ *  overhead on every persistToStorage call. Pass `force` to bypass the
+ *  throttle — used by the QuotaExceededError recovery path, which must
+ *  free space immediately rather than wait out the window. */
 let _lastPruneAt = 0
-function pruneStorageCache(): void {
+function pruneStorageCache(force = false): void {
   const now = Date.now()
-  if (now - _lastPruneAt < 60_000) return
+  if (!force && now - _lastPruneAt < 60_000) return
   _lastPruneAt = now
   try {
-    const entries: Array<{ key: string; ts: number }> = []
+    const entries: Array<{ key: string; ts: number; bytes: number }> = []
+    let totalBytes = 0
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i)
       if (!key?.startsWith(STORAGE_PREFIX)) continue
       const raw = localStorage.getItem(key)
       if (!raw) continue
+      // Approximate byte size by string length — same unit used by the
+      // STORAGE_MAX_BYTES check in persistToStorage, so the two agree.
+      const bytes = raw.length + key.length
+      totalBytes += bytes
       try {
         const data = JSON.parse(raw) as { savedAt?: number }
         // Use the savedAt timestamp written by persistToStorage.
         // Fall back to 0 for entries written by older versions.
-        entries.push({ key, ts: typeof data.savedAt === 'number' ? data.savedAt : 0 })
+        entries.push({ key, ts: typeof data.savedAt === 'number' ? data.savedAt : 0, bytes })
       } catch {
-        entries.push({ key, ts: 0 })
+        entries.push({ key, ts: 0, bytes })
       }
     }
     // Sort oldest first — evict the least-recently-saved entries.
     entries.sort((a, b) => a.ts - b.ts)
-    while (entries.length > MAX_CACHED_SESSIONS) {
+    while (
+      entries.length > 0 &&
+      (totalBytes > STORAGE_TOTAL_BUDGET || entries.length > MAX_CACHED_SESSIONS)
+    ) {
       const oldest = entries.shift()!
       localStorage.removeItem(oldest.key)
+      totalBytes -= oldest.bytes
     }
   } catch { /* ignore */ }
 }
@@ -65,44 +93,74 @@ function pruneStorageCache(): void {
  *  destruction (idle pruning) and page reloads. Only stores the essential
  *  data needed to render the conversation — liveTurn, permissions, and
  *  other ephemeral state are excluded. */
+/** True for a quota-exceeded write failure across browsers. Firefox uses
+ *  code 1014 / name 'NS_ERROR_DOM_QUOTA_REACHED'; everyone else 22 /
+ *  'QuotaExceededError'. */
+function isQuotaError(e: unknown): boolean {
+  return (
+    e instanceof DOMException &&
+    (e.code === 22 ||
+      e.code === 1014 ||
+      e.name === 'QuotaExceededError' ||
+      e.name === 'NS_ERROR_DOM_QUOTA_REACHED')
+  )
+}
+
 function persistToStorage(sessionId: string, state: SessionState): void {
+  // plainText is derived from msg via extractMessagePlainText — we never
+  // persist it. loadFromStorage re-derives on hydrate so format upgrades
+  // to the extractor land automatically.
+  const payload = JSON.stringify({
+    v: 1,
+    savedAt: Date.now(),
+    messages: state.messages,
+    items: state.items.map((i) => ({
+      id: i.id,
+      isCompactSummary: i.isCompactSummary,
+      hiddenByDefault: i.hiddenByDefault,
+      // Store msg as raw object — SdkMessage is loosely typed
+      msg: i.msg,
+    })),
+    lastMessageUuid: state.lastMessageUuid,
+  })
+  // Trim oversized transcripts to their last 200 messages so a single
+  // session can't blow past STORAGE_MAX_BYTES.
+  const toWrite =
+    payload.length > STORAGE_MAX_BYTES
+      ? JSON.stringify({
+          v: 1,
+          savedAt: Date.now(),
+          messages: state.messages.slice(-200),
+          items: state.items.slice(-200).map((i) => ({
+            id: i.id,
+            msg: i.msg,
+            isCompactSummary: i.isCompactSummary,
+            hiddenByDefault: i.hiddenByDefault,
+          })),
+          lastMessageUuid: state.lastMessageUuid,
+        })
+      : payload
+
+  const key = STORAGE_PREFIX + sessionId
   try {
-    // plainText is derived from msg via extractMessagePlainText —
-    // we never persist it.  loadFromStorage re-derives on hydrate
-    // so format upgrades to the extractor land automatically.
-    const payload = JSON.stringify({
-      v: 1,
-      savedAt: Date.now(),
-      messages: state.messages,
-      items: state.items.map((i) => ({
-        id: i.id,
-        isCompactSummary: i.isCompactSummary,
-        hiddenByDefault: i.hiddenByDefault,
-        // Store msg as raw object — SdkMessage is loosely typed
-        msg: i.msg,
-      })),
-      lastMessageUuid: state.lastMessageUuid,
-    })
-    if (payload.length > STORAGE_MAX_BYTES) {
-      // Trim oldest items to fit — keep last 200 messages max
-      const trimmed = JSON.stringify({
-        v: 1,
-        messages: state.messages.slice(-200),
-        items: state.items.slice(-200).map((i) => ({
-          id: i.id,
-          msg: i.msg,
-          isCompactSummary: i.isCompactSummary,
-          hiddenByDefault: i.hiddenByDefault,
-        })),
-        lastMessageUuid: state.lastMessageUuid,
-      })
-      localStorage.setItem(STORAGE_PREFIX + sessionId, trimmed)
-    } else {
-      localStorage.setItem(STORAGE_PREFIX + sessionId, payload)
-    }
+    localStorage.setItem(key, toWrite)
     pruneStorageCache()
-  } catch {
-    // localStorage quota exceeded or unavailable — silently skip
+  } catch (e) {
+    // Quota full: force an immediate eviction pass (bypassing the 60s
+    // throttle) to free space, then retry once. If it still fails, give
+    // up — the transcript cache is a non-essential render optimisation,
+    // but log so a recurring quota problem is visible rather than silent.
+    if (isQuotaError(e)) {
+      try {
+        pruneStorageCache(true)
+        localStorage.setItem(key, toWrite)
+      } catch {
+        console.warn(
+          `[session-store] transcript cache write for ${sessionId} failed after eviction — localStorage still full; skipping`,
+        )
+      }
+    }
+    // Non-quota errors (e.g. SecurityError in private mode): silently skip.
   }
 }
 
@@ -352,6 +410,12 @@ export class SessionStore {
 //   • running + tool_result EXISTS in log → id-mismatch: the result is there
 //     but its tool_use_id didn't match the seeded id (normalize.ts bug).
 //
+// It ALSO reports `orphans`: every tool_result that did NOT merge into its
+// card (so MessageList draws a standalone bubble). Each orphan is tagged
+// `isExcludedByDesign` — true for Plan/Question/Subagent (expected fallback,
+// they own their rendering) and false for a generic tool whose result should
+// have merged but didn't (a real matching bug). Read the `diagnosis` field.
+//
 // Paste the output back and we can name the root cause with certainty.
 
 const debugStores = new Map<string, Set<SessionStore>>()
@@ -390,6 +454,29 @@ interface ToolEntryDump {
   diagnosis: string
 }
 
+/** One tool_result block in the live message log that did NOT get merged
+ *  into its originating tool card (so MessageList draws it as a standalone
+ *  "orphan" bubble). The headline field is `isExcludedByDesign`: it splits
+ *  expected orphans (Plan/Question/Subagent — excluded from the merge map
+ *  on purpose, they own their own rendering) from REAL orphans (a generic
+ *  tool whose result should have merged but didn't — a matching bug). */
+interface OrphanResultDump {
+  toolUseId: string
+  /** Tool name resolved from the originating tool_use, null if none found
+   *  in the live log (result with no matching tool_use — a different bug). */
+  toolName: string | null
+  /** True when the tool is in TOOL_STATUS_EXCLUDE — orphan bubble is the
+   *  EXPECTED fallback, the specific card (PlanCard/QuestionCard/Subagent)
+   *  should be the real renderer. False = unexpected, investigate. */
+  isExcludedByDesign: boolean
+  /** Whether the id was seeded into toolStatus (a generic card exists for
+   *  it). True here with an orphan result means the merge step skipped it. */
+  hasSeededStatus: boolean
+  /** parent_tool_use_id of the carrying user frame (null = main thread). */
+  parentToolUseId: string | null
+  diagnosis: string
+}
+
 interface ToolStatusDump {
   sessionId: string
   total: number
@@ -399,7 +486,25 @@ interface ToolStatusDump {
    *  previous version only analyzed 'running' entries — useless once the
    *  turn-end sweep has flipped lingering 'running' tools to 'error'. */
   problems: ToolEntryDump[]
+  /** tool_result blocks rendered as standalone orphan bubbles (not merged
+   *  into a card). Each is tagged expected-vs-real so you can tell a
+   *  by-design fallback from a genuine merge failure at a glance. */
+  orphans: OrphanResultDump[]
   all: Record<string, string>
+}
+
+/** Mirrors normalize.ts's TOOL_STATUS_EXCLUDE (not exported there). Tools
+ *  here are intentionally kept out of the generic toolStatus/toolResults
+ *  maps because they have dedicated renderers, so their tool_result lands
+ *  as an orphan bubble by design. */
+function isExcludedFromMerge(toolName: string | null): boolean {
+  if (!toolName) return false
+  return (
+    PLAN_TOOL_NAMES.has(toolName) ||
+    SUBAGENT_TOOL_NAMES.has(toolName) ||
+    toolName === ENTER_PLAN_MODE_TOOL_NAME ||
+    toolName === 'AskUserQuestion'
+  )
 }
 
 function dumpToolStatus(): ToolStatusDump[] {
@@ -464,9 +569,105 @@ function dumpToolStatus(): ToolStatusDump[] {
           diagnosis,
         })
       }
+      // EnterPlanMode ids — it has no lifecycle map (renders as a stateless
+      // marker) yet still emits a tool_result. MessageList's predicate folds
+      // these in to suppress the stray bubble; mirror that here so the
+      // diagnostic agrees with what's actually rendered.
+      const enterPlanIds = new Set<string>()
+      for (const m of messages) {
+        const content = m.message?.content
+        if (!Array.isArray(content)) continue
+        for (const b of content as Array<Record<string, unknown>>) {
+          if (b.type === 'tool_use' && b.name === ENTER_PLAN_MODE_TOOL_NAME) {
+            const eid = typeof b.id === 'string' ? b.id : typeof b.tool_use_id === 'string' ? b.tool_use_id : null
+            if (eid) enterPlanIds.add(eid)
+          }
+        }
+      }
+      // Orphan scan: the inverse of the loop above. Instead of starting
+      // from seeded ids, walk every tool_result block in the live log and
+      // ask "did this get consumed by a card?" The ones that didn't are
+      // exactly what MessageList draws as standalone orphan bubbles.
+      const orphans: OrphanResultDump[] = []
+      const seenOrphanIds = new Set<string>()
+      for (const m of messages) {
+        const content = m.message?.content
+        if (!Array.isArray(content)) continue
+        const parent = (m as Record<string, unknown>).parent_tool_use_id
+        for (const b of content as Array<Record<string, unknown>>) {
+          if (b.type !== 'tool_result' || typeof b.tool_use_id !== 'string') continue
+          const id = b.tool_use_id
+          // Consumed → not an orphan. This MUST mirror the render predicate
+          // (MessageList.tsx makeResultConsumed): generic inline merge
+          // (toolResults), PlanCard (planStatus), QuestionCard
+          // (questionAnswers), or the EnterPlanMode marker (enterPlanIds).
+          // Subagent ids are in none of these, so they still surface as
+          // orphan bubbles by design.
+          if (
+            state.toolResults.has(id) ||
+            state.planStatus.has(id) ||
+            state.questionAnswers.has(id) ||
+            enterPlanIds.has(id)
+          ) {
+            continue
+          }
+          if (seenOrphanIds.has(id)) continue
+          seenOrphanIds.add(id)
+          // Resolve the originating tool_use name (search the whole log).
+          let toolName: string | null = null
+          for (const mm of messages) {
+            const c = mm.message?.content
+            if (!Array.isArray(c)) continue
+            for (const bb of c as Array<Record<string, unknown>>) {
+              if (bb.type === 'tool_use' && (bb.id === id || bb.tool_use_id === id)) {
+                toolName = typeof bb.name === 'string' ? bb.name : null
+              }
+            }
+          }
+          const excluded = isExcludedFromMerge(toolName)
+          const hasSeededStatus = state.toolStatus.has(id)
+          let diagnosis: string
+          if (excluded) {
+            // Plan / Question results are normally consumed by their card
+            // (planStatus / questionAnswers) and skipped above, so reaching
+            // here for those is unusual — it means the lifecycle map was
+            // pruned away while the result still lingers in the log. Subagent
+            // (Agent/Task/Explore) results legitimately surface as bubbles:
+            // SubagentCard owns the input card, the result bubble is the
+            // worker's only output in the main transcript and is kept by design.
+            diagnosis =
+              `EXPECTED — "${toolName}" is excluded from the merge map by design; ` +
+              'its dedicated renderer (PlanCard / QuestionCard / SubagentCard) is the ' +
+              'real card. For Subagent the orphan bubble is the worker output (kept); ' +
+              'for Plan/Question the result is normally suppressed once its card consumes it.'
+          } else if (toolName == null) {
+            diagnosis =
+              'NO matching tool_use in live log — the result arrived without (or before) ' +
+              'its tool_use. Likely an out-of-order frame or a pump-drop of the assistant turn.'
+          } else if (hasSeededStatus) {
+            diagnosis =
+              `REAL ORPHAN — "${toolName}" WAS seeded into toolStatus but its result was not ` +
+              'merged into toolResults. The reducer merge step skipped it (see reducer.ts ' +
+              'getToolResultEntries gate: toolStatus.has(id) && !toolResults.has(id)).'
+          } else {
+            diagnosis =
+              `REAL ORPHAN — generic tool "${toolName}" never seeded into toolStatus, so its ` +
+              'result could not merge. Likely an id-extraction mismatch in normalize.ts ' +
+              '(getToolUseStarts) between the tool_use id and the tool_result tool_use_id.'
+          }
+          orphans.push({
+            toolUseId: id,
+            toolName,
+            isExcludedByDesign: excluded,
+            hasSeededStatus,
+            parentToolUseId: typeof parent === 'string' ? parent : null,
+            diagnosis,
+          })
+        }
+      }
       const all: Record<string, string> = {}
       for (const [id, status] of state.toolStatus) all[id] = status
-      out.push({ sessionId, total: state.toolStatus.size, counts, problems, all })
+      out.push({ sessionId, total: state.toolStatus.size, counts, problems, orphans, all })
     }
   }
   console.log('[toolStatus dump]', out)

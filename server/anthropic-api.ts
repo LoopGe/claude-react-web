@@ -1,6 +1,6 @@
 // Shared Anthropic Messages API caller for the small handful of server
 // features that need an LLM round-trip (recap, commit-message). Both
-// previously hand-rolled the same fetch + auth + 15s-timeout + response
+// previously hand-rolled the same fetch + auth + 30s-timeout + response
 // parsing — extracting it here keeps the contract (auth header shape,
 // version pin, error format) in one place. Callers do their own
 // post-processing (regex trims, fence stripping) since each prompt's
@@ -14,7 +14,7 @@ interface CallOptions {
   userContent: string
   maxTokens: number
   temperature: number
-  /** Optional caller signal. If omitted, a 15s timeout signal is used. */
+  /** Optional caller signal. If omitted, a 30s timeout signal is used. */
   signal?: AbortSignal
 }
 
@@ -38,7 +38,7 @@ export async function callAnthropicMessages(opts: CallOptions): Promise<string> 
       system: opts.system,
       messages: [{ role: 'user', content: opts.userContent }],
     }),
-    signal: opts.signal ?? AbortSignal.timeout(15_000),
+    signal: opts.signal ?? AbortSignal.timeout(30_000),
   })
   if (!res.ok) {
     const body = await res.text().catch(() => '')

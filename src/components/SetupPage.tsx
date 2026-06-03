@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../hooks/useApi'
 import { useNotifications } from '../hooks/useNotifications'
+import { useUpdateInfo } from '../hooks/useUpdateInfo'
 import { notificationTooltip } from '../utils/notifications'
 import { IconBell, IconBellOff, IconX, IconCheck } from './icons/ToolIcons'
 
@@ -38,7 +39,8 @@ const STEPS = [
   { id: 1, short: 'Auth Token', subtitle: 'Configure your Anthropic API credentials to get started.' },
   { id: 2, short: 'Models', subtitle: 'Pick the models you want available in new sessions.' },
   { id: 3, short: 'Notifications', subtitle: 'Decide how you want to be notified when a turn completes.' },
-  { id: 4, short: 'Finish', subtitle: "You're ready — let's open your first session." },
+  { id: 4, short: 'Updates', subtitle: 'Choose the npm registry used to check for updates.' },
+  { id: 5, short: 'Finish', subtitle: "You're ready — let's open your first session." },
 ] as const
 
 type Step = (typeof STEPS)[number]['id']
@@ -68,7 +70,7 @@ interface ClaudeHealth {
  *  be added here explicitly; the default is to NOT advance, which keeps
  *  the "Add model" field and other context-sensitive Enter behaviours
  *  from being silently overridden by the wizard. */
-const ADVANCE_ON_ENTER_INPUT_IDS = new Set(['auth-token', 'base-url'])
+const ADVANCE_ON_ENTER_INPUT_IDS = new Set(['auth-token', 'base-url', 'update-registry'])
 
 export function SetupPage({ onConfigured }: Props) {
   // ── Wizard step ──
@@ -99,6 +101,22 @@ export function SetupPage({ onConfigured }: Props) {
 
   // ── Step 3: Notifications ──
   const notifications = useNotifications()
+
+  // ── Step 4: Update registry ──
+  // Empty string = update checks disabled (mirrors server/config.ts:
+  // updateCheckRegistry default ''). Default-fill the public npm registry
+  // so the common case is one click; the user can clear it to opt out.
+  const [updateRegistry, setUpdateRegistry] = useState('https://registry.npmjs.org')
+  // `enabled: false` — no auto-probe on mount. During setup the registry
+  // isn't saved yet, so the only meaningful probe is the explicit "Check
+  // now" below, which passes the typed value as an override. `info` here
+  // therefore only ever reflects an override probe, never the saved config.
+  const updateProbe = useUpdateInfo(false)
+  // The exact (trimmed) registry value the last "Check now" probed. We only
+  // render the probe result when this still matches the input — so editing
+  // the field after a check hides the now-stale result. `null` = no probe
+  // yet (or the result was invalidated by an edit).
+  const [probedRegistry, setProbedRegistry] = useState<string | null>(null)
 
   // ── Submit state ──
   // We only POST /config/setup once, when the user clicks the final button
@@ -270,6 +288,11 @@ export function SetupPage({ onConfigured }: Props) {
             modelList: modelList.length > 0 ? modelList : undefined,
             recapModel: recapModel.trim() || undefined,
             commitMessageModel: commitMessageModel.trim() || undefined,
+            // Always send the registry (even when empty) so an explicit
+            // opt-out — the user clearing the prefilled value — persists
+            // as updateCheckRegistry: '' rather than being silently
+            // dropped to the server default.
+            updateCheckRegistry: updateRegistry.trim(),
           })
           setSetupCompleted(true)
         }
@@ -299,7 +322,7 @@ export function SetupPage({ onConfigured }: Props) {
       // flipped isConfigured), so calling setSubmitting(false) would warn
       // about state-on-unmounted in dev.
     },
-    [authToken, baseUrl, modelList, recapModel, commitMessageModel, onConfigured, setupCompleted],
+    [authToken, baseUrl, modelList, recapModel, commitMessageModel, updateRegistry, onConfigured, setupCompleted],
   )
 
   // ── Navigation helpers ──
@@ -724,6 +747,73 @@ export function SetupPage({ onConfigured }: Props) {
           )}
 
           {step === 4 && (
+            <div style={styles.field}>
+              <label style={styles.label} htmlFor="update-registry">
+                Update registry <span style={styles.optional}>(optional)</span>
+              </label>
+              <p id="update-registry-hint" style={styles.hint}>
+                The npm registry probed for the <code style={styles.code}>latest</code>{' '}
+                dist-tag to tell you when a new version of Claude Web is
+                available. Leave empty to disable update checks.
+              </p>
+              <input
+                id="update-registry"
+                type="url"
+                value={updateRegistry}
+                onChange={(e) => {
+                  setUpdateRegistry(e.target.value)
+                  // A previous probe's result describes the OLD URL — drop it
+                  // the moment the field changes so a stale "up to date" / error
+                  // line doesn't appear to vouch for the newly-typed value.
+                  if (updateProbe.info) setProbedRegistry(null)
+                }}
+                placeholder="https://registry.npmjs.org"
+                style={styles.input}
+                aria-describedby="update-registry-hint"
+                autoComplete="off"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+              />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 2 }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProbedRegistry(updateRegistry.trim())
+                    updateProbe.refresh(updateRegistry)
+                  }}
+                  disabled={updateProbe.refreshing || !updateRegistry.trim()}
+                  style={styles.secondaryBtn}
+                  title={!updateRegistry.trim() ? 'Enter a registry URL first.' : undefined}
+                >
+                  {updateProbe.refreshing ? 'Checking…' : 'Check now'}
+                </button>
+                {/* Only show a result when it describes the value currently
+                 *  in the box (probedRegistry === the trimmed input). */}
+                {probedRegistry !== null && probedRegistry === updateRegistry.trim() && !updateProbe.refreshing && (
+                  <span style={styles.hint} role="status">
+                    {updateProbe.error || updateProbe.info?.error ? (
+                      <span style={{ color: 'var(--msg-error-fg)' }}>
+                        Couldn’t reach registry: {updateProbe.error || updateProbe.info?.error}
+                      </span>
+                    ) : updateProbe.info?.disabled ? (
+                      'Update checks disabled (empty registry).'
+                    ) : updateProbe.info?.latest ? (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <IconCheck size={12} /> Reachable — latest {updateProbe.info.latest}
+                      </span>
+                    ) : null}
+                  </span>
+                )}
+              </div>
+              <p style={styles.hint}>
+                You can change this later from the About tab in the global
+                settings panel.
+              </p>
+            </div>
+          )}
+
+          {step === 5 && (
             <div style={styles.field}>
               <label style={styles.label}>You're all set</label>
               <p style={styles.hint}>

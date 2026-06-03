@@ -46,12 +46,19 @@ class SessionStoreRegistry {
     }
   }
 
+  /** Permanently drop a session's cache. Destroys the in-memory store (if
+   *  one exists) BEFORE clearing localStorage — otherwise the idle sweep's
+   *  destroy()→save() would re-persist the key and resurrect the orphan.
+   *  Clears storage unconditionally so a cached transcript with no live
+   *  store entry (e.g. left over from a previous tab/session) is still
+   *  purged. */
   delete(sessionId: string): void {
     const entry = this.stores.get(sessionId)
-    if (!entry) return
-    entry.store.destroy()
+    if (entry) {
+      entry.store.destroy()
+      this.stores.delete(sessionId)
+    }
     clearSessionStorage(sessionId)
-    this.stores.delete(sessionId)
   }
 
   private ensureEntry(sessionId: string): StoreEntry {

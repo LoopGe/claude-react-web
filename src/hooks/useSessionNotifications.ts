@@ -13,11 +13,21 @@
 //      user isn't actively watching. Tagged `:perm` so it doesn't
 //      collide with the same session's turn-complete toast.
 //
-// Both gates use the same visibility rule — `document.hasFocus() &&
-// focusedId === sessionId` means the user is staring right at it, no
-// desktop interruption needed. `hasFocus()` (rather than visibilityState)
-// catches minimised / Alt-Tabbed / locked-screen cases that still report
-// 'visible'.
+// Both gates use the same THREE-state visibility rule (see `presentation`):
+//   - 'skip'    → window focused AND this session is the one on screen.
+//                 The user is staring right at it; no interruption at all.
+//   - 'toast'   → window focused but the user is looking at a DIFFERENT
+//                 session. They're in the page, so an in-app toast is the
+//                 right weight — lighter than an OS toast and guaranteed
+//                 visible (Windows Action Center can silently drop desktop
+//                 notifications from a backgrounded-feeling page). Toasts
+//                 do NOT require browser permission and are independent of
+//                 the desktop-notification master switch.
+//   - 'desktop' → window not focused (minimised / Alt-Tabbed / locked).
+//                 A toast wouldn't be seen, so fall back to the OS
+//                 notification (still gated by enable + permission).
+// `hasFocus()` (rather than visibilityState) catches minimised /
+// Alt-Tabbed / locked-screen cases that still report 'visible'.
 //
 // The hook reads `focusedIdRef`, `sessionsRef`, `handleSelectRef` via
 // passed-in RefObjects so its callbacks stay referentially stable
@@ -28,7 +38,17 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { RefObject } from 'react'
 import { useNotifications, type UseNotifications } from './useNotifications'
+import { useToast } from './useToast'
 import type { SessionInfo } from '../types'
+
+/** How to surface an event, given window focus + which session is on
+ *  screen. See the file header for the rationale behind each state. */
+type Presentation = 'skip' | 'toast' | 'desktop'
+function presentation(windowFocused: boolean, isFocusedSession: boolean): Presentation {
+  if (windowFocused && isFocusedSession) return 'skip'
+  if (windowFocused) return 'toast'
+  return 'desktop'
+}
 
 export interface UseSessionNotificationsArgs {
   /** Currently-focused session id (or null). Read at notify time to
@@ -85,6 +105,15 @@ export function useSessionNotifications({
     notifyRef.current = notifications.notify
   })
 
+  // Same ref-mirror trick for the toast hub. `useToast()` is already
+  // referentially stable (memoised), but mirroring keeps the pattern
+  // uniform and decouples the maybe* callbacks from it entirely.
+  const toast = useToast()
+  const toastRef = useRef(toast)
+  useEffect(() => {
+    toastRef.current = toast
+  })
+
   /** Last-seen working flag per session. We notify when this flips from
    *  true to false (= a turn just completed). */
   const prevWorkingRef = useRef<Map<string, boolean>>(new Map())
@@ -97,7 +126,8 @@ export function useSessionNotifications({
       // hasFocus() correctly returns false, so we still fire the notification.
       const windowFocused = typeof document !== 'undefined' && document.hasFocus()
       const isFocused = focusedIdRef.current === sessionId
-      if (windowFocused && isFocused) return
+      const mode = presentation(windowFocused, isFocused)
+      if (mode === 'skip') return
 
       // Look up a friendly title — fall back to id prefix when we haven't
       // seen the session in the list yet (unlikely but possible during
@@ -106,6 +136,20 @@ export function useSessionNotifications({
       const session = sessionsNow.find((s) => s.id === sessionId)
       const title = session?.title ?? sessionId.slice(0, 8)
 
+      if (mode === 'toast') {
+        // User is in the page, just on another session. A sticky toast
+        // (durationMs:0) stays until they act — permission requests block
+        // the turn until answered. Independent of the desktop-notification
+        // master switch / browser permission.
+        toastRef.current.info(`⚠ ${title} needs permission`, {
+          durationMs: 0,
+          actionLabel: 'Open',
+          onClick: () => handleSelectRef.current?.(sessionId),
+        })
+        return
+      }
+
+      // mode === 'desktop' — window not focused, fall back to the OS toast.
       notifyRef.current({
         title: `⚠ ${title} needs permission`,
         body: `Approve or deny: ${toolLabel}`,
@@ -131,9 +175,25 @@ export function useSessionNotifications({
 
       const windowFocused = typeof document !== 'undefined' && document.hasFocus()
       const isFocused = focusedIdRef.current === s.id
-      if (windowFocused && isFocused) return // user is watching it — no need
+      const mode = presentation(windowFocused, isFocused)
+      if (mode === 'skip') return // user is watching it — no need
 
       const title = s.title ?? s.id.slice(0, 8)
+
+      if (mode === 'toast') {
+        // User is in the page, just on another session — an in-app toast is
+        // the right weight. Click jumps to the session (same handler as the
+        // desktop notification below).
+        const onClick = () => handleSelectRef.current?.(s.id)
+        if (s.error) {
+          toastRef.current.error(`✗ ${title} · ${s.error}`, { onClick })
+        } else {
+          toastRef.current.info(`✓ ${title} · Turn complete`, { onClick })
+        }
+        return
+      }
+
+      // mode === 'desktop' — window not focused, fall back to the OS toast.
       notifyRef.current({
         title: `✓ ${title}`,
         body: s.error ? `Errored: ${s.error}` : 'Turn complete',
