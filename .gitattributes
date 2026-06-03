@@ -1,0 +1,36 @@
+# Normalize line endings: store everything as LF in the repo, and check out
+# as LF on every platform. This makes the working tree byte-identical across
+# Windows/macOS/Linux and stops `core.autocrlf` from rewriting endings on
+# commit (the source of the "LF will be replaced by CRLF" warnings).
+* text=auto eol=lf
+
+# Explicit text types (belt-and-suspenders; covered by text=auto but kept
+# so intent is obvious and a future binary-looking extension isn't guessed).
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.js    text eol=lf
+*.mjs   text eol=lf
+*.cjs   text eol=lf
+*.json  text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.svg   text eol=lf
+
+# Binary assets: never touch their bytes (no eol conversion, no diff/merge).
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.eot   binary
+*.pdf   binary
+
+# Lockfile is text but huge — keep LF, skip noisy diffs in review tools.
+package-lock.json text eol=lf linguist-generated=true
