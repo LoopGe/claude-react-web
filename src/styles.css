@@ -290,19 +290,80 @@ button { cursor: pointer; }
   pointer-events: none;
 }
 
-/* Toolbar accent picker inherits .btn.btn-icon base styles.
-   Only needs layout override for the swatch row. */
-.main-toolbar .accent-picker {
-  gap: 3px;
-  min-width: unset;
+/* Accent picker trigger: a single swatch button that opens the popover.
+   In the toolbar it also carries `.btn.btn-icon`, so it inherits that
+   button's sizing and hover treatment; we only centre the swatch inside. */
+.accent-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* Never let a flex/grid parent stretch the trigger to full width — it's
+     a compact swatch button, not a field. Matters in the New-session dialog
+     where `.settings-field` is a column flexbox (align-items: stretch). */
+  align-self: flex-start;
 }
-.main-toolbar .accent-swatch {
-  width: 14px;
-  height: 14px;
+/* Standalone trigger (not carrying `.btn`): give it its own compact button
+   chrome so it reads as a button, not a bare dot. The toolbar trigger has
+   `.btn.btn-icon` for this; `:not(.btn)` keeps the two from fighting over
+   padding (equal specificity would otherwise let the later rule win). */
+.accent-trigger:not(.btn) {
+  padding: 5px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
 }
-.main-toolbar .accent-swatch.active {
-  border-color: var(--swatch-strong);
-  box-shadow: 0 0 0 1px var(--bg-elev-2);
+.accent-trigger:not(.btn):hover {
+  border-color: var(--fg-muted);
+}
+.accent-trigger .accent-swatch {
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+}
+.accent-trigger:hover .accent-swatch {
+  border-color: var(--fg-muted);
+}
+
+/* Accent picker popover: reuses the .ctx-menu visual language. Hosts the
+   swatch grid (.accent-picker) laid out 5-per-row so 8 presets + default
+   + custom wrap into two tidy rows. */
+.accent-popover {
+  position: fixed;
+  padding: 10px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+}
+.accent-popover .accent-picker {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+  padding: 0;
+}
+.accent-popover .accent-swatch {
+  width: 26px;
+  height: 26px;
+}
+/* Full-width section break inside the swatch grid (e.g. before "Recent").
+   Spans every column so the swatches after it start on a fresh row. */
+.accent-picker-divider {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  /* Hairline rule to the right of the label. */
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.accent-picker-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
 }
 
 .input, .textarea, .select {

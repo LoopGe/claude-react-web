@@ -21,6 +21,30 @@ export const ACCENT_COLORS = [
 
 export const ACCENT_COLOR_KEY = 'claude-react-web:accent-color'
 export const SESSION_COLORS_KEY = 'claude-react-web:session-colors'
+/** Globally-shared list of recently-used custom accent colours (newest
+ *  first). Lets a colour picked via the native colour input survive being
+ *  switched away from, so the user can re-select it later without redialing
+ *  it in the OS picker. Presets are never stored here (they're always in
+ *  the grid). Shared across all three picker sites via useLocalStorage's
+ *  same-tab sync. */
+export const RECENT_COLORS_KEY = 'claude-react-web:recent-colors'
+/** LRU cap on the recent-custom-colours list. Six keeps the popover's
+ *  "Recent" row tidy (the grid is five columns) while still being useful. */
+export const MAX_RECENT_COLORS = 6
+
+/** Type-guard for the persisted recent-colours array. Rejects anything
+ *  that isn't an array of `#rrggbb` strings so a corrupt / hand-edited
+ *  localStorage value can't crash the grid renderer. Used as the
+ *  `validate` option to useLocalStorage. */
+export function isHexColorList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(isHexColor)
+}
+
+/** True for a 6-digit `#rrggbb` hex string. The native <input type="color">
+ *  always emits this canonical form, so we normalise/validate against it. */
+export function isHexColor(value: unknown): value is string {
+  return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
+}
 
 /** Resolve the `--accent-strong` value (hover / active variant) for any
  *  accent hex. Presets carry a hand-tuned `strong`; arbitrary colours

@@ -98,6 +98,7 @@ export function SetupPage({ onConfigured }: Props) {
   const [recapModel, setRecapModel] = useState('')
   const [commitMessageModel, setCommitMessageModel] = useState('')
   const [duplicateMsg, setDuplicateMsg] = useState<string | null>(null)
+  const [modelsPrefilled, setModelsPrefilled] = useState(false)
 
   // ── Step 3: Notifications ──
   const notifications = useNotifications()
@@ -135,7 +136,7 @@ export function SetupPage({ onConfigured }: Props) {
   // Pre-fill from ~/.claude/settings.json if available.
   useEffect(() => {
     void api
-      .get<{ authToken?: string; baseUrl?: string }>('/config/claude-defaults')
+      .get<{ authToken?: string; baseUrl?: string; modelList?: string[] }>('/config/claude-defaults')
       .then((r) => {
         if (r.authToken) {
           setAuthToken(r.authToken)
@@ -144,6 +145,10 @@ export function SetupPage({ onConfigured }: Props) {
         if (r.baseUrl) {
           setBaseUrl(r.baseUrl)
           setBaseUrlPrefilled(true)
+        }
+        if (Array.isArray(r.modelList) && r.modelList.length > 0) {
+          setModelList(r.modelList)
+          setModelsPrefilled(true)
         }
       })
       .catch(() => {})
@@ -245,10 +250,12 @@ export function SetupPage({ onConfigured }: Props) {
     setModelList([...modelList, m])
     setNewModel('')
     setDuplicateMsg(null)
+    setModelsPrefilled(false)
   }
 
   const removeModel = (model: string) => {
     setModelList(modelList.filter((m) => m !== model))
+    setModelsPrefilled(false)
     // Reset bound selects + show a transient hint so the user knows the
     // dependent selection silently dropped to default. Without the
     // notice, a user removing their custom recap model on Step 2 has no
@@ -617,6 +624,13 @@ export function SetupPage({ onConfigured }: Props) {
                 <p style={styles.hint}>
                   First model is the default. Add model IDs one at a time.
                 </p>
+                {modelsPrefilled && (
+                  <p style={styles.prefilledHint}>
+                    Pre-filled from{' '}
+                    <code style={styles.code}>~/.claude/settings.json</code>{' '}
+                    (ANTHROPIC_DEFAULT_*_MODEL). Edit to override.
+                  </p>
+                )}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                   {modelList.map((m, i) => (
                     <div key={m} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>

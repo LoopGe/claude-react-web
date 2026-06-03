@@ -6,12 +6,11 @@
 // build time, so the bundled dist/cli.mjs does NOT need package.json
 // alongside it at runtime.
 //
-// Registry source: `config.updateCheckRegistry`, configured by the user
-// in the About tab. There is NO default — this package is published on
-// a private registry, so blindly probing npmjs.org would just return
-// 404s and clutter the UI with errors. When unset the checker returns
-// `{ disabled: true }` and the UI hides the banner / shows a "registry
-// not configured" hint in About.
+// Registry source: `config.updateCheckRegistry`, which defaults to the
+// public npm registry (https://registry.npmjs.org) and can be overridden
+// in the About tab to point at a private registry. When the user clears
+// it (empty string) the checker returns `{ disabled: true }` and the UI
+// hides the banner / shows a "registry not configured" hint in About.
 //
 // Caching policy:
 //   - Successful probes are cached for CACHE_TTL_MS (6 hours). Within

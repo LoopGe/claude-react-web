@@ -51,11 +51,10 @@ interface ConfigFile {
   /** Persisted runtime scope filter (null / [] = all scopes). Restored on
    *  boot unless the LOG_SCOPES env var is set. Written by PUT /api/log. */
   logScopes?: string[] | null
-  /** npm registry URL the update checker probes. Empty / unset disables
-   *  the update check entirely (banner stays hidden, About tab shows
-   *  "disabled"). No default — this package is published on a private
-   *  registry, so guessing npmjs.org would just produce 404s. The user
-   *  configures it explicitly in the About tab. */
+  /** npm registry URL the update checker probes. Defaults to the public
+   *  npm registry (https://registry.npmjs.org). Set to empty string to
+   *  disable the update check entirely (banner stays hidden, About tab
+   *  shows "disabled"). Override to point at a private registry. */
   updateCheckRegistry?: string
 }
 
@@ -77,10 +76,10 @@ export interface ServerConfig {
    *  Read once at startup by cli.ts; the live auth state lives in auth.ts. */
   readonly accessToken: string
   readonly logToFile: boolean
-  /** Empty string when the user hasn't configured a registry — the update
-   *  checker treats that as "disabled". Stored as a string (not optional)
-   *  so callers can do plain `if (config.updateCheckRegistry)` without
-   *  defending against undefined. */
+  /** npm registry the update checker probes. Defaults to the public npm
+   *  registry; empty string means the user explicitly disabled the check.
+   *  Stored as a string (not optional) so callers can do plain
+   *  `if (config.updateCheckRegistry)` without defending against undefined. */
   readonly updateCheckRegistry: string
 }
 
@@ -107,7 +106,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   baseUrl: 'https://api.anthropic.com',
   accessToken: '',
   logToFile: false,
-  updateCheckRegistry: '',
+  updateCheckRegistry: 'https://registry.npmjs.org',
 })
 
 /** Current server config. Frozen after loadConfig() — reads are safe,

@@ -3,7 +3,6 @@
 // overlay (inside ChatPanel) rather than a right drawer — see below.
 
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties } from 'react'
 import { SessionList } from './components/SessionList'
 import { ChatPanel } from './components/ChatPanel'
 import { api } from './hooks/useApi'
@@ -22,7 +21,8 @@ import { useWsHub, useWsHubStatus } from './hooks/useWsHub'
 import type { WsServerFrame } from './ws-types'
 import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, SidebarSection } from './types'
 import { PERMISSION_MODES } from './types'
-import { ACCENT_COLORS, isPresetAccent } from './theme'
+import { ACCENT_COLORS } from './theme'
+import { AccentPicker } from './components/AccentPicker'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { IconSettings, IconBell, IconBellOff, IconBot, IconBug, IconBugOff, IconMenu } from './components/icons/ToolIcons'
 import { ThemeToggle } from './components/ThemeToggle'
@@ -1520,46 +1520,13 @@ export function App() {
             >
               {notifications.enabled ? <IconBell size={16} /> : <IconBellOff size={16} />}
             </button>
-            <div className="btn btn-icon accent-picker" role="radiogroup" aria-label="Accent colour">
-              {ACCENT_COLORS.map((c) => (
-                <button
-                  key={c.accent}
-                  className={`accent-swatch${accentColor === c.accent ? ' active' : ''}`}
-                  style={{ '--swatch': c.accent, '--swatch-strong': c.strong } as CSSProperties}
-                  onClick={() => setAccentColor(c.accent)}
-                  role="radio"
-                  aria-checked={accentColor === c.accent}
-                  aria-label={c.name}
-                  title={c.name}
-                />
-              ))}
-              {(() => {
-                const isCustom = !isPresetAccent(accentColor)
-                // When a custom colour is active, fill the swatch with it
-                // (and feed --swatch-strong so the toolbar's active-border
-                // rule resolves). Otherwise keep the fill transparent so the
-                // dashed ring + "+" affordance stays visible.
-                const swatch = isCustom ? accentColor : 'transparent'
-                const swatchStrong = isCustom ? accentColor : 'var(--fg)'
-                return (
-                  <label
-                    className={`accent-swatch accent-swatch-custom${isCustom ? ' active' : ''}`}
-                    style={{ '--swatch': swatch, '--swatch-strong': swatchStrong } as CSSProperties}
-                    role="radio"
-                    aria-checked={isCustom}
-                    aria-label="Custom colour"
-                    title="Custom colour"
-                  >
-                    <input
-                      type="color"
-                      value={isCustom ? accentColor : ACCENT_COLORS[0].accent}
-                      onChange={(e) => setAccentColor(e.target.value)}
-                    />
-                    {!isCustom && <span className="accent-swatch-custom-plus" aria-hidden>+</span>}
-                  </label>
-                )
-              })()}
-            </div>
+            <AccentPicker
+              value={accentColor}
+              onChange={(v) => setAccentColor(v ?? ACCENT_COLORS[0].accent)}
+              allowDefault={false}
+              ariaLabel="Accent colour"
+              className="btn btn-icon"
+            />
             <ThemeToggle theme={theme} onToggle={toggleThemeNext} />
             <button
               className="btn btn-icon"

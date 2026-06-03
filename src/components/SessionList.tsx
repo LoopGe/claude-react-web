@@ -10,6 +10,7 @@ import { buildSessionAccentMap } from '../theme'
 import type { NewSessionForm, SessionGroup, SessionInfo, SidebarSection } from '../types'
 import { NewSessionDialog } from './session-list/NewSessionDialog'
 import { SessionContextMenu } from './session-list/SessionContextMenu'
+import { AccentPickerPanel } from './AccentPicker'
 import { SessionCard } from './session-list/SessionCard'
 import { ConfirmDialog } from './ConfirmDialog'
 import { PromptDialog } from './PromptDialog'
@@ -160,6 +161,10 @@ export const SessionList = memo(function SessionList({
   const [renameDraft, setRenameDraft] = useState('')
   /** Active right-click menu. `id` tells us which session it targets. */
   const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null)
+  /** Accent-colour popover opened from the context menu. Owns its own
+   *  anchor (the menu's coordinates, captured before the menu closes) so
+   *  the unified AccentPickerPanel can render at the right spot. */
+  const [accentPopover, setAccentPopover] = useState<{ x: number; y: number; id: string } | null>(null)
   /** Sidebar filter text. Case-insensitive substring match against title,
    *  cwd, and the first 8 chars of the id. Not persisted — a stale filter
    *  after a reload causes more confusion than it saves typing. */
@@ -750,7 +755,7 @@ export const SessionList = memo(function SessionList({
         onNewLikeThis={(id) => onNewLikeThis?.(id)}
         onRestart={(id) => onRestart?.(id)}
         sessionColor={sessionColors?.[menu.id]}
-        onColorChange={(color) => onSessionColorChange?.(menu.id, color)}
+        onEditAccent={() => setAccentPopover({ x: menu.x, y: menu.y, id: menu.id })}
         groups={groups}
         onAddToGroup={onAddToGroup}
         maxOpen={maxOpen}
@@ -758,6 +763,18 @@ export const SessionList = memo(function SessionList({
         onAskConfirm={handleAskConfirm}
       />
       })()}
+
+      {accentPopover && (
+        <AccentPickerPanel
+          x={accentPopover.x}
+          y={accentPopover.y}
+          value={sessionColors?.[accentPopover.id]}
+          allowDefault
+          ariaLabel="Session accent"
+          onChange={(v) => onSessionColorChange?.(accentPopover.id, v)}
+          onClose={() => setAccentPopover(null)}
+        />
+      )}
 
       {showDialog && (
         <NewSessionDialog

@@ -5,7 +5,7 @@ import { useFocusTrap } from '../../hooks/useFocusTrap'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { api } from '../../hooks/useApi'
 import { shortenPath } from '../../utils/paths'
-import { ACCENT_COLORS, isPresetAccent } from '../../theme'
+import { AccentPicker } from '../AccentPicker'
 import type { McpServerConfigMeta, NewSessionForm, PermissionMode, SessionGroup } from '../../types'
 import { PERMISSION_MODES } from '../../types'
 
@@ -408,50 +408,12 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
 
             <div className="settings-field">
               <label>Accent colour</label>
-              <div className="accent-picker" role="radiogroup" aria-label="Session accent">
-                <button
-                  type="button"
-                  className={`accent-swatch accent-swatch-default ${accent === undefined ? 'active' : ''}`}
-                  onClick={() => setAccent(undefined)}
-                  role="radio"
-                  aria-checked={accent === undefined}
-                  aria-label="Use global accent"
-                  title="Use global accent"
-                />
-                {ACCENT_COLORS.map((c) => (
-                  <button
-                    key={c.accent}
-                    type="button"
-                    className={`accent-swatch ${accent === c.accent ? 'active' : ''}`}
-                    style={{ ['--swatch' as string]: c.accent }}
-                    onClick={() => setAccent(c.accent)}
-                    role="radio"
-                    aria-checked={accent === c.accent}
-                    aria-label={c.name}
-                    title={c.name}
-                  />
-                ))}
-                {(() => {
-                  const isCustom = accent !== undefined && !isPresetAccent(accent)
-                  return (
-                    <label
-                      className={`accent-swatch accent-swatch-custom${isCustom ? ' active' : ''}`}
-                      style={{ ['--swatch' as string]: isCustom ? accent : 'transparent' }}
-                      role="radio"
-                      aria-checked={isCustom}
-                      aria-label="Custom colour"
-                      title="Custom colour"
-                    >
-                      <input
-                        type="color"
-                        value={isCustom ? accent : ACCENT_COLORS[0].accent}
-                        onChange={(e) => setAccent(e.target.value)}
-                      />
-                      {!isCustom && <span className="accent-swatch-custom-plus" aria-hidden>+</span>}
-                    </label>
-                  )
-                })()}
-              </div>
+              <AccentPicker
+                value={accent}
+                onChange={setAccent}
+                allowDefault
+                ariaLabel="Session accent"
+              />
             </div>
 
             <div className="settings-field">

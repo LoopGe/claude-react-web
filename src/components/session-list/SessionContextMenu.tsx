@@ -1,5 +1,4 @@
 import { ContextMenu, type ContextMenuItem } from '../ContextMenu'
-import { ACCENT_COLORS, isPresetAccent } from '../../theme'
 import type { SessionGroup, SessionInfo } from '../../types'
 import {
   IconPencil,
@@ -35,10 +34,12 @@ export interface SessionContextMenuProps {
   onNewLikeThis: (id: string) => void
   /** Delete the session and create a fresh one with the same config. */
   onRestart: (id: string) => void
-  /** Current per-session accent hex, or undefined for global default. */
+  /** Current per-session accent hex, or undefined for global default.
+   *  Used only to tint the "Accent colour…" row's icon. */
   sessionColor?: string
-  /** Set or clear the session accent. */
-  onColorChange?: (color: string | undefined) => void
+  /** Open the unified accent-colour popover. The parent owns the popover
+   *  and positions it at the menu's anchor coordinates. */
+  onEditAccent?: () => void
   // --- Group actions ---
   groups: SessionGroup[]
   onAddToGroup: (sessionId: string, groupId: string) => void
@@ -72,7 +73,7 @@ export function SessionContextMenu({
   onNewLikeThis,
   onRestart,
   sessionColor,
-  onColorChange,
+  onEditAccent,
   groups,
   onAddToGroup,
   maxOpen,
@@ -206,57 +207,17 @@ export function SessionContextMenu({
         ]
       : []),
     { label: '' }, // separator
-    ...ACCENT_COLORS.map(
-      (c) =>
-        ({
-          label: c.name,
-          icon: sessionColor === c.accent ? <IconCircleDot size={14} /> : <IconCircle size={14} />,
-          iconStyle: { color: c.accent },
-          onClick: () => onColorChange?.(c.accent),
-        }) as ContextMenuItem,
-    ),
     {
-      label: 'Custom colour…',
+      // Opens the unified accent-colour popover (AccentPickerPanel),
+      // hosted by the parent at the menu's anchor coordinates. The menu
+      // itself closes on click (as always); the parent re-opens the
+      // popover from the saved anchor.
+      label: 'Accent colour…',
       icon:
-        sessionColor && !isPresetAccent(sessionColor) ? (
-          <IconCircleDot size={14} />
-        ) : (
-          <IconCircle size={14} />
-        ),
-      iconStyle: sessionColor && !isPresetAccent(sessionColor) ? { color: sessionColor } : undefined,
-      // The menu closes on click, so we can't host a live <input> here.
-      // Instead spawn a detached native colour input and open it — the OS
-      // picker is independent of the menu's lifecycle, and onColorChange
-      // fires when the user commits a colour.
-      onClick: () => {
-        const input = document.createElement('input')
-        input.type = 'color'
-        input.value = sessionColor && !isPresetAccent(sessionColor) ? sessionColor : ACCENT_COLORS[0].accent
-        input.style.position = 'fixed'
-        input.style.opacity = '0'
-        input.style.pointerEvents = 'none'
-        document.body.appendChild(input)
-        input.addEventListener('change', () => {
-          onColorChange?.(input.value)
-          input.remove()
-        })
-        // Clean up if the picker is dismissed without a commit. `cancel`
-        // fires on dismiss; unlike `blur` it does NOT fire merely because
-        // opening the OS picker moves focus off the input, so it won't
-        // tear the input down before the user picks a colour.
-        input.addEventListener('cancel', () => input.remove())
-        input.click()
-      },
+        sessionColor ? <IconCircleDot size={14} /> : <IconCircle size={14} />,
+      iconStyle: sessionColor ? { color: sessionColor } : undefined,
+      onClick: () => onEditAccent?.(),
     },
-    ...(sessionColor
-      ? [
-          {
-            label: 'Default colour',
-            icon: '↺',
-            onClick: () => onColorChange?.(undefined),
-          } as ContextMenuItem,
-        ]
-      : []),
     { label: '' }, // separator
     {
       label: 'Delete session',

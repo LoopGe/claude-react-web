@@ -60,16 +60,37 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
   })
 
   // Read defaults from ~/.claude/settings.json so the setup page can
-  // pre-fill the token and base URL fields.
+  // pre-fill the token, base URL, and model list fields.
   app.get('/config/claude-defaults', async (c) => {
     const settingsPath = joinPath(homedir(), '.claude', 'settings.json')
     try {
       const raw = JSON.parse(await readFile(settingsPath, 'utf8'))
       const env = raw?.env ?? {}
       const key = typeof env.ANTHROPIC_API_KEY === 'string' ? env.ANTHROPIC_API_KEY : undefined
+
+      // Claude Code stores concrete model ids under env.ANTHROPIC_DEFAULT_*_MODEL
+      // and names the active one via the top-level `model` alias (opus/sonnet/
+      // haiku). Surface those ids as the setup model list, ordered so the
+      // alias named by `model` lands first (→ becomes the session default).
+      const aliasEnvVar: Record<string, unknown> = {
+        opus: env.ANTHROPIC_DEFAULT_OPUS_MODEL,
+        sonnet: env.ANTHROPIC_DEFAULT_SONNET_MODEL,
+        haiku: env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
+      }
+      const baseOrder = ['opus', 'sonnet', 'haiku']
+      const topAlias = typeof raw.model === 'string' ? raw.model.toLowerCase() : undefined
+      const order = topAlias && baseOrder.includes(topAlias)
+        ? [topAlias, ...baseOrder.filter((a) => a !== topAlias)]
+        : baseOrder
+      const modelList = order
+        .map((a) => aliasEnvVar[a])
+        .filter((m): m is string => typeof m === 'string' && m.trim().length > 0)
+        .map((m) => m.trim())
+
       return c.json({
         authToken: key,
         baseUrl: typeof env.ANTHROPIC_BASE_URL === 'string' ? env.ANTHROPIC_BASE_URL : undefined,
+        modelList: modelList.length > 0 ? modelList : undefined,
       })
     } catch {
       return c.json({})
