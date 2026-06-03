@@ -23,8 +23,13 @@ const McpInstaller = lazy(() =>
 const MarketplaceTab = lazy(() =>
   import('./MarketplaceTab').then((m) => ({ default: m.MarketplaceTab })),
 )
+// ShareTab pulls in the `qrcode` dependency — lazy-load it so that weight
+// only lands when the user opens the "Open on phone" tab.
+const ShareTab = lazy(() =>
+  import('./ShareTab').then((m) => ({ default: m.ShareTab })),
+)
 
-type Tab = 'api' | 'models' | 'server' | 'mcp' | 'marketplace' | 'logs' | 'about'
+type Tab = 'api' | 'models' | 'server' | 'mcp' | 'marketplace' | 'share' | 'logs' | 'about'
 
 type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'trace'
 
@@ -225,6 +230,7 @@ export function GlobalSettingsModal({
     { key: 'server', label: 'Server' },
     { key: 'mcp', label: 'MCP Servers' },
     { key: 'marketplace', label: 'Marketplace' },
+    { key: 'share', label: 'Open on phone' },
     { key: 'logs', label: 'Logs' },
     { key: 'about', label: 'About' },
   ]
@@ -311,6 +317,11 @@ export function GlobalSettingsModal({
               {tab === 'marketplace' && (
                 <Suspense fallback={<div className="lazy-tab-loading">Loading marketplace…</div>}>
                   <MarketplaceTab />
+                </Suspense>
+              )}
+              {tab === 'share' && (
+                <Suspense fallback={<div className="lazy-tab-loading">Loading…</div>}>
+                  <ShareTab />
                 </Suspense>
               )}
               {tab === 'logs' && <LogsTab />}

@@ -65,6 +65,8 @@
      Defined here so light theme can flatten the alpha — dark needs a
      deeper shadow against the elevated bg, light needs a softer one. */
   --overlay-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  /* QR codes need a light quiet zone to scan reliably even in dark theme. */
+  --qr-bg: #ffffff;
 }
 
 [data-theme="light"] {
@@ -118,6 +120,7 @@
   --plugin-active: var(--ok);
   --plugin-inactive: #9e9e9e;
   --overlay-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+  --qr-bg: #ffffff;
 }
 
 * {
@@ -507,6 +510,19 @@ body.resizing-col * {
   background: var(--bg);
   border-top: 2px solid transparent;
   overflow: hidden;
+  /* Re-declare the user-bubble vars here so their color-mix() formulas
+     re-evaluate against this panel's --accent. When a session sets a
+     per-session accent via inline style on .chat-panel, the global
+     :root-computed --msg-user-* values would otherwise be inherited as
+     already-resolved colors and ignore the session override. */
+  --msg-user-bg: color-mix(in srgb, var(--accent) 28%, var(--bg));
+  --msg-user-border: color-mix(in srgb, var(--accent) 50%, var(--bg));
+  --msg-user-fg: var(--fg);
+  --msg-user-header-fg: color-mix(in srgb, var(--accent) 75%, var(--fg));
+  --msg-user-link-fg: var(--accent);
+  --msg-user-code-bg: color-mix(in srgb, var(--accent) 18%, transparent);
+  --msg-user-pre-bg: color-mix(in srgb, var(--bg) 80%, var(--accent));
+  --msg-user-pre-border: color-mix(in srgb, var(--accent) 25%, transparent);
 }
 .chat-panel.focused { border-top-color: var(--accent); }
 .chat-panel.drop-target {
@@ -6734,6 +6750,22 @@ mark.search-hl.search-hl-active {
 }
 
 /* ============================================================
+   Tablet adaptation (769–1024px)
+   ------------------------------------------------------------
+   Between phone (drawer) and desktop: the static sidebar stays
+   but is capped narrower to leave more room for chat panels.
+   --sidebar-width is set inline on .app (App.tsx) so a plain
+   variable override would lose to inline specificity; instead
+   we cap the grid column with min(), which still reads the live
+   (drag-resized) width but never exceeds the tablet ceiling.
+   ============================================================ */
+@media (min-width: 769px) and (max-width: 1024px) {
+  .app {
+    grid-template-columns: min(var(--sidebar-width), 240px) 1fr;
+  }
+}
+
+/* ============================================================
    Mobile / narrow-viewport adaptation (≤768px)
    ------------------------------------------------------------
    Single-panel mode (maxOpen forced to 1 in App.tsx via
@@ -6803,10 +6835,130 @@ mark.search-hl.search-hl-active {
     opacity: 0.7;
   }
 
-  /* Enlarge icon-button hit areas to the ~44px touch-target guideline. */
+  /* Enlarge icon-button hit areas to the 44px touch-target guideline
+     (Apple HIG 44pt / Material 48dp). */
   .btn-icon {
-    min-width: 40px;
-    min-height: 40px;
+    min-width: 44px;
+    min-height: 44px;
   }
+
+  /* Kill the legacy 300ms double-tap-zoom delay on tappable controls so
+     taps feel instant. `manipulation` only disables double-tap-zoom and
+     double-tap-to-scroll — it still permits panning/pinch, so applying it
+     here never interferes with the horizontal scrolling of code blocks
+     (those elements aren't matched anyway). */
+  button,
+  .btn,
+  a,
+  [role="button"] {
+    touch-action: manipulation;
+  }
+
+  /* The subagent inspector is a right-edge drawer on desktop
+     (width: min(50%,640px); min-width: 320px). On a phone that min-width
+     leaves only a sliver of scrim and overflows below 320px — make it a
+     full-width sheet instead. */
+  .subagent-overlay-panel {
+    width: 100%;
+    min-width: 0;
+    border-left: none;
+  }
+
+  /* The slash-command picker floats with min-width:280px which can punch
+     past a narrow viewport. Let it shrink and cap it to the screen. */
+  .cmd-picker {
+    min-width: 0;
+    max-width: calc(100vw - 24px);
+  }
+
+  /* Settings & Git overlays: turn the centered card into a bottom sheet
+     that rises from the panel's lower edge — easier to reach one-handed.
+     safe-area padding keeps the sheet clear of the home-indicator. */
+  .settings-overlay,
+  .git-overlay {
+    align-items: flex-end;
+    padding: 8px 8px max(8px, env(safe-area-inset-bottom));
+  }
+  .settings-overlay > .settings-panel,
+  .git-overlay > .git-panel {
+    width: 100%;
+    max-height: 100%;
+    border-radius: 12px 12px 0 0;
+  }
+
+  /* Command palette: sit higher on small screens so the keyboard doesn't
+     bury it and more results are visible. dvh tracks the mobile URL-bar
+     collapse (matches the .palette max-height convention above). */
+  .palette-backdrop {
+    padding-top: 8vh;
+    padding-top: 8dvh;
+  }
+}
+
+/* ── "Open on phone" settings tab (QR access) ────────────────────── */
+
+.share-tab {
+  padding: 4px 2px;
+}
+.share-tab-hint {
+  margin: 0 0 8px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.share-tab-qr {
+  display: flex;
+  justify-content: center;
+  margin: 12px 0 16px;
+}
+/* White quiet-zone box so the code scans in dark theme too. */
+.share-tab-qr-img {
+  width: 220px;
+  height: 220px;
+  background: var(--qr-bg);
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.share-tab-qr-img svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.share-tab-select {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-bottom: 12px;
+  max-width: 240px;
+}
+.share-tab-url-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+.share-tab-url {
+  flex: 1;
+  background: var(--code-bg);
+  border: 1px solid var(--code-block-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  word-break: break-all;
+  display: flex;
+  align-items: center;
+}
+.share-tab-url code {
+  font-size: 12px;
+  color: var(--code-fg);
+}
+.share-tab-warn {
+  margin: 12px 0 0;
+  color: var(--warn, var(--fg-muted));
+  font-size: 12px;
+  line-height: 1.5;
 }
 

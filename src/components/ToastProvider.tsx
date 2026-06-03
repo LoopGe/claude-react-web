@@ -13,6 +13,7 @@ import {
   type ToastKind,
   type PushOptions,
 } from '../hooks/toastContext'
+import { randomId } from '../utils/uuid'
 
 /** Hard cap on simultaneously visible toasts. New ones evict the oldest
  *  so a tight loop of failures can't push the column past the viewport. */
@@ -27,14 +28,11 @@ const DEFAULT_DURATIONS: Record<ToastKind, number> = {
   info: 8000,
 }
 
-/** Random id with a `crypto.randomUUID` fallback. The fallback path
- *  matters in older test environments where `crypto` is undefined. */
-function makeId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
-}
+/** Random id with a `crypto.randomUUID` fallback. The fallback path matters
+ *  both in older test environments where `crypto` is undefined AND when the
+ *  app is opened over plain HTTP from another machine (non-secure context,
+ *  where `crypto.randomUUID` is not exposed). Shared impl in utils/uuid. */
+const makeId = randomId
 
 /** Per-toast countdown bookkeeping. `remaining` is recomputed on pause so
  *  resume can re-arm with the time left, keeping the JS removal in sync

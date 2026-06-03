@@ -8,7 +8,8 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { SessionManager } from './session-manager.js'
-import { buildAuthMiddleware } from './auth.js'
+import { buildAuthMiddleware, getWebAuth } from './auth.js'
+import { isLoopbackHost, lanIPv4Addresses } from './net.js'
 import { createErrorHandler } from './errors.js'
 import { buildApiRouter } from './routes/index.js'
 import { buildFsRouter } from './fs-routes.js'
@@ -49,6 +50,10 @@ export interface AppOptions {
   /** State directory containing config.json. Passed to the API router
    *  so the setup endpoint can write config changes to disk. */
   configDir?: string
+  /** Host/port the server is bound to. Used by GET /api/access-info to
+   *  build the LAN URLs + QR codes shown in the "open on phone" dialog.
+   *  When omitted, access-info reports no LAN reachability. */
+  bind?: { host: string; port: number }
 }
 
 /**
@@ -149,6 +154,24 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
       maxOpenPanels: serverConfig.maxOpenPanels,
     }),
   )
+
+  // Access info for the "open on phone" (QR) dialog. Mounted on the
+  // authed apiRouter so only an already-signed-in client can read the
+  // token (it's an httpOnly cookie, invisible to client JS otherwise).
+  // Returns the LAN token-URLs the frontend renders as QR codes; empty
+  // when the server is bound to loopback (no phone can reach it).
+  apiRouter.get('/access-info', (c) => {
+    const { accessToken, authEnabled } = getWebAuth()
+    const port = opts.bind?.port
+    const boundHost = opts.bind?.host ?? '127.0.0.1'
+    const lanReachable = !!port && !isLoopbackHost(boundHost)
+    const tokenQuery = authEnabled && accessToken ? `/?token=${accessToken}` : '/'
+    const urls = lanReachable
+      ? lanIPv4Addresses().map((ip) => ({ ip, url: `http://${ip}:${port}${tokenQuery}` }))
+      : []
+    return c.json({ authEnabled, boundHost, lanReachable, port: port ?? null, urls })
+  })
+
   app.route('/api', apiRouter)
   app.route('/api/fs', buildFsRouter())
   app.route('/api/git', buildGitRouter())

@@ -6,6 +6,7 @@ import { clearAllSessionStorage } from '../session-store/store'
 import type { ActiveSubagent, ActivePhase, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
 import { useWsHub, useWsHubStatus } from './useWsHub'
 import { api } from './useApi'
+import { randomId } from '../utils/uuid'
 import type { WsServerFrame } from '../ws-types'
 import type { PermissionRequest, PermissionResolved, SdkMessage, SkillFrontmatter } from '../types'
 
@@ -303,7 +304,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   }, [store])
 
   const insertUserMessage = useCallback((text: string): string => {
-    const pendingId = `optimistic:${crypto.randomUUID()}`
+    const pendingId = `optimistic:${randomId()}`
     const message: SdkMessage = {
       type: 'user',
       uuid: pendingId,

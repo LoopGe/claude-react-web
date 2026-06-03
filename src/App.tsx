@@ -8,6 +8,7 @@ import { ChatPanel } from './components/ChatPanel'
 import { api } from './hooks/useApi'
 import { isInAppDrag, readDragPayload } from './hooks/useDragPayload'
 import { useIsMobile } from './hooks/useIsMobile'
+import { useSwipeToClose } from './hooks/useSwipeToClose'
 import { useVisualViewportHeight } from './hooks/useVisualViewportHeight'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useLocalStorage } from './hooks/useLocalStorage'
@@ -61,6 +62,7 @@ import {
 import type { Defaults, ConfigResponse } from './types/config'
 import { notificationTooltip } from './utils/notifications'
 import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
+import { randomId } from './utils/uuid'
 
 export function App() {
   const [isConfigured, setIsConfigured] = useState<boolean | null>(null)
@@ -162,6 +164,11 @@ export function App() {
   // True at/below the mobile breakpoint (≤768px). Drives single-panel mode
   // and the drawer sidebar.
   const isMobile = useIsMobile()
+  // Swipe the drawer left to dismiss it — only active as a mobile drawer.
+  const drawerSwipe = useSwipeToClose({
+    onClose: () => setDrawerOpen(false),
+    enabled: isMobile && drawerOpen,
+  })
   // Track the visible viewport height on mobile so the on-screen keyboard
   // can't push the composer off-screen (writes the --app-vh CSS var).
   useVisualViewportHeight(isMobile)
@@ -1198,7 +1205,7 @@ export function App() {
 
   const handleCreateGroup = useCallback(
     (name: string) => {
-      const id = crypto.randomUUID()
+      const id = randomId()
       setGroups((prev) => [...prev, { id, name, sessionIds: [] }])
       return id
     },
@@ -1417,7 +1424,7 @@ export function App() {
           a Tab-only user doesn't have to walk through the entire
           sidebar to reach the conversation. */}
       <a className="skip-link" href="#main">Skip to chat</a>
-      <aside className="sidebar" aria-label="Sessions">
+      <aside className="sidebar" aria-label="Sessions" {...drawerSwipe}>
         <div className="brand">
           <span className="brand-dot" /> claude-react-web
         </div>

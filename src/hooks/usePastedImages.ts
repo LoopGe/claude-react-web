@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { formatBytes } from '../utils/format'
+import { randomId } from '../utils/uuid'
 import type { PastedImage } from '../types'
 
 const ALLOWED_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
@@ -56,7 +57,7 @@ export function usePastedImages(): UsePastedImages {
       return
     }
 
-    const id = crypto.randomUUID()
+    const id = randomId()
     const previewUrl = URL.createObjectURL(file)
     const generation = clearGenerationRef.current
 

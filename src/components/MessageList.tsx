@@ -7,7 +7,7 @@
 // Filters out `stream_event` partials (the final assistant message
 // carries the complete content, so showing both just flickers).
 
-import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { Markdown } from './Markdown'
 import { ToolUseBlock } from './ToolUseBlock'
@@ -470,7 +470,7 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
 
   // Streaming-content auto-follow. Virtuoso's `followOutput` only fires
   // when `data` changes, but streamingContent lives in the Footer slot —
-  // its DOM grows every ~33ms flush without `data` changing, so without
+  // its DOM grows every ~80ms flush without `data` changing, so without
   // this effect the typing text silently overflows below the viewport.
   // We bypass Virtuoso here and write scrollTop directly because the
   // Footer is not addressable via scrollToIndex (which targets items).
@@ -478,23 +478,22 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
   // already at the bottom — if they scrolled up to read history mid-
   // stream, atBottomRef goes false and we stop fighting their scroll.
   //
-  // The scrollTop write is deferred to the next animation frame so the
-  // 33ms streaming flush doesn't cause a synchronous layout-read-after-
-  // write inside React's commit phase (forced reflow). The cancel on
-  // cleanup prevents a stale frame from re-pinning after the user has
-  // scrolled away or the component unmounted.
-  useEffect(() => {
+  // The scrollTop write runs in a LAYOUT effect (synchronously after the DOM
+  // mutation, BEFORE the browser paints) rather than a passive effect + rAF.
+  // The old passive-effect + requestAnimationFrame path was deferred twice —
+  // React runs passive effects after paint, and the rAF pushed the write to
+  // the *next* frame again — so every 80ms flush painted one frame with the
+  // grown footer but the bottom still off-screen, then yanked it back on the
+  // following frame: a visible per-flush jitter. A layout effect pins the
+  // bottom in the same frame the taller content is committed, so the bottom
+  // never paints off-screen. Cost: one synchronous reflow per flush (~12/s),
+  // which is cheap next to the visible jump it removes.
+  useLayoutEffect(() => {
     if (streamingContent == null) return
     if (!atBottomRef.current) return
     const el = scrollerRef.current
     if (!el) return
-    const raf = requestAnimationFrame(() => {
-      // Re-check atBottom inside the frame: the user may have scrolled
-      // up between the effect firing and the frame running.
-      if (!atBottomRef.current) return
-      el.scrollTop = el.scrollHeight
-    })
-    return () => cancelAnimationFrame(raf)
+    el.scrollTop = el.scrollHeight
   }, [streamingContent])
 
   // Authoritative scroll-state listener — covers two cases that
