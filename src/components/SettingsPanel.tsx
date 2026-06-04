@@ -24,6 +24,8 @@ const MarketplaceBrowser = lazy(() =>
 import { formatTokens, formatJson } from '../utils/format'
 import type { ContextUsage } from '../hooks/useChatStream'
 
+type SettingsTab = 'general' | 'context' | 'plugins' | 'mcp'
+
 interface Props {
   session: SessionInfo
   onClose: () => void
@@ -36,10 +38,14 @@ interface Props {
    *  trip. The full breakdown (skills/agents/memoryFiles) is lazy-loaded
    *  only when the user expands the detail sections. */
   contextUsage?: ContextUsage | null
+  /** Nonce-stamped request to switch tabs (the `/mcp` local command). The
+   *  nonce changes on every request so the switch re-applies even when the
+   *  panel is already mounted on another tab. */
+  tabRequest?: { tab: SettingsTab; nonce: number } | null
   onPluginsReloaded?: () => void
 }
 
-export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onSessionUpdate, commands = [], agents = [], contextUsage, onPluginsReloaded }: Props) {
+export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onSessionUpdate, commands = [], agents = [], contextUsage, tabRequest, onPluginsReloaded }: Props) {
   const [models, setModels] = useState<ModelInfo[]>([])
   const [settingsText, setSettingsText] = useState('{}')
   // Full context-usage breakdown from the (blocking) REST endpoint. Null
@@ -64,82 +70,96 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
   const toast = useToast()
   const [reloadedPlugins, setReloadedPlugins] = useState<Plugin[]>([])
   const [showMarketplace, setShowMarketplace] = useState(false)
+  // Active tab. Mirrors the global settings modal's tabbed layout so the
+  // session panel reads as one long scroll no more — each concern is its
+  // own tab (General controls, Context usage, Plugins, MCP servers).
+  const [tab, setTab] = useState<SettingsTab>('general')
 
-  // Load supported models and MCP status when the panel opens. Parent
+  // Apply an external deep-link tab request (e.g. the `/mcp` local command).
+  // Uses React's "adjust state during render" pattern
+  // (https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes):
+  // we track the last-seen nonce in state, and when a fresh request arrives
+  // we switch tabs. Keying on the nonce (not the tab value) means the same
+  // target tab re-applies on every request even when the panel is already
+  // mounted on a different tab — without an effect or a cascading render.
+  const [appliedTabNonce, setAppliedTabNonce] = useState<number | null>(null)
+  if (tabRequest && tabRequest.nonce !== appliedTabNonce) {
+    setAppliedTabNonce(tabRequest.nonce)
+    setTab(tabRequest.tab)
+  }
+
+  // Load the model list and MCP status when the panel opens. Parent
   // remounts this component on session switch (via `key={session.id}`),
-  // so there's no need to imperatively reset state here. All three calls
+  // so there's no need to imperatively reset state here. The MCP calls
   // forward SDK control requests to the subprocess — if the session isn't
   // running the server returns 410; skip them rather than surface noise.
   //
-  // We also fetch server-configured models from /api/config and merge
-  // them in so that custom models (e.g. xiaomi/mimo-*) always appear
-  // even if the SDK subprocess doesn't list them.
+  // Models come ONLY from /api/config (the user's configured modelList).
+  // We deliberately do NOT query the SDK's supportedModels: the gateway
+  // advertises extra models (e.g. *-omni) the user didn't configure, and
+  // we don't want those leaking into the picker.
   useEffect(() => {
     if (!session.running) return
     const ac = new AbortController()
+    // NOTE: /context-usage is intentionally NOT fetched here. It's a
+    // blocking SDK control request that hangs the whole panel open while
+    // the subprocess is mid-turn or the proxy init handshake stalls.
+    // ContextBar runs off the WebSocket-pushed `contextUsage` prop
+    // instead (zero round-trip); the full breakdown is lazy-loaded only
+    // when a detail section is expanded — see loadDetailedUsage().
+
+    // models + global MCP config are plain server-side reads — fetch once.
     ;(async () => {
-      // Fetch server-configured models and SDK models in parallel.
-      // SDK models merge depends on server config, so those two are
-      // awaited together; the rest are independent fire-and-forget.
-      //
-      // NOTE: /context-usage is intentionally NOT fetched here. It's a
-      // blocking SDK control request that hangs the whole panel open while
-      // the subprocess is mid-turn or the proxy init handshake stalls.
-      // ContextBar runs off the WebSocket-pushed `contextUsage` prop
-      // instead (zero round-trip); the full breakdown is lazy-loaded only
-      // when a detail section is expanded — see loadDetailedUsage().
-      const [cfgResult, modelsResult, mcpResult, gcResult] =
-        await Promise.allSettled([
-          api.get<{ models?: string[] }>('/config', { signal: ac.signal }),
-          api.get<{ models: ModelInfo[] }>(
-            `/sessions/${session.id}/models`,
-            { signal: ac.signal },
-          ),
-          api.get<{ mcp: McpServerStatus[] }>(
-            `/sessions/${session.id}/mcp-status`,
-            { signal: ac.signal },
-          ),
-          api.get<{ servers: McpServerConfigMeta[] }>(
-            '/mcp-config',
-            { signal: ac.signal },
-          ),
-        ])
+      const [cfgResult, gcResult] = await Promise.allSettled([
+        api.get<{ models?: string[] }>('/config', { signal: ac.signal }),
+        api.get<{ servers: McpServerConfigMeta[] }>(
+          '/mcp-config',
+          { signal: ac.signal },
+        ),
+      ])
 
       if (ac.signal.aborted) return
 
-      // Models: merge SDK models with server-configured ones.
-      // The SDK→wire translation in /sessions/:id/models already filters
-      // entries with no id, so we don't need to defend against empties
-      // here.
+      // Models: only the user's configured modelList.
       const serverModelIds =
         cfgResult.status === 'fulfilled' ? (cfgResult.value.models ?? []) : []
-      if (modelsResult.status === 'fulfilled') {
-        const sdkIds = new Set(modelsResult.value.models.map((x) => x.id))
-        const merged = [
-          ...modelsResult.value.models,
-          ...serverModelIds
-            .filter((id) => !sdkIds.has(id))
-            .map((id): ModelInfo => ({ id })),
-        ]
-        setModels(merged)
-      } else {
-        // Supported models fails if SDK hasn't initialized yet — fall
-        // back to server-configured models so the dropdown isn't empty.
-        if ((modelsResult.reason as Error)?.name !== 'AbortError') {
-          console.warn('could not load models:', (modelsResult.reason as Error)?.message)
-          if (serverModelIds.length) {
-            setModels(serverModelIds.map((id): ModelInfo => ({ id })))
-          }
-        }
-      }
+      setModels(serverModelIds.map((id): ModelInfo => ({ id })))
 
-      if (mcpResult.status === 'fulfilled') {
-        setMcp(mcpResult.value.mcp)
-      }
       if (gcResult.status === 'fulfilled') {
         setGlobalMcpNames(new Set(gcResult.value.servers.map((s) => s.name)))
       }
-      setLoadingMeta(false)
+    })()
+
+    // mcp-status forwards an SDK control request to the subprocess and
+    // depends on its init handshake. While the handshake is still in
+    // flight (common on proxy backends, or right after spawn) the call
+    // times out or fails — and a single failure would otherwise leave the
+    // panel stuck on an empty list forever. Retry with a short timeout and
+    // exponential backoff so the list fills in once the subprocess is ready.
+    ;(async () => {
+      const delays = [0, 1_000, 2_000, 4_000, 8_000, 8_000]
+      for (let attempt = 0; attempt < delays.length; attempt++) {
+        if (delays[attempt] > 0) {
+          await new Promise<void>((res) => setTimeout(res, delays[attempt]))
+        }
+        if (ac.signal.aborted) return
+        try {
+          const r = await api.get<{ mcp: McpServerStatus[] }>(
+            `/sessions/${session.id}/mcp-status`,
+            { signal: ac.signal, timeoutMs: 10_000 },
+          )
+          if (ac.signal.aborted) return
+          setMcp(r.mcp)
+          setLoadingMeta(false)
+          return
+        } catch {
+          // Failed (timeout / handshake not ready / 410) — fall through to
+          // the next backoff attempt. An aborted signal is caught at the
+          // top of the next iteration and bails out.
+        }
+      }
+      // Retries exhausted: stop the skeleton so the empty-state note shows.
+      if (!ac.signal.aborted) setLoadingMeta(false)
     })()
     return () => { ac.abort() }
   }, [session.id, session.running])
@@ -279,6 +299,13 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
     return result
   }, [commands, agents, reloadedPlugins])
 
+  const tabs: { key: SettingsTab; label: string }[] = [
+    { key: 'general', label: 'General' },
+    { key: 'context', label: 'Context' },
+    { key: 'plugins', label: 'Plugins' },
+    { key: 'mcp', label: 'MCP Servers' },
+  ]
+
   return (
     <aside className="settings-panel" aria-label="Session settings">
       <div className="settings-panel-header">
@@ -288,10 +315,29 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
         </button>
       </div>
 
+      {/* Tab bar — reuses the global settings modal's tab styling for
+          visual consistency. */}
+      <div className="global-settings-tabs">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            className={`global-settings-tab${tab === t.key ? ' active' : ''}`}
+            onClick={() => setTab(t.key)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
       {/* All settings feedback (success/error) flows through the global
           toast hub now (see ToastHost). The toast itself is the live
           region; screen readers pick up the role=alert from there. */}
 
+      {/* Scrollable body — header + tab bar stay pinned above it, mirroring
+          the global settings modal (where only .global-settings-body scrolls). */}
+      <div className="settings-panel-body">
+      {tab === 'general' && (
+      <>
       <div className="settings-section">
         <h4>Read-only (set at create)</h4>
         <ReadOnlyField label="Session ID" value={session.id} mono />
@@ -354,7 +400,10 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
           Apply settings
         </button>
       </div>
+      </>
+      )}
 
+      {tab === 'context' && (
       <div className="settings-section">
         <h4>Context usage</h4>
         {/* ContextBar runs off the WS-pushed lite usage — paints instantly,
@@ -415,7 +464,10 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
           </pre>
         </details>
       </div>
+      )}
 
+      {tab === 'plugins' && (
+      <>
       <div className="settings-section">
         <div className="settings-section-head">
           <h4>Plugins</h4>
@@ -441,6 +493,21 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
 
       <div className="settings-section">
         <div className="settings-section-head">
+          <h4>Marketplace</h4>
+          <button className="btn btn-sm" onClick={() => setShowMarketplace(true)}>
+            Browse plugins
+          </button>
+        </div>
+        <div className="settings-note">
+          Browse and install plugins from registered marketplaces.
+        </div>
+      </div>
+      </>
+      )}
+
+      {tab === 'mcp' && (
+      <div className="settings-section">
+        <div className="settings-section-head">
           <h4>MCP servers</h4>
           <div className="settings-section-head-actions">
             <button
@@ -464,17 +531,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
           />
         ))}
       </div>
-
-      <div className="settings-section">
-        <div className="settings-section-head">
-          <h4>Marketplace</h4>
-          <button className="btn btn-sm" onClick={() => setShowMarketplace(true)}>
-            Browse plugins
-          </button>
-        </div>
-        <div className="settings-note">
-          Browse and install plugins from registered marketplaces.
-        </div>
+      )}
       </div>
 
       {showMarketplace && (

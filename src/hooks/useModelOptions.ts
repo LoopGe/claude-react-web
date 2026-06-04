@@ -4,30 +4,25 @@
 // We return a *structured* result rather than a flat string list so the
 // picker can group and label entries:
 //
-//   - models: the union of
-//       1. SDK supportedModels (from /api/sessions/:id/models — what the
-//          live claude subprocess advertises, carrying a display_name)
-//       2. Server-configured modelList from /api/config — custom proxy
-//          models (ppio/..., xiaomi/...) the SDK often doesn't report but
-//          that still work end-to-end (these have no display_name)
+//   - models: the server-configured modelList from /api/config (the custom
+//       proxy models the user explicitly listed). We deliberately do NOT
+//       merge in the SDK's supportedModels (/api/sessions/:id/models): the
+//       gateway advertises extra models (e.g. *-omni) the user didn't ask
+//       for, so the picker would show entries beyond the configured list.
+//       Only the user's own config drives the dropdown.
 //   - recents: localStorage models the user typed in NewSession before,
 //       kept separate so the picker can show a "Recent" group and so the
-//       list isn't empty while the API calls are in flight / both fail.
+//       list isn't empty while the API call is in flight / fails.
 //
 // Fetching is gated on `enabled`. ChatPanel only enables this when the
-// picker is open, so we don't fire two requests per open panel on every
-// page load. After the first successful fetch the result is kept in state
-// for the lifetime of the hook instance.
-//
-// We intentionally do NOT debounce or share across panels — each panel
-// has its own /sessions/:id/models endpoint anyway, and the /config call
-// is so cheap (small JSON, same-origin) that one extra hit per opened
-// panel isn't worth a global cache.
+// picker is open, so we don't fire a request per open panel on every page
+// load. After the first successful fetch the result is kept in state for
+// the lifetime of the hook instance. The /config call is so cheap (small
+// JSON, same-origin) that one hit per opened panel isn't worth a cache.
 
 import { useEffect, useRef, useState } from 'react'
 import { api } from './useApi'
 import { readRecentModels } from '../utils/recent-models'
-import type { ModelInfo } from '../types'
 
 export interface ModelOption {
   id: string
@@ -35,7 +30,7 @@ export interface ModelOption {
 }
 
 export interface ModelOptions {
-  /** SDK ∪ config, deduped by id. SDK entries carry a display_name. */
+  /** The user's configured modelList (config.modelList), in order. */
   models: ModelOption[]
   /** Recent model ids from localStorage (raw strings). */
   recents: string[]
@@ -63,46 +58,32 @@ export function useModelOptions(sessionId: string, enabled: boolean): ModelOptio
     fetchedRef.current = sessionId
     const ac = new AbortController()
     ;(async () => {
-      const [sdkRes, cfgRes] = await Promise.allSettled([
-        api.get<{ models: ModelInfo[] }>(
-          `/sessions/${sessionId}/models`,
-          { signal: ac.signal },
-        ),
-        api.get<{ models?: string[] }>('/config', { signal: ac.signal }),
-      ])
+      let cfg: { models?: string[] }
+      try {
+        cfg = await api.get<{ models?: string[] }>('/config', { signal: ac.signal })
+      } catch {
+        if (ac.signal.aborted) return
+        // Leave fetchedRef cleared so a subsequent open of the picker
+        // retries rather than showing only recents forever.
+        fetchedRef.current = null
+        return
+      }
       if (ac.signal.aborted) return
 
-      const sdkModels =
-        sdkRes.status === 'fulfilled' ? sdkRes.value.models : []
-      const cfgIds =
-        cfgRes.status === 'fulfilled' ? (cfgRes.value.models ?? []) : []
+      const cfgIds = cfg.models ?? []
       // The server's default is the first configured model — the same value
       // create() pins (config.defaultModel === modelList[0]). Capture it so
       // the picker can mark it selected for a not-yet-set session.
       const defaultModel = cfgIds[0]
 
-      // SDK first (canonical, with display_name), then config-only extras.
-      // Dedupe by id.
+      // Only the user's configured models, deduped by id, in order.
       const seen = new Set<string>()
       const merged: ModelOption[] = []
-      for (const m of sdkModels) {
-        if (m.id && !seen.has(m.id)) {
-          seen.add(m.id)
-          merged.push({ id: m.id, displayName: m.display_name })
-        }
-      }
       for (const id of cfgIds) {
         if (id && !seen.has(id)) {
           seen.add(id)
           merged.push({ id })
         }
-      }
-
-      // If both calls failed, leave fetchedRef cleared so a subsequent
-      // open of the picker will retry rather than show only recents forever.
-      if (sdkRes.status === 'rejected' && cfgRes.status === 'rejected') {
-        fetchedRef.current = null
-        return
       }
 
       setData({ sessionId, models: merged, defaultModel })

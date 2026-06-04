@@ -20,6 +20,7 @@ import { useTheme } from './hooks/useTheme'
 import { useToast } from './hooks/useToast'
 import { useWsHub, useWsHubStatus } from './hooks/useWsHub'
 import type { WsServerFrame } from './ws-types'
+import type { SettingsTabName } from './local-commands'
 import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, SidebarSection } from './types'
 import { PERMISSION_MODES } from './types'
 import { ACCENT_COLORS } from './theme'
@@ -99,10 +100,22 @@ export function App() {
    *  the focused session — making it per-session lets the overlay cover
    *  just that column instead of the whole viewport. */
   const [settingsOpenFor, setSettingsOpenFor] = useState<string | null>(null)
+  // Deep-link request to a specific Settings tab (the `/mcp` local command).
+  // The nonce makes every request distinct so SettingsPanel re-applies the
+  // tab even when the panel is already mounted/open on another tab.
+  const [settingsTabRequest, setSettingsTabRequest] = useState<{
+    sessionId: string
+    tab: SettingsTabName
+    nonce: number
+  } | null>(null)
   const [newSessionDialogOpen, setNewSessionDialogOpen] = useState(false)
   const newSessionDialogOpenRef = useRef(newSessionDialogOpen)
   const [resumeDialogOpen, setResumeDialogOpen] = useState(false)
   const resumeDialogOpenRef = useRef(resumeDialogOpen)
+  // When set, the resume picker was opened from a panel's `/resume` local
+  // command: the chosen session should REPLACE this panel's slot rather than
+  // open in a new panel. Null = the global (Mod+Shift+O) resume flow.
+  const [resumeTargetPanelId, setResumeTargetPanelId] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false)
@@ -211,6 +224,17 @@ export function App() {
   const handleOpenGitPanel = useCallback((id: string) => {
     setGitPanelOpenFor(id)
     setSettingsOpenFor(null)
+  }, [])
+  // Deep-link a panel's settings to a specific tab (the `/mcp` local command).
+  // Opens the settings overlay (closing Git, mirroring handleOpenSettings) and
+  // emits a nonce-stamped tab request so SettingsPanel switches even if it's
+  // already open on another tab.
+  const settingsTabNonceRef = useRef(0)
+  const openSettingsTab = useCallback((id: string, tab: SettingsTabName) => {
+    setSettingsOpenFor(id)
+    setGitPanelOpenFor(null)
+    settingsTabNonceRef.current += 1
+    setSettingsTabRequest({ sessionId: id, tab, nonce: settingsTabNonceRef.current })
   }, [])
 
   const { gridTemplate, onDividerMouseDown, draggingDivider, bodyRef, setPanelRatios } = usePanelColumnResize({ openIds, panelMinRatio })
@@ -1097,7 +1121,7 @@ export function App() {
             // close when they press Esc with both possible.
             if (paletteOpenRef.current) setPaletteOpen(false)
             else if (helpOpenRef.current) setHelpOpen(false)
-            else if (resumeDialogOpenRef.current) setResumeDialogOpen(false)
+            else if (resumeDialogOpenRef.current) { setResumeDialogOpen(false); setResumeTargetPanelId(null) }
             else if (newSessionDialogOpenRef.current) setNewSessionDialogOpen(false)
             else if (gitPanelOpenForRef.current) setGitPanelOpenFor(null)
             else if (settingsOpenForRef.current) setSettingsOpenFor(null)
@@ -1338,6 +1362,29 @@ export function App() {
     openAtSlot(sidebarId, targetSlotId, live?.lastTurnAt)
   }, [updateSession, openAtSlot, toast])
 
+  // Resume a picked session INTO a specific panel slot (the `/resume` local
+  // command flow). Mirrors handleAcceptSidebarDrop's dormant handling, but
+  // also covers unknown CLI-created sessions (not in `sessions`): those fall
+  // through to resumeSession, which adopts them server-side before swapping.
+  const resumeIntoPanel = useCallback(
+    (pickedId: string, targetPanelId: string) => {
+      const known = sessionsRef.current.find((s) => s.id === pickedId)
+      if (known?.running) {
+        openAtSlot(pickedId, targetPanelId, known.lastTurnAt)
+      } else {
+        void resumeSession(pickedId, (res) => openAtSlot(pickedId, targetPanelId, res.session.lastTurnAt))
+      }
+    },
+    [resumeSession, openAtSlot],
+  )
+
+  // Opened from a panel's `/resume`: remember which slot to replace, then pop
+  // the picker. onResume (below) branches on resumeTargetPanelId.
+  const requestResumeForPanel = useCallback((panelSessionId: string) => {
+    setResumeTargetPanelId(panelSessionId)
+    setResumeDialogOpen(true)
+  }, [])
+
   const refreshConfigResponse = useCallback(async () => {
     const r = await api.get<ConfigResponse>('/config')
     setDefaults(r.defaults)
@@ -1451,7 +1498,6 @@ export function App() {
           onReorderInGroup={handleReorderInGroup}
           newSessionDialogOpen={newSessionDialogOpen}
           onNewSessionDialogChange={setNewSessionDialogOpen}
-          onResume={() => setResumeDialogOpen(true)}
           groups={groups}
           sidebarSections={sidebarSections}
           collapsedGroups={collapsedGroups}
@@ -1647,6 +1693,13 @@ export function App() {
                     onRegisterInterrupt={registerInterrupt}
                     onRegisterRecap={registerRecap}
                     onAcceptSidebarDrop={handleAcceptSidebarDrop}
+                    onRequestResumeForPanel={requestResumeForPanel}
+                    onOpenSettingsTab={openSettingsTab}
+                    settingsTabRequest={
+                      settingsTabRequest?.sessionId === s.id
+                        ? { tab: settingsTabRequest.tab, nonce: settingsTabRequest.nonce }
+                        : null
+                    }
                     isResuming={resuming.has(s.id)}
                     snippets={snippets}
                     onOpenSnippetsManager={openSnippetsManager}
@@ -1697,6 +1750,14 @@ export function App() {
             defaultCwd={defaults.cwd}
             onResume={(id) => {
               setResumeDialogOpen(false)
+              // Panel-scoped `/resume`: replace that panel's slot with the
+              // picked session instead of opening a new panel.
+              if (resumeTargetPanelId) {
+                const target = resumeTargetPanelId
+                setResumeTargetPanelId(null)
+                resumeIntoPanel(id, target)
+                return
+              }
               if (openIds.includes(id)) {
                 setFocusedId(id)
                 return
@@ -1714,7 +1775,7 @@ export function App() {
                 void resumeSession(id, (res) => openSession(id, res.session.lastTurnAt))
               }
             }}
-            onCancel={() => setResumeDialogOpen(false)}
+            onCancel={() => { setResumeDialogOpen(false); setResumeTargetPanelId(null) }}
           />
         </Suspense>
       )}

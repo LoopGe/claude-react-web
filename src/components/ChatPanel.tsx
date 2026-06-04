@@ -19,6 +19,7 @@ import { shortenPath } from '../utils/paths'
 import { IconSettings, IconX, IconFolder, IconCheck, IconAlertTriangle, IconSparkles } from './icons/ToolIcons'
 import { PermissionModeIcon, permissionModeLabel } from './permission-mode-display'
 import type { PermissionMode, SessionInfo } from '../types'
+import type { SettingsTabName } from '../local-commands'
 import { PERMISSION_MODES } from '../types'
 import type { GitStatus } from '../../shared/git-types'
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
@@ -97,6 +98,15 @@ export interface ChatPanelProps {
   onSwap: (draggedId: string, targetId: string) => void
   /** A sidebar card was dropped onto this panel — replace it. */
   onAcceptSidebarDrop: (sidebarId: string, sessionId: string) => void
+  /** Open the resume picker scoped to this panel — the chosen session
+   *  replaces this panel's slot. Triggered by the `/resume` local command. */
+  onRequestResumeForPanel: (panelSessionId: string) => void
+  /** Open this panel's settings overlay on a specific tab. Triggered by the
+   *  `/mcp` local command. */
+  onOpenSettingsTab: (panelSessionId: string, tab: SettingsTabName) => void
+  /** Nonce-stamped request to switch the settings tab (forwarded to <Chat> →
+   *  SettingsPanel). Null when no request targets this panel. */
+  settingsTabRequest?: { tab: SettingsTabName; nonce: number } | null
   /** Global transcript toggle (forwarded to the inner <Chat>). */
   showSystemEvents?: boolean
   /** When true, render the Settings overlay on top of this panel. */
@@ -137,6 +147,9 @@ export const ChatPanel = memo(function ChatPanel({
   onSessionUpdate,
   onSwap,
   onAcceptSidebarDrop,
+  onRequestResumeForPanel,
+  onOpenSettingsTab,
+  settingsTabRequest,
   showSystemEvents,
   settingsOpen,
   onOpenSettings,
@@ -465,6 +478,9 @@ export const ChatPanel = memo(function ChatPanel({
             session={session}
             focused={focused}
             onSessionUpdate={onSessionUpdate}
+            onRequestResumeForPanel={onRequestResumeForPanel}
+            onOpenSettingsTab={onOpenSettingsTab}
+            settingsTabRequest={settingsTabRequest}
             showSystemEvents={showSystemEvents}
             settingsOpen={settingsOpen}
             onCloseSettings={onCloseSettings}

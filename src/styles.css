@@ -3198,10 +3198,19 @@ body.resizing-col * {
 .settings-panel {
   background: var(--bg-elev);
   border-left: 1px solid var(--border);
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;
+}
+/* Only the body scrolls; the header + tab bar stay pinned above it,
+   matching the global settings modal layout. */
+.settings-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 .settings-panel-header {
   padding: 14px 16px;

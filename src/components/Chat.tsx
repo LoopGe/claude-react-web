@@ -44,6 +44,8 @@ import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
 import type { AgentInfo, SessionInfo, SlashCommand } from '../types'
 import type { GitStatusResponse } from '../../shared/git-types'
+import { LOCAL_COMMANDS, matchLocalCommand } from '../local-commands'
+import type { SettingsTabName } from '../local-commands'
 
 
 const INPUT_HISTORY_KEY = 'claude-react-web:input-history'
@@ -73,6 +75,15 @@ interface Props {
   /** Reserved for future push updates — currently unused because session
    *  state is tracked via the WebSocket hub + top-level session list poll. */
   onSessionUpdate: (s: SessionInfo) => void
+  /** Open the resume picker scoped to this panel — the chosen session
+   *  replaces this panel's slot. Invoked by the `/resume` local command. */
+  onRequestResumeForPanel: (panelSessionId: string) => void
+  /** Open this panel's settings overlay on a specific tab. Invoked by the
+   *  `/mcp` local command. */
+  onOpenSettingsTab: (panelSessionId: string, tab: SettingsTabName) => void
+  /** Nonce-stamped request to switch the settings tab — forwarded to
+   *  SettingsPanel, which applies it when the nonce changes. */
+  settingsTabRequest?: { tab: SettingsTabName; nonce: number } | null
   /** Forwarded to MessageList. App-level toggle (header bug icon). */
   showSystemEvents?: boolean
   /** When true, render the Settings overlay on top of this chat panel. */
@@ -116,7 +127,7 @@ export const Chat = memo(function Chat({
   session, showSystemEvents,
   settingsOpen, onCloseSettings,
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
-  onSessionUpdate, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, headerButtonsRef,
+  onSessionUpdate, onRequestResumeForPanel, onOpenSettingsTab, settingsTabRequest, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, headerButtonsRef,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet,
 }: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
@@ -170,6 +181,27 @@ export const Chat = memo(function Chat({
       cancelled = true
     }
   }, [session.id, session.running])
+
+  // Local commands (e.g. /resume, /mcp) merged in ONLY for the Composer's "/"
+  // picker, so they're discoverable. They're handled in-app by send()'s
+  // matchLocalCommand check. The SDK may ALSO advertise a same-named command
+  // (Claude Code ships a built-in /mcp): local wins, so we drop any SDK entry
+  // whose name collides — otherwise the picker shows duplicates and React
+  // warns on the duplicate `key={cmd.name}`. Deliberately NOT passed to
+  // SettingsPanel (which uses the raw `commands` for the skills/plugins
+  // catalog — a client command doesn't belong there).
+  const mergedCommands = useMemo<SlashCommand[]>(() => {
+    const localNames = new Set(LOCAL_COMMANDS.map((c) => c.name))
+    return [
+      ...LOCAL_COMMANDS.map((c) => ({
+        name: c.name,
+        description: c.description,
+        argumentHint: c.argumentHint ?? '',
+        aliases: c.aliases,
+      })),
+      ...commands.filter((c) => !localNames.has(c.name)),
+    ]
+  }, [commands])
 
   // Agents — fetched once per session, refreshed after plugin reload.
   // Cached per session (like commands) so switching away and back — or a
@@ -491,6 +523,19 @@ export const Chat = memo(function Chat({
     // so two rapid Enter presses (within one frame) can't both pass.
     if (sendingRef.current) return
     const text = input.trim()
+    // Client-side local commands (e.g. /resume) are intercepted here and
+    // handled in-app instead of being POSTed to the SDK. Matched strictly
+    // (first token only) so real SDK/plugin commands still pass through.
+    const local = matchLocalCommand(text)
+    if (local) {
+      setInput('')
+      local.run({
+        sessionId: session.id,
+        requestResumeForPanel: onRequestResumeForPanel,
+        openSettingsTab: onOpenSettingsTab,
+      })
+      return
+    }
     // Allow sending with just attachments (e.g. "here, look at these files")
     // — the model sees only the attachments preamble in that case.
     if (!text && attachmentList.length === 0 && pastedImages.images.length === 0) return
@@ -552,7 +597,7 @@ export const Chat = memo(function Chat({
       sendingRef.current = false
       setSending(false)
     }
-  }, [input, attachmentList, session.id, history, trackSentTurn, insertUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, pastedImages])
+  }, [input, attachmentList, session.id, history, trackSentTurn, insertUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, pastedImages, onRequestResumeForPanel, onOpenSettingsTab])
 
   // Focus traps for the two in-panel overlays. The settings overlay is
   // always mounted (toggled via CSS .hidden), so the trap is gated on
@@ -745,7 +790,7 @@ export const Chat = memo(function Chat({
         onDragLeave={onDragLeave}
         onDrop={onDrop}
         history={history}
-        commands={commands}
+        commands={mergedCommands}
         pastedImages={pastedImages.images}
         onPasteImage={pastedImages.addImage}
         onRemovePastedImage={pastedImages.removeImage}
@@ -825,6 +870,7 @@ export const Chat = memo(function Chat({
               commands={commands}
               agents={agents}
               contextUsage={stream.contextUsage}
+              tabRequest={settingsTabRequest}
               onPluginsReloaded={() => { refreshCommands(); refreshAgents() }}
             />
           </Suspense>

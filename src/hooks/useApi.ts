@@ -79,8 +79,8 @@ export async function apiRequest<T>(
 }
 
 export const api = {
-  get: <T>(path: string, opts?: { signal?: AbortSignal }) =>
-    apiRequest<T>(path, { signal: opts?.signal }),
+  get: <T>(path: string, opts?: { signal?: AbortSignal; timeoutMs?: number }) =>
+    apiRequest<T>(path, { signal: opts?.signal }, { timeoutMs: opts?.timeoutMs }),
   post: <T>(path: string, body?: unknown, opts?: { signal?: AbortSignal; timeoutMs?: number }) =>
     apiRequest<T>(
       path,
