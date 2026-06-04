@@ -18,10 +18,19 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { Markdown } from './Markdown'
 import type { PermissionRequest, QuestionSpec } from '../types'
 import { useFocusTrap } from '../hooks/useFocusTrap'
-import { IconMessageCircle, IconCheckSquare, IconSquare, IconCircleDot, IconCircle } from './icons/ToolIcons'
+import { IconMessageCircle, IconCheckSquare, IconSquare, IconCircleDot, IconCircle, IconX } from './icons/ToolIcons'
 
 /** Narrowed to the question variant of the union. */
 type QuestionRequest = Extract<PermissionRequest, { kind: 'question' }>
+
+/** In-progress answer state for one question dialog. Lifted out of the
+ *  component so Chat can persist it across minimize/re-open (the dialog
+ *  unmounts when minimized, so its local state would otherwise be lost). */
+export interface QuestionDraft {
+  choices: Array<string | string[] | null>
+  otherActive: boolean[]
+  otherTexts: string[]
+}
 
 interface Props {
   request: QuestionRequest
@@ -32,21 +41,30 @@ interface Props {
   /** Cancelling skips all questions (each becomes null). Lets the model
    *  continue with no guidance rather than blocking forever. */
   onSkipAll: () => void
+  /** Hide the dialog without resolving the request. The question stays
+   *  pending; the inline message card can re-open it later. */
+  onMinimize: () => void
+  /** Restore previously-entered answers (from a prior minimize). When
+   *  undefined the dialog starts blank. */
+  initialDraft?: QuestionDraft
+  /** Fired on every answer change so Chat can persist the draft for
+   *  restore-after-minimize. */
+  onDraftChange?: (draft: QuestionDraft) => void
 }
 
-export function QuestionDialog({ request, onSubmit, onSkipAll }: Props) {
+export function QuestionDialog({ request, onSubmit, onSkipAll, onMinimize, initialDraft, onDraftChange }: Props) {
   // Map question index → chosen label (or array for multi-select).
   // `null` means the user hasn't chosen anything for this question yet —
   // treated as "skip" on submit.
   const [choices, setChoices] = useState<Array<string | string[] | null>>(() =>
-    request.questions.map(() => null),
+    initialDraft?.choices ?? request.questions.map(() => null),
   )
   // Track which questions have "Other" mode active and the custom text.
   const [otherActive, setOtherActive] = useState<boolean[]>(() =>
-    request.questions.map(() => false),
+    initialDraft?.otherActive ?? request.questions.map(() => false),
   )
   const [otherTexts, setOtherTexts] = useState<string[]>(() =>
-    request.questions.map(() => ''),
+    initialDraft?.otherTexts ?? request.questions.map(() => ''),
   )
   // `busy` guards against a double-submit in the one-frame window between
   // the click and the parent unmounting this dialog (it optimistically
@@ -64,6 +82,17 @@ export function QuestionDialog({ request, onSubmit, onSkipAll }: Props) {
   })
 
   useFocusTrap(dialogRef)
+
+  // Persist the in-progress draft upward (keyed by request id in Chat) so
+  // minimizing then re-opening restores the user's selections. Keep the
+  // callback in a ref so this effect depends only on the answer state.
+  const onDraftChangeRef = useRef(onDraftChange)
+  useLayoutEffect(() => {
+    onDraftChangeRef.current = onDraftChange
+  })
+  useEffect(() => {
+    onDraftChangeRef.current?.({ choices, otherActive, otherTexts })
+  }, [choices, otherActive, otherTexts])
 
   const setSingle = (qIdx: number, label: string) => {
     setChoices((prev) => {
@@ -222,6 +251,16 @@ export function QuestionDialog({ request, onSubmit, onSkipAll }: Props) {
             <span aria-hidden style={{ display: 'inline-flex' }}><IconMessageCircle size={16} /></span>
             Claude is asking
           </h3>
+          <button
+            type="button"
+            className="question-minimize-btn"
+            onClick={onMinimize}
+            disabled={busy}
+            aria-label="Minimize"
+            title="收起 — 稍后可点消息里的问题卡片重新打开"
+          >
+            <IconX size={14} />
+          </button>
         </div>
 
         <div className="modal-section question-body">

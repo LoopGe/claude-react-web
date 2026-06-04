@@ -28,9 +28,10 @@ import { Composer } from './Composer'
 import { ContextBar } from './ContextBar'
 import { MessageList, WorkingBubble } from './MessageList'
 import { PermissionDialog } from './PermissionDialog'
-import { QuestionDialog } from './QuestionDialog'
+import { QuestionDialog, type QuestionDraft } from './QuestionDialog'
 import { SubagentOverlay } from './SubagentOverlay'
 import { SubagentProvider } from '../hooks/useSubagentContext'
+import { ReopenQuestionProvider } from '../hooks/useReopenQuestion'
 import { TodoChecklist } from './TodoChecklist'
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { useSessionRecap } from '../hooks/useSessionRecap'
@@ -275,6 +276,73 @@ export const Chat = memo(function Chat({
     [stream.subagentIndex, stream.messages, openSubagent],
   )
 
+  // ── AskUserQuestion minimize / re-open ──────────────────────
+  // A minimized question dialog is hidden (not resolved) so the user can
+  // read the conversation behind it; the inline QuestionCard re-opens it.
+  // Keyed by the pending request's `id`.
+  const [minimizedQ, setMinimizedQ] = useState<Set<string>>(() => new Set())
+  // Persist in-progress answers across minimize/re-open (the dialog unmounts
+  // when minimized). Keyed by request id. A ref because drafts don't need to
+  // trigger re-renders — the dialog reads its initialDraft only on mount.
+  const questionDraftsRef = useRef<Map<string, QuestionDraft>>(new Map())
+
+  const minimizeQuestion = useCallback((id: string) => {
+    setMinimizedQ((prev) => {
+      const next = new Set(prev)
+      next.add(id)
+      return next
+    })
+  }, [])
+  // Re-open keyed by tool_use_id (what the inline card knows); resolve to the
+  // pending request id and drop it from the minimized set.
+  const reopenQuestion = useCallback(
+    (toolUseId: string) => {
+      const req = permissions.pending.find(
+        (p) => p.kind === 'question' && p.toolUseID === toolUseId,
+      )
+      if (!req) return
+      setMinimizedQ((prev) => {
+        if (!prev.has(req.id)) return prev
+        const next = new Set(prev)
+        next.delete(req.id)
+        return next
+      })
+    },
+    [permissions.pending],
+  )
+  // Map the minimized request ids → tool_use_ids so the inline card (which
+  // only knows its tool_use_id) can tell whether it's currently minimized.
+  const minimizedToolUseIds = useMemo(() => {
+    const out = new Set<string>()
+    for (const p of permissions.pending) {
+      if (p.kind === 'question' && minimizedQ.has(p.id)) out.add(p.toolUseID)
+    }
+    return out
+  }, [permissions.pending, minimizedQ])
+  const reopenCtxValue = useMemo(
+    () => ({ minimizedToolUseIds, onReopen: reopenQuestion }),
+    [minimizedToolUseIds, reopenQuestion],
+  )
+  // Drop minimize/draft state once a question resolves (no longer pending) so
+  // the set and ref don't accumulate stale ids over a long session.
+  useEffect(() => {
+    const liveQ = new Set(
+      permissions.pending.filter((p) => p.kind === 'question').map((p) => p.id),
+    )
+    setMinimizedQ((prev) => {
+      let changed = false
+      const next = new Set<string>()
+      for (const id of prev) {
+        if (liveQ.has(id)) next.add(id)
+        else changed = true
+      }
+      return changed ? next : prev
+    })
+    for (const id of questionDraftsRef.current.keys()) {
+      if (!liveQ.has(id)) questionDraftsRef.current.delete(id)
+    }
+  }, [permissions.pending])
+
   // ── In-chat search ──────────────────────────────────────────
   const [searchOpen, setSearchOpen] = useState(false)
   const [exportMenuPos, setExportMenuPos] = useState<{ x: number; y: number } | null>(null)
@@ -493,7 +561,7 @@ export const Chat = memo(function Chat({
   const settingsOverlayRef = useRef<HTMLDivElement>(null)
   const gitOverlayRef = useRef<HTMLDivElement>(null)
   useFocusTrap(settingsOverlayRef, { restoreFocus: true, active: !!settingsOpen })
-  useFocusTrap(gitOverlayRef, { restoreFocus: true, active: !!gitPanelOpen })
+  useFocusTrap(gitOverlayRef, { restoreFocus: false, active: !!gitPanelOpen })
 
   const interrupt = useCallback(async () => {
     try {
@@ -599,6 +667,7 @@ export const Chat = memo(function Chat({
       />
 
       <SubagentProvider value={subagentCtxValue}>
+        <ReopenQuestionProvider value={reopenCtxValue}>
         <MessageList
           items={stream.items}
           recap={session.recap}
@@ -617,6 +686,7 @@ export const Chat = memo(function Chat({
           hasOlder={stream.hasOlder}
           loadingOlder={stream.loadingOlder}
         />
+        </ReopenQuestionProvider>
       </SubagentProvider>
 
       <TodoChecklist messages={stream.messages} working={session.working} />
@@ -694,13 +764,19 @@ export const Chat = memo(function Chat({
           immediately on submit — the parent drops it from the pending
           queue optimistically (see usePermissionChannel). */}
       {(() => {
-        // Active pending question — show the interactive dialog.
+        // Active pending question — show the interactive dialog, unless the
+        // user minimized it (then it lives only as the inline message card).
         const pendingHead = permissions.pending[0]
-        if (pendingHead?.kind === 'question') {
+        if (pendingHead?.kind === 'question' && !minimizedQ.has(pendingHead.id)) {
           return (
             <QuestionDialog
               key={pendingHead.id}
               request={pendingHead}
+              initialDraft={questionDraftsRef.current.get(pendingHead.id)}
+              onDraftChange={(draft) => {
+                questionDraftsRef.current.set(pendingHead.id, draft)
+              }}
+              onMinimize={() => minimizeQuestion(pendingHead.id)}
               onSubmit={(answers) => {
                 void permissions.answerQuestion(pendingHead.id, answers)
               }}

@@ -41,13 +41,13 @@ The CLI `--model` flag takes priority over the first entry when launching.
 | | |
 |---|---|
 | Type | `string` |
-| Default | `"claude-haiku-3-5-20241022"` |
+| Default | `"claude-haiku-4-5-20251001"` |
 
 Lightweight model used to generate AI session summaries (recaps). Choose a fast, inexpensive model since recaps are generated frequently and don't require deep reasoning.
 
 ```json
 {
-  "recapModel": "claude-haiku-3-5-20241022"
+  "recapModel": "claude-haiku-4-5-20251001"
 }
 ```
 
@@ -70,28 +70,20 @@ Maximum file upload size. Files larger than this are rejected before upload. Mus
 
 ---
 
-### `sessionIdleMs`
+### `commitMessageModel`
 
 | | |
 |---|---|
-| Type | `number` (milliseconds) |
-| Default | `1800000` (30 minutes) |
+| Type | `string` |
+| Default | `"claude-haiku-4-5-20251001"` |
 
-How long a session can be idle (no user interaction, no active WebSocket subscriber) before its underlying SDK process is automatically unloaded to free memory. The session metadata is preserved on disk and the session can be resumed by clicking it in the sidebar.
+Model used by the AI commit-message generator in the GitPanel "This session" view. Defaults to the same lightweight model as `recapModel`; point it at a stronger model (e.g. an Opus build) if you want higher-quality messages at higher cost.
 
 ```json
 {
-  "sessionIdleMs": 1800000
+  "commitMessageModel": "claude-haiku-4-5-20251001"
 }
 ```
-
-| Value | Meaning |
-|-------|---------|
-| `600000` | 10 minutes |
-| `1800000` | 30 minutes (default) |
-| `3600000` | 1 hour |
-
-Must be a positive integer. The idle GC runs every 60 seconds, so the actual eviction may be up to 60 seconds later than the configured timeout.
 
 ---
 
@@ -114,34 +106,22 @@ Must be a positive integer. Higher values use more memory but allow the UI to sc
 
 ---
 
-### `contextSteps`
+### `workingStuckMs`
 
 | | |
 |---|---|
-| Type | `Array<{ value: number; label: string; beta?: string }>` |
-| Default | see below |
+| Type | `number` (milliseconds) |
+| Default | `3600000` (1 hour) |
 
-Context-window size presets shown as a slider in the "new session" dialog. Each entry defines:
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `value` | yes | Token count (positive integer) |
-| `label` | yes | Display label shown in the UI (e.g. `"256k"`, `"1M"`) |
-| `beta` | no | Beta flag name shown as a tooltip when this step is selected |
+How long a session may stay in the "working" state with no SDK activity before it is considered stuck and auto-interrupted. Set to `0` to disable the watchdog entirely.
 
 ```json
 {
-  "contextSteps": [
-    { "value": 100000,  "label": "100k" },
-    { "value": 200000,  "label": "200k" },
-    { "value": 256000,  "label": "256k" },
-    { "value": 512000,  "label": "512k" },
-    { "value": 1000000, "label": "1M", "beta": "context-1m-2025-08-07" }
-  ]
+  "workingStuckMs": 3600000
 }
 ```
 
-The slider respects array order; the first entry is selected by default. The `beta` field, when present, triggers an informational hint in the UI that this step is in beta.
+Must be a non-negative integer.
 
 ---
 
@@ -161,6 +141,95 @@ Maximum number of chat panels open side-by-side, and also the maximum number of 
 ```
 
 Values outside the 2–5 range are clamped. This replaced the previous per-browser UI selector; the value is now server-controlled and shared by all clients.
+
+---
+
+### `authToken`
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | _(none — must be set)_ |
+
+Anthropic credential forwarded to each Claude SDK subprocess as an `Authorization: Bearer <token>` header. Works against both the official API and Anthropic-compatible proxies. The server warns at startup when this is unset, and API calls fail until it is configured. Can also be filled in from the in-app settings panel.
+
+```json
+{
+  "authToken": "sk-ant-..."
+}
+```
+
+---
+
+### `baseUrl`
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | `"https://api.anthropic.com"` |
+
+API endpoint the SDK talks to. Override to point at a proxy or relay. Any trailing slash is stripped during load.
+
+```json
+{
+  "baseUrl": "https://api.anthropic.com"
+}
+```
+
+---
+
+### `accessToken`
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | _(none)_ |
+
+Shared **web access** token (distinct from `authToken` above). When set, every visitor must supply it once via `/?token=<token>` before the UI loads. Auto-generated and enforced when the server binds to a non-loopback host. Pin a stable value here to keep the same token across restarts.
+
+> Note: this field is read at startup but is intentionally **not** rewritable from the in-app settings UI.
+
+```json
+{
+  "accessToken": "my-shared-secret"
+}
+```
+
+---
+
+### `logToFile`
+
+| | |
+|---|---|
+| Type | `boolean` |
+| Default | `false` |
+
+When `true`, server logs are written to a file under `<stateDir>/logs/` in addition to stdout.
+
+```json
+{
+  "logToFile": true
+}
+```
+
+The runtime log level and scope filter are controlled separately via the `LOG_LEVEL` / `LOG_SCOPES` env vars or `PUT /api/log`, and persisted as `logLevel` / `logScopes`.
+
+---
+
+### `updateCheckRegistry`
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | `"https://registry.npmjs.org"` |
+
+npm registry URL the update checker probes for new releases. Set to an empty string to disable the update check entirely (the banner stays hidden and the About tab shows "disabled"). Override to point at a private registry.
+
+```json
+{
+  "updateCheckRegistry": "https://registry.npmjs.org"
+}
+```
 
 ---
 

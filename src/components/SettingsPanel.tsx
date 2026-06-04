@@ -630,7 +630,10 @@ function McpServerCard({
 }) {
   const [expanded, setExpanded] = useState(false)
   const color = STATUS_COLORS[server.status] ?? 'var(--fg-muted)'
-  const canReconnect = server.status === 'failed' || server.status === 'disabled'
+  // Allow reconnecting any server that isn't disabled — even a healthy
+  // `connected` one, since users sometimes need to force a refresh (e.g. the
+  // upstream server changed its tool set). Disabled servers use Enable instead.
+  const canReconnect = server.status !== 'disabled'
   const canDisable = server.status !== 'disabled'
   const canEnable = server.status === 'disabled'
 

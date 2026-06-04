@@ -389,7 +389,17 @@ export class SessionManager {
    *  For resume, use `resume()` instead — this path always allocates a
    *  fresh UUID and won't wire up SDK `resume`. */
   create(opts: Options): SessionInfo {
-    return this.spawn(randomUUID(), opts)
+    // Pin a concrete default model for brand-new sessions so we don't lean
+    // on the CLI subprocess's built-in default. When the client omits a
+    // model, use the first entry of the configured model list
+    // (config.defaultModel === modelList[0]). This keeps session.model a
+    // concrete id from the start — matching what the model picker shows as
+    // selected — instead of an undefined that silently resolves to whatever
+    // model the `claude` CLI happens to pick. Resume/fork are unaffected:
+    // they carry the persisted model forward through their own opts.
+    const withDefault: Options =
+      opts.model ? opts : { ...opts, model: defaultConfig.defaultModel }
+    return this.spawn(randomUUID(), withDefault)
   }
 
   /** Resume a previously-persisted session. The SDK loads conversation
@@ -1618,8 +1628,30 @@ export class SessionManager {
     if (!opts.pathToClaudeCodeExecutable && this.claudeBinary) {
       opts.pathToClaudeCodeExecutable = this.claudeBinary
     }
-    if (!opts.env) {
-      opts.env = this.buildAnthropicEnv()
+    // Inject the model-alias env vars so subagents (Task/Agent/Explore)
+    // resolve to a model that actually works. Subagents are spawned by the
+    // CLI subprocess and carry model *aliases* (sonnet/haiku/opus/inherit),
+    // not the explicit `model` ID we pass to the main Query. The CLI resolves
+    // those aliases via ANTHROPIC_DEFAULT_*_MODEL / ANTHROPIC_SMALL_FAST_MODEL;
+    // when those are unset (and the user points at a third-party
+    // ANTHROPIC_BASE_URL that doesn't know Anthropic's default IDs), the
+    // aliases resolve to models the gateway rejects → the subagent call errors
+    // even though the main conversation works. Pin every alias to this
+    // session's effective model so a subagent always uses a model we know is
+    // accepted. We shallow-copy before writing: buildAnthropicEnv() returns a
+    // SHARED cached object, and each session may run a different model, so
+    // mutating it in place would cross-contaminate sessions.
+    //
+    // Known limitation: setModel() mid-session can't re-inject this (the
+    // subprocess env is fixed at spawn), so subagents keep using the model
+    // pinned here. That's still a valid model, so it won't error.
+    const effectiveModel = opts.model || defaultConfig.defaultModel
+    opts.env = {
+      ...(opts.env ?? this.buildAnthropicEnv()),
+      ANTHROPIC_DEFAULT_OPUS_MODEL: effectiveModel,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: effectiveModel,
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: effectiveModel,
+      ANTHROPIC_SMALL_FAST_MODEL: effectiveModel,
     }
     // Merge marketplace-enabled plugin paths into Options.plugins. We
     // append rather than replace so a caller can pass its own plugins

@@ -719,6 +719,9 @@ body.resizing-col * {
 .chat-panel-git-badge:hover:not(:disabled) {
   background: var(--bg-elev-2);
 }
+.chat-panel-model-badge.open {
+  background: var(--bg-elev-2);
+}
 .chat-panel-model-badge:focus-visible,
 .chat-panel-git-badge:focus-visible {
   outline: 2px solid var(--accent);
@@ -809,21 +812,6 @@ body.resizing-col * {
   margin: 0 8px 0 auto;
   min-width: 0;
   flex-shrink: 1;
-}
-
-/* Inline model editor — replaces the model badge when editing. Width
-   roughly matches the badge so the layout doesn't jump when entering /
-   leaving edit mode. */
-.chat-panel-chip-input {
-  background: var(--bg);
-  color: var(--fg);
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  font-size: 12px;
-  font-family: var(--mono);
-  padding: 2px 6px;
-  width: 180px;
-  outline: none;
 }
 
 .chat-panel-settings,
@@ -1472,6 +1460,30 @@ body.resizing-col * {
 .perm-card .modal-footer {
   flex-shrink: 0;
 }
+/* Minimize (×) button in the QuestionDialog header — hides the dialog so
+   the user can read the conversation behind it; the question stays pending
+   and the inline message card re-opens it. */
+.question-minimize-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.question-minimize-btn:hover:not(:disabled) {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+}
+.question-minimize-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 
 /* Custom right-click menu. Positioned absolutely by the parent. */
 .ctx-menu {
@@ -1519,6 +1531,111 @@ body.resizing-col * {
   background: var(--border);
   margin: 4px 2px;
 }
+
+/* ── Model picker — searchable dropdown anchored under the header chip ──
+   Combines the slash/command-palette listbox pattern with ctx-menu's
+   fixed anchoring. Reuses theme variables only (no hardcoded colours). */
+.model-picker {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  width: 300px;
+  max-width: calc(100vw - 16px);
+  max-height: min(420px, calc(100vh - 80px));
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  overflow: hidden;
+}
+.model-picker-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+.model-picker-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--fg);
+  font-size: 13px;
+  font-family: var(--mono);
+}
+.model-picker-input::placeholder {
+  color: var(--fg-muted);
+}
+.model-picker-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px;
+}
+.model-picker-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+.model-picker-heading {
+  padding: 6px 8px 2px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+.model-picker-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.model-picker-item.selected {
+  background: var(--bg-elev-2);
+}
+.model-picker-item.active {
+  color: var(--accent);
+}
+.model-picker-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.model-picker-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+.model-picker-item-label {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-picker-item-sub {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Slash command picker — anchored above the composer textarea */
 .cmd-picker {
   position: fixed;
@@ -4364,6 +4481,28 @@ details.question-inline-card[open] > summary {
   color: var(--fg-muted);
   border-color: color-mix(in srgb, var(--fg-muted) 30%, transparent);
 }
+/* "Click to answer" pill on a minimized pending question card. Sits after
+   the status chip (which has margin-left:auto). */
+.question-inline-reopen {
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  cursor: pointer;
+  background: var(--accent);
+  color: var(--on-accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  white-space: nowrap;
+}
+.question-inline-reopen:hover {
+  background: color-mix(in srgb, var(--accent) 85%, #000);
+}
+/* A minimized card pulls focus — brighter left rail + subtle ring so the
+   user can find their way back to the open question. */
+details.question-inline-card-minimized {
+  border-left-width: 3px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
 .question-inline-body {
   padding: 10px 14px 12px;
   display: flex;
@@ -6886,12 +7025,117 @@ mark.search-hl.search-hl-active {
     border-radius: 12px 12px 0 0;
   }
 
+  /* Global settings modal → bottom sheet. .modal-backdrop is shared by every
+     modal (new-session, marketplace, …), so :has() scopes this to the global
+     settings one only — the others keep their centered-card treatment. The
+     modal has 8 tabs in a flex row with no wrap/scroll: on a phone they need
+     ~714px but only ~313px exists, leaving half the tabs unreachable. */
+  .modal-backdrop:has(> .global-settings-modal) {
+    align-items: flex-end;
+    padding: 0;
+  }
+  .global-settings-modal {
+    width: 100%;
+    max-width: 100%;
+    max-height: 90dvh;
+    border-radius: 12px 12px 0 0;
+    /* Clear the home-indicator at the sheet's bottom edge. */
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  /* Let the tab row scroll horizontally instead of overflowing; the tabs must
+     not shrink below their label width or they become unreadable. */
+  .global-settings-tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: none; /* Firefox: hide the scrollbar, swipe still works */
+  }
+  .global-settings-tabs::-webkit-scrollbar {
+    display: none; /* WebKit: same */
+  }
+  .global-settings-tab {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
   /* Command palette: sit higher on small screens so the keyboard doesn't
      bury it and more results are visible. dvh tracks the mobile URL-bar
      collapse (matches the .palette max-height convention above). */
   .palette-backdrop {
     padding-top: 8vh;
     padding-top: 8dvh;
+  }
+
+  /* ── Safe areas (notch / Dynamic Island / home-indicator) ──────────
+     Enabled by viewport-fit=cover in index.html. Each fixed edge of the
+     UI reserves the corresponding inset so content never sits under the
+     status bar, camera cutout, or the gesture home-indicator. max() keeps
+     the existing padding as a floor on devices that report a 0 inset. */
+
+  /* App-level top toolbar (holds the hamburger): clear the status bar /
+     notch above and the rounded screen corners on the sides. */
+  .main-header {
+    padding-top: max(6px, env(safe-area-inset-top));
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
+  }
+
+  /* The drawer is a fixed full-height panel pinned to the left edge, so its
+     header (.brand) and footer must dodge the top inset and the home bar. */
+  .sidebar {
+    padding-left: env(safe-area-inset-left);
+  }
+  .sidebar .brand {
+    padding-top: max(14px, calc(14px + env(safe-area-inset-top)));
+  }
+
+  /* Bottom composer: lift the controls above the home-indicator and clear
+     the side insets (relevant in landscape, where the notch is sideways). */
+  .chat-composer {
+    padding-left: max(16px, env(safe-area-inset-left));
+    padding-right: max(16px, env(safe-area-inset-right));
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+
+  /* The composer textarea inherits .textarea's 12.5px. iOS Safari auto-zooms
+     the whole page when a focused input's font-size is < 16px, so every tap
+     into the box jolts the layout. 16px is the documented threshold that
+     suppresses that zoom — only raised on mobile to keep the desktop density. */
+  .chat-composer textarea {
+    font-size: 16px;
+  }
+
+  /* Send / Interrupt are text buttons (.btn, ~30px tall), below the 44px
+     touch target. The paperclip is a .btn-icon already covered above; this
+     lifts the text buttons in the actions column to the same floor. */
+  .chat-composer-actions .btn {
+    min-height: 44px;
+  }
+}
+
+/* ============================================================
+   Short viewports — phone landscape, split-screen, tiny windows
+   ------------------------------------------------------------
+   A landscape phone leaves very little vertical room; once the
+   on-screen keyboard appears the message list can vanish entirely.
+   Trim the fixed vertical chrome so the conversation stays usable.
+   max-height (not orientation) is the real signal — it also catches
+   small floating windows and split-screen multitasking. */
+@media (max-height: 480px) {
+  /* Shorter composer so the textarea can't eat the whole height; the
+     message list keeps the remaining space. */
+  .chat-composer textarea {
+    max-height: 96px;
+  }
+  /* Tighten the top toolbar to buy back a row of content. */
+  .main-header {
+    padding-top: 3px;
+    padding-bottom: 3px;
+  }
+  /* The command palette is normally pushed down 8dvh; on a short screen
+     that wastes precious height — pin it near the top instead. */
+  .palette-backdrop {
+    padding-top: 4vh;
+    padding-top: 4dvh;
   }
 }
 

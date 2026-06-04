@@ -33,6 +33,17 @@ type Tab = 'api' | 'models' | 'server' | 'mcp' | 'marketplace' | 'share' | 'logs
 
 type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'trace'
 
+/** Result of POST /config/test-connection. `ok` true means the token and
+ *  baseUrl are valid (we got past authentication); otherwise `status` (when
+ *  it was an HTTP error) and `error` describe the failure. `baseUrl` echoes
+ *  what was actually probed. */
+interface ConnectionTestResult {
+  ok: boolean
+  status?: number
+  error?: string
+  baseUrl?: string
+}
+
 interface LogConfig {
   level: LogLevel
   scopes: string[] | null
@@ -75,6 +86,10 @@ export function GlobalSettingsModal({
   const [authTokenMasked, setAuthTokenMasked] = useState<string | undefined>()
   const [authTokenDirty, setAuthTokenDirty] = useState(false)
   const [baseUrl, setBaseUrl] = useState('')
+
+  // ── Connection-test state (API tab) ──
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null)
 
   // ── Models tab state ──
   const [modelList, setModelList] = useState<string[]>([])
@@ -193,6 +208,30 @@ export function GlobalSettingsModal({
     }
   }
 
+  const handleTestConnection = async () => {
+    setTesting(true)
+    setTestResult(null)
+    try {
+      // Send the token only when the user edited it (otherwise the server
+      // falls back to the saved token — the client never holds the plaintext
+      // of an already-saved token). Always send baseUrl so an unsaved URL
+      // edit is what gets validated.
+      const r = await api.post<ConnectionTestResult>(
+        '/config/test-connection',
+        {
+          authToken: authTokenDirty && authToken.trim() ? authToken.trim() : undefined,
+          baseUrl: baseUrl.trim() || undefined,
+        },
+        { timeoutMs: 20_000 },
+      )
+      setTestResult(r)
+    } catch (e) {
+      setTestResult({ ok: false, error: (e as Error).message })
+    } finally {
+      setTesting(false)
+    }
+  }
+
   const addModel = () => {
     const m = newModel.trim()
     if (!m || modelList.includes(m)) return
@@ -276,8 +315,11 @@ export function GlobalSettingsModal({
                   authTokenMasked={authTokenMasked}
                   authTokenDirty={authTokenDirty}
                   baseUrl={baseUrl}
-                  onAuthTokenChange={(v) => { setAuthToken(v); setAuthTokenDirty(true) }}
-                  onBaseUrlChange={setBaseUrl}
+                  onAuthTokenChange={(v) => { setAuthToken(v); setAuthTokenDirty(true); setTestResult(null) }}
+                  onBaseUrlChange={(v) => { setBaseUrl(v); setTestResult(null) }}
+                  testing={testing}
+                  testResult={testResult}
+                  onTest={handleTestConnection}
                 />
               )}
               {tab === 'models' && (
@@ -370,6 +412,7 @@ export function GlobalSettingsModal({
 function ApiTab({
   authToken, authTokenMasked, authTokenDirty, baseUrl,
   onAuthTokenChange, onBaseUrlChange,
+  testing, testResult, onTest,
 }: {
   authToken: string
   authTokenMasked?: string
@@ -377,7 +420,13 @@ function ApiTab({
   baseUrl: string
   onAuthTokenChange: (v: string) => void
   onBaseUrlChange: (v: string) => void
+  testing: boolean
+  testResult: ConnectionTestResult | null
+  onTest: () => void
 }) {
+  // Can only test if there's a token to test — either a freshly-typed one or
+  // a previously-saved one (signalled by the masked value being present).
+  const canTest = (authTokenDirty && !!authToken.trim()) || !!authTokenMasked
   return (
     <>
       <Field label="Auth Token" hint={authTokenMasked && !authTokenDirty ? `Current: ${authTokenMasked}` : undefined}>
@@ -397,6 +446,30 @@ function ApiTab({
           placeholder="https://api.anthropic.com"
         />
       </Field>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 4 }}>
+        <button
+          className="btn"
+          onClick={onTest}
+          disabled={testing || !canTest}
+          title={!canTest ? 'Enter a token first' : 'Send a minimal request to verify the token and URL'}
+        >
+          {testing ? 'Testing…' : 'Test connection'}
+        </button>
+        {testResult && (
+          testResult.ok ? (
+            <span style={{ fontSize: 12, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <IconCheck size={12} /> Token &amp; URL valid
+            </span>
+          ) : (
+            <span style={{ fontSize: 12, color: 'var(--danger)' }}>
+              ✗ {testResult.status ? `${testResult.status}: ` : ''}{testResult.error ?? 'Failed'}
+            </span>
+          )
+        )}
+      </div>
+      <span className="hint" style={{ display: 'block', marginTop: 6 }}>
+        Tests the token above (or your saved token if unchanged) without saving.
+      </span>
     </>
   )
 }

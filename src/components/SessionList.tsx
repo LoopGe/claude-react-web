@@ -495,16 +495,6 @@ export const SessionList = memo(function SessionList({
         >
           + New session
         </button>
-        {onResume && (
-          <button
-            className="btn new-session-btn"
-            style={{ width: '100%', marginTop: 6 }}
-            onClick={onResume}
-            title="Resume a session from disk (Mod+Shift+O)"
-          >
-            Resume session…
-          </button>
-        )}
         {/* Filter input — visible only when there are at least a handful
             of sessions. Below that the filter is more friction than help. */}
         {sessions.length > 3 && (

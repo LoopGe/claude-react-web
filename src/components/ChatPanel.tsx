@@ -14,6 +14,7 @@ import { useGitStatus } from '../hooks/useGitStatus'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { statusClass, statusLabel, shortenModel } from '../utils/session-status'
 import { useModelOptions } from '../hooks/useModelOptions'
+import { ModelPicker } from './ModelPicker'
 import { shortenPath } from '../utils/paths'
 import { IconSettings, IconX, IconFolder, IconCheck, IconAlertTriangle, IconSparkles } from './icons/ToolIcons'
 import { PermissionModeIcon, permissionModeLabel } from './permission-mode-display'
@@ -160,9 +161,8 @@ export const ChatPanel = memo(function ChatPanel({
    *  keep the header "X msgs" label up-to-date without waiting for a
    *  server-pushed session-update (which only fires at turn end). */
   const [liveMessageCount, setLiveMessageCount] = useState(0)
-  /** When true, the model chip in the header becomes an inline <input>. */
-  const [editingModel, setEditingModel] = useState(false)
-  const [modelDraft, setModelDraft] = useState('')
+  /** Anchor for the model picker dropdown. Non-null = picker visible. */
+  const [modelMenu, setModelMenu] = useState<{ x: number; y: number } | null>(null)
   /** Anchor for the permission-mode menu. Non-null = menu visible. A
    *  custom menu (rather than a native <select>) gives us full control
    *  over dark-theme styling; the native control's dropdown surface
@@ -171,12 +171,12 @@ export const ChatPanel = memo(function ChatPanel({
   /** Global toast hub. Model/permission failures used to render an
    *  inline panel banner; they now surface as right-bottom toasts. */
   const toast = useToast()
-  // Datalist for the inline model chip. We only start fetching when the
-  // user clicks to edit (or has already opened it once on this panel) —
-  // no need to ping /sessions/:id/models + /config for every panel that
-  // happens to be open. The hook keeps recents from localStorage as a
-  // fallback so the dropdown isn't empty during the brief fetch window.
-  const modelOptions = useModelOptions(session.id, editingModel && !!session.running)
+  // Options for the model picker. We only start fetching when the user
+  // opens the picker — no need to ping /sessions/:id/models + /config for
+  // every panel that happens to be open. The hook keeps recents from
+  // localStorage as a fallback so the list isn't empty during the brief
+  // fetch window.
+  const modelOptions = useModelOptions(session.id, !!modelMenu && !!session.running)
   const chipsDisabled = !session.running || session.terminated
   // Use the live count from the stream when available; fall back to the
   // server-pushed session.messageCount (updated only at turn boundaries).
@@ -194,7 +194,7 @@ export const ChatPanel = memo(function ChatPanel({
 
   const commitModel = (next: string) => {
     const value = next.trim()
-    setEditingModel(false)
+    setModelMenu(null)
     if (value === (session.model ?? '')) return
     commitWithRollback(
       session,
@@ -325,52 +325,30 @@ export const ChatPanel = memo(function ChatPanel({
           </button>
         </Tooltip>
         <div className="chat-panel-meta">
-          {editingModel ? (
-            <input
-              className="chat-panel-chip-input"
-              list="chat-panel-model-datalist"
-              autoFocus
-              value={modelDraft}
-              placeholder="model name"
+          <Tooltip label={`Model: ${session.model ?? 'default'} · click to change`} placement="bottom">
+            <button
+              type="button"
+              className={`chat-panel-model-badge${modelMenu ? ' open' : ''}`}
               disabled={chipsDisabled}
+              aria-haspopup="listbox"
+              aria-expanded={!!modelMenu}
+              aria-label={`Model: ${session.model ?? 'default'} · click to change`}
               onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => setModelDraft(e.target.value)}
-              onBlur={() => commitModel(modelDraft)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault()
-                  commitModel(modelDraft)
-                } else if (e.key === 'Escape') {
-                  e.preventDefault()
-                  setEditingModel(false)
-                }
+              onClick={(e) => {
+                e.stopPropagation()
+                // Open only. Closing is handled by the picker's own
+                // outside-click / Escape listeners (matching the perm-mode
+                // menu). A toggle here can't work: the picker's window
+                // mousedown listener fires before this click and has
+                // already closed it, so toggling would just reopen.
+                const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
+                setModelMenu({ x: rect.left, y: rect.bottom + 4 })
               }}
-            />
-          ) : (
-            <Tooltip label={`Model: ${session.model ?? 'default'} · click to change`} placement="bottom">
-              <button
-                type="button"
-                className="chat-panel-model-badge"
-                disabled={chipsDisabled}
-                aria-label={`Model: ${session.model ?? 'default'} · click to change`}
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setModelDraft(session.model ?? '')
-                  setEditingModel(true)
-                }}
-              >
-                <IconSparkles size={13} aria-hidden />
-                <span className="chat-panel-model-badge-value">{shortenModel(session.model)}</span>
-              </button>
-            </Tooltip>
-          )}
-          <datalist id="chat-panel-model-datalist">
-            {modelOptions.map((m) => (
-              <option key={m} value={m} />
-            ))}
-          </datalist>
+            >
+              <IconSparkles size={13} aria-hidden />
+              <span className="chat-panel-model-badge-value">{shortenModel(session.model)}</span>
+            </button>
+          </Tooltip>
           {/* Git chip — surfaces branch + dirty/ahead/behind/untracked
               counts at a glance. Hidden when the cwd isn't a git repo
               (so non-git sessions don't get visual noise) or while the
@@ -406,6 +384,16 @@ export const ChatPanel = memo(function ChatPanel({
               icon: (session.permissionMode ?? 'default') === m ? <IconCheck size={14} /> : ' ',
               onClick: () => commitPermissionMode(m),
             }))}
+          />
+        )}
+        {modelMenu && (
+          <ModelPicker
+            anchor={modelMenu}
+            current={session.model}
+            options={modelOptions}
+            disabled={chipsDisabled}
+            onSelect={(model) => commitModel(model)}
+            onClose={() => setModelMenu(null)}
           />
         )}
         <div ref={setHeaderBtnEl} className="chat-panel-header-buttons" />

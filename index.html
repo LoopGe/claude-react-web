@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover opts into the full screen on notch / Dynamic Island
+         devices so env(safe-area-inset-*) resolves to real values; without it
+         iOS reports 0 and all the safe-area padding below would be inert. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Claude React Web</title>
   </head>
   <body>

@@ -172,6 +172,7 @@ const tick = () => new Promise((r) => setImmediate(r))
 // Import AFTER vi.mock so the SessionManager picks up the mocked SDK.
 import { SessionManager } from './session-manager.js'
 import { SessionStore } from './persistence.js'
+import { config as defaultConfig } from './config.js'
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), 'claude-rw-sm-'))
@@ -213,6 +214,36 @@ describe('SessionManager', () => {
     // matches `id` (the bug this guards against: SDK auto-generated its own
     // UUID, so our id matched no jsonl and fork/resume probes failed).
     expect(mockHandles[0].options.sessionId).toBe(info.id)
+  })
+
+  it('pins subagent model-alias env vars to the session model', () => {
+    sm.create({ cwd: '/tmp', model: 'gw/some-model' })
+    const env = mockHandles[0].options.env as Record<string, string>
+    // All four aliases resolve to the session's explicit model so subagents
+    // (Task/Agent/Explore) never fall back to an ID the gateway rejects.
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('gw/some-model')
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('gw/some-model')
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('gw/some-model')
+    expect(env.ANTHROPIC_SMALL_FAST_MODEL).toBe('gw/some-model')
+  })
+
+  it('falls back to the default model for the alias env vars when none is given', () => {
+    sm.create({ cwd: '/tmp' })
+    const env = mockHandles[0].options.env as Record<string, string>
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe(defaultConfig.defaultModel)
+    expect(env.ANTHROPIC_SMALL_FAST_MODEL).toBe(defaultConfig.defaultModel)
+  })
+
+  it('does not contaminate the shared env cache across sessions with different models', () => {
+    sm.create({ cwd: '/tmp', model: 'model-a' })
+    sm.create({ cwd: '/tmp', model: 'model-b' })
+    const envA = mockHandles[0].options.env as Record<string, string>
+    const envB = mockHandles[1].options.env as Record<string, string>
+    // Shallow-copy isolation: session A's aliases must not be overwritten by
+    // session B spawning with a different model.
+    expect(envA.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('model-a')
+    expect(envB.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('model-b')
+    expect(envA).not.toBe(envB)
   })
 
   it('global stream emits `created` on spawn and `update` on subsequent changes', async () => {

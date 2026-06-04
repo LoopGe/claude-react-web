@@ -29,6 +29,7 @@ import { memo, type ComponentType, type ReactNode } from 'react'
 import { Markdown } from './Markdown'
 import { usePlanStatus, usePlanContent } from '../hooks/usePlanStatus'
 import { useQuestionAnswers } from '../hooks/useQuestionAnswers'
+import { useReopenQuestion } from '../hooks/useReopenQuestion'
 import { SubagentCard } from './SubagentCard'
 import { ToolCard } from './ToolCard'
 import {
@@ -349,11 +350,15 @@ const QuestionCard = memo(function QuestionCard({
     ? (input.questions as QuestionSpec[])
     : []
   const answers = useQuestionAnswers(toolUseId)
+  const { minimizedToolUseIds, onReopen } = useReopenQuestion()
 
   const status: QuestionCardStatus = (() => {
     if (!answers || answers.length === 0) return 'pending'
     return answers.every((a) => a.answer == null) ? 'skipped' : 'answered'
   })()
+  // The dialog is minimized (hidden) but the question is still awaiting an
+  // answer — let the user click this card to bring the dialog back.
+  const isMinimized = status === 'pending' && !!toolUseId && minimizedToolUseIds.has(toolUseId)
   const statusLabel = status
   const statusTitle =
     status === 'answered'
@@ -368,7 +373,7 @@ const QuestionCard = memo(function QuestionCard({
   return (
     <details
       key={status}
-      className={`question-inline-card question-inline-card-${status}`}
+      className={`question-inline-card question-inline-card-${status}${isMinimized ? ' question-inline-card-minimized' : ''}`}
       open={defaultOpen}
     >
       <summary>
@@ -382,6 +387,22 @@ const QuestionCard = memo(function QuestionCard({
           <span className={`question-inline-status ${status}`} title={statusTitle}>
             {statusLabel}
           </span>
+          {isMinimized && toolUseId && (
+            <button
+              type="button"
+              className="question-inline-reopen"
+              // <summary>'s default click toggles the <details>; stop it so
+              // re-opening the dialog doesn't also collapse/expand the card.
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                onReopen(toolUseId)
+              }}
+              title="重新打开问题弹窗"
+            >
+              点击回答
+            </button>
+          )}
         </div>
       </summary>
       <div className="question-inline-body">
