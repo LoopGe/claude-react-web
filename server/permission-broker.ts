@@ -12,7 +12,7 @@
 //   - persist() after decide/answerQuestion (session metadata updates)
 //   - setPermissionMode (session.permissionMode mutation)
 
-import type { CanUseTool, PermissionResult } from '@anthropic-ai/claude-agent-sdk'
+import type { CanUseTool, PermissionResult, PermissionMode } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
 import type {
   PendingPermission,
@@ -27,8 +27,21 @@ import { toSnapshot, sanitizeQuestions, formatQuestionAnswers, promoteToSession 
 import { HttpError } from './errors.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import { createLogger } from './log.js'
+import { isAutoApprovableEditBash, isInScopeEditTool } from './accept-edits-bash.js'
+import { isReadOnlyBash } from './readonly-bash.js'
 
 const log = createLogger('broker')
+
+/** Read-only built-in tools that `dontAsk` mode auto-approves. Conservative
+ *  first cut: only tools that purely read/inspect. WebFetch/WebSearch (network)
+ *  and TodoWrite (mutates todo state) are intentionally excluded → they get
+ *  auto-denied under dontAsk. Bash is handled separately via isReadOnlyBash. */
+const READONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'Read',
+  'Grep',
+  'Glob',
+  'NotebookRead',
+])
 
 export interface PermissionBrokerOptions {
   /** Timeout (ms) for pending requests. 0 = no timeout. */
@@ -228,6 +241,38 @@ export class PermissionBroker {
           timeoutTimer,
         }), `plan review request — ${toolName}`)
       }
+      // `acceptEdits` auto-approves pure file-editing tools so the user isn't
+      // prompted for every Edit/Write. Non-edit tools (Bash, etc.) fall through
+      // to the pending-request path below and still prompt. Implemented here
+      // (not via the SDK's permissionMode flag) for the same reason as
+      // bypassPermissions: with a canUseTool callback present the SDK routes
+      // EVERY tool through us, so its built-in acceptEdits auto-allow never
+      // fires. Placed AFTER the ExitPlanMode check so plan review is never
+      // skipped.
+      if (session.permissionMode === 'acceptEdits') {
+        // File-editing tools: auto-approve ONLY when the target path is inside
+        // the working directory (official semantics — edits outside cwd still
+        // prompt). isInScopeEditTool is the single source of truth for "which
+        // tools are editing tools" (it returns false for any non-edit tool),
+        // so no separate name-set guard is needed. Fail-closed.
+        const isInScopeEdit = isInScopeEditTool(toolName, toolInput, session.cwd)
+        // Bash: auto-approve ONLY the whitelisted filesystem commands operating
+        // on in-scope paths (mkdir/touch/rm/rmdir/mv/cp). The check is strictly
+        // fail-closed — anything unprovable (shell metacharacters, paths
+        // outside cwd, traversal, unknown commands, sed) falls through to a
+        // prompt. Mirrors official Claude Code acceptEdits semantics.
+        const isSafeBash =
+          toolName === 'Bash' &&
+          isAutoApprovableEditBash((toolInput as { command?: unknown })?.command, session.cwd)
+        if (isInScopeEdit || isSafeBash) {
+          return {
+            behavior: 'allow',
+            updatedInput: toolInput,
+            toolUseID: ctx.toolUseID,
+          } satisfies PermissionResult
+        }
+        // Non-edit, non-safe-Bash tools fall through to the prompt below.
+      }
       // `bypassPermissions` is implemented here rather than via the SDK's
       // own permissionMode flag. That flag is set at spawn time and the
       // SDK then refuses to transition into it mid-session, which makes
@@ -239,6 +284,35 @@ export class PermissionBroker {
         return {
           behavior: 'allow',
           updatedInput: toolInput,
+          toolUseID: ctx.toolUseID,
+        } satisfies PermissionResult
+      }
+      // `dontAsk` is the CI lockdown mode: auto-DENY everything that would
+      // otherwise prompt, allowing ONLY read-only built-in tools and read-only
+      // Bash commands (this app has no permissions.allow rule system, so those
+      // are the sole auto-approve paths). Mirrors official Claude Code
+      // semantics. Placed AFTER ExitPlanMode/AskUserQuestion so interactive
+      // and plan-review flows are never silently denied.
+      if (session.permissionMode === 'dontAsk') {
+        const isReadOnlyTool = READONLY_TOOL_NAMES.has(toolName)
+        const isReadOnlyBashCmd =
+          toolName === 'Bash' &&
+          isReadOnlyBash((toolInput as { command?: unknown })?.command)
+        if (isReadOnlyTool || isReadOnlyBashCmd) {
+          return {
+            behavior: 'allow',
+            updatedInput: toolInput,
+            toolUseID: ctx.toolUseID,
+          } satisfies PermissionResult
+        }
+        // Everything else: auto-deny WITHOUT a prompt. interrupt:false so the
+        // model sees the denial and can re-plan rather than aborting the turn.
+        return {
+          behavior: 'deny',
+          message:
+            'dontAsk mode: auto-denied. Only read-only tools and read-only ' +
+            'Bash commands run in this mode; switch modes to make changes.',
+          interrupt: false,
           toolUseID: ctx.toolUseID,
         } satisfies PermissionResult
       }
@@ -295,7 +369,10 @@ export class PermissionBroker {
     session: Session,
     pid: string,
     decision:
-      | { behavior: 'allow'; persistForSession?: boolean }
+      // `planTargetMode` is consumed by SessionManager.decide (post-approval
+      // mode switch), not here — accepted in the type so the same decision
+      // object can flow through unchanged.
+      | { behavior: 'allow'; persistForSession?: boolean; planTargetMode?: PermissionMode }
       | { behavior: 'deny'; message?: string },
   ): void {
     const p = session.pending.get(pid)

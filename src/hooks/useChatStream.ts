@@ -133,6 +133,23 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   const subagentIndex = useSessionField(sessionId, 'subagentIndex')
   const replayReady = useSessionField(sessionId, 'replayReady')
   const permsRef = useRef(permissions)
+  // Set true when a `session-cleared` frame lands for this session. Blocks
+  // loadOlder() from paging the pre-/clear transcript back in from disk
+  // (the on-disk log still holds it; the server only truncated its
+  // in-memory ring). Reset on session switch.
+  const clearedRef = useRef(false)
+  // --- Lazy history paging (scroll-up) ---------------------------------
+  // hasOlder/loadingOlder are React state (drive UI). The cursor index and
+  // in-flight guard are refs (don't need to trigger renders). Declared here
+  // (above the WS listener effect) so the session-cleared handler can call
+  // setHasOlder(false) without a temporal-dead-zone reference. Reset whenever
+  // the session changes (see the effect further down).
+  const [hasOlder, setHasOlder] = useState(true)
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  // Disk index to page before next time (the previous response's startIndex).
+  // null means "first page — anchor by uuid instead".
+  const cursorRef = useRef<number | null>(null)
+  const inFlightRef = useRef(false)
 
   useEffect(() => {
     permsRef.current = permissions
@@ -277,6 +294,35 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
           }
           break
         }
+        case 'session-cleared': {
+          // The backend confirmed a /clear and already truncated its
+          // history ring (to [init, ...]). Reset the transcript store and
+          // drop the local cache.
+          //
+          // Mid-replay guard: if a reconnect's replay raced ahead of this
+          // frame, the buffers below hold PRE-clear messages (the server's
+          // ring wasn't truncated yet when it built that replay). Were we
+          // to leave them, the pending replay-done's REPLAY_REPLACE would
+          // re-apply them on top of the freshly-reset store and resurrect
+          // the cleared transcript. So drop every buffered replay/live
+          // frame and force replay-mode off — the next subscribe (or the
+          // post-clear live stream) repaints from the truncated ring.
+          replayMessages = []
+          replayPermissions = []
+          pendingLive.length = 0
+          replaying = false
+          // Reset in-memory state AND erase the cache with no pending write
+          // left behind (clearPersisted cancels the debounced save that a
+          // plain reset() would schedule — otherwise that timer rewrites the
+          // key with the empty state and the cache reappears).
+          store.clearPersisted()
+          // Block reverse-paging: the on-disk transcript still holds the
+          // pre-clear messages; without this, scrolling up would pull them
+          // back in. Reset on session switch (see the paging effect below).
+          clearedRef.current = true
+          setHasOlder(false)
+          break
+        }
         default:
           break
       }
@@ -326,17 +372,6 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     store.dispatch({ type: 'ERROR', message: null })
   }, [store])
 
-  // --- Lazy history paging (scroll-up) ---------------------------------
-  // hasOlder/loadingOlder are React state (drive UI). The cursor index and
-  // in-flight guard are refs (don't need to trigger renders). Reset whenever
-  // the session changes.
-  const [hasOlder, setHasOlder] = useState(true)
-  const [loadingOlder, setLoadingOlder] = useState(false)
-  // Disk index to page before next time (the previous response's startIndex).
-  // null means "first page — anchor by uuid instead".
-  const cursorRef = useRef<number | null>(null)
-  const inFlightRef = useRef(false)
-
   useEffect(() => {
     // New session: reset paging state. The setState calls are intentional —
     // paging UI state is derived from `sessionId` and must reset when it
@@ -345,6 +380,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     // render concern the rule guards against doesn't apply here.
     cursorRef.current = null
     inFlightRef.current = false
+    clearedRef.current = false
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setHasOlder(true)
     setLoadingOlder(false)
@@ -352,6 +388,9 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
 
   const loadOlder = useCallback(async (): Promise<number> => {
     if (inFlightRef.current) return 0
+    // After a /clear, the pre-clear transcript still exists on disk but
+    // must stay hidden — refuse to page it back in for this session.
+    if (clearedRef.current) return 0
     inFlightRef.current = true
     setLoadingOlder(true)
     try {

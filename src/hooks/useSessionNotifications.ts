@@ -74,9 +74,15 @@ export interface UseSessionNotificationsResult {
    *  user isn't actively watching that session. */
   maybeNotify: (s: SessionInfo) => void
   /** Called from the WS `global-permission-request` handler with the
-   *  session id and a friendly tool label. Fires a requireInteraction
-   *  toast iff the user isn't actively watching that session. */
-  maybePermissionNotify: (sessionId: string, toolLabel: string) => void
+   *  session id, a friendly tool label, and the request kind. Fires a
+   *  requireInteraction toast iff the user isn't actively watching that
+   *  session. `kind` defaults to 'permission'; 'question' switches the
+   *  copy to question wording (AskUserQuestion isn't a permission grant). */
+  maybePermissionNotify: (
+    sessionId: string,
+    toolLabel: string,
+    kind?: 'permission' | 'question',
+  ) => void
   /** Seed the edge-detector when a `session-created` frame lands.
    *  Without this, a session that spawns already working would fire a
    *  notification on its first true→false transition — even when the
@@ -119,7 +125,7 @@ export function useSessionNotifications({
   const prevWorkingRef = useRef<Map<string, boolean>>(new Map())
 
   const maybePermissionNotify = useCallback(
-    (sessionId: string, toolLabel: string) => {
+    (sessionId: string, toolLabel: string, kind: 'permission' | 'question' = 'permission') => {
       // Use hasFocus() rather than visibilityState: the tab can be "visible"
       // (foreground tab) while the browser window itself is minimized, behind
       // another app (Alt-Tab), or the screen is locked. In all those cases
@@ -136,14 +142,23 @@ export function useSessionNotifications({
       const session = sessionsNow.find((s) => s.id === sessionId)
       const title = session?.title ?? sessionId.slice(0, 8)
 
+      // AskUserQuestion is surfaced through this same blocking-request path,
+      // but it isn't a permission grant — it's a question awaiting an answer.
+      // Word it accordingly so the toast/desktop notification doesn't say
+      // "needs permission" / "Approve or deny" for what is really a question.
+      const isQuestion = kind === 'question'
+      const headline = isQuestion
+        ? `❓ ${title} is asking a question`
+        : `⚠ ${title} needs permission`
+
       if (mode === 'toast') {
         // User is in the page, just on another session. A sticky toast
-        // (durationMs:0) stays until they act — permission requests block
-        // the turn until answered. Independent of the desktop-notification
-        // master switch / browser permission.
-        toastRef.current.info(`⚠ ${title} needs permission`, {
+        // (durationMs:0) stays until they act — both permission requests
+        // and questions block the turn until answered. Independent of the
+        // desktop-notification master switch / browser permission.
+        toastRef.current.info(headline, {
           durationMs: 0,
-          actionLabel: 'Open',
+          actionLabel: isQuestion ? 'Answer' : 'Open',
           onClick: () => handleSelectRef.current?.(sessionId),
         })
         return
@@ -151,13 +166,13 @@ export function useSessionNotifications({
 
       // mode === 'desktop' — window not focused, fall back to the OS toast.
       notifyRef.current({
-        title: `⚠ ${title} needs permission`,
-        body: `Approve or deny: ${toolLabel}`,
+        title: headline,
+        body: isQuestion ? 'Open to answer' : `Approve or deny: ${toolLabel}`,
         tag: `${sessionId}:perm`,
-        // Permission notifications are actionable — the user must respond
-        // for the turn to continue. Keep the toast visible until they
-        // dismiss it, and DON'T mark it silent (Windows Action Center
-        // suppresses silent toasts from this kind of "background" page).
+        // These notifications are actionable — the user must respond for the
+        // turn to continue. Keep the toast visible until they dismiss it, and
+        // DON'T mark it silent (Windows Action Center suppresses silent toasts
+        // from this kind of "background" page).
         requireInteraction: true,
         onClick: () => {
           handleSelectRef.current?.(sessionId)

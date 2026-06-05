@@ -6,13 +6,17 @@ import type { SessionInfoBase } from '../shared/session-info'
 
 export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto'
 
+// User-selectable permission modes (dropdown + Shift+Tab cycle). `auto` is
+// intentionally omitted: it depends on a server-side classifier + specific
+// models + account eligibility that aren't available on this deployment's
+// backend, so it can't function here (it would silently behave like default).
+// `auto` remains in the PermissionMode type since it's a valid SDK value.
 export const PERMISSION_MODES: PermissionMode[] = [
   'default',
   'acceptEdits',
   'plan',
   'bypassPermissions',
   'dontAsk',
-  'auto',
 ]
 
 /** Field shape is defined once in shared/session-info.ts and instantiated
@@ -181,6 +185,10 @@ export interface SdkMessage {
    *  meaningful on top-level user messages; absent (undefined) means the
    *  message is still queued and hasn't been picked up yet. */
   consumedAt?: number
+  /** parent_tool_use_id is null for top-level user/assistant messages,
+   *  and non-null for tool results and subagent-internal frames. The SDK
+   *  declares this on both SDKUserMessage and SDKAssistantMessage. */
+  parent_tool_use_id?: string | null
   // `message` is present on user/assistant. For user: { role: 'user', content: string }.
   // For assistant: { role: 'assistant', content: ContentBlock[] } (Anthropic SDK shape).
   message?: {

@@ -16,10 +16,15 @@ interface Props {
    *  resets this (e.g. because the query changed), the internal
    *  counter syncs to it. */
   activeIndex?: number
+  /** Seed text for the search input, captured from the user's current
+   *  selection when the bar opens. Used only as the initial state — the
+   *  parent forces a remount via `key` each time search opens, so this
+   *  is read once at mount. */
+  initialQuery?: string
 }
 
-export function MessageSearch({ open, onClose, onNavigate, totalResults, onQueryChange, activeIndex }: Props) {
-  const [query, setQuery] = useState('')
+export function MessageSearch({ open, onClose, onNavigate, totalResults, onQueryChange, activeIndex, initialQuery }: Props) {
+  const [query, setQuery] = useState(initialQuery ?? '')
   const [currentIdx, setCurrentIdx] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const prevQueryRef = useRef(query)
@@ -38,7 +43,13 @@ export function MessageSearch({ open, onClose, onNavigate, totalResults, onQuery
   // `key` prop that forces a full remount each time search opens.
   useEffect(() => {
     if (open) {
-      requestAnimationFrame(() => inputRef.current?.focus())
+      requestAnimationFrame(() => {
+        const el = inputRef.current
+        if (!el) return
+        el.focus()
+        // Select the seeded text so the user can immediately type over it.
+        el.select()
+      })
     }
   }, [open])
 

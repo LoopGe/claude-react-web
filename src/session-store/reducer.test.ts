@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { reduceSessionState } from './reducer'
+import { reduceSessionState, splitReplayAgainstCache } from './reducer'
 import { createInitialSessionState } from './types'
 import { isTrimBoundary } from './normalize'
 import type { PermissionRequest, SdkMessage } from '../types'
@@ -627,5 +627,161 @@ describe('reducer: front-trim memory bound', () => {
     state = reduceSessionState(state, { type: 'MESSAGE', message: assistantMsg('a-real', 'reply') })
     expect(state.items.length).toBeLessThanOrEqual(CAP + SLACK)
     expect(isTrimBoundary(state.items[0].msg)).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Replay-on-top-of-cache reconciliation (resume seed + reconnect overlap).
+//
+// Regression context: when a dormant session is resumed, the server now seeds
+// the live history ring from the on-disk transcript tail, so the first replay
+// is NON-EMPTY and OVERLAPS whatever the client cached in localStorage. The
+// reducer's incremental-replay branch used to blind-append, rendering every
+// overlapping message twice. splitReplayAgainstCache() (and the branch that
+// uses it) must drop the overlap while preserving older/newer portions.
+// ---------------------------------------------------------------------------
+
+function userMsg(uuid: string, text: string): SdkMessage {
+  return {
+    type: 'user',
+    uuid,
+    message: { role: 'user', content: text },
+    parent_tool_use_id: null,
+  } as unknown as SdkMessage
+}
+
+function asstMsg(uuid: string, text: string): SdkMessage {
+  return {
+    type: 'assistant',
+    uuid,
+    message: { role: 'assistant', content: [{ type: 'text', text }] },
+    parent_tool_use_id: null,
+  } as unknown as SdkMessage
+}
+
+function resultMsg(uuid: string): SdkMessage {
+  return { type: 'result', subtype: 'success', uuid } as unknown as SdkMessage
+}
+
+function seedCache(messages: SdkMessage[]): ReturnType<typeof createInitialSessionState> {
+  // Build a cache exactly as a full replay would, then return state.
+  let state = createInitialSessionState('s')
+  state = reduceSessionState(state, {
+    type: 'REPLAY_REPLACE',
+    messages,
+    permissions: [],
+  })
+  return state
+}
+
+function replay(
+  state: ReturnType<typeof createInitialSessionState>,
+  messages: SdkMessage[],
+): ReturnType<typeof createInitialSessionState> {
+  return reduceSessionState(state, { type: 'REPLAY_REPLACE', messages, permissions: [] })
+}
+
+const ids = (state: ReturnType<typeof createInitialSessionState>) => state.items.map((i) => i.id)
+
+describe('splitReplayAgainstCache (pure)', () => {
+  it('treats a non-overlapping payload as entirely newer (clean reconnect)', () => {
+    const cache = seedCache([userMsg('u1', 'hi'), asstMsg('a1', 'hello')])
+    const incoming = [asstMsg('a2', 'more'), resultMsg('r2')]
+    const { older, newer } = splitReplayAgainstCache(incoming, cache.items)
+    expect(older).toEqual([])
+    expect(newer).toEqual(incoming)
+  })
+
+  it('drops the overlapping span and keeps only the newer tail', () => {
+    const cache = seedCache([asstMsg('a1', 'one'), asstMsg('a2', 'two')])
+    // Disk seed overlaps a1+a2 then adds a3.
+    const incoming = [asstMsg('a1', 'one'), asstMsg('a2', 'two'), asstMsg('a3', 'three')]
+    const { older, newer } = splitReplayAgainstCache(incoming, cache.items)
+    expect(older).toEqual([])
+    expect(newer.map((m) => m.uuid)).toEqual(['a3'])
+  })
+
+  it('splits older (below cache) and overlap correctly', () => {
+    const cache = seedCache([asstMsg('a2', 'two'), asstMsg('a3', 'three')])
+    // Payload reaches further back (a1) and overlaps a2,a3.
+    const incoming = [asstMsg('a1', 'one'), asstMsg('a2', 'two'), asstMsg('a3', 'three')]
+    const { older, newer } = splitReplayAgainstCache(incoming, cache.items)
+    expect(older.map((m) => m.uuid)).toEqual(['a1'])
+    expect(newer).toEqual([])
+  })
+
+  it('keeps a mid-payload frame absent from the cache (contiguous-bracket, not membership)', () => {
+    // Cache trimmed out a2; payload is a1,a2,a3 and cache has a1,a3.
+    // a2 sits between the first (a1) and last (a3) overlap, so it is dropped
+    // as part of the overlap span — correct, because the cache already shows
+    // the surrounding context and re-inserting a2 mid-stream is not supported
+    // by an append/prepend split. (Documents the bracket semantics.)
+    const cache = seedCache([asstMsg('a1', 'one'), asstMsg('a3', 'three')])
+    const incoming = [asstMsg('a1', 'one'), asstMsg('a2', 'two'), asstMsg('a3', 'three')]
+    const { older, newer } = splitReplayAgainstCache(incoming, cache.items)
+    expect(older).toEqual([])
+    expect(newer).toEqual([])
+  })
+})
+
+describe('reducer: REPLAY_REPLACE on top of a cache', () => {
+  it('empty replay keeps the cache (no blank screen)', () => {
+    const cache = seedCache([userMsg('u1', 'hi'), asstMsg('a1', 'hello')])
+    const after = replay(cache, [])
+    expect(ids(after)).toEqual(['u1', 'a1'])
+    expect(after.replayReady).toBe(true)
+  })
+
+  it('does NOT double-append when the seed overlaps the cache (the regression)', () => {
+    const cache = seedCache([userMsg('u1', 'hi'), asstMsg('a1', 'hello'), resultMsg('r1')])
+    // Resume seed from disk: same transcript, but result frames are not on
+    // disk, so the seed is u1 + a1 (overlap) — and the cache's lastMessageUuid
+    // was r1, which is NOT in the seed → server fell back to FULL replay.
+    const seed = [userMsg('u1-disk', 'hi'), asstMsg('a1', 'hello')]
+    const after = replay(cache, seed)
+    // u1 (prompt) dedups by content signature, a1 by uuid → no growth.
+    expect(after.items.length).toBe(3)
+    expect(ids(after)).toEqual(['u1', 'a1', 'r1'])
+  })
+
+  it('appends genuinely newer messages from the replay tail', () => {
+    const cache = seedCache([userMsg('u1', 'hi'), asstMsg('a1', 'hello')])
+    const seed = [asstMsg('a1', 'hello'), userMsg('u2-disk', 'again'), asstMsg('a2', 'sure')]
+    const after = replay(cache, seed)
+    expect(ids(after)).toEqual(['u1', 'a1', 'u2-disk', 'a2'])
+  })
+
+  it('prepends older messages when the cache was trimmed below the seed', () => {
+    const cache = seedCache([asstMsg('a2', 'two'), asstMsg('a3', 'three')])
+    const seed = [asstMsg('a1', 'one'), asstMsg('a2', 'two'), asstMsg('a3', 'three')]
+    const after = replay(cache, seed)
+    expect(ids(after)).toEqual(['a1', 'a2', 'a3'])
+  })
+
+  it('does NOT drop a legitimate repeated prompt in the strictly-newer slice', () => {
+    // Clean reconnect: cache ends after a turn whose prompt was "ok". The
+    // server slices strictly-after and the NEXT turn happens to also start
+    // with "ok". Keying overlap on prompt CONTENT (instead of disk-stable
+    // uuid) would treat the second "ok" as an overlap and silently eat the
+    // whole new turn. Anchoring only on uuid keeps it.
+    const cache = seedCache([userMsg('u1', 'ok'), asstMsg('a1', 'done')])
+    const slice = [userMsg('u2', 'ok'), asstMsg('a2', 'done again')]
+    const after = replay(cache, slice)
+    expect(after.items.length).toBe(4)
+    expect(ids(after)).toEqual(['u1', 'a1', 'u2', 'a2'])
+  })
+
+  it('handles older + overlap + newer in one payload (the common 200-cache / 500-seed case)', () => {
+    // localStorage trims to 200 messages but the disk seed takes historyCap
+    // (500), so a long session's full replay reaches BOTH further back than
+    // the cache AND forward of it. Exercises prepend-then-append in one pass.
+    const cache = seedCache([asstMsg('a2', 'two'), asstMsg('a3', 'three')])
+    const seed = [
+      asstMsg('a1', 'one'), // older
+      asstMsg('a2', 'two'), asstMsg('a3', 'three'), // overlap (dropped)
+      asstMsg('a4', 'four'), asstMsg('a5', 'five'), // newer
+    ]
+    const after = replay(cache, seed)
+    expect(ids(after)).toEqual(['a1', 'a2', 'a3', 'a4', 'a5'])
   })
 })

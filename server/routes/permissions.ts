@@ -1,6 +1,7 @@
 // Permission-related routes: list pending, decide, answer-question.
 
 import { Hono } from 'hono'
+import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
 import { SessionManager } from '../session-manager.js'
 import { safeJson } from './index.js'
 
@@ -18,16 +19,24 @@ export function buildPermissionRouter(sm: SessionManager): Hono {
   app.post('/sessions/:id/permissions/:pid/decide', async (c) => {
     const id = c.req.param('id')
     const pid = c.req.param('pid')
-    const raw = await safeJson<{ behavior?: unknown; persistForSession?: unknown; message?: unknown }>(c.req)
+    const raw = await safeJson<{ behavior?: unknown; persistForSession?: unknown; message?: unknown; planTargetMode?: unknown }>(c.req)
     if (raw.behavior === 'allow') {
-      sm.decide(id, pid, {
+      // planTargetMode: when approving an ExitPlanMode (plan proposal), the
+      // execution mode the session should switch to. Ignored for non-plan
+      // approvals. Validated against the known modes; anything else is dropped.
+      const VALID_TARGETS = ['default', 'acceptEdits', 'bypassPermissions', 'auto'] as const
+      const planTargetMode = VALID_TARGETS.includes(raw.planTargetMode as typeof VALID_TARGETS[number])
+        ? (raw.planTargetMode as PermissionMode)
+        : undefined
+      await sm.decide(id, pid, {
         behavior: 'allow',
         persistForSession: typeof raw.persistForSession === 'boolean' ? raw.persistForSession : false,
+        planTargetMode,
       })
       return c.json({ ok: true })
     }
     if (raw.behavior === 'deny') {
-      sm.decide(id, pid, {
+      await sm.decide(id, pid, {
         behavior: 'deny',
         message: typeof raw.message === 'string' ? raw.message : undefined,
       })

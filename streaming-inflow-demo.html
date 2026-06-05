@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>StreamingFooter 流内版 — 入场 + 原地 settle(不遮挡)</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --bg-elev: #1a2029;
+    --bg-elev-2: #242a35;
+    --border: #2a313c;
+    --accent: #7aa2f7;
+    --fg: #c8d3e0;
+    --fg-muted: #7a8597;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    --user-bg: #2d4a7c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #070a0e; color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 15px; line-height: 1.6; padding: 24px;
+    display: flex; flex-direction: column; align-items: center; gap: 16px;
+  }
+  h1 { font-size: 18px; margin: 0; }
+  .sub { color: var(--fg-muted); font-size: 13px; margin: 0; text-align: center; max-width: 720px; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+  button {
+    background: var(--bg-elev-2); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 16px; font-size: 13px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { border-color: var(--accent); color: var(--accent); }
+  label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fg-muted); }
+
+  .chat-panel-body {
+    width: 760px; max-width: 100%; height: 560px;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 12px; overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .chat-messages {
+    flex: 1; overflow-y: auto; padding: 16px 18px;
+    display: flex; flex-direction: column; gap: 14px;
+    scroll-behavior: smooth;
+  }
+  .chat-messages::-webkit-scrollbar { width: 8px; }
+  .chat-messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+  .msg {
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 14px; background: var(--bg-elev); max-width: 88%;
+  }
+  .msg.user {
+    align-self: flex-end; background: var(--user-bg);
+    border-bottom-right-radius: 3px; max-width: 70%;
+  }
+  .msg.assistant { align-self: flex-start; border-bottom-left-radius: 3px; }
+  .msg-header { font-size: 12px; font-weight: 600; color: var(--accent); margin-bottom: 4px; }
+  .msg.user .msg-header { color: #cdddff; }
+  .msg .md { white-space: pre-wrap; }
+  .msg .md strong { color: #fff; }
+
+  /* ===================== 流内 streaming 气泡(在历史下方,不遮挡) ===================== */
+  .streaming-wrapper {
+    align-self: flex-start;
+    max-width: 88%;
+    /* 隔离:入场 transform 不波及上方历史,不触发 reflow */
+    contain: layout paint;
+  }
+  .streaming-msg {
+    border: 2px solid var(--accent);
+    border-radius: 8px; border-bottom-left-radius: 3px;
+    background: var(--bg-elev);
+    animation: stream-border-glow 1.8s ease-in-out infinite;
+  }
+  @keyframes stream-border-glow {
+    0%,100% { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); box-shadow: 0 0 0 0 transparent; }
+    50%     { border-color: var(--accent); box-shadow: 0 0 12px 1px rgba(122,162,247,0.28); }
+  }
+  .stream-label {
+    font-size: 11px; color: var(--accent); font-weight: 600;
+    padding: 8px 14px 0; display: flex; align-items: center; gap: 6px;
+  }
+  .stream-label .dot {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+    animation: pulse 1s ease-in-out infinite;
+  }
+  @keyframes pulse { 50% { opacity: 0.3; } }
+  .streaming-plain {
+    white-space: pre-wrap; overflow-wrap: anywhere;
+    padding: 8px 14px 12px; max-height: 22vh; overflow-y: auto;
+    scroll-padding-bottom: 12px;
+  }
+  .streaming-plain::-webkit-scrollbar { width: 8px; }
+  .streaming-plain::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  .streaming-cursor {
+    display: inline-block; width: 2px; height: 1.1em;
+    background: var(--accent); vertical-align: text-bottom; margin-left: 1px;
+    animation: blink 1s step-end infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ---- 入场:淡入 + 上浮 + 模糊消散 ---- */
+  .streaming-wrapper.entering {
+    animation: stream-in 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  @keyframes stream-in {
+    from { opacity: 0; transform: translateY(12px); filter: blur(5px); }
+    to   { opacity: 1; transform: translateY(0);    filter: blur(0); }
+  }
+
+  /* ---- settle:正式消息原地揭示淡入(替代「出场」,无重影) ---- */
+  .msg.assistant.settle {
+    animation: settle-in 300ms ease-out both;
+  }
+  @keyframes settle-in {
+    from { opacity: 0.3; filter: blur(2px); }
+    to   { opacity: 1;   filter: blur(0); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .streaming-wrapper.entering, .msg.assistant.settle { animation: none; }
+    .streaming-msg { animation: none; border-color: var(--accent); }
+  }
+
+  .composer {
+    border-top: 1px solid var(--border); padding: 12px 14px;
+    background: var(--bg-elev); display: flex; gap: 8px; flex: none;
+  }
+  .composer input {
+    flex: 1; background: var(--bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; font-size: 14px;
+  }
+  .composer .send { background: var(--accent); color: #0b1220; border: none; font-weight: 600; }
+</style>
+</head>
+<body>
+  <h1>流内版:入场动画 + 原地 settle(不遮挡任何历史)</h1>
+  <p class="sub">streaming 气泡留在滚动流末尾、所有历史<b>下方</b>,零遮挡。入场:淡入+上浮+模糊消散;结束时纯文本气泡<b>原地 settle</b> 成正式 Markdown 消息(揭示淡入掩盖交接),无重影、无 reflow。</p>
+
+  <div class="toolbar">
+    <button id="play" class="primary">▶ 发送并播放一轮</button>
+    <label class="chk"><input type="checkbox" id="slow" /> 慢速</label>
+  </div>
+
+  <div class="chat-panel-body">
+    <div class="chat-messages" id="messages">
+      <div class="msg user"><div class="msg-header">你</div><div class="md">独立浮层会盖住历史消息,不太好。</div></div>
+      <div class="msg assistant"><div class="msg-header">✦ Claude</div><div class="md">同意。streaming 气泡其实本来就在所有历史下方,留在流内就天然不遮挡。</div></div>
+      <div class="msg user"><div class="msg-header">你</div><div class="md">那动画还能做吗?会不会有重影?</div></div>
+    </div>
+    <!-- 流内气泡插入到 #messages 末尾 -->
+    <div class="composer">
+      <input placeholder="输入消息…" />
+      <button class="send">发送</button>
+    </div>
+  </div>
+
+<script>
+  const STREAM_TEXT = `可以,而且不会有重影。
+
+streaming 气泡留在滚动流的最末尾,排在所有历史消息的下方,所以它从不遮挡任何已有内容 —— 这正是浮层方案做不到的。
+
+入场时它淡入、上浮、模糊消散;因为外层加了 contain: layout paint,这个动画被隔离,不会让上方历史发生 reflow。
+
+最妙的是「出场」:我们不延迟卸载气泡去播滑出动画(那才会重影)。而是在流式结束的同一帧,让气泡原地卸载、正式 Markdown 消息在同一位置揭示淡入 —— 看起来就是纯文本「settle」成了格式化消息。
+
+交接发生在同一帧、同一位置,所以零重影、零 store 改动。`;
+
+  const messages = document.getElementById('messages');
+  let timer = null;
+  let wrapper = null;
+
+  function appendUserMsg() {
+    const u = document.createElement('div');
+    u.className = 'msg user';
+    u.innerHTML = '<div class="msg-header">你</div><div class="md">把 streaming 气泡做成流内 + 动画,会遮挡或重影吗?</div>';
+    messages.appendChild(u);
+    messages.scrollTop = messages.scrollHeight;
+  }
+
+  function mountStreaming() {
+    wrapper = document.createElement('div');
+    wrapper.className = 'streaming-wrapper entering';
+    wrapper.innerHTML = `
+      <div class="streaming-msg">
+        <div class="stream-label"><span class="dot"></span> Claude 正在输入…</div>
+        <div class="streaming-plain" id="plain"></div>
+      </div>`;
+    messages.appendChild(wrapper);
+    wrapper.addEventListener('animationend', function once(e) {
+      if (e.animationName === 'stream-in') {
+        wrapper.classList.remove('entering');
+        wrapper.removeEventListener('animationend', once);
+      }
+    });
+    messages.scrollTop = messages.scrollHeight;
+    return wrapper.querySelector('#plain');
+  }
+
+  function setPlain(el, text, withCursor) {
+    el.textContent = text;
+    if (withCursor) {
+      const c = document.createElement('span');
+      c.className = 'streaming-cursor';
+      el.appendChild(c);
+    }
+    el.scrollTop = el.scrollHeight;
+    messages.scrollTop = messages.scrollHeight;
+  }
+
+  function settleToFinal() {
+    // 同一帧:卸载流内气泡 + 正式消息在同位置揭示淡入
+    if (wrapper) { wrapper.remove(); wrapper = null; }
+    const m = document.createElement('div');
+    m.className = 'msg assistant settle';
+    const html = STREAM_TEXT
+      .replace(/contain: layout paint/g, '<strong>contain: layout paint</strong>')
+      .replace(/同一帧/g, '<strong>同一帧</strong>')
+      .replace(/零重影/g, '<strong>零重影</strong>')
+      .replace(/不遮挡任何已有内容|从不遮挡任何已有内容/g, '<strong>从不遮挡任何已有内容</strong>');
+    m.innerHTML = '<div class="msg-header">✦ Claude</div><div class="md">' + html + '</div>';
+    messages.appendChild(m);
+    messages.scrollTop = messages.scrollHeight;
+  }
+
+  function play() {
+    if (timer) { clearInterval(timer); timer = null; }
+    if (wrapper) { wrapper.remove(); wrapper = null; }
+
+    appendUserMsg();
+    const plain = mountStreaming();
+
+    const slow = document.getElementById('slow').checked;
+    const stepDelay = slow ? 130 : 55;
+    const text = STREAM_TEXT;
+    let i = 0;
+    const step = Math.max(1, Math.round(text.length / (slow ? 90 : 110)));
+
+    timer = setInterval(() => {
+      i += step;
+      if (i >= text.length) {
+        setPlain(plain, text, false);
+        clearInterval(timer); timer = null;
+        settleToFinal();
+        return;
+      }
+      setPlain(plain, text.slice(0, i), true);
+    }, stepDelay);
+  }
+
+  document.getElementById('play').onclick = play;
+</script>
+</body>
+</html>

@@ -10,7 +10,8 @@
 // destination to 'session'. No suggestions? We hide the always button.
 
 import { memo, useEffect, useRef, useState } from 'react'
-import type { PermissionRequest } from '../types'
+import type { PermissionRequest, PermissionMode } from '../types'
+import type { PlanTargetMode } from '../hooks/usePermissionChannel'
 import { Markdown } from './Markdown'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { PLAN_TOOL_NAMES } from '../constants/toolNames'
@@ -24,7 +25,7 @@ interface Props {
   request: PermissionRequestPermission
   onDecide: (
     decision:
-      | { behavior: 'allow'; persistForSession: boolean }
+      | { behavior: 'allow'; persistForSession: boolean; planTargetMode?: PlanTargetMode }
       | { behavior: 'deny'; message?: string },
   ) => void
   /** Plan body text from ExitPlanMode tool_result outputs.  The CLI
@@ -33,9 +34,14 @@ interface Props {
    *  empty.  May be undefined on first render (before the tool_result
    *  arrives); the dialog re-renders once the map is populated. */
   planContentMap?: ReadonlyMap<string, string>
+  /** The session's current permission mode. On a plan-approval card, the
+   *  approve option matching the current mode is promoted to the primary
+   *  (first, highlighted) button so approving defaults to "keep running the
+   *  way I already chose" rather than silently downgrading the mode. */
+  currentMode?: PermissionMode
 }
 
-export const PermissionDialog = memo(function PermissionDialog({ request, onDecide, planContentMap }: Props) {
+export const PermissionDialog = memo(function PermissionDialog({ request, onDecide, planContentMap, currentMode }: Props) {
   const [showRaw, setShowRaw] = useState(false)
   const [busy, setBusy] = useState(false)
   // Ref provides a synchronous guard so that rapid double-clicks
@@ -49,7 +55,7 @@ export const PermissionDialog = memo(function PermissionDialog({ request, onDeci
 
   const click = (
     d:
-      | { behavior: 'allow'; persistForSession: boolean }
+      | { behavior: 'allow'; persistForSession: boolean; planTargetMode?: PlanTargetMode }
       | { behavior: 'deny'; message?: string },
   ) => {
     if (busyRef.current) return
@@ -91,6 +97,27 @@ export const PermissionDialog = memo(function PermissionDialog({ request, onDeci
   const planAllowedPrompts = Array.isArray(planInput?.allowedPrompts)
     ? (planInput.allowedPrompts as Array<{ tool?: string; prompt?: string }>)
     : []
+
+  // Plan-approval execution-mode options. The one matching the session's
+  // current mode is floated to the front (and rendered as the primary button)
+  // so approving defaults to "keep running the way I already chose" instead of
+  // silently downgrading the mode. `plan` and `default` both map to the
+  // default (review-each) option since there's no distinct "stay in plan".
+  // `auto` is intentionally not offered — it can't function on this backend
+  // (see PERMISSION_MODES in types.ts).
+  const PLAN_APPROVE_OPTIONS: Array<{ mode: PlanTargetMode; label: string; title: string }> = [
+    { mode: 'acceptEdits', label: 'Approve & auto-accept edits', title: 'Approve and auto-accept file edits; other tools still prompt' },
+    { mode: 'default', label: 'Approve & review each', title: 'Approve and review each action as it comes' },
+    { mode: 'bypassPermissions', label: 'Approve & bypass', title: 'Approve and skip all permission prompts (use with care)' },
+  ]
+  const orderedPlanOptions = [...PLAN_APPROVE_OPTIONS].sort(
+    (a, b) => Number(b.mode === currentMode) - Number(a.mode === currentMode),
+  )
+  // Lay the approve buttons out two-per-row (robust to any option count).
+  const planOptionRows: typeof orderedPlanOptions[] = []
+  for (let r = 0; r < orderedPlanOptions.length; r += 2) {
+    planOptionRows.push(orderedPlanOptions.slice(r, r + 2))
+  }
 
   const headline = request.title ?? (
     isPlanRequest
@@ -163,40 +190,85 @@ export const PermissionDialog = memo(function PermissionDialog({ request, onDeci
         </div>
 
         <div className="modal-footer" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button
-              className="btn btn-primary"
-              onClick={() => click({ behavior: 'allow', persistForSession: false })}
-              disabled={busy}
-              style={{ flex: 1 }}
-            >
-              {isPlanRequest ? 'Approve plan' : 'Allow once'}
-            </button>
-            {hasSuggestions && !isPlanRequest && (
-              <button
-                className="btn"
-                onClick={() => click({ behavior: 'allow', persistForSession: true })}
-                disabled={busy}
-                style={{ flex: 1 }}
-                title="Apply the SDK's suggested allow rule for the rest of this session"
-              >
-                Allow for session
-              </button>
-            )}
-            <button
-              className="btn btn-danger"
-              onClick={() => click({ behavior: 'deny' })}
-              disabled={busy}
-              style={{ flex: 1 }}
-            >
-              {isPlanRequest ? 'Keep planning' : 'Deny'}
-            </button>
-          </div>
-          <span className="hint" style={{ textAlign: 'center' }}>
-            {isPlanRequest
-              ? 'Approving exits plan mode and lets Claude execute. "Keep planning" returns control to Claude with feedback so it can revise.'
-              : 'Deny returns a message to the model — it keeps thinking, but won\'t execute this tool.'}
-          </span>
+          {isPlanRequest ? (
+            <>
+              {/* Approving a plan exits plan mode and switches the session to
+                  the chosen execution mode (the SDK's read-only plan lock is
+                  released and replaced). Each button approves AND picks how
+                  Claude runs from here. The option matching the session's
+                  current mode is promoted to the primary (first) button. */}
+              {planOptionRows.map((row, rowIdx) => (
+                <div key={rowIdx} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {row.map((opt, i) => {
+                    const isPrimary = rowIdx === 0 && i === 0
+                    const matchesCurrent = opt.mode === currentMode
+                    return (
+                      <button
+                        key={opt.mode}
+                        className={`btn ${isPrimary ? 'btn-primary' : ''}`}
+                        onClick={() => click({ behavior: 'allow', persistForSession: false, planTargetMode: opt.mode })}
+                        disabled={busy}
+                        style={{ flex: 1 }}
+                        title={opt.title}
+                      >
+                        {opt.label}{matchesCurrent ? ' (current)' : ''}
+                      </button>
+                    )
+                  })}
+                </div>
+              ))}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  className="btn btn-danger"
+                  onClick={() => click({ behavior: 'deny' })}
+                  disabled={busy}
+                  style={{ flex: 1 }}
+                >
+                  Keep planning
+                </button>
+              </div>
+              <span className="hint" style={{ textAlign: 'center' }}>
+                Approving exits plan mode and lets Claude execute in the chosen
+                mode. "Keep planning" returns control to Claude with feedback so
+                it can revise.
+              </span>
+            </>
+          ) : (
+            <>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => click({ behavior: 'allow', persistForSession: false })}
+                  disabled={busy}
+                  style={{ flex: 1 }}
+                >
+                  Allow once
+                </button>
+                {hasSuggestions && (
+                  <button
+                    className="btn"
+                    onClick={() => click({ behavior: 'allow', persistForSession: true })}
+                    disabled={busy}
+                    style={{ flex: 1 }}
+                    title="Apply the SDK's suggested allow rule for the rest of this session"
+                  >
+                    Allow for session
+                  </button>
+                )}
+                <button
+                  className="btn btn-danger"
+                  onClick={() => click({ behavior: 'deny' })}
+                  disabled={busy}
+                  style={{ flex: 1 }}
+                >
+                  Deny
+                </button>
+              </div>
+              <span className="hint" style={{ textAlign: 'center' }}>
+                Deny returns a message to the model — it keeps thinking, but won't execute this tool.
+              </span>
+            </>
+          )}
         </div>
       </div>
     </div>

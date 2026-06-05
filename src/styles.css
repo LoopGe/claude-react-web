@@ -15,7 +15,25 @@
   --danger: #f06363;
   --ok: #6cc88b;
   --warn: #e6b450;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  /* Monospace stack. Cascadia (Windows Terminal / VS Code default) and
+     Roboto Mono are listed before the legacy Consolas/Menlo fallbacks so
+     modern terminals render their native glyphs instead of dropping to
+     Consolas. Pure system fonts — nothing is downloaded. */
+  --mono: ui-monospace, 'Cascadia Code', 'Cascadia Mono', SFMono-Regular,
+          'Roboto Mono', Menlo, Monaco, Consolas, monospace;
+  /* Sans stack with explicit CJK fallbacks so mixed CN/EN text keeps a
+     consistent baseline and weight across macOS / Windows / Linux. */
+  --sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'PingFang SC',
+          'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
+  /* Type scale tokens — the canonical font-size steps for new components.
+     Existing one-off px values are migrated incrementally; new code should
+     reference these instead of hardcoding px. */
+  --fs-2xs: 10px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-base: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
   --msg-tool-bg: #101820;
   --msg-tool-border: #1c2a36;
   --msg-tool-result-bg: #14202a;
@@ -174,11 +192,30 @@ html, body, #root { height: 100%; margin: 0; }
   background: var(--accent);
 }
 body {
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-family: var(--sans);
   background: var(--bg);
   color: var(--fg);
-  font-size: 14px;
+  font-size: var(--fs-md);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Tabular figures so live-updating numbers in the chrome (counts, sizes,
+     context bar, ahead/behind) keep a fixed column width and don't reflow as
+     digits change. Only affects digit advance width, not glyph shapes. */
+  font-variant-numeric: tabular-nums;
+}
+
+/* Code / input surfaces: enable slashed zero so 0 vs O and 1 vs l stay
+   distinguishable in code, IDs, hashes and diffs, and tabular-nums so digits
+   keep a fixed width. 'zero' is the standardized OpenType slashed-zero
+   feature (safe on any font that supports it; ignored otherwise) — ss01 is
+   deliberately avoided since stylistic sets differ per font. */
+.textarea,
+pre,
+code,
+kbd,
+samp {
+  font-feature-settings: 'zero' 1;
+  font-variant-numeric: slashed-zero tabular-nums;
 }
 
 button, input, textarea, select {
@@ -194,9 +231,12 @@ button { cursor: pointer; }
   color: var(--fg);
   padding: 6px 12px;
   border-radius: 6px;
-  transition: background 0.1s, border-color 0.1s;
+  transition: background 0.1s, border-color 0.1s, transform 0.08s ease;
 }
 .btn:hover:not(:disabled) { background: var(--btn-hover-bg); border-color: var(--btn-hover-border); }
+/* (#4) Press feedback — subtle scale-down on active, restores on release
+   (Apple HIG / Material scale-feedback). transform-only, GPU-composited. */
+.btn:active:not(:disabled) { transform: scale(0.96); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-sm { padding: 2px 8px; font-size: 11px; }
 .btn-primary {
@@ -663,7 +703,7 @@ body.resizing-col * {
   user-select: none;
   line-height: 1.35;
   cursor: pointer;
-  transition: background 120ms ease;
+  transition: background 120ms ease, transform 120ms ease;
 }
 /* Non-default modes get the tinted background; default stays transparent
    until hover so it doesn't compete with the title. */
@@ -676,7 +716,9 @@ body.resizing-col * {
 }
 .chat-panel-mode-badge:hover:not(:disabled) {
   background: color-mix(in srgb, var(--mode-color, var(--fg-muted)) 20%, transparent);
+  transform: translateY(-1px);
 }
+.chat-panel-mode-badge:active:not(:disabled) { transform: translateY(0) scale(0.97); }
 .chat-panel-mode-badge:focus-visible {
   outline: 2px solid var(--mode-color, var(--accent));
   outline-offset: 1px;
@@ -713,11 +755,16 @@ body.resizing-col * {
   user-select: none;
   line-height: 1.35;
   cursor: pointer;
-  transition: background 120ms ease;
+  transition: background 120ms ease, transform 120ms ease;
 }
 .chat-panel-model-badge:hover:not(:disabled),
 .chat-panel-git-badge:hover:not(:disabled) {
   background: var(--bg-elev-2);
+  transform: translateY(-1px);
+}
+.chat-panel-model-badge:active:not(:disabled),
+.chat-panel-git-badge:active:not(:disabled) {
+  transform: translateY(0) scale(0.97);
 }
 .chat-panel-model-badge.open {
   background: var(--bg-elev-2);
@@ -862,6 +909,12 @@ body.resizing-col * {
 .settings-overlay.hidden {
   display: none;
 }
+/* (#1) Overlay entrance — backdrop fades in, the panel scales + lifts.
+   The overlay is always mounted and toggled via `.hidden` (display:none),
+   so the animation replays each time it's revealed. Shared by the git
+   overlay (mounted conditionally) below via .overlay-enter-* keyframes. */
+.settings-overlay:not(.hidden) { animation: overlay-backdrop-in 160ms ease-out both; }
+.settings-overlay:not(.hidden) > .settings-panel { animation: overlay-panel-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both; }
 .settings-overlay > .settings-panel {
   width: min(420px, 100%);
   max-height: 100%;
@@ -869,6 +922,14 @@ body.resizing-col * {
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+}
+@keyframes overlay-backdrop-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes overlay-panel-in {
+  from { opacity: 0; transform: scale(0.97) translateY(6px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
 }
 
 /* Sidebar mode marker: same size/spacing as the pin so it lines up
@@ -1497,6 +1558,14 @@ body.resizing-col * {
   z-index: 1000;
   font-size: 13px;
   user-select: none;
+  /* (#2) Pop in from the anchor — scale + fade, top-origin so it reads as
+     unfolding from the click point. */
+  transform-origin: top left;
+  animation: ctx-menu-in 120ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes ctx-menu-in {
+  from { opacity: 0; transform: scale(0.96) translateY(-4px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
 }
 .ctx-menu-item {
   display: flex;
@@ -1884,9 +1953,11 @@ body.resizing-col * {
      Setting overflow-y: hidden prevents a double-scrollbar. */
   overflow-y: hidden;
   overflow-x: hidden;
-  /* Vertical padding only — horizontal padding is on .virtuoso-item-wrapper
-     so the scrollbar sits flush against the right edge of the viewport. */
-  padding: 10px 0;
+  /* No container inset: the top/bottom breathing room now lives on each
+     .virtuoso-item-wrapper (padding-block: 7px) so the gap belongs to the
+     messages themselves rather than a fixed container liner. This keeps the
+     first message off the header and the last off the composer, while the
+     between-message gap stays 14px (7px + 7px). */
 }
 /* Each virtualised item is wrapped in this div so that .msg.user's
    align-self: flex-end still works (the old flex column on
@@ -1902,7 +1973,11 @@ body.resizing-col * {
 .virtuoso-item-wrapper {
   display: flex;
   flex-direction: column;
-  padding-bottom: 14px;  /* replaces the old gap: 14px on .chat-messages */
+  /* 7px top + 7px bottom → 14px between adjacent items (matches the old
+     gap), and the first/last item gets a 7px inset from the header/composer
+     now that .chat-messages no longer carries a container padding. */
+  padding-top: 7px;
+  padding-bottom: 7px;
   padding-left: max(20px, calc((100% - 900px) / 2));
   padding-right: max(20px, calc((100% - 900px) / 2));
   contain: layout style;
@@ -1915,6 +1990,11 @@ body.resizing-col * {
   flex-direction: column;
   padding-left: max(20px, calc((100% - 900px) / 2));
   padding-right: max(20px, calc((100% - 900px) / 2));
+  /* 7px top keeps the streaming/recap bubble 14px below the previous item
+     (matching .virtuoso-item-wrapper's rhythm now that .chat-messages has no
+     container padding); the larger bottom gives the live bubble room off the
+     composer. */
+  padding-top: 7px;
   padding-bottom: 14px;
 }
 /* Empty state — shown when there are zero messages. Needs explicit
@@ -1967,8 +2047,17 @@ body.resizing-col * {
   cursor: pointer;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
   z-index: 3;
+  /* (#6) Float up + scale in when it mounts (user scrolled away from the
+     bottom) so it appears rather than snapping into place. */
+  animation: jump-to-bottom-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  transition: transform 0.08s ease, filter 0.1s ease;
 }
 .chat-jump-to-bottom:hover { filter: brightness(1.08); }
+.chat-jump-to-bottom:active { transform: scale(0.94); }
+@keyframes jump-to-bottom-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.85); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
 .chat-jump-to-bottom-count {
   display: inline-flex;
   align-items: center;
@@ -2075,6 +2164,21 @@ body.resizing-col * {
   resize: none;
 }
 .chat-composer-actions { display: flex; flex-direction: column; gap: 6px; }
+/* Spin the loader glyph during the brief optimistic-send window (before the
+   server flips `working` true and the button swaps to Interrupt). Reuses the
+   existing msg-sending-spin keyframes — a load-bearing progress indicator, so
+   it deliberately keeps animating under prefers-reduced-motion (see the
+   reduced-motion block's note). */
+.composer-send-spinner { animation: msg-sending-spin 0.8s linear infinite; }
+/* (#5) Send ⇄ Interrupt swap. The two buttons occupy one slot and are
+   mutually exclusive, so React remounts the glyph whenever canInterrupt
+   flips — the icon fades + scales in (no rotate) so the change reads as a
+   smooth crossfade rather than a hard cut. */
+.composer-action-icon { animation: composer-icon-swap 160ms ease-out both; }
+@keyframes composer-icon-swap {
+  from { opacity: 0; transform: scale(0.85); }
+  to   { opacity: 1; transform: scale(1); }
+}
 
 .attachments {
   display: flex;
@@ -2433,12 +2537,28 @@ body.resizing-col * {
 }
 
 .streaming-msg .assistant-body { position: relative; }
+/* The scroll container is .streaming-plain (below), not the .msg bubble, so
+   the bubble's own padding lives OUTSIDE the scroll viewport and can't keep
+   the first/last lines off the clipped edges. Drop the bubble's vertical
+   padding here and re-apply it inside the scroller instead, so internally-
+   scrolled text (and the pinned cursor) always has breathing room rather
+   than being sliced flush against the border. Horizontal padding stays so
+   the bubble keeps its left/right inset. */
+.streaming-msg {
+  padding-top: 0;
+  padding-bottom: 0;
+}
 /* In-progress streaming text is rendered as plain text (not Markdown) for
    performance; preserve newlines/wrapping and long-word breaks so it reads
    like prose until it settles into the formatted message. */
 .streaming-plain {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  /* Vertical padding lives on the scroll container (not the .msg bubble) so
+     scrolled-away content fades against internal padding instead of being
+     clipped flush at the viewport edge. */
+  padding-top: 10px;
+  padding-bottom: 10px;
   /* Cap the live bubble's height so a long in-progress turn doesn't push
      the whole transcript off-screen. Past the cap the body scrolls
      internally; StreamingFooter pins it to the latest line as text flows
@@ -2446,6 +2566,9 @@ body.resizing-col * {
      as a normal (unbounded) Markdown message. */
   max-height: 20vh;
   overflow-y: auto;
+  /* Keep the pinned last line clear of the bottom edge even at scrollTop
+     extremes (scroll-padding reserves space inside the scroll viewport). */
+  scroll-padding-bottom: 10px;
 }
 .streaming-cursor {
   display: inline-block;
@@ -2770,6 +2893,9 @@ body.resizing-col * {
   backdrop-filter: blur(2px);
   display: flex;
   justify-content: flex-end;
+  /* (#1/#2) Backdrop fades in; the drawer slides from the right edge
+     (directional continuity — it lives on the right of the column). */
+  animation: overlay-backdrop-in 160ms ease-out both;
 }
 .subagent-overlay-panel {
   width: min(50%, 640px);
@@ -2780,6 +2906,11 @@ body.resizing-col * {
   display: flex;
   flex-direction: column;
   box-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);
+  animation: subagent-drawer-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes subagent-drawer-in {
+  from { opacity: 0; transform: translateX(24px); }
+  to   { opacity: 1; transform: translateX(0); }
 }
 .subagent-overlay-header {
   display: flex;
@@ -3316,6 +3447,9 @@ body.resizing-col * {
   align-items: center;
   justify-content: center;
   z-index: 100;
+  /* (#2) Backdrop fades, the modal lifts in — same motion language as the
+     per-panel overlays, reusing overlay-backdrop-in. */
+  animation: overlay-backdrop-in 160ms ease-out both;
 }
 .modal {
   background: var(--bg-elev);
@@ -3327,6 +3461,7 @@ body.resizing-col * {
   flex-direction: column;
   overflow: hidden;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  animation: overlay-panel-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .modal-header {
   display: flex;
@@ -3697,6 +3832,75 @@ body.resizing-col * {
 }
 .todo-pending { color: var(--fg-muted); }
 .todo-pending .todo-icon { opacity: 0.5; }
+
+/* Monitor bar — surfaces currently-running Monitor background tasks. Shares
+   the visual vocabulary of .todo-panel (sticky, top glow, count chip, pulsing
+   icon) but uses --warn for the accent so it reads as distinct from the
+   Checklist. */
+.monitor-bar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  border-top: 2px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+  padding: 10px max(20px, calc((100% - 900px) / 2));
+  font-size: 13px;
+}
+.monitor-bar-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.monitor-bar-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--warn);
+}
+.monitor-bar-count {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: var(--bg);
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+.monitor-bar-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.monitor-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  line-height: 1.4;
+  color: var(--fg);
+}
+.monitor-icon {
+  flex-shrink: 0;
+  width: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--warn);
+  transform: translateY(-0.5px);
+  /* Reuse the checklist's breathing pulse so a live monitor visibly "moves". */
+  animation: todo-icon-pulse 2s ease-in-out infinite;
+}
+.monitor-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* Inline TodoWrite tool-use rendering (inside the message transcript).
    Replaces the raw JSON dump with a compact, readable checklist. */
@@ -4844,34 +5048,6 @@ mark.search-hl.search-hl-active {
   color: var(--bg);
 }
 
-/* ── Per-message copy button ───────────────────────────────────── */
-
-.msg-copy-btn {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  opacity: 0;
-  transition: opacity 0.15s;
-  padding: 2px 6px;
-  font-size: 12px;
-  background: var(--bg-elev-2);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--fg-muted);
-  cursor: pointer;
-  z-index: 1;
-}
-.msg-copy-btn:hover {
-  color: var(--fg);
-  border-color: var(--accent);
-}
-.msg:hover .msg-copy-btn {
-  opacity: 0.7;
-}
-.msg-copy-btn:focus-visible {
-  opacity: 1;
-}
-
 /* ── Session ended banner in composer ──────────────────────────── */
 
 .session-ended {
@@ -5116,6 +5292,9 @@ mark.search-hl.search-hl-active {
   backdrop-filter: blur(2px);
   z-index: 5;
   overflow-y: auto;
+  /* (#1) Entrance — mounts conditionally, so the animation fires on mount.
+     Reuses the same keyframes as the settings overlay for one motion. */
+  animation: overlay-backdrop-in 160ms ease-out both;
 }
 .git-overlay > .git-panel {
   width: min(520px, 100%);
@@ -5127,6 +5306,7 @@ mark.search-hl.search-hl-active {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  animation: overlay-panel-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .git-panel-header {
@@ -6580,6 +6760,24 @@ mark.search-hl.search-hl-active {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+  /* Neutralise the state-change ENTRANCE animations added for overlays,
+     menus, the swap glyph and the jump button — these are decorative
+     motion-on-state-change (WCAG 2.3.3), unlike the load-bearing spinners
+     the global block above deliberately leaves running. Named explicitly so
+     spinners/shimmers keep animating. */
+  .settings-overlay:not(.hidden),
+  .settings-overlay:not(.hidden) > .settings-panel,
+  .git-overlay,
+  .git-overlay > .git-panel,
+  .subagent-overlay,
+  .subagent-overlay-panel,
+  .modal-backdrop,
+  .modal,
+  .ctx-menu,
+  .composer-action-icon,
+  .chat-jump-to-bottom {
+    animation-duration: 0.01ms !important;
+  }
 }
 
 /* ── Tooltip primitive ─────────────────────────────────────────────
@@ -6978,9 +7176,6 @@ mark.search-hl.search-hl-active {
   .code-block-copy,
   .git-file-actions {
     opacity: 1;
-  }
-  .msg-copy-btn {
-    opacity: 0.7;
   }
 
   /* Enlarge icon-button hit areas to the 44px touch-target guideline

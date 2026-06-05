@@ -137,6 +137,14 @@ export interface Session {
    *  simple counter rather than a set because we don't need to identify
    *  which specific turn is outstanding — just whether ANY is. */
   pendingTurns: number
+  /** Epoch ms set when the user sends `/clear`, marking that we're waiting
+   *  for the SDK to confirm the context reset (it emits a fresh `system`/
+   *  `init` message once done). The pump consumes this when that init lands
+   *  within CLEAR_SIGNAL_WINDOW_MS — truncating the history ring and
+   *  broadcasting `session-cleared` — or drops it when the window elapses.
+   *  undefined = no pending clear. Failure mode is "don't clear" (safe);
+   *  it never mis-fires against a spawn/resume init outside the window. */
+  pendingClearSince?: number
   /** Epoch ms when the first pending turn started. Cleared when all turns
    *  complete (pendingTurns drops to 0) or the session terminates. */
   workingSince?: number
@@ -175,6 +183,11 @@ export interface Session {
    *  / requestGenerate via SessionManager. Each WS subscriber gets its
    *  own pushable so a slow tab can't block another tab's updates. */
   recapSubscribers: Set<Pushable<unknown>>
+  /** Per-subscriber pushables for `session-cleared` signal frames.
+   *  Mirrors gitStatusSubscribers (signal-shaped, no payload beyond the
+   *  sessionId). Driven by the pump when a `/clear`-triggered init lands.
+   *  Clients respond by resetting their transcript store + local cache. */
+  sessionClearedSubscribers: Set<Pushable<unknown>>
   /** AbortController whose signal races the pump's `iter.next()` so
    *  unload() can break a wedged generator without waiting for the SDK
    *  subprocess to exit. */
@@ -192,34 +205,28 @@ export interface Session {
   recap?: import('../shared/session-info.js').SessionRecap
 }
 
-/** End every live subscriber (messages, permissions, context-usage) and
+/** End every subscriber in a collection and clear it. Works on both
+ *  `Set<Pushable<T>>` and `Map<K, V>` where values have an `end()` method. */
+function endAndClear<T extends { end(): void }>(
+  collection: { values(): Iterable<T>; clear(): void },
+): void {
+  for (const sub of collection.values()) {
+    try { sub.end() } catch { /* subscriber dead — skip */ }
+  }
+  collection.clear()
+}
+
+/** End every live subscriber (messages, permissions, context-usage, …) and
  *  clear the collections so no dangling references prevent GC.
  *  Shared across handleProcessExit, cleanupPump, and unload. */
 export function endAllSubscribers(s: Session): void {
-  for (const sub of s.subscribers.values()) {
-    try { sub.end() } catch { /* subscriber dead — don't break cleanup for others */ }
-  }
-  s.subscribers.clear()
-  for (const sub of s.permissionSubscribers.values()) {
-    try { sub.end() } catch { /* subscriber dead — skip */ }
-  }
-  s.permissionSubscribers.clear()
-  for (const sub of s.contextUsageSubscribers) {
-    try { sub.end() } catch { /* subscriber dead — skip */ }
-  }
-  s.contextUsageSubscribers.clear()
-  for (const sub of s.gitStatusSubscribers) {
-    try { sub.end() } catch { /* subscriber dead — skip */ }
-  }
-  s.gitStatusSubscribers.clear()
-  for (const sub of s.messageStatusSubscribers) {
-    try { sub.end() } catch { /* subscriber dead — skip */ }
-  }
-  s.messageStatusSubscribers.clear()
-  for (const sub of s.recapSubscribers) {
-    try { sub.end() } catch { /* subscriber dead — skip */ }
-  }
-  s.recapSubscribers.clear()
+  endAndClear(s.subscribers)
+  endAndClear(s.permissionSubscribers)
+  endAndClear(s.contextUsageSubscribers)
+  endAndClear(s.gitStatusSubscribers)
+  endAndClear(s.messageStatusSubscribers)
+  endAndClear(s.recapSubscribers)
+  endAndClear(s.sessionClearedSubscribers)
 }
 
 export interface SessionManagerOptions {
@@ -308,6 +315,15 @@ export interface SessionBroadcaster {
    *  but pure from the caller's perspective; included in the broadcaster
    *  contract so the debounce helper and write routes can both call it. */
   broadcastGitStatusChanged(sessionId: string): void
+  /** Per-session subscription for `session-cleared` signal frames.
+   *  Returns null when the session is unknown (callers short-circuit).
+   *  Mirrors subscribeGitStatus. */
+  subscribeSessionCleared(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null
+  /** Push a `session-cleared` signal to every subscriber of the session.
+   *  Signal-only (bare sessionId). Called by the pump when a `/clear`-
+   *  triggered context reset is confirmed. No-op when the session is
+   *  unknown or has no subscribers. */
+  broadcastSessionCleared(sessionId: string): void
 }
 
 // Re-export HttpError from its canonical location so existing importers

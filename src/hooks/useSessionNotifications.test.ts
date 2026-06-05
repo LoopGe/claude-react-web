@@ -131,6 +131,28 @@ describe('useSessionNotifications — three-state dispatch', () => {
       expect(handleSelect).toHaveBeenCalledWith('s1')
     })
 
+    it('uses question wording (not "needs permission") for AskUserQuestion', () => {
+      setFocus(true)
+      const { api } = setup('other')
+      api.maybePermissionNotify('s1', 'a question', 'question')
+      expect(toastInfo).toHaveBeenCalledTimes(1)
+      const [msg, opts] = toastInfo.mock.calls[0]
+      expect(msg).toContain('is asking a question')
+      expect(msg).not.toContain('needs permission')
+      expect(opts.actionLabel).toBe('Answer')
+    })
+
+    it('uses question wording in the desktop fallback too', () => {
+      setFocus(false)
+      const { api } = setup('s1')
+      api.maybePermissionNotify('s1', 'a question', 'question')
+      expect(notify).toHaveBeenCalledTimes(1)
+      const arg = notify.mock.calls[0][0]
+      expect(arg.title).toContain('is asking a question')
+      expect(arg.title).not.toContain('needs permission')
+      expect(arg.body).not.toContain('Approve or deny')
+    })
+
     it('skips when focused on the requesting session', () => {
       setFocus(true)
       const { api } = setup('s1')

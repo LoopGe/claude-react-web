@@ -49,7 +49,7 @@ export function buildApiRouter(
   app.route('/', buildUploadRouter(sm))
   app.route('/', buildPermissionRouter(sm))
   app.route('/', buildRecapRouter(sm))
-  app.route('/', buildMarketplaceRouter())
+  app.route('/', buildMarketplaceRouter(claudeBinary))
   // Homegrown marketplace lives under /mp/* and is independent of the
   // CLI-shelling /marketplaces routes above. Only mounted when an
   // MpStore was provided — other buildApp callers (tests, standalone

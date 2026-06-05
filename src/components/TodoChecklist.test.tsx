@@ -311,4 +311,42 @@ describe('TodoChecklist — Task* reconstruction', () => {
     expect(items.length).toBe(1)
     expect(container.querySelector('.todo-text')?.textContent).toBe('Orphan')
   })
+
+  it('drops a stale provisional orphan whose create result never arrived', () => {
+    // Regression: a TaskCreate whose tool_result was lost (truncated history)
+    // never learns its `#N`, so it lives under a `pending:<toolUseId>` key.
+    // A later TaskUpdate completes it via the real numeric id, creating a
+    // separate completed stub. The completed stub is stale → dropped; the
+    // provisional pending entry must ALSO be dropped, or the panel hangs at
+    // "0/1" forever (the "stuck checklist" bug).
+    const msgs = [
+      userMsg('do A and B'),
+      // c1's create result is MISSING; only c2's survives.
+      taskUseMsg('c1', 'TaskCreate', { subject: 'A', description: 'A' }),
+      taskUseMsg('c2', 'TaskCreate', { subject: 'B', description: 'B' }),
+      taskResultMsg('c2', 'Task #2 created successfully: B'),
+      taskUseMsg('u1', 'TaskUpdate', { taskId: '1', status: 'completed' }),
+      taskResultMsg('u1', 'Updated task #1 status'),
+      taskUseMsg('u2', 'TaskUpdate', { taskId: '2', status: 'completed' }),
+      taskResultMsg('u2', 'Updated task #2 status'),
+      userMsg('next, unrelated'),
+    ]
+    const { container } = render(<TodoChecklist messages={msgs} working={false} />)
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('keeps an in-flight provisional create visible in the current turn', () => {
+    // A create whose result hasn't landed YET (still in-flight this turn) is
+    // also provisional, but NOT stale — it must stay visible so the user sees
+    // the task immediately, before the `#N` result round-trips.
+    const msgs = [
+      userMsg('start task X'),
+      taskUseMsg('c1', 'TaskCreate', { subject: 'X', description: 'X' }),
+      // no result yet
+    ]
+    const { container } = render(<TodoChecklist messages={msgs} working />)
+    expect(container.querySelector('.todo-panel')).not.toBeNull()
+    expect(container.querySelector('.todo-text')?.textContent).toBe('X')
+    expect(container.querySelector('.todo-panel-count')?.textContent).toBe('0/1')
+  })
 })

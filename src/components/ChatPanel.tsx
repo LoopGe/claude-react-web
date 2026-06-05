@@ -125,6 +125,9 @@ export interface ChatPanelProps {
   onRegisterInterrupt?: (sessionId: string, fn: () => void) => void
   /** Forwarded to <Chat> so it can register its recap-refresh callback. */
   onRegisterRecap?: (sessionId: string, fn: () => void) => void
+  /** Forwarded to <Chat> so it can register its composer input-injection
+   *  callback (used by the Mod+Shift+H input-history panel). */
+  onRegisterInjectInput?: (sessionId: string, fn: (text: string) => void) => void
   /** True while the session is being resumed from dormancy. */
   isResuming?: boolean
   /** Global composer-snippets api (single shared instance owned by App).
@@ -159,6 +162,7 @@ export const ChatPanel = memo(function ChatPanel({
   onCloseGitPanel,
   onRegisterInterrupt,
   onRegisterRecap,
+  onRegisterInjectInput,
   isResuming,
   snippets,
   onOpenSnippetsManager,
@@ -493,6 +497,7 @@ export const ChatPanel = memo(function ChatPanel({
             onLiveMessageCount={setLiveMessageCount}
             onRegisterInterrupt={onRegisterInterrupt}
             onRegisterRecap={onRegisterRecap}
+            onRegisterInjectInput={onRegisterInjectInput}
             headerButtonsRef={headerBtnEl}
             snippets={snippets}
             onOpenSnippetsManager={onOpenSnippetsManager}

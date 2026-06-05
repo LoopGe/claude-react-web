@@ -14,6 +14,7 @@ import { readFile } from 'node:fs/promises'
 import { resolve as resolvePath } from 'node:path'
 import { homedir } from 'node:os'
 import { execFile } from 'node:child_process'
+import { execPath } from 'node:process'
 
 const CLAUDE_DIR = resolvePath(homedir(), '.claude')
 const KNOWN_MARKETPLACES = resolvePath(CLAUDE_DIR, 'plugins', 'known_marketplaces.json')
@@ -27,14 +28,46 @@ function assertSafeName(name: string, label: string): void {
   }
 }
 
+/** How to invoke the `claude` CLI: a command plus any leading argv elements
+ *  that must precede the per-call arguments. */
+interface ClaudeInvocation {
+  cmd: string
+  prefix: string[]
+}
+
+/** Resolve how to invoke the CLI from the binary path the server already
+ *  resolved (cli.ts `resolveClaudeBinary`). That value can be:
+ *   - undefined → fall back to the bare name `claude` and let the OS / SDK
+ *     resolve it (preserves prior behavior on hosts where resolution failed).
+ *   - a `.js` script path (the common Windows case — npm's `.cmd` shim is
+ *     de-shimmed to its underlying script). `execFile` cannot run a `.js`
+ *     directly, so we run it with the current Node, mirroring how
+ *     npm-install.ts invokes npm-cli.js.
+ *   - any other absolute path (e.g. a native `claude.exe` on Windows or the
+ *     Unix launcher) → run it directly. Crucially this is an absolute path,
+ *     so `execFile` does NOT depend on PATHEXT — which is exactly the bug
+ *     that made a bare `claude` fail on Windows. */
+function resolveClaudeInvocation(claudeBinary: string | undefined): ClaudeInvocation {
+  if (!claudeBinary) return { cmd: 'claude', prefix: [] }
+  if (claudeBinary.toLowerCase().endsWith('.js')) {
+    return { cmd: execPath, prefix: [claudeBinary] }
+  }
+  return { cmd: claudeBinary, prefix: [] }
+}
+
 /** Run the `claude` CLI with a fixed argv. NEVER goes through a shell —
  *  arbitrary-looking source strings (URLs, paths) are passed verbatim
  *  as a single argv element so shell metacharacters carry no meaning.
  *  Default timeout is generous because `marketplace add` and
  *  `marketplace update` may clone repos. */
-async function execClaude(args: string[], timeoutMs = 120_000): Promise<string> {
+async function execClaude(
+  invocation: ClaudeInvocation,
+  args: string[],
+  timeoutMs = 120_000,
+): Promise<string> {
+  const argv = [...invocation.prefix, ...args]
   return new Promise<string>((resolve, reject) => {
-    execFile('claude', args, { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(invocation.cmd, argv, { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
         const code = (err as NodeJS.ErrnoException).code
         if (code === 'ENOENT') {
@@ -117,11 +150,11 @@ function invalidatePluginListCache(): void {
   pluginListCache = null
 }
 
-async function getPluginList(): Promise<PluginListJson> {
+async function getPluginList(invocation: ClaudeInvocation): Promise<PluginListJson> {
   if (pluginListCache && Date.now() - pluginListCache.fetchedAt < PLUGIN_LIST_TTL) {
     return pluginListCache.data
   }
-  const stdout = await execClaude(['plugin', 'list', '--json', '--available'], 30_000)
+  const stdout = await execClaude(invocation, ['plugin', 'list', '--json', '--available'], 30_000)
   try {
     const parsed = JSON.parse(stdout) as Partial<PluginListJson>
     const data: PluginListJson = {
@@ -143,8 +176,10 @@ function authorOf(p: RawPlugin): string {
   return ''
 }
 
-export function buildMarketplaceRouter(): Hono {
+export function buildMarketplaceRouter(claudeBinary?: string): Hono {
   const app = new Hono()
+  // Resolve once at build time; reused by every route's execClaude call.
+  const invocation = resolveClaudeInvocation(claudeBinary)
 
   // ─── Marketplace endpoints ────────────────────────────────────
 
@@ -176,7 +211,7 @@ export function buildMarketplaceRouter(): Hono {
     if (source.length > 4096) return c.json({ error: 'source too long' }, 400)
     if (source.includes('\0')) return c.json({ error: 'source contains NUL byte' }, 400)
     try {
-      const output = await execClaude(['plugin', 'marketplace', 'add', source])
+      const output = await execClaude(invocation, ['plugin', 'marketplace', 'add', source])
       invalidatePluginListCache()
       return c.json({ ok: true, output })
     } catch (e) {
@@ -194,7 +229,7 @@ export function buildMarketplaceRouter(): Hono {
       return c.json({ error: (e as Error).message }, 400)
     }
     try {
-      const output = await execClaude(['plugin', 'marketplace', 'remove', name])
+      const output = await execClaude(invocation, ['plugin', 'marketplace', 'remove', name])
       invalidatePluginListCache()
       return c.json({ ok: true, output })
     } catch (e) {
@@ -211,7 +246,7 @@ export function buildMarketplaceRouter(): Hono {
       return c.json({ error: (e as Error).message }, 400)
     }
     try {
-      const output = await execClaude(['plugin', 'marketplace', 'update', name])
+      const output = await execClaude(invocation, ['plugin', 'marketplace', 'update', name])
       invalidatePluginListCache()
       return c.json({ ok: true, output })
     } catch (e) {
@@ -228,7 +263,7 @@ export function buildMarketplaceRouter(): Hono {
    *  segments), so order is harmless either way. */
   app.post('/marketplaces/refresh-all', async (c) => {
     try {
-      const output = await execClaude(['plugin', 'marketplace', 'update'])
+      const output = await execClaude(invocation, ['plugin', 'marketplace', 'update'])
       invalidatePluginListCache()
       return c.json({ ok: true, output })
     } catch (e) {
@@ -250,7 +285,7 @@ export function buildMarketplaceRouter(): Hono {
       return c.json({ error: (e as Error).message }, 400)
     }
     try {
-      const list = await getPluginList()
+      const list = await getPluginList(invocation)
       // Build a map of installed entries keyed by pluginId so we can
       // O(1) merge them onto the available list — and surface installed
       // plugins whose marketplace is no longer registered (rare, but
@@ -324,7 +359,7 @@ export function buildMarketplaceRouter(): Hono {
       return c.json({ error: (e as Error).message }, 400)
     }
     try {
-      const output = await execClaude(['plugin', 'install', `${plugin}@${marketplace}`])
+      const output = await execClaude(invocation, ['plugin', 'install', `${plugin}@${marketplace}`])
       invalidatePluginListCache()
       return c.json({ ok: true, output })
     } catch (e) {
@@ -346,7 +381,7 @@ export function buildMarketplaceRouter(): Hono {
       return c.json({ error: (e as Error).message }, 400)
     }
     try {
-      const output = await execClaude(['plugin', 'uninstall', `${plugin}@${marketplace}`, '-y'])
+      const output = await execClaude(invocation, ['plugin', 'uninstall', `${plugin}@${marketplace}`, '-y'])
       invalidatePluginListCache()
       return c.json({ ok: true, output })
     } catch (e) {
@@ -365,7 +400,7 @@ export function buildMarketplaceRouter(): Hono {
       return c.json({ error: (e as Error).message }, 400)
     }
     try {
-      const output = await execClaude(['plugin', 'enable', `${plugin}@${marketplace}`])
+      const output = await execClaude(invocation, ['plugin', 'enable', `${plugin}@${marketplace}`])
       invalidatePluginListCache()
       return c.json({ ok: true, output })
     } catch (e) {
@@ -384,7 +419,7 @@ export function buildMarketplaceRouter(): Hono {
       return c.json({ error: (e as Error).message }, 400)
     }
     try {
-      const output = await execClaude(['plugin', 'disable', `${plugin}@${marketplace}`])
+      const output = await execClaude(invocation, ['plugin', 'disable', `${plugin}@${marketplace}`])
       invalidatePluginListCache()
       return c.json({ ok: true, output })
     } catch (e) {

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
+  clearSignalAction,
   liteContextUsageFromResult,
   toolResultIds,
   userMessageHasToolResult,
@@ -73,6 +74,42 @@ describe('toolResultIds', () => {
   it('returns empty for text-only / string content', () => {
     expect(toolResultIds(userMsg('hello'))).toEqual([])
     expect(toolResultIds(userMsg([{ type: 'text', text: 'x' }]))).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// /clear confirmation signal
+//
+// `/clear` is forwarded to the SDK like any turn; the SDK resets context and
+// emits a fresh system/init. clearSignalAction decides whether that init
+// (within the window) confirms the clear, whether the marker has expired, or
+// whether there's nothing to do.
+// ---------------------------------------------------------------------------
+
+const initMsg = { type: 'system', subtype: 'init', uuid: 'i1' } as unknown as SDKMessage
+const asstMsg = { type: 'assistant', message: { content: [] }, uuid: 'a1' } as unknown as SDKMessage
+
+describe('clearSignalAction', () => {
+  it("returns 'none' when there is no pending clear", () => {
+    expect(clearSignalAction(undefined, 1000, initMsg)).toBe('none')
+  })
+
+  it("returns 'clear' for an init within the window", () => {
+    expect(clearSignalAction(1000, 1000 + 5_000, initMsg)).toBe('clear')
+  })
+
+  it("returns 'none' for a non-init message within the window (keeps waiting)", () => {
+    // A turn may still be draining; non-init frames shouldn't consume the marker.
+    expect(clearSignalAction(1000, 1000 + 5_000, asstMsg)).toBe('none')
+  })
+
+  it("returns 'expire' once the window has elapsed, even for an init", () => {
+    // A much later spawn/resume init must never be mis-read as this clear.
+    expect(clearSignalAction(1000, 1000 + 60_001, initMsg)).toBe('expire')
+  })
+
+  it("returns 'expire' for a late non-init frame too", () => {
+    expect(clearSignalAction(1000, 1000 + 120_000, asstMsg)).toBe('expire')
   })
 })
 

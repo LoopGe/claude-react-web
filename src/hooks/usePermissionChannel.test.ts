@@ -142,6 +142,21 @@ describe('usePermissionChannel', () => {
     )
   })
 
+  it('forwards planTargetMode in the decide body (plan approval)', async () => {
+    mockPost.mockResolvedValueOnce({ ok: true })
+    const { result } = renderHook(() => usePermissionChannel('s1'))
+    act(() => {
+      result.current.onRequest(makePermissionRequest('p1'))
+    })
+    await act(async () => {
+      await result.current.decide('p1', { behavior: 'allow', persistForSession: false, planTargetMode: 'acceptEdits' })
+    })
+    expect(mockPost).toHaveBeenCalledWith(
+      '/sessions/s1/permissions/p1/decide',
+      { behavior: 'allow', persistForSession: false, planTargetMode: 'acceptEdits' },
+    )
+  })
+
   it('shows error and re-fetches pending on decide failure', async () => {
     mockPost.mockRejectedValueOnce(new Error('server down'))
     // Re-fetch after failure returns the original request.

@@ -170,13 +170,31 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
 const tick = () => new Promise((r) => setImmediate(r))
 
 // Import AFTER vi.mock so the SessionManager picks up the mocked SDK.
-import { SessionManager } from './session-manager.js'
+import { SessionManager, isClearCommand } from './session-manager.js'
 import { SessionStore } from './persistence.js'
 import { config as defaultConfig } from './config.js'
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), 'claude-rw-sm-'))
 }
+
+describe('isClearCommand', () => {
+  it('matches /clear and its case/whitespace variants', () => {
+    expect(isClearCommand('/clear')).toBe(true)
+    expect(isClearCommand('/Clear')).toBe(true)
+    expect(isClearCommand('  /clear  ')).toBe(true)
+    expect(isClearCommand('/clear extra args')).toBe(true)
+  })
+
+  it('does not match look-alikes or embedded uses', () => {
+    expect(isClearCommand('/clearfoo')).toBe(false)
+    expect(isClearCommand('hello /clear')).toBe(false)
+    expect(isClearCommand('clear')).toBe(false)
+    expect(isClearCommand('/clearcache')).toBe(false)
+    expect(isClearCommand('')).toBe(false)
+    expect(isClearCommand('/')).toBe(false)
+  })
+})
 
 describe('SessionManager', () => {
   let dir: string
@@ -491,27 +509,44 @@ describe('SessionManager', () => {
     expect(updated.title).toBeUndefined()
   })
 
-  it('setPermissionMode() only updates local state, does not call the SDK', async () => {
+  it('setPermissionMode() to a non-plan mode forwards "default" to the SDK (canUseTool owns it)', async () => {
     const info = sm.create({ permissionMode: 'default' })
     await sm.setPermissionMode(info.id, 'acceptEdits')
     expect(sm.get(info.id).permissionMode).toBe('acceptEdits')
-    // The SDK-level setter must NOT be invoked. Previous implementation
-    // forwarded every change, which fell over when switching INTO
-    // bypassPermissions mid-session.
-    expect(mockHandles[0].setPermissionMode).not.toHaveBeenCalled()
+    // Only `plan` forwards a real mode; every other mode forwards 'default'
+    // so the SDK has no read-only lock and canUseTool stays authoritative.
+    expect(mockHandles[0].setPermissionMode).toHaveBeenCalledWith('default')
   })
 
-  it('setPermissionMode() allows transitioning into bypassPermissions', async () => {
+  it('setPermissionMode() to plan forwards "plan" to the SDK (read-only steering)', async () => {
     const info = sm.create({ permissionMode: 'default' })
-    await sm.setPermissionMode(info.id, 'bypassPermissions')
+    await sm.setPermissionMode(info.id, 'plan')
+    expect(sm.get(info.id).permissionMode).toBe('plan')
+    expect(mockHandles[0].setPermissionMode).toHaveBeenCalledWith('plan')
+  })
+
+  it('setPermissionMode() OUT of plan forwards "default" to release the SDK lock', async () => {
+    const info = sm.create({ permissionMode: 'plan' })
+    await sm.setPermissionMode(info.id, 'acceptEdits')
+    // Switching away from plan must send 'default' to disengage the SDK's
+    // read-only lock, otherwise the model stays stuck unable to edit.
+    expect(mockHandles[0].setPermissionMode).toHaveBeenCalledWith('default')
+  })
+
+  it('setPermissionMode() never fails even if the SDK control request throws', async () => {
+    const info = sm.create({ permissionMode: 'default' })
+    mockHandles[0].setPermissionMode.mockRejectedValueOnce(new Error('SDK boom'))
+    const updated = await sm.setPermissionMode(info.id, 'bypassPermissions')
+    expect(updated.permissionMode).toBe('bypassPermissions')
     expect(sm.get(info.id).permissionMode).toBe('bypassPermissions')
   })
 
-  it('spawn does not forward permissionMode to the SDK options', () => {
+  it('spawn forwards only plan to the SDK options; other modes map to undefined', () => {
     sm.create({ permissionMode: 'acceptEdits' })
-    // The SDK sees options with permissionMode cleared — the server's own
-    // canUseTool owns the semantics.
     expect(mockHandles[0].options.permissionMode).toBeUndefined()
+
+    sm.create({ permissionMode: 'plan' })
+    expect(mockHandles[1].options.permissionMode).toBe('plan')
   })
 
   it('fork() spawns a new session with resume=sourceId + forkSession=true', async () => {
@@ -787,7 +822,9 @@ describe('SessionManager', () => {
     )
     await tick()
     const pid = sm.listPending(info.id)[0].id
-    expect(() => sm.decide(info.id, pid, { behavior: 'deny' })).toThrow(
+    // decide() is async now (it may switch permission mode after a plan
+    // approval), so the broker's synchronous throw surfaces as a rejection.
+    await expect(sm.decide(info.id, pid, { behavior: 'deny' })).rejects.toThrow(
       /interactive question/i,
     )
   })
@@ -810,6 +847,44 @@ describe('SessionManager', () => {
     expect(() => sm.answerQuestion(info.id, pid, [null])).toThrow(
       /not an interactive question/i,
     )
+  })
+
+  it('approving an ExitPlanMode plan switches the session to the chosen execution mode', async () => {
+    const info = sm.create({ permissionMode: 'plan' })
+    const canUseTool = mockHandles[0].options.canUseTool as (
+      tool: string,
+      input: unknown,
+      ctx: { signal: AbortSignal; toolUseID: string },
+    ) => Promise<unknown>
+    const ctrl = new AbortController()
+    void canUseTool(
+      'ExitPlanMode',
+      { plan: 'do the thing' },
+      { signal: ctrl.signal, toolUseID: 'tu-plan' },
+    )
+    await tick()
+    const pid = sm.listPending(info.id)[0].id
+    await sm.decide(info.id, pid, { behavior: 'allow', planTargetMode: 'acceptEdits' })
+    // Session left plan mode and landed in the chosen execution mode.
+    expect(sm.get(info.id).permissionMode).toBe('acceptEdits')
+    // And the SDK was told to release the plan lock (forward 'default' for the
+    // non-plan target).
+    expect(mockHandles[0].setPermissionMode).toHaveBeenCalledWith('default')
+  })
+
+  it('approving an ExitPlanMode plan with no target defaults to "default" mode', async () => {
+    const info = sm.create({ permissionMode: 'plan' })
+    const canUseTool = mockHandles[0].options.canUseTool as (
+      tool: string,
+      input: unknown,
+      ctx: { signal: AbortSignal; toolUseID: string },
+    ) => Promise<unknown>
+    const ctrl = new AbortController()
+    void canUseTool('ExitPlanMode', { plan: 'p' }, { signal: ctrl.signal, toolUseID: 'tu-plan2' })
+    await tick()
+    const pid = sm.listPending(info.id)[0].id
+    await sm.decide(info.id, pid, { behavior: 'allow' })
+    expect(sm.get(info.id).permissionMode).toBe('default')
   })
 
   it('AskUserQuestion is never auto-allowed under bypassPermissions (interactive is not bypassable)', async () => {

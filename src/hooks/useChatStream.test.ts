@@ -505,6 +505,87 @@ describe('useChatStream', () => {
     expect(result.current.error).toBeNull()
   })
 
+  // ── session-cleared ───────────────────────────────────────────
+
+  it('wipes transcript + state on a session-cleared frame', async () => {
+    const { result } = renderHook(
+      () => useChatStream('s1', noopPerms),
+    )
+
+    // Populate the transcript.
+    act(() => {
+      dispatchToSession('s1', {
+        kind: 'replay',
+        sessionId: 's1',
+        messages: [{ type: 'user', uuid: 'u1' }, { type: 'assistant', uuid: 'a1' }],
+      })
+      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
+    })
+    await waitFor(() => {
+      expect(result.current.messages).toHaveLength(2)
+    })
+
+    // Backend confirms /clear — the transcript should reset.
+    act(() => {
+      dispatchToSession('s1', { kind: 'session-cleared', sessionId: 's1' })
+    })
+
+    await waitFor(() => {
+      expect(result.current.messages).toEqual([])
+    })
+    // hasOlder flips false so the cleared transcript can't be paged back.
+    expect(result.current.hasOlder).toBe(false)
+  })
+
+  it('does not resurrect old messages from a replay after a clear', async () => {
+    const { result } = renderHook(
+      () => useChatStream('s1', noopPerms),
+    )
+
+    act(() => {
+      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [{ type: 'user', uuid: 'u1' }] })
+      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
+    })
+    await waitFor(() => expect(result.current.messages).toHaveLength(1))
+
+    // Clear, then a fresh (empty) replay arrives — as the server now sends
+    // after truncating its ring. The transcript stays empty.
+    act(() => {
+      dispatchToSession('s1', { kind: 'session-cleared', sessionId: 's1' })
+      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
+      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
+    })
+    await waitFor(() => expect(result.current.messages).toEqual([]))
+  })
+
+  it('drops a pre-clear replay that raced ahead (clear lands mid-replay)', async () => {
+    // Race: a reconnect's `replay` (built BEFORE the server truncated its
+    // ring, so it carries pre-clear messages) arrives, then `session-cleared`
+    // lands, then `replay-done`. Without the mid-replay guard, replay-done's
+    // REPLAY_REPLACE would re-apply the buffered pre-clear messages on top of
+    // the reset store and resurrect the cleared transcript.
+    const { result } = renderHook(
+      () => useChatStream('s1', noopPerms),
+    )
+
+    act(() => {
+      // Stale replay opens (buffered, not yet applied)...
+      dispatchToSession('s1', {
+        kind: 'replay',
+        sessionId: 's1',
+        messages: [{ type: 'user', uuid: 'u1' }, { type: 'assistant', uuid: 'a1' }],
+      })
+      // ...clear confirmation races in BEFORE replay-done...
+      dispatchToSession('s1', { kind: 'session-cleared', sessionId: 's1' })
+      // ...and the (now-stale) replay-done arrives.
+      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
+    })
+
+    // The pre-clear messages must NOT be resurrected.
+    await waitFor(() => expect(result.current.messages).toEqual([]))
+    expect(result.current.hasOlder).toBe(false)
+  })
+
   // ── subscribe/unsubscribe lifecycle ──────────────────────────
 
   it('subscribes to hub on mount and unsubscribes on unmount', () => {

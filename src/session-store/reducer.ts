@@ -162,15 +162,31 @@ function replayReplace(
   if (messages.length === 0 && prevState.items.length > 0) {
     return { ...prevState, replayReady: true }
   }
-  // Incremental replay: the server sent only messages after the client's
-  // lastUuid (sinceUuid). Append them to the existing transcript instead
-  // of replacing it — otherwise the entire pre-reconnect history vanishes.
+  // Replay on top of an existing (cached) transcript. The replay payload can
+  // relate to the cache three different ways, and we must NOT blind-append:
+  //
+  //   - Clean reconnect (sinceUuid hit the ring): the server already sliced to
+  //     messages STRICTLY AFTER the client's lastUuid, so they're all newer →
+  //     pure append (the original incremental-replay behaviour).
+  //   - Resume seed / sinceUuid miss → FULL replay: the payload is the disk
+  //     transcript tail, which OVERLAPS the cache. Blind-appending would
+  //     render every overlapping message twice (the "shows twice" regression).
+  //   - Cache trimmed below the replay window: the payload's leading portion
+  //     is OLDER than the cache's first item.
+  //
+  // splitReplayAgainstCache() splits the payload into older / overlapping
+  // / newer relative to the cache and routes each part to the path that
+  // already dedups it correctly (prependMessages for older, applyMessage for
+  // newer, drop the overlap). This makes the merge correct regardless of how
+  // the server happened to slice — no reliance on sinceUuid landing cleanly.
   if (messages.length > 0 && prevState.items.length > 0) {
     let state: SessionState = { ...prevState, liveTurn: null, replayReady: true }
     for (const permission of permissions) {
       state = reduceSessionState(state, { type: 'PERMISSION_REQUEST', request: permission })
     }
-    for (const message of messages) {
+    const { older, newer } = splitReplayAgainstCache(messages, prevState.items)
+    if (older.length > 0) state = prependMessages(state, older)
+    for (const message of newer) {
       state = applyMessage(state, message)
     }
     return state
@@ -187,6 +203,72 @@ function replayReplace(
     state = applyMessage(state, message)
   }
   return { ...state, replayReady: true }
+}
+
+/** Overlap-anchor key: the message uuid, or null when the frame must NOT
+ *  anchor the overlap bracket.
+ *
+ *  We anchor ONLY on disk-stable frames (assistant / system / tool_result-
+ *  bearing user), whose uuids match between the in-memory ring and the on-disk
+ *  transcript. Top-level user prompts are deliberately excluded (return null):
+ *  their server-minted uuid never matches the on-disk SDK uuid, so they can't
+ *  anchor reliably — AND keying them by content signature is WRONG, because
+ *  two distinct turns can carry identical prompt text ("ok", "yes"). Treating
+ *  such a repeated prompt as an overlap would silently drop a legitimate new
+ *  turn. Prompt dedup is handled positionally instead: prompts in the OLDER
+ *  portion are signature-deduped by prependMessages/countPromptOverlap, and
+ *  prompts inside the overlap bracket are dropped with it. */
+function overlapAnchorUuid(msg: SdkMessage): string | null {
+  if (topLevelUserPromptSignature(msg) != null) return null // a prompt — never an anchor
+  return typeof msg.uuid === 'string' ? msg.uuid : null
+}
+
+/** Split a replay payload into the portion OLDER than the cached transcript
+ *  and the portion NEWER than it, dropping anything that overlaps the cache.
+ *
+ *  Both the replay payload and the cache are chronological slices of the same
+ *  transcript. We bracket the overlap by disk-stable uuid (overlapAnchorUuid):
+ *  the FIRST payload frame whose uuid is already in the cache marks where the
+ *  overlap begins, the LAST marks where it ends. Everything before the first
+ *  anchor is older (→ prependMessages, which dedups prompts by signature +
+ *  prepends + indexes); everything after the last anchor is newer (→
+ *  applyMessage append); the overlap itself is dropped.
+ *
+ *  The clean-reconnect case (server already sliced to strictly-newer messages)
+ *  has zero overlap, so `firstOverlap` stays -1 and the entire payload falls
+ *  into `newer` — byte-identical to the original blind append. The resume-seed
+ *  / full-replay case overlaps the cache tail, so that overlap is dropped
+ *  instead of double-appended.
+ *
+ *  We use the first/last anchor bracket rather than per-message membership: a
+ *  payload is a contiguous transcript slice, so a uuid that appears mid-payload
+ *  but not in the cache (e.g. an assistant frame the cache trimmed) must still
+ *  be kept, not dropped as a false non-overlap. */
+export function splitReplayAgainstCache(
+  messages: SdkMessage[],
+  items: SessionState['items'],
+): { older: SdkMessage[]; newer: SdkMessage[] } {
+  const cacheUuids = new Set<string>()
+  for (const it of items) {
+    const key = overlapAnchorUuid(it.msg)
+    if (key != null) cacheUuids.add(key)
+  }
+  let firstOverlap = -1
+  let lastOverlap = -1
+  for (let i = 0; i < messages.length; i++) {
+    const key = overlapAnchorUuid(messages[i])
+    if (key != null && cacheUuids.has(key)) {
+      if (firstOverlap === -1) firstOverlap = i
+      lastOverlap = i
+    }
+  }
+  // No overlap → clean reconnect (or a disjoint older batch). Treat the whole
+  // payload as newer; applyMessage append preserves the original behaviour.
+  if (firstOverlap === -1) return { older: [], newer: messages }
+  return {
+    older: messages.slice(0, firstOverlap),
+    newer: messages.slice(lastOverlap + 1),
+  }
 }
 
 /** Prepend a chronological batch of older messages (loaded from disk on
@@ -467,7 +549,7 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   // the optimistic — without this guard, a tool_result that lands while
   // pendingUserMessageIds is still populated would replace the typed text
   // with a JSON tool result and silently drop what the user wrote.
-  const incomingParent = (message as Record<string, unknown>).parent_tool_use_id
+  const incomingParent = message.parent_tool_use_id
   if (
     message.type === 'user' &&
     state.pendingUserMessageIds.size > 0 &&
@@ -868,7 +950,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
   // (identified by parent_tool_use_id). This pre-computes the value that
   // SubagentCard previously scanned the full message list to compute.
   if (message.type === 'assistant' && activeSubagents.size > 0) {
-    const parentId = (message as Record<string, unknown>).parent_tool_use_id
+    const parentId = message.parent_tool_use_id
     if (typeof parentId === 'string') {
       const existing = activeSubagents.get(parentId)
       if (existing) {

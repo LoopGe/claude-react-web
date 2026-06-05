@@ -306,6 +306,25 @@ export class SessionStore {
     this.dispatch({ type: 'RESET' })
   }
 
+  /** Reset in-memory state AND erase the localStorage cache, with no
+   *  pending write left behind. Used by the /clear flow: a plain reset()
+   *  would dispatch RESET, which schedules a debounced save that later
+   *  rewrites the key with the empty state — so a separate
+   *  clearSessionStorage() call races that timer and the key reappears.
+   *  Here we cancel BOTH timers and remove the key synchronously after the
+   *  reset, so the cache is gone and stays gone. */
+  clearPersisted(): void {
+    this.reset()
+    // Cancel the debounced save that reset()'s RESET dispatch just
+    // scheduled — otherwise it fires later and re-creates the key.
+    if (this.saveTimer != null) {
+      window.clearTimeout(this.saveTimer)
+      this.saveTimer = null
+    }
+    this.saveDirtySince = null
+    clearSessionStorage(this.state.sessionId)
+  }
+
   destroy(): void {
     unregisterStoreForDebug(this.state.sessionId, this)
     // Persist messages to localStorage before tearing down so they survive
@@ -555,7 +574,7 @@ function buildToolIndex(messages: readonly SdkMessage[]): ToolIndex {
   for (const m of messages) {
     const content = m.message?.content
     if (!Array.isArray(content)) continue
-    const parent = (m as Record<string, unknown>).parent_tool_use_id
+    const parent = m.parent_tool_use_id
     const parentToolUseId = typeof parent === 'string' ? parent : null
     for (const b of content as Array<Record<string, unknown>>) {
       if (b.type === 'tool_use') {
@@ -667,7 +686,7 @@ function dumpToolStatus(): ToolStatusDump[] {
       for (const m of messages) {
         const content = m.message?.content
         if (!Array.isArray(content)) continue
-        const parent = (m as Record<string, unknown>).parent_tool_use_id
+        const parent = m.parent_tool_use_id
         for (const b of content as Array<Record<string, unknown>>) {
           if (b.type !== 'tool_result' || typeof b.tool_use_id !== 'string') continue
           const id = b.tool_use_id

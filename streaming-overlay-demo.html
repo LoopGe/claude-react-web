@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>StreamingFooter → 独立浮层 + 出入场动画 demo</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --bg-elev: #1a2029;
+    --bg-elev-2: #242a35;
+    --border: #2a313c;
+    --accent: #7aa2f7;
+    --fg: #c8d3e0;
+    --fg-muted: #7a8597;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    --user-bg: #2d4a7c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #070a0e;
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+  h1 { font-size: 18px; margin: 0; }
+  .sub { color: var(--fg-muted); font-size: 13px; margin: 0; text-align: center; max-width: 720px; }
+
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+  button {
+    background: var(--bg-elev-2); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 16px; font-size: 13px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { border-color: var(--accent); color: var(--accent); }
+  label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fg-muted); }
+
+  /* ===================== 模拟 ChatPanel ===================== */
+  .chat-panel-body {
+    position: relative;            /* ← 浮层定位锚点 */
+    width: 760px;
+    max-width: 100%;
+    height: 560px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    /* 与浮层动画隔离:浮层 transform/opacity 不波及面板其它部分 */
+  }
+
+  /* 历史消息滚动区(模拟 Virtuoso) */
+  .chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    scroll-behavior: smooth;
+  }
+  .chat-messages::-webkit-scrollbar { width: 8px; }
+  .chat-messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+  .msg {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    background: var(--bg-elev);
+    max-width: 88%;
+  }
+  .msg.user {
+    align-self: flex-end;
+    background: var(--user-bg);
+    border-bottom-right-radius: 3px;
+    max-width: 70%;
+  }
+  .msg.assistant {
+    align-self: flex-start;
+    border-bottom-left-radius: 3px;
+  }
+  .msg-header { font-size: 12px; font-weight: 600; color: var(--accent); margin-bottom: 4px; }
+  .msg.user .msg-header { color: #cdddff; }
+  .msg .md { white-space: pre-wrap; }
+  .msg .md strong { color: #fff; }
+  /* 正式消息「揭示」时的轻微淡入(它本就在流里就位) */
+  .msg.assistant.reveal { animation: reveal-in 320ms ease-out both; }
+  @keyframes reveal-in {
+    from { opacity: 0.35; }
+    to   { opacity: 1; }
+  }
+
+  /* composer */
+  .composer {
+    border-top: 1px solid var(--border);
+    padding: 12px 14px;
+    background: var(--bg-elev);
+    display: flex;
+    gap: 8px;
+    flex: none;
+  }
+  .composer input {
+    flex: 1; background: var(--bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px;
+    font-size: 14px;
+  }
+  .composer .send { background: var(--accent); color: #0b1220; border: none; font-weight: 600; }
+
+  /* ===================== 独立浮层 streaming ===================== */
+  .stream-overlay {
+    position: absolute;
+    left: 18px;
+    right: 18px;
+    bottom: 14px;                  /* 悬浮在 composer 之上 */
+    z-index: 5;
+    /* 隔离:布局/绘制都不外溢,动画绝不触发面板 reflow */
+    contain: layout paint;
+    pointer-events: none;          /* 不挡历史区滚动/点击 */
+  }
+  .stream-overlay .inner { pointer-events: auto; }
+
+  /* 浮层自带遮罩:与下方历史视觉隔开(顶部渐隐,底部不透明) */
+  .stream-overlay::before {
+    content: '';
+    position: absolute;
+    left: -18px; right: -18px;
+    top: -28px; bottom: -14px;
+    background: linear-gradient(to top,
+      var(--bg) 0%,
+      var(--bg) 62%,
+      color-mix(in srgb, var(--bg) 92%, transparent) 82%,
+      transparent 100%);
+    z-index: -1;
+    pointer-events: none;
+  }
+
+  .streaming-msg {
+    border: 2px solid var(--accent);
+    border-radius: 10px;
+    border-bottom-left-radius: 3px;
+    background: var(--bg-elev);
+    box-shadow: 0 8px 28px -8px rgba(0,0,0,0.6), 0 0 14px 1px rgba(122,162,247,0.22);
+    animation: stream-border-glow 1.8s ease-in-out infinite;
+  }
+  @keyframes stream-border-glow {
+    0%,100% { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+    50%     { border-color: var(--accent); }
+  }
+  .streaming-plain {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    padding: 12px 14px;
+    max-height: 22vh;
+    overflow-y: auto;
+    scroll-padding-bottom: 12px;
+  }
+  .streaming-plain::-webkit-scrollbar { width: 8px; }
+  .streaming-plain::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  .stream-label {
+    font-size: 11px; color: var(--accent); font-weight: 600;
+    padding: 7px 14px 0; display: flex; align-items: center; gap: 6px;
+  }
+  .stream-label .dot {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+    animation: pulse 1s ease-in-out infinite;
+  }
+  @keyframes pulse { 50% { opacity: 0.3; } }
+  .streaming-cursor {
+    display: inline-block; width: 2px; height: 1.1em;
+    background: var(--accent); vertical-align: text-bottom; margin-left: 1px;
+    animation: blink 1s step-end infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ---- 入场:淡入 + 上浮 + 模糊消散 ---- */
+  .stream-overlay.entering .inner {
+    animation: overlay-in 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  @keyframes overlay-in {
+    from { opacity: 0; transform: translateY(16px) scale(0.985); filter: blur(6px); }
+    to   { opacity: 1; transform: translateY(0)    scale(1);     filter: blur(0); }
+  }
+  /* ---- 出场:原地淡出 + 下沉(揭示下方已就位的正式消息) ---- */
+  .stream-overlay.leaving .inner {
+    animation: overlay-out 300ms cubic-bezier(0.4, 0, 1, 1) both;
+  }
+  .stream-overlay.leaving::before {
+    animation: mask-out 300ms ease both;
+  }
+  @keyframes overlay-out {
+    from { opacity: 1; transform: translateY(0)   scale(1); filter: blur(0); }
+    to   { opacity: 0; transform: translateY(10px) scale(0.99); filter: blur(3px); }
+  }
+  @keyframes mask-out { to { opacity: 0; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .stream-overlay.entering .inner,
+    .stream-overlay.leaving .inner { animation: none; }
+    .streaming-msg { animation: none; border-color: var(--accent); }
+  }
+</style>
+</head>
+<body>
+  <h1>StreamingFooter → 独立浮层 + 出入场动画</h1>
+  <p class="sub">演示完整生命周期:点「发送」→ 浮层<b>入场</b>(淡入+上浮+模糊消散)→ 逐字流式 → 结束时浮层<b>出场</b>(淡出+下沉),同时下方正式 Markdown 消息「揭示」。浮层脱离滚动流、自带遮罩,与历史区隔离,且<b>无重影</b>。</p>
+
+  <div class="toolbar">
+    <button id="play" class="primary">▶ 发送并播放一轮</button>
+    <button id="scroll-test">测试:流式时滚动历史</button>
+    <label class="chk"><input type="checkbox" id="slow" /> 慢速</label>
+  </div>
+
+  <div class="chat-panel-body" id="panel">
+    <div class="chat-messages" id="messages">
+      <div class="msg user"><div class="msg-header">你</div><div class="md">plan 模式和 acceptEdits/bypass 有什么本质区别?</div></div>
+      <div class="msg assistant"><div class="msg-header">✦ Claude</div><div class="md">它们不是一类东西。acceptEdits/bypass 是对单个工具调用 allow/deny,而 plan 是模型层面的只读引导。</div></div>
+      <div class="msg user"><div class="msg-header">你</div><div class="md">那 StreamingFooter 能做成独立浮层吗?</div></div>
+    </div>
+
+    <!-- 浮层会被 JS 动态插入到这里(panel 内、composer 外) -->
+
+    <div class="composer">
+      <input placeholder="输入消息…" />
+      <button class="send">发送</button>
+    </div>
+  </div>
+
+<script>
+  const STREAM_TEXT = `好的——可以,而且独立浮层正好能顺带解决出场动画的重影难题。
+
+关键在于:浮层用 position: absolute 脱离了 Virtuoso 的滚动流,它是盖在历史之上的一个图层。
+
+所以当流式结束、正式 Markdown 消息进入历史列表时,正式消息其实已经在浮层「下方」就位了。
+
+此时浮层做淡出+下沉动画 —— 视觉上就是「浮层让位、正式消息显形」,也就是交叉淡出的效果,但完全不需要改 store 时序,也不会出现两条相同内容并排的重影。
+
+再配合 contain: layout paint,浮层的所有动画都不会触发面板 reflow,与 ChatPanel 彻底隔离。`;
+
+  const panel = document.getElementById('panel');
+  const messages = document.getElementById('messages');
+  const composer = panel.querySelector('.composer');
+
+  let overlay = null;
+  let timer = null;
+
+  function mountOverlay() {
+    overlay = document.createElement('div');
+    overlay.className = 'stream-overlay entering';
+    overlay.innerHTML = `
+      <div class="inner streaming-msg">
+        <div class="stream-label"><span class="dot"></span> Claude 正在输入…</div>
+        <div class="streaming-plain" id="plain"></div>
+      </div>`;
+    panel.insertBefore(overlay, composer);
+    overlay.addEventListener('animationend', function once(e) {
+      if (e.animationName === 'overlay-in') {
+        overlay.classList.remove('entering');
+        overlay.removeEventListener('animationend', once);
+      }
+    });
+    return overlay.querySelector('#plain');
+  }
+
+  function setPlain(el, text, withCursor) {
+    el.textContent = text;
+    if (withCursor) {
+      const c = document.createElement('span');
+      c.className = 'streaming-cursor';
+      el.appendChild(c);
+    }
+    el.scrollTop = el.scrollHeight;       // 钉底
+  }
+
+  function leaveOverlay(onDone) {
+    if (!overlay) return onDone && onDone();
+    overlay.classList.add('leaving');
+    const node = overlay;
+    overlay = null;
+    node.addEventListener('animationend', function once(e) {
+      if (e.animationName === 'overlay-out') {
+        node.remove();
+        onDone && onDone();
+      }
+    });
+  }
+
+  function appendUserMsg() {
+    const u = document.createElement('div');
+    u.className = 'msg user';
+    u.innerHTML = '<div class="msg-header">你</div><div class="md">把 streaming 气泡改成独立浮层,能做出入场动画吗?</div>';
+    messages.appendChild(u);
+    messages.scrollTop = messages.scrollHeight;
+  }
+
+  function revealFinalMsg() {
+    // 正式 Markdown 消息进入历史流(在浮层「下方」就位)
+    const m = document.createElement('div');
+    m.className = 'msg assistant reveal';
+    const html = STREAM_TEXT
+      .replace(/position: absolute/g, '<strong>position: absolute</strong>')
+      .replace(/contain: layout paint/g, '<strong>contain: layout paint</strong>')
+      .replace(/重影/g, '<strong>重影</strong>');
+    m.innerHTML = '<div class="msg-header">✦ Claude</div><div class="md">' + html + '</div>';
+    messages.appendChild(m);
+    messages.scrollTop = messages.scrollHeight;
+  }
+
+  function play() {
+    if (timer) { clearInterval(timer); timer = null; }
+    if (overlay) { overlay.remove(); overlay = null; }
+
+    appendUserMsg();
+    const plain = mountOverlay();
+
+    const slow = document.getElementById('slow').checked;
+    const stepDelay = slow ? 130 : 55;
+    const text = STREAM_TEXT;
+    let i = 0;
+    const step = Math.max(1, Math.round(text.length / (slow ? 90 : 110)));
+
+    timer = setInterval(() => {
+      i += step;
+      if (i >= text.length) {
+        i = text.length;
+        setPlain(plain, text, false);
+        clearInterval(timer); timer = null;
+        // 流式结束:正式消息「同帧」就位 → 浮层出场揭示它
+        revealFinalMsg();
+        leaveOverlay();
+        return;
+      }
+      setPlain(plain, text.slice(0, i), true);
+    }, stepDelay);
+  }
+
+  document.getElementById('play').onclick = play;
+  document.getElementById('scroll-test').onclick = () => {
+    messages.scrollTop = 0;
+    if (!overlay) play();
+  };
+</script>
+</body>
+</html>

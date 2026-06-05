@@ -172,6 +172,19 @@ export interface WsSessionRecapUpdate<Recap> {
   recap?: Recap
 }
 
+/** Signal-only frame: "this session's context was cleared (via /clear)
+ *  and the server has confirmed it by truncating its history ring".
+ *  Fired only after the SDK emits the post-clear `init` message, never
+ *  on the bare `/clear` send. The server intentionally packs no payload
+ *  beyond the sessionId — the client responds by resetting its transcript
+ *  store and dropping its local cache. Because the server already
+ *  truncated `history`, any subsequent replay/reconnect is already empty,
+ *  so the reset stays consistent across tabs and refreshes. */
+export interface WsSessionCleared {
+  kind: 'session-cleared'
+  sessionId: string
+}
+
 /** Heartbeat reply. */
 export interface WsPong {
   kind: 'pong'
@@ -203,6 +216,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap> =
   | WsGitStatusChanged
   | WsMessageConsumed
   | WsSessionRecapUpdate<Recap>
+  | WsSessionCleared
   | WsPong
   | WsError
 

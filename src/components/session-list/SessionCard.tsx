@@ -175,12 +175,15 @@ export const SessionCard = memo(function SessionCard({
         <strong className="session-item-title">
           {pendingCount > 0 && (
             <Tooltip
-              label={`${pendingCount} permission request${pendingCount === 1 ? '' : 's'} awaiting decision`}
+              // Neutral wording: pendingCount mixes tool-permission requests
+              // and AskUserQuestion questions (no per-kind breakdown here), so
+              // "awaiting your response" reads correctly for both.
+              label={`${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`}
               placement="right"
             >
               <span
                 className="session-item-perm-badge"
-                aria-label={`${pendingCount} pending permission${pendingCount === 1 ? '' : 's'}`}
+                aria-label={`${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`}
               >
                 {pendingCount > 9 ? '9+' : pendingCount}
               </span>

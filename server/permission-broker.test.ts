@@ -20,6 +20,7 @@ function makeFakeSession(overrides: Partial<Session> = {}): Session {
     gitStatusSubscribers: new Set(),
     messageStatusSubscribers: new Set(),
     recapSubscribers: new Set(),
+    sessionClearedSubscribers: new Set(),
     abortController: ac,
     pumpTask: Promise.resolve(),
     running: true,
@@ -108,6 +109,154 @@ describe('PermissionBroker', () => {
         updatedInput: { command: 'ls' },
         toolUseID: 'tu-1',
       })
+    })
+
+    it('auto-allows edit tools targeting paths inside cwd in acceptEdits mode', async () => {
+      const session = makeFakeSession({ permissionMode: 'acceptEdits', cwd: '/work/app' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const input = { file_path: '/work/app/src/x.ts', content: 'hi' }
+      const result = await canUseTool('Write', input, {
+        toolUseID: 'tu-1',
+        signal: new AbortController().signal,
+        title: 'Write file',
+        displayName: 'Write',
+        description: '',
+        suggestions: [],
+      })
+      expect(result).toEqual({
+        behavior: 'allow',
+        updatedInput: input,
+        toolUseID: 'tu-1',
+      })
+      // No prompt was raised.
+      expect(session.pending.size).toBe(0)
+    })
+
+    it('still prompts for edit tools targeting paths OUTSIDE cwd in acceptEdits mode', () => {
+      const session = makeFakeSession({ permissionMode: 'acceptEdits', cwd: '/work/app' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      canUseTool('Write', { file_path: '/etc/passwd', content: 'x' }, {
+        toolUseID: 'tu-1',
+        signal: new AbortController().signal,
+        title: 'Write file', displayName: 'Write', description: '', suggestions: [],
+      })
+      expect(session.pending.size).toBe(1)
+      expect(Array.from(session.pending.values())[0].toolName).toBe('Write')
+    })
+
+    it('still prompts for non-edit tools (Bash) in acceptEdits mode', () => {
+      const session = makeFakeSession({ permissionMode: 'acceptEdits' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      canUseTool('Bash', { command: 'ls' }, {
+        toolUseID: 'tu-1',
+        signal: new AbortController().signal,
+        title: 'Run bash',
+        displayName: 'Bash',
+        description: '',
+        suggestions: [],
+      })
+      expect(session.pending.size).toBe(1)
+      expect(Array.from(session.pending.values())[0].toolName).toBe('Bash')
+    })
+
+    it('auto-approves whitelisted filesystem Bash commands in acceptEdits mode', async () => {
+      const session = makeFakeSession({ permissionMode: 'acceptEdits' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const result = await canUseTool('Bash', { command: 'mkdir -p src/new' }, {
+        toolUseID: 'tu-1',
+        signal: new AbortController().signal,
+        title: 'Run bash',
+        displayName: 'Bash',
+        description: '',
+        suggestions: [],
+      })
+      expect(result).toEqual({
+        behavior: 'allow',
+        updatedInput: { command: 'mkdir -p src/new' },
+        toolUseID: 'tu-1',
+      })
+      expect(session.pending.size).toBe(0)
+    })
+
+    it('still prompts for dangerous Bash (absolute path / shell features) in acceptEdits mode', () => {
+      const session = makeFakeSession({ permissionMode: 'acceptEdits' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      // Absolute path — must NOT be auto-approved.
+      canUseTool('Bash', { command: 'rm -rf /etc/passwd' }, {
+        toolUseID: 'tu-1',
+        signal: new AbortController().signal,
+        title: 'Run bash', displayName: 'Bash', description: '', suggestions: [],
+      })
+      // Shell chaining — must NOT be auto-approved.
+      canUseTool('Bash', { command: 'mkdir ok && curl evil' }, {
+        toolUseID: 'tu-2',
+        signal: new AbortController().signal,
+        title: 'Run bash', displayName: 'Bash', description: '', suggestions: [],
+      })
+      expect(session.pending.size).toBe(2)
+    })
+
+    it('still raises a plan review for ExitPlanMode in acceptEdits mode', () => {
+      const session = makeFakeSession({ permissionMode: 'acceptEdits' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      canUseTool('ExitPlanMode', { plan: 'do the thing' }, {
+        toolUseID: 'tu-1',
+        signal: new AbortController().signal,
+        title: 'Plan',
+        displayName: 'ExitPlanMode',
+        description: '',
+        suggestions: [],
+      })
+      expect(session.pending.size).toBe(1)
+      expect(Array.from(session.pending.values())[0].toolName).toBe('ExitPlanMode')
+    })
+
+    // ─── dontAsk mode ──────────────────────────────────────────────
+    const ctx = (toolUseID = 'tu-1') => ({
+      toolUseID,
+      signal: new AbortController().signal,
+      title: '', displayName: '', description: '', suggestions: [],
+    })
+
+    it('dontAsk auto-allows read-only built-in tools', async () => {
+      const session = makeFakeSession({ permissionMode: 'dontAsk' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const result = await canUseTool('Read', { file_path: 'a.txt' }, ctx())
+      expect(result).toMatchObject({ behavior: 'allow' })
+      expect(session.pending.size).toBe(0)
+    })
+
+    it('dontAsk auto-allows read-only Bash commands', async () => {
+      const session = makeFakeSession({ permissionMode: 'dontAsk' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const result = await canUseTool('Bash', { command: 'git status' }, ctx())
+      expect(result).toMatchObject({ behavior: 'allow' })
+      expect(session.pending.size).toBe(0)
+    })
+
+    it('dontAsk auto-DENIES edits without prompting', async () => {
+      const session = makeFakeSession({ permissionMode: 'dontAsk' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const result = await canUseTool('Write', { file_path: 'a', content: 'x' }, ctx())
+      expect(result).toMatchObject({ behavior: 'deny', interrupt: false })
+      // No prompt was raised — it's an immediate deny, not a pending request.
+      expect(session.pending.size).toBe(0)
+    })
+
+    it('dontAsk auto-DENIES write Bash commands without prompting', async () => {
+      const session = makeFakeSession({ permissionMode: 'dontAsk' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const result = await canUseTool('Bash', { command: 'rm x' }, ctx())
+      expect(result).toMatchObject({ behavior: 'deny', interrupt: false })
+      expect(session.pending.size).toBe(0)
+    })
+
+    it('dontAsk still raises a plan review for ExitPlanMode (ordering preserved)', () => {
+      const session = makeFakeSession({ permissionMode: 'dontAsk' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      canUseTool('ExitPlanMode', { plan: 'p' }, ctx())
+      expect(session.pending.size).toBe(1)
+      expect(Array.from(session.pending.values())[0].toolName).toBe('ExitPlanMode')
     })
 
     it('creates a pending permission for tool calls in default mode', () => {

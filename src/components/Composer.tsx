@@ -2,7 +2,7 @@
 //
 // Pure UI — all side-effecting bits (upload, send, interrupt, history
 // persistence) are passed in. The keyboard handling is deliberately
-// terminal-ish: Enter sends, Shift+Enter newlines, Ctrl/Cmd+P/N walks
+// terminal-ish: Enter sends, Shift+Enter / Ctrl+Enter newlines, Ctrl/Cmd+P/N walks
 // history, bare ↑/↓ walks history only at the text edge so multi-line
 // drafts stay editable.
 
@@ -15,7 +15,7 @@ import { useToast } from '../hooks/useToast'
 import type { PastedImage, SlashCommand } from '../types'
 import { CommandPicker } from './CommandPicker'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
-import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings } from './icons/ToolIcons'
+import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconArrowUp, IconSquare, IconLoader } from './icons/ToolIcons'
 
 interface Props {
   input: string
@@ -420,7 +420,7 @@ export const Composer = memo(function Composer({
           placeholder={
             dragOver
               ? 'Drop files to attach…'
-              : 'Send a message (Enter = send, Shift+Enter = newline, ↑/↓ history)'
+              : 'Send a message (Enter = send, Shift/Ctrl+Enter = newline, ↑/↓ history)'
           }
           value={input}
           onContextMenu={handleTextareaContextMenu}
@@ -483,6 +483,28 @@ export const Composer = memo(function Composer({
               }
               // All other keys (letters, backspace, etc.) fall through to
               // onChange which will re-filter or close the picker.
+            }
+            // Ctrl/Cmd+Enter inserts a newline (same as Shift+Enter). The
+            // browser doesn't do this for us, so splice '\n' in at the caret.
+            if (
+              e.key === 'Enter' &&
+              (e.ctrlKey || e.metaKey) &&
+              !e.nativeEvent.isComposing
+            ) {
+              e.preventDefault()
+              const el = textareaRef.current
+              if (el) {
+                const start = el.selectionStart
+                const end = el.selectionEnd
+                const next = input.slice(0, start) + '\n' + input.slice(end)
+                setInput(next)
+                if (history.isBrowsing()) history.reset()
+                const caret = start + 1
+                requestAnimationFrame(() => {
+                  el.setSelectionRange(caret, caret)
+                })
+              }
+              return
             }
             // Skip Enter while an IME composition is active — CJK input
             // methods fire Enter to confirm a candidate, and we'd otherwise
@@ -558,26 +580,45 @@ export const Composer = memo(function Composer({
       </div>
       <div className="chat-composer-actions">
         <button
-          className="btn"
+          className="btn btn-icon"
           type="button"
           onClick={openFilePicker}
           disabled={disabled || uploading || !canAttach}
           title={canAttach ? 'Attach files' : 'Attach disabled: session has no cwd'}
           aria-label="Attach files"
         >
-          <IconPaperclip size={16} />
+          <IconPaperclip size={18} />
         </button>
-        <button className="btn btn-primary" onClick={onSend} disabled={!canSend}>
-          {sending ? 'Sending…' : 'Send'}
-        </button>
-        <button
-          className="btn btn-danger"
-          onClick={onInterrupt}
-          disabled={disabled || !canInterrupt}
-          title={canInterrupt ? 'Interrupt the current turn' : 'Nothing to interrupt'}
-        >
-          Interrupt
-        </button>
+        {/* Send / Interrupt share one slot — they're mutually exclusive
+            states (idle = Send, mid-turn = Interrupt). While a turn is
+            running we show ONLY Interrupt; queuing another message is still
+            possible via Enter in the textarea (queue-bar handles the rest). */}
+        {canInterrupt ? (
+          <button
+            className="btn btn-danger btn-icon"
+            type="button"
+            onClick={onInterrupt}
+            title="Interrupt the current turn"
+            aria-label="Interrupt the current turn"
+          >
+            <IconSquare size={16} className="composer-action-icon" />
+          </button>
+        ) : (
+          <button
+            className="btn btn-primary btn-icon"
+            type="button"
+            onClick={onSend}
+            disabled={!canSend}
+            title="Send message (Enter)"
+            aria-label="Send message"
+          >
+            {sending ? (
+              <IconLoader size={18} className="composer-send-spinner" />
+            ) : (
+              <IconArrowUp size={18} className="composer-action-icon" />
+            )}
+          </button>
+        )}
       </div>
       <input
         ref={fileInputRef}

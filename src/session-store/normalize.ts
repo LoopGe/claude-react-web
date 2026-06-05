@@ -27,7 +27,7 @@ export function shouldHideByDefault(msg: SdkMessage): boolean {
  *  anchor and the reducer's front-trim boundary alignment. */
 export function isDiskStableMsg(msg: SdkMessage): boolean {
   if (msg.type === 'assistant' || msg.type === 'system') return true
-  if (msg.type === 'user' && (msg as Record<string, unknown>).parent_tool_use_id != null) return true
+  if (msg.type === 'user' && msg.parent_tool_use_id != null) return true
   return false
 }
 
@@ -57,7 +57,7 @@ const PERSISTED_SYSTEM_SUBTYPES = new Set(['error', 'compact_boundary', 'api_ret
  *  real turn ends with a main-thread assistant frame, so a boundary always
  *  exists within the recent tail. */
 export function isTrimBoundary(msg: SdkMessage): boolean {
-  if (msg.type === 'assistant' && (msg as Record<string, unknown>).parent_tool_use_id == null) return true
+  if (msg.type === 'assistant' && msg.parent_tool_use_id == null) return true
   if (msg.type === 'system' && PERSISTED_SYSTEM_SUBTYPES.has(msg.subtype as string)) return true
   return false
 }
@@ -103,7 +103,7 @@ export function toTranscriptItem(msg: SdkMessage, prev: TranscriptItem | undefin
  *  also returns undefined: we have no server-side queue signal to show. */
 function deriveDeliveryStatus(msg: SdkMessage): 'queued' | 'consumed' | undefined {
   if (msg.type !== 'user') return undefined
-  if ((msg as { parent_tool_use_id?: string | null }).parent_tool_use_id != null) return undefined
+  if (msg.parent_tool_use_id != null) return undefined
   if (typeof msg.consumedAt === 'number') return 'consumed'
   // Only call it "queued" once the server has acknowledged it (receivedAt).
   // Without that, an optimistic placeholder would flash a "queued" badge
@@ -129,7 +129,7 @@ function deriveDeliveryStatus(msg: SdkMessage): 'queued' | 'consumed' | undefine
  *  contiguous leading-prompt run the caller scans. */
 export function topLevelUserPromptSignature(msg: SdkMessage): string | null {
   if (msg.type !== 'user') return null
-  if ((msg as { parent_tool_use_id?: string | null }).parent_tool_use_id != null) return null
+  if (msg.parent_tool_use_id != null) return null
   // Empty string (image-only prompt with no text) is a valid signature: the
   // on-disk copy of the same prompt also extracts to '', so they still match.
   return extractMessagePlainText(msg) ?? ''

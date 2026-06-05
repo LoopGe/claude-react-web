@@ -39,6 +39,7 @@ import { sessionStoreRegistry } from './session-store/registry'
 // SetupPage is also lazy: only first-time / unconfigured users hit it,
 // and it pulls in ~1150 lines of UI that returning users never see.
 const CommandPalette = lazy(() => import('./components/CommandPalette').then((m) => ({ default: m.CommandPalette })))
+const InputHistoryPanel = lazy(() => import('./components/InputHistoryPanel').then((m) => ({ default: m.InputHistoryPanel })))
 const ResumeSessionDialog = lazy(() => import('./components/session-list/ResumeSessionDialog').then((m) => ({ default: m.ResumeSessionDialog })))
 const ShortcutHelp = lazy(() => import('./components/ShortcutHelp').then((m) => ({ default: m.ShortcutHelp })))
 const GlobalSettingsModal = lazy(() => import('./components/GlobalSettingsModal').then((m) => ({ default: m.GlobalSettingsModal })))
@@ -118,6 +119,7 @@ export function App() {
   const [resumeTargetPanelId, setResumeTargetPanelId] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
+  const [historyPanelOpen, setHistoryPanelOpen] = useState(false)
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false)
   // Operational errors and one-shot notifications go through the global
   // toast hub (mounted in main.tsx). Use `toast.error(...)` for anything
@@ -269,6 +271,7 @@ export function App() {
   const maxOpenRef = useRef(maxOpen)
   const paletteOpenRef = useRef(paletteOpen)
   const helpOpenRef = useRef(helpOpen)
+  const historyPanelOpenRef = useRef(historyPanelOpen)
   const settingsOpenForRef = useRef(settingsOpenFor)
   const gitPanelOpenForRef = useRef(gitPanelOpenFor)
   const handleSelectRef = useRef<(id: string) => void>(() => {})
@@ -285,6 +288,13 @@ export function App() {
   const registerRecap = useCallback((sessionId: string, fn: () => void) => {
     recapFnsRef.current.set(sessionId, fn)
   }, [])
+  // Per-session input-injection callbacks registered by <Chat> components.
+  // The Mod+Shift+H input-history panel uses this to drop a selected past
+  // message into the focused session's composer.
+  const injectInputFnsRef = useRef<Map<string, (text: string) => void>>(new Map())
+  const registerInjectInput = useCallback((sessionId: string, fn: (text: string) => void) => {
+    injectInputFnsRef.current.set(sessionId, fn)
+  }, [])
   // Keep refs in sync with the latest state values. Assigned directly
   // in the render body (before return) so callbacks that capture these
   // refs always read the current values — no useEffect needed.
@@ -296,6 +306,7 @@ export function App() {
   maxOpenRef.current = maxOpen
   paletteOpenRef.current = paletteOpen
   helpOpenRef.current = helpOpen
+  historyPanelOpenRef.current = historyPanelOpen
   settingsOpenForRef.current = settingsOpenFor
   gitPanelOpenForRef.current = gitPanelOpenFor
   newSessionDialogOpenRef.current = newSessionDialogOpen
@@ -475,8 +486,8 @@ export function App() {
           break
         }
         case 'global-permission-request': {
-          // Questions get a dedicated wording — "Claude is asking a
-          // question" reads better than "Claude wants to use AskUserQuestion".
+          // Questions get dedicated wording in the notification ("is asking a
+          // question" rather than "needs permission" / "Approve or deny").
           const r = frame.request
           const label =
             r.kind === 'question'
@@ -484,7 +495,7 @@ export function App() {
               : (('displayName' in r && r.displayName) ||
                   ('toolName' in r && r.toolName) ||
                   'a tool')
-          maybePermissionNotify(frame.sessionId, label as string)
+          maybePermissionNotify(frame.sessionId, label as string, r.kind)
           break
         }
         default:
@@ -1077,6 +1088,12 @@ export function App() {
           description: 'Command palette',
         },
         {
+          combo: 'mod+shift+h',
+          handler: () => setHistoryPanelOpen((v) => !v),
+          allowInInput: true,
+          description: 'Browse input history',
+        },
+        {
           combo: 'mod+?',
           handler: () => setHelpOpen((v) => !v),
           allowInInput: true,
@@ -1120,6 +1137,7 @@ export function App() {
             // introduced overlay and tends to be what the user wants to
             // close when they press Esc with both possible.
             if (paletteOpenRef.current) setPaletteOpen(false)
+            else if (historyPanelOpenRef.current) setHistoryPanelOpen(false)
             else if (helpOpenRef.current) setHelpOpen(false)
             else if (resumeDialogOpenRef.current) { setResumeDialogOpen(false); setResumeTargetPanelId(null) }
             else if (newSessionDialogOpenRef.current) setNewSessionDialogOpen(false)
@@ -1692,6 +1710,7 @@ export function App() {
                     onSwap={swapPanels}
                     onRegisterInterrupt={registerInterrupt}
                     onRegisterRecap={registerRecap}
+                    onRegisterInjectInput={registerInjectInput}
                     onAcceptSidebarDrop={handleAcceptSidebarDrop}
                     onRequestResumeForPanel={requestResumeForPanel}
                     onOpenSettingsTab={openSettingsTab}
@@ -1740,6 +1759,17 @@ export function App() {
               openSession(id, s?.lastTurnAt)
             }
             setPaletteOpen(false)
+          }}
+        />
+      </Suspense>
+
+      <Suspense fallback={null}>
+        <InputHistoryPanel
+          open={historyPanelOpen}
+          onClose={() => setHistoryPanelOpen(false)}
+          onSelect={(text) => {
+            const fid = focusedIdRef.current
+            if (fid) injectInputFnsRef.current.get(fid)?.(text)
           }}
         />
       </Suspense>

@@ -34,7 +34,7 @@ export type WsMessage = shared.WsMessage<unknown>
 export type WsPermissionRequest = shared.WsPermissionRequest<PermissionRequest>
 export type WsPermissionResolved = shared.WsPermissionResolved<shared.PermissionDecision>
 export type WsSessionRecapUpdate = shared.WsSessionRecapUpdate<SessionRecap>
-export type { WsContextUsage, WsGitStatusChanged, WsMessageConsumed, WsPong, WsError, PermissionDecision } from '../shared/ws-protocol.js'
+export type { WsContextUsage, WsGitStatusChanged, WsMessageConsumed, WsSessionCleared, WsPong, WsError, PermissionDecision } from '../shared/ws-protocol.js'
 
 export type WsServerFrame = shared.WsServerFrame<
   SessionInfo,

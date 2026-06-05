@@ -10,6 +10,24 @@ Each chat session holds its own stateful `Query` (the SDK's streaming async gene
 
 ## Quick start
 
+Install globally from npm and run:
+
+```bash
+npm i -g claude-react-web
+claude-react-web
+```
+
+Or run it without installing via `npx`:
+
+```bash
+npx claude-react-web
+```
+
+Either way launches the server on `http://127.0.0.1:3456` and opens your browser.
+
+<details>
+<summary>Run from source instead</summary>
+
 ```bash
 git clone https://github.com/LoopGe/claude-react-web.git
 cd claude-react-web
@@ -18,7 +36,7 @@ npm run build
 npm run start
 ```
 
-This launches the server on `http://127.0.0.1:3456` and opens your browser.
+</details>
 
 On first run a starter `~/.claude-react-web/config.json` is scaffolded. Set your Anthropic credentials there before sending messages — the server forwards them to the Claude SDK subprocess:
 

@@ -93,6 +93,57 @@ describe('SessionStore hydration', () => {
   })
 })
 
+describe('SessionStore.clearPersisted', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    localStorage.clear()
+  })
+
+  function pushUser(store: SessionStore, uuid: string) {
+    store.dispatch({
+      type: 'MESSAGE',
+      message: { type: 'user', uuid, message: { role: 'user', content: 'hi' } } as unknown as SdkMessage,
+    })
+  }
+
+  it('wipes in-memory state and removes the localStorage key', () => {
+    const id = 'clear-test-1'
+    const store = new SessionStore(id)
+    pushUser(store, 'u1')
+    // Flush the debounced save so a key exists on disk.
+    vi.runAllTimers()
+    expect(localStorage.getItem(STORAGE_PREFIX + id)).not.toBeNull()
+
+    store.clearPersisted()
+    expect(store.getSnapshot().items).toEqual([])
+    expect(localStorage.getItem(STORAGE_PREFIX + id)).toBeNull()
+  })
+
+  it('does NOT let a pending debounced save resurrect the key', () => {
+    // Regression: reset() schedules a debounced save; if clearPersisted
+    // only removed the key without cancelling that timer, the timer would
+    // later rewrite the key with the empty state. clearPersisted must
+    // cancel it so the cache stays gone past the debounce window.
+    const id = 'clear-test-2'
+    const store = new SessionStore(id)
+    pushUser(store, 'u1')
+    vi.runAllTimers()
+    expect(localStorage.getItem(STORAGE_PREFIX + id)).not.toBeNull()
+
+    store.clearPersisted()
+    expect(localStorage.getItem(STORAGE_PREFIX + id)).toBeNull()
+
+    // Advance well past SAVE_DEBOUNCE_MS (2s) / SAVE_MAX_DEFER_MS (10s).
+    vi.advanceTimersByTime(15_000)
+    vi.runAllTimers()
+    expect(localStorage.getItem(STORAGE_PREFIX + id)).toBeNull()
+  })
+})
+
 // ── Storage quota management (pruneStorageCache / persistToStorage) ──────────
 //
 // These mirror the constants in store.ts (not exported — real code never

@@ -13,8 +13,13 @@ import { api } from './useApi'
 import type { PermissionRequest, PermissionResolved } from '../types'
 
 export type PermissionDecision =
-  | { behavior: 'allow'; persistForSession: boolean }
+  // `planTargetMode` only applies when approving a plan proposal (ExitPlanMode):
+  // the execution mode the session switches to after the plan is approved.
+  | { behavior: 'allow'; persistForSession: boolean; planTargetMode?: PlanTargetMode }
   | { behavior: 'deny'; message?: string }
+
+/** Execution modes a session can switch into when a plan is approved. */
+export type PlanTargetMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'auto'
 
 export type QuestionAnswer = string | string[] | null
 

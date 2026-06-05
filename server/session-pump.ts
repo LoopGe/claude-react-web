@@ -15,7 +15,44 @@ import { pushBounded, stampReceivedAt } from './history-utils.js'
 import { mutatingToolUseId, scheduleGitBroadcast } from './git-broadcast.js'
 import { createLogger } from './log.js'
 
+/** Extract `parent_tool_use_id` from an SDK message defensively.
+ *  Returns the value for user/assistant messages; undefined for types
+ *  that don't carry the field. Server-side SDKMessage is a discriminated
+ *  union, so the cast is necessary — the field is only guaranteed on
+ *  SDKUserMessage / SDKAssistantMessage variants. */
+export function getParentToolUseId(msg: SDKMessage): string | null | undefined {
+  return (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id
+}
+
 const log = createLogger('pump')
+
+/** Window after a `/clear` send during which we accept the SDK's next
+ *  `init` message as the "context reset confirmed" signal. Generous
+ *  because the CLI may be mid-turn when /clear is queued; long enough to
+ *  cover a slow turn drain, short enough that a much later spawn/resume
+ *  init can never be mis-attributed to this clear. Failure mode if the
+ *  init somehow arrives after the window: we simply don't clear (safe). */
+const CLEAR_SIGNAL_WINDOW_MS = 60_000
+
+/** Decide what to do with a `/clear` marker when a message arrives.
+ *  Pure so it can be unit-tested without driving the whole pump.
+ *   - 'none'   : no pending clear (or marker absent) — ignore.
+ *   - 'expire' : marker is stale (past the window) — drop it, no clear.
+ *   - 'clear'  : this is the post-/clear `init` within the window —
+ *                truncate history + broadcast session-cleared.
+ *  @param pendingClearSince  Session.pendingClearSince (undefined = none).
+ *  @param now                Current epoch ms.
+ *  @param msg                The just-received SDK message. */
+export function clearSignalAction(
+  pendingClearSince: number | undefined,
+  now: number,
+  msg: SDKMessage,
+): 'none' | 'expire' | 'clear' {
+  if (pendingClearSince == null) return 'none'
+  if (now - pendingClearSince > CLEAR_SIGNAL_WINDOW_MS) return 'expire'
+  if (msg.type === 'system' && (msg as { subtype?: string }).subtype === 'init') return 'clear'
+  return 'none'
+}
 
 /** True when an SDK `user` message carries at least one `tool_result`
  *  content block. Used to distinguish a genuine top-level user-input echo
@@ -65,6 +102,11 @@ export interface PumpDeps {
    *  runs Edit/Write/NotebookEdit/Bash. Optional so test fixtures that
    *  don't exercise tool-use behaviour can omit it. */
   broadcaster?: SessionBroadcaster
+  /** Push a `session-cleared` signal to the session's subscribers. Called
+   *  when a `/clear`-triggered `init` message confirms the context reset
+   *  (after the pump truncates the history ring). Optional so test
+   *  fixtures that don't exercise /clear can omit it. */
+  broadcastSessionCleared?: (id: string) => void
 }
 
 /**
@@ -153,7 +195,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // carry NO tool_result block.
         if (
           msg.type === 'user' &&
-          (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id == null &&
+          getParentToolUseId(msg) == null &&
           !userMessageHasToolResult(msg)
         ) {
           debugLog(`[session ${session.id}] dropping echoed top-level user message uuid=${(msg as { uuid?: string }).uuid}`)
@@ -206,6 +248,36 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           try { sub.push(msg) } catch { /* subscriber dead — don't break broadcast to others */ }
         }
         msgCount++
+        // /clear confirmation: when the user sent `/clear`, the SDK resets
+        // its context and emits a fresh `system`/`init` message. That init —
+        // arriving within CLEAR_SIGNAL_WINDOW_MS of the send — is our signal
+        // that the backend is actually clear. We then truncate the history
+        // ring to start at this init (dropping the pre-clear transcript so
+        // reconnect/second-panel replay stays empty) and broadcast
+        // `session-cleared` so live clients reset their transcript store.
+        // The window guard ensures a normal spawn/resume init (no pending
+        // clear) never triggers this; an expired marker is simply dropped.
+        if (session.pendingClearSince != null) {
+          const action = clearSignalAction(session.pendingClearSince, Date.now(), msg)
+          if (action === 'expire') {
+            session.pendingClearSince = undefined
+          } else if (action === 'clear') {
+            // Diagnostic: confirm which frame we treated as the clear signal.
+            // (See plan — the exact post-/clear frame can't be verified
+            // offline since the CLI binary spawns at runtime.)
+            debugLog(
+              `[session ${session.id}] /clear confirmed by init message ` +
+              `uuid=${(msg as { uuid?: string }).uuid}; truncating history ring`,
+            )
+            const idx = session.history.lastIndexOf(msg)
+            session.history = idx >= 0 ? session.history.slice(idx) : []
+            session.pendingClearSince = undefined
+            deps.broadcastSessionCleared?.(session.id)
+            try { deps.persist(session) } catch (err) {
+              log.warn(`[session ${session.id}] persist failed after /clear: ${err}`)
+            }
+          }
+        }
         // Derive a context-usage snapshot directly from the result's own
         // `usage` + `modelUsage` payload — no IPC. The result message is
         // the SDK's authoritative tally for the API call that just landed,
@@ -290,6 +362,11 @@ async function cleanupPump(session: Session, deps: PumpDeps): Promise<void> {
     // state. Overwriting here would stamp terminated=true, which
     // prevents the user from resuming the session later. Skip.
     if (!deps.isLive(session.id)) return
+
+    // Drop any unconsumed /clear marker before we possibly auto-resume, so
+    // the resumed pump's own `init` message can't be mistaken for a clear
+    // confirmation.
+    session.pendingClearSince = undefined
 
     // When the Query exits cleanly (no error), try auto-resume first.
     // This keeps the session alive transparently — the CLI subprocess

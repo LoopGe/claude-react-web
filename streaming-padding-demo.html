@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>StreamingFooter padding 修复对比</title>
+<style>
+  /* ---- 主题变量（取自项目 dark 主题的近似值）---- */
+  :root {
+    --bg: #0f1419;
+    --bg-elev: #1a2029;
+    --bg-elev-2: #242a35;
+    --border: #2a313c;
+    --accent: #7aa2f7;
+    --fg: #c8d3e0;
+    --fg-muted: #7a8597;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+    padding: 32px;
+  }
+
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--fg-muted); font-size: 13px; margin: 0 0 24px; }
+
+  .toolbar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+  }
+  button {
+    background: var(--bg-elev-2);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 7px 14px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button.active { border-color: var(--accent); color: var(--accent); }
+  button:hover { border-color: var(--accent); }
+
+  .compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 28px;
+  }
+  @media (max-width: 880px) { .compare { grid-template-columns: 1fr; } }
+
+  .col-label {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .tag {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 99px;
+  }
+  .tag-bad { background: rgba(247,118,142,0.15); color: #f7768e; }
+  .tag-good { background: rgba(158,206,106,0.15); color: #9ece6a; }
+
+  /* ===================== 共用气泡样式（对应 .msg / .streaming-msg） ===================== */
+  .msg {
+    position: relative;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;            /* ← .msg 默认内边距 */
+    background: var(--bg-elev);
+    width: 100%;
+    max-width: 900px;
+  }
+  .streaming-msg {
+    border: 2px solid var(--accent);
+    border-radius: 8px;
+    border-bottom-left-radius: 3px;
+    background: var(--bg-elev);
+    box-shadow: 0 0 12px 1px rgba(122,162,247,0.25);
+  }
+  .streaming-plain {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 20vh;
+    overflow-y: auto;
+  }
+  .streaming-cursor {
+    display: inline-block;
+    width: 2px;
+    height: 1.1em;
+    background: var(--accent);
+    vertical-align: text-bottom;
+    margin-left: 1px;
+    animation: blink 1s step-end infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* 滚动条样式，方便看清滚动区边界 */
+  .streaming-plain::-webkit-scrollbar { width: 8px; }
+  .streaming-plain::-webkit-scrollbar-thumb {
+    background: var(--border); border-radius: 4px;
+  }
+
+  /* ===================== BEFORE：当前问题版（padding 在外层 .msg） ===================== */
+  /* 内层滚动容器没有内边距 → 文字贴边裁切 */
+
+  /* ===================== AFTER：修复版 ===================== */
+  .fix .streaming-msg {
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+  .fix .streaming-plain {
+    padding-top: 10px;
+    padding-bottom: 10px;
+    scroll-padding-bottom: 10px;
+  }
+
+  /* 一条用于参考的边缘指示线（仅演示用，标出滚动视口的上下边界） */
+  .edge-hint {
+    font-size: 11px;
+    color: var(--fg-muted);
+    margin-top: 8px;
+  }
+</style>
+</head>
+<body>
+  <h1>StreamingFooter — padding 裁切问题修复对比</h1>
+  <p class="sub">左：当前版本（padding 在外层 <code>.msg</code>，滚动区内文字贴边被切）；右：修复版（padding 移入滚动容器 <code>.streaming-plain</code>）。两边都已滚到底部、模拟流式钉底状态。</p>
+
+  <div class="toolbar">
+    <span style="color:var(--fg-muted);font-size:13px;">文本量：</span>
+    <button id="btn-long" class="active">长文本（触发内部滚动）</button>
+    <button id="btn-short">短文本（不滚动）</button>
+    <button id="btn-replay" style="margin-left:auto;">▶ 重新播放流式</button>
+  </div>
+
+  <div class="compare">
+    <!-- BEFORE -->
+    <div class="before">
+      <div class="col-label"><span class="tag tag-bad">BEFORE</span> 当前：文字贴上下边缘裁切</div>
+      <div class="msg streaming-msg">
+        <div class="streaming-plain" id="plain-before"></div>
+      </div>
+      <div class="edge-hint">↑ 注意第一行齐着上边框、最后一行+光标齐着下边框，无缓冲。</div>
+    </div>
+
+    <!-- AFTER -->
+    <div class="after fix">
+      <div class="col-label"><span class="tag tag-good">AFTER</span> 修复：滚动区内有 10px 上下缓冲</div>
+      <div class="msg streaming-msg">
+        <div class="streaming-plain" id="plain-after"></div>
+      </div>
+      <div class="edge-hint">↑ 文字与上下边框之间有内边距，钉底时最后一行不再被切。</div>
+    </div>
+  </div>
+
+<script>
+  const LONG = `好的——plan 模式恰恰是最特殊的一个，它和 acceptEdits/bypass 根本不是一类东西。
+
+acceptEdits/bypass 本质都是对单个工具调用 allow/deny —— 这正好是 canUseTool 能做的事。
+
+但 plan 模式的核心是"让模型只研究不动手、最后提交计划"。这不是"挡住某次编辑"那么简单：
+- canUseTool 只能 deny 一次编辑 → 模型看到拒绝，会困惑地重试或乱试，不会优雅地转成"我来规划"。
+- 真正的 plan 模式是 SDK/CLI 在模型层面注入只读引导 + 拦截编辑 + 引导走 ExitPlanMode。
+
+实测也印证了：plan 转发给 SDK 后，模型的 Write 被 SDK 在到达 canUseTool 之前就拦下，模型自动改走 ExitPlanMode。这种"引导"只有 SDK 原生 plan 能给。
+
+所以结论的方向是：plan 必须转发给 SDK，不能在 broker 里手写。这也是它和 acceptEdits/bypass 的关键区别。
+
+但有一个我担心的致命交互——必须先查。真实 Claude Code 里，用户批准计划 → 退出 plan 模式 → 切到执行模式，然后才开始干活。`;
+
+  const SHORT = `好的——这是一段较短的流式文本，不会超过 20vh 的高度上限，因此不会触发内部滚动。\n你可以看到此时上下 padding 的差异并不影响裁切（因为没有滚动），但修复版的间距更舒展。`;
+
+  const before = document.getElementById('plain-before');
+  const after = document.getElementById('plain-after');
+
+  let current = LONG;
+  let timer = null;
+
+  function pin(el) {
+    // 模拟 StreamingFooter 的钉底逻辑
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function setInstant(text) {
+    before.textContent = text;
+    after.textContent = text;
+    addCursor(before);
+    addCursor(after);
+    pin(before);
+    pin(after);
+  }
+
+  function addCursor(el) {
+    const c = document.createElement('span');
+    c.className = 'streaming-cursor';
+    el.appendChild(c);
+  }
+
+  function clearCursor(el) {
+    const c = el.querySelector('.streaming-cursor');
+    if (c) c.remove();
+  }
+
+  function playStream(text) {
+    if (timer) clearInterval(timer);
+    before.textContent = '';
+    after.textContent = '';
+    addCursor(before);
+    addCursor(after);
+    let i = 0;
+    timer = setInterval(() => {
+      i += Math.max(1, Math.round(text.length / 120)); // ~120 步
+      const chunk = text.slice(0, i);
+      clearCursor(before); clearCursor(after);
+      before.textContent = chunk;
+      after.textContent = chunk;
+      addCursor(before); addCursor(after);
+      pin(before); pin(after);
+      if (i >= text.length) clearInterval(timer);
+    }, 60);
+  }
+
+  document.getElementById('btn-long').onclick = (e) => {
+    setActive(e.target); current = LONG; playStream(LONG);
+  };
+  document.getElementById('btn-short').onclick = (e) => {
+    setActive(e.target); current = SHORT; playStream(SHORT);
+  };
+  document.getElementById('btn-replay').onclick = () => playStream(current);
+
+  function setActive(btn) {
+    document.getElementById('btn-long').classList.remove('active');
+    document.getElementById('btn-short').classList.remove('active');
+    btn.classList.add('active');
+  }
+
+  // 初始：直接展示钉底的长文本静态对比
+  setInstant(LONG);
+</script>
+</body>
+</html>

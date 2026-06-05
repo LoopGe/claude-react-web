@@ -33,6 +33,7 @@ import { SubagentOverlay } from './SubagentOverlay'
 import { SubagentProvider } from '../hooks/useSubagentContext'
 import { ReopenQuestionProvider } from '../hooks/useReopenQuestion'
 import { TodoChecklist } from './TodoChecklist'
+import { MonitorBar } from './MonitorBar'
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { useSessionRecap } from '../hooks/useSessionRecap'
 import { MessageSearch } from './MessageSearch'
@@ -48,7 +49,7 @@ import { LOCAL_COMMANDS, matchLocalCommand } from '../local-commands'
 import type { SettingsTabName } from '../local-commands'
 
 
-const INPUT_HISTORY_KEY = 'claude-react-web:input-history'
+export const INPUT_HISTORY_KEY = 'claude-react-web:input-history'
 const DRAFT_KEY_PREFIX = 'claude-react-web:draft:'
 
 /** Read a session's saved draft from sessionStorage. Non-throwing. */
@@ -112,6 +113,10 @@ interface Props {
   /** Called once on mount so the parent can store a reference to this
    *  panel's recap.refresh() function. Enables the Alt+R shortcut in App. */
   onRegisterRecap?: (sessionId: string, fn: () => void) => void
+  /** Called on mount so the parent can store a reference to this panel's
+   *  composer input-injection function. Enables the Mod+Shift+H input-history
+   *  panel to drop a selected past message into the focused composer. */
+  onRegisterInjectInput?: (sessionId: string, fn: (text: string) => void) => void
   /** Portal target element in ChatPanel's header — set via callback ref.
    *  When non-null, Chat portals its toolbar buttons here so they appear
    *  in the panel header row instead of occupying a separate line. */
@@ -127,7 +132,7 @@ export const Chat = memo(function Chat({
   session, showSystemEvents,
   settingsOpen, onCloseSettings,
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
-  onSessionUpdate, onRequestResumeForPanel, onOpenSettingsTab, settingsTabRequest, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, headerButtonsRef,
+  onSessionUpdate, onRequestResumeForPanel, onOpenSettingsTab, settingsTabRequest, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, onRegisterInjectInput, headerButtonsRef,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet,
 }: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
@@ -377,6 +382,17 @@ export const Chat = memo(function Chat({
 
   // ── In-chat search ──────────────────────────────────────────
   const [searchOpen, setSearchOpen] = useState(false)
+  // Seed for the search input, captured from the current selection at open time.
+  const [searchSeed, setSearchSeed] = useState('')
+  // Open search, pre-filling the input with the user's current selection
+  // (single-line, trimmed) so they can search the highlighted text directly.
+  const openSearch = useCallback(() => {
+    const sel = window.getSelection()?.toString() ?? ''
+    // Ignore multi-line / oversized selections — those aren't useful as a query.
+    const seed = sel.trim()
+    setSearchSeed(seed && !seed.includes('\n') && seed.length <= 200 ? seed : '')
+    setSearchOpen(true)
+  }, [])
   const [exportMenuPos, setExportMenuPos] = useState<{ x: number; y: number } | null>(null)
   // Export-success feedback now goes through the global toast hub.
   const toast = useToast()
@@ -423,12 +439,12 @@ export const Chat = memo(function Chat({
         const target = e.target as HTMLElement
         if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') return
         e.preventDefault()
-        setSearchOpen(true)
+        openSearch()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [focused])
+  }, [focused, openSearch])
 
   const handleSearchNavigate = useCallback(
     (index: number) => {
@@ -630,6 +646,16 @@ export const Chat = memo(function Chat({
     onRegisterRecap?.(session.id, recap.refresh)
   }, [session.id, recap.refresh, onRegisterRecap])
 
+  // Expose a composer input-injection callback so the Mod+Shift+H input-history
+  // panel can drop a selected past message into this panel's composer. setInput
+  // also write-throughs to the per-session draft, so the recalled text persists.
+  useEffect(() => {
+    onRegisterInjectInput?.(session.id, (text: string) => {
+      setInput(text)
+      history.reset()
+    })
+  }, [session.id, setInput, history, onRegisterInjectInput])
+
   // Note: we used to poll /sessions/:id 500ms after every SDK message to
   // keep the header badges fresh. That added O(messages × sessions) HTTP
   // requests on top of the WebSocket streams, and with three panels open it was
@@ -648,7 +674,7 @@ export const Chat = memo(function Chat({
         <>
           <button
             className="chat-panel-header-btn"
-            onClick={(e) => { e.stopPropagation(); setSearchOpen(true) }}
+            onClick={(e) => { e.stopPropagation(); openSearch() }}
             onMouseDown={(e) => e.stopPropagation()}
             title="Search messages (Ctrl+F)"
             aria-label="Search messages"
@@ -709,6 +735,7 @@ export const Chat = memo(function Chat({
         totalResults={searchMatches.length}
         onQueryChange={setSearchQuery}
         activeIndex={searchActiveIdx}
+        initialQuery={searchSeed}
       />
 
       <SubagentProvider value={subagentCtxValue}>
@@ -735,6 +762,7 @@ export const Chat = memo(function Chat({
       </SubagentProvider>
 
       <TodoChecklist messages={stream.messages} working={session.working} />
+      <MonitorBar messages={stream.messages} />
 
       {/* Always-mounted live region — see `.error-bar-empty` in styles.css.
           Keeping the region in the DOM (just visually hidden when empty)
@@ -843,6 +871,7 @@ export const Chat = memo(function Chat({
               request={pendingHead}
               onDecide={(d) => void permissions.decide(pendingHead.id, d)}
               planContentMap={stream.planContent}
+              currentMode={session.permissionMode}
             />
           )
         }

@@ -185,6 +185,13 @@ interface TaskState {
   status: 'pending' | 'in_progress' | 'completed' | 'cancelled'
   activeForm?: string
   lastTouched: number
+  /** True while this entry is keyed by a synthesized `pending:<toolUseId>`
+   *  key because its TaskCreate result (which carries the real `#N`) hasn't
+   *  been seen. Cleared once the real id is learned. A provisional entry that
+   *  goes stale is an orphan — its result will never arrive (history was
+   *  truncated) and the real task it stood for has been folded under its
+   *  numeric id elsewhere — so cleanup drops it. */
+  provisional?: boolean
 }
 
 /** The task tools' four mutating verbs. `Task`/`TaskOutput`/`TaskStop` are
@@ -261,6 +268,7 @@ function extractFromTaskEvents(messages: SdkMessage[]): Todo[] | null {
           status: normalizeStatus(str(input?.status)) ?? 'pending',
           activeForm: str(input?.activeForm),
           lastTouched: idx,
+          provisional: id == null,
         })
         continue
       }
@@ -314,6 +322,14 @@ function extractFromTaskEvents(messages: SdkMessage[]): Todo[] | null {
     const resolved = t.status === 'completed' || t.status === 'cancelled'
     const stale = t.lastTouched < lastUserInputIdx
     if (resolved && stale) continue
+    // Drop stale provisional orphans: a TaskCreate whose result never arrived
+    // (history truncated), so we never learned its `#N`. The real task it
+    // represented was folded under its numeric id by a later TaskUpdate; this
+    // leftover would otherwise hang forever as a phantom `pending` item (it's
+    // never `completed`, so the rule above can't reach it) — the "stuck 0/1
+    // checklist" bug. Keep provisional entries that are still current, so an
+    // in-flight create whose result hasn't landed yet still shows this turn.
+    if (t.provisional && stale) continue
     out.push({
       content: t.subject,
       // 'cancelled' maps to 'completed' for the 3-state UI (it's resolved —

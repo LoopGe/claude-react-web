@@ -232,6 +232,8 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
         | { iterable: AsyncIterable<unknown>; snapshot: unknown; unsubscribe: () => void }
         | null = null
       let recapIter: AsyncIterator<unknown> | null = null
+      let clearedSub: { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null = null
+      let clearedIter: AsyncIterator<unknown> | null = null
       try {
         const msg = sm.subscribe(sessionId)
         msgSub = msg
@@ -245,6 +247,8 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
         msgStatIter = msgStatSub?.iterable[Symbol.asyncIterator]() ?? null
         recapSub = sm.subscribeSessionRecap(sessionId)
         recapIter = recapSub?.iterable[Symbol.asyncIterator]() ?? null
+        clearedSub = sm.subscribeSessionCleared(sessionId)
+        clearedIter = clearedSub?.iterable[Symbol.asyncIterator]() ?? null
 
         // 1) Send replay. If the client supplied `sinceUuid`, try to
         //    send only messages after that point (incremental sync).
@@ -311,22 +315,13 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
         //    pattern as the SSE route — each iterator tagged so the loop
         //    knows which frame to emit.
         let stopped = false
+        const _iterCleanup: AsyncIterator<unknown>[] = [ctxIter, gitIter, msgStatIter, recapIter, clearedIter]
+          .filter((it): it is AsyncIterator<unknown> => !!it)
         const stop = () => {
           if (stopped) return
           stopped = true
-          msgSub?.unsubscribe()
-          permSub?.unsubscribe()
-          ctxSub?.unsubscribe()
-          gitSub?.unsubscribe()
-          msgStatSub?.unsubscribe()
-          recapSub?.unsubscribe()
-          // Return the context-usage / git-status / msg-status / recap
-          // iterators so their pushable waiters resolve with done:true
-          // instead of hanging the driver.
-          if (ctxIter) void ctxIter.return?.()
-          if (gitIter) void gitIter.return?.()
-          if (msgStatIter) void msgStatIter.return?.()
-          if (recapIter) void recapIter.return?.()
+          for (const sub of [msgSub, permSub, ctxSub, gitSub, msgStatSub, recapSub, clearedSub]) sub?.unsubscribe()
+          for (const iter of _iterCleanup) void iter.return?.()
         }
 
         void (async () => {
@@ -340,111 +335,73 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
             | { kind: 'git'; result: IteratorResult<unknown> }
             | { kind: 'msgstat'; result: IteratorResult<unknown> }
             | { kind: 'recap'; result: IteratorResult<unknown> }
+            | { kind: 'cleared'; result: IteratorResult<unknown> }
 
-          const tag = async (
-            kind: Tagged['kind'],
-            it: AsyncIterator<unknown>,
-          ): Promise<Tagged> => ({ kind, result: await it.next() })
+          const tag = async (kind: Tagged['kind'], it: AsyncIterator<unknown>): Promise<Tagged> =>
+            ({ kind, result: await it.next() })
 
-          let msgP: Promise<Tagged> | null = tag('msg', msgIter)
-          let permP: Promise<Tagged> | null = tag('perm', permIter)
-          let ctxP: Promise<Tagged> | null = ctxIter ? tag('ctx', ctxIter) : null
-          let gitP: Promise<Tagged> | null = gitIter ? tag('git', gitIter) : null
-          let msgStatP: Promise<Tagged> | null = msgStatIter ? tag('msgstat', msgStatIter) : null
-          let recapP: Promise<Tagged> | null = recapIter ? tag('recap', recapIter) : null
+          interface Channel {
+            kind: Tagged['kind']
+            iter: AsyncIterator<unknown>
+            promise: Promise<Tagged> | null
+          }
+
+          const channels: Channel[] = [
+            { kind: 'msg', iter: msgIter, promise: tag('msg', msgIter) },
+            { kind: 'perm', iter: permIter, promise: tag('perm', permIter) },
+            ...(ctxIter ? [{ kind: 'ctx' as const, iter: ctxIter, promise: tag('ctx', ctxIter) }] : []),
+            ...(gitIter ? [{ kind: 'git' as const, iter: gitIter, promise: tag('git', gitIter) }] : []),
+            ...(msgStatIter ? [{ kind: 'msgstat' as const, iter: msgStatIter, promise: tag('msgstat', msgStatIter) }] : []),
+            ...(recapIter ? [{ kind: 'recap' as const, iter: recapIter, promise: tag('recap', recapIter) }] : []),
+            ...(clearedIter ? [{ kind: 'cleared' as const, iter: clearedIter, promise: tag('cleared', clearedIter) }] : []),
+          ]
 
           try {
-            while (!stopped && (msgP || permP || ctxP || gitP || msgStatP || recapP)) {
-              const pending: Promise<Tagged>[] = []
-              if (msgP) pending.push(msgP)
-              if (permP) pending.push(permP)
-              if (ctxP) pending.push(ctxP)
-              if (gitP) pending.push(gitP)
-              if (msgStatP) pending.push(msgStatP)
-              if (recapP) pending.push(recapP)
-              const winner = await Promise.race(pending)
-              if (winner.kind === 'msg') {
-                if (winner.result.done) msgP = null
-                else {
-                  queue.enqueue({
-                    kind: 'message',
-                    sessionId,
-                    message: winner.result.value as never,
-                  })
-                  msgP = tag('msg', msgIter)
-                }
-              } else if (winner.kind === 'perm') {
-                if (winner.result.done) permP = null
-                else {
+            while (!stopped && channels.some((c) => c.promise)) {
+              const winner = await Promise.race(
+                channels.filter((c): c is Channel & { promise: Promise<Tagged> } => c.promise != null)
+                  .map((c) => c.promise),
+              )
+              const ch = channels.find((c) => c.kind === winner.kind)!
+              if (winner.result.done) { ch.promise = null; continue }
+              // Dispatch per channel kind. Each branch maps the channel's value
+              // to one or more WS frames; the retag happens once at the bottom.
+              switch (winner.kind) {
+                case 'msg':
+                  queue.enqueue({ kind: 'message', sessionId, message: winner.result.value as never })
+                  break
+                case 'perm': {
                   const ev = winner.result.value as
                     | { kind: 'request'; payload: never }
                     | { kind: 'resolved'; pid: string; decision: never }
-                  if (ev.kind === 'request') {
+                  if (ev.kind === 'request')
                     queue.enqueue({ kind: 'permission-request', sessionId, payload: ev.payload })
-                  } else {
-                    queue.enqueue({
-                      kind: 'permission-resolved',
-                      sessionId,
-                      id: ev.pid,
-                      decision: ev.decision,
-                    })
-                  }
-                  permP = tag('perm', permIter)
+                  else
+                    queue.enqueue({ kind: 'permission-resolved', sessionId, id: ev.pid, decision: ev.decision })
+                  break
                 }
-              } else if (winner.kind === 'ctx') {
-                if (winner.result.done) ctxP = null
-                else {
-                  queue.enqueue({
-                    kind: 'context-usage',
-                    sessionId,
-                    usage: winner.result.value,
-                  })
-                  ctxP = tag('ctx', ctxIter!)
-                }
-              } else if (winner.kind === 'git') {
-                // git-status-changed signal — value carries { kind, sessionId }
-                // but we re-emit the canonical frame with our own sessionId
-                // (defence in depth: the broadcaster is trusted, but no harm
-                // verifying we send the right session).
-                if (winner.result.done) gitP = null
-                else {
+                case 'ctx':
+                  queue.enqueue({ kind: 'context-usage', sessionId, usage: winner.result.value })
+                  break
+                case 'git':
                   queue.enqueue({ kind: 'git-status-changed', sessionId })
-                  gitP = tag('git', gitIter!)
-                }
-              } else if (winner.kind === 'msgstat') {
-                // message-consumed signal — value carries { kind, sessionId,
-                // uuid, consumedAt }. Re-emit with our own sessionId for
-                // symmetry with the other channels; forward uuid/consumedAt
-                // verbatim so the client can flip the matching bubble.
-                if (winner.result.done) msgStatP = null
-                else {
+                  break
+                case 'msgstat': {
                   const v = winner.result.value as { uuid?: string; consumedAt?: number }
-                  if (typeof v.uuid === 'string' && typeof v.consumedAt === 'number') {
-                    queue.enqueue({
-                      kind: 'message-consumed',
-                      sessionId,
-                      uuid: v.uuid,
-                      consumedAt: v.consumedAt,
-                    })
-                  }
-                  msgStatP = tag('msgstat', msgStatIter!)
+                  if (typeof v.uuid === 'string' && typeof v.consumedAt === 'number')
+                    queue.enqueue({ kind: 'message-consumed', sessionId, uuid: v.uuid, consumedAt: v.consumedAt })
+                  break
                 }
-              } else {
-                // session-recap-update — payload from broadcastSessionRecap
-                // is { kind, sessionId, recap? }. Re-emit with our own
-                // sessionId for symmetry with the other channels (the
-                // broadcaster is trusted, but cross-checking costs nothing).
-                if (winner.result.done) recapP = null
-                else {
+                case 'recap': {
                   const v = winner.result.value as { recap?: unknown }
-                  queue.enqueue({
-                    kind: 'session-recap-update',
-                    sessionId,
-                    recap: v.recap as never,
-                  })
-                  recapP = tag('recap', recapIter!)
+                  queue.enqueue({ kind: 'session-recap-update', sessionId, recap: v.recap as never })
+                  break
                 }
+                case 'cleared':
+                  queue.enqueue({ kind: 'session-cleared', sessionId })
+                  break
               }
+              ch.promise = tag(ch.kind, ch.iter)
             }
           } catch (err) {
             if (!closed && !stopped) {

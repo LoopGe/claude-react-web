@@ -23,7 +23,7 @@ import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, Transcrip
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { getBlocks, getEnterPlanToolUseIds } from '../session-store/normalize'
 import { useSubagentContext } from '../hooks/useSubagentContext'
-import { IconCopy, IconArrowDown, IconZap, IconSparkles, IconAlertTriangle, IconMessageCircle, IconDollar, IconClock, IconWrench, IconUser, IconExternalLink } from './icons/ToolIcons'
+import { IconArrowDown, IconZap, IconSparkles, IconAlertTriangle, IconMessageCircle, IconDollar, IconClock, IconWrench, IconUser, IconExternalLink } from './icons/ToolIcons'
 import { countMatches, extractPlainText } from '../search'
 
 /** Re-export type for backward compatibility (types don't affect Fast Refresh). */
@@ -221,7 +221,7 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
     const out: RenderableItem[] = []
     for (let i = 0; i < items.length; i++) {
       const item = items[i]
-      const parent = (item.msg as Record<string, unknown>).parent_tool_use_id
+      const parent = item.msg.parent_tool_use_id
       // Filter by parent_tool_use_id:
       //  - main transcript (filter == null): show only root messages
       //    — subagent children are surfaced via SubagentCard placeholders
@@ -415,7 +415,7 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
   const trackedCount = useMemo(() => {
     let count = 0
     for (const item of items) {
-      const parent = (item.msg as Record<string, unknown>).parent_tool_use_id
+      const parent = item.msg.parent_tool_use_id
       if (parentToolUseIdFilter == null) {
         if (parent != null) continue
       } else {
@@ -707,6 +707,17 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
             startReached={startReached}
             itemContent={itemContent}
             components={virtuosoComponents}
+            // Render ~600px of items BELOW the fold before they become the
+            // bottom anchor. Without this, a new tail item (e.g. a tool card
+            // arriving mid-stream) mounts at an estimated height, so totalHeight
+            // is wrong for one frame; the ResizeObserver then corrects it and
+            // `followOutput` re-pins to bottom, yanking scrollTop by
+            // (actual − estimated). That one-frame scroll correction shifts the
+            // streaming footer bubble as a block — the "整体跳动" jitter. By
+            // pre-rendering tail items offscreen they're already measured before
+            // becoming the anchor, so no post-insert scroll correction happens.
+            // Rows are memoized, so the extra offscreen DOM is cheap.
+            increaseViewportBy={{ top: 0, bottom: 600 }}
             alignToBottom
           />
         )}
@@ -810,21 +821,6 @@ const StreamingFooter = memo(function StreamingFooter({ content }: { content: st
     </div>
   )
 })
-
-async function copyToClipboard(text: string): Promise<void> {
-  try {
-    await navigator.clipboard?.writeText(text)
-  } catch {
-    // Fallback: select from a hidden textarea (Safari / HTTP).
-    const ta = document.createElement('textarea')
-    ta.value = text
-    ta.style.cssText = 'position:fixed;opacity:0'
-    document.body.appendChild(ta)
-    ta.select()
-    document.execCommand('copy')
-    document.body.removeChild(ta)
-  }
-}
 
 const MessageView = memo(function MessageView({
   msg,
@@ -949,7 +945,7 @@ const MessageView = memo(function MessageView({
     //      forwarded only when `forwardSubagentText: true`.
     // Real user input always has neither: parent_tool_use_id is null
     // AND content is either a string or an array of text blocks.
-    const isSubagent = (msg as Record<string, unknown>).parent_tool_use_id != null
+    const isSubagent = msg.parent_tool_use_id != null
     // `allToolBlocks` decides "is this a synthetic tool-result frame" (so
     // it never falls through to the real-user path even when every result
     // was merged into a card); `toolBlocks` (orphans only) decides what to
@@ -994,14 +990,6 @@ const MessageView = memo(function MessageView({
     const showQueued = !sending && deliveryStatus === 'queued'
     return (
       <div className={`msg user${sending ? ' msg-sending' : ''}${showQueued ? ' msg-queued' : ''}`}>
-        <button
-          className="msg-copy-btn"
-          onClick={() => void copyToClipboard(userContent ?? '')}
-          title="Copy message"
-          aria-label="Copy message"
-        >
-          <IconCopy size={12} />
-        </button>
         <div className="msg-header">
           <span><IconUser size={12} /> you</span>
           <MessageTimestamp ms={msg.receivedAt} />
@@ -1047,11 +1035,7 @@ const MessageView = memo(function MessageView({
     // them distinctly so users can tell which model produced which
     // output — without this, a subagent's `tool_use: Bash` would look
     // identical to the main model running Bash.
-    const isSubagent = (msg as Record<string, unknown>).parent_tool_use_id != null
-    const assistantText = blocks
-      .filter((b) => b.type === 'text' && typeof b.text === 'string')
-      .map((b) => b.text as string)
-      .join('\n\n')
+    const isSubagent = msg.parent_tool_use_id != null
     // Suppress assistant messages with no visible content. The SDK can emit
     // a standalone assistant message whose only block is an empty
     // (signature-only) thinking block — BlockView renders it as null, but
@@ -1061,16 +1045,6 @@ const MessageView = memo(function MessageView({
     if (willRenderEmpty(msg, isCompactSummary, isResultConsumed)) return null
     return (
       <div className={`msg assistant${isSubagent ? ' subagent' : ''}`}>
-        {assistantText && (
-          <button
-            className="msg-copy-btn"
-            onClick={() => void copyToClipboard(assistantText)}
-            title="Copy message"
-            aria-label="Copy message"
-          >
-            <IconCopy size={12} />
-          </button>
-        )}
         <div className="msg-header">
           <span>{isSubagent ? 'subagent' : 'assistant'}</span>
           <MessageTimestamp ms={msg.receivedAt} />
@@ -1601,7 +1575,7 @@ function willRenderEmpty(
     const toolBlocks = allToolBlocks.filter(
       (b) => typeof b.tool_use_id !== 'string' || !isResultConsumed(b.tool_use_id),
     )
-    const isSubagent = (msg as Record<string, unknown>).parent_tool_use_id != null
+    const isSubagent = msg.parent_tool_use_id != null
     const isToolResult = allToolBlocks.length > 0
     const hasOrphanResults = toolBlocks.length > 0
     if (isToolResult || isSubagent) {

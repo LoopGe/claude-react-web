@@ -99,14 +99,22 @@ describe('Composer', () => {
     expect(onSend).toHaveBeenCalledOnce()
   })
 
-  it('shows interrupt button when sending', () => {
+  it('shows the Interrupt button (not Send) while a turn is running', () => {
     const { container } = render(
-      <Composer {...defaultProps} sending />,
+      <Composer {...defaultProps} canInterrupt />,
     )
-    const btn = container.querySelector('.btn-interrupt, .interrupt-btn, button')
-    // The interrupt button should be visible when sending=true.
-    // Exact class depends on implementation; check that some button exists.
-    expect(btn).not.toBeNull()
+    // Send and Interrupt share one slot; canInterrupt (= session.working)
+    // swaps Send out for Interrupt.
+    expect(container.querySelector('[aria-label="Interrupt the current turn"]')).not.toBeNull()
+    expect(container.querySelector('[aria-label="Send message"]')).toBeNull()
+  })
+
+  it('shows the Send button (not Interrupt) when idle', () => {
+    const { container } = render(
+      <Composer {...defaultProps} canInterrupt={false} />,
+    )
+    expect(container.querySelector('[aria-label="Send message"]')).not.toBeNull()
+    expect(container.querySelector('[aria-label="Interrupt the current turn"]')).toBeNull()
   })
 
   it('shows session ended instead of textarea when terminated', () => {
