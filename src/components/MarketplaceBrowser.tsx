@@ -11,6 +11,7 @@
 // and avoids z-index ambiguity with the parent modal.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { IconTrash, IconX, IconCircleDot, IconCircle } from './icons/ToolIcons'
 import { api } from '../hooks/useApi'
 import { formatRelativeTime } from '../utils/format'
@@ -272,7 +273,11 @@ export function MarketplaceBrowser({ onClose, onInstalled }: Props) {
 
   // ─── Render ───────────────────────────────────────────────────
 
-  return (
+  // Portal to <body>: the parent .settings-overlay sets backdrop-filter,
+  // which makes it the containing block for position:fixed descendants.
+  // Without the portal this overlay's `inset:0` resolves against the narrow
+  // chat-panel column instead of the viewport, rendering it tiny.
+  return createPortal(
     <div className="marketplace-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
       <div className="marketplace-card">
         <div className="modal-header">
@@ -497,6 +502,7 @@ export function MarketplaceBrowser({ onClose, onInstalled }: Props) {
           })}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

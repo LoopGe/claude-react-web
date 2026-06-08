@@ -4,6 +4,7 @@
 // for env vars and headers, type-specific fields, client + server validation.
 
 import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { api } from '../hooks/useApi'
 import type { McpServerConfigMeta, McpServerInput } from '../types'
 import { IconX } from './icons/ToolIcons'
@@ -141,7 +142,11 @@ export function McpInstaller({ server, onSave, onClose }: Props) {
     }
   }
 
-  return (
+  // Portal to <body>: the parent .settings-overlay sets backdrop-filter,
+  // which makes it the containing block for position:fixed descendants —
+  // without the portal this modal's `inset:0` resolves against the narrow
+  // chat-panel column instead of the viewport, rendering it tiny.
+  return createPortal(
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" style={{ width: 'min(520px, 92vw)' }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
@@ -267,7 +272,8 @@ export function McpInstaller({ server, onSave, onClose }: Props) {
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 

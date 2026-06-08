@@ -18,9 +18,10 @@
   --accent: #7b8cde;
   --accent-strong: #5b6fc7;
   /* Foreground colour for text/icons placed on top of --accent (e.g. primary
-     CTA buttons). Always white because --accent stays saturated enough in
-     both themes for AA contrast — but lives behind a token so components
-     never reference a raw hex. */
+     CTA buttons). White by default, but useTheme overrides it at runtime via
+     onAccentFor() — switching to dark ink when the chosen accent is light
+     enough that white would be unreadable (e.g. a near-white custom accent).
+     Lives behind a token so components never reference a raw hex. */
   --on-accent: #ffffff;
   --danger: #f06363;
   --ok: #6cc88b;
@@ -497,6 +498,7 @@ button { cursor: pointer; }
 .btn-primary {
   background: var(--accent-strong);
   border-color: var(--accent);
+  color: var(--on-accent);
 }
 .btn-primary:hover:not(:disabled) { background: var(--accent); }
 .btn-danger {
@@ -662,6 +664,22 @@ button { cursor: pointer; }
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--fg-muted);
+}
+
+/* Appearance panel embeds the swatch grid inline (no .accent-popover
+   wrapper), so it would otherwise fall back to the toolbar's single-row
+   inline-flex layout — which overflows once "Recent" colours are saved.
+   Reuse the popover's wrapped grid so presets + custom + recents flow into
+   tidy rows instead of one crowded line. */
+.appearance-section .accent-picker {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+  padding: 0;
+}
+.appearance-section .accent-swatch {
+  width: 26px;
+  height: 26px;
 }
 
 .input, .textarea, .select {
@@ -885,7 +903,7 @@ body.resizing-col * {
 }
 .chat-panel-slot.focused {
   background: var(--accent);
-  color: var(--bg);
+  color: var(--on-accent);
 }
 
 /* Status dot — one of live/working/terminated/err/dormant. Colour and
@@ -2402,7 +2420,7 @@ body.resizing-col * {
 }
 .session-item-slot.focused {
   background: var(--accent);
-  color: var(--bg);
+  color: var(--on-accent);
 }
 /* Unread sessions nudge the title right to make room for the dot. */
 .session-item-unread {
@@ -2649,7 +2667,7 @@ body.resizing-col * {
   padding: 6px 12px;
   border-radius: 999px;
   background: var(--accent);
-  color: var(--bg);
+  color: var(--on-accent);
   border: none;
   font: inherit;
   font-weight: 600;
@@ -4271,8 +4289,13 @@ body.resizing-col * {
 /* Shortcut help overlay */
 .shortcut-table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 13px;
+}
+.shortcut-table td:last-child {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .shortcut-table th {
   text-align: left;
@@ -4290,10 +4313,11 @@ body.resizing-col * {
 }
 .shortcut-table td:first-child {
   width: 120px;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .shortcut-table kbd {
   display: inline-block;
+  max-width: 100%;
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -4302,6 +4326,8 @@ body.resizing-col * {
   font-size: 12px;
   line-height: 1.6;
   color: var(--fg);
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 /* Permission dialog */
@@ -6895,7 +6921,7 @@ mark.search-hl.search-hl-active {
   z-index: 10000;
   padding: 8px 14px;
   background: var(--accent);
-  color: var(--bg);
+  color: var(--on-accent);
   text-decoration: none;
   border-radius: 4px;
   font-weight: 600;

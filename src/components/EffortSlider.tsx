@@ -10,6 +10,7 @@
 // labels under the track let the user see and click the named stops.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { EffortLevel } from '../types'
 
 interface Props {
@@ -30,11 +31,24 @@ export function EffortSlider({ anchor, levels, current, disabled, onSelect, onCl
   const [pos, setPos] = useState<{ x: number; y: number }>(anchor)
 
   const maxIndex = Math.max(0, levels.length - 1)
-  // Controlled by `current`. The caller updates the session optimistically
-  // (see ChatPanel.commitEffortLevel) so this prop changes synchronously as
-  // the user drags — the thumb follows without local state, and a failed
-  // POST rolls the prop back, snapping the thumb to the prior level.
   const index = Math.max(0, levels.indexOf(current))
+
+  // Continuous (无级) drag: while the user is dragging, `dragVal` holds the
+  // raw float position so the thumb glides smoothly between stops. We do NOT
+  // commit on every move — only on release do we snap to the nearest level
+  // and call onSelect. When not dragging, `dragVal` is null and the thumb is
+  // controlled by `index` (the committed level, kept in sync optimistically
+  // by the caller). A failed POST rolls `current` back, snapping the thumb.
+  const [dragVal, setDragVal] = useState<number | null>(null)
+  const value = dragVal ?? index
+  // Holds the in-flight snap animation frame so a new drag (or unmount) can
+  // cancel it. The animation eases `dragVal` from the release position to the
+  // target stop, then clears `dragVal` so the thumb is controlled by `index`.
+  const snapRaf = useRef<number | null>(null)
+  // Nearest stop to the live position — drives the value label + active tick
+  // so the UI previews where a release would land.
+  const previewIndex = Math.min(maxIndex, Math.max(0, Math.round(value)))
+  const previewLevel = levels[previewIndex] ?? current
 
   // Measure after layout and nudge inward to stay in the viewport.
   useLayoutEffect(() => {
@@ -73,7 +87,45 @@ export function EffortSlider({ anchor, levels, current, disabled, onSelect, onCl
     if (level && level !== current) onSelect(level)
   }
 
-  return (
+  // Release handler: ease the float position from where the user let go to
+  // the nearest stop (a spring-like "snap" animation), then commit the level
+  // and drop back to controlled-by-`current` mode. Cancels any prior snap.
+  const commitDrag = () => {
+    if (snapRaf.current != null) cancelAnimationFrame(snapRaf.current)
+    setDragVal((from) => {
+      if (from == null) return null
+      const target = Math.min(maxIndex, Math.max(0, Math.round(from)))
+      if (Math.abs(from - target) < 0.001) {
+        selectIndex(target)
+        return null
+      }
+      const DURATION = 160 // ms
+      const start = performance.now()
+      // easeOutCubic — quick departure, gentle settle onto the stop.
+      const ease = (t: number) => 1 - Math.pow(1 - t, 3)
+      const step = (now: number) => {
+        const t = Math.min(1, (now - start) / DURATION)
+        const v = from + (target - from) * ease(t)
+        if (t >= 1) {
+          snapRaf.current = null
+          selectIndex(target)
+          setDragVal(null)
+        } else {
+          setDragVal(v)
+          snapRaf.current = requestAnimationFrame(step)
+        }
+      }
+      snapRaf.current = requestAnimationFrame(step)
+      return from
+    })
+  }
+
+  // Cancel any in-flight snap animation on unmount.
+  useEffect(() => () => {
+    if (snapRaf.current != null) cancelAnimationFrame(snapRaf.current)
+  }, [])
+
+  return createPortal(
     <div
       ref={ref}
       className="effort-slider"
@@ -81,12 +133,11 @@ export function EffortSlider({ anchor, levels, current, disabled, onSelect, onCl
       role="dialog"
       aria-label="Select effort level"
       onMouseDown={(e) => e.stopPropagation()}
-      // The popover renders inside the ChatPanel header, which is
-      // `draggable` (panel-swap handle). Dragging the slider thumb would
-      // otherwise start that native drag and move the whole panel. Cancel
-      // the drag here and stop it bubbling to the header. (dragstart is a
-      // separate event from mousedown, so the stopPropagation above can't
-      // cover it.)
+      // Rendered in a portal on document.body so the popover lives OUTSIDE
+      // the ChatPanel header's `draggable` subtree. Otherwise dragging the
+      // slider thumb starts the panel-swap native drag (a descendant of a
+      // draggable element inherits the drag), moving the whole panel.
+      // Keeping draggable=false here too as a belt-and-suspenders guard.
       draggable={false}
       onDragStart={(e) => {
         e.preventDefault()
@@ -95,34 +146,72 @@ export function EffortSlider({ anchor, levels, current, disabled, onSelect, onCl
     >
       <div className="effort-slider-head">
         <span className="effort-slider-title">Effort</span>
-        <span className="effort-slider-value">{current}</span>
+        <span className="effort-slider-value">{previewLevel}</span>
       </div>
       <input
         className="effort-slider-range"
         type="range"
         min={0}
         max={maxIndex}
-        step={1}
-        value={index}
+        // Fine step gives 无级 (continuous) glide between named stops; we
+        // snap to the nearest integer level only on release (commitDrag).
+        step={0.01}
+        value={value}
         disabled={disabled}
         aria-label="Effort level"
-        aria-valuetext={current}
-        onChange={(e) => selectIndex(Number(e.target.value))}
+        aria-valuetext={previewLevel}
+        onChange={(e) => {
+          // Grabbing the thumb mid-snap cancels the in-flight animation so
+          // the user's drag takes over cleanly.
+          if (snapRaf.current != null) {
+            cancelAnimationFrame(snapRaf.current)
+            snapRaf.current = null
+          }
+          setDragVal(Number(e.target.value))
+        }}
+        onPointerUp={commitDrag}
+        onPointerCancel={commitDrag}
+        onBlur={commitDrag}
+        // Arrow keys should step by whole levels (not 0.01), so intercept
+        // them: move from the current preview stop and commit immediately.
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') {
+            e.preventDefault()
+            setDragVal(null)
+            selectIndex(previewIndex - 1)
+          } else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
+            e.preventDefault()
+            setDragVal(null)
+            selectIndex(previewIndex + 1)
+          } else if (e.key === 'Home') {
+            e.preventDefault()
+            setDragVal(null)
+            selectIndex(0)
+          } else if (e.key === 'End') {
+            e.preventDefault()
+            setDragVal(null)
+            selectIndex(maxIndex)
+          }
+        }}
       />
       <div className="effort-slider-ticks" aria-hidden>
         {levels.map((l, i) => (
           <button
             key={l}
             type="button"
-            className={`effort-slider-tick${i === index ? ' active' : ''}`}
+            className={`effort-slider-tick${i === previewIndex ? ' active' : ''}`}
             disabled={disabled}
             tabIndex={-1}
-            onClick={() => selectIndex(i)}
+            onClick={() => {
+              setDragVal(null)
+              selectIndex(i)
+            }}
           >
             {l}
           </button>
         ))}
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

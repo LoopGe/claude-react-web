@@ -95,6 +95,12 @@ interface Props {
   hasOlder?: boolean
   /** True while a loadOlder() request is in flight (drives the top spinner). */
   loadingOlder?: boolean
+  /** Register a navigator that scrolls the transcript to the previous /
+   *  next real user message relative to the current viewport top. Wired up
+   *  the chain to the session right-click menu ("Scroll to previous/next
+   *  user message"). The callback identity is stable for the component's
+   *  lifetime, so the parent can register it once. */
+  onRegisterNavigate?: (fn: (dir: 'prev' | 'next') => void) => void
 }
 
 /** An item in the Virtuoso data array. Pre-computing isCompactSummary
@@ -153,7 +159,7 @@ const MAX_ENTER_BATCH = 4
 const ENTER_MAX_AGE_MS = 10_000
 const KNOWN_IDS_CAP = 4000
 
-export const MessageList = memo(function MessageList({ items, recap, showSystemEvents = false, replayReady = true, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false }: Props) {
+export const MessageList = memo(function MessageList({ items, recap, showSystemEvents = false, replayReady = true, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -600,6 +606,75 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
     setUnseenCount(0)
   }, [])
 
+  // --- Scroll to previous / next user message ----------------------------
+  // Data-array (0-based, Virtuoso `scrollToIndex` space) indices of every
+  // *real* user message — the same discriminator MessageView uses to pick
+  // the "msg user" bubble branch: a root frame (no parent_tool_use_id), not
+  // a compact-summary, carrying no tool_result block. Recomputed only when
+  // the rendered list changes.
+  const userMsgIndices = useMemo(() => {
+    const out: number[] = []
+    for (let i = 0; i < renderableItems.length; i++) {
+      const it = renderableItems[i]
+      const msg = it.msg
+      if (msg.type !== 'user') continue
+      if (it.isCompactSummary) continue
+      if (msg.parent_tool_use_id != null) continue
+      const hasToolResult = getBlocks(msg).some((b) => b.type === 'tool_result')
+      if (hasToolResult) continue
+      out.push(i)
+    }
+    return out
+  }, [renderableItems])
+  // Mirror in a ref so the (stable) navigate callback reads the latest list
+  // without being re-created — keeps its registered identity constant. Synced
+  // in an effect (not during render) to respect the refs-in-render rule.
+  const userMsgIndicesRef = useRef<number[]>(userMsgIndices)
+  useEffect(() => {
+    userMsgIndicesRef.current = userMsgIndices
+  }, [userMsgIndices])
+
+  // Top-most visible data index, tracked from Virtuoso's `rangeChanged`.
+  // rangeChanged reports indices in OFFSET space (dataIndex + firstItemIndex),
+  // so we subtract firstItemIndex to get back to the `scrollToIndex` space.
+  // Kept in a ref (read by the navigate callback, never rendered).
+  const topVisibleIdxRef = useRef(0)
+  const firstItemIndexValRef = useRef(firstItemIndex)
+  useEffect(() => {
+    firstItemIndexValRef.current = firstItemIndex
+  }, [firstItemIndex])
+  const handleRangeChanged = useCallback((range: { startIndex: number; endIndex: number }) => {
+    topVisibleIdxRef.current = range.startIndex - firstItemIndexValRef.current
+  }, [])
+
+  const navigate = useCallback((dir: 'prev' | 'next') => {
+    const indices = userMsgIndicesRef.current
+    if (indices.length === 0) return
+    const top = topVisibleIdxRef.current
+    let target: number | undefined
+    if (dir === 'prev') {
+      // Last user message strictly above the current viewport top.
+      for (let i = indices.length - 1; i >= 0; i--) {
+        if (indices[i] < top) { target = indices[i]; break }
+      }
+    } else {
+      // First user message strictly below the current viewport top.
+      for (let i = 0; i < indices.length; i++) {
+        if (indices[i] > top) { target = indices[i]; break }
+      }
+    }
+    if (target == null) return
+    // Disable follow so the programmatic scroll doesn't fight auto-follow
+    // (mirrors the search-result scroll path).
+    shouldFollowRef.current = false
+    virtuosoRef.current?.scrollToIndex({ index: target, behavior: 'smooth', align: 'start' })
+  }, [])
+
+  // Expose the navigator to the parent (Chat → App → session context menu).
+  useEffect(() => {
+    onRegisterNavigate?.(navigate)
+  }, [onRegisterNavigate, navigate])
+
   const scrollerRefCb = useCallback((ref: HTMLElement | Window | null) => {
     if (ref && ref instanceof HTMLElement) scrollerRef.current = ref
   }, [])
@@ -735,6 +810,7 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
             followOutput={followOutput}
             atBottomStateChange={atBottomStateChange}
             startReached={startReached}
+            rangeChanged={handleRangeChanged}
             itemContent={itemContent}
             components={virtuosoComponents}
             // Render ~600px of items BELOW the fold before they become the

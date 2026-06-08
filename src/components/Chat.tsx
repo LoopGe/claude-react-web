@@ -39,7 +39,7 @@ import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
 import { ContextMenu } from './ContextMenu'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
-import { IconSearch, IconClock, IconFileText, IconX, IconCopy, IconSettings } from './icons/ToolIcons'
+import { IconSearch, IconClock, IconFileText, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown } from './icons/ToolIcons'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
 import type { AgentInfo, SessionInfo, SlashCommand } from '../types'
@@ -667,6 +667,14 @@ export const Chat = memo(function Chat({
     })
   }, [session.id, setInput, history, onRegisterInjectInput])
 
+  // MessageList registers its prev/next-user-message navigator here so the
+  // chat-area right-click menu ("Scroll to previous/next user message") can
+  // drive it without prop-threading through the message list.
+  const scrollNavRef = useRef<((dir: 'prev' | 'next') => void) | null>(null)
+  const registerNavigate = useCallback((fn: (dir: 'prev' | 'next') => void) => {
+    scrollNavRef.current = fn
+  }, [])
+
   // Note: we used to poll /sessions/:id 500ms after every SDK message to
   // keep the header badges fresh. That added O(messages × sessions) HTTP
   // requests on top of the WebSocket streams, and with three panels open it was
@@ -703,6 +711,17 @@ export const Chat = memo(function Chat({
               label: 'Search messages',
               icon: <IconSearch size={14} />,
               onClick: () => openSearch(),
+            },
+            { label: '' },
+            {
+              label: 'Scroll to previous user message',
+              icon: <IconArrowUp size={14} />,
+              onClick: () => scrollNavRef.current?.('prev'),
+            },
+            {
+              label: 'Scroll to next user message',
+              icon: <IconArrowDown size={14} />,
+              onClick: () => scrollNavRef.current?.('next'),
             },
             { label: '' },
             {
@@ -785,6 +804,7 @@ export const Chat = memo(function Chat({
           loadOlder={stream.loadOlder}
           hasOlder={stream.hasOlder}
           loadingOlder={stream.loadingOlder}
+          onRegisterNavigate={registerNavigate}
         />
         </div>
         </ReopenQuestionProvider>

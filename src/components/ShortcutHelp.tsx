@@ -3,10 +3,12 @@
 // the `/help` slash command (with commands) or Shift+/ / the command palette
 // (shortcuts only).
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import type { Shortcut } from '../hooks/useKeyboardShortcuts'
 import type { SlashCommand } from '../types'
 import { formatCombo } from '../utils/format-combo'
+
+type Tab = 'commands' | 'shortcuts'
 
 interface Props {
   open: boolean
@@ -22,6 +24,14 @@ export function ShortcutHelp({ open, onClose, shortcuts, commands = [] }: Props)
   // intentionally hidden from the cheat sheet).
   const visible = shortcuts.filter((s) => s.description)
   const showCommands = commands.length > 0
+  // Default to the commands tab when commands are available (the `/help`
+  // entry point); otherwise only the shortcuts tab exists.
+  const [tab, setTab] = useState<Tab>('shortcuts')
+
+  useEffect(() => {
+    if (!open) return
+    setTab(showCommands ? 'commands' : 'shortcuts')
+  }, [open, showCommands])
 
   useEffect(() => {
     if (!open) return
@@ -44,12 +54,30 @@ export function ShortcutHelp({ open, onClose, shortcuts, commands = [] }: Props)
         if (e.target === e.currentTarget) onClose()
       }}
     >
-      <div className="modal" style={{ maxWidth: 440, padding: '16px 20px' }}>
-        <h3 style={{ marginTop: 0 }}>{showCommands ? 'Help' : 'Keyboard shortcuts'}</h3>
+      <div className="modal" style={{ maxWidth: 440 }}>
+        <div className="modal-header">
+          <h3>{showCommands ? 'Help' : 'Keyboard shortcuts'}</h3>
+        </div>
 
         {showCommands && (
-          <>
-            <h4 style={{ margin: '0 0 8px' }}>Slash commands</h4>
+          <div className="global-settings-tabs">
+            <button
+              className={`global-settings-tab${tab === 'commands' ? ' active' : ''}`}
+              onClick={() => setTab('commands')}
+            >
+              Slash commands
+            </button>
+            <button
+              className={`global-settings-tab${tab === 'shortcuts' ? ' active' : ''}`}
+              onClick={() => setTab('shortcuts')}
+            >
+              Keyboard shortcuts
+            </button>
+          </div>
+        )}
+
+        <div className="modal-section">
+          {showCommands && tab === 'commands' && (
             <table className="shortcut-table">
               <thead>
                 <tr>
@@ -66,27 +94,29 @@ export function ShortcutHelp({ open, onClose, shortcuts, commands = [] }: Props)
                 ))}
               </tbody>
             </table>
-            <h4 style={{ margin: '16px 0 8px' }}>Keyboard shortcuts</h4>
-          </>
-        )}
+          )}
 
-        <table className="shortcut-table">
-          <thead>
-            <tr>
-              <th>Shortcut</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {visible.map((s) => (
-              <tr key={s.combo}>
-                <td><kbd>{formatCombo(s.combo)}</kbd></td>
-                <td>{s.description}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <div style={{ textAlign: 'right', marginTop: 12 }}>
+          {(!showCommands || tab === 'shortcuts') && (
+            <table className="shortcut-table">
+              <thead>
+                <tr>
+                  <th>Shortcut</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map((s) => (
+                  <tr key={s.combo}>
+                    <td><kbd>{formatCombo(s.combo)}</kbd></td>
+                    <td>{s.description}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className="modal-footer" style={{ justifyContent: 'flex-end' }}>
           <button className="btn" onClick={onClose}>Close</button>
         </div>
       </div>

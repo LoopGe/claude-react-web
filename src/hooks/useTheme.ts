@@ -22,6 +22,7 @@ import {
   SESSION_COLORS_KEY,
   accentStrongFor,
   buildSessionAccentMap,
+  onAccentFor,
 } from '../theme'
 import type { CSSProperties } from 'react'
 import { applySkin, applyTheme, getStoredSkin, getStoredTheme, onSystemThemeChange, toggleTheme, type Skin, type Theme } from '../utils/theme'
@@ -117,6 +118,10 @@ export function useTheme(): UseThemeResult {
     const root = document.documentElement.style
     root.setProperty('--accent', accentColor)
     root.setProperty('--accent-strong', accentStrongFor(accentColor))
+    // Adapt the on-accent foreground to the chosen accent's luminance so
+    // text/icons sitting on an accent fill stay legible for any accent
+    // (e.g. a near-black accent picked under the light theme).
+    root.setProperty('--on-accent', onAccentFor(accentColor))
   }, [accentColor])
 
   // Pre-computed per-session accent CSS overrides. Stable references so

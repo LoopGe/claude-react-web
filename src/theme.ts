@@ -63,6 +63,41 @@ export function isPresetAccent(hex: string): boolean {
   return ACCENT_COLORS.some((c) => c.accent === hex)
 }
 
+/** Dark foreground used on top of *light* accents. A near-black that still
+ *  reads as "ink" rather than pure #000, matching the app's dark fg tone. */
+const ON_ACCENT_DARK = '#15171c'
+const ON_ACCENT_LIGHT = '#ffffff'
+
+/** Luminance above which we flip on-accent text from white to dark. The
+ *  curated presets top out at ~0.50 (Amber) and have always used white
+ *  text; we keep that by biasing toward white and only switching to dark
+ *  ink for genuinely *light* accents — where white would be unreadable
+ *  (e.g. a near-white custom accent). This fixes the legibility extremes
+ *  without recolouring every preset. The black-accent case is already
+ *  handled: on-accent stays white there (luminance ~0). */
+const ON_ACCENT_LIGHT_LUM_THRESHOLD = 0.55
+
+/** Pick a legible foreground (white or near-black) for text/icons placed on
+ *  top of a given accent background. Hardcoding white breaks once the user
+ *  dials in an extreme accent — a near-white accent leaves white text
+ *  invisible. We compute the accent's WCAG relative luminance and switch to
+ *  dark ink only when the accent is light enough that white would fail, so
+ *  any accent (preset or custom) stays readable in both themes. */
+export function onAccentFor(hex: string): string {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim())
+  if (!m) return ON_ACCENT_LIGHT
+  const int = parseInt(m[1], 16)
+  const channel = (c: number) => {
+    const s = c / 255
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
+  }
+  const r = channel((int >> 16) & 0xff)
+  const g = channel((int >> 8) & 0xff)
+  const b = channel(int & 0xff)
+  const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+  return lum > ON_ACCENT_LIGHT_LUM_THRESHOLD ? ON_ACCENT_DARK : ON_ACCENT_LIGHT
+}
+
 /** Build a `sessionId → CSSProperties` map for per-session accent overrides.
  *  Used by App.tsx (driving ChatPanel) and SessionList.tsx (driving
  *  SessionCard). Each style sets `--accent` and `--accent-strong` so a
@@ -74,7 +109,11 @@ export function buildSessionAccentMap(
   const map = new Map<string, CSSProperties>()
   if (!sessionColors) return map
   for (const [id, hex] of Object.entries(sessionColors)) {
-    map.set(id, { '--accent': hex, '--accent-strong': accentStrongFor(hex) } as CSSProperties)
+    map.set(id, {
+      '--accent': hex,
+      '--accent-strong': accentStrongFor(hex),
+      '--on-accent': onAccentFor(hex),
+    } as CSSProperties)
   }
   return map
 }
