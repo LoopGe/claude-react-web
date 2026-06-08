@@ -5,6 +5,7 @@ describe('matchLocalCommand', () => {
   it('matches an exact local command', () => {
     expect(matchLocalCommand('/resume')?.name).toBe('resume')
     expect(matchLocalCommand('/mcp')?.name).toBe('mcp')
+    expect(matchLocalCommand('/help')?.name).toBe('help')
   })
 
   it('/mcp run() opens the mcp settings tab for its panel', () => {
@@ -12,10 +13,26 @@ describe('matchLocalCommand', () => {
     let opened: { id: string; tab: string } | null = null
     cmd.run({
       sessionId: 'sess-1',
+      commands: [],
       requestResumeForPanel: () => {},
       openSettingsTab: (id, tab) => { opened = { id, tab } },
+      showHelp: () => {},
     })
     expect(opened).toEqual({ id: 'sess-1', tab: 'mcp' })
+  })
+
+  it('/help run() opens the help dialog with the panel commands', () => {
+    const cmd = matchLocalCommand('/help')!
+    const panelCommands = [{ name: 'help', description: 'Show help', argumentHint: '' }]
+    let shown: typeof panelCommands | null = null
+    cmd.run({
+      sessionId: 'sess-1',
+      commands: panelCommands,
+      requestResumeForPanel: () => {},
+      openSettingsTab: () => {},
+      showHelp: (cmds) => { shown = cmds },
+    })
+    expect(shown).toBe(panelCommands)
   })
 
   it('matches with surrounding whitespace', () => {

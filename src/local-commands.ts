@@ -11,6 +11,8 @@
 // and (if it needs a new capability) widen LocalCommandContext. The
 // interception/transport wiring in Chat/ChatPanel/App does not need to change.
 
+import type { SlashCommand } from './types'
+
 /** Capabilities a local command can invoke. Owned by App, threaded down to
  *  each Chat panel. Grows as new local commands need new actions. */
 /** Tabs of the session SettingsPanel a local command can deep-link to. Keep
@@ -20,11 +22,17 @@ export type SettingsTabName = 'general' | 'context' | 'plugins' | 'mcp'
 export interface LocalCommandContext {
   /** Session id of the panel the command was typed in. */
   sessionId: string
+  /** The merged slash-command list (local + SDK) for the panel the command
+   *  was typed in. Used by /help to populate the help dialog. */
+  commands: SlashCommand[]
   /** Open the resume picker so the chosen historical session REPLACES the
    *  given panel (not a new panel). `panelSessionId` is the slot to replace. */
   requestResumeForPanel: (panelSessionId: string) => void
   /** Open this panel's settings overlay and switch it to the given tab. */
   openSettingsTab: (panelSessionId: string, tab: SettingsTabName) => void
+  /** Open the in-app help dialog, listing the given slash commands plus the
+   *  global keyboard shortcuts. */
+  showHelp: (commands: SlashCommand[]) => void
   // Future: clearInput, fork, etc.
 }
 
@@ -46,6 +54,11 @@ export const LOCAL_COMMANDS: LocalCommand[] = [
     name: 'mcp',
     description: 'Open this session’s settings on the MCP servers tab',
     run: (ctx) => ctx.openSettingsTab(ctx.sessionId, 'mcp'),
+  },
+  {
+    name: 'help',
+    description: 'Show available slash commands and keyboard shortcuts',
+    run: (ctx) => ctx.showHelp(ctx.commands),
   },
 ]
 

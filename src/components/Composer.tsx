@@ -485,7 +485,7 @@ export const Composer = memo(function Composer({
               // onChange which will re-filter or close the picker.
             }
             // Ctrl/Cmd+Enter inserts a newline (same as Shift+Enter). The
-            // browser doesn't do this for us, so splice '\n' in at the caret.
+            // browser doesn't do this for us, so we insert '\n' at the caret.
             if (
               e.key === 'Enter' &&
               (e.ctrlKey || e.metaKey) &&
@@ -494,15 +494,28 @@ export const Composer = memo(function Composer({
               e.preventDefault()
               const el = textareaRef.current
               if (el) {
-                const start = el.selectionStart
-                const end = el.selectionEnd
-                const next = input.slice(0, start) + '\n' + input.slice(end)
-                setInput(next)
-                if (history.isBrowsing()) history.reset()
-                const caret = start + 1
-                requestAnimationFrame(() => {
-                  el.setSelectionRange(caret, caret)
-                })
+                // Prefer execCommand('insertText') so the newline goes in the
+                // same way Shift+Enter's native insert does — it keeps the
+                // browser's undo stack intact AND scrolls the caret into view.
+                // A manual splice (below) only moves the caret via
+                // setSelectionRange, which never scrolls, so on this fixed-
+                // height textarea the new line ends up hidden below the fold.
+                // execCommand fires a native input event, so onChange already
+                // runs setInput + history.reset() for us.
+                const inserted =
+                  el.ownerDocument?.execCommand?.('insertText', false, '\n')
+                if (!inserted) {
+                  // Fallback for engines without execCommand (e.g. jsdom).
+                  const start = el.selectionStart
+                  const end = el.selectionEnd
+                  const next = input.slice(0, start) + '\n' + input.slice(end)
+                  setInput(next)
+                  if (history.isBrowsing()) history.reset()
+                  const caret = start + 1
+                  requestAnimationFrame(() => {
+                    el.setSelectionRange(caret, caret)
+                  })
+                }
               }
               return
             }

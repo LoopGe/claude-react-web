@@ -109,6 +109,27 @@ export const SessionCard = memo(function SessionCard({
   const dormant = !s.running && !s.terminated
   const working = s.running && s.working
   const pendingCount = s.pendingPermissionCount ?? 0
+  // Single source of truth for the status chip — drives the dot colour,
+  // the short label, and the aria-label. Order matches the historical
+  // precedence (error → ended → resuming → working → live → dormant).
+  const status: 'err' | 'ended' | 'resuming' | 'working' | 'live' | 'dormant' =
+    s.error ? 'err' : s.terminated ? 'ended' : isResuming ? 'resuming' : working ? 'working' : s.running ? 'live' : 'dormant'
+  const statusText: Record<typeof status, string> = {
+    err: 'err',
+    ended: 'ended',
+    resuming: 'resuming…',
+    working: 'working',
+    live: 'live',
+    dormant: 'dormant',
+  }
+  const statusAria: Record<typeof status, string> = {
+    err: 'error',
+    ended: 'ended',
+    resuming: 'resuming',
+    working: 'working',
+    live: 'live',
+    dormant: 'dormant',
+  }
 
   return (
     <div
@@ -249,24 +270,16 @@ export const SessionCard = memo(function SessionCard({
           )}
         </strong>
         <span
-          className={`session-item-badge ${s.error ? 'err' : s.running ? 'running' : ''} ${working ? 'working' : ''}`}
+          className={`session-item-badge status-${status}`}
           title={s.error ?? (s.terminated && s.terminatedReason ? statusLabel(s) : '')}
-          aria-label={`Status: ${
-            s.error ? 'error' : s.terminated ? 'ended' : isResuming ? 'resuming' : working ? 'working' : s.running ? 'live' : 'dormant'
-          }`}
+          aria-label={`Status: ${statusAria[status]}`}
         >
-          {working && <span className="session-item-working-dot" aria-hidden />}
-          {s.error
-            ? 'err'
-            : s.terminated
-            ? 'ended'
-            : isResuming
-            ? <><span className="session-resuming-spinner" aria-hidden />resuming…</>
-            : working
-            ? 'working'
-            : s.running
-            ? 'live'
-            : 'dormant'}
+          {status === 'resuming' ? (
+            <span className="session-resuming-spinner" aria-hidden />
+          ) : (
+            <span className={`session-status-dot status-${status}`} aria-hidden />
+          )}
+          <span className="session-status-label">{statusText[status]}</span>
         </span>
       </div>
       {s.error && (

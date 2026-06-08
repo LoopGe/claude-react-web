@@ -5,8 +5,14 @@
 // The `data-theme` attribute is always set to 'dark' or 'light' — never 'system'.
 
 const THEME_KEY = 'claude-react-web:theme'
+const SKIN_KEY = 'claude-react-web:skin'
 
 export type Theme = 'dark' | 'light' | 'system'
+
+/** A "skin" is orthogonal to the light/dark mode: it changes the visual
+ *  *feel* (depth, glow, gradients) while inheriting the colour tokens of
+ *  whichever mode is active. 'default' is the original flat look. */
+export type Skin = 'default' | 'glow'
 
 export function getStoredTheme(): Theme {
   try {
@@ -15,6 +21,29 @@ export function getStoredTheme(): Theme {
   } catch { /* ignored */ }
   // Default to dark if no preference is stored.
   return 'dark'
+}
+
+export function getStoredSkin(): Skin {
+  try {
+    const v = window.localStorage.getItem(SKIN_KEY)
+    if (v === 'default' || v === 'glow') return v
+  } catch { /* ignored */ }
+  // Default skin keeps the original look for existing users.
+  return 'default'
+}
+
+/** Apply a skin by toggling the `data-skin` attribute on <html>. The
+ *  'default' skin removes the attribute entirely so the base :root /
+ *  [data-theme] rules apply untouched. */
+export function applySkin(skin: Skin): void {
+  if (skin === 'default') {
+    document.documentElement.removeAttribute('data-skin')
+  } else {
+    document.documentElement.setAttribute('data-skin', skin)
+  }
+  try {
+    window.localStorage.setItem(SKIN_KEY, skin)
+  } catch { /* ignored */ }
 }
 
 /** Resolve the OS-level colour scheme preference. */

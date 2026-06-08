@@ -7,6 +7,19 @@ import { safeJson } from './index.js'
 
 const VALID_IMG_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
 
+/** Validate the optional `enabledMcpServers` field shared by the create and
+ *  dynamic-MCP routes. Returns an error string if present-but-malformed, or
+ *  null if absent or a valid string[]. Guards against a string being passed
+ *  where an array is expected (mergeMcpServers would otherwise iterate it
+ *  character-by-character). */
+function validateEnabledMcpServers(value: unknown): string | null {
+  if (value == null) return null
+  if (!Array.isArray(value) || !value.every((s) => typeof s === 'string')) {
+    return 'enabledMcpServers must be an array of strings'
+  }
+  return null
+}
+
 export function buildSessionRouter(sm: SessionManager): Hono {
   const app = new Hono()
 
@@ -21,6 +34,8 @@ export function buildSessionRouter(sm: SessionManager): Hono {
       enabledMcpServers?: string[]
       mcpServers?: Record<string, unknown>
     }
+    const enabledErr = validateEnabledMcpServers(enabledMcpServers)
+    if (enabledErr) return c.json({ error: enabledErr }, 400)
     const mergedMcp = sm.mergeMcpServers(enabledMcpServers, mcpServers)
     if (mergedMcp) rest.mcpServers = mergedMcp
     const info = sm.create(rest as Options)
@@ -164,6 +179,18 @@ export function buildSessionRouter(sm: SessionManager): Hono {
     return c.json({ session: info })
   })
 
+  // Set reasoning effort level (low/medium/high/xhigh/max). Forwarded to the
+  // SDK via applyFlagSettings; unsupported levels are silently downgraded.
+  app.post('/sessions/:id/effort-level', async (c) => {
+    const body = await safeJson<{ level?: string }>(c.req)
+    const level = body.level
+    if (level !== 'low' && level !== 'medium' && level !== 'high' && level !== 'xhigh' && level !== 'max') {
+      return c.json({ error: 'level must be one of low, medium, high, xhigh, max' }, 400)
+    }
+    const info = await sm.setEffortLevel(c.req.param('id'), level)
+    return c.json({ session: info })
+  })
+
   // Context usage
   app.get('/sessions/:id/context-usage', async (c) => {
     const usage = await sm.contextUsage(c.req.param('id'))
@@ -186,6 +213,8 @@ export function buildSessionRouter(sm: SessionManager): Hono {
       displayName?: string
       description?: string
       supportsFastMode?: boolean
+      supportsEffort?: boolean
+      supportedEffortLevels?: ('low' | 'medium' | 'high' | 'xhigh' | 'max')[]
     }
     const raw = (await sm.supportedModels(c.req.param('id'))) as unknown as SdkModelInfo[]
     const models = raw
@@ -195,6 +224,8 @@ export function buildSessionRouter(sm: SessionManager): Hono {
         display_name: m.displayName,
         description: m.description,
         supports_fast_mode: m.supportsFastMode,
+        supports_effort: m.supportsEffort,
+        supported_effort_levels: m.supportedEffortLevels,
       }))
     return c.json({ models })
   })
@@ -245,13 +276,34 @@ export function buildSessionRouter(sm: SessionManager): Hono {
     return c.json({ session: info })
   })
 
-  // Add/remove MCP servers on a live session
+  // Add/remove MCP servers on a live session. Accepts the same two inputs
+  // as session creation: `enabledMcpServers` (names of global servers to
+  // resolve from the McpConfigStore) and/or `servers` (full inline configs,
+  // which win on name collision). They are merged via mergeMcpServers before
+  // being handed to the SDK's setMcpServers — so the dynamic path can
+  // reference global servers by name just like the create path.
+  //
+  // Note: setMcpServers has REPLACE semantics over the dynamically-added set,
+  // so the merged object must list every dynamic server that should remain
+  // connected. An explicit empty result (e.g. servers:{} with no enabled
+  // names) clears all dynamic servers.
   app.post('/sessions/:id/mcp/servers', async (c) => {
-    const body = await safeJson<{ servers?: Record<string, unknown> }>(c.req)
-    if (!body.servers || typeof body.servers !== 'object') {
-      return c.json({ error: 'servers (object) is required' }, 400)
+    const body = await safeJson<{
+      servers?: Record<string, unknown>
+      enabledMcpServers?: string[]
+    }>(c.req)
+    const hasServers = body.servers != null
+    const hasEnabled = body.enabledMcpServers != null
+    if (!hasServers && !hasEnabled) {
+      return c.json({ error: 'servers (object) or enabledMcpServers (string[]) is required' }, 400)
     }
-    const result = await sm.setMcpServers(c.req.param('id'), body.servers as Record<string, unknown>)
+    if (hasServers && (typeof body.servers !== 'object' || Array.isArray(body.servers))) {
+      return c.json({ error: 'servers must be an object' }, 400)
+    }
+    const enabledErr = validateEnabledMcpServers(body.enabledMcpServers)
+    if (enabledErr) return c.json({ error: enabledErr }, 400)
+    const merged = sm.mergeMcpServers(body.enabledMcpServers, body.servers) ?? {}
+    const result = await sm.setMcpServers(c.req.param('id'), merged)
     return c.json({ result })
   })
 

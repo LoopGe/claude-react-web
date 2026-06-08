@@ -21,13 +21,12 @@ import { useToast } from './hooks/useToast'
 import { useWsHub, useWsHubStatus } from './hooks/useWsHub'
 import type { WsServerFrame } from './ws-types'
 import type { SettingsTabName } from './local-commands'
-import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, SidebarSection } from './types'
+import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, SidebarSection, SlashCommand } from './types'
 import { PERMISSION_MODES } from './types'
 import { ACCENT_COLORS } from './theme'
-import { AccentPicker } from './components/AccentPicker'
+import { AppearancePanel } from './components/AppearancePanel'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { IconSettings, IconBell, IconBellOff, IconBot, IconBug, IconBugOff, IconMenu } from './components/icons/ToolIcons'
-import { ThemeToggle } from './components/ThemeToggle'
 import { UpdateBanner } from './components/UpdateBanner'
 import { useUpdateInfo } from './hooks/useUpdateInfo'
 import { sessionStoreRegistry } from './session-store/registry'
@@ -119,6 +118,11 @@ export function App() {
   const [resumeTargetPanelId, setResumeTargetPanelId] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
+  // Slash commands to show in the help dialog. Populated by the `/help`
+  // local command (with the triggering panel's merged command list) and
+  // cleared when help is opened via the Mod+? shortcut, which only shows
+  // keyboard shortcuts.
+  const [helpCommands, setHelpCommands] = useState<SlashCommand[]>([])
   const [historyPanelOpen, setHistoryPanelOpen] = useState(false)
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false)
   // Operational errors and one-shot notifications go through the global
@@ -132,7 +136,9 @@ export function App() {
   // CSS-var sync, and the React-19-unmount-race write-through pattern.
   const {
     theme,
-    toggleThemeNext,
+    setMode,
+    skin,
+    setSkin,
     accentColor,
     setAccentColor,
     sessionColors,
@@ -237,6 +243,14 @@ export function App() {
     setGitPanelOpenFor(null)
     settingsTabNonceRef.current += 1
     setSettingsTabRequest({ sessionId: id, tab, nonce: settingsTabNonceRef.current })
+  }, [])
+
+  // Open the help dialog with a panel's slash commands (the `/help` local
+  // command). The Mod+? shortcut uses an empty list so it only shows
+  // keyboard shortcuts.
+  const showHelpWithCommands = useCallback((commands: SlashCommand[]) => {
+    setHelpCommands(commands)
+    setHelpOpen(true)
   }, [])
 
   const { gridTemplate, onDividerMouseDown, draggingDivider, bodyRef, setPanelRatios } = usePanelColumnResize({ openIds, panelMinRatio })
@@ -1095,7 +1109,14 @@ export function App() {
         },
         {
           combo: 'mod+?',
-          handler: () => setHelpOpen((v) => !v),
+          handler: () => {
+            // Opening via the shortcut shows only keyboard shortcuts —
+            // clear any slash-command list left over from a prior /help.
+            // (Read the current open state from the render-synced ref so
+            // both setters stay top-level calls, not nested in an updater.)
+            if (!helpOpenRef.current) setHelpCommands([])
+            setHelpOpen((v) => !v)
+          },
           allowInInput: true,
           description: 'Keyboard shortcuts',
         },
@@ -1606,14 +1627,15 @@ export function App() {
             >
               {notifications.enabled ? <IconBell size={16} /> : <IconBellOff size={16} />}
             </button>
-            <AccentPicker
-              value={accentColor}
-              onChange={(v) => setAccentColor(v ?? ACCENT_COLORS[0].accent)}
-              allowDefault={false}
-              ariaLabel="Accent colour"
+            <AppearancePanel
+              skin={skin}
+              mode={theme}
+              accentColor={accentColor}
+              onSkin={setSkin}
+              onMode={setMode}
+              onAccent={(v) => setAccentColor(v ?? ACCENT_COLORS[0].accent)}
               className="btn btn-icon"
             />
-            <ThemeToggle theme={theme} onToggle={toggleThemeNext} />
             <button
               className="btn btn-icon"
               onClick={() => setGlobalSettingsOpen(true)}
@@ -1714,6 +1736,7 @@ export function App() {
                     onAcceptSidebarDrop={handleAcceptSidebarDrop}
                     onRequestResumeForPanel={requestResumeForPanel}
                     onOpenSettingsTab={openSettingsTab}
+                    onShowHelp={showHelpWithCommands}
                     settingsTabRequest={
                       settingsTabRequest?.sessionId === s.id
                         ? { tab: settingsTabRequest.tab, nonce: settingsTabRequest.nonce }
@@ -1767,6 +1790,7 @@ export function App() {
         <InputHistoryPanel
           open={historyPanelOpen}
           onClose={() => setHistoryPanelOpen(false)}
+          currentSessionId={focusedId}
           onSelect={(text) => {
             const fid = focusedIdRef.current
             if (fid) injectInputFnsRef.current.get(fid)?.(text)
@@ -1815,6 +1839,7 @@ export function App() {
           open={helpOpen}
           onClose={() => setHelpOpen(false)}
           shortcuts={shortcuts}
+          commands={helpCommands}
         />
       </Suspense>
 

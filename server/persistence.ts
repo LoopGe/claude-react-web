@@ -14,7 +14,7 @@
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
+import type { EffortLevel, PermissionMode } from '@anthropic-ai/claude-agent-sdk'
 import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import type { JsonFileStoreOptions } from './json-file-store.js'
 
@@ -37,6 +37,9 @@ export interface SessionMeta {
    *  on re-spawn (resume / restart). Only the intent is persisted — the
    *  SDK's runtime fast_mode_state is re-reported after respawn. */
   fastMode?: boolean
+  /** User intent: reasoning effort level. Re-applied to the SDK on
+   *  re-spawn (resume / restart / fork). */
+  effortLevel?: EffortLevel
   /** Monotonic counter of user turns seen; used as a rough "is there
    *  anything to resume?" hint for the UI. */
   messageCount: number
@@ -141,6 +144,11 @@ function coerceMeta(raw: unknown): SessionMeta | null {
       ? (r.betas as string[])
       : undefined,
     fastMode: typeof r.fastMode === 'boolean' ? r.fastMode : undefined,
+    effortLevel:
+      r.effortLevel === 'low' || r.effortLevel === 'medium' || r.effortLevel === 'high' ||
+      r.effortLevel === 'xhigh' || r.effortLevel === 'max'
+        ? r.effortLevel
+        : undefined,
     messageCount: typeof r.messageCount === 'number' ? r.messageCount : 0,
     terminated: typeof r.terminated === 'boolean' ? r.terminated : false,
     terminatedReason: typeof r.terminatedReason === 'string' ? r.terminatedReason : undefined,

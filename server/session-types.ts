@@ -3,6 +3,7 @@
 
 import type {
   CanUseTool,
+  EffortLevel,
   FastModeState,
   PermissionMode,
   PermissionResult,
@@ -128,6 +129,19 @@ export interface Session {
    *  omits the field), which the UI uses to hide the toggle. Not persisted —
    *  the SDK re-reports it after respawn. */
   fastModeState?: FastModeState
+  /** User intent: reasoning effort level ('low'|'medium'|'high'|'xhigh'|
+   *  'max'). Controls how many tokens the model spends. Persisted, re-applied
+   *  on respawn. Undefined means no explicit level (SDK default 'high'). */
+  effortLevel?: EffortLevel
+  /** Effort levels the CURRENT model supports, fetched from the SDK
+   *  (supportedModels) at spawn / model-change. Three-state:
+   *   - undefined: capability unknown (not fetched yet, model not matched,
+   *     or proxy didn't report it) → UI falls back to offering all 5.
+   *   - []        : model explicitly does NOT support effort → UI hides chip.
+   *   - [levels]  : the supported subset → UI offers only these.
+   *  Not persisted — re-fetched on every spawn (capability tracks the
+   *  model + SDK version, not the conversation). */
+  effortLevels?: EffortLevel[]
   input: Pushable<SDKUserMessage>
   query: Query
   subscribers: Map<string, Subscriber>
@@ -177,6 +191,12 @@ export interface Session {
    *  Each WS subscriber gets its own pushable to avoid waiter overwrite
    *  when multiple tabs are connected to the same session. */
   contextUsageSubscribers: Set<Pushable<unknown>>
+  /** Last context-usage snapshot pushed to subscribers. Cached so a freshly
+   *  subscribed tab (reconnect / new panel / refresh+resume) gets the current
+   *  value immediately via subscribeContextUsage's snapshot, instead of
+   *  waiting for the next `result`. Cleared on /clear. Not persisted —
+   *  re-derived from the next result after resume. */
+  lastContextUsage?: import('./session-pump.js').LiteContextUsage
   /** Per-subscriber pushables for `git-status-changed` signal frames.
    *  Same shape as contextUsageSubscribers but carries a signal-only
    *  payload (no GitStatus snapshot — clients refetch). Driven by
@@ -307,7 +327,7 @@ export interface SessionBroadcaster {
     snapshot: PermissionRequestSnapshot[]
     unsubscribe: () => void
   }
-  subscribeContextUsage(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null
+  subscribeContextUsage(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot?: import('./session-pump.js').LiteContextUsage; unsubscribe: () => void } | null
   subscribeGitStatus(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null
   /** Per-session subscription for `message-consumed` signal frames.
    *  Returns null when the session is unknown (callers short-circuit).

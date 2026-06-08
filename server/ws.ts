@@ -222,7 +222,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
       if (subs.has(sessionId)) return
       let msgSub: { unsubscribe: () => void } | null = null
       let permSub: { unsubscribe: () => void } | null = null
-      let ctxSub: { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null = null
+      let ctxSub: { iterable: AsyncIterable<unknown>; snapshot?: unknown; unsubscribe: () => void } | null = null
       let ctxIter: AsyncIterator<unknown> | null = null
       let gitSub: { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null = null
       let gitIter: AsyncIterator<unknown> | null = null
@@ -309,6 +309,14 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
             sessionId,
             recap: recapSub.snapshot as never,
           })
+        }
+
+        // 2.6) Send the cached context-usage snapshot if there is one, so a
+        //      tab that subscribes between turns (reconnect / new panel /
+        //      refresh+resume) shows the Context bar immediately instead of
+        //      waiting for the next `result` to land.
+        if (ctxSub?.snapshot) {
+          queue.enqueue({ kind: 'context-usage', sessionId, usage: ctxSub.snapshot })
         }
 
         // 2) Drive the live iterables concurrently. Same Promise.race

@@ -15,12 +15,13 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import { statusClass, statusLabel, shortenModel } from '../utils/session-status'
 import { useModelOptions } from '../hooks/useModelOptions'
 import { ModelPicker } from './ModelPicker'
+import { EffortSlider } from './EffortSlider'
 import { shortenPath } from '../utils/paths'
-import { IconSettings, IconX, IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconZap } from './icons/ToolIcons'
+import { IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconZap } from './icons/ToolIcons'
 import { PermissionModeIcon, permissionModeLabel } from './permission-mode-display'
-import type { PermissionMode, SessionInfo } from '../types'
+import type { EffortLevel, PermissionMode, SessionInfo, SlashCommand } from '../types'
 import type { SettingsTabName } from '../local-commands'
-import { PERMISSION_MODES } from '../types'
+import { PERMISSION_MODES, EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL } from '../types'
 import type { GitStatus } from '../../shared/git-types'
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 
@@ -104,6 +105,9 @@ export interface ChatPanelProps {
   /** Open this panel's settings overlay on a specific tab. Triggered by the
    *  `/mcp` local command. */
   onOpenSettingsTab: (panelSessionId: string, tab: SettingsTabName) => void
+  /** Open the in-app help dialog with the given slash commands. Triggered by
+   *  the `/help` local command. */
+  onShowHelp: (commands: SlashCommand[]) => void
   /** Nonce-stamped request to switch the settings tab (forwarded to <Chat> →
    *  SettingsPanel). Null when no request targets this panel. */
   settingsTabRequest?: { tab: SettingsTabName; nonce: number } | null
@@ -152,6 +156,7 @@ export const ChatPanel = memo(function ChatPanel({
   onAcceptSidebarDrop,
   onRequestResumeForPanel,
   onOpenSettingsTab,
+  onShowHelp,
   settingsTabRequest,
   showSystemEvents,
   settingsOpen,
@@ -171,8 +176,6 @@ export const ChatPanel = memo(function ChatPanel({
   // Panel swap via drag is a multi-panel desktop affordance; mobile is
   // single-panel and touch can't HTML5-drag, so disable it there.
   const isMobile = useIsMobile()
-  /** State (not ref) so that Chat re-renders once the portal target mounts. */
-  const [headerBtnEl, setHeaderBtnEl] = useState<HTMLDivElement | null>(null)
   const [dropActive, setDropActive] = useState(false)
   /** Live message count reported by <Chat> during streaming. Used to
    *  keep the header "X msgs" label up-to-date without waiting for a
@@ -185,6 +188,8 @@ export const ChatPanel = memo(function ChatPanel({
    *  over dark-theme styling; the native control's dropdown surface
    *  can't be restyled across browsers. */
   const [permMenu, setPermMenu] = useState<{ x: number; y: number } | null>(null)
+  /** Anchor for the effort-level menu. Non-null = menu visible. */
+  const [effortMenu, setEffortMenu] = useState<{ x: number; y: number } | null>(null)
   /** Global toast hub. Model/permission failures used to render an
    *  inline panel banner; they now surface as right-bottom toasts. */
   const toast = useToast()
@@ -249,6 +254,34 @@ export const ChatPanel = memo(function ChatPanel({
       toast.error,
     )
   }
+
+  const commitEffortLevel = (level: EffortLevel) => {
+    // Don't close the popover here — the slider stays open so the user can
+    // drag across stops; dismissal is via outside-click / Escape (owned by
+    // EffortSlider). Guard against a no-op commit when the level is unchanged.
+    if (level === (session.effortLevel ?? DEFAULT_EFFORT_LEVEL)) return
+    // Optimistically update the session so the (controlled) slider thumb
+    // follows the drag instantly. commitWithRollback reconciles to the
+    // server's response and rolls back to `before` if the POST fails.
+    onSessionUpdate({ ...session, effortLevel: level })
+    commitWithRollback(
+      session,
+      `/sessions/${session.id}/effort-level`,
+      { level },
+      { effortLevel: session.effortLevel },
+      `Couldn't change effort level`,
+      onSessionUpdate,
+      toast.error,
+    )
+  }
+  const effortLevel = session.effortLevel ?? DEFAULT_EFFORT_LEVEL
+  // Effort chip gating from the model's reported capability (three-state):
+  //   undefined → capability unknown → offer all 5 (fallback, chip visible)
+  //   []        → model doesn't support effort → hide chip
+  //   [subset]  → offer only the supported levels
+  const effortCaps = session.effortLevels
+  const effortVisible = effortCaps === undefined || effortCaps.length > 0
+  const effortChoices = effortCaps && effortCaps.length > 0 ? effortCaps : EFFORT_LEVELS
 
   const permMode = session.permissionMode ?? 'default'
   const isNonDefaultMode = permMode !== 'default'
@@ -430,6 +463,36 @@ export const ChatPanel = memo(function ChatPanel({
             </button>
           </Tooltip>
         )}
+        {/* Effort-level control. Shown when the current model supports
+            effort (or its capability is unknown → fallback to offering all
+            5). Hidden only when the SDK explicitly reports no effort support
+            (effortLevels === []). The menu lists the supported subset, or all
+            5 when capability is unknown. Chip shows the active level,
+            defaulting to 'high'. */}
+        {effortVisible && (
+          <Tooltip
+            label={`Effort: ${effortLevel} · controls reasoning depth & token spend · click to change`}
+            placement="bottom"
+          >
+            <button
+              type="button"
+              key={`effort-${effortLevel}`}
+              className={`chat-panel-effort-badge effort-${effortLevel}`}
+              disabled={chipsDisabled}
+              aria-haspopup="menu"
+              aria-expanded={!!effortMenu}
+              aria-label={`Effort: ${effortLevel} · click to change`}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation()
+                const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
+                setEffortMenu({ x: rect.left, y: rect.bottom + 4 })
+              }}
+            >
+              {effortLevel}
+            </button>
+          </Tooltip>
+        )}
         <div className="chat-panel-meta">
           <Tooltip label={`Model: ${session.model ?? 'default'} · click to change`} placement="bottom">
             <button
@@ -492,6 +555,16 @@ export const ChatPanel = memo(function ChatPanel({
             }))}
           />
         )}
+        {effortMenu && (
+          <EffortSlider
+            anchor={effortMenu}
+            levels={effortChoices}
+            current={effortLevel}
+            disabled={chipsDisabled}
+            onSelect={(l) => commitEffortLevel(l)}
+            onClose={() => setEffortMenu(null)}
+          />
+        )}
         {modelMenu && (
           <ModelPicker
             anchor={modelMenu}
@@ -502,31 +575,6 @@ export const ChatPanel = memo(function ChatPanel({
             onClose={() => setModelMenu(null)}
           />
         )}
-        <div ref={setHeaderBtnEl} className="chat-panel-header-buttons" />
-        <Tooltip label="Session settings" placement="bottom">
-          <button
-            className="chat-panel-settings"
-            onClick={(e) => {
-              e.stopPropagation()
-              onOpenSettings(session.id)
-            }}
-            aria-label="Open settings"
-          >
-            <IconSettings size={16} />
-          </button>
-        </Tooltip>
-        <Tooltip label="Close this panel (Alt+W) · session stays alive" placement="bottom">
-          <button
-            className="chat-panel-close"
-            onClick={(e) => {
-              e.stopPropagation()
-              onClose(session.id)
-            }}
-            aria-label="Close panel"
-          >
-            <IconX size={16} />
-          </button>
-        </Tooltip>
         </div>
         {session.error && (
           <Tooltip label={session.error}>
@@ -573,6 +621,7 @@ export const ChatPanel = memo(function ChatPanel({
             onSessionUpdate={onSessionUpdate}
             onRequestResumeForPanel={onRequestResumeForPanel}
             onOpenSettingsTab={onOpenSettingsTab}
+            onShowHelp={onShowHelp}
             settingsTabRequest={settingsTabRequest}
             showSystemEvents={showSystemEvents}
             settingsOpen={settingsOpen}
@@ -587,10 +636,11 @@ export const ChatPanel = memo(function ChatPanel({
             onRegisterInterrupt={onRegisterInterrupt}
             onRegisterRecap={onRegisterRecap}
             onRegisterInjectInput={onRegisterInjectInput}
-            headerButtonsRef={headerBtnEl}
+            onOpenSettingsPanel={onOpenSettings}
             snippets={snippets}
             onOpenSnippetsManager={onOpenSnippetsManager}
             onSaveCurrentAsSnippet={onSaveCurrentAsSnippet}
+            onClosePanel={onClose}
           />
         ) : (
           <div className="empty-state">

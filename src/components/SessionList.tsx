@@ -15,7 +15,7 @@ import { SessionCard } from './session-list/SessionCard'
 import { ConfirmDialog } from './ConfirmDialog'
 import { PromptDialog } from './PromptDialog'
 import { ContextMenu } from './ContextMenu'
-import { IconX, IconChevronRight, IconChevronDown, IconSquare, IconPencil, IconTrash } from './icons/ToolIcons'
+import { IconX, IconChevronRight, IconChevronDown, IconSquare, IconPencil, IconTrash, IconSearch } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
 import { Virtuoso } from 'react-virtuoso'
 
@@ -495,6 +495,9 @@ export const SessionList = memo(function SessionList({
             of sessions. Below that the filter is more friction than help. */}
         {sessions.length > 3 && (
           <div className="session-filter">
+            <span className="session-filter-icon" aria-hidden>
+              <IconSearch size={13} />
+            </span>
             <input
               className="input"
               type="text"
@@ -522,7 +525,8 @@ export const SessionList = memo(function SessionList({
             <button
               key={g.id}
               type="button"
-              className="group-pill"
+              className={`group-pill ${g.id === activeGroupId ? 'active' : ''}`}
+              aria-pressed={g.id === activeGroupId}
               title={`Activate "${g.name}" (${g.sessionIds.length} sessions) · right-click for options`}
               onClick={() => onActivateGroup(g.id)}
               onContextMenu={(e) => {

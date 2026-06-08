@@ -22,6 +22,7 @@ import {
   query,
   getSessionInfo,
   listSessions,
+  type EffortLevel,
   type Options,
   type PermissionMode,
   type Query,
@@ -58,6 +59,7 @@ import {
   endAllSubscribers,
 } from './session-types.js'
 import { HttpError } from './errors.js'
+import { effortLevelsForModel } from './effort-capability.js'
 import { PermissionBroker } from './permission-broker.js'
 import { SessionHealthMonitor } from './session-health.js'
 import { debugLog } from './debug.js'
@@ -342,6 +344,7 @@ export class SessionManager {
       title: s.title,
       betas: s.betas,
       fastMode: s.fastMode,
+      effortLevel: s.effortLevel,
       messageCount: s.history.length,
       terminated: s.terminated,
       terminatedReason: s.terminatedReason,
@@ -382,7 +385,7 @@ export class SessionManager {
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
-  private snapshotMeta(opts: Options): { cwd?: string; model?: string; permissionMode?: PermissionMode; title?: string; betas?: string[] } {
+  private snapshotMeta(opts: Options): { cwd?: string; model?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; effortLevel?: EffortLevel } {
     return {
       cwd: opts.cwd,
       model: opts.model,
@@ -392,6 +395,9 @@ export class SessionManager {
       // model's context window. Must survive restart / resume / fork
       // or the user's 1M session silently downgrades to 200k.
       betas: Array.isArray(opts.betas) ? opts.betas : undefined,
+      // Effort passed at create time (Options.effort) becomes the session's
+      // initial effortLevel so a create-time choice persists like the others.
+      effortLevel: opts.effort,
     }
   }
 
@@ -476,6 +482,9 @@ export class SessionManager {
       model: meta.model,
       permissionMode: meta.permissionMode,
       title: meta.title,
+      // Carry the effort level forward so a resumed session keeps its
+      // reasoning depth instead of falling back to the SDK default.
+      effort: meta.effortLevel,
       // Carry beta flags forward — without this, a 1M-context session
       // silently downgrades to the model's default window on resume.
       // Cast: SDK types this as a literal-string union of known flags,
@@ -670,6 +679,8 @@ export class SessionManager {
       model: meta.model,
       permissionMode: meta.permissionMode,
       title,
+      // Carry effort + beta flags forward so the fork matches the source.
+      effort: meta.effortLevel,
       // Same as resume: preserve `context-1m-...` etc. so the fork has
       // the same effective window as the source. See resume() for the cast rationale.
       betas: meta.betas as Options['betas'],
@@ -794,6 +805,7 @@ export class SessionManager {
       // indistinguishable downstream.
       history: historySeed ? historySeed.slice(-this.historyCap) : [],
       contextUsageSubscribers: new Set(),
+      lastContextUsage: undefined,
       gitStatusSubscribers: new Set(),
       messageStatusSubscribers: new Set(),
       recapSubscribers: new Set(),
@@ -850,9 +862,23 @@ export class SessionManager {
       })
     }
 
+    // Re-apply the effort level as a runtime control request. Options.effort
+    // (set via snapshotMeta) already seeds it at spawn, but applyFlagSettings
+    // is the authoritative runtime path and keeps the SDK in sync. The
+    // Settings.effortLevel typedef omits 'max'; cast through to keep all 5.
+    if (session.effortLevel) {
+      void q.applyFlagSettings({ effortLevel: session.effortLevel as 'low' | 'medium' | 'high' | 'xhigh' }).catch((err) => {
+        console.warn(`[session ${id}] applying effortLevel on spawn failed:`, err)
+      })
+    }
+
     session.pumpTask = this.pump(session)
     this.sessions.set(id, session)
     console.log(`[session ${id}] spawned — model=${fullOpts.model ?? 'default'}, permissionMode=${requestedMode ?? 'default'}, resume=${!!fullOpts.resume}`)
+    // Classify the model's effort capability (keyword-based, synchronous) so
+    // the very first `created` frame below already carries the correct
+    // visible/levels state — no follow-up update needed.
+    session.effortLevels = effortLevelsForModel(session.model)
     // Brand-new session (or a resume, which also "creates" as far as the
     // UI list is concerned): persist to disk, then broadcast `created`
     // instead of `update`. The frontend `created` handler is the one
@@ -968,6 +994,10 @@ export class SessionManager {
     await s.query.setModel(model)
     s.model = model
     s.lastActivityAt = Date.now()
+    // The model changed — recompute its effort capability (keyword-based,
+    // synchronous). The persist() below broadcasts the session-update
+    // carrying the new effortLevels.
+    s.effortLevels = effortLevelsForModel(s.model)
     this.persist(s)
     return this.info(s)
   }
@@ -1041,6 +1071,21 @@ export class SessionManager {
     const s = this.requireLive(id)
     await s.query.applyFlagSettings({ fastMode: enabled })
     s.fastMode = enabled
+    s.lastActivityAt = Date.now()
+    this.persist(s)
+    return this.info(s)
+  }
+
+  /** Set the reasoning effort level. Forwards to the SDK via
+   *  applyFlagSettings({ effortLevel }) and records it locally so it survives
+   *  resume/restart (re-applied on respawn). Unsupported levels for the
+   *  current model are silently downgraded by the SDK — no error. The
+   *  Settings.effortLevel typedef omits 'max', so we cast through to keep all
+   *  5 levels (the API and supportedEffortLevels both list 'max'). */
+  async setEffortLevel(id: string, level: EffortLevel): Promise<SessionInfo> {
+    const s = this.requireLive(id)
+    await s.query.applyFlagSettings({ effortLevel: level as 'low' | 'medium' | 'high' | 'xhigh' })
+    s.effortLevel = level
     s.lastActivityAt = Date.now()
     this.persist(s)
     return this.info(s)
@@ -1132,10 +1177,11 @@ export class SessionManager {
     const global = this.mcpStore?.toSdkConfig() ?? {}
     const result: Record<string, unknown> = {}
 
-    // Add enabled global servers
-    if (enabledGlobal) {
+    // Add enabled global servers. Guard on Array.isArray so a stray string
+    // (e.g. enabledMcpServers:"foo") can't be iterated character-by-character.
+    if (Array.isArray(enabledGlobal)) {
       for (const name of enabledGlobal) {
-        if (global[name]) result[name] = global[name]
+        if (typeof name === 'string' && global[name]) result[name] = global[name]
       }
     }
 
@@ -1230,10 +1276,11 @@ export class SessionManager {
    *  as "no context data available").
    *  Each subscriber gets its own pushable to avoid waiter overwrite
    *  when multiple tabs are connected to the same session. */
-  subscribeContextUsage(id: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null {
+  subscribeContextUsage(id: string): { iterable: AsyncIterable<unknown>; snapshot?: import('./session-pump.js').LiteContextUsage; unsubscribe: () => void } | null {
     const s = this.sessions.get(id)
     if (!s) return null
-    return this.subscribePushableSet(s, s.contextUsageSubscribers, 'ctx', 50)
+    const sub = this.subscribePushableSet(s, s.contextUsageSubscribers, 'ctx', 50)
+    return { iterable: sub.iterable, snapshot: s.lastContextUsage, unsubscribe: sub.unsubscribe }
   }
 
   /** AsyncIterable of `git-status-changed` signal frames for one session.
@@ -1696,6 +1743,8 @@ export class SessionManager {
       betas: s.betas,
       fastMode: s.fastMode,
       fastModeState: s.fastModeState,
+      effortLevel: s.effortLevel,
+      effortLevels: s.effortLevels,
       running: s.running,
       terminated: s.terminated,
       terminatedReason: s.terminatedReason,
@@ -1743,6 +1792,7 @@ export class SessionManager {
       permissionMode: meta.permissionMode,
       title: meta.title,
       fastMode: meta.fastMode,
+      effortLevel: meta.effortLevel,
       // Dormant: no live Query, so the SDK isn't reporting a runtime state.
       // Leave fastModeState undefined — the UI hides the chip until resume.
       running: false,
@@ -1915,6 +1965,8 @@ export class SessionManager {
       model: session.model,
       permissionMode: this.sdkForwardMode(session.permissionMode),
       title: session.title,
+      // Carry the effort level forward across auto-resume.
+      effort: session.effortLevel,
       // Carry beta flags forward — without this, a 1M-context session
       // silently downgrades to the model's default window on auto-resume.
       // See resume() for the cast rationale.
@@ -1941,6 +1993,11 @@ export class SessionManager {
     if (session.fastMode) {
       void q.applyFlagSettings({ fastMode: true }).catch((err) => {
         console.warn(`[session ${session.id}] re-applying fastMode on auto-resume failed:`, err)
+      })
+    }
+    if (session.effortLevel) {
+      void q.applyFlagSettings({ effortLevel: session.effortLevel as 'low' | 'medium' | 'high' | 'xhigh' }).catch((err) => {
+        console.warn(`[session ${session.id}] applying effortLevel on auto-resume failed:`, err)
       })
     }
 

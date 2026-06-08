@@ -23,6 +23,7 @@ interface MockQueryHandle {
   supportedCommands: ReturnType<typeof vi.fn>
   supportedAgents: ReturnType<typeof vi.fn>
   mcpServerStatus: ReturnType<typeof vi.fn>
+  setMcpServers: ReturnType<typeof vi.fn>
   getContextUsage: ReturnType<typeof vi.fn>
 }
 
@@ -122,6 +123,11 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         supportedCommands: vi.fn(async () => []),
         supportedAgents: vi.fn(async () => []),
         mcpServerStatus: vi.fn(async () => ({})),
+        setMcpServers: vi.fn(async (servers: Record<string, unknown>) => ({
+          added: Object.keys(servers),
+          removed: [],
+          errors: {},
+        })),
         getContextUsage: vi.fn(async () => ({})),
       }
       mockHandles.push(handle)
@@ -157,6 +163,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         supportedCommands: handle.supportedCommands,
         supportedAgents: handle.supportedAgents,
         mcpServerStatus: handle.mcpServerStatus,
+        setMcpServers: handle.setMcpServers,
         getContextUsage: handle.getContextUsage,
       }
       return q
@@ -173,6 +180,8 @@ const tick = () => new Promise((r) => setImmediate(r))
 import { SessionManager, isClearCommand } from './session-manager.js'
 import { SessionStore } from './persistence.js'
 import { config as defaultConfig } from './config.js'
+import { McpConfigStore } from './mcp-config.js'
+import { buildSessionRouter } from './routes/sessions.js'
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), 'claude-rw-sm-'))
@@ -373,6 +382,34 @@ describe('SessionManager', () => {
     sub.unsubscribe()
   })
 
+  it('subscribeContextUsage() hands a fresh subscriber the last cached snapshot', async () => {
+    // A tab that attaches BETWEEN turns (reconnect / new panel / refresh)
+    // should see the Context bar value immediately rather than waiting for
+    // the next `result`. The pump caches every result's usage on the
+    // session; subscribeContextUsage returns it as `snapshot`.
+    const info = sm.create({})
+    sm.send(info.id, 'hi')
+    mockHandles[0].emit({
+      type: 'result',
+      usage: { input_tokens: 1000, cache_creation_input_tokens: 200, cache_read_input_tokens: 5000 },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+    })
+    await tick()
+
+    const sub = sm.subscribeContextUsage(info.id)
+    expect(sub).not.toBeNull()
+    expect(sub!.snapshot).toMatchObject({ totalTokens: 6200, maxTokens: 200000, model: 'claude-opus-4-7' })
+    sub!.unsubscribe()
+  })
+
+  it('subscribeContextUsage() snapshot is undefined before any result lands', () => {
+    const info = sm.create({})
+    const sub = sm.subscribeContextUsage(info.id)
+    expect(sub).not.toBeNull()
+    expect(sub!.snapshot).toBeUndefined()
+    sub!.unsubscribe()
+  })
+
   it('persists metadata on create and on send', async () => {
     const info = sm.create({ title: 'hello', cwd: '/x' })
     await store.flush()
@@ -504,6 +541,59 @@ describe('SessionManager', () => {
     await sm.setFastMode(info.id, true)
     await store.flush()
     expect(store.get(info.id)?.fastMode).toBe(true)
+  })
+
+  it('setEffortLevel() records the level and forwards applyFlagSettings({ effortLevel })', async () => {
+    const info = sm.create({})
+    expect(info.effortLevel).toBeUndefined()
+    const updated = await sm.setEffortLevel(info.id, 'low')
+    expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ effortLevel: 'low' })
+    expect(updated.effortLevel).toBe('low')
+    expect(sm.get(info.id).effortLevel).toBe('low')
+  })
+
+  it("setEffortLevel() forwards 'max' (Settings typedef omits it, but the API accepts it)", async () => {
+    const info = sm.create({})
+    const updated = await sm.setEffortLevel(info.id, 'max')
+    expect(mockHandles[0].applyFlagSettings).toHaveBeenLastCalledWith({ effortLevel: 'max' })
+    expect(updated.effortLevel).toBe('max')
+  })
+
+  it('setEffortLevel() persists the level so it survives resume', async () => {
+    const info = sm.create({})
+    await sm.setEffortLevel(info.id, 'xhigh')
+    await store.flush()
+    expect(store.get(info.id)?.effortLevel).toBe('xhigh')
+  })
+
+  // --- effort capability (effortLevels three-state) ---
+  // Capability is now classified by model-id keyword (effortLevelsForModel),
+  // NOT the SDK's supportedModels (which on gateways reports unmatched
+  // aliases and claims every model supports effort). We exercise it through
+  // setModel and read the projected SessionInfo (synchronous now).
+
+  it('effortLevels is the full 5 for an opus-family id (provider prefix tolerated)', async () => {
+    const info = sm.create({ model: 'm-a' })
+    await sm.setModel(info.id, 'ppio/pa/claude-opus-4-8')
+    expect(sm.get(info.id).effortLevels).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+  })
+
+  it('effortLevels omits xhigh for a sonnet-family id', async () => {
+    const info = sm.create({ model: 'm-a' })
+    await sm.setModel(info.id, 'anthropic/claude-sonnet-4-20250514')
+    expect(sm.get(info.id).effortLevels).toEqual(['low', 'medium', 'high', 'max'])
+  })
+
+  it('effortLevels is [] for haiku (no effort support → chip hidden)', async () => {
+    const info = sm.create({ model: 'm-a' })
+    await sm.setModel(info.id, 'claude-haiku-3-5-20241022')
+    expect(sm.get(info.id).effortLevels).toEqual([])
+  })
+
+  it('effortLevels is [] for a non-Claude model (chip hidden)', async () => {
+    const info = sm.create({ model: 'm-a' })
+    await sm.setModel(info.id, 'xiaomi/mimo-v2.5-pro')
+    expect(sm.get(info.id).effortLevels).toEqual([])
   })
 
   it('rename() updates title on a live session', () => {
@@ -1017,5 +1107,213 @@ describe('SessionManager', () => {
       mockGetSessionInfo.mockResolvedValueOnce(undefined)
       await expect(sm.resume('ghost')).rejects.toMatchObject({ status: 404 })
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Dynamic MCP server management (setMcpServers + mergeMcpServers)
+// ---------------------------------------------------------------------------
+
+describe('mergeMcpServers', () => {
+  let dir: string
+  let store: SessionStore
+  let mcpDir: string
+  let mcpStore: McpConfigStore
+  let sm: SessionManager
+
+  beforeEach(async () => {
+    mockHandles.length = 0
+    mockGetSessionInfo.mockReset()
+    mockGetSessionInfo.mockImplementation(async (id) => ({ sessionId: id }))
+    mockListSessions.mockReset()
+    mockListSessions.mockImplementation(async () => [])
+    dir = makeTmpDir()
+    mcpDir = makeTmpDir()
+    store = new SessionStore({ stateDir: dir })
+    await store.load()
+    mcpStore = new McpConfigStore({ stateDir: mcpDir })
+    await mcpStore.load()
+    // Seed two global servers; one disabled so it's excluded from toSdkConfig.
+    mcpStore.upsert({
+      name: 'global-a', type: 'stdio', command: 'node', args: ['a.js'],
+      createdAt: 1, updatedAt: 1,
+    })
+    mcpStore.upsert({
+      name: 'global-b', type: 'sse', url: 'http://b.local',
+      createdAt: 1, updatedAt: 1,
+    })
+    mcpStore.upsert({
+      name: 'global-off', type: 'stdio', command: 'node', enabled: false,
+      createdAt: 1, updatedAt: 1,
+    })
+    await mcpStore.flush()
+    sm = new SessionManager({ store, mcpConfigStore: mcpStore })
+  })
+
+  afterEach(async () => {
+    await sm.shutdown()
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(mcpDir, { recursive: true, force: true })
+  })
+
+  it('resolves enabled global server names to their SDK config', () => {
+    const merged = sm.mergeMcpServers(['global-a'], undefined)
+    expect(merged).toEqual({
+      'global-a': { type: 'stdio', command: 'node', args: ['a.js'] },
+    })
+  })
+
+  it('skips unknown and disabled global names', () => {
+    const merged = sm.mergeMcpServers(['global-a', 'global-off', 'nope'], undefined)
+    expect(Object.keys(merged ?? {})).toEqual(['global-a'])
+  })
+
+  it('lets inline session servers override a global of the same name', () => {
+    const merged = sm.mergeMcpServers(
+      ['global-a'],
+      { 'global-a': { type: 'http', url: 'http://override' } },
+    )
+    expect(merged).toEqual({ 'global-a': { type: 'http', url: 'http://override' } })
+  })
+
+  it('returns undefined when nothing resolves', () => {
+    expect(sm.mergeMcpServers([], undefined)).toBeUndefined()
+    expect(sm.mergeMcpServers(undefined, {})).toBeUndefined()
+    expect(sm.mergeMcpServers(undefined, undefined)).toBeUndefined()
+  })
+
+  it('does not iterate a stray string character-by-character', () => {
+    // Defensive: a non-array enabledGlobal must be ignored, not split into
+    // chars. 'global-a' as a string would otherwise produce keys 'g','l',...
+    const merged = sm.mergeMcpServers('global-a' as unknown as string[], undefined)
+    expect(merged).toBeUndefined()
+  })
+})
+
+describe('setMcpServers (dynamic, on a live session)', () => {
+  let dir: string
+  let store: SessionStore
+  let mcpDir: string
+  let mcpStore: McpConfigStore
+  let sm: SessionManager
+
+  beforeEach(async () => {
+    mockHandles.length = 0
+    mockGetSessionInfo.mockReset()
+    mockGetSessionInfo.mockImplementation(async (id) => ({ sessionId: id }))
+    mockListSessions.mockReset()
+    mockListSessions.mockImplementation(async () => [])
+    dir = makeTmpDir()
+    mcpDir = makeTmpDir()
+    store = new SessionStore({ stateDir: dir })
+    await store.load()
+    mcpStore = new McpConfigStore({ stateDir: mcpDir })
+    await mcpStore.load()
+    mcpStore.upsert({
+      name: 'global-a', type: 'stdio', command: 'node', args: ['a.js'],
+      createdAt: 1, updatedAt: 1,
+    })
+    await mcpStore.flush()
+    sm = new SessionManager({ store, mcpConfigStore: mcpStore })
+  })
+
+  afterEach(async () => {
+    await sm.shutdown()
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(mcpDir, { recursive: true, force: true })
+  })
+
+  it('forwards the given servers straight to query.setMcpServers', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    const servers = { x: { type: 'stdio', command: 'node' } }
+    const result = await sm.setMcpServers(info.id, servers)
+    expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith(servers)
+    expect(result).toEqual({ added: ['x'], removed: [], errors: {} })
+  })
+
+  it('throws for an unknown / non-live session', async () => {
+    await expect(sm.setMcpServers('ghost', {})).rejects.toBeTruthy()
+  })
+
+  // --- via the HTTP route (mergeMcpServers integration) -------------------
+
+  function app() {
+    return buildSessionRouter(sm)
+  }
+
+  async function post(path: string, body: unknown) {
+    return app().request(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  }
+
+  it('resolves enabledMcpServers names before calling setMcpServers', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    const res = await post(`/sessions/${info.id}/mcp/servers`, {
+      enabledMcpServers: ['global-a'],
+    })
+    expect(res.status).toBe(200)
+    expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({
+      'global-a': { type: 'stdio', command: 'node', args: ['a.js'] },
+    })
+  })
+
+  it('merges inline servers with enabled global names', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    await post(`/sessions/${info.id}/mcp/servers`, {
+      enabledMcpServers: ['global-a'],
+      servers: { inline: { type: 'http', url: 'http://x' } },
+    })
+    expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({
+      'global-a': { type: 'stdio', command: 'node', args: ['a.js'] },
+      inline: { type: 'http', url: 'http://x' },
+    })
+  })
+
+  it('passes an empty object (clear-all) when nothing resolves', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    const res = await post(`/sessions/${info.id}/mcp/servers`, { servers: {} })
+    expect(res.status).toBe(200)
+    expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({})
+  })
+
+  it('400s when neither servers nor enabledMcpServers is provided', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    const res = await post(`/sessions/${info.id}/mcp/servers`, {})
+    expect(res.status).toBe(400)
+  })
+
+  it('400s when servers is not an object', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    const res = await post(`/sessions/${info.id}/mcp/servers`, { servers: ['nope'] })
+    expect(res.status).toBe(400)
+  })
+
+  it('400s when enabledMcpServers is a string (not an array)', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    const res = await post(`/sessions/${info.id}/mcp/servers`, { enabledMcpServers: 'global-a' })
+    expect(res.status).toBe(400)
+    expect(mockHandles[0].setMcpServers).not.toHaveBeenCalled()
+  })
+
+  it('400s when enabledMcpServers contains a non-string element', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    const res = await post(`/sessions/${info.id}/mcp/servers`, { enabledMcpServers: ['global-a', 123] })
+    expect(res.status).toBe(400)
+    expect(mockHandles[0].setMcpServers).not.toHaveBeenCalled()
+  })
+
+  // The create route shares the same validator.
+  it('create route 400s when enabledMcpServers is a string', async () => {
+    const res = await app().request('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cwd: '/tmp', enabledMcpServers: 'global-a' }),
+    })
+    expect(res.status).toBe(400)
+    // No session should have spawned.
+    expect(mockHandles).toHaveLength(0)
   })
 })

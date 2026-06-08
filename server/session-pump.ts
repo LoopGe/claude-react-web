@@ -301,6 +301,10 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             const idx = session.history.lastIndexOf(msg)
             session.history = idx >= 0 ? session.history.slice(idx) : []
             session.pendingClearSince = undefined
+            // Drop the cached context-usage so a freshly subscribing tab
+            // doesn't get handed a stale pre-clear value. The bar resets to
+            // `—` until the first post-clear `result` repopulates it.
+            session.lastContextUsage = undefined
             deps.broadcastSessionCleared?.(session.id)
             try { deps.persist(session) } catch (err) {
               log.warn(`[session ${session.id}] persist failed after /clear: ${err}`)
@@ -314,9 +318,14 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // the CLI subprocess for getContextUsage(). The full breakdown
         // (skills/agents/memoryFiles/mcpTools) still comes from the
         // on-demand REST endpoint when the user opens SettingsPanel.
-        if (msg.type === 'result' && session.subscribers.size > 0) {
+        if (msg.type === 'result') {
           const usage = liteContextUsageFromResult(msg)
           if (usage) {
+            // Cache regardless of current subscriber count so a tab that
+            // attaches LATER (reconnect / new panel / refresh+resume) can
+            // be handed the value immediately via subscribeContextUsage's
+            // snapshot, instead of waiting for the next `result`.
+            session.lastContextUsage = usage
             for (const sub of session.contextUsageSubscribers) {
               try { sub.push(usage) } catch { /* subscriber dead — skip */ }
             }
@@ -438,7 +447,7 @@ async function cleanupPump(session: Session, deps: PumpDeps): Promise<void> {
  *  See src/hooks/useChatStream.ts:ContextUsage — these are the four fields
  *  the chat-side bar reads (totalTokens, maxTokens, percentage, model).
  *  rawMaxTokens is included because ContextBar prefers it over maxTokens. */
-interface LiteContextUsage {
+export interface LiteContextUsage {
   totalTokens: number
   maxTokens: number
   rawMaxTokens: number

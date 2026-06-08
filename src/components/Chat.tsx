@@ -10,7 +10,6 @@
 
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
-import { createPortal } from 'react-dom'
 // SettingsPanel and GitPanel are split into their own chunks: both are
 // per-panel overlays that many sessions never open, so keeping them out of
 // the main bundle shrinks first paint. SettingsPanel stays mounted once
@@ -40,7 +39,7 @@ import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
 import { ContextMenu } from './ContextMenu'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
-import { IconSearch, IconDownload, IconClock, IconFileText } from './icons/ToolIcons'
+import { IconSearch, IconClock, IconFileText, IconX, IconCopy, IconSettings } from './icons/ToolIcons'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
 import type { AgentInfo, SessionInfo, SlashCommand } from '../types'
@@ -82,6 +81,9 @@ interface Props {
   /** Open this panel's settings overlay on a specific tab. Invoked by the
    *  `/mcp` local command. */
   onOpenSettingsTab: (panelSessionId: string, tab: SettingsTabName) => void
+  /** Open the in-app help dialog with the given slash commands. Invoked by
+   *  the `/help` local command. */
+  onShowHelp: (commands: SlashCommand[]) => void
   /** Nonce-stamped request to switch the settings tab — forwarded to
    *  SettingsPanel, which applies it when the nonce changes. */
   settingsTabRequest?: { tab: SettingsTabName; nonce: number } | null
@@ -117,23 +119,27 @@ interface Props {
    *  composer input-injection function. Enables the Mod+Shift+H input-history
    *  panel to drop a selected past message into the focused composer. */
   onRegisterInjectInput?: (sessionId: string, fn: (text: string) => void) => void
-  /** Portal target element in ChatPanel's header — set via callback ref.
-   *  When non-null, Chat portals its toolbar buttons here so they appear
-   *  in the panel header row instead of occupying a separate line. */
-  headerButtonsRef?: HTMLDivElement | null
   /** Global composer-snippets api (single shared instance owned by App).
    *  Passed straight to <Composer>; the manager + save dialogs live in App. */
   snippets: ComposerSnippetsApi
   onOpenSnippetsManager: () => void
   onSaveCurrentAsSnippet: (content: string) => void
+  /** Close this panel (session stays alive). Forwarded from ChatPanel so the
+   *  message-area context menu can offer a "Close panel" item now that the
+   *  header X button is gone. */
+  onClosePanel?: (sessionId: string) => void
+  /** Open this panel's settings overlay. Forwarded from ChatPanel so the
+   *  message-area context menu can offer a "Settings" item now that the
+   *  header gear button is gone. */
+  onOpenSettingsPanel?: (sessionId: string) => void
 }
 
 export const Chat = memo(function Chat({
   session, showSystemEvents,
   settingsOpen, onCloseSettings,
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
-  onSessionUpdate, onRequestResumeForPanel, onOpenSettingsTab, settingsTabRequest, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, onRegisterInjectInput, headerButtonsRef,
-  snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet,
+  onSessionUpdate, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, settingsTabRequest, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, onRegisterInjectInput,
+  snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onOpenSettingsPanel,
 }: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
   // The parent remounts Chat on session switch (<Chat key={session.id}>), so
@@ -274,10 +280,11 @@ export const Chat = memo(function Chat({
     [session.id],
   )
 
-  // Shell-style history is stored globally (all sessions share the same
-  // ring) — matches how terminal users expect bash history to behave
-  // across tabs.
-  const history = useInputHistory(INPUT_HISTORY_KEY)
+  // Shell-style history is persisted in one localStorage ring but partitioned
+  // by session: composer navigation (Mod+↑/↓, Ctrl+P/N) only walks this
+  // session's entries, so one panel never surfaces another's prompts. The
+  // Mod+Shift+H panel still reads the whole ring across sessions.
+  const history = useInputHistory(INPUT_HISTORY_KEY, session.id)
 
   // Permissions first — its onRequest/onResolved are passed into the
   // stream hook so SDK messages and permission events share one WebSocket.
@@ -393,7 +400,9 @@ export const Chat = memo(function Chat({
     setSearchSeed(seed && !seed.includes('\n') && seed.length <= 200 ? seed : '')
     setSearchOpen(true)
   }, [])
-  const [exportMenuPos, setExportMenuPos] = useState<{ x: number; y: number } | null>(null)
+  // Message-area right-click menu. `selection` is captured at open time —
+  // clicking a menu item can collapse the live selection, so we snapshot it.
+  const [exportMenuPos, setExportMenuPos] = useState<{ x: number; y: number; selection: string } | null>(null)
   // Export-success feedback now goes through the global toast hub.
   const toast = useToast()
   const [searchQuery, setSearchQuery] = useState('')
@@ -547,8 +556,10 @@ export const Chat = memo(function Chat({
       setInput('')
       local.run({
         sessionId: session.id,
+        commands: mergedCommands,
         requestResumeForPanel: onRequestResumeForPanel,
         openSettingsTab: onOpenSettingsTab,
+        showHelp: onShowHelp,
       })
       return
     }
@@ -613,7 +624,7 @@ export const Chat = memo(function Chat({
       sendingRef.current = false
       setSending(false)
     }
-  }, [input, attachmentList, session.id, history, trackSentTurn, insertUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, pastedImages, onRequestResumeForPanel, onOpenSettingsTab])
+  }, [input, attachmentList, session.id, history, trackSentTurn, insertUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, pastedImages, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp])
 
   // Focus traps for the two in-panel overlays. The settings overlay is
   // always mounted (toggled via CSS .hidden), so the trap is gated on
@@ -670,40 +681,30 @@ export const Chat = memo(function Chat({
 
   return (
     <div className="chat">
-      {headerButtonsRef && createPortal(
-        <>
-          <button
-            className="chat-panel-header-btn"
-            onClick={(e) => { e.stopPropagation(); openSearch() }}
-            onMouseDown={(e) => e.stopPropagation()}
-            title="Search messages (Ctrl+F)"
-            aria-label="Search messages"
-          >
-            <IconSearch size={16} />
-          </button>
-          <button
-            className="chat-panel-header-btn"
-            onClick={(e) => {
-              e.stopPropagation()
-              const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
-              setExportMenuPos({ x: rect.left, y: rect.bottom + 4 })
-            }}
-            onMouseDown={(e) => e.stopPropagation()}
-            title="Export conversation"
-            aria-label="Export conversation"
-          >
-            <IconDownload size={16} />
-          </button>
-        </>,
-        headerButtonsRef,
-      )}
-
       {exportMenuPos && (
         <ContextMenu
           x={exportMenuPos.x}
           y={exportMenuPos.y}
           onClose={() => setExportMenuPos(null)}
           items={[
+            ...(exportMenuPos.selection.trim()
+              ? [
+                  {
+                    label: 'Copy',
+                    icon: <IconCopy size={14} />,
+                    onClick: () => {
+                      void navigator.clipboard?.writeText(exportMenuPos.selection)
+                    },
+                  },
+                  { label: '' },
+                ]
+              : []),
+            {
+              label: 'Search messages',
+              icon: <IconSearch size={14} />,
+              onClick: () => openSearch(),
+            },
+            { label: '' },
             {
               label: 'Export as Markdown',
               icon: <IconFileText size={14} />,
@@ -720,6 +721,25 @@ export const Chat = memo(function Chat({
                 toast.success('Exported as JSON')
               },
             },
+            { label: '' },
+            ...(onOpenSettingsPanel
+              ? [
+                  {
+                    label: 'Settings',
+                    icon: <IconSettings size={14} />,
+                    onClick: () => onOpenSettingsPanel(session.id),
+                  },
+                ]
+              : []),
+            ...(onClosePanel
+              ? [
+                  {
+                    label: 'Close panel',
+                    icon: <IconX size={14} />,
+                    onClick: () => onClosePanel(session.id),
+                  },
+                ]
+              : []),
           ]}
         />
       )}
@@ -740,6 +760,14 @@ export const Chat = memo(function Chat({
 
       <SubagentProvider value={subagentCtxValue}>
         <ReopenQuestionProvider value={reopenCtxValue}>
+        <div
+          className="chat-messages-area"
+          onContextMenu={(e) => {
+            e.preventDefault()
+            const selection = window.getSelection()?.toString() ?? ''
+            setExportMenuPos({ x: e.clientX, y: e.clientY, selection })
+          }}
+        >
         <MessageList
           items={stream.items}
           recap={session.recap}
@@ -758,6 +786,7 @@ export const Chat = memo(function Chat({
           hasOlder={stream.hasOlder}
           loadingOlder={stream.loadingOlder}
         />
+        </div>
         </ReopenQuestionProvider>
       </SubagentProvider>
 

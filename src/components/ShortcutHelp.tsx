@@ -1,20 +1,27 @@
-// Keyboard shortcut help overlay — lists all registered shortcuts in a
-// scrollable table. Triggered via Shift+/ or the command palette.
+// In-app help overlay — lists the available slash commands (when provided)
+// and all registered keyboard shortcuts in scrollable tables. Triggered via
+// the `/help` slash command (with commands) or Shift+/ / the command palette
+// (shortcuts only).
 
 import { useEffect } from 'react'
 import type { Shortcut } from '../hooks/useKeyboardShortcuts'
+import type { SlashCommand } from '../types'
 import { formatCombo } from '../utils/format-combo'
 
 interface Props {
   open: boolean
   onClose: () => void
   shortcuts: Shortcut[]
+  /** Slash commands to list above the keyboard shortcuts. Empty when help is
+   *  opened via the Mod+? shortcut (shortcuts-only view). */
+  commands?: SlashCommand[]
 }
 
-export function ShortcutHelp({ open, onClose, shortcuts }: Props) {
+export function ShortcutHelp({ open, onClose, shortcuts, commands = [] }: Props) {
   // Filter to only shortcuts with a description (undocumented ones are
   // intentionally hidden from the cheat sheet).
   const visible = shortcuts.filter((s) => s.description)
+  const showCommands = commands.length > 0
 
   useEffect(() => {
     if (!open) return
@@ -38,7 +45,31 @@ export function ShortcutHelp({ open, onClose, shortcuts }: Props) {
       }}
     >
       <div className="modal" style={{ maxWidth: 440, padding: '16px 20px' }}>
-        <h3 style={{ marginTop: 0 }}>Keyboard shortcuts</h3>
+        <h3 style={{ marginTop: 0 }}>{showCommands ? 'Help' : 'Keyboard shortcuts'}</h3>
+
+        {showCommands && (
+          <>
+            <h4 style={{ margin: '0 0 8px' }}>Slash commands</h4>
+            <table className="shortcut-table">
+              <thead>
+                <tr>
+                  <th>Command</th>
+                  <th>Description</th>
+                </tr>
+              </thead>
+              <tbody>
+                {commands.map((c) => (
+                  <tr key={c.name}>
+                    <td><kbd>/{c.name}</kbd></td>
+                    <td>{c.description}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <h4 style={{ margin: '16px 0 8px' }}>Keyboard shortcuts</h4>
+          </>
+        )}
+
         <table className="shortcut-table">
           <thead>
             <tr>

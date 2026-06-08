@@ -24,11 +24,17 @@ import {
   buildSessionAccentMap,
 } from '../theme'
 import type { CSSProperties } from 'react'
-import { applyTheme, getStoredTheme, onSystemThemeChange, toggleTheme, type Theme } from '../utils/theme'
+import { applySkin, applyTheme, getStoredSkin, getStoredTheme, onSystemThemeChange, toggleTheme, type Skin, type Theme } from '../utils/theme'
 
 export interface UseThemeResult {
   theme: Theme
   toggleThemeNext: () => void
+  /** Set the light/dark/system mode directly (used by the appearance panel,
+   *  which offers explicit choices rather than a cycle). */
+  setMode: (mode: Theme) => void
+  /** Active skin (default / glow) — orthogonal to the mode above. */
+  skin: Skin
+  setSkin: (skin: Skin) => void
   accentColor: string
   setAccentColor: (v: string) => void
   /** Raw per-session accent map (id → hex). Exposed so consumers that
@@ -82,6 +88,18 @@ export function useTheme(): UseThemeResult {
   const toggleThemeNext = useCallback(() => {
     setTheme((prev) => toggleTheme(prev))
   }, [])
+  const setMode = useCallback((mode: Theme) => {
+    setTheme(mode)
+  }, [])
+
+  // --- Skin (default / glow) — orthogonal to the light/dark mode. --------
+  const [skin, setSkinState] = useState<Skin>(getStoredSkin)
+  useEffect(() => {
+    applySkin(skin)
+  }, [skin])
+  const setSkin = useCallback((next: Skin) => {
+    setSkinState(next)
+  }, [])
 
   // --- Accent colour ------------------------------------------------------
   const [accentColor, setAccentColor] = useLocalStorage<string>(
@@ -133,6 +151,9 @@ export function useTheme(): UseThemeResult {
   return {
     theme,
     toggleThemeNext,
+    setMode,
+    skin,
+    setSkin,
     accentColor,
     setAccentColor,
     sessionColors,

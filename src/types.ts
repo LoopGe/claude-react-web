@@ -19,6 +19,19 @@ export const PERMISSION_MODES: PermissionMode[] = [
   'dontAsk',
 ]
 
+/** Reasoning effort level — controls how many tokens the model spends.
+ *  The SDK default is 'high' (equivalent to omitting the parameter). */
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+/** User-selectable effort levels, ordered low→max. Shown in the effort
+ *  chip dropdown. All five are always offered: unsupported levels for the
+ *  current model are silently downgraded by the SDK, so there's no harm in
+ *  listing them (and no per-model gating needed). */
+export const EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
+
+/** SDK default effort when none is explicitly set. */
+export const DEFAULT_EFFORT_LEVEL: EffortLevel = 'high'
+
 /** Field shape is defined once in shared/session-info.ts and instantiated
  *  here with the client's PermissionMode union. Server uses the SDK's
  *  PermissionMode; both project to the same JSON. */
@@ -97,6 +110,10 @@ export interface ModelInfo {
   description?: string
   /** Whether this model supports fast mode (research-preview Opus speedup). */
   supports_fast_mode?: boolean
+  /** Whether this model supports effort levels. */
+  supports_effort?: boolean
+  /** Effort levels this model supports (subset of EFFORT_LEVELS). */
+  supported_effort_levels?: EffortLevel[]
 }
 
 /** A slash command exposed by the SDK (e.g. /help, /clear). */

@@ -70,6 +70,13 @@ export interface SessionInfoBase<PM = string> {
    *  toggle entirely. 'cooldown' means fast mode is rate-limited and
    *  temporarily inactive. Not persisted (the SDK re-reports it). */
   fastModeState?: 'off' | 'cooldown' | 'on'
+  /** User intent: reasoning effort level. Undefined means no explicit
+   *  level was set (the SDK default is 'high'). Persisted. */
+  effortLevel?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  /** Effort levels the current model supports (SDK capability). Three-state:
+   *  undefined = unknown → UI offers all 5; [] = unsupported → UI hides the
+   *  chip; [subset] = UI offers only these. Not persisted. */
+  effortLevels?: ('low' | 'medium' | 'high' | 'xhigh' | 'max')[]
   running: boolean
   terminated: boolean
   terminatedReason?: string

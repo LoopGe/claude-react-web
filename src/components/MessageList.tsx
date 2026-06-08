@@ -1495,10 +1495,17 @@ const BlockView = memo(function BlockView({ block, searchQuery, activeMatchIdx }
     // Rendering an empty "thinking (0 chars)" <details> is pure noise, so
     // skip it entirely.
     if (block.thinking.trim().length === 0) return null
+    // Match the collapse behavior of other blocks (tool results, recap):
+    // show a one-line content preview in the summary when collapsed, not
+    // just a bare char count.
+    const preview = block.thinking.replace(/\s+/g, ' ').trim().slice(0, 120)
     return (
-      <details style={{ color: 'var(--fg-muted)', margin: '4px 0' }}>
-        <summary style={{ cursor: 'pointer' }}>thinking ({block.thinking.length} chars)</summary>
-        <pre style={{ marginTop: 6, color: 'var(--code-fg)' }}>{block.thinking}</pre>
+      <details className="thinking-details">
+        <summary className="thinking-summary">
+          <span className="thinking-label">thinking</span>
+          <span className="thinking-preview">{preview}</span>
+        </summary>
+        <pre className="thinking-body">{block.thinking}</pre>
       </details>
     )
   }
