@@ -155,6 +155,15 @@ export function buildSessionRouter(sm: SessionManager): Hono {
     return c.json({ session: info })
   })
 
+  // Toggle fast mode (research-preview Opus speedup). Forwards the intent to
+  // the SDK via applyFlagSettings; the SDK reports the real runtime state back
+  // through messages (parsed by the pump into session.fastModeState).
+  app.post('/sessions/:id/fast-mode', async (c) => {
+    const body = await safeJson<{ enabled?: boolean }>(c.req)
+    const info = await sm.setFastMode(c.req.param('id'), body.enabled === true)
+    return c.json({ session: info })
+  })
+
   // Context usage
   app.get('/sessions/:id/context-usage', async (c) => {
     const usage = await sm.contextUsage(c.req.param('id'))
@@ -176,6 +185,7 @@ export function buildSessionRouter(sm: SessionManager): Hono {
       value?: string
       displayName?: string
       description?: string
+      supportsFastMode?: boolean
     }
     const raw = (await sm.supportedModels(c.req.param('id'))) as unknown as SdkModelInfo[]
     const models = raw
@@ -184,6 +194,7 @@ export function buildSessionRouter(sm: SessionManager): Hono {
         id: m.value as string,
         display_name: m.displayName,
         description: m.description,
+        supports_fast_mode: m.supportsFastMode,
       }))
     return c.json({ models })
   })

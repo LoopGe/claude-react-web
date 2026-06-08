@@ -1,3 +1,13 @@
+/* Register --mode-color as a transitionable <color> so mode switches
+   animate smoothly instead of snapping. The initial-value is transparent
+   (invisible) — each .mode-* variant overrides it with a real colour.
+   inherits: true so the panel-level variable reaches child badges. */
+@property --mode-color {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: transparent;
+}
+
 :root {
   --bg: #0f1115;
   --bg-elev: #15181f;
@@ -15,6 +25,9 @@
   --danger: #f06363;
   --ok: #6cc88b;
   --warn: #e6b450;
+  /* Fast-mode accent — electric violet, distinct from accent/warn/ok so the
+     fast-mode chip reads as its own thing. */
+  --fast: #c08cff;
   /* Monospace stack. Cascadia (Windows Terminal / VS Code default) and
      Roboto Mono are listed before the legacy Consolas/Menlo fallbacks so
      modern terminals render their native glyphs instead of dropping to
@@ -100,6 +113,7 @@
   --danger: #d93b3b;
   --ok: #2e9e56;
   --warn: #c79518;
+  --fast: #8b3fd6;
   --msg-tool-bg: #f0f4f8;
   --msg-tool-border: #c8d4e0;
   --msg-tool-result-bg: #eef3f8;
@@ -680,11 +694,58 @@ body.resizing-col * {
   border-bottom-color: color-mix(in srgb, var(--mode-color, var(--warn)) 35%, var(--border));
   box-shadow: inset 3px 0 0 var(--mode-color, var(--warn));
 }
+.chat-panel.mode-default { --mode-color: var(--fg-muted); }
 .chat-panel.mode-plan { --mode-color: var(--warn); }
 .chat-panel.mode-bypassPermissions { --mode-color: var(--danger); }
 .chat-panel.mode-dontAsk { --mode-color: var(--danger); }
 .chat-panel.mode-acceptEdits { --mode-color: var(--accent); }
 .chat-panel.mode-auto { --mode-color: var(--accent); }
+
+/* Smooth mode-colour transitions on the panel itself. --mode-color is
+   registered via @property so the browser can interpolate it. The header
+   uses color-mix() — because the colour-stop is the only thing that
+   changes, the interpolation Just Works in supporting browsers. */
+.chat-panel {
+  transition: --mode-color 300ms ease;
+}
+.chat-panel.mode-active .chat-panel-header {
+  transition: background 300ms ease, border-bottom-color 300ms ease, box-shadow 300ms ease;
+}
+/* Ensure the header also transitions smoothly when reverting to default
+   mode (losing .mode-active). Without this, the header snaps back. */
+.chat-panel .chat-panel-header {
+  transition: background 300ms ease, border-bottom-color 300ms ease, box-shadow 300ms ease;
+}
+/* Attention-grabbing flash when the permission mode changes. The header
+   briefly brightens (25% → 8% tint) to draw the eye to the mode switch.
+   Set/unset by ChatPanel.tsx via the mode-changing class; removed on
+   animationend so it can replay on the next switch. */
+@keyframes mode-flash {
+  0%   { background: color-mix(in srgb, var(--mode-color) 25%, var(--bg-elev)); }
+  100% { background: color-mix(in srgb, var(--mode-color) 8%, var(--bg-elev)); }
+}
+.chat-panel-header.mode-changing.mode-changing {
+  animation: mode-flash 400ms ease-out;
+}
+/* Mode badge slide transition. On switch the old badge slides out to the
+   left while the new one slides in from the right, producing a lateral
+   "flow" effect. The wrapper clips overflow so the outgoing badge
+   disappears cleanly. */
+@keyframes mode-slide-in {
+  0%   { transform: translateX(50%); opacity: 0; }
+  100% { transform: translateX(0);   opacity: 1; }
+}
+@keyframes mode-slide-out {
+  0%   { transform: translateX(0);    opacity: 1; }
+  100% { transform: translateX(-50%); opacity: 0; }
+}
+
+.chat-panel-mode-badge-wrap {
+  position: relative;
+  display: inline-flex;
+  border-radius: 4px;
+}
+
 .chat-panel-mode-badge {
   display: inline-flex;
   align-items: center;
@@ -703,7 +764,21 @@ body.resizing-col * {
   user-select: none;
   line-height: 1.35;
   cursor: pointer;
-  transition: background 120ms ease, transform 120ms ease;
+  transition: background 120ms ease, color 300ms ease, transform 120ms ease;
+}
+/* The outgoing badge is positioned absolutely so it overlaps the incoming
+   one and doesn't affect layout while it slides away. It keeps its natural
+   size and slides left out of frame. */
+.chat-panel-mode-badge.mode-slide-out {
+  position: absolute;
+  left: 0;
+  top: 0;
+  animation: mode-slide-out 220ms ease-in forwards;
+  pointer-events: none;
+}
+/* The incoming badge gets the slide-in animation only during a transition. */
+.chat-panel-mode-badge.mode-slide-in {
+  animation: mode-slide-in 280ms ease-out;
 }
 /* Non-default modes get the tinted background; default stays transparent
    until hover so it doesn't compete with the title. */
@@ -724,6 +799,49 @@ body.resizing-col * {
   outline-offset: 1px;
 }
 .chat-panel-mode-badge:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* Fast-mode badge — same pill shape as the mode badge. Muted when off
+   (a quiet, opt-in control), tinted with --fast when on, and rendered in
+   --warn with a "cooldown" label when rate-limited. */
+.chat-panel-fast-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  flex-shrink: 0;
+  user-select: none;
+  line-height: 1.35;
+  cursor: pointer;
+  transition: background 120ms ease, color 200ms ease, transform 120ms ease;
+}
+.chat-panel-fast-badge.fast-on {
+  color: var(--fast);
+  background: color-mix(in srgb, var(--fast) 14%, transparent);
+}
+.chat-panel-fast-badge.fast-cooldown {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+}
+.chat-panel-fast-badge:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--fast) 22%, transparent);
+  transform: translateY(-1px);
+}
+.chat-panel-fast-badge:active:not(:disabled) { transform: translateY(0) scale(0.97); }
+.chat-panel-fast-badge:focus-visible {
+  outline: 2px solid var(--fast);
+  outline-offset: 1px;
+}
+.chat-panel-fast-badge:disabled {
   cursor: not-allowed;
   opacity: 0.45;
 }
@@ -2547,6 +2665,10 @@ body.resizing-col * {
 .streaming-msg {
   padding-top: 0;
   padding-bottom: 0;
+  /* Drop the bubble's right inset (it ate a lot of horizontal space); the
+     right breathing room is re-applied inside .streaming-plain so text and
+     the internal scrollbar still clear the border. */
+  padding-right: 0;
 }
 /* In-progress streaming text is rendered as plain text (not Markdown) for
    performance; preserve newlines/wrapping and long-word breaks so it reads
@@ -2559,6 +2681,10 @@ body.resizing-col * {
      clipped flush at the viewport edge. */
   padding-top: 10px;
   padding-bottom: 10px;
+  /* The bubble drops its right padding (.streaming-msg padding-right: 0) to
+     reclaim horizontal space, so re-apply a small right inset here — inside
+     the scroll viewport — to keep text and the scrollbar off the border. */
+  padding-right: 8px;
   /* Cap the live bubble's height so a long in-progress turn doesn't push
      the whole transcript off-screen. Past the cap the body scrolls
      internally; StreamingFooter pins it to the latest line as text flows

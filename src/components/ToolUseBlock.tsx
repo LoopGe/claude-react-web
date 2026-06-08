@@ -291,7 +291,7 @@ const PlanCard = memo(function PlanCard({
           <div className="plan-card-empty">
             {status === 'pending'
               ? 'Plan will appear after approval (CLI reads it from the plan file on disk).'
-              : '(empty plan — Claude sent no body)'}
+              : 'Plan shown above — the CLI did not echo it back into this card.'}
           </div>
         )}
       </div>

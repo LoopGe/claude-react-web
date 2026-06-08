@@ -59,6 +59,7 @@ import {
 } from './session-types.js'
 import { HttpError } from './errors.js'
 import { PermissionBroker } from './permission-broker.js'
+import { SessionHealthMonitor } from './session-health.js'
 import { debugLog } from './debug.js'
 import { pushBounded, stampReceivedAt, stampConsumedAt } from './history-utils.js'
 import { readHistoryPage, type HistoryPage } from './history-reader.js'
@@ -77,12 +78,6 @@ export {
 } from './session-types.js'
 export { HttpError } from './errors.js'
 
-/** How long after firing an auto-interrupt we give the SDK subprocess to
- *  respond before either (a) skipping the next GC tick or (b) escalating
- *  to a force-unload. Sized to be longer than typical interrupt round-trip
- *  but short enough that escalation kicks in within a couple of GC ticks. */
-const AUTO_INTERRUPT_DEDUP_MS = 2 * 60 * 1000
-
 /** True when `text` is the `/clear` slash command. Mirrors the strict
  *  first-token matching in src/local-commands.ts (matchLocalCommand):
  *  trim → require a leading '/' → compare ONLY the first whitespace-
@@ -100,9 +95,8 @@ export class SessionManager {
   private sessions = new Map<string, Session>()
   private historyCap: number
   private permissionTimeoutMs: number
-  private workingStuckMs: number
   private autoResumeEnabled: boolean
-  private gcTimer?: NodeJS.Timeout
+  private healthMonitor: SessionHealthMonitor
   private store?: SessionStore
   private mcpStore?: McpConfigStore
   private mpStore?: MpStore
@@ -130,14 +124,18 @@ export class SessionManager {
     this.historyCap = opts.historyCap ?? defaultConfig.historyCap
     this.permissionTimeoutMs = opts.permissionTimeoutMs ?? defaultConfig.permissionTimeoutMs
     this.permBroker = new PermissionBroker({ permissionTimeoutMs: this.permissionTimeoutMs })
-    this.workingStuckMs = opts.workingStuckMs ?? defaultConfig.workingStuckMs
     this.autoResumeEnabled = opts.autoResume ?? false
     this.store = opts.store
     this.mcpStore = opts.mcpConfigStore
     this.mpStore = opts.mpStore
-    this.gcTimer = setInterval(() => this.gc(), 60_000)
-    // Don't keep the Node process alive just for GC
-    this.gcTimer.unref?.()
+    // Stuck-session monitor — periodic GC tick with auto-interrupt.
+    // `unload` is a class method so it's always available via `this`.
+    // The deps arrow captures `this` so the callback stays bound.
+    this.healthMonitor = new SessionHealthMonitor({
+      sessions: this.sessions,
+      workingStuckMs: opts.workingStuckMs ?? defaultConfig.workingStuckMs,
+      unload: (id, opts) => this.unload(id, opts),
+    })
 
     // Process monitor — real-time CLI exit detection
     this.processMonitor = new ProcessMonitor((info) => this.handleProcessExit(info))
@@ -162,8 +160,7 @@ export class SessionManager {
     })
 
     console.log(
-      `[session-manager] initialized — permissionTimeoutMs=${this.permissionTimeoutMs}, ` +
-      `workingStuckMs=${this.workingStuckMs}`,
+      `[session-manager] initialized — permissionTimeoutMs=${this.permissionTimeoutMs}`,
     )
   }
 
@@ -344,6 +341,7 @@ export class SessionManager {
       permissionMode: s.permissionMode,
       title: s.title,
       betas: s.betas,
+      fastMode: s.fastMode,
       messageCount: s.history.length,
       terminated: s.terminated,
       terminatedReason: s.terminatedReason,
@@ -809,6 +807,10 @@ export class SessionManager {
       // it forward so the "This session" anchor stays stable even if the
       // server restarts. New sessions get a fresh capture below.
       gitStartSha: existingMeta?.gitStartSha,
+      // Preserve the fast-mode intent across resume/restart. Re-applied to
+      // the SDK after query() spawns (applyFlagSettings is streaming-only
+      // and must run post-spawn). The SDK re-reports fastModeState itself.
+      fastMode: existingMeta?.fastMode,
     }
 
     // Register canUseTool on fullOpts BEFORE query(). See note on
@@ -836,6 +838,17 @@ export class SessionManager {
     // Create the Query — spawns the claude CLI subprocess.
     const q = query({ prompt: input.iterable, options: fullOpts })
     session.query = q
+
+    // Re-apply the persisted fast-mode intent. applyFlagSettings is a
+    // streaming control request, so it can only run after query() spawns —
+    // hence here rather than via Options. Fire-and-forget: a failure (e.g.
+    // unsupported model, no fast-mode entitlement) is non-fatal and just
+    // means fast mode stays off; the SDK reports the real state via the pump.
+    if (session.fastMode) {
+      void q.applyFlagSettings({ fastMode: true }).catch((err) => {
+        console.warn(`[session ${id}] re-applying fastMode on spawn failed:`, err)
+      })
+    }
 
     session.pumpTask = this.pump(session)
     this.sessions.set(id, session)
@@ -1013,6 +1026,21 @@ export class SessionManager {
   async applySettings(id: string, settings: Settings): Promise<SessionInfo> {
     const s = this.requireLive(id)
     await s.query.applyFlagSettings(settings)
+    s.lastActivityAt = Date.now()
+    this.persist(s)
+    return this.info(s)
+  }
+
+  /** Toggle fast mode for a session. Forwards the intent to the SDK via
+   *  applyFlagSettings({ fastMode }) and records it locally so it survives
+   *  resume/restart (re-applied on respawn). The SDK reports the actual
+   *  runtime state (off/cooldown/on) back through messages, which the pump
+   *  parses into s.fastModeState — so we do NOT optimistically set the
+   *  runtime state here. */
+  async setFastMode(id: string, enabled: boolean): Promise<SessionInfo> {
+    const s = this.requireLive(id)
+    await s.query.applyFlagSettings({ fastMode: enabled })
+    s.fastMode = enabled
     s.lastActivityAt = Date.now()
     this.persist(s)
     return this.info(s)
@@ -1588,7 +1616,7 @@ export class SessionManager {
   }
 
   async shutdown(): Promise<void> {
-    if (this.gcTimer) clearInterval(this.gcTimer)
+    this.healthMonitor.stop()
     // End all global subscribers so their iterators resolve and
     // don't hang waiting for events that will never arrive.
     for (const sub of this.globalSubscribers.values()) sub.end()
@@ -1666,6 +1694,8 @@ export class SessionManager {
       permissionMode: s.permissionMode,
       title: s.title,
       betas: s.betas,
+      fastMode: s.fastMode,
+      fastModeState: s.fastModeState,
       running: s.running,
       terminated: s.terminated,
       terminatedReason: s.terminatedReason,
@@ -1712,6 +1742,9 @@ export class SessionManager {
       model: meta.model,
       permissionMode: meta.permissionMode,
       title: meta.title,
+      fastMode: meta.fastMode,
+      // Dormant: no live Query, so the SDK isn't reporting a runtime state.
+      // Leave fastModeState undefined — the UI hides the chip until resume.
       running: false,
       terminated: meta.terminated,
       terminatedReason: meta.terminatedReason,
@@ -1814,6 +1847,14 @@ export class SessionManager {
         // Pump calls this when a `/clear`-triggered init confirms the
         // context reset (after it truncates the history ring).
         broadcastSessionCleared: (id) => this.broadcastSessionCleared(id),
+        // Pump calls this when the SDK-reported fast_mode_state changes.
+        // Broadcasts a session-update WITHOUT writing to disk — the runtime
+        // fast-mode state is transient and re-reported after respawn, so it
+        // doesn't belong in persisted meta.
+        broadcastInfo: (s) => {
+          if (!this.sessions.has(s.id)) return
+          this.broadcastGlobal({ kind: 'update', session: this.info(s) })
+        },
       }
     }
     return this.cachedPumpDeps
@@ -1895,6 +1936,14 @@ export class SessionManager {
     // Create new Query
     const q = query({ prompt: newInput.iterable, options: resumeOpts })
 
+    // Re-apply fast-mode intent across the respawn (same rationale as
+    // spawn(): applyFlagSettings is streaming-only, must run post-query).
+    if (session.fastMode) {
+      void q.applyFlagSettings({ fastMode: true }).catch((err) => {
+        console.warn(`[session ${session.id}] re-applying fastMode on auto-resume failed:`, err)
+      })
+    }
+
     // Update session with new references
     session.input = newInput
     session.query = q
@@ -1915,84 +1964,5 @@ export class SessionManager {
     return true
   }
 
-  /** Periodic check for stuck sessions. Idle sessions are no longer
-   *  auto-unloaded — they persist until explicitly deleted by the user. */
-  private gc() {
-    const now = Date.now()
-    for (const [id, s] of this.sessions) {
-      this.checkStuck(id, s, now)
-    }
-  }
-
-  /** Detect sessions that have made no progress for too long and try to
-   *  shake them loose. Three flavours:
-   *
-   *  1. Mid-turn silence: pump received SOME messages but none recently.
-   *     Measured by `lastActivityAt` — moves on every SDK message of any
-   *     type (assistant, stream_event, task_progress, etc), so a session
-   *     legitimately producing a long stream of progress events resets
-   *     the clock and is never falsely classified as stuck. Only sessions
-   *     that have actually gone silent get caught.
-   *
-   *  2. Init silence: session was spawned but NO messages have arrived
-   *     yet. Common with proxy backends whose init handshake hangs. We
-   *     can't interrupt() these usefully (the SDK subprocess hasn't
-   *     wired up control yet), so we force-unload instead.
-   *
-   *  3. Already-interrupted: don't re-fire auto-interrupt every 60s.
-   *     Once we've kicked a session, give it AUTO_INTERRUPT_DEDUP_MS to
-   *     respond before kicking again. After that escalate to unload. */
-  private checkStuck(id: string, s: Session, now: number): void {
-    if (this.workingStuckMs <= 0) return
-    if (!s.running || s.terminated || s.exiting) return
-    // Only check sessions that are actively working (mid-turn).
-    // Idle sessions (pendingTurns=0, no pending permissions) are not stuck —
-    // they are waiting for user input and should persist indefinitely.
-    if (s.pendingTurns === 0 && s.pending.size === 0) return
-
-    const idleSince = now - s.lastActivityAt
-    if (idleSince <= this.workingStuckMs) return
-
-    // Init never landed: no point sending interrupt control frames into a
-    // half-spawned subprocess. Schedule unload directly.
-    if (s.history.length === 0) {
-      console.warn(
-        `[session ${id}] init never completed — no messages after ${idleSince}ms ` +
-        `(pendingTurns=${s.pendingTurns}, subscribers=${s.subscribers.size}). Force-unloading.`,
-      )
-      void this.unload(id, { terminate: true, reason: 'init_stuck' })
-      return
-    }
-
-    // Mid-turn but truly stuck (lastActivityAt is older than threshold).
-    // De-dup repeated kicks: if we already fired an interrupt recently,
-    // wait it out before deciding what to do next.
-    if (s.autoInterruptedAt && now - s.autoInterruptedAt < AUTO_INTERRUPT_DEDUP_MS) {
-      return
-    }
-
-    // If we ALREADY tried interrupt once and it didn't break the silence
-    // (autoInterruptedAt was set, dedup window has now passed, AND we're
-    // still stuck), the SDK subprocess is wedged. Escalate to unload.
-    if (s.autoInterruptedAt) {
-      console.error(
-        `[session ${id}] still silent ${now - s.autoInterruptedAt}ms after auto-interrupt — escalating to unload`,
-      )
-      void this.unload(id, { terminate: true, reason: 'stuck' })
-      return
-    }
-
-    const startedAt = Date.now()
-    console.warn(
-      `[session ${id}] no SDK message for ${idleSince}ms — auto-interrupting ` +
-      `(pendingTurns=${s.pendingTurns}, pending perms=${s.pending.size}, ` +
-      `subscribers=${s.subscribers.size}, history=${s.history.length})`,
-    )
-    s.autoInterruptedAt = now
-    s.query.interrupt().then(
-      () => console.warn(`[session ${id}] auto-interrupt() resolved in ${Date.now() - startedAt}ms`),
-      (err) => console.error(`[session ${id}] auto-interrupt() rejected after ${Date.now() - startedAt}ms:`, err),
-    )
-  }
 }
 

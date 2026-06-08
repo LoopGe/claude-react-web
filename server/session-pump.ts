@@ -7,7 +7,7 @@
 // mark session as terminated, persist final state).
 
 import { randomUUID } from 'node:crypto'
-import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { FastModeState, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { Session, SessionBroadcaster } from './session-types.js'
 import { endAllSubscribers } from './session-types.js'
 import { debugLog } from './debug.js'
@@ -85,6 +85,17 @@ export function toolResultIds(msg: SDKMessage): string[] {
   return ids
 }
 
+/** Extract the SDK-reported `fast_mode_state` from a message, if present.
+ *  The field rides on `system/init` and `result` (success + error) messages
+ *  (see sdk.d.ts: SDKSystemMessage, SDKResultSuccess, SDKResultError). We
+ *  probe every message defensively rather than branching on type — a missing
+ *  field is simply undefined. Returns undefined when absent (which also means
+ *  "the current model doesn't support fast mode"). Pure — exported for tests. */
+export function fastModeStateOf(msg: SDKMessage): FastModeState | undefined {
+  const fms = (msg as { fast_mode_state?: unknown }).fast_mode_state
+  return fms === 'off' || fms === 'cooldown' || fms === 'on' ? fms : undefined
+}
+
 export interface PumpDeps {
   historyCap: number
   persist: (session: Session) => void
@@ -107,6 +118,11 @@ export interface PumpDeps {
    *  (after the pump truncates the history ring). Optional so test
    *  fixtures that don't exercise /clear can omit it. */
   broadcastSessionCleared?: (id: string) => void
+  /** Push a `session-update` frame (e.g. after the SDK-reported fast-mode
+   *  state changes). Distinct from `persist` — this broadcasts WITHOUT
+   *  writing to disk, for transient runtime state that doesn't belong in
+   *  persisted meta. Optional so test fixtures can omit it. */
+  broadcastInfo?: (session: Session) => void
 }
 
 /**
@@ -233,6 +249,19 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           }
         }
         session.lastActivityAt = Date.now()
+        // Track the SDK-reported fast-mode runtime state. It rides on
+        // system/init and result messages; when it changes, broadcast a
+        // session-update so the UI's fast-mode chip reflects reality
+        // (including the 'cooldown' rate-limited state). Not persisted —
+        // the SDK re-reports it after respawn. Only broadcast on a real
+        // change to avoid a frame per message.
+        {
+          const fms = fastModeStateOf(msg)
+          if (fms !== undefined && fms !== session.fastModeState) {
+            session.fastModeState = fms
+            deps.broadcastInfo?.(session)
+          }
+        }
         // The session has produced something since the last GC kick, so any
         // pending auto-interrupt mark is no longer relevant — clear it so a
         // future silence triggers fresh detection rather than immediately

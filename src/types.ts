@@ -95,6 +95,8 @@ export interface ModelInfo {
   id: string
   display_name?: string
   description?: string
+  /** Whether this model supports fast mode (research-preview Opus speedup). */
+  supports_fast_mode?: boolean
 }
 
 /** A slash command exposed by the SDK (e.g. /help, /clear). */

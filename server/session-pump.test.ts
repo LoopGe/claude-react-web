@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
   clearSignalAction,
+  fastModeStateOf,
   liteContextUsageFromResult,
   toolResultIds,
   userMessageHasToolResult,
@@ -357,5 +358,20 @@ describe('liteContextUsageFromResult', () => {
     const out = liteContextUsageFromResult(msg)
     expect(out!.model).toBe('real-model')
     expect(out!.maxTokens).toBe(100000)
+  })
+})
+
+
+describe('fastModeStateOf', () => {
+  it('extracts on/off/cooldown from a message', () => {
+    expect(fastModeStateOf({ type: 'result', fast_mode_state: 'on' } as never)).toBe('on')
+    expect(fastModeStateOf({ type: 'system', subtype: 'init', fast_mode_state: 'off' } as never)).toBe('off')
+    expect(fastModeStateOf({ type: 'result', fast_mode_state: 'cooldown' } as never)).toBe('cooldown')
+  })
+
+  it('returns undefined when the field is absent or unrecognized', () => {
+    expect(fastModeStateOf({ type: 'assistant' } as never)).toBeUndefined()
+    expect(fastModeStateOf({ type: 'result', fast_mode_state: 'bogus' } as never)).toBeUndefined()
+    expect(fastModeStateOf({ type: 'result' } as never)).toBeUndefined()
   })
 })

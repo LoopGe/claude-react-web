@@ -2,7 +2,7 @@
  *  carries the close button, focus click-target, and a dormant/terminated
  *  placeholder when the session's Query isn't live. */
 
-import { memo, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { Chat } from './Chat'
 import { ContextMenu } from './ContextMenu'
@@ -16,7 +16,7 @@ import { statusClass, statusLabel, shortenModel } from '../utils/session-status'
 import { useModelOptions } from '../hooks/useModelOptions'
 import { ModelPicker } from './ModelPicker'
 import { shortenPath } from '../utils/paths'
-import { IconSettings, IconX, IconFolder, IconCheck, IconAlertTriangle, IconSparkles } from './icons/ToolIcons'
+import { IconSettings, IconX, IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconZap } from './icons/ToolIcons'
 import { PermissionModeIcon, permissionModeLabel } from './permission-mode-display'
 import type { PermissionMode, SessionInfo } from '../types'
 import type { SettingsTabName } from '../local-commands'
@@ -237,8 +237,49 @@ export const ChatPanel = memo(function ChatPanel({
     )
   }
 
+  const commitFastMode = () => {
+    const next = !(session.fastMode ?? false)
+    commitWithRollback(
+      session,
+      `/sessions/${session.id}/fast-mode`,
+      { enabled: next },
+      { fastMode: session.fastMode },
+      `Couldn't toggle fast mode`,
+      onSessionUpdate,
+      toast.error,
+    )
+  }
+
   const permMode = session.permissionMode ?? 'default'
   const isNonDefaultMode = permMode !== 'default'
+  /** Detect permission-mode changes and apply a brief flash animation
+   *  class to the header. The class triggers mode-flash and is removed
+   *  on animationend so it can replay on the next switch.
+   *  Also tracks the previous mode for the badge slide-out transition. */
+  const prevPermModeRef = useRef(permMode)
+  const [modeChanging, setModeChanging] = useState(false)
+  const [modeTransitionFrom, setModeTransitionFrom] = useState<PermissionMode | null>(null)
+  useEffect(() => {
+    if (prevPermModeRef.current !== permMode) {
+      setModeTransitionFrom(prevPermModeRef.current)
+      prevPermModeRef.current = permMode
+      setModeChanging(true)
+    }
+  }, [permMode])
+  // Fast mode chip.
+  //  - Visibility is gated on the SDK reporting a runtime state: undefined
+  //    means the current model doesn't support fast mode (the SDK omits the
+  //    field), so we hide the chip entirely.
+  //  - cooldown is a real runtime state (rate-limited) and must NOT be masked
+  //    by the optimistic intent — it takes precedence.
+  //  - on/off appearance follows the user INTENT (session.fastMode) so a
+  //    click flips the chip instantly, even while idle (the SDK only reports
+  //    fastModeState on the next init/result). The runtime state catches up
+  //    and the POST response / WS update keeps intent authoritative.
+  const fastState = session.fastModeState
+  const fastVisible = fastState !== undefined
+  const fastCooldown = fastState === 'cooldown'
+  const fastOn = !fastCooldown && (session.fastMode ?? false)
 
   return (
     <section
@@ -247,7 +288,7 @@ export const ChatPanel = memo(function ChatPanel({
         focused ? 'focused' : '',
         dropActive ? 'drop-target' : '',
         isNonDefaultMode ? 'mode-active' : '',
-        isNonDefaultMode ? `mode-${permMode}` : '',
+        `mode-${permMode}`,
       ].filter(Boolean).join(' ')}
       style={accentStyle}
       onMouseDownCapture={(e) => {
@@ -282,7 +323,8 @@ export const ChatPanel = memo(function ChatPanel({
       }}
     >
       <div
-        className="chat-panel-header"
+        className={`chat-panel-header${modeChanging ? ' mode-changing' : ''}`}
+        onAnimationEnd={() => modeChanging && setModeChanging(false)}
         // The header is the drag handle for panel swaps — the body stays
         // non-draggable so textarea text selection and scrolling work.
         draggable={!isMobile}
@@ -325,22 +367,69 @@ export const ChatPanel = memo(function ChatPanel({
             modes; muted/neutral in default mode so it reads as a quiet
             control rather than a warning. */}
         <Tooltip label={`Permission mode: ${permissionModeLabel(permMode)} · click to change`} placement="bottom">
-          <button
-            type="button"
-            className={`chat-panel-mode-badge mode-${permMode}`}
-            disabled={chipsDisabled}
-            aria-label={`Permission mode: ${permissionModeLabel(permMode)} · click to change`}
+          <span
+            className="chat-panel-mode-badge-wrap"
             onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation()
-              const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
-              setPermMenu({ x: rect.left, y: rect.bottom + 4 })
-            }}
           >
-            <PermissionModeIcon mode={permMode} />
-            {permMode}
-          </button>
+            {modeTransitionFrom != null && (
+              <span
+                key={`out-${modeTransitionFrom}`}
+                className={`chat-panel-mode-badge mode-${modeTransitionFrom} mode-slide-out`}
+                aria-hidden
+              >
+                <PermissionModeIcon mode={modeTransitionFrom} />
+                {modeTransitionFrom}
+              </span>
+            )}
+            <button
+              type="button"
+              key={`mode-${permMode}`}
+              className={`chat-panel-mode-badge mode-${permMode}${modeTransitionFrom != null ? ' mode-slide-in' : ''}`}
+              disabled={chipsDisabled}
+              aria-label={`Permission mode: ${permissionModeLabel(permMode)} · click to change`}
+              onAnimationEnd={() => setModeTransitionFrom(null)}
+              onClick={(e) => {
+                e.stopPropagation()
+                const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
+                setPermMenu({ x: rect.left, y: rect.bottom + 4 })
+              }}
+            >
+              <PermissionModeIcon mode={permMode} />
+              {permMode}
+            </button>
+          </span>
         </Tooltip>
+        {/* Fast-mode control. Only shown when the SDK reports a fast-mode
+            runtime state for the current model (undefined → model doesn't
+            support it → chip hidden). 'cooldown' means the speedup is
+            rate-limited and temporarily inactive, so we disable the toggle
+            and explain why. Clicking flips the persisted intent. */}
+        {fastVisible && (
+          <Tooltip
+            label={
+              fastCooldown
+                ? 'Fast mode: rate-limited (cooldown) · resumes automatically'
+                : `Fast mode: ${fastOn ? 'on' : 'off'} · Opus-only · faster output, premium pricing · click to toggle`
+            }
+            placement="bottom"
+          >
+            <button
+              type="button"
+              className={`chat-panel-fast-badge${fastOn ? ' fast-on' : ''}${fastCooldown ? ' fast-cooldown' : ''}`}
+              disabled={chipsDisabled || fastCooldown}
+              aria-pressed={fastOn}
+              aria-label={`Fast mode: ${fastState} · click to toggle`}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation()
+                commitFastMode()
+              }}
+            >
+              <IconZap size={13} aria-hidden />
+              {fastCooldown ? 'cooldown' : 'fast'}
+            </button>
+          </Tooltip>
+        )}
         <div className="chat-panel-meta">
           <Tooltip label={`Model: ${session.model ?? 'default'} · click to change`} placement="bottom">
             <button

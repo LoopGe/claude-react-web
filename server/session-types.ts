@@ -3,6 +3,7 @@
 
 import type {
   CanUseTool,
+  FastModeState,
   PermissionMode,
   PermissionResult,
   PermissionUpdate,
@@ -116,6 +117,17 @@ export interface Session {
    *  `context-1m-...`). Stored on the live session so restart / resume
    *  / fork can re-apply them and the context window stays consistent. */
   betas?: string[]
+  /** User intent: whether fast mode is requested for this session. Set via
+   *  setFastMode (forwarded to the SDK as applyFlagSettings({ fastMode })),
+   *  persisted so it survives resume/restart, and re-applied on respawn. */
+  fastMode?: boolean
+  /** SDK-reported runtime fast-mode state ('off' | 'cooldown' | 'on'),
+   *  parsed from system/init and result messages. Read-only — reflects what
+   *  the backend is actually doing (e.g. 'cooldown' after a rate limit).
+   *  undefined means the current model doesn't support fast mode (the SDK
+   *  omits the field), which the UI uses to hide the toggle. Not persisted —
+   *  the SDK re-reports it after respawn. */
+  fastModeState?: FastModeState
   input: Pushable<SDKUserMessage>
   query: Query
   subscribers: Map<string, Subscriber>

@@ -295,10 +295,20 @@ export function getPlanResultDecisions(msg: SdkMessage, known: ReadonlyMap<strin
 
 /** Extract plan body text from ExitPlanMode tool_result outputs.
  *
- *  The CLI's `normalizeToolInput` reads the plan file from disk and
- *  injects it into the tool_result output as `plan`.  We pull that
- *  text out so the PermissionDialog and inline PlanCard can display
- *  it even though the tool_use input only carries `allowedPrompts`. */
+ *  The plan body is NOT in the tool_use input on current CLI builds (the
+ *  input often carries only `allowedPrompts`). On approval the CLI emits a
+ *  tool_result in one of these shapes:
+ *    - JSON `ExitPlanModeOutput` with a `.plan` string field (legacy);
+ *    - a long text blob that echoes the plan under an `## Approved Plan:`
+ *      (or `## Approved Plan (edited by user):`) heading;
+ *    - a short boilerplate like "User has approved exiting plan mode. You
+ *      can now proceed." that carries NO plan at all.
+ *
+ *  We must capture ONLY a genuine plan body — never the boilerplate. The old
+ *  implementation fell back to "use the whole text if it isn't a rejection",
+ *  which made the PlanCard render the approval sentence as if it were the
+ *  plan. So here we extract the `.plan` field or the `## Approved Plan`
+ *  section, and capture nothing otherwise. */
 export function extractPlanContent(
   msg: SdkMessage,
   knownPlanIds: ReadonlySet<string>,
@@ -308,26 +318,40 @@ export function extractPlanContent(
   for (const block of getBlocks(msg)) {
     if (block.type !== 'tool_result' || typeof block.tool_use_id !== 'string') continue
     if (!knownPlanIds.has(block.tool_use_id)) continue
-    // The tool_result content is the CLI's ExitPlanModeOutput serialized
-    // as JSON.  Try to parse and extract the `plan` field.
     const raw = textOfContent(block.content)
     if (!raw) continue
-    let plan = ''
-    try {
-      const parsed = JSON.parse(raw)
-      if (typeof parsed === 'object' && parsed !== null && typeof parsed.plan === 'string') {
-        plan = parsed.plan
-      }
-    } catch {
-      // Not JSON — the CLI may have returned plain text.  Use as-is
-      // if it looks like a plan (non-empty, not a rejection message).
-      if (raw.length > 0 && !REJECTION_NEEDLES.some((n) => raw.toLowerCase().includes(n))) {
-        plan = raw
-      }
-    }
+    const plan = parsePlanFromResult(raw)
     if (plan) out.push({ toolUseId: block.tool_use_id, plan })
   }
   return out
+}
+
+/** Heading the CLI prints right before echoing the approved plan in the
+ *  long-form tool_result. Matches both "## Approved Plan:" and
+ *  "## Approved Plan (edited by user):". Capture group 1 is the body. */
+const APPROVED_PLAN_HEADING = /^[ \t]*#{1,6}[ \t]*Approved Plan\b[^\n]*\n([\s\S]*)$/m
+
+/** Pull the genuine plan markdown out of an ExitPlanMode tool_result.
+ *  Returns '' when the result carries no plan (boilerplate approval,
+ *  rejection, error) so the caller stores nothing. */
+function parsePlanFromResult(raw: string): string {
+  // Legacy shape: the whole result is JSON with a `.plan` string.
+  const trimmed = raw.trim()
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (typeof parsed === 'object' && parsed !== null && typeof parsed.plan === 'string') {
+        return parsed.plan.trim()
+      }
+    } catch {
+      // fall through to the text-heading parse below
+    }
+  }
+  // Long-form text: plan body follows an "## Approved Plan" heading.
+  const m = APPROVED_PLAN_HEADING.exec(raw)
+  if (m) return m[1].trim()
+  // Anything else (short boilerplate, rejection, error) carries no plan.
+  return ''
 }
 
 export function mapPendingPermissions(requests: PermissionRequest[]): Map<string, PermissionRequest> {

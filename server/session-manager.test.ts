@@ -487,6 +487,25 @@ describe('SessionManager', () => {
     expect(sm.get(info.id).model).toBe('new-model')
   })
 
+  it('setFastMode() records the intent and forwards applyFlagSettings({ fastMode }) to the Query', async () => {
+    const info = sm.create({})
+    expect(info.fastMode).toBeUndefined()
+    const updated = await sm.setFastMode(info.id, true)
+    expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ fastMode: true })
+    expect(updated.fastMode).toBe(true)
+    expect(sm.get(info.id).fastMode).toBe(true)
+    await sm.setFastMode(info.id, false)
+    expect(mockHandles[0].applyFlagSettings).toHaveBeenLastCalledWith({ fastMode: false })
+    expect(sm.get(info.id).fastMode).toBe(false)
+  })
+
+  it('setFastMode() persists the intent so it survives resume', async () => {
+    const info = sm.create({})
+    await sm.setFastMode(info.id, true)
+    await store.flush()
+    expect(store.get(info.id)?.fastMode).toBe(true)
+  })
+
   it('rename() updates title on a live session', () => {
     const info = sm.create({ title: 'before' })
     const updated = sm.rename(info.id, 'after')

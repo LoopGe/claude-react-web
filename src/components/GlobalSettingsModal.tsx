@@ -4,7 +4,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../hooks/useApi'
 import { formatBytes } from '../utils/format'
-import { IconX, IconCheck } from './icons/ToolIcons'
+import { IconX, IconCheck, IconArrowUp, IconArrowDown } from './icons/ToolIcons'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
 import type { FullServerConfig } from '../types/config'
 import type { McpServerConfigMeta } from '../types'
@@ -245,6 +245,18 @@ export function GlobalSettingsModal({
     if (commitMessageModel === model) setCommitMessageModel('')
   }
 
+  const moveModel = (index: number, direction: -1 | 1) => {
+    const target = index + direction
+    if (target < 0 || target >= modelList.length) return
+    const next = [...modelList]
+    ;[next[index], next[target]] = [next[target], next[index]]
+    setModelList(next)
+  }
+
+  const sortModels = () => {
+    setModelList([...modelList].sort((a, b) => a.localeCompare(b)))
+  }
+
   const deleteMcpServer = async (name: string) => {
     try {
       await api.delete(`/mcp-config/${encodeURIComponent(name)}`)
@@ -333,6 +345,8 @@ export function GlobalSettingsModal({
                   onNewModelChange={setNewModel}
                   onAddModel={addModel}
                   onRemoveModel={removeModel}
+                  onMoveModel={moveModel}
+                  onSortModels={sortModels}
                 />
               )}
               {tab === 'server' && (
@@ -477,6 +491,7 @@ function ApiTab({
 function ModelsTab({
   modelList, recapModel, commitMessageModel, newModel,
   onRecapModelChange, onCommitMessageModelChange, onNewModelChange, onAddModel, onRemoveModel,
+  onMoveModel, onSortModels,
 }: {
   modelList: string[]
   recapModel: string
@@ -487,13 +502,27 @@ function ModelsTab({
   onNewModelChange: (v: string) => void
   onAddModel: () => void
   onRemoveModel: (m: string) => void
+  onMoveModel: (index: number, direction: -1 | 1) => void
+  onSortModels: () => void
 }) {
   return (
     <>
       <Field label="Available Models" hint="First model is the default. Add model IDs one at a time.">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {modelList.length > 1 && (
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 2 }}>
+              <button
+                className="btn"
+                style={{ fontSize: 11, padding: '2px 8px' }}
+                onClick={onSortModels}
+                title="Sort alphabetically (A→Z)"
+              >
+                A→Z
+              </button>
+            </div>
+          )}
           {modelList.map((m, i) => (
-            <div key={m} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <div key={m} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
               <span style={{
                 fontSize: 11, color: 'var(--fg-muted)', width: 18, textAlign: 'right', flexShrink: 0,
               }}>
@@ -506,6 +535,26 @@ function ModelsTab({
               }}>
                 {m}
               </code>
+              <button
+                className="btn"
+                style={{ padding: '2px 6px', fontSize: 11, flexShrink: 0 }}
+                onClick={() => onMoveModel(i, -1)}
+                disabled={i === 0}
+                title="Move up"
+                aria-label="Move up"
+              >
+                <IconArrowUp size={12} />
+              </button>
+              <button
+                className="btn"
+                style={{ padding: '2px 6px', fontSize: 11, flexShrink: 0 }}
+                onClick={() => onMoveModel(i, 1)}
+                disabled={i === modelList.length - 1}
+                title="Move down"
+                aria-label="Move down"
+              >
+                <IconArrowDown size={12} />
+              </button>
               <button
                 className="btn"
                 style={{ padding: '2px 6px', fontSize: 11, flexShrink: 0 }}

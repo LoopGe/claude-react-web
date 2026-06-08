@@ -33,6 +33,10 @@ export interface SessionMeta {
    *  re-spawn (restart / resume / fork). Persists the 1M-context flag
    *  for Sonnet 4 across server restarts. */
   betas?: string[]
+  /** User intent: whether fast mode was requested. Re-applied to the SDK
+   *  on re-spawn (resume / restart). Only the intent is persisted — the
+   *  SDK's runtime fast_mode_state is re-reported after respawn. */
+  fastMode?: boolean
   /** Monotonic counter of user turns seen; used as a rough "is there
    *  anything to resume?" hint for the UI. */
   messageCount: number
@@ -136,6 +140,7 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     betas: Array.isArray(r.betas) && r.betas.every((b) => typeof b === 'string')
       ? (r.betas as string[])
       : undefined,
+    fastMode: typeof r.fastMode === 'boolean' ? r.fastMode : undefined,
     messageCount: typeof r.messageCount === 'number' ? r.messageCount : 0,
     terminated: typeof r.terminated === 'boolean' ? r.terminated : false,
     terminatedReason: typeof r.terminatedReason === 'string' ? r.terminatedReason : undefined,

@@ -62,6 +62,14 @@ export interface SessionInfoBase<PM = string> {
    *  practical case is `context-1m-...` for Sonnet 4's 1M window: without
    *  preservation, restart silently drops back to the default 200k. */
   betas?: string[]
+  /** User intent: whether fast mode is requested for this session.
+   *  Persisted; survives resume/restart. */
+  fastMode?: boolean
+  /** SDK-reported runtime fast-mode state. undefined means the current
+   *  model doesn't support fast mode — the UI uses this to hide the
+   *  toggle entirely. 'cooldown' means fast mode is rate-limited and
+   *  temporarily inactive. Not persisted (the SDK re-reports it). */
+  fastModeState?: 'off' | 'cooldown' | 'on'
   running: boolean
   terminated: boolean
   terminatedReason?: string

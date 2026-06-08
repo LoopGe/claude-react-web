@@ -326,16 +326,26 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
   const knownIdsRef = useRef<Set<string>>(new Set())
   const enterIdsRef = useRef<Set<string>>(new Set())
   const prevLenRef = useRef(0)
+  // Tracks the id of the last renderable item so the gate can detect an
+  // in-place echo replacement (optimistic id → server uuid at the same
+  // tail position) and transfer the entering flag for a seamless animation.
+  const prevLastIdRef = useRef<string | null>(null)
   /* eslint-disable react-hooks/refs -- ref reads/writes during render commit
      the enter-set together with `data`, mirroring the firstItemIndex block. */
   {
     const prevLen = prevLenRef.current
     const curLen = renderableItems.length
     // Tail-append candidates: ids at index >= prevLen that we've never seen.
-    // Only consider when growing a non-empty list by a small delta (live
-    // arrivals trickle in 1–2 at a time; bulk loads add many at once).
+    // Only consider when growing the list by a small delta (live arrivals
+    // trickle in 1–2 at a time; bulk loads add many at once).
+    //
+    // prevLen may be 0 for the very first message in a session — that case
+    // is fine because receivedAt recency (ENTER_MAX_AGE_MS) and batch-size
+    // guards (MAX_ENTER_BATCH) together prevent initial replay / session-
+    // switch bulk loads from animating. A disk-restored single-message
+    // session also won't animate (receivedAt is undefined).
     const delta = curLen - prevLen
-    const armed = replayReady && prevLen > 0 && delta > 0 && delta <= MAX_ENTER_BATCH
+    const armed = replayReady && delta > 0 && delta <= MAX_ENTER_BATCH
     if (armed) {
       // eslint-disable-next-line react-hooks/purity -- Date.now() gates animation recency; a stale value at worst skips one animation, never corrupts state.
       const now = Date.now()
@@ -346,6 +356,26 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
           enterIdsRef.current.add(it.id)
         }
       }
+    }
+    // Echo-replacement transfer: when the server echo replaces the optimistic
+    // placeholder in-place (same index, same list length, different id), the
+    // new id should inherit the entering flag so the animation continues
+    // seamlessly rather than snapping to a static bubble mid-transition.
+    // We only check the last few items (the tail window where replacements
+    // actually happen) to keep this O(1) instead of scanning the whole list.
+    {
+      const prevLastId = prevLastIdRef.current
+      const curLastId = curLen > 0 ? renderableItems[curLen - 1].id : null
+      if (
+        prevLastId != null &&
+        curLastId != null &&
+        curLastId !== prevLastId &&
+        enterIdsRef.current.has(prevLastId)
+      ) {
+        enterIdsRef.current.delete(prevLastId)
+        enterIdsRef.current.add(curLastId)
+      }
+      prevLastIdRef.current = curLastId
     }
     // Always record every current id so a later in-place swap / re-mount of
     // the same message is recognised as already-seen and never re-animates.
