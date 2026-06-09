@@ -44,8 +44,14 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 // store round-trips work without a real .git directory.
 const FAKE_SHA = '1'.repeat(40)
 const FAKE_SHA_2 = '2'.repeat(40)
+const EXT_SHA = 'e23271f65aa7572f567d085d6baec5c2408e2ad5'
+const EXT_URL = 'https://github.com/adobe/skills.git'
+const EXT_SUBPATH = 'plugins/creative-cloud/adobe-for-creativity'
 let pullSha = FAKE_SHA
 let pullUpdated = false
+// Tracks gitCloneAtSha invocations + lets a test force a clone failure.
+let cloneAtShaCalls: Array<{ url: string; sha: string }> = []
+let cloneAtShaShouldFail = false
 
 vi.mock('../git-clone.js', async () => {
   // Pull in the real HttpError so url validation produces the same 400
@@ -57,7 +63,8 @@ vi.mock('../git-clone.js', async () => {
       if (!/^https:\/\//.test(url)) throw new errors.HttpError(400, `bad url: ${url}`)
     },
     gitClone: vi.fn(async (_url: string, dest: string) => {
-    // Build a tiny fixture marketplace at `dest` with two plugins.
+    // Build a tiny fixture marketplace at `dest`: two in-repo plugins plus
+    // one git-subdir plugin (external repo, not present in this clone).
     mkdirSync(join(dest, '.claude-plugin'), { recursive: true })
     mkdirSync(join(dest, 'foo'), { recursive: true })
     mkdirSync(join(dest, 'bar'), { recursive: true })
@@ -69,13 +76,30 @@ vi.mock('../git-clone.js', async () => {
         plugins: [
           { name: 'foo', description: 'foo desc' },
           { name: 'bar', description: 'bar desc' },
+          {
+            name: 'ext',
+            description: 'external git-subdir plugin',
+            source: { source: 'git-subdir', url: EXT_URL, path: EXT_SUBPATH, ref: 'main', sha: EXT_SHA },
+          },
         ],
       }),
       'utf8',
     )
     }),
+    gitCloneAtSha: vi.fn(async (url: string, dest: string, opts: { sha: string }) => {
+      cloneAtShaCalls.push({ url, sha: opts.sha })
+      if (cloneAtShaShouldFail) throw new errors.HttpError(500, 'clone failed')
+      // Materialise a fake external repo with the .git marker and the subdir.
+      mkdirSync(join(dest, '.git'), { recursive: true })
+      mkdirSync(join(dest, EXT_SUBPATH), { recursive: true })
+    }),
     gitPull: vi.fn(async () => ({ updated: pullUpdated, newSha: pullSha })),
-    gitGetHeadSha: vi.fn(async () => pullSha),
+    // External clones (under external-cache) report the pinned EXT_SHA so the
+    // idempotency fast-path in ensureExternalClone is exercised; marketplace
+    // repos report the marketplace pullSha.
+    gitGetHeadSha: vi.fn(async (cwd: string) =>
+      cwd && cwd.includes('external-cache') ? EXT_SHA : pullSha,
+    ),
   }
 })
 
@@ -105,6 +129,8 @@ describe('mp-marketplace routes', () => {
   beforeEach(async () => {
     pullSha = FAKE_SHA
     pullUpdated = false
+    cloneAtShaCalls = []
+    cloneAtShaShouldFail = false
     stateDir = tempDir('mp-route')
     store = new MpStore({ stateDir })
     await store.load()
@@ -137,20 +163,23 @@ describe('mp-marketplace routes', () => {
       body: JSON.stringify({ url: 'https://example.com/owner/test.git' }),
     })
     expect(addRes.status).toBe(200)
-    const added = await jsonOf<{ ok: true; entry: { id: string; pluginCount: number } }>(addRes)
+    const added = await jsonOf<{ ok: true; entry: { id: string; pluginCount: number; enabledCount: number } }>(addRes)
     expect(added.ok).toBe(true)
-    expect(added.entry.pluginCount).toBe(2)
+    expect(added.entry.pluginCount).toBe(3)
+    // Nothing enabled right after add.
+    expect(added.entry.enabledCount).toBe(0)
     const id = added.entry.id
 
     // List
     const listRes = await app.request('/mp/marketplaces')
-    const listed = await jsonOf<{ marketplaces: Array<{ id: string }> }>(listRes)
+    const listed = await jsonOf<{ marketplaces: Array<{ id: string; enabledCount: number }> }>(listRes)
     expect(listed.marketplaces.map((m) => m.id)).toContain(id)
+    expect(listed.marketplaces.find((m) => m.id === id)?.enabledCount).toBe(0)
 
-    // Plugins
+    // Plugins — the git-subdir plugin ("ext") now LISTS (previously dropped).
     const plugRes = await app.request(`/mp/marketplaces/${id}/plugins`)
     const plugs = await jsonOf<{ plugins: Array<{ name: string; enabled: boolean }> }>(plugRes)
-    expect(plugs.plugins.map((p) => p.name).sort()).toEqual(['bar', 'foo'])
+    expect(plugs.plugins.map((p) => p.name).sort()).toEqual(['bar', 'ext', 'foo'])
     expect(plugs.plugins.every((p) => p.enabled === false)).toBe(true)
   })
 
@@ -178,6 +207,88 @@ describe('mp-marketplace routes', () => {
     expect(foo.enabled).toBe(true)
     const bar = plugs.plugins.find((p) => p.name === 'bar')!
     expect(bar.enabled).toBe(false)
+
+    // The marketplace's enabledCount now reflects the one enabled plugin.
+    const listed = await jsonOf<{ marketplaces: Array<{ id: string; enabledCount: number }> }>(
+      await app.request('/mp/marketplaces'),
+    )
+    expect(listed.marketplaces.find((m) => m.id === id)?.enabledCount).toBe(1)
+  })
+
+  it('enabling a git-subdir plugin clones the external repo at the pinned sha', async () => {
+    const add = await jsonOf<{ entry: { id: string } }>(
+      await app.request('/mp/marketplaces', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'https://example.com/owner/test.git' }),
+      }),
+    )
+    const id = add.entry.id
+
+    const tog = await app.request(`/mp/marketplaces/${id}/plugins/ext/toggle`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: true }),
+    })
+    expect(tog.status).toBe(200)
+    // The external repo was cloned with the manifest's url + sha.
+    expect(cloneAtShaCalls).toEqual([{ url: EXT_URL, sha: EXT_SHA }])
+
+    const plugs = await jsonOf<{ plugins: Array<{ name: string; enabled: boolean }> }>(
+      await app.request(`/mp/marketplaces/${id}/plugins`),
+    )
+    expect(plugs.plugins.find((p) => p.name === 'ext')!.enabled).toBe(true)
+  })
+
+  it('does not re-clone a git-subdir plugin already present at the pinned sha', async () => {
+    const add = await jsonOf<{ entry: { id: string } }>(
+      await app.request('/mp/marketplaces', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'https://example.com/owner/test.git' }),
+      }),
+    )
+    const id = add.entry.id
+    const toggle = () => app.request(`/mp/marketplaces/${id}/plugins/ext/toggle`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: true }),
+    })
+
+    await toggle()
+    expect(cloneAtShaCalls).toHaveLength(1)
+    // Second enable: the clone dir exists with .git at EXT_SHA → fast-path
+    // returns without cloning again.
+    await toggle()
+    expect(cloneAtShaCalls).toHaveLength(1)
+  })
+
+  it('leaves a git-subdir plugin disabled when the external clone fails', async () => {
+    const add = await jsonOf<{ entry: { id: string } }>(
+      await app.request('/mp/marketplaces', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'https://example.com/owner/test.git' }),
+      }),
+    )
+    const id = add.entry.id
+    cloneAtShaShouldFail = true
+
+    const tog = await app.request(`/mp/marketplaces/${id}/plugins/ext/toggle`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: true }),
+    })
+    expect(tog.status).toBeGreaterThanOrEqual(500)
+
+    // Plugin stays disabled and nothing was persisted.
+    const plugs = await jsonOf<{ plugins: Array<{ name: string; enabled: boolean }> }>(
+      await app.request(`/mp/marketplaces/${id}/plugins`),
+    )
+    expect(plugs.plugins.find((p) => p.name === 'ext')!.enabled).toBe(false)
+    const reloaded = new MpStore({ stateDir })
+    await reloaded.load()
+    expect(reloaded.enabledKeys()).toEqual([])
   })
 
   it('refresh updates the stored SHA when the remote moves', async () => {

@@ -145,28 +145,6 @@ export interface SkillFrontmatter {
   tokens: number
 }
 
-/** A registered marketplace. */
-export interface MarketplaceInfo {
-  name: string
-  source: string
-  lastUpdated?: string
-  autoUpdate?: boolean
-}
-
-/** A plugin available in a marketplace. */
-export interface MarketplacePlugin {
-  name: string
-  description: string
-  version: string
-  author?: string
-  installed: boolean
-  /** Only meaningful when `installed` is true. Defaults to true server-side
-   *  when the CLI doesn't expose an explicit flag (most installed plugins
-   *  are enabled — disabled is the explicit, less common state). */
-  enabled: boolean
-  marketplace: string
-}
-
 // Re-export canonical QuestionSpec from shared.
 export type { QuestionSpec } from '../shared/question-spec.js'
 
@@ -353,6 +331,9 @@ export interface MpListItem {
   lastRefreshedAt: number
   lastSha: string
   pluginCount: number
+  /** How many of this marketplace's plugins are enabled (= installed, since
+   *  enabling clones/installs). Shown next to the total in the UI. */
+  enabledCount: number
   manifestVersion?: string
   ownerName?: string
 }

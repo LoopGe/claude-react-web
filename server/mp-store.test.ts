@@ -142,6 +142,24 @@ describe('MpStore', () => {
     expect(s.getEnabledPluginAbsolutePaths()).toEqual(['/abs/path/to/plugA'])
   })
 
+  it('dedupes paths when two enabled plugins resolve to the same dir', async () => {
+    const s = new MpStore({ stateDir: dir })
+    await s.load()
+    // Two distinct plugins in one marketplace pointing at the same dir.
+    s.upsert(fakeEntry('mkt1', {
+      manifest: {
+        name: 'fake',
+        plugins: [
+          { name: 'a', dir: '/abs/shared' },
+          { name: 'b', dir: '/abs/shared' },
+        ],
+      },
+    }))
+    s.setEnabled('a', 'mkt1', true)
+    s.setEnabled('b', 'mkt1', true)
+    expect(s.getEnabledPluginAbsolutePaths()).toEqual(['/abs/shared'])
+  })
+
   it('skips enabled plugins whose marketplace or plugin no longer exists', async () => {
     const s = new MpStore({ stateDir: dir })
     await s.load()
@@ -158,6 +176,91 @@ describe('MpStore', () => {
       'utf8',
     )
     await s.load()
+    expect(s.getEnabledPluginAbsolutePaths()).toEqual([])
+  })
+
+  it('externalCloneDir is deterministic and shared per (url, sha)', () => {
+    const s = new MpStore({ stateDir: dir })
+    const url = 'https://github.com/adobe/skills.git'
+    const sha = 'e23271f65aa7572f567d085d6baec5c2408e2ad5'
+    const a = s.externalCloneDir(url, sha)
+    const b = s.externalCloneDir(url, sha)
+    expect(a).toBe(b)
+    // Different sha → different dir.
+    expect(s.externalCloneDir(url, 'f'.repeat(40))).not.toBe(a)
+    // Lives under the _external cache.
+    expect(a.startsWith(s.externalCacheDir)).toBe(true)
+  })
+
+  it('resolves a git-subdir plugin path only when the external clone exists', async () => {
+    const s = new MpStore({ stateDir: dir })
+    await s.load()
+    const url = 'https://github.com/adobe/skills.git'
+    const sha = 'e23271f65aa7572f567d085d6baec5c2408e2ad5'
+    const subPath = 'plugins/creative-cloud/adobe-for-creativity'
+    s.upsert(fakeEntry('mkt1', {
+      manifest: {
+        name: 'fake',
+        plugins: [
+          { name: 'adobe', dir: null, source: { kind: 'git-subdir', url, subPath, sha } },
+        ],
+      },
+    }))
+    s.setEnabled('adobe', 'mkt1', true)
+
+    // Not cloned yet → excluded.
+    expect(s.getEnabledPluginAbsolutePaths()).toEqual([])
+
+    // Materialise the external clone subdir → now resolved.
+    const cloneDir = s.externalCloneDir(url, sha)
+    const full = join(cloneDir, subPath)
+    mkdirSync(full, { recursive: true })
+    expect(s.getEnabledPluginAbsolutePaths()).toEqual([full])
+  })
+
+  it('drops a hand-edited git-subdir plugin whose subPath escapes the clone dir', async () => {
+    // Simulate a tampered marketplaces.json with a path-traversal subPath.
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, 'marketplaces.json'),
+      JSON.stringify({
+        version: 1,
+        marketplaces: {
+          mkt1: {
+            id: 'mkt1',
+            displayName: 'mkt1',
+            source: { type: 'https', url: 'https://example.com/mkt1.git' },
+            cloneDir: '/tmp/mkt1',
+            addedAt: 1,
+            lastRefreshedAt: 1,
+            lastSha: 'a'.repeat(40),
+            manifest: {
+              name: 'mkt1',
+              plugins: [
+                {
+                  name: 'evil',
+                  dir: null,
+                  source: { kind: 'git-subdir', url: 'https://example.com/x.git', subPath: '../../../../etc', sha: 'a'.repeat(40) },
+                },
+                {
+                  name: 'ok',
+                  dir: null,
+                  source: { kind: 'git-subdir', url: 'https://example.com/x.git', subPath: 'plugins/ok', sha: 'b'.repeat(40) },
+                },
+              ],
+            },
+          },
+        },
+        enabledPlugins: { 'evil@mkt1': true },
+      }),
+      'utf8',
+    )
+    const s = new MpStore({ stateDir: dir })
+    await s.load()
+    // The traversal plugin is filtered out on load; the safe one survives.
+    const names = s.get('mkt1')!.manifest.plugins.map((p) => p.name)
+    expect(names).toEqual(['ok'])
+    // And its enabled flag resolves to nothing (plugin no longer exists).
     expect(s.getEnabledPluginAbsolutePaths()).toEqual([])
   })
 

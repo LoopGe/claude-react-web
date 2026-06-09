@@ -200,4 +200,133 @@ describe('parseMarketplace', () => {
     expect(manifest.plugins).toHaveLength(1)
     expect(warnings.some((w) => w.detail.includes('duplicate'))).toBe(true)
   })
+
+  // ── git-subdir source (plugin lives in a separate external repo) ──
+
+  const GIT_SUBDIR_SHA = 'e23271f65aa7572f567d085d6baec5c2408e2ad5'
+
+  it('captures a git-subdir source without emitting dir-not-found', async () => {
+    // No on-disk dir is created — the external repo isn't cloned at parse time.
+    writeManifest(repo, {
+      name: 'M',
+      plugins: [
+        {
+          name: 'adobe-for-creativity',
+          description: 'Adobe creative tools',
+          source: {
+            source: 'git-subdir',
+            url: 'https://github.com/adobe/skills.git',
+            path: 'plugins/creative-cloud/adobe-for-creativity',
+            ref: 'main',
+            sha: GIT_SUBDIR_SHA,
+          },
+        },
+      ],
+    })
+    const { manifest, warnings } = await parseMarketplace(repo)
+    expect(warnings).toEqual([])
+    expect(manifest.plugins).toHaveLength(1)
+    expect(manifest.plugins[0].dir).toBeNull()
+    expect(manifest.plugins[0].source).toEqual({
+      kind: 'git-subdir',
+      url: 'https://github.com/adobe/skills.git',
+      subPath: 'plugins/creative-cloud/adobe-for-creativity',
+      ref: 'main',
+      sha: GIT_SUBDIR_SHA,
+    })
+  })
+
+  it('captures a `url` source as the external repo root', async () => {
+    // `source: 'url'` means the WHOLE external repo is the plugin (no path).
+    writeManifest(repo, {
+      name: 'M',
+      plugins: [
+        {
+          name: 'agentforce-adlc',
+          source: {
+            source: 'url',
+            url: 'https://github.com/SalesforceAIResearch/agentforce-adlc.git',
+            sha: GIT_SUBDIR_SHA,
+          },
+        },
+      ],
+    })
+    const { manifest, warnings } = await parseMarketplace(repo)
+    expect(warnings).toEqual([])
+    expect(manifest.plugins).toHaveLength(1)
+    expect(manifest.plugins[0].dir).toBeNull()
+    expect(manifest.plugins[0].source).toEqual({
+      kind: 'git-subdir',
+      url: 'https://github.com/SalesforceAIResearch/agentforce-adlc.git',
+      subPath: '.',
+      ref: undefined,
+      sha: GIT_SUBDIR_SHA,
+    })
+  })
+
+  it('skips a `url` source missing a valid sha', async () => {
+    writeManifest(repo, {
+      name: 'M',
+      plugins: [
+        { name: 'p', source: { source: 'url', url: 'https://github.com/o/r.git' } },
+      ],
+    })
+    const { manifest, warnings } = await parseMarketplace(repo)
+    expect(manifest.plugins).toHaveLength(0)
+    expect(warnings.some((w) => w.kind === 'plugin-bad-shape' && w.detail.includes('sha'))).toBe(true)
+    expect(warnings.some((w) => w.kind === 'plugin-dir-not-found')).toBe(false)
+  })
+
+  it('tags in-repo plugins with an in-repo source', async () => {
+    makePluginDir(repo, 'foo')
+    writeManifest(repo, { name: 'M', plugins: [{ name: 'foo' }] })
+    const { manifest } = await parseMarketplace(repo)
+    expect(manifest.plugins[0].source).toEqual({ kind: 'in-repo' })
+  })
+
+  it('skips a git-subdir plugin missing a valid sha', async () => {
+    writeManifest(repo, {
+      name: 'M',
+      plugins: [
+        {
+          name: 'p',
+          source: { source: 'git-subdir', url: 'https://github.com/o/r.git', path: 'sub' },
+        },
+      ],
+    })
+    const { manifest, warnings } = await parseMarketplace(repo)
+    expect(manifest.plugins).toHaveLength(0)
+    expect(warnings.some((w) => w.kind === 'plugin-bad-shape' && w.detail.includes('sha'))).toBe(true)
+    expect(warnings.some((w) => w.kind === 'plugin-dir-not-found')).toBe(false)
+  })
+
+  it('skips a git-subdir plugin with a non-https url', async () => {
+    writeManifest(repo, {
+      name: 'M',
+      plugins: [
+        {
+          name: 'p',
+          source: { source: 'git-subdir', url: 'git://github.com/o/r.git', path: 'sub', sha: GIT_SUBDIR_SHA },
+        },
+      ],
+    })
+    const { manifest, warnings } = await parseMarketplace(repo)
+    expect(manifest.plugins).toHaveLength(0)
+    expect(warnings.some((w) => w.kind === 'plugin-bad-shape')).toBe(true)
+  })
+
+  it('skips a git-subdir plugin with a path escaping the repo', async () => {
+    writeManifest(repo, {
+      name: 'M',
+      plugins: [
+        {
+          name: 'p',
+          source: { source: 'git-subdir', url: 'https://github.com/o/r.git', path: '../outside', sha: GIT_SUBDIR_SHA },
+        },
+      ],
+    })
+    const { manifest, warnings } = await parseMarketplace(repo)
+    expect(manifest.plugins).toHaveLength(0)
+    expect(warnings.some((w) => w.kind === 'plugin-bad-shape')).toBe(true)
+  })
 })

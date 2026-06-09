@@ -14,10 +14,22 @@ import { isAbsolute, join, normalize, resolve, sep } from 'node:path'
 /** Manifest filename, relative to the repo root. */
 export const MANIFEST_REL_PATH = '.claude-plugin/marketplace.json'
 
-/** A single plugin entry, post-parse, post-validation. The `dir` field is
- *  the absolute path on disk to the plugin's directory; resolved during
- *  `parseMarketplace` so consumers don't have to redo the lookup. Plugins
- *  whose dir doesn't exist are dropped from the parsed result. */
+/** Where a plugin physically lives.
+ *   - `in-repo`: a directory inside the marketplace's own cloned repo. The
+ *     `dir` field on ParsedPlugin holds its resolved absolute path.
+ *   - `git-subdir`: a subdirectory of a SEPARATE git repo. The plugin's files
+ *     aren't present until that external repo is cloned (lazily, on first
+ *     enable). `dir` stays null until then; the store resolves the eventual
+ *     path from `url`+`sha`+`subPath`. */
+export type ParsedPluginSource =
+  | { kind: 'in-repo' }
+  | { kind: 'git-subdir'; url: string; subPath: string; ref?: string; sha: string }
+
+/** A single plugin entry, post-parse, post-validation. For in-repo plugins
+ *  `dir` is the absolute path on disk, resolved during `parseMarketplace` so
+ *  consumers don't have to redo the lookup (in-repo plugins whose dir doesn't
+ *  exist are dropped). For git-subdir plugins `dir` is null until the external
+ *  repo is cloned. */
 export interface ParsedPlugin {
   name: string
   description?: string
@@ -25,8 +37,12 @@ export interface ParsedPlugin {
   author?: string
   category?: string
   tags?: string[]
-  /** Absolute on-disk plugin directory inside the cloned repo. */
-  dir: string
+  /** Absolute on-disk plugin directory for in-repo plugins; null for
+   *  git-subdir plugins until their external repo has been cloned. */
+  dir: string | null
+  /** Physical location discriminator. Undefined is treated as in-repo
+   *  (back-compat with manifests persisted before this field existed). */
+  source?: ParsedPluginSource
 }
 
 export interface MarketplaceManifest {
@@ -67,6 +83,39 @@ function flattenAuthor(raw: unknown): string | undefined {
     if (typeof r.name === 'string' && r.name.trim()) return r.name.trim()
   }
   return undefined
+}
+
+/** Non-throwing https-URL check. Mirrors `assertHttpsUrl` in git-clone.ts
+ *  but returns a boolean — the parser emits warnings rather than throwing
+ *  HttpError, so importing the throwing version would be the wrong layer. */
+function isHttpsUrl(url: unknown): url is string {
+  return (
+    typeof url === 'string' &&
+    url.length > 0 &&
+    url.length <= 4096 &&
+    !url.includes('\0') &&
+    /^https:\/\/[^\s]+$/.test(url)
+  )
+}
+
+/** Validate a git commit SHA (full or abbreviated, 7-40 hex chars). */
+function isValidSha(sha: unknown): sha is string {
+  return typeof sha === 'string' && /^[0-9a-f]{7,40}$/i.test(sha)
+}
+
+/** Re-validate an already-parsed plugin's source. Used when loading a
+ *  PERSISTED manifest from disk (marketplaces.json) — the file is treated as
+ *  untrusted (a user could hand-edit it), so we re-apply the same checks the
+ *  live parser does rather than trusting the cast. A git-subdir source must
+ *  have an https url, a containment-safe relative subPath (no `..`, not
+ *  absolute), and a valid sha; in-repo / undefined sources are always OK. */
+export function isValidParsedSource(source: ParsedPluginSource | undefined): boolean {
+  if (!source || source.kind === 'in-repo') return true
+  return (
+    isHttpsUrl(source.url) &&
+    validateRelativePath(source.subPath) !== null &&
+    isValidSha(source.sha)
+  )
 }
 
 /** Validate a plugin's source.path: must be relative to the repo, no `..`
@@ -159,6 +208,71 @@ export async function parseMarketplace(repoRoot: string): Promise<ParseResult> {
     }
     seenNames.add(pName)
 
+    // Common metadata shared by every source kind.
+    const meta = {
+      name: pName,
+      description: typeof entry.description === 'string' ? entry.description : undefined,
+      version: typeof entry.version === 'string' ? entry.version : undefined,
+      author: flattenAuthor(entry.author),
+      category: typeof entry.category === 'string' ? entry.category : undefined,
+      tags: Array.isArray(entry.tags)
+        ? entry.tags.filter((t): t is string => typeof t === 'string')
+        : undefined,
+    }
+
+    // External-repo plugins: the plugin's files live in a SEPARATE git repo,
+    // not in the marketplace repo. Two manifest shapes map to this:
+    //   - `source: 'git-subdir'` — a SUBDIRECTORY of the external repo (`path`
+    //     required).
+    //   - `source: 'url'`        — the WHOLE external repo (no `path`; the
+    //     plugin is the repo root).
+    // Both clone the external repo at `sha` lazily on first enable, so we
+    // don't resolve a local dir here — capture url/subPath/ref/sha and move
+    // on WITHOUT emitting plugin-dir-not-found.
+    const srcType = entry.source && typeof entry.source === 'object' && !Array.isArray(entry.source)
+      ? (entry.source as Record<string, unknown>).source
+      : undefined
+    if (srcType === 'git-subdir' || srcType === 'url') {
+      const src = entry.source as Record<string, unknown>
+      if (!isHttpsUrl(src.url)) {
+        warnings.push({
+          kind: 'plugin-bad-shape',
+          detail: `plugin "${pName}" ${srcType} source has a non-https url; skipping`,
+        })
+        continue
+      }
+      // git-subdir requires a path; url defaults to the repo root (`.`).
+      let subPath: string | null
+      if (srcType === 'url') {
+        subPath = typeof src.path === 'string' && src.path.trim() ? validateRelativePath(src.path) : '.'
+      } else {
+        subPath = typeof src.path === 'string' ? validateRelativePath(src.path) : null
+      }
+      if (!subPath) {
+        warnings.push({
+          kind: 'plugin-bad-shape',
+          detail: `plugin "${pName}" ${srcType} source has an invalid path; skipping`,
+        })
+        continue
+      }
+      if (!isValidSha(src.sha)) {
+        warnings.push({
+          kind: 'plugin-bad-shape',
+          detail: `plugin "${pName}" ${srcType} source is missing a valid sha; skipping`,
+        })
+        continue
+      }
+      const ref = typeof src.ref === 'string' && src.ref.trim() && !src.ref.includes('\0') && src.ref.length <= 256
+        ? src.ref.trim()
+        : undefined
+      plugins.push({
+        ...meta,
+        dir: null,
+        source: { kind: 'git-subdir', url: src.url, subPath, ref, sha: src.sha },
+      })
+      continue
+    }
+
     // Resolve plugin directory. Convention: each plugin lives at
     // `<repo>/<plugin.source>` if the manifest specifies one, otherwise at
     // `<repo>/<plugin.name>`. (Both conventions show up in real-world
@@ -201,15 +315,9 @@ export async function parseMarketplace(repoRoot: string): Promise<ParseResult> {
     }
 
     plugins.push({
-      name: pName,
-      description: typeof entry.description === 'string' ? entry.description : undefined,
-      version: typeof entry.version === 'string' ? entry.version : undefined,
-      author: flattenAuthor(entry.author),
-      category: typeof entry.category === 'string' ? entry.category : undefined,
-      tags: Array.isArray(entry.tags)
-        ? entry.tags.filter((t): t is string => typeof t === 'string')
-        : undefined,
+      ...meta,
       dir: absDir,
+      source: { kind: 'in-repo' },
     })
   }
 

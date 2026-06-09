@@ -3,6 +3,7 @@
 
 import { useLayoutEffect, useMemo, useRef } from 'react'
 import type { SlashCommand } from '../types'
+import { pluginTagOf } from '../utils/text'
 
 interface Props {
   commands: SlashCommand[]
@@ -31,12 +32,13 @@ interface CommandGroup {
   commands: SlashCommand[]
 }
 
-/** Split commands into groups by plugin namespace (first ':' in name). */
+/** Split commands into groups by plugin. The SDK encodes a command's owning
+ *  plugin as a leading "(plugin)" tag in its description (names are bare, with
+ *  no "plugin:" prefix); fall back to "__builtin__" when there's no tag. */
 function groupCommands(commands: SlashCommand[]): CommandGroup[] {
   const map = new Map<string, SlashCommand[]>()
   for (const cmd of commands) {
-    const colon = cmd.name.indexOf(':')
-    const key = colon > 0 ? cmd.name.slice(0, colon) : '__builtin__'
+    const key = pluginTagOf(cmd.description) ?? '__builtin__'
     if (!map.has(key)) map.set(key, [])
     map.get(key)!.push(cmd)
   }

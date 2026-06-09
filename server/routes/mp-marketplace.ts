@@ -1,26 +1,26 @@
-// Homegrown git-repo marketplace routes.
-//
-// Independent from the existing CLI-shelling marketplace.ts (which talks to
-// the `claude` CLI). This implementation:
+// Git-repo marketplace routes. This is the sole plugin-marketplace
+// implementation. It:
 //   1. Clones the user's https git URL into our own state-dir cache.
 //   2. Parses .claude-plugin/marketplace.json ourselves.
 //   3. Stores marketplace + per-plugin enabled state in MpStore.
 //   4. Pushes enable/disable changes into every live session via the
 //      SessionManager so mid-conversation toggles take effect immediately.
 //
-// All paths live under /api/mp/* to avoid colliding with the CLI-based
-// /api/marketplaces/* route group. Coexistence is intentional during the
-// rollout period; either can be deprecated later.
+// All paths live under /api/mp/*.
 
 import { Hono } from 'hono'
-import { mkdir } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { mkdir, rm } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { HttpError } from '../errors.js'
 import { safeJson } from './index.js'
 import type { SessionManager } from '../session-manager.js'
 import { MpStore, type MpEntry } from '../mp-store.js'
-import { gitClone, gitPull, gitGetHeadSha, assertHttpsUrl } from '../git-clone.js'
-import { parseMarketplace, type ParsedPlugin } from '../marketplace-parser.js'
+import { gitClone, gitCloneAtSha, gitPull, gitGetHeadSha, assertHttpsUrl } from '../git-clone.js'
+import { parseMarketplace, type ParsedPlugin, type ParsedPluginSource } from '../marketplace-parser.js'
+
+/** Narrow to just the git-subdir variant of the source union. */
+type GitSubdirSource = Extract<ParsedPluginSource, { kind: 'git-subdir' }>
 
 /** Same charset rule the CLI marketplace router uses. Applied to :id and
  *  :plugin so user-supplied path params can't escape into the filesystem
@@ -41,11 +41,20 @@ interface MpListItem {
   lastRefreshedAt: number
   lastSha: string
   pluginCount: number
+  /** How many of this marketplace's plugins are currently enabled. In B,
+   *  enabling a plugin IS installing it, so this doubles as the "installed"
+   *  count the UI shows next to the total. */
+  enabledCount: number
   manifestVersion?: string
   ownerName?: string
 }
 
-function toListItem(e: MpEntry): MpListItem {
+function toListItem(e: MpEntry, store: MpStore): MpListItem {
+  const enabledMap = store.enabledMapFor(e.id)
+  const enabledCount = e.manifest.plugins.reduce(
+    (n, p) => (enabledMap[p.name] === true ? n + 1 : n),
+    0,
+  )
   return {
     id: e.id,
     displayName: e.displayName,
@@ -54,6 +63,7 @@ function toListItem(e: MpEntry): MpListItem {
     lastRefreshedAt: e.lastRefreshedAt,
     lastSha: e.lastSha,
     pluginCount: e.manifest.plugins.length,
+    enabledCount,
     manifestVersion: e.manifest.version,
     ownerName: e.manifest.owner?.name,
   }
@@ -90,7 +100,7 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
   // ─── Marketplace listing ─────────────────────────────────────────
 
   app.get('/mp/marketplaces', (c) => {
-    const items = store.list().map(toListItem)
+    const items = store.list().map((e) => toListItem(e, store))
     items.sort((a, b) => a.displayName.localeCompare(b.displayName))
     return c.json({ marketplaces: items })
   })
@@ -149,7 +159,7 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
 
     return c.json({
       ok: true,
-      entry: toListItem(entry),
+      entry: toListItem(entry, store),
       warnings: parseResult.warnings,
     })
   })
@@ -173,9 +183,25 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
     }
     store.upsert(next)
     await store.flush()
+    // A refresh may bump pinned shas in the manifest. For any git-subdir
+    // plugin still enabled, re-materialise its clone at the NEW sha before
+    // pruning — otherwise the plugin would silently drop from sessions
+    // (its old-sha clone gets GC'd and the new one was never cloned).
+    const enabledMap = store.enabledMapFor(id)
+    for (const p of next.manifest.plugins) {
+      if (p.source?.kind === 'git-subdir' && enabledMap[p.name] === true) {
+        try {
+          await ensureExternalClone(store, p.source)
+        } catch (err) {
+          console.warn(`[mp-marketplace] refresh re-clone failed for ${p.name}@${id}: ${(err as Error).message}`)
+        }
+      }
+    }
+    // GC external clones no longer referenced by any enabled plugin.
+    await store.pruneExternalClones()
     return c.json({
       ok: true,
-      entry: toListItem(next),
+      entry: toListItem(next, store),
       updated,
       warnings: parseResult.warnings,
     })
@@ -235,6 +261,16 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
     }
     const enabled = body.enabled
 
+    // For git-subdir plugins, enabling IS installing: the plugin's files
+    // live in a SEPARATE repo that hasn't been cloned yet. Clone + checkout
+    // the pinned sha BEFORE persisting the enable flag, so a successful
+    // toggle always corresponds to an on-disk plugin. Clone failure aborts
+    // the toggle (the HttpError propagates; nothing is enabled).
+    const pluginEntry = entry.manifest.plugins.find((p) => p.name === plugin)!
+    if (enabled && pluginEntry.source?.kind === 'git-subdir') {
+      await ensureExternalClone(store, pluginEntry.source)
+    }
+
     // Persist FIRST so a server restart mid-toggle leaves the store in
     // a coherent state. The live-session push is best-effort and can
     // miss without losing user intent.
@@ -248,6 +284,12 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
     const key = MpStore.keyOf(plugin, id)
     await applyToggleToLiveSessions(sm, key, enabled)
 
+    // Disabling a git-subdir plugin may free its (full, no-depth) external
+    // clone. GC it if nothing else still references that (url, sha).
+    if (!enabled && pluginEntry.source?.kind === 'git-subdir') {
+      await store.pruneExternalClones()
+    }
+
     return c.json({
       ok: true,
       plugin: toPluginListItem(
@@ -258,6 +300,39 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
   })
 
   return app
+}
+
+/** Ensure the external repo backing a git-subdir plugin is cloned and
+ *  checked out at the pinned sha. Idempotent:
+ *   - clone dir absent → full clone + checkout sha
+ *   - clone dir present at the right sha → no-op
+ *   - clone dir present but stale/corrupt → wipe + re-clone
+ *  On failure the partial clone is removed and the error propagates so the
+ *  caller leaves the plugin disabled. */
+async function ensureExternalClone(store: MpStore, src: GitSubdirSource): Promise<void> {
+  const cloneDir = store.externalCloneDir(src.url, src.sha)
+  if (existsSync(cloneDir)) {
+    // A complete clone at the right sha → reuse. Anything else (wrong sha,
+    // or a partial clone with no/.broken .git) → wipe so the clone below
+    // doesn't fail on a non-empty destination.
+    if (existsSync(join(cloneDir, '.git'))) {
+      try {
+        const head = await gitGetHeadSha(cloneDir)
+        // src.sha may be abbreviated; accept a prefix match.
+        if (head === src.sha || head.startsWith(src.sha)) return
+      } catch {
+        /* fall through to re-clone */
+      }
+    }
+    await rm(cloneDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(() => {})
+  }
+  await mkdir(dirname(cloneDir), { recursive: true })
+  try {
+    await gitCloneAtSha(src.url, cloneDir, { sha: src.sha, ref: src.ref })
+  } catch (err) {
+    await rm(cloneDir, { recursive: true, force: true }).catch(() => {})
+    throw err
+  }
 }
 
 /** Walk every live session and push the plugin toggle through. Failures

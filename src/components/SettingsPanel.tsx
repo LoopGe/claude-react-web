@@ -3,6 +3,7 @@
 
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
 import type { AgentInfo, McpServerConfigMeta, McpServerStatus, ModelInfo, PermissionMode, Plugin, SessionInfo, SlashCommand } from '../types'
@@ -12,16 +13,17 @@ import { ContextBar } from './ContextBar'
 import { IconChevronUp, IconChevronDown } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
 
-// MarketplaceBrowser and McpInstaller are heavy modal-within-modal
+// MarketplaceTab and McpInstaller are heavy modal-within-modal
 // components opened only on user intent (Browse plugins / Add MCP).
 // Lazy-load both so SettingsPanel itself stays thin.
 const McpInstaller = lazy(() =>
   import('./McpInstaller').then((m) => ({ default: m.McpInstaller })),
 )
-const MarketplaceBrowser = lazy(() =>
-  import('./MarketplaceBrowser').then((m) => ({ default: m.MarketplaceBrowser })),
+const MarketplaceTab = lazy(() =>
+  import('./MarketplaceTab').then((m) => ({ default: m.MarketplaceTab })),
 )
 import { formatTokens, formatJson } from '../utils/format'
+import { pluginTagOf } from '../utils/text'
 import type { ContextUsage } from '../hooks/useChatStream'
 
 type SettingsTab = 'general' | 'context' | 'plugins' | 'mcp'
@@ -69,6 +71,9 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
   // been removed in favour of right-bottom toasts.
   const toast = useToast()
   const [reloadedPlugins, setReloadedPlugins] = useState<Plugin[]>([])
+  // One-shot guard so opening the Plugins tab auto-loads the plugin list
+  // exactly once per mount (the panel remounts per session via key=).
+  const pluginsAutoLoadedRef = useRef(false)
   const [showMarketplace, setShowMarketplace] = useState(false)
   // Active tab. Mirrors the global settings modal's tabbed layout so the
   // session panel reads as one long scroll no more — each concern is its
@@ -259,6 +264,26 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
     }
   }
 
+  // Auto-load the plugin list the first time the Plugins tab is opened. The
+  // reload response carries the plugin NAMES the grouping logic needs to
+  // associate skills/agents with their owning plugin (the description's
+  // "(plugin)" tag is matched against these names) — without it everything
+  // falls back to "Built-in". Fires once per mount; the panel remounts per
+  // session, so a new session re-loads. Skipped if a manual reload already
+  // populated the list.
+  useEffect(() => {
+    if (tab !== 'plugins') return
+    if (pluginsAutoLoadedRef.current) return
+    if (!session.running || session.terminated) return
+    pluginsAutoLoadedRef.current = true
+    // Defer out of the synchronous effect body — reloadPlugins() awaits an
+    // HTTP round-trip before any setState, so the state update never happens
+    // during this effect's render pass.
+    const t = setTimeout(() => { void reloadPlugins() }, 0)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, session.running, session.terminated])
+
   const handleMcpInstallerSave = () => {
     setShowMcpInstaller(false)
     setMcpInstallerEdit(undefined)
@@ -269,24 +294,46 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
     void refreshMcp()
   }
 
-  // Derive plugin groups from commands (split on first ':') + reload metadata.
+  // Derive plugin groups. The SDK does NOT namespace plugin commands as
+  // `plugin:command` — it returns bare skill names and encodes the owning
+  // plugin as a leading `(pluginName)` tag in the description (e.g.
+  // "(skills) Use this skill…"). We associate a command/agent with a plugin
+  // when that tag matches a name from the reloadPlugins response; everything
+  // else is genuinely built-in (core CLI commands, core agents).
   const pluginGroups = useMemo(() => {
     const groups = new Map<string, { plugin: Plugin | undefined; commands: SlashCommand[]; agents: AgentInfo[] }>()
-    // Index reloaded plugins by name for path/source info
     const pluginMeta = new Map(reloadedPlugins.map((p) => [p.name, p]))
+    const pluginNames = new Set(reloadedPlugins.map((p) => p.name))
+    // Per-group seen-sets guard against residual SDK duplicates (the same
+    // skill surfacing twice — see the dedupe note in mp-store).
+    const seenCommands = new Map<string, Set<string>>()
+    const seenAgents = new Map<string, Set<string>>()
+
+    const keyFor = (description: string | undefined): string => {
+      const tag = pluginTagOf(description)
+      return tag && pluginNames.has(tag) ? tag : '__builtin__'
+    }
+    const ensure = (key: string) => {
+      if (!groups.has(key)) {
+        groups.set(key, { plugin: pluginMeta.get(key), commands: [], agents: [] })
+        seenCommands.set(key, new Set())
+        seenAgents.set(key, new Set())
+      }
+      return groups.get(key)!
+    }
+
     for (const cmd of commands) {
-      const colon = cmd.name.indexOf(':')
-      const pluginName = colon > 0 ? cmd.name.slice(0, colon) : null
-      const key = pluginName ?? '__builtin__'
-      if (!groups.has(key)) groups.set(key, { plugin: pluginMeta.get(pluginName ?? ''), commands: [], agents: [] })
+      const key = keyFor(cmd.description)
+      ensure(key)
+      if (seenCommands.get(key)!.has(cmd.name)) continue
+      seenCommands.get(key)!.add(cmd.name)
       groups.get(key)!.commands.push(cmd)
     }
-    // Assign agents to their plugin namespace if they match a plugin name
-    const pluginNames = new Set(reloadedPlugins.map((p) => p.name))
     for (const agent of agents) {
-      const match = [...pluginNames].find((n) => agent.name.includes(n))
-      const key = match ?? '__builtin__'
-      if (!groups.has(key)) groups.set(key, { plugin: match ? pluginMeta.get(match) : undefined, commands: [], agents: [] })
+      const key = keyFor(agent.description)
+      ensure(key)
+      if (seenAgents.get(key)!.has(agent.name)) continue
+      seenAgents.get(key)!.add(agent.name)
       groups.get(key)!.agents.push(agent)
     }
     // Move built-in group to end
@@ -534,13 +581,24 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
       )}
       </div>
 
-      {showMarketplace && (
-        <Suspense fallback={null}>
-          <MarketplaceBrowser
-            onClose={() => setShowMarketplace(false)}
-            onInstalled={() => { onPluginsReloaded?.() }}
-          />
-        </Suspense>
+      {showMarketplace && createPortal(
+        <div
+          className="marketplace-overlay"
+          onMouseDown={(e) => { if (e.target === e.currentTarget) setShowMarketplace(false) }}
+        >
+          <div className="marketplace-card">
+            <div className="modal-header">
+              <h3>Plugin Marketplace</h3>
+              <button className="btn btn-sm" onClick={() => setShowMarketplace(false)}>Close</button>
+            </div>
+            <div style={{ overflowY: 'auto', padding: 16 }}>
+              <Suspense fallback={<div className="lazy-tab-loading">Loading marketplace…</div>}>
+                <MarketplaceTab onPluginToggled={() => { onPluginsReloaded?.() }} />
+              </Suspense>
+            </div>
+          </div>
+        </div>,
+        document.body,
       )}
 
       {showMcpInstaller && (

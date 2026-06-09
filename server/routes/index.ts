@@ -13,7 +13,6 @@ import { buildUploadRouter } from './uploads.js'
 import { buildRecapRouter } from './recap.js'
 import { buildConfigRouter } from './config-routes.js'
 import { buildHealthRouter } from './health-routes.js'
-import { buildMarketplaceRouter } from './marketplace.js'
 import { buildMpRouter } from './mp-marketplace.js'
 import { buildGitWriteRouter } from './git-write.js'
 import { buildUpdateRouter } from './update-routes.js'
@@ -49,9 +48,7 @@ export function buildApiRouter(
   app.route('/', buildUploadRouter(sm))
   app.route('/', buildPermissionRouter(sm))
   app.route('/', buildRecapRouter(sm))
-  app.route('/', buildMarketplaceRouter(claudeBinary))
-  // Homegrown marketplace lives under /mp/* and is independent of the
-  // CLI-shelling /marketplaces routes above. Only mounted when an
+  // Homegrown git-repo marketplace lives under /mp/*. Only mounted when an
   // MpStore was provided — other buildApp callers (tests, standalone
   // tooling) skip it cleanly.
   if (mpStore) {

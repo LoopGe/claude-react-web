@@ -15,13 +15,14 @@
 // side field. Serialisation merges both back into the on-disk shape;
 // parsing populates both in `load()`.
 
-import { promises as fs } from 'node:fs'
+import { promises as fs, existsSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { resolve as resolvePath, join } from 'node:path'
 import { homedir } from 'node:os'
+import { createHash } from 'node:crypto'
 import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import type { JsonFileStoreOptions } from './json-file-store.js'
-import type { MarketplaceManifest } from './marketplace-parser.js'
+import { isValidParsedSource, type MarketplaceManifest } from './marketplace-parser.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -69,9 +70,28 @@ export class MpStore extends JsonFileStore<MpEntry> {
    *  own folder named by its slug. */
   readonly cacheDir: string
 
+  /** Holds clones of EXTERNAL repos referenced by `git-subdir` plugins.
+   *  Keyed by a hash of (url, sha) so the same repo at the same commit is
+   *  cloned once and shared across plugins / marketplaces. Deliberately a
+   *  SIBLING of `cacheDir` (not a child) so it can never collide with a
+   *  marketplace slug — a slug is always a child of `cacheDir`, so external
+   *  clones living one level up are in a separate namespace entirely. This
+   *  also keeps `gitPull --ff-only` on a marketplace repo from ever touching
+   *  an external clone. */
+  readonly externalCacheDir: string
+
   constructor(opts: MpStoreOptions = {}) {
     super(opts, 'marketplaces.json', DEFAULT_DIR_NAME, 'mp-store')
     this.cacheDir = join(this.dir, 'marketplace-cache')
+    this.externalCacheDir = join(this.dir, 'external-cache')
+  }
+
+  /** Deterministic on-disk dir for an external repo pinned at `sha`. Same
+   *  (url, sha) → same dir, so multiple git-subdir plugins from one repo
+   *  clone it once. */
+  externalCloneDir(url: string, sha: string): string {
+    const hash = createHash('sha256').update(`${url}\0${sha}`).digest('hex').slice(0, 16)
+    return join(this.externalCacheDir, hash)
   }
 
   protected getKey(entry: MpEntry): string {
@@ -175,6 +195,9 @@ export class MpStore extends JsonFileStore<MpEntry> {
         console.warn(`[mp-store] failed to remove clone dir ${entry.cloneDir}: ${(err as Error).message}`)
       }
     }
+    // Drop any external git-subdir clones this marketplace's plugins were the
+    // last enabled reference to.
+    await this.pruneExternalClones()
   }
 
   // ─── Plugin enable/disable ───────────────────────────────────────
@@ -226,6 +249,17 @@ export class MpStore extends JsonFileStore<MpEntry> {
    *  fail the spawn outright. */
   getEnabledPluginAbsolutePaths(): string[] {
     const paths: string[] = []
+    // Dedupe: two enabled plugins can resolve to the same dir (e.g. a `url`
+    // git-subdir plugin pointing at a repo root, or the same path reached via
+    // two marketplaces). The SDK loads each entry of Options.plugins, so a
+    // duplicate path would register the plugin — and its commands/agents —
+    // twice. Collapse to a set.
+    const seen = new Set<string>()
+    const push = (p: string) => {
+      if (seen.has(p)) return
+      seen.add(p)
+      paths.push(p)
+    }
     for (const [key, on] of this.enabled) {
       if (!on) continue
       const at = key.lastIndexOf('@')
@@ -236,9 +270,59 @@ export class MpStore extends JsonFileStore<MpEntry> {
       if (!entry) continue
       const plugin = entry.manifest.plugins.find((p) => p.name === pluginName)
       if (!plugin) continue
-      paths.push(plugin.dir)
+      if (plugin.source && plugin.source.kind === 'git-subdir') {
+        // The plugin's files live in an external repo cloned lazily on
+        // enable. Resolve its eventual subdir; skip silently if the clone
+        // hasn't happened (or vanished) — handing the SDK a missing path
+        // would fail the spawn.
+        const abs = resolvePath(
+          this.externalCloneDir(plugin.source.url, plugin.source.sha),
+          plugin.source.subPath,
+        )
+        if (existsSync(abs)) push(abs)
+      } else if (plugin.dir) {
+        // In-repo plugin. Left unguarded (no existsSync) intentionally —
+        // the dir was verified to exist at parse time.
+        push(plugin.dir)
+      }
     }
     return paths
+  }
+
+  /** Best-effort GC of external git-subdir clones no longer referenced by
+   *  any still-enabled plugin across ALL marketplaces. Called after remove /
+   *  refresh. Filesystem errors are swallowed — an orphaned clone only costs
+   *  disk; deleting a still-referenced one would break a live plugin, so the
+   *  reference set is computed across every marketplace, not just one. */
+  async pruneExternalClones(): Promise<void> {
+    if (!existsSync(this.externalCacheDir)) return
+    // Compute the set of clone-dir basenames still referenced by an enabled
+    // git-subdir plugin.
+    const referenced = new Set<string>()
+    for (const [key, on] of this.enabled) {
+      if (!on) continue
+      const at = key.lastIndexOf('@')
+      if (at <= 0) continue
+      const pluginName = key.slice(0, at)
+      const marketplaceId = key.slice(at + 1)
+      const entry = this.get(marketplaceId)
+      if (!entry) continue
+      const plugin = entry.manifest.plugins.find((p) => p.name === pluginName)
+      if (plugin?.source && plugin.source.kind === 'git-subdir') {
+        referenced.add(this.externalCloneDir(plugin.source.url, plugin.source.sha))
+      }
+    }
+    try {
+      const entries = await fs.readdir(this.externalCacheDir)
+      for (const name of entries) {
+        const full = join(this.externalCacheDir, name)
+        if (!referenced.has(full)) {
+          await rm(full, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(() => {})
+        }
+      }
+    } catch (err) {
+      console.warn(`[mp-store] pruneExternalClones failed: ${(err as Error).message}`)
+    }
   }
 
   /** Snapshot of every enabled `<plugin>@<marketplace>` key. Used by the
@@ -304,6 +388,11 @@ function coerceMpEntry(raw: unknown, fallbackId: string): MpEntry | null {
   if (!manifestRaw || typeof manifestRaw !== 'object') return null
   const manifest = manifestRaw as MarketplaceManifest
   if (typeof manifest.name !== 'string' || !Array.isArray(manifest.plugins)) return null
+  // The file is untrusted (hand-editable). Drop any plugin whose persisted
+  // git-subdir source fails the same checks the live parser enforces — a
+  // tampered subPath like `../../..` must not survive load and reach
+  // resolvePath in getEnabledPluginAbsolutePaths.
+  manifest.plugins = manifest.plugins.filter((p) => isValidParsedSource(p?.source))
   return {
     id,
     displayName: typeof r.displayName === 'string' && r.displayName ? r.displayName : manifest.name || id,

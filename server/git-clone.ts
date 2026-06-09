@@ -19,6 +19,10 @@ const execFileAsync = promisify(execFile)
 /** Clone timeout. Generous because real-world marketplace repos can be a
  *  few hundred MB and clone over slow connections. */
 const CLONE_TIMEOUT_MS = 5 * 60 * 1000
+/** Full-clone timeout. `gitCloneAtSha` pulls full history (no --depth) so a
+ *  pinned commit anywhere in the graph is reachable — give it more headroom
+ *  than the shallow marketplace clone. */
+const FULL_CLONE_TIMEOUT_MS = 10 * 60 * 1000
 /** Pull timeout. Fast-forward fetches against an already-cloned repo are
  *  bounded — we don't need the full clone budget. */
 const PULL_TIMEOUT_MS = 60_000
@@ -115,6 +119,38 @@ export async function gitClone(
   // happens to start with `-` can't be reinterpreted as an option.
   args.push('--', url, dest)
   await runGitOutside(args, undefined, CLONE_TIMEOUT_MS)
+}
+
+/** Clone a full repo and check out a specific commit SHA. Used for
+ *  `git-subdir` plugins, whose files live in a SEPARATE repo than the
+ *  marketplace manifest. We clone full history (no `--depth`) because the
+ *  pinned sha can be any commit in the graph, then detach-checkout it for
+ *  reproducibility. `dest` must NOT already exist (same contract as
+ *  `gitClone` — the caller handles idempotency / re-clone). */
+export async function gitCloneAtSha(
+  url: string,
+  dest: string,
+  opts: { sha: string; ref?: string },
+): Promise<void> {
+  assertHttpsUrl(url)
+  if (typeof opts.sha !== 'string' || !/^[0-9a-f]{7,40}$/i.test(opts.sha)) {
+    throw new HttpError(400, 'invalid sha')
+  }
+  // Clone without materialising a working tree, then check out the pinned
+  // commit. `--` guards a URL that happens to start with `-`.
+  await runGitOutside(['clone', '--no-checkout', '--', url, dest], undefined, FULL_CLONE_TIMEOUT_MS)
+  try {
+    await runGitOutside(['-C', dest, 'checkout', opts.sha], undefined, CLONE_TIMEOUT_MS)
+  } catch (err) {
+    // The default clone may not contain a sha that lives only on an
+    // unmerged ref. If the manifest named a ref, fetch it and retry once.
+    if (opts.ref && typeof opts.ref === 'string' && !opts.ref.includes('\0') && opts.ref.length <= 256) {
+      await runGitOutside(['-C', dest, 'fetch', 'origin', opts.ref], undefined, FULL_CLONE_TIMEOUT_MS)
+      await runGitOutside(['-C', dest, 'checkout', opts.sha], undefined, CLONE_TIMEOUT_MS)
+    } else {
+      throw err
+    }
+  }
 }
 
 /** Pull the latest changes into an existing clone. Returns the new HEAD

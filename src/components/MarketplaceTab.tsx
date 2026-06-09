@@ -28,7 +28,13 @@ interface RefreshResponse {
   warnings: MpParseWarning[]
 }
 
-export function MarketplaceTab() {
+interface MarketplaceTabProps {
+  /** Called after a plugin is successfully toggled, so a host (e.g. the
+   *  session settings panel) can refresh its own plugin/command/agent list. */
+  onPluginToggled?: () => void
+}
+
+export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
   const [items, setItems] = useState<MpListItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -39,6 +45,11 @@ export function MarketplaceTab() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null)
+  // Per-plugin in-flight toggles, keyed `<mpId>:<plugin>`. Enabling a
+  // git-subdir plugin triggers a full external-repo clone server-side, which
+  // can take seconds — disable the toggle button meanwhile to block double
+  // clicks.
+  const [togglingKeys, setTogglingKeys] = useState<Set<string>>(new Set())
 
   // Add form
   const [newUrl, setNewUrl] = useState('')
@@ -170,23 +181,42 @@ export function MarketplaceTab() {
     if (!plugins[id]) await fetchPlugins(id)
   }
 
+  // Adjust a marketplace's enabledCount by delta (clamped ≥ 0) so the
+  // "<enabled>/<total>" badge stays live without a refetch.
+  const bumpEnabledCount = useCallback((mpId: string, delta: number) => {
+    setItems((prev) => prev.map((it) => (
+      it.id === mpId ? { ...it, enabledCount: Math.max(0, it.enabledCount + delta) } : it
+    )))
+  }, [])
+
   const handleTogglePlugin = async (mpId: string, plugin: string, enabled: boolean) => {
+    const key = `${mpId}:${plugin}`
     // Optimistic update — if the request fails we revert.
     setPlugins((prev) => ({
       ...prev,
       [mpId]: (prev[mpId] ?? []).map((p) => (p.name === plugin ? { ...p, enabled } : p)),
     }))
+    bumpEnabledCount(mpId, enabled ? 1 : -1)
+    setTogglingKeys((prev) => new Set(prev).add(key))
     try {
       await api.post(`/mp/marketplaces/${encodeURIComponent(mpId)}/plugins/${encodeURIComponent(plugin)}/toggle`, {
         enabled,
       })
+      onPluginToggled?.()
     } catch (e) {
       setError((e as Error).message)
-      // Revert
+      // Revert both the plugin row and the count.
       setPlugins((prev) => ({
         ...prev,
         [mpId]: (prev[mpId] ?? []).map((p) => (p.name === plugin ? { ...p, enabled: !enabled } : p)),
       }))
+      bumpEnabledCount(mpId, enabled ? -1 : 1)
+    } finally {
+      setTogglingKeys((prev) => {
+        const next = new Set(prev)
+        next.delete(key)
+        return next
+      })
     }
   }
 
@@ -264,6 +294,7 @@ export function MarketplaceTab() {
           onCancelRemove={() => setConfirmRemoveId(null)}
           onConfirmRemove={() => void handleRemove(item.id)}
           onTogglePlugin={(name, enabled) => void handleTogglePlugin(item.id, name, enabled)}
+          togglingPlugins={togglingKeys}
         />
       ))}
     </div>
@@ -285,12 +316,19 @@ interface CardProps {
   onCancelRemove: () => void
   onConfirmRemove: () => void
   onTogglePlugin: (name: string, enabled: boolean) => void
+  /** Set of `<mpId>:<plugin>` keys with an in-flight toggle request. */
+  togglingPlugins: Set<string>
 }
 
 function MarketplaceCard({
   item, warnings, plugins, expanded, busy, confirmRemove,
   onToggleExpand, onRefresh, onRequestRemove, onCancelRemove, onConfirmRemove, onTogglePlugin,
+  togglingPlugins,
 }: CardProps) {
+  const [pluginFilter, setPluginFilter] = useState<'all' | 'enabled' | 'disabled'>('all')
+  const visiblePlugins = (plugins ?? []).filter((p) =>
+    pluginFilter === 'all' ? true : pluginFilter === 'enabled' ? p.enabled : !p.enabled,
+  )
   return (
     <div style={{
       border: '1px solid var(--border)', borderRadius: 6, marginBottom: 6, overflow: 'hidden',
@@ -320,10 +358,17 @@ function MarketplaceCard({
             {item.source.url}{item.source.ref ? ` @ ${item.source.ref}` : ''}
           </div>
         </div>
-        <span style={{
-          fontSize: 11, color: 'var(--fg-muted)', background: 'var(--bg-elev-2)',
-          padding: '1px 6px', borderRadius: 3, flexShrink: 0,
-        }}>
+        <span
+          style={{
+            fontSize: 11, color: 'var(--fg-muted)', background: 'var(--bg-elev-2)',
+            padding: '1px 6px', borderRadius: 3, flexShrink: 0,
+          }}
+          title={`${item.enabledCount} enabled of ${item.pluginCount} plugin${item.pluginCount === 1 ? '' : 's'}`}
+        >
+          {item.enabledCount > 0 && (
+            <span style={{ color: 'var(--plugin-active)' }}>{item.enabledCount}</span>
+          )}
+          {item.enabledCount > 0 ? ' / ' : ''}
           {item.pluginCount} plugin{item.pluginCount === 1 ? '' : 's'}
         </span>
         <button className="btn btn-sm" onClick={onRefresh} disabled={busy} title="Pull from upstream">
@@ -386,7 +431,38 @@ function MarketplaceCard({
               No plugins in this marketplace.
             </div>
           )}
-          {plugins?.map((p) => (
+          {/* Filter bar: only worth showing when there's more than one plugin. */}
+          {plugins && plugins.length > 1 && (
+            <div style={{ display: 'flex', gap: 4, marginBottom: 6 }}>
+              {(['all', 'enabled', 'disabled'] as const).map((f) => {
+                const count = f === 'all'
+                  ? plugins.length
+                  : plugins.filter((p) => (f === 'enabled' ? p.enabled : !p.enabled)).length
+                return (
+                  <button
+                    key={f}
+                    className="btn btn-sm"
+                    onClick={() => setPluginFilter(f)}
+                    aria-pressed={pluginFilter === f}
+                    style={{
+                      fontSize: 11,
+                      textTransform: 'capitalize',
+                      background: pluginFilter === f ? 'var(--bg-elev-2)' : undefined,
+                      fontWeight: pluginFilter === f ? 600 : undefined,
+                    }}
+                  >
+                    {f} ({count})
+                  </button>
+                )
+              })}
+            </div>
+          )}
+          {plugins && plugins.length > 0 && visiblePlugins.length === 0 && (
+            <div style={{ padding: '8px 0', fontSize: 12, color: 'var(--fg-muted)' }}>
+              No {pluginFilter} plugins.
+            </div>
+          )}
+          {visiblePlugins.map((p) => (
             <div key={p.name} style={{
               display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0',
             }}>
@@ -408,13 +484,19 @@ function MarketplaceCard({
                   </div>
                 )}
               </div>
-              <button
-                className="btn btn-sm"
-                onClick={() => onTogglePlugin(p.name, !p.enabled)}
-                title={p.enabled ? 'Disable for new and live sessions' : 'Enable for new and live sessions'}
-              >
-                {p.enabled ? 'ON' : 'OFF'}
-              </button>
+              {(() => {
+                const toggling = togglingPlugins.has(`${item.id}:${p.name}`)
+                return (
+                  <button
+                    className="btn btn-sm"
+                    onClick={() => onTogglePlugin(p.name, !p.enabled)}
+                    disabled={toggling}
+                    title={p.enabled ? 'Disable for new and live sessions' : 'Enable for new and live sessions'}
+                  >
+                    {toggling ? '…' : p.enabled ? 'ON' : 'OFF'}
+                  </button>
+                )
+              })()}
             </div>
           ))}
         </div>
