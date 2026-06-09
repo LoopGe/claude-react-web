@@ -1,3 +1,9 @@
+/* Anthropic skin's official typeface pairing — Poppins (headings) + Lora
+   (body). Loaded once; only the [data-skin="anthropic"] blocks below switch
+   the font tokens to reference them, so default/glow are unaffected. The
+   @import must precede all other rules to be valid CSS. */
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Lora:ital,wght@0,400;0,500;0,600;1,400&display=swap');
+
 /* Register --mode-color as a transitionable <color> so mode switches
    animate smoothly instead of snapping. The initial-value is transparent
    (invisible) — each .mode-* variant overrides it with a real colour.
@@ -390,6 +396,72 @@
 /* Per-session scrollbar thumb gets a faint accent glow. */
 [data-skin="glow"] .chat-panel ::-webkit-scrollbar-thumb {
   box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   ANTHROPIC SKIN  ([data-skin="anthropic"])
+   ────────────────────────────────────────────────────────────────────
+   Aligned to Anthropic's official brand guidelines:
+     Dark #141413 · Light #faf9f5 · Mid Gray #b0aea5 · Light Gray #e8e6dc
+     Accents — Orange #d97757 · Blue #6a9bcc · Green #788c5d
+     Type — Poppins (headings) + Lora (body).
+   Unlike glow (which only retints effects), this skin sets the full colour
+   palette AND locks the accent to terracotta — useTheme removes its inline
+   --accent override when this skin is active, so the values here win.
+   ════════════════════════════════════════════════════════════════════ */
+
+/* ── Anthropic · dark (warm near-black) ── */
+[data-skin="anthropic"] {
+  --bg: #141413;
+  --bg-elev: #1e1e1c;
+  --bg-elev-1: #242422;
+  --bg-elev-2: #2c2b28;
+  --bg-elev-3: #353430;
+  --border: #353430;
+  --fg: #e8e6dc;
+  --fg-muted: #b0aea5;
+  /* Locked brand accent — terracotta. */
+  --accent: #d97757;
+  --accent-strong: #c25e3f;
+  --on-accent: #141413;
+  --ok: #97ab78;
+  --warn: #d9a441;
+  --danger: #cf6b5c;
+  /* Official typeface pairing. --font-head is consumed by the heading rule
+     below; --sans is the body stack (Lora). Falls back gracefully offline. */
+  --font-head: 'Poppins', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --sans: 'Lora', Georgia, 'PingFang SC', 'Microsoft YaHei', serif;
+  --code-bg: #0f0f0e;
+  --code-block-border: var(--border);
+}
+
+/* ── Anthropic · light (warm paper) ── */
+[data-skin="anthropic"][data-theme="light"] {
+  --bg: #faf9f5;
+  --bg-elev: #f4f2ea;
+  --bg-elev-1: #f0eee6;
+  --bg-elev-2: #e8e6dc;
+  --bg-elev-3: #e0ddd0;
+  --border: #e3e0d6;
+  --fg: #141413;
+  --fg-muted: #6b6862;
+  --accent: #d97757;
+  --accent-strong: #c25e3f;
+  --on-accent: #ffffff;
+  --ok: #5c7040;
+  --warn: #b5841f;
+  --danger: #c0392b;
+  --code-bg: #f3f1e9;
+  --code-block-border: #e3e0d6;
+}
+
+/* Headings adopt Poppins under the Anthropic skin. The base themes never
+   define --font-head, so the var() fallback to --sans leaves them untouched. */
+[data-skin="anthropic"] h1,
+[data-skin="anthropic"] h2,
+[data-skin="anthropic"] h3,
+[data-skin="anthropic"] .appearance-heading {
+  font-family: var(--font-head, var(--sans));
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2155,6 +2227,25 @@ body.resizing-col * {
   letter-spacing: 0.08em;
   color: var(--fg-muted);
 }
+/* Anthropic skin locks its accent — show a static swatch + label instead
+   of the pickable swatch grid. */
+.appearance-accent-locked {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 2px;
+}
+.appearance-accent-locked-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  flex: none;
+}
+.appearance-accent-locked-label {
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
 .appearance-skin-row {
   display: flex;
   gap: 8px;
@@ -2166,6 +2257,9 @@ body.resizing-col * {
   flex-direction: column;
   gap: 2px;
   padding: 10px;
+  /* Reserve room on the right so the active check mark never overlaps the
+     label/desc text — matters now that three skins share the row. */
+  padding-right: 24px;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--bg-elev-1);
@@ -2179,8 +2273,8 @@ body.resizing-col * {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
-.appearance-skin-label { font-size: var(--fs-sm); font-weight: 600; }
-.appearance-skin-desc { font-size: var(--fs-2xs); color: var(--fg-muted); }
+.appearance-skin-label { font-size: var(--fs-sm); font-weight: 600; line-height: 1.25; }
+.appearance-skin-desc { font-size: var(--fs-2xs); color: var(--fg-muted); line-height: 1.3; }
 .appearance-skin-check {
   position: absolute;
   top: 7px;

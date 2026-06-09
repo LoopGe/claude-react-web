@@ -32,7 +32,13 @@ interface Props {
 const SKIN_OPTIONS: { value: Skin; label: string; desc: string }[] = [
   { value: 'default', label: 'Default', desc: 'Flat, high-contrast' },
   { value: 'glow', label: 'Glow', desc: 'Soft depth & glow' },
+  { value: 'anthropic', label: 'Anthropic', desc: 'Warm paper & terracotta' },
 ]
+
+/** Anthropic's locked brand accent (terracotta). Mirrors the value in
+ *  styles.css's [data-skin="anthropic"] block — shown as a non-interactive
+ *  swatch so users see the colour is fixed, not pickable. */
+const ANTHROPIC_ACCENT = '#d97757'
 
 const MODE_OPTIONS: { value: Theme; label: string; icon: ReactNode }[] = [
   { value: 'light', label: 'Light', icon: <IconSun size={15} /> },
@@ -150,11 +156,24 @@ function AppearancePopover({
       {/* Accent */}
       <div className="appearance-section">
         <div className="appearance-heading">Accent</div>
-        <AccentSwatchGrid
-          value={accentColor}
-          onChange={(v) => onAccent(v ?? ACCENT_COLORS[0].accent)}
-          ariaLabel="Accent colour"
-        />
+        {skin === 'anthropic' ? (
+          <div className="appearance-accent-locked">
+            <span
+              className="appearance-accent-locked-swatch"
+              style={{ background: ANTHROPIC_ACCENT }}
+              aria-hidden
+            />
+            <span className="appearance-accent-locked-label">
+              Locked to Anthropic terracotta
+            </span>
+          </div>
+        ) : (
+          <AccentSwatchGrid
+            value={accentColor}
+            onChange={(v) => onAccent(v ?? ACCENT_COLORS[0].accent)}
+            ariaLabel="Accent colour"
+          />
+        )}
       </div>
     </div>,
     document.body,

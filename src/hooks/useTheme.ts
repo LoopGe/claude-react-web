@@ -116,13 +116,24 @@ export function useTheme(): UseThemeResult {
   // entire stylesheet picks up the change without any further wiring.
   useEffect(() => {
     const root = document.documentElement.style
+    // The Anthropic skin locks its brand colour (terracotta). Remove any
+    // inline accent overrides so the values defined in styles.css's
+    // [data-skin="anthropic"] block take effect — inline styles on <html>
+    // would otherwise win over the stylesheet. Switching back to another
+    // skin re-runs this effect and writes the user's accent again.
+    if (skin === 'anthropic') {
+      root.removeProperty('--accent')
+      root.removeProperty('--accent-strong')
+      root.removeProperty('--on-accent')
+      return
+    }
     root.setProperty('--accent', accentColor)
     root.setProperty('--accent-strong', accentStrongFor(accentColor))
     // Adapt the on-accent foreground to the chosen accent's luminance so
     // text/icons sitting on an accent fill stay legible for any accent
     // (e.g. a near-black accent picked under the light theme).
     root.setProperty('--on-accent', onAccentFor(accentColor))
-  }, [accentColor])
+  }, [accentColor, skin])
 
   // Pre-computed per-session accent CSS overrides. Stable references so
   // ChatPanel's React.memo can skip unchanged panels — recomputing only

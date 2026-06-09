@@ -12,7 +12,7 @@ export type Theme = 'dark' | 'light' | 'system'
 /** A "skin" is orthogonal to the light/dark mode: it changes the visual
  *  *feel* (depth, glow, gradients) while inheriting the colour tokens of
  *  whichever mode is active. 'default' is the original flat look. */
-export type Skin = 'default' | 'glow'
+export type Skin = 'default' | 'glow' | 'anthropic'
 
 export function getStoredTheme(): Theme {
   try {
@@ -26,7 +26,7 @@ export function getStoredTheme(): Theme {
 export function getStoredSkin(): Skin {
   try {
     const v = window.localStorage.getItem(SKIN_KEY)
-    if (v === 'default' || v === 'glow') return v
+    if (v === 'default' || v === 'glow' || v === 'anthropic') return v
   } catch { /* ignored */ }
   // Default skin keeps the original look for existing users.
   return 'default'
