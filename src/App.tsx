@@ -428,7 +428,12 @@ export function App() {
         }
         case 'session-created': {
           setSessions((prev) => {
-            if (prev.some((s) => s.id === frame.session.id)) return prev
+            const i = prev.findIndex((s) => s.id === frame.session.id)
+            if (i >= 0) {
+              const next = prev.slice()
+              next[i] = frame.session
+              return next
+            }
             return [frame.session, ...prev]
           })
           // Seed the edge-detector so a session that spawns already

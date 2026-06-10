@@ -798,7 +798,7 @@ export class SessionManager {
   }
 
   /** Send a user turn into an existing session. */
-  send(id: string, text: string): void {
+  send(id: string, text: string): SDKUserMessage {
     const s = this.requireRunnable(id)
     // `/clear` is forwarded to the SDK like any other turn (it's the SDK
     // that actually resets the context). Mark the session so the pump
@@ -820,10 +820,11 @@ export class SessionManager {
       `running=${s.running}, terminated=${s.terminated}`,
     )
     this.dispatchUserMessage(s, userMsg)
+    return userMsg
   }
 
   /** Send a user turn with a content array (text + image blocks). */
-  sendContent(id: string, content: Array<{ type: string; [k: string]: unknown }>): void {
+  sendContent(id: string, content: Array<{ type: string; [k: string]: unknown }>): SDKUserMessage {
     const s = this.requireRunnable(id)
     const userMsg: SDKUserMessage = {
       type: 'user',
@@ -838,6 +839,7 @@ export class SessionManager {
       `pendingTurns=${s.pendingTurns}, input.closed=${s.handle.closed}`,
     )
     this.dispatchUserMessage(s, userMsg)
+    return userMsg
   }
 
   /** Shared tail for send() and sendContent(): push into the SDK input

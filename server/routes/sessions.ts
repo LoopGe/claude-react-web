@@ -109,6 +109,7 @@ export function buildSessionRouter(sm: SessionManager): Hono {
   app.post('/sessions/:id/messages', async (c) => {
     const id = c.req.param('id')
     const body = await safeJson<{ text?: string; content?: unknown[] }>(c.req)
+    let accepted: { uuid?: string; receivedAt?: number }
 
     if (Array.isArray(body.content) && body.content.length > 0) {
       let totalBase64 = 0
@@ -131,14 +132,14 @@ export function buildSessionRouter(sm: SessionManager): Hono {
         return c.json({ error: 'total image payload too large' }, 413)
       }
       console.log(`[http] POST /sessions/${id}/messages — content array with ${body.content.length} blocks`)
-      sm.sendContent(id, body.content as Array<{ type: string; [k: string]: unknown }>)
+      accepted = sm.sendContent(id, body.content as Array<{ type: string; [k: string]: unknown }>) as { uuid?: string; receivedAt?: number }
     } else {
       const text = typeof body.text === 'string' ? body.text : ''
       if (!text.trim()) return c.json({ error: 'text is required' }, 400)
       console.log(`[http] POST /sessions/${id}/messages — ${text.length} chars`)
-      sm.send(id, text)
+      accepted = sm.send(id, text) as { uuid?: string; receivedAt?: number }
     }
-    return c.json({ ok: true })
+    return c.json({ ok: true, message: { uuid: accepted.uuid, receivedAt: accepted.receivedAt } })
   })
 
   // Paginated history (lazy-load older messages from disk).

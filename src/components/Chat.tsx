@@ -132,6 +132,14 @@ interface Props {
   onOpenSettingsPanel?: (sessionId: string) => void
 }
 
+interface SendMessageResponse {
+  ok: boolean
+  message?: {
+    uuid?: string
+    receivedAt?: number
+  }
+}
+
 export const Chat = memo(function Chat({
   session,
   settingsOpen, onCloseSettings,
@@ -484,7 +492,7 @@ export const Chat = memo(function Chat({
   // Putting the whole hook object in a dep list re-creates callbacks every
   // render and can churn child re-renders (the composer's onChange in
   // particular — that's what caused the "can't send / can't type" freeze).
-  const { trackSentTurn, insertUserMessage, rollbackUserMessage, clearError: clearStreamError } = stream
+  const { trackSentTurn, insertUserMessage, ackUserMessage, rollbackUserMessage, clearError: clearStreamError } = stream
   const {
     attachments: attachmentList,
     setDragOver,
@@ -587,6 +595,7 @@ export const Chat = memo(function Chat({
     const pendingId = full.trim() ? insertUserMessage(full) : null
 
     try {
+      let res: SendMessageResponse
       if (pastedImages.images.length > 0) {
         // Build content array with text + image blocks
         const content: Array<{ type: string; text?: string; source?: { type: string; data: string; media_type: string } }> = []
@@ -594,9 +603,12 @@ export const Chat = memo(function Chat({
         for (const img of pastedImages.images) {
           content.push({ type: 'image', source: { type: 'base64', data: img.data, media_type: img.mediaType } })
         }
-        await api.post(`/sessions/${session.id}/messages`, { content })
+        res = await api.post<SendMessageResponse>(`/sessions/${session.id}/messages`, { content })
       } else {
-        await api.post(`/sessions/${session.id}/messages`, { text: full })
+        res = await api.post<SendMessageResponse>(`/sessions/${session.id}/messages`, { text: full })
+      }
+      if (pendingId && typeof res.message?.uuid === 'string') {
+        ackUserMessage(pendingId, res.message.uuid, res.message.receivedAt)
       }
       if (text) history.add(text)
       setInput('')
@@ -621,7 +633,7 @@ export const Chat = memo(function Chat({
       sendingRef.current = false
       setSending(false)
     }
-  }, [input, attachmentList, session.id, history, trackSentTurn, insertUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, pastedImages, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp])
+  }, [input, attachmentList, session.id, history, trackSentTurn, insertUserMessage, ackUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, pastedImages, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp])
 
   // Focus traps for the two in-panel overlays. The settings overlay is
   // always mounted (toggled via CSS .hidden), so the trap is gated on

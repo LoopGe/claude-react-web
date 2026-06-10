@@ -30,6 +30,8 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
       return applyMessage(state, action.message)
     case 'OPTIMISTIC_USER_MESSAGE':
       return applyOptimisticUserMessage(state, action.message)
+    case 'ACK_USER_MESSAGE':
+      return ackUserMessage(state, action.pendingId, action.serverUuid, action.receivedAt)
     case 'ROLLBACK_OPTIMISTIC_USER_MESSAGE': {
       // Only roll back if the pendingId is still tracked — between the
       // failed POST and this dispatch, the server echo might have
@@ -424,6 +426,64 @@ function applyOptimisticUserMessage(state: SessionState, message: SdkMessage): S
   }
 }
 
+function ackUserMessage(
+  state: SessionState,
+  pendingId: string,
+  serverUuid: string,
+  receivedAt?: number,
+): SessionState {
+  const idx = state.items.findIndex((it) => it.id === pendingId)
+  const hadPending = state.pendingUserMessageIds.has(pendingId)
+  const nextIds = new Set(state.pendingUserMessageIds)
+  nextIds.delete(pendingId)
+
+  if (idx < 0) {
+    return hadPending ? { ...state, pendingUserMessageIds: nextIds } : state
+  }
+
+  const duplicateIdx = state.items.findIndex((it, i) => i !== idx && it.id === serverUuid)
+  if (duplicateIdx >= 0) {
+    const items = state.items.filter((_, i) => i !== idx)
+    const messages = state.messages.filter(
+      (m) => (typeof m.uuid === 'string' ? m.uuid : null) !== pendingId,
+    )
+    return { ...state, items, messages, pendingUserMessageIds: nextIds }
+  }
+
+  const current = state.items[idx]
+  const msg: SdkMessage = {
+    ...current.msg,
+    uuid: serverUuid,
+    ...(typeof receivedAt === 'number' ? { receivedAt } : {}),
+  }
+  const item = toTranscriptItem(msg, state.items[idx - 1])
+  if (!item) return { ...state, pendingUserMessageIds: nextIds }
+
+  const items = state.items.slice()
+  items[idx] = item
+  const msgIdx = state.messages.findIndex(
+    (m) => (typeof m.uuid === 'string' ? m.uuid : null) === pendingId,
+  )
+  const messages = msgIdx >= 0 ? state.messages.slice() : state.messages
+  if (msgIdx >= 0) messages[msgIdx] = msg
+
+  nextIds.add(serverUuid)
+  return { ...state, items, messages, pendingUserMessageIds: nextIds }
+}
+
+function clearSendingUserItems(state: SessionState): SessionState {
+  if (!state.items.some((it) => it.sending)) return state
+  return {
+    ...state,
+    items: state.items.map((it) => {
+      if (!it.sending) return it
+      const rest = { ...it }
+      delete rest.sending
+      return rest
+    }),
+  }
+}
+
 /** Flip a queued user message to 'consumed' when the live message-consumed
  *  frame arrives. Matches by uuid. No-op when the message isn't present yet
  *  (the frame raced ahead of the message broadcast) or is already consumed —
@@ -669,7 +729,7 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
       if (prunedSubagents === next.activeSubagents) prunedSubagents = new Map(next.activeSubagents)
       prunedSubagents.set(id, { ...sub, status: 'interrupted', endedAt: sub.endedAt ?? sub.startedAt })
     }
-    next = {
+    next = clearSendingUserItems({
       ...next,
       toolStatus: sweptToolStatus,
       // Reset to 0 (not decrement). The SDK can merge multiple queued
@@ -691,7 +751,7 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
       // KEEPING completed records so their merged card + orphan-bubble
       // suppression survive across turns and replay.
       activeSubagents: prunedSubagents,
-    }
+    })
   }
 
   // Bound in-memory growth. No-op until the transcript exceeds CAP + SLACK,

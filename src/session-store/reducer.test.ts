@@ -31,6 +31,19 @@ function applyServerEcho(
   return reduceSessionState(state, { type: 'MESSAGE', message })
 }
 
+function applyAck(
+  state: ReturnType<typeof createInitialSessionState>,
+  pendingId = 'optimistic:abc',
+  serverUuid = 'real-server-uuid',
+): ReturnType<typeof createInitialSessionState> {
+  return reduceSessionState(state, {
+    type: 'ACK_USER_MESSAGE',
+    pendingId,
+    serverUuid,
+    receivedAt: 123,
+  })
+}
+
 describe('reducer: optimistic user message + server echo', () => {
   it('replaces the optimistic placeholder in-place (does NOT append a duplicate)', () => {
     // Regression: when insertUserMessage runs BEFORE the POST awaits, the
@@ -67,6 +80,25 @@ describe('reducer: optimistic user message + server echo', () => {
     state = applyServerEcho(state, arr, 'real-img-uuid')
     expect(state.items.length).toBe(1)
     expect(state.items[0].id).toBe('real-img-uuid')
+  })
+
+  it('clears sending on REST ack before the WS echo arrives', () => {
+    let state = createInitialSessionState('s1')
+    state = applyOptimistic(state, 'hello', 'optimistic:abc')
+    expect(state.items[0].sending).toBe(true)
+
+    state = applyAck(state, 'optimistic:abc', 'real-ack-uuid')
+    expect(state.items).toHaveLength(1)
+    expect(state.items[0].id).toBe('real-ack-uuid')
+    expect(state.items[0].sending).toBeUndefined()
+    expect(state.items[0].deliveryStatus).toBe('queued')
+    expect(hasId(state.pendingUserMessageIds, 'optimistic:abc')).toBe(false)
+    expect(hasId(state.pendingUserMessageIds, 'real-ack-uuid')).toBe(true)
+
+    state = applyServerEcho(state, 'hello', 'real-ack-uuid')
+    expect(state.items).toHaveLength(1)
+    expect(state.items[0].id).toBe('real-ack-uuid')
+    expect(isEmpty(state.pendingUserMessageIds)).toBe(true)
   })
 
   it('appends normally when no optimistic is pending', () => {
@@ -107,6 +139,7 @@ describe('reducer: optimistic user message + server echo', () => {
     } as unknown as SdkMessage
     state = reduceSessionState(state, { type: 'MESSAGE', message: resultMsg })
     expect(isEmpty(state.pendingUserMessageIds)).toBe(true)
+    expect(state.items[0].sending).toBeUndefined()
   })
 })
 

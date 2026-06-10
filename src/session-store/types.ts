@@ -164,6 +164,11 @@ export type SessionAction =
   | { type: 'PREPEND_MESSAGES'; messages: SdkMessage[] }
   | { type: 'MESSAGE'; message: SdkMessage }
   | { type: 'OPTIMISTIC_USER_MESSAGE'; message: SdkMessage }
+  /** The REST send endpoint accepted an optimistic user message and returned
+   *  the server-side uuid. Clears the local sending spinner immediately while
+   *  keeping the id in pendingUserMessageIds until the WS echo/replay/result
+   *  reconciles the turn. */
+  | { type: 'ACK_USER_MESSAGE'; pendingId: string; serverUuid: string; receivedAt?: number }
   /** Roll back the most recent optimistic user message (POST failed
    *  before the server could broadcast it). Identified by pendingId
    *  so concurrent unrelated dispatches don't drop the wrong row. */
@@ -237,4 +242,3 @@ export function createInitialSessionState(sessionId: string): SessionState {
     activeSubagents: new Map(),
   }
 }
-

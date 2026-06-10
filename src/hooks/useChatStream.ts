@@ -76,6 +76,10 @@ export interface ChatStream {
    *  real message from the WS stream will replace this placeholder
    *  (matched by id, not by content — works for multimodal too). */
   insertUserMessage: (text: string) => string
+  /** Mark an optimistic user message as accepted by the REST send endpoint.
+   *  This clears the local "sending" spinner using the server-side uuid;
+   *  the later WS echo/replay/result still performs final reconciliation. */
+  ackUserMessage: (pendingId: string, serverUuid: string, receivedAt?: number) => void
   /** Remove a previously-inserted optimistic user message. Used by the
    *  Composer's send() catch path so a failed POST doesn't leave a
    *  ghost row in the transcript. */
@@ -364,6 +368,10 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     store.dispatch({ type: 'ROLLBACK_OPTIMISTIC_USER_MESSAGE', pendingId })
   }, [store])
 
+  const ackUserMessage = useCallback((pendingId: string, serverUuid: string, receivedAt?: number) => {
+    store.dispatch({ type: 'ACK_USER_MESSAGE', pendingId, serverUuid, receivedAt })
+  }, [store])
+
   const reset = useCallback(() => {
     store.reset()
   }, [store])
@@ -453,6 +461,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       replayReady,
       trackSentTurn,
       insertUserMessage,
+      ackUserMessage,
       rollbackUserMessage,
       reset,
       clearError,
@@ -460,6 +469,6 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       hasOlder,
       loadingOlder,
     }),
-    [items, messages, queuedAhead, displayedError, contextUsage, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, replayReady, trackSentTurn, insertUserMessage, rollbackUserMessage, reset, clearError, loadOlder, hasOlder, loadingOlder],
+    [items, messages, queuedAhead, displayedError, contextUsage, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, replayReady, trackSentTurn, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, loadOlder, hasOlder, loadingOlder],
   )
 }
