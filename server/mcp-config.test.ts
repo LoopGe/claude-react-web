@@ -167,6 +167,44 @@ describe('McpConfigStore.toSdkConfig', () => {
     expect(cfg.http).toEqual({ type: 'http', url: 'http://localhost:8080' })
   })
 
+  it('injects stored OAuth bearer token when no Authorization header exists', async () => {
+    const store = new McpConfigStore({ stateDir: dir })
+    await store.load()
+    store.upsert(makeServer({
+      name: 'oauth-http',
+      type: 'http',
+      url: 'http://localhost:8080',
+      headers: { 'X-Custom': 'v' },
+      oauth: { tokens: { access_token: 'tok', token_type: 'Bearer' } },
+    }))
+
+    const cfg = store.toSdkConfig()
+    expect(cfg['oauth-http']).toEqual({
+      type: 'http',
+      url: 'http://localhost:8080',
+      headers: { 'X-Custom': 'v', Authorization: 'Bearer tok' },
+    })
+  })
+
+  it('keeps an explicit Authorization header over stored OAuth token', async () => {
+    const store = new McpConfigStore({ stateDir: dir })
+    await store.load()
+    store.upsert(makeServer({
+      name: 'explicit-auth',
+      type: 'sse',
+      url: 'http://localhost:3000',
+      headers: { authorization: 'Bearer manual' },
+      oauth: { tokens: { access_token: 'tok', token_type: 'Bearer' } },
+    }))
+
+    const cfg = store.toSdkConfig()
+    expect(cfg['explicit-auth']).toEqual({
+      type: 'sse',
+      url: 'http://localhost:3000',
+      headers: { authorization: 'Bearer manual' },
+    })
+  })
+
   it('includes alwaysLoad flag when true', async () => {
     const store = new McpConfigStore({ stateDir: dir })
     await store.load()
@@ -224,6 +262,18 @@ describe('maskSecrets', () => {
     const masked = maskSecrets(makeServer({ headers: { Authorization: 'Bearer tok' } }))
     expect(masked).not.toHaveProperty('headers')
     expect(masked.headerKeys).toEqual(['Authorization'])
+  })
+
+  it('strips raw OAuth state and exposes only auth metadata', () => {
+    const masked = maskSecrets(makeServer({
+      oauth: {
+        tokens: { access_token: 'secret-token', token_type: 'Bearer' },
+        lastAuthorizedAt: 1_700_000_000_001,
+      },
+    }))
+    expect(masked).not.toHaveProperty('oauth')
+    expect(masked.oauthAuthorized).toBe(true)
+    expect(masked.oauthLastAuthorizedAt).toBe(1_700_000_000_001)
   })
 
   it('omits envKeys when env is empty or undefined', () => {

@@ -288,6 +288,18 @@ export interface McpServerConfigMeta {
   updatedAt: number
   envKeys?: string[]
   headerKeys?: string[]
+  oauthAuthorized?: boolean
+  oauthLastAuthorizedAt?: number
+}
+
+export interface McpConnectionTestResult {
+  success: boolean
+  status: 'connected' | 'failed' | 'needs-auth'
+  serverInfo?: { name?: string; version?: string }
+  toolCount?: number
+  tools?: McpServerTool[]
+  authRequired?: boolean
+  error?: string
 }
 
 export type { McpServerInput } from '../shared/mcp-types'

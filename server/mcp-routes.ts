@@ -8,13 +8,19 @@
 import { Hono } from 'hono'
 import {
   McpConfigStore,
+  clearMcpOAuth,
+  finishMcpOAuth,
   maskSecrets,
+  startMcpOAuth,
+  testMcpConnection,
   validateMcpServer,
   type StoredMcpServer,
   type McpServerInput,
 } from './mcp-config.js'
 import { HttpError, createErrorHandler } from './errors.js'
 import { safeJson } from './routes/index.js'
+
+const OAUTH_CALLBACK_PATH = '/api/mcp-config/oauth/callback'
 
 export function buildMcpConfigRouter(store: McpConfigStore): Hono {
   const app = new Hono()
@@ -25,6 +31,31 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
   app.get('/', (c) => {
     const servers = store.list().map(maskSecrets)
     return c.json({ servers })
+  })
+
+  // OAuth redirect target. Completes token exchange and shows a tiny close page.
+  app.get('/oauth/callback', async (c) => {
+    const name = c.req.query('server')
+    const code = c.req.query('code')
+    const error = c.req.query('error')
+    const state = c.req.query('state')
+    if (!name) throw new HttpError(400, 'server is required')
+    const server = store.get(name)
+    if (!server) throw new HttpError(404, `MCP server "${name}" not found`)
+    if (error) {
+      return c.html(renderOAuthResultPage(false, `Authorization failed: ${error}`), 400)
+    }
+    if (server.oauth?.state && state !== server.oauth.state) {
+      return c.html(renderOAuthResultPage(false, 'Authorization state did not match. Please start auth again.'), 400)
+    }
+    if (!code) throw new HttpError(400, 'code is required')
+
+    const redirectUrl = server.oauth?.redirectUrl ?? new URL(OAUTH_CALLBACK_PATH, c.req.url).toString()
+    await finishMcpOAuth(server, code, redirectUrl)
+    server.updatedAt = Date.now()
+    store.upsert(server)
+    await store.flush()
+    return c.html(renderOAuthResultPage(true, `MCP server "${name}" is authorized.`))
   })
 
   // Get one server (secrets masked)
@@ -121,6 +152,63 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
     return c.json({ server: maskSecrets(updated) })
   })
 
+  // Start OAuth for a remote MCP server. The frontend opens authorizationUrl.
+  app.post('/:name/auth/start', async (c) => {
+    const name = c.req.param('name')
+    const server = store.get(name)
+    if (!server) throw new HttpError(404, `MCP server "${name}" not found`)
+    if (server.type === 'stdio') throw new HttpError(400, 'OAuth auth is only available for remote MCP servers')
+
+    const redirectUrl = new URL(OAUTH_CALLBACK_PATH, c.req.url)
+    redirectUrl.searchParams.set('server', name)
+    const result = await startMcpOAuth(server, redirectUrl.toString())
+    server.updatedAt = Date.now()
+    store.upsert(server)
+    await store.flush()
+    return c.json(result)
+  })
+
+  // Clear stored OAuth credentials for a remote MCP server.
+  app.delete('/:name/auth', async (c) => {
+    const name = c.req.param('name')
+    const server = store.get(name)
+    if (!server) throw new HttpError(404, `MCP server "${name}" not found`)
+    clearMcpOAuth(server)
+    server.updatedAt = Date.now()
+    store.upsert(server)
+    await store.flush()
+    return c.json({ server: maskSecrets(server) })
+  })
+
+  // Probe a saved server with a real MCP initialize handshake.
+  app.post('/:name/test', async (c) => {
+    const name = c.req.param('name')
+    const server = store.get(name)
+    if (!server) throw new HttpError(404, `MCP server "${name}" not found`)
+
+    const result = await testMcpConnection(server, { includeTools: false })
+    if (server.type !== 'stdio') {
+      store.upsert(server)
+      await store.flush()
+    }
+    return c.json({ result })
+  })
+
+  // Probe and return the tool list for a saved server.
+  app.get('/:name/tools', async (c) => {
+    const name = c.req.param('name')
+    const server = store.get(name)
+    if (!server) throw new HttpError(404, `MCP server "${name}" not found`)
+
+    const result = await testMcpConnection(server, { includeTools: true })
+    if (server.type !== 'stdio') {
+      store.upsert(server)
+      await store.flush()
+    }
+    if (!result.success) return c.json({ result, tools: [] })
+    return c.json({ result, tools: result.tools ?? [] })
+  })
+
   // Validate a server config (schema check only, no connection test)
   app.post('/validate', async (c) => {
     const body = await safeJson<Partial<StoredMcpServer>>(c.req)
@@ -129,4 +217,43 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
   })
 
   return app
+}
+
+function renderOAuthResultPage(ok: boolean, message: string): string {
+  const safeMessage = escapeHtml(message)
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MCP Authorization</title>
+  <style>
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background: #0f1115; color: #e6e8eb; }
+    .card { max-width: 460px; padding: 24px; border: 1px solid #262b36; border-radius: 12px; background: #15181f; box-shadow: 0 16px 48px rgba(0,0,0,.35); }
+    h1 { margin: 0 0 8px; font-size: 18px; }
+    p { margin: 0 0 16px; color: #8c94a3; line-height: 1.5; }
+    button { border: 1px solid #262b36; border-radius: 8px; padding: 8px 12px; background: #1c2029; color: #e6e8eb; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>${ok ? 'Authorization complete' : 'Authorization failed'}</h1>
+    <p>${safeMessage}</p>
+    <button onclick="window.close()">Close window</button>
+  </main>
+  <script>
+    try { localStorage.setItem('claude-react-web:mcp-oauth-complete', String(Date.now())); } catch {}
+    try { new BroadcastChannel('claude-react-web:mcp-oauth').postMessage({ ok: ${ok ? 'true' : 'false'} }); } catch {}
+  </script>
+</body>
+</html>`
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
 }

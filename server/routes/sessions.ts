@@ -56,7 +56,7 @@ export function buildSessionRouter(sm: SessionManager): Hono {
     if (enabledErr) return c.json({ error: enabledErr }, 400)
     const envErr = validateEnv(customEnv)
     if (envErr) return c.json({ error: envErr }, 400)
-    const mergedMcp = sm.mergeMcpServers(enabledMcpServers, mcpServers)
+    const mergedMcp = await sm.mergeMcpServersAsync(enabledMcpServers, mcpServers)
     if (mergedMcp) rest.mcpServers = mergedMcp
     const info = sm.create(rest as Options & { provider?: string }, customEnv as Record<string, string> | undefined)
     return c.json({ session: info }, 201)
@@ -322,7 +322,7 @@ export function buildSessionRouter(sm: SessionManager): Hono {
     }
     const enabledErr = validateEnabledMcpServers(body.enabledMcpServers)
     if (enabledErr) return c.json({ error: enabledErr }, 400)
-    const merged = sm.mergeMcpServers(body.enabledMcpServers, body.servers) ?? {}
+    const merged = await sm.mergeMcpServersAsync(body.enabledMcpServers, body.servers) ?? {}
     const result = await sm.setMcpServers(c.req.param('id'), merged)
     return c.json({ result })
   })

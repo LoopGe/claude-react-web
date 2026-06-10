@@ -318,6 +318,48 @@ describe('mcp-config routes', () => {
   })
 
   // -------------------------------------------------------------------
+  // OAuth metadata routes
+  // -------------------------------------------------------------------
+  describe('DELETE /:name/auth', () => {
+    it('clears stored OAuth credentials and keeps them masked in the response', async () => {
+      store.upsert(makeServer({
+        name: 'remote',
+        type: 'http',
+        url: 'http://localhost:9999',
+        oauth: {
+          tokens: { access_token: 'secret', token_type: 'Bearer' },
+          lastAuthorizedAt: 1_700_000_000_001,
+        },
+      }))
+      await store.flush()
+
+      const res = await app().request('/remote/auth', { method: 'DELETE' })
+      expect(res.status).toBe(200)
+      const body = await json(res)
+      const server = body.server as Record<string, unknown>
+      expect(server).not.toHaveProperty('oauth')
+      expect(server.oauthAuthorized).toBeUndefined()
+      expect(store.get('remote')?.oauth).toBeUndefined()
+    })
+  })
+
+  describe('GET /oauth/callback', () => {
+    it('rejects mismatched OAuth state before exchanging a code', async () => {
+      store.upsert(makeServer({
+        name: 'remote',
+        type: 'http',
+        url: 'http://localhost:9999',
+        oauth: { state: 'expected' },
+      }))
+      await store.flush()
+
+      const res = await app().request('/oauth/callback?server=remote&code=abc&state=wrong')
+      expect(res.status).toBe(400)
+      expect(await res.text()).toContain('Authorization state did not match')
+    })
+  })
+
+  // -------------------------------------------------------------------
   // POST /validate
   // -------------------------------------------------------------------
   describe('POST /validate', () => {

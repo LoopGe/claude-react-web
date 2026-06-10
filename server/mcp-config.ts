@@ -10,6 +10,7 @@
 // (env vars, API tokens, auth headers).
 
 import { promises as fs } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import type {
   McpServerConfig,
   McpStdioServerConfig,
@@ -17,9 +18,22 @@ import type {
   McpHttpServerConfig,
 } from '@anthropic-ai/claude-agent-sdk'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import {
+  UnauthorizedError,
+  discoverOAuthServerInfo,
+  refreshAuthorization,
+  selectResourceURL,
+} from '@modelcontextprotocol/sdk/client/auth.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { InvalidClientError, InvalidGrantError, UnauthorizedClientError } from '@modelcontextprotocol/sdk/server/auth/errors.js'
+import type {
+  OAuthClientInformationMixed,
+  OAuthClientMetadata,
+  OAuthTokens,
+} from '@modelcontextprotocol/sdk/shared/auth.js'
+import type { OAuthClientProvider, OAuthDiscoveryState } from '@modelcontextprotocol/sdk/client/auth.js'
 import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import type { JsonFileStoreOptions } from './json-file-store.js'
 
@@ -47,8 +61,20 @@ export interface StoredMcpServer {
   alwaysLoad?: boolean
   /** User can disable without deleting */
   enabled?: boolean
+  /** Remote MCP OAuth state. Contains secrets and is never returned raw. */
+  oauth?: StoredMcpOAuthState
   createdAt: number
   updatedAt: number
+}
+
+export interface StoredMcpOAuthState {
+  tokens?: OAuthTokens
+  clientInformation?: OAuthClientInformationMixed
+  codeVerifier?: string
+  state?: string
+  discoveryState?: OAuthDiscoveryState
+  redirectUrl?: string
+  lastAuthorizedAt?: number
 }
 
 /** The on-disk shape: a keyed object. Keys match `name`. */
@@ -71,6 +97,10 @@ export interface MaskedMcpServer {
   envKeys?: string[]
   /** Header keys (values hidden) */
   headerKeys?: string[]
+  /** True when OAuth tokens are stored for this remote server. */
+  oauthAuthorized?: boolean
+  /** Last successful OAuth token exchange timestamp. */
+  oauthLastAuthorizedAt?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +184,28 @@ export class McpConfigStore extends JsonFileStore<StoredMcpServer> {
     }
     return result
   }
+
+  /** Refresh stored OAuth tokens before serialising configs for real SDK sessions. */
+  async refreshOAuthTokens(names?: Iterable<string>): Promise<void> {
+    const selected = names ? new Set(Array.from(names).filter((name): name is string => typeof name === 'string')) : undefined
+    let changed = false
+    for (const [name, server] of this.index) {
+      if (server.enabled === false) continue
+      if (selected && !selected.has(name)) continue
+      const before = JSON.stringify(server.oauth ?? null)
+      try {
+        await refreshMcpOAuth(server)
+      } catch (err) {
+        console.warn(`[mcp-config] OAuth refresh failed for ${name}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      if (JSON.stringify(server.oauth ?? null) !== before) {
+        server.updatedAt = Date.now()
+        this.upsert(server)
+        changed = true
+      }
+    }
+    if (changed) await this.flush()
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -162,10 +214,12 @@ export class McpConfigStore extends JsonFileStore<StoredMcpServer> {
 
 /** Strip secrets from a StoredMcpServer for API responses. */
 export function maskSecrets(server: StoredMcpServer): MaskedMcpServer {
-  const { env, headers, ...rest } = server
+  const { env, headers, oauth, ...rest } = server
   const masked: MaskedMcpServer = { ...rest }
   if (env && Object.keys(env).length > 0) masked.envKeys = Object.keys(env)
   if (headers && Object.keys(headers).length > 0) masked.headerKeys = Object.keys(headers)
+  if (oauth?.tokens?.access_token) masked.oauthAuthorized = true
+  if (typeof oauth?.lastAuthorizedAt === 'number') masked.oauthLastAuthorizedAt = oauth.lastAuthorizedAt
   return masked
 }
 
@@ -191,6 +245,7 @@ export function coerceStoredMcpServer(raw: unknown, fallbackName?: string): Stor
   if (isStringRecord(r.env)) server.env = r.env as Record<string, string>
   if (typeof r.url === 'string') server.url = r.url
   if (isStringRecord(r.headers)) server.headers = r.headers as Record<string, string>
+  if (isOAuthState(r.oauth)) server.oauth = r.oauth as StoredMcpOAuthState
   if (typeof r.alwaysLoad === 'boolean') server.alwaysLoad = r.alwaysLoad
   if (typeof r.enabled === 'boolean') server.enabled = r.enabled
   return server
@@ -218,9 +273,26 @@ export function validateMcpServer(server: Partial<StoredMcpServer>): string[] {
 
 export interface TestConnectionResult {
   success: boolean
+  status: 'connected' | 'failed' | 'needs-auth'
   serverInfo?: { name?: string; version?: string }
   toolCount?: number
+  tools?: McpConnectionTool[]
+  authRequired?: boolean
   error?: string
+}
+
+export interface TestConnectionOptions {
+  includeTools?: boolean
+}
+
+export interface McpConnectionTool {
+  name: string
+  description?: string
+  annotations?: { readOnly?: boolean; destructive?: boolean; openWorld?: boolean }
+}
+
+export interface StartMcpOAuthResult {
+  authorizationUrl: string
 }
 
 const CONNECT_TIMEOUT_MS = 10_000
@@ -229,30 +301,51 @@ const CONNECT_TIMEOUT_MS = 10_000
  *  initialize handshake, and optionally listing tools. Returns a result
  *  object (never throws). The spawned child process (stdio) or network
  *  resources (sse/http) are always cleaned up. */
-export async function testMcpConnection(server: StoredMcpServer): Promise<TestConnectionResult> {
+export async function testMcpConnection(
+  server: StoredMcpServer,
+  options: TestConnectionOptions = {},
+): Promise<TestConnectionResult> {
   const client = new Client(
     { name: 'claude-react-web-test', version: '1.0.0' },
     { capabilities: {} },
   )
   let transport: Awaited<ReturnType<typeof createTransport>> | null = null
   try {
-    transport = await createTransport(server)
+    const authProvider = server.type !== 'stdio' && server.oauth?.tokens
+      ? new StoredMcpOAuthProvider(server, server.oauth.redirectUrl ?? 'http://127.0.0.1/')
+      : undefined
+    transport = await createTransport(server, authProvider)
     await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS)
-    let toolCount = 0
-    try {
-      const { tools } = await client.listTools()
-      toolCount = tools.length
-    } catch {
-      // listTools is optional — some servers don't support it
+    let tools: McpConnectionTool[] | undefined
+    if (options.includeTools) {
+      tools = []
+      try {
+        const result = await client.listTools()
+        tools = result.tools.map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          annotations: normalizeToolAnnotations(tool.annotations),
+        }))
+      } catch {
+        // listTools is optional; some servers don't support it.
+      }
     }
     const serverInfo = client.getServerVersion()
     return {
       success: true,
+      status: 'connected',
       serverInfo: serverInfo ? { name: serverInfo.name, version: serverInfo.version } : undefined,
-      toolCount,
+      toolCount: tools?.length,
+      tools,
     }
   } catch (err) {
-    return { success: false, error: (err as Error).message ?? String(err) }
+    const authRequired = isMcpAuthError(err)
+    return {
+      success: false,
+      status: authRequired ? 'needs-auth' : 'failed',
+      authRequired,
+      error: (err as Error).message ?? String(err),
+    }
   } finally {
     try { await client.close() } catch { /* best-effort */ }
     // For stdio, closing the client kills the child process. For network
@@ -260,7 +353,124 @@ export async function testMcpConnection(server: StoredMcpServer): Promise<TestCo
   }
 }
 
-function createTransport(server: StoredMcpServer) {
+/** Start a remote MCP OAuth authorization flow. The returned URL should be
+ * opened by the browser; the OAuth provider state is persisted on `server`. */
+export async function startMcpOAuth(server: StoredMcpServer, redirectUrl: string): Promise<StartMcpOAuthResult> {
+  if (server.type === 'stdio') throw new Error('OAuth auth is only available for remote MCP servers')
+  let authorizationUrl = ''
+  const oauth = { ...(server.oauth ?? {}), redirectUrl, state: randomUUID() }
+  delete oauth.tokens
+  delete oauth.codeVerifier
+  server.oauth = oauth
+  const provider = new StoredMcpOAuthProvider(server, redirectUrl, (url) => { authorizationUrl = url.toString() })
+  const transport = createTransport(server, provider)
+  const client = new Client({ name: 'claude-react-web-auth', version: '1.0.0' }, { capabilities: {} })
+  try {
+    await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS)
+  } catch (err) {
+    if (!authorizationUrl && !isMcpAuthError(err)) throw err
+  } finally {
+    try { await client.close() } catch { /* best-effort */ }
+  }
+  if (!authorizationUrl) throw new Error('MCP server did not provide an OAuth authorization URL')
+  return { authorizationUrl }
+}
+
+/** Complete a remote MCP OAuth flow and store the resulting tokens. */
+export async function finishMcpOAuth(server: StoredMcpServer, code: string, redirectUrl: string): Promise<void> {
+  if (server.type === 'stdio') throw new Error('OAuth auth is only available for remote MCP servers')
+  const provider = new StoredMcpOAuthProvider(server, redirectUrl)
+  const transport = createTransport(server, provider)
+  try {
+    if ('finishAuth' in transport && typeof transport.finishAuth === 'function') {
+      await withTimeout(transport.finishAuth(code), CONNECT_TIMEOUT_MS)
+    } else {
+      throw new Error('transport does not support OAuth finishAuth')
+    }
+    server.oauth = { ...(server.oauth ?? {}), redirectUrl, lastAuthorizedAt: Date.now() }
+    delete server.oauth.codeVerifier
+    delete server.oauth.state
+  } finally {
+    try { await transport.close?.() } catch { /* best-effort */ }
+  }
+}
+
+export function clearMcpOAuth(server: StoredMcpServer): void {
+  if (server.oauth) delete server.oauth
+}
+
+export async function refreshMcpOAuth(server: StoredMcpServer): Promise<boolean> {
+  if (server.type === 'stdio' || !server.url) return false
+  const refreshToken = server.oauth?.tokens?.refresh_token
+  const clientInformation = server.oauth?.clientInformation
+  if (!refreshToken || !clientInformation) return false
+
+  const provider = new StoredMcpOAuthProvider(server, server.oauth?.redirectUrl ?? 'http://127.0.0.1/')
+  try {
+    const cachedState = provider.discoveryState()
+    const serverInfo = cachedState?.authorizationServerUrl
+      ? cachedState
+      : await withTimeout(discoverOAuthServerInfo(server.url), CONNECT_TIMEOUT_MS)
+    if (!cachedState?.authorizationServerUrl) {
+      provider.saveDiscoveryState({
+        authorizationServerUrl: serverInfo.authorizationServerUrl,
+        authorizationServerMetadata: serverInfo.authorizationServerMetadata,
+        resourceMetadata: serverInfo.resourceMetadata,
+      })
+    }
+    const resource = await selectResourceURL(server.url, provider, serverInfo.resourceMetadata)
+    const tokens = await withTimeout(
+      refreshAuthorization(serverInfo.authorizationServerUrl, {
+        metadata: serverInfo.authorizationServerMetadata,
+        clientInformation,
+        refreshToken,
+        resource,
+      }),
+      CONNECT_TIMEOUT_MS,
+    )
+    provider.saveTokens(tokens)
+    return true
+  } catch (err) {
+    if (clearInvalidOAuthCredentials(server, err)) {
+      return true
+    }
+    throw err
+  }
+}
+
+function normalizeToolAnnotations(annotations: unknown): McpConnectionTool['annotations'] | undefined {
+  if (!annotations || typeof annotations !== 'object') return undefined
+  const record = annotations as Record<string, unknown>
+  const normalized = {
+    readOnly: record.readOnlyHint === true || record.readOnly === true,
+    destructive: record.destructiveHint === true || record.destructive === true,
+    openWorld: record.openWorldHint === true || record.openWorld === true,
+  }
+  return normalized.readOnly || normalized.destructive || normalized.openWorld ? normalized : undefined
+}
+
+function isMcpAuthError(err: unknown): boolean {
+  if (err instanceof UnauthorizedError) return true
+  if (err instanceof StreamableHTTPError && err.code === 401) return true
+  const maybe = err as { code?: unknown; message?: unknown }
+  const message = typeof maybe.message === 'string' ? maybe.message.toLowerCase() : ''
+  return maybe.code === 401 || message.includes('unauthorized') || message.includes('401') || message.includes('auth')
+}
+
+function isOAuthCredentialsInvalid(err: unknown): boolean {
+  return err instanceof InvalidGrantError || err instanceof InvalidClientError || err instanceof UnauthorizedClientError
+}
+
+function clearInvalidOAuthCredentials(server: StoredMcpServer, err: unknown): boolean {
+  if (!isOAuthCredentialsInvalid(err) || !server.oauth) return false
+  if (err instanceof InvalidClientError || err instanceof UnauthorizedClientError) {
+    delete server.oauth.clientInformation
+  }
+  if (server.oauth.tokens) delete server.oauth.tokens
+  return true
+}
+
+function createTransport(server: StoredMcpServer, authProvider?: OAuthClientProvider) {
   const type = server.type ?? 'stdio'
   if (type === 'stdio') {
     if (!server.command) throw new Error('command is required for stdio')
@@ -276,6 +486,7 @@ function createTransport(server: StoredMcpServer) {
     if (!server.url) throw new Error('url is required for sse')
     const url = new URL(server.url)
     return new SSEClientTransport(url, {
+      authProvider,
       requestInit: server.headers ? { headers: server.headers } : undefined,
     })
   }
@@ -283,6 +494,7 @@ function createTransport(server: StoredMcpServer) {
     if (!server.url) throw new Error('url is required for http')
     const url = new URL(server.url)
     return new StreamableHTTPClientTransport(url, {
+      authProvider,
       requestInit: server.headers ? { headers: server.headers } : undefined,
     })
   }
@@ -299,6 +511,92 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   })
 }
 
+class StoredMcpOAuthProvider implements OAuthClientProvider {
+  constructor(
+    private readonly server: StoredMcpServer,
+    private readonly callbackUrl: string,
+    private readonly onRedirect?: (url: URL) => void,
+  ) {}
+
+  get redirectUrl(): string {
+    return this.callbackUrl
+  }
+
+  get clientMetadata(): OAuthClientMetadata {
+    return {
+      redirect_uris: [this.callbackUrl],
+      token_endpoint_auth_method: 'none',
+      grant_types: ['authorization_code', 'refresh_token'],
+      response_types: ['code'],
+      client_name: 'claude-react-web',
+    }
+  }
+
+  clientInformation(): OAuthClientInformationMixed | undefined {
+    return this.server.oauth?.clientInformation
+  }
+
+  saveClientInformation(clientInformation: OAuthClientInformationMixed): void {
+    this.ensureState().clientInformation = clientInformation
+  }
+
+  tokens(): OAuthTokens | undefined {
+    return this.server.oauth?.tokens
+  }
+
+  saveTokens(tokens: OAuthTokens): void {
+    const state = this.ensureState()
+    state.tokens = tokens
+    state.lastAuthorizedAt = Date.now()
+  }
+
+  state(): string {
+    const state = this.ensureState()
+    state.state ??= randomUUID()
+    return state.state
+  }
+
+  redirectToAuthorization(authorizationUrl: URL): void {
+    this.onRedirect?.(authorizationUrl)
+  }
+
+  saveCodeVerifier(codeVerifier: string): void {
+    this.ensureState().codeVerifier = codeVerifier
+  }
+
+  codeVerifier(): string {
+    const codeVerifier = this.server.oauth?.codeVerifier
+    if (!codeVerifier) throw new Error('missing OAuth code verifier; start auth again')
+    return codeVerifier
+  }
+
+  saveDiscoveryState(discoveryState: OAuthDiscoveryState): void {
+    this.ensureState().discoveryState = discoveryState
+  }
+
+  discoveryState(): OAuthDiscoveryState | undefined {
+    return this.server.oauth?.discoveryState
+  }
+
+  invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery'): void {
+    if (!this.server.oauth) return
+    if (scope === 'all') {
+      delete this.server.oauth
+      return
+    }
+    if (scope === 'client') delete this.server.oauth.clientInformation
+    if (scope === 'tokens') delete this.server.oauth.tokens
+    if (scope === 'verifier') delete this.server.oauth.codeVerifier
+    if (scope === 'discovery') delete this.server.oauth.discoveryState
+  }
+
+  private ensureState(): StoredMcpOAuthState {
+    this.server.oauth ??= {}
+    this.server.oauth.redirectUrl = this.callbackUrl
+    return this.server.oauth
+  }
+}
+
 /** Convert a StoredMcpServer to the SDK config shape. */
 function toSdkServerConfig(server: StoredMcpServer): McpServerConfig | null {
   if (server.type === 'stdio') {
@@ -312,21 +610,50 @@ function toSdkServerConfig(server: StoredMcpServer): McpServerConfig | null {
   if (server.type === 'sse') {
     if (!server.url) return null
     const cfg: McpSSEServerConfig = { type: 'sse', url: server.url }
-    if (server.headers && Object.keys(server.headers).length > 0) cfg.headers = server.headers
+    const headers = headersWithOAuth(server)
+    if (Object.keys(headers).length > 0) cfg.headers = headers
     if (server.alwaysLoad) cfg.alwaysLoad = true
     return cfg
   }
   if (server.type === 'http') {
     if (!server.url) return null
     const cfg: McpHttpServerConfig = { type: 'http', url: server.url }
-    if (server.headers && Object.keys(server.headers).length > 0) cfg.headers = server.headers
+    const headers = headersWithOAuth(server)
+    if (Object.keys(headers).length > 0) cfg.headers = headers
     if (server.alwaysLoad) cfg.alwaysLoad = true
     return cfg
   }
   return null
 }
 
+function headersWithOAuth(server: StoredMcpServer): Record<string, string> {
+  const headers = { ...(server.headers ?? {}) }
+  const accessToken = server.oauth?.tokens?.access_token
+  if (accessToken && !hasAuthorizationHeader(headers)) {
+    headers.Authorization = `Bearer ${accessToken}`
+  }
+  return headers
+}
+
+function hasAuthorizationHeader(headers: Record<string, string>): boolean {
+  return Object.keys(headers).some((key) => key.toLowerCase() === 'authorization')
+}
+
 function isStringRecord(v: unknown): boolean {
   if (!v || typeof v !== 'object') return false
   return Object.values(v).every((val) => typeof val === 'string')
+}
+
+function isOAuthState(v: unknown): boolean {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false
+  const state = v as Record<string, unknown>
+  return (
+    (state.tokens === undefined || (typeof state.tokens === 'object' && state.tokens !== null)) &&
+    (state.clientInformation === undefined || (typeof state.clientInformation === 'object' && state.clientInformation !== null)) &&
+    (state.codeVerifier === undefined || typeof state.codeVerifier === 'string') &&
+    (state.state === undefined || typeof state.state === 'string') &&
+    (state.discoveryState === undefined || (typeof state.discoveryState === 'object' && state.discoveryState !== null)) &&
+    (state.redirectUrl === undefined || typeof state.redirectUrl === 'string') &&
+    (state.lastAuthorizedAt === undefined || typeof state.lastAuthorizedAt === 'number')
+  )
 }

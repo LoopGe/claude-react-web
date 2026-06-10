@@ -1,13 +1,13 @@
 // Global application settings modal. Edits config.json fields and manages
 // MCP server configs. All changes are persisted server-side on Save.
 
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { api } from '../hooks/useApi'
 import { formatBytes } from '../utils/format'
-import { IconX, IconCheck, IconArrowUp, IconArrowDown } from './icons/ToolIcons'
+import { IconX, IconCheck, IconArrowUp, IconArrowDown, IconChevronDown } from './icons/ToolIcons'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
 import type { FullServerConfig } from '../types/config'
-import type { McpServerConfigMeta } from '../types'
+import type { McpConnectionTestResult, McpServerConfigMeta, McpServerTool } from '../types'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
 import type { UpdateActionResult, UpdateInfo } from '../../shared/update-info'
@@ -173,6 +173,19 @@ export function GlobalSettingsModal({
       setMcpServers(r.servers)
     } catch { /* no global config is fine */ }
   }, [])
+
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === 'claude-react-web:mcp-oauth-complete') void refreshMcp()
+    }
+    const channel = 'BroadcastChannel' in window ? new BroadcastChannel('claude-react-web:mcp-oauth') : null
+    channel?.addEventListener('message', () => void refreshMcp())
+    window.addEventListener('storage', onStorage)
+    return () => {
+      window.removeEventListener('storage', onStorage)
+      channel?.close()
+    }
+  }, [refreshMcp])
 
   const handleSave = async () => {
     setSaving(true)
@@ -368,6 +381,7 @@ export function GlobalSettingsModal({
                   onEdit={(s) => { setMcpInstallerEdit(s); setShowMcpInstaller(true) }}
                   onDelete={deleteMcpServer}
                   onToggle={toggleMcpServer}
+                  onRefresh={refreshMcp}
                 />
               )}
               {tab === 'marketplace' && (
@@ -508,12 +522,11 @@ function ModelsTab({
   return (
     <>
       <Field label="Available Models" hint="First model is the default. Add model IDs one at a time.">
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div className="settings-model-list">
           {modelList.length > 1 && (
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 2 }}>
+            <div className="settings-model-list-toolbar">
               <button
-                className="btn"
-                style={{ fontSize: 11, padding: '2px 8px' }}
+                className="btn btn-xs settings-model-sort-btn"
                 onClick={onSortModels}
                 title="Sort alphabetically (A→Z)"
               >
@@ -522,42 +535,35 @@ function ModelsTab({
             </div>
           )}
           {modelList.map((m, i) => (
-            <div key={m} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-              <span style={{
-                fontSize: 11, color: 'var(--fg-muted)', width: 18, textAlign: 'right', flexShrink: 0,
-              }}>
-                {i === 0 ? '★' : ''}
+            <div key={m} className={`settings-model-row${i === 0 ? ' default' : ''}`}>
+              <span className="settings-model-rank" title={i === 0 ? 'Default model' : undefined}>
+                {i === 0 ? 'Default' : i + 1}
               </span>
-              <code style={{
-                flex: 1, fontSize: 12, padding: '4px 8px',
-                background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4,
-                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-              }}>
+              <code className="settings-model-id" title={m}>
                 {m}
               </code>
+              <div className="settings-model-move" role="group" aria-label="Move model priority">
+                <button
+                  className="btn-icon-sm settings-model-action"
+                  onClick={() => onMoveModel(i, -1)}
+                  disabled={i === 0}
+                  title="Move up"
+                  aria-label="Move up"
+                >
+                  <IconArrowUp size={12} />
+                </button>
+                <button
+                  className="btn-icon-sm settings-model-action"
+                  onClick={() => onMoveModel(i, 1)}
+                  disabled={i === modelList.length - 1}
+                  title="Move down"
+                  aria-label="Move down"
+                >
+                  <IconArrowDown size={12} />
+                </button>
+              </div>
               <button
-                className="btn"
-                style={{ padding: '2px 6px', fontSize: 11, flexShrink: 0 }}
-                onClick={() => onMoveModel(i, -1)}
-                disabled={i === 0}
-                title="Move up"
-                aria-label="Move up"
-              >
-                <IconArrowUp size={12} />
-              </button>
-              <button
-                className="btn"
-                style={{ padding: '2px 6px', fontSize: 11, flexShrink: 0 }}
-                onClick={() => onMoveModel(i, 1)}
-                disabled={i === modelList.length - 1}
-                title="Move down"
-                aria-label="Move down"
-              >
-                <IconArrowDown size={12} />
-              </button>
-              <button
-                className="btn"
-                style={{ padding: '2px 6px', fontSize: 11, flexShrink: 0 }}
+                className="btn-icon-sm settings-model-action danger"
                 onClick={() => onRemoveModel(m)}
                 title="Remove"
                 aria-label="Remove"
@@ -566,44 +572,49 @@ function ModelsTab({
               </button>
             </div>
           ))}
-          <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+          <div className="settings-model-add-row">
             <input
-              className="input"
-              style={{ flex: 1, fontSize: 12 }}
+              className="input settings-model-input"
               value={newModel}
               onChange={(e) => onNewModelChange(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') onAddModel() }}
               placeholder="model-id (e.g. claude-sonnet-4-20250514)"
             />
-            <button className="btn" style={{ fontSize: 11, padding: '2px 8px' }} onClick={onAddModel}>
+            <button className="btn btn-xs settings-model-add-btn" onClick={onAddModel}>
               Add
             </button>
           </div>
         </div>
       </Field>
       <Field label="Recap Model" hint="Model used for AI session summaries (lighter model recommended)">
-        <select
-          className="input"
-          value={recapModel}
-          onChange={(e) => onRecapModelChange(e.target.value)}
-        >
-          <option value="">(default)</option>
-          {modelList.map((m) => (
-            <option key={m} value={m}>{m}</option>
-          ))}
-        </select>
+        <div className="settings-model-select-wrap">
+          <select
+            className="input settings-model-select"
+            value={recapModel}
+            onChange={(e) => onRecapModelChange(e.target.value)}
+          >
+            <option value="">(default)</option>
+            {modelList.map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+          <IconChevronDown className="settings-model-select-icon" size={14} aria-hidden />
+        </div>
       </Field>
       <Field label="Commit Message Model" hint="Model used for AI-generated commit messages in Git panel">
-        <select
-          className="input"
-          value={commitMessageModel}
-          onChange={(e) => onCommitMessageModelChange(e.target.value)}
-        >
-          <option value="">(default)</option>
-          {modelList.map((m) => (
-            <option key={m} value={m}>{m}</option>
-          ))}
-        </select>
+        <div className="settings-model-select-wrap">
+          <select
+            className="input settings-model-select"
+            value={commitMessageModel}
+            onChange={(e) => onCommitMessageModelChange(e.target.value)}
+          >
+            <option value="">(default)</option>
+            {modelList.map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+          <IconChevronDown className="settings-model-select-icon" size={14} aria-hidden />
+        </div>
       </Field>
     </>
   )
@@ -659,106 +670,250 @@ function ServerTab({
 }
 
 function McpTab({
-  servers, onAdd, onEdit, onDelete, onToggle,
+  servers, onAdd, onEdit, onDelete, onToggle, onRefresh,
 }: {
   servers: McpServerConfigMeta[]
   onAdd: () => void
   onEdit: (s: McpServerConfigMeta) => void
   onDelete: (name: string) => void
   onToggle: (name: string, enabled: boolean) => void
+  onRefresh: () => void | Promise<void>
 }) {
   return (
     <>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <span style={{ fontSize: 13, color: 'var(--fg-muted)' }}>
+      <div className="settings-section-head settings-mcp-head">
+        <span className="settings-note settings-mcp-count">
           {servers.length} server{servers.length !== 1 ? 's' : ''} configured
         </span>
-        <button className="btn" style={{ fontSize: 11, padding: '4px 12px' }} onClick={onAdd}>
+        <button className="btn btn-sm" onClick={onAdd}>
           + Add Server
         </button>
       </div>
       {servers.length === 0 && (
-        <div style={{ padding: '24px 0', textAlign: 'center', color: 'var(--fg-muted)', fontSize: 13 }}>
+        <div className="settings-empty-note settings-mcp-empty">
           No MCP servers configured. Click "Add Server" to get started.
         </div>
       )}
       {servers.map((srv) => (
-        <McpCard key={srv.name} server={srv} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} />
+        <McpCard key={srv.name} server={srv} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} onRefresh={onRefresh} />
       ))}
     </>
   )
 }
 
 function McpCard({
-  server, onEdit, onDelete, onToggle,
+  server, onEdit, onDelete, onToggle, onRefresh,
 }: {
   server: McpServerConfigMeta
   onEdit: (s: McpServerConfigMeta) => void
   onDelete: (name: string) => void
   onToggle: (name: string, enabled: boolean) => void
+  onRefresh: () => void | Promise<void>
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [authBusy, setAuthBusy] = useState(false)
+  const [toolsOpen, setToolsOpen] = useState(false)
+  const [testResult, setTestResult] = useState<McpConnectionTestResult | null>(null)
+
+  const isRemote = server.type !== 'stdio'
+  const currentTools = testResult?.tools ?? []
+  const status = testResult?.status ?? (server.enabled === false ? 'disabled' : server.oauthAuthorized ? 'authorized' : 'idle')
+  const statusColor = status === 'connected'
+    ? 'var(--ok)'
+    : status === 'needs-auth'
+      ? 'var(--warn)'
+      : status === 'failed'
+        ? 'var(--danger)'
+        : server.enabled !== false
+          ? 'var(--plugin-active)'
+          : 'var(--plugin-inactive)'
+
+  const runTest = async () => {
+    setTesting(true)
+    try {
+      const r = await api.post<{ result: McpConnectionTestResult }>(
+        `/mcp-config/${encodeURIComponent(server.name)}/test`,
+        undefined,
+        { timeoutMs: 15_000 },
+      )
+      setTestResult(r.result)
+    } catch (e) {
+      setTestResult({
+        success: false,
+        status: 'failed',
+        error: (e as Error).message,
+      })
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  const listTools = async () => {
+    setTesting(true)
+    setToolsOpen(true)
+    try {
+      const r = await api.get<{ result: McpConnectionTestResult; tools: McpServerTool[] }>(
+        `/mcp-config/${encodeURIComponent(server.name)}/tools`,
+        { timeoutMs: 15_000 },
+      )
+      setTestResult({ ...r.result, tools: r.tools, toolCount: r.tools.length })
+    } catch (e) {
+      setTestResult({
+        success: false,
+        status: 'failed',
+        tools: [],
+        toolCount: 0,
+        error: (e as Error).message,
+      })
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  const startAuth = async () => {
+    setAuthBusy(true)
+    try {
+      const r = await api.post<{ authorizationUrl: string }>(
+        `/mcp-config/${encodeURIComponent(server.name)}/auth/start`,
+        undefined,
+        { timeoutMs: 15_000 },
+      )
+      window.open(r.authorizationUrl, '_blank', 'noopener,noreferrer')
+      setTestResult({
+        success: false,
+        status: 'needs-auth',
+        authRequired: true,
+        error: 'Authorization window opened. After finishing auth, this list refreshes automatically; click Test to verify.',
+      })
+    } catch (e) {
+      setTestResult({ success: false, status: 'failed', error: (e as Error).message })
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  const clearAuth = async () => {
+    setAuthBusy(true)
+    try {
+      await api.delete(`/mcp-config/${encodeURIComponent(server.name)}/auth`)
+      await onRefresh()
+      setTestResult(null)
+    } catch (e) {
+      setTestResult({ success: false, status: 'failed', error: (e as Error).message })
+    } finally {
+      setAuthBusy(false)
+    }
+  }
 
   return (
-    <div style={{
-      border: '1px solid var(--border)', borderRadius: 6, marginBottom: 6, overflow: 'hidden',
-    }}>
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: 'var(--bg)',
-      }}>
-        <span style={{
-          width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
-          background: server.enabled !== false ? 'var(--plugin-active)' : 'var(--plugin-inactive)',
-        }} />
-        <span style={{ fontWeight: 500, fontSize: 13, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+    <div className="settings-card settings-mcp-card">
+      <div className="settings-card-head settings-mcp-card-head">
+        <span className="settings-card-dot" style={{ '--dot': statusColor } as CSSProperties} />
+        <span className="settings-card-name">
           {server.name}
         </span>
-        <span style={{
-          fontSize: 11, color: 'var(--fg-muted)', background: 'var(--bg-elev-2)',
-          padding: '1px 6px', borderRadius: 3, flexShrink: 0,
-        }}>
+        <span className="settings-card-badge">
           {server.type}
         </span>
-        <button
-          className="btn btn-sm"
-          onClick={() => onToggle(server.name, server.enabled === false)}
-          title={server.enabled !== false ? 'Disable' : 'Enable'}
-        >
-          {server.enabled !== false ? 'ON' : 'OFF'}
-        </button>
-        <button className="btn btn-sm" onClick={() => onEdit(server)}>
-          Edit
-        </button>
-        {!confirmDelete ? (
-          <button className="btn btn-sm" style={{ color: 'var(--danger)' }} onClick={() => setConfirmDelete(true)}>
-            Del
-          </button>
-        ) : (
-          <div style={{ display: 'flex', gap: 2 }}>
-            <button
-              className="btn"
-              style={{ padding: '2px 6px', fontSize: 11, color: 'var(--danger)' }}
-              onClick={() => { onDelete(server.name); setConfirmDelete(false) }}
-            >
-              Confirm
-            </button>
-            <button className="btn" style={{ padding: '2px 6px', fontSize: 11 }} onClick={() => setConfirmDelete(false)} aria-label="Cancel">
-              <IconX size={12} />
-            </button>
-          </div>
+        {server.oauthAuthorized && <span className="settings-card-badge global">auth</span>}
+        {testResult?.toolCount != null && (
+          <span className="settings-card-meta">{testResult.toolCount} tool{testResult.toolCount !== 1 ? 's' : ''}</span>
         )}
+        <div className="settings-mcp-actions">
+          <button className="btn btn-sm" onClick={() => void runTest()} disabled={testing || authBusy}>
+            {testing ? 'Testing…' : 'Test'}
+          </button>
+          <button className="btn btn-sm" onClick={() => void listTools()} disabled={testing || authBusy}>
+            List tools
+          </button>
+          {isRemote && (
+            <button className="btn btn-sm" onClick={() => void startAuth()} disabled={testing || authBusy}>
+              {authBusy ? 'Auth…' : server.oauthAuthorized ? 'Re-auth' : 'Auth'}
+            </button>
+          )}
+          {isRemote && server.oauthAuthorized && (
+            <button className="btn btn-sm btn-danger" onClick={() => void clearAuth()} disabled={testing || authBusy}>
+              Clear auth
+            </button>
+          )}
+          <button
+            className="btn btn-sm"
+            onClick={() => onToggle(server.name, server.enabled === false)}
+            title={server.enabled !== false ? 'Disable' : 'Enable'}
+          >
+            {server.enabled !== false ? 'ON' : 'OFF'}
+          </button>
+          <button className="btn btn-sm" onClick={() => onEdit(server)}>
+            Edit
+          </button>
+          {!confirmDelete ? (
+            <button className="btn btn-sm btn-danger" onClick={() => setConfirmDelete(true)}>
+              Del
+            </button>
+          ) : (
+            <div className="settings-mcp-confirm">
+              <button
+                className="btn btn-sm btn-danger"
+                onClick={() => { onDelete(server.name); setConfirmDelete(false) }}
+              >
+                Confirm
+              </button>
+              <button className="btn btn-sm" onClick={() => setConfirmDelete(false)} aria-label="Cancel">
+                <IconX size={12} />
+              </button>
+            </div>
+          )}
+        </div>
       </div>
       {(server.command || server.url) && (
-        <div style={{
-          padding: '4px 10px 6px', fontSize: 11, color: 'var(--fg-muted)',
-          fontFamily: 'var(--mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          borderTop: '1px solid var(--border)', background: 'var(--bg-elev)',
-        }}>
+        <div className="settings-card-path settings-mcp-path" title={server.type === 'stdio' ? `${server.command} ${(server.args ?? []).join(' ')}` : server.url}>
           {server.type === 'stdio'
             ? `${server.command} ${(server.args ?? []).join(' ')}`
             : server.url}
         </div>
       )}
+      {testResult && (
+        <div className={`settings-mcp-result status-${testResult.status}`}>
+          {testResult.success ? (
+            <>
+              <span><IconCheck size={12} /> Connected</span>
+              {testResult.serverInfo?.name && <span>{testResult.serverInfo.name}</span>}
+              {testResult.serverInfo?.version && <span>{testResult.serverInfo.version}</span>}
+            </>
+          ) : (
+            <>
+              <span>{testResult.status === 'needs-auth' ? 'Auth required' : 'Connection failed'}</span>
+              {testResult.error && <span className="settings-mcp-result-error">{testResult.error}</span>}
+            </>
+          )}
+        </div>
+      )}
+      {toolsOpen && (
+        <McpToolsList tools={currentTools} loading={testing} onClose={() => setToolsOpen(false)} />
+      )}
+    </div>
+  )
+}
+
+function McpToolsList({ tools, loading, onClose }: { tools: McpServerTool[]; loading: boolean; onClose: () => void }) {
+  return (
+    <div className="settings-card-body settings-mcp-tools">
+      <div className="settings-mcp-tools-head">
+        <span className="settings-card-grouplabel">Tools</span>
+        <button className="btn btn-xs" onClick={onClose}>Hide</button>
+      </div>
+      {loading && <div className="settings-card-desc">Loading tools…</div>}
+      {!loading && tools.length === 0 && <div className="settings-card-desc">No tools returned by this server.</div>}
+      {!loading && tools.map((tool) => (
+        <div key={tool.name} className="settings-card-item settings-mcp-tool-item">
+          <code>{tool.name}</code>
+          {tool.annotations?.readOnly && <span className="settings-tag readonly">read-only</span>}
+          {tool.annotations?.destructive && <span className="settings-tag destructive">destructive</span>}
+          {tool.annotations?.openWorld && <span className="settings-tag openworld">open-world</span>}
+          {tool.description && <span className="settings-card-desc">{tool.description}</span>}
+        </div>
+      ))}
     </div>
   )
 }

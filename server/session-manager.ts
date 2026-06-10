@@ -1168,6 +1168,17 @@ export class SessionManager {
     return Object.keys(result).length > 0 ? result : undefined
   }
 
+  /** Async merge path for HTTP routes: refresh remote OAuth tokens first. */
+  async mergeMcpServersAsync(
+    enabledGlobal?: string[],
+    sessionMcp?: Record<string, unknown>,
+  ): Promise<Record<string, unknown> | undefined> {
+    if (this.mcpStore && Array.isArray(enabledGlobal)) {
+      await this.mcpStore.refreshOAuthTokens(enabledGlobal)
+    }
+    return this.mergeMcpServers(enabledGlobal, sessionMcp)
+  }
+
   async reloadPlugins(id: string) {
     const s = this.requireLive(id)
     return this.requireHandleMethod<() => Promise<unknown>>(
@@ -1935,4 +1946,3 @@ export class SessionManager {
   }
 
 }
-
