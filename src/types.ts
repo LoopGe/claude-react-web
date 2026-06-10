@@ -42,6 +42,7 @@ export type SessionInfo = SessionInfoBase<PermissionMode>
  *  no automated drift check (same convention as ws-types). Spans both
  *  sessions this app tracks (`known`) and CLI-created ones it doesn't. */
 export interface ResumableSession {
+  provider?: string
   sessionId: string
   title?: string
   firstPrompt?: string
@@ -74,6 +75,7 @@ export type SidebarSection =
 
 /** Shape of Options we expose in the "new session" form. */
 export interface NewSessionForm {
+  provider?: string
   cwd?: string
   model?: string
   systemPrompt?: string
@@ -96,6 +98,8 @@ export interface NewSessionForm {
   enabledMcpServers?: string[]
   // Advanced (JSON blobs — rendered as <textarea> and parsed on submit)
   mcpServers?: unknown
+  /** Custom environment variables merged into the subprocess environment. */
+  env?: Record<string, string>
   /** Frontend-only: chosen accent hex (from theme ACCENT_COLORS). Not
    *  sent to the server — stored in localStorage keyed by the returned
    *  session id once creation succeeds. */

@@ -62,7 +62,6 @@ const READONLY_GIT_SUBCOMMANDS: ReadonlySet<string> = new Set([
 
 // Same shell-feature gate as accept-edits-bash: presence of any of these means
 // the string is more than a plain command and must not be auto-approved.
-// eslint-disable-next-line no-control-regex
 const SHELL_METACHARACTERS = /[|&;<>()$`\\"'*?[\]{}#~\n\r\t]/
 
 const SAFE_WRAPPERS: ReadonlySet<string> = new Set(['timeout', 'nice', 'nohup', 'time', 'stdbuf'])

@@ -279,12 +279,12 @@ export const SessionList = memo(function SessionList({
     setRenameDraft(draft)
   }, [])
 
-  const startRename = (s: SessionInfo) => {
+  const startRename = useCallback((s: SessionInfo) => {
     setRenamingId(s.id)
     setRenameDraft(s.title ?? '')
-  }
+  }, [])
 
-  const commitRename = async (id: string, title: string) => {
+  const commitRename = useCallback(async (id: string, title: string) => {
     setRenamingId(null)
     // The server broadcasts the updated session via WebSocket, so we
     // don't need to update local state here. If the request fails the
@@ -294,9 +294,9 @@ export const SessionList = memo(function SessionList({
     } catch (err) {
       console.warn('rename failed:', (err as Error).message)
     }
-  }
+  }, [])
 
-  const cancelRename = () => setRenamingId(null)
+  const cancelRename = useCallback(() => setRenamingId(null), [])
 
   /** Extract an absolute path from a drop event. Browsers don't expose
    *  file system paths on File objects (unlike Electron), but on Linux /

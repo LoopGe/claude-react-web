@@ -1,42 +1,30 @@
-// Multi-session pool for @anthropic-ai/claude-agent-sdk Query instances.
+// Multi-session pool for provider-backed agent sessions.
 //
 // Each session holds:
-//   - A pushable input iterable (queue of SDKUserMessage) — writers push turns,
-//     the SDK reads them.
-//   - The Query async generator returned by `query({ prompt, options })` — we
-//     pump it in a background task and fan every message out to subscribers.
-//   - Subscribers (Set<Subscriber>) — each connected client has its own subscriber
-//     queue so a slow client can't block the SDK pump.
-//   - A small ring buffer of recent messages so a freshly-connected subscriber
+//   - A provider session handle for queued user turns and streamed messages.
+//   - Subscribers (Set<Subscriber>) so a slow client cannot block the pump.
+//   - A small ring buffer of recent messages so freshly-connected subscribers
 //     can see the state of the world without missing live events.
 //
-// Control methods (interrupt / setModel / setPermissionMode / applyFlagSettings)
-// are delegated straight to the underlying Query, which implements them as
-// in-band control requests to the CLI subprocess.
+// Optional control methods are delegated through the provider handle and
+// guarded by provider capabilities.
 //
 // Sessions are only removed when explicitly deleted by the user or when the
 // stuck-session detector fires. A periodic tick checks for stuck sessions
 // (mid-turn silence exceeding workingStuckMs).
 
 import {
-  query,
-  getSessionInfo,
-  listSessions,
   type EffortLevel,
   type Options,
   type PermissionMode,
-  type Query,
   type SDKMessage,
-  type SDKSessionInfo,
   type SDKUserMessage,
   type Settings,
 } from '@anthropic-ai/claude-agent-sdk'
-import { ProcessMonitor, type ProcessExitInfo } from './process-monitor.js'
+import type { ProcessExitInfo } from './process-monitor.js'
 import { randomUUID } from 'node:crypto'
-import { createPushable, type Pushable } from './pushable.js'
 import type { SessionMeta, SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
-import type { MpStore } from './mp-store.js'
 import { RecapManager } from './recap.js'
 import type { SessionPhase, SessionRecap } from './session-types.js'
 import { tryCaptureGitHead, invalidateStatusCache } from './git.js'
@@ -64,7 +52,11 @@ import { PermissionBroker } from './permission-broker.js'
 import { SessionHealthMonitor } from './session-health.js'
 import { debugLog } from './debug.js'
 import { pushBounded, stampReceivedAt, stampConsumedAt } from './history-utils.js'
-import { readHistoryPage, type HistoryPage } from './history-reader.js'
+import type { HistoryPage } from './history-reader.js'
+import { createPushable, type Pushable } from './pushable.js'
+import { createDefaultProviders } from './providers/default-providers.js'
+import type { ProviderCapabilities, ProviderSessionHandle } from './providers/types.js'
+import type { ProviderRegistry } from './providers/registry.js'
 
 // Re-export types so existing importers continue to work.
 export {
@@ -82,7 +74,7 @@ export { HttpError } from './errors.js'
 
 /** True when `text` is the `/clear` slash command. Mirrors the strict
  *  first-token matching in src/local-commands.ts (matchLocalCommand):
- *  trim → require a leading '/' → compare ONLY the first whitespace-
+ *  trim ?require a leading '/' ?compare ONLY the first whitespace-
  *  delimited token (case-insensitive). Deliberately NOT a loose
  *  startsWith so `/clearfoo` and `hello /clear` don't match, while
  *  `/clear`, `/Clear`, and `/clear <args>` do. */
@@ -101,36 +93,34 @@ export class SessionManager {
   private healthMonitor: SessionHealthMonitor
   private store?: SessionStore
   private mcpStore?: McpConfigStore
-  private mpStore?: MpStore
-  private claudeBinary?: string
+  private providers: ProviderRegistry
+  private defaultProvider: string
   private globalSubscribers = new Map<string, GlobalSubscriber>()
-  private processMonitor: ProcessMonitor
-  private spawnWrapper?: (opts: import('@anthropic-ai/claude-agent-sdk').SpawnOptions) => import('@anthropic-ai/claude-agent-sdk').SpawnedProcess
   private permBroker: PermissionBroker
   /** Owns recap lifecycle for every session. Public so the recap route
-   *  can call requestGenerate() without going through a wrapper method —
+   *  can call requestGenerate() without going through a wrapper method ?
    *  the route is the only HTTP surface for recap, and proxying through
    *  SessionManager would just re-export the same throw semantics. */
   recapManager: RecapManager
   /** Cached result of buildAnthropicEnv(). Invalidated when config.authToken
    *  or config.baseUrl change (detected lazily on each call). */
-  private cachedEnv?: NodeJS.ProcessEnv
-  /** Cached PumpDeps — all fields reference stable `this` members,
+  /** Cached PumpDeps ?all fields reference stable `this` members,
    *  so the object is built once and reused. */
   private cachedPumpDeps?: PumpDeps
-  private cachedAuthToken?: string
-  private cachedBaseUrl?: string
-
   constructor(opts: SessionManagerOptions = {}) {
-    this.claudeBinary = opts.claudeBinary
     this.historyCap = opts.historyCap ?? defaultConfig.historyCap
     this.permissionTimeoutMs = opts.permissionTimeoutMs ?? defaultConfig.permissionTimeoutMs
     this.permBroker = new PermissionBroker({ permissionTimeoutMs: this.permissionTimeoutMs })
     this.autoResumeEnabled = opts.autoResume ?? false
     this.store = opts.store
     this.mcpStore = opts.mcpConfigStore
-    this.mpStore = opts.mpStore
-    // Stuck-session monitor — periodic GC tick with auto-interrupt.
+    this.providers = opts.providers ?? createDefaultProviders({
+      claudeBinary: opts.claudeBinary,
+      mpStore: opts.mpStore,
+      onProcessExit: (info) => this.handleProcessExit(info),
+    })
+    this.defaultProvider = opts.defaultProvider ?? 'claude'
+    // Stuck-session monitor ?periodic GC tick with auto-interrupt.
     // `unload` is a class method so it's always available via `this`.
     // The deps arrow captures `this` so the callback stays bound.
     this.healthMonitor = new SessionHealthMonitor({
@@ -139,11 +129,7 @@ export class SessionManager {
       unload: (id, opts) => this.unload(id, opts),
     })
 
-    // Process monitor — real-time CLI exit detection
-    this.processMonitor = new ProcessMonitor((info) => this.handleProcessExit(info))
-    this.spawnWrapper = this.processMonitor.createSpawnWrapper()
-
-    // RecapManager — owns the lifecycle (pending → ready/error) for the
+    // RecapManager ?owns the lifecycle (pending ?ready/error) for the
     // session.recap field. Hooks back into this manager via the deps
     // interface so the module never imports SessionManager directly.
     this.recapManager = new RecapManager({
@@ -162,53 +148,8 @@ export class SessionManager {
     })
 
     console.log(
-      `[session-manager] initialized — permissionTimeoutMs=${this.permissionTimeoutMs}`,
+      `[session-manager] initialized ?permissionTimeoutMs=${this.permissionTimeoutMs}`,
     )
-  }
-
-  /** Construct the env object with API credentials from config.json.
-   *  Shared by spawn and autoResume. The result is cached and only
-   *  rebuilt when the auth token or base URL change. */
-  private buildAnthropicEnv(): NodeJS.ProcessEnv {
-    if (
-      this.cachedEnv &&
-      this.cachedAuthToken === defaultConfig.authToken &&
-      this.cachedBaseUrl === defaultConfig.baseUrl
-    ) {
-      return this.cachedEnv
-    }
-    this.cachedAuthToken = defaultConfig.authToken
-    this.cachedBaseUrl = defaultConfig.baseUrl
-    // Forward only the env vars the CLI subprocess actually needs instead of
-    // spreading all of process.env (which leaks server-side variables and
-    // creates an unnecessarily large allocation).
-    const env: NodeJS.ProcessEnv = {
-      PATH: process.env.PATH,
-      HOME: process.env.HOME ?? process.env.USERPROFILE,
-      USERPROFILE: process.env.USERPROFILE,
-      SystemRoot: process.env.SystemRoot,
-      TEMP: process.env.TEMP,
-      TMP: process.env.TMP,
-      LANG: process.env.LANG,
-      LC_ALL: process.env.LC_ALL,
-      TERM: process.env.TERM,
-      SHELL: process.env.SHELL,
-      ComSpec: process.env.ComSpec,
-      NODE_PATH: process.env.NODE_PATH,
-      ANTHROPIC_AUTH_TOKEN: defaultConfig.authToken,
-      ANTHROPIC_BASE_URL: defaultConfig.baseUrl,
-      // Strip the legacy x-api-key variable — we standardised on Bearer.
-      ANTHROPIC_API_KEY: undefined,
-    }
-    // Forward any additional ANTHROPIC_* env vars (except API_KEY which we
-    // intentionally strip) so callers can pass feature flags, debug toggles, etc.
-    for (const key of Object.keys(process.env)) {
-      if (key.startsWith('ANTHROPIC_') && key !== 'ANTHROPIC_API_KEY' && !(key in env)) {
-        env[key] = process.env[key]
-      }
-    }
-    this.cachedEnv = env
-    return this.cachedEnv
   }
 
   /** Handle a CLI process exit detected by ProcessMonitor.
@@ -221,28 +162,28 @@ export class SessionManager {
    *  a chance to try auto-resume.
    *
    *  For unexpected exits (non-zero code or killed), we terminate
-   *  immediately — no auto-resume attempt. */
+   *  immediately ?no auto-resume attempt. */
   private handleProcessExit(info: ProcessExitInfo): void {
     const { sessionId, code, signal, killed, spawnError } = info
     const s = this.sessions.get(sessionId)
     if (!s) return // Session already cleaned up (e.g. by unload)
-    if (s.terminated) return // Already terminated — no action needed
+    if (s.terminated) return // Already terminated ?no action needed
 
     const cleanExit = !killed && code === 0 && !spawnError
 
     if (cleanExit) {
       // Normal exit (e.g. idle timeout). Abort the controller so the
-      // pump breaks out of iter.next(), but DON'T set terminated — let
+      // pump breaks out of iter.next(), but DON'T set terminated ?let
       // cleanupPump handle auto-resume or termination.
-      console.log(`[session ${sessionId}] CLI exited cleanly (code=0) — deferring to pump cleanup`)
+      console.log(`[session ${sessionId}] CLI exited cleanly (code=0) ?deferring to pump cleanup`)
       // Mark as exiting so the GC timer's checkStuck() skips this session
       // during the window between abort and cleanupPump finishing.
       s.exiting = true
-      s.abortController.abort()
+      s.handle.abort()
       return
     }
 
-    // Determine reason / message. spawnError takes priority — it's a
+    // Determine reason / message. spawnError takes priority ?it's a
     // structured failure from ProcessMonitor's 'error' event and carries
     // the actual errno (ENOENT for "binary missing", EACCES for
     // "not executable", etc.) which is much more actionable than the
@@ -252,7 +193,7 @@ export class SessionManager {
     if (spawnError) {
       reason = 'spawn_failed'
       // Any spawn-time failure proves the cached health snapshot is no
-      // longer trustworthy — the binary may have been moved, replaced,
+      // longer trustworthy ?the binary may have been moved, replaced,
       // chmod-ed, or the host may have hit an fd-table cap (EMFILE) or a
       // sandbox policy (EPERM). Drop the cache unconditionally so the
       // next /health/claude probe re-runs --version and reports the real
@@ -285,7 +226,7 @@ export class SessionManager {
     console.error(`[session ${sessionId}] ${errorMsg}`)
 
     // Abort the pump so it breaks out of iter.next()
-    s.abortController.abort()
+    s.handle.abort()
     s.running = false
     s.terminated = true
     s.terminatedReason = reason
@@ -329,13 +270,14 @@ export class SessionManager {
   /** Write a session's metadata to the persistence store without
    *  broadcasting on the global channel. Use from spawn() so the
    *  subsequent `created` event is the only thing the frontend sees for
-   *  a brand-new session — if we also sent an `update` the client can't
+   *  a brand-new session ?if we also sent an `update` the client can't
    *  tell which arrives first, which races with the optimistic POST
    *  response and produces duplicate cards. */
   private writeStore(s: Session): void {
     if (!this.store) return
     this.store.upsert({
       id: s.id,
+      provider: s.provider,
       createdAt: s.createdAt,
       lastActivityAt: s.lastActivityAt,
       cwd: s.cwd,
@@ -385,8 +327,9 @@ export class SessionManager {
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
-  private snapshotMeta(opts: Options): { cwd?: string; model?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; effortLevel?: EffortLevel } {
+  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; effortLevel?: EffortLevel } {
     return {
+      provider,
       cwd: opts.cwd,
       model: opts.model,
       permissionMode: opts.permissionMode,
@@ -403,20 +346,23 @@ export class SessionManager {
 
   /** Create a brand-new session and start pumping.
    *
-   *  For resume, use `resume()` instead — this path always allocates a
+   *  For resume, use `resume()` instead ?this path always allocates a
    *  fresh UUID and won't wire up SDK `resume`. */
-  create(opts: Options): SessionInfo {
+  create(opts: Options & { provider?: string }, customEnv?: Record<string, string>): SessionInfo {
     // Pin a concrete default model for brand-new sessions so we don't lean
     // on the CLI subprocess's built-in default. When the client omits a
     // model, use the first entry of the configured model list
     // (config.defaultModel === modelList[0]). This keeps session.model a
-    // concrete id from the start — matching what the model picker shows as
-    // selected — instead of an undefined that silently resolves to whatever
+    // concrete id from the start ?matching what the model picker shows as
+    // selected ?instead of an undefined that silently resolves to whatever
     // model the `claude` CLI happens to pick. Resume/fork are unaffected:
     // they carry the persisted model forward through their own opts.
-    const withDefault: Options =
-      opts.model ? opts : { ...opts, model: defaultConfig.defaultModel }
-    return this.spawn(randomUUID(), withDefault)
+    const withDefault: Options & { provider?: string } = {
+      ...opts,
+      provider: opts.provider ?? this.defaultProvider,
+      model: opts.model ?? defaultConfig.defaultModel,
+    }
+    return this.spawn(randomUUID(), withDefault, customEnv)
   }
 
   /** Resume a previously-persisted session. The SDK loads conversation
@@ -425,7 +371,7 @@ export class SessionManager {
    *
    *  Behaviour:
    *  - If the session is already live in memory, returns its current info
-   *    (idempotent — reconnecting from two tabs doesn't spawn twice).
+   *    (idempotent ?reconnecting from two tabs doesn't spawn twice).
    *  - If the session is in the persistence index and not terminated,
    *    spawns a new Query with `options.resume = id` and reuses the id.
    *  - Refuses to resume terminated sessions; the SDK can't continue past
@@ -442,14 +388,14 @@ export class SessionManager {
     // in our store). Probe the SDK's on-disk metadata and, if it exists,
     // register a SessionMeta so the normal resume path below can run.
     // After this first resume the session is "known" like any other.
-    const meta = this.store.get(id) ?? (await this.adoptDiskSession(id))
+    const meta = this.store.get(id) ?? (await this.adoptDiskSession(id, this.defaultProvider))
     if (!meta) throw new HttpError(404, `session ${id} not found`)
     if (meta.terminated) {
       throw new HttpError(410, `session ${id} has ended and cannot be resumed`)
     }
     // Guard: the SDK only writes session data to disk after the first
     // `result` message.  If no turn was completed there is nothing to
-    // resume — the SDK would fail with
+    // resume ?the SDK would fail with
     //   "No conversation found with session ID: <uuid>"
     // Mark the session as terminated so the client can clean it up.
     if (!meta.lastTurnAt) {
@@ -461,7 +407,7 @@ export class SessionManager {
       this.broadcastGlobal({ kind: 'update', session: this.infoFromMeta(meta) })
       throw new HttpError(
         410,
-        `session ${id} has no conversation data on disk — it cannot be resumed (the first turn never completed)`,
+        `session ${id} has no conversation data on disk ?it cannot be resumed (the first turn never completed)`,
       )
     }
     // Same disk-vs-memory mismatch as fork(): the persisted meta says
@@ -473,10 +419,12 @@ export class SessionManager {
       this.markTranscriptMissing(meta, 'resume')
       throw new HttpError(
         410,
-        `session ${id}'s SDK transcript file is missing on disk — it cannot be resumed. The session has been marked terminated; delete it from the sidebar.`,
+        `session ${id}'s SDK transcript file is missing on disk ?it cannot be resumed. The session has been marked terminated; delete it from the sidebar.`,
       )
     }
-    const resumeOpts: Options = {
+    const provider = meta.provider ?? this.defaultProvider
+    const resumeOpts: Options & { provider?: string } = {
+      provider,
       resume: id,
       cwd: meta.cwd,
       model: meta.model,
@@ -485,7 +433,7 @@ export class SessionManager {
       // Carry the effort level forward so a resumed session keeps its
       // reasoning depth instead of falling back to the SDK default.
       effort: meta.effortLevel,
-      // Carry beta flags forward — without this, a 1M-context session
+      // Carry beta flags forward ?without this, a 1M-context session
       // silently downgrades to the model's default window on resume.
       // Cast: SDK types this as a literal-string union of known flags,
       // but we store the user-supplied list as plain `string[]` so a
@@ -496,23 +444,23 @@ export class SessionManager {
     // loads the transcript as context on resume but does NOT re-emit it
     // through the Query stream, so without this the ring stays empty until a
     // new turn lands and the first subscribe replays nothing. We take the
-    // newest page (historyCap messages) — symmetric with a long-lived session
+    // newest page (historyCap messages) ?symmetric with a long-lived session
     // whose ring only holds its recent tail; older history is paged in by the
     // client's loadOlder() scroll-up exactly as before. A failed/empty disk
     // read degrades to the old behaviour (empty ring) rather than blocking
-    // resume — readHistoryPage already returns an empty page when the file is
+    // resume ?readHistoryPage already returns an empty page when the file is
     // absent or unreadable.
     let historySeed: SDKMessage[] | undefined
     try {
-      const page = await readHistoryPage(id, { limit: this.historyCap })
+      const page = await this.readProviderHistoryPage(provider, id, { limit: this.historyCap })
       if (page.messages.length > 0) historySeed = page.messages as SDKMessage[]
     } catch {
-      /* disk read failed — fall back to an empty ring (pre-fix behaviour) */
+      /* disk read failed ?fall back to an empty ring (pre-fix behaviour) */
     }
-    return this.spawn(id, resumeOpts, historySeed)
+    return this.spawn(id, resumeOpts, undefined, historySeed)
   }
 
-  /** Adopt a session that exists on disk but isn't in our store — i.e. one
+  /** Adopt a session that exists on disk but isn't in our store ?i.e. one
    *  the `claude` CLI created directly. Reads the SDK's transcript metadata
    *  via `getSessionInfo(id)` (no `dir`, so the SDK scans every project dir,
    *  matching its own resume-by-id fallback) and synthesises a SessionMeta
@@ -522,25 +470,26 @@ export class SessionManager {
    *  value): the file's very existence proves at least one `result` landed,
    *  so the downstream `!meta.lastTurnAt` "no_data" guard must pass. Returns
    *  null when no transcript exists, so the caller falls through to 404. */
-  private async adoptDiskSession(id: string): Promise<SessionMeta | undefined> {
-    let info: SDKSessionInfo | undefined
+  private async adoptDiskSession(id: string, providerName: string): Promise<SessionMeta | undefined> {
+    let info: ResumableSession | undefined
     try {
-      info = await getSessionInfo(id)
+      info = await this.providers.get(providerName).getSessionInfo?.(id)
     } catch (err) {
-      console.warn(`[session ${id}] adoptDiskSession: getSessionInfo threw:`, err)
+      console.warn(`[session ${id}] adoptDiskSession(${providerName}): getSessionInfo threw:`, err)
       return undefined
     }
     if (!info) return undefined
     const now = Date.now()
     const meta: SessionMeta = {
       id,
+      provider: providerName,
       createdAt: info.createdAt ?? info.lastModified ?? now,
       lastActivityAt: info.lastModified ?? now,
       cwd: info.cwd,
-      title: info.customTitle ?? info.summary ?? info.firstPrompt,
+      title: info.title ?? info.firstPrompt,
       messageCount: 0,
       terminated: false,
-      // Non-null so the no_data guard passes — the transcript file existing
+      // Non-null so the no_data guard passes ?the transcript file existing
       // already proves a completed turn.
       lastTurnAt: info.lastModified ?? now,
     }
@@ -553,39 +502,41 @@ export class SessionManager {
    *
    *  `lastTurnAt` only proves *we once observed a `result` for this id in
    *  this process*. It does NOT prove the SDK's `~/.claude/projects/<dir>/
-   *  <id>.jsonl` is still on disk — the user could have deleted the file,
+   *  <id>.jsonl` is still on disk ?the user could have deleted the file,
    *  switched machines via a synced sessions.json, etc. Both `fork()` and
    *  `resume()` will hand the SDK a `resume: id` and watch the CLI
    *  subprocess error out with "No conversation found with session ID:
    *  <uuid>" the moment the file is missing.
    *
    *  `getSessionInfo({ dir })` reads exactly the file the CLI would, so
-   *  this is the authoritative probe — no need to recreate the SDK's
+   *  this is the authoritative probe ?no need to recreate the SDK's
    *  cwd-encoding ourselves. When `dir` is omitted the SDK scans every
    *  project directory, which matches the CLI's own resume-by-id
    *  fallback. Returns false on any error (file missing, permission
    *  denied, etc.) so callers can refuse the operation uniformly. */
-  private async hasSdkTranscript(meta: { id: string; cwd?: string }): Promise<boolean> {
-    const opts = meta.cwd ? { dir: meta.cwd } : undefined
+  private async hasSdkTranscript(meta: { id: string; cwd?: string; provider?: string }): Promise<boolean> {
+    const providerName = meta.provider ?? this.defaultProvider
+    const provider = this.providers.get(providerName)
+    if (!provider.hasTranscript) return true
     try {
-      const info = await getSessionInfo(meta.id, opts)
-      if (!info) {
+      const hasTranscript = await provider.hasTranscript(meta as SessionMeta)
+      if (!hasTranscript) {
         // Distinguish "file genuinely missing" (info===undefined) from
         // "SDK threw" (caught below). The former is the common case
         // (user/tool deleted the jsonl); the latter is interesting
         // because it means the SDK itself misbehaved and we want a
-        // breadcrumb to chase it. Including cwd in both — the SDK
+        // breadcrumb to chase it. Including cwd in both ?the SDK
         // encodes the cwd into the on-disk path, so a wrong cwd is the
         // first thing to check next time.
         console.warn(
           `[session ${meta.id}] hasSdkTranscript: getSessionInfo returned undefined ` +
-          `(cwd=${meta.cwd ?? '<none>'}) — jsonl is missing on disk`,
+          `(cwd=${meta.cwd ?? '<none>'}) ?jsonl is missing on disk`,
         )
       }
-      return !!info
+      return hasTranscript
     } catch (err) {
       console.warn(
-        `[session ${meta.id}] hasSdkTranscript: getSessionInfo threw ` +
+        `[session ${meta.id}] hasSdkTranscript(${providerName}) threw ` +
         `(cwd=${meta.cwd ?? '<none>'}):`,
         err,
       )
@@ -610,6 +561,18 @@ export class SessionManager {
     this.broadcastGlobal({ kind: 'update', session: this.infoFromMeta(meta) })
   }
 
+  private readProviderHistoryPage(
+    providerName: string,
+    id: string,
+    opts: { before?: number; beforeUuid?: string; limit: number },
+  ): Promise<HistoryPage> {
+    const provider = this.providers.get(providerName)
+    if (!provider.readHistoryPage) {
+      throw new HttpError(501, `provider ${providerName} does not support history pagination`)
+    }
+    return provider.readHistoryPage(id, opts)
+  }
+
   /** Fork a session: spawn a new session whose transcript is initialised
    *  from the source session's on-disk log, but which gets a fresh UUID
    *  so future turns diverge. Implemented via SDK's `options.resume` +
@@ -617,7 +580,7 @@ export class SessionManager {
    *  default; the title is suffixed " (fork)" so sidebars can tell the
    *  two apart at a glance.
    *
-   *  Source can be live OR dormant — we pull metadata from memory first,
+   *  Source can be live OR dormant ?we pull metadata from memory first,
    *  persistence second. Terminated sessions can still be forked (their
    *  transcript lives in ~/.claude/projects/ regardless).
    *
@@ -633,14 +596,14 @@ export class SessionManager {
     if (!meta.lastTurnAt) {
       throw new HttpError(
         400,
-        `session ${id} has no completed turns yet — send at least one message and wait for the reply before forking`,
+        `session ${id} has no completed turns yet ?send at least one message and wait for the reply before forking`,
       )
     }
     // The lastTurnAt guard above only proves we once saw a `result` in
     // memory; it doesn't prove the SDK's transcript file is still on
     // disk. Without this probe a missing jsonl spawns a doomed Query
     // whose CLI subprocess errors with "No conversation found with
-    // session ID: <uuid>" — confusing for the user (the fork panel
+    // session ID: <uuid>" ?confusing for the user (the fork panel
     // opens, then crashes a beat later). Mark the source terminated so
     // the sidebar dims it and the user can clear it out.
     if (!(await this.hasSdkTranscript(meta))) {
@@ -650,6 +613,7 @@ export class SessionManager {
       // time, and the next resume attempt will re-trip this same guard.
       const persisted: SessionMeta = this.store?.get(id) ?? {
         id: meta.id,
+        provider: meta.provider ?? this.defaultProvider,
         createdAt: meta.createdAt,
         lastActivityAt: meta.lastActivityAt,
         cwd: meta.cwd,
@@ -668,11 +632,13 @@ export class SessionManager {
       this.markTranscriptMissing(persisted, 'fork')
       throw new HttpError(
         410,
-        `session ${id}'s SDK transcript file is missing on disk — it cannot be forked. The session has been marked terminated; delete it from the sidebar.`,
+        `session ${id}'s SDK transcript file is missing on disk ?it cannot be forked. The session has been marked terminated; delete it from the sidebar.`,
       )
     }
     const title = meta.title ? `${meta.title} (fork)` : undefined
-    const forkOpts: Options = {
+    const sourceProvider = meta.provider ?? this.defaultProvider
+    const forkOpts: Options & { provider?: string } = {
+      provider: sourceProvider,
       resume: id,
       forkSession: true,
       cwd: meta.cwd,
@@ -686,24 +652,6 @@ export class SessionManager {
       betas: meta.betas as Options['betas'],
     }
     return this.spawn(randomUUID(), forkOpts)
-  }
-
-  /** Create an input pushable for a session. Shared by spawn() and autoResume(). */
-  private createInputPushable(id: string): Pushable<SDKUserMessage> {
-    return createPushable<SDKUserMessage>(
-      `input-${id.slice(0, 8)}`,
-      undefined,
-      (msg) => this.onInputConsumed(id, msg),
-    )
-  }
-
-  /** Wire an AbortController into SDK Options and register it with the
-   *  ProcessMonitor so we get real-time exit/error notifications. Shared by
-   *  spawn() and autoResume(). */
-  private wireAbortController(abortController: AbortController, id: string, opts: Options): void {
-    opts.abortController = abortController
-    opts.spawnClaudeCodeProcess = this.spawnWrapper
-    this.processMonitor.register(abortController.signal, id)
   }
 
   /** Fire-and-forget capture of the worktree's HEAD SHA at session spawn.
@@ -720,74 +668,39 @@ export class SessionManager {
     }
   }
 
-  /** Shared spawn path for create() and resume(). */
-  private spawn(id: string, opts: Options, historySeed?: SDKMessage[]): SessionInfo {
-    // The consume hook looks the session up by id at call time rather than
-    // closing over the `session` object — `session` is built a few lines
-    // below, after the input pushable, so it isn't in scope here. By the
-    // time the SDK actually reads a turn the session is long-since in the
-    // map, so the lookup always resolves.
-    const input = this.createInputPushable(id)
-    const fullOpts: Options = { ...opts }
-    // Remember the user-requested permission mode before we strip it
-    // from the SDK options. The session's own state ends up holding it.
-    const requestedMode = opts.permissionMode
-    this.applyStandardQueryOpts(fullOpts)
+  /** Shared spawn path for create(), resume(), and fork(). */
+  private spawn(
+    id: string,
+    opts: Options & { provider?: string },
+    customEnv?: Record<string, string>,
+    historySeed?: SDKMessage[],
+  ): SessionInfo {
+    const providerName = opts.provider ?? this.defaultProvider
+    const provider = this.providers.get(providerName)
+    const fullOpts: Options & { provider?: string } = { ...opts, provider: providerName }
+    const requestedMode = fullOpts.permissionMode
 
     // Forward only `plan` to the SDK (see sdkForwardMode): plan needs
     // SDK-level read-only model steering that canUseTool can't replicate. All
     // other modes are enforced by our own canUseTool, so they map to undefined
     // (no SDK-side mode). The session's own `permissionMode` field (set below)
     // stays the source of truth for canUseTool and the UI.
-    fullOpts.permissionMode = this.sdkForwardMode(requestedMode)
+    fullOpts.permissionMode = requestedMode
 
-    // Pin the SDK's session_id to OUR id so the on-disk transcript filename
-    // (~/.claude/projects/<sanitized-cwd>/<session_id>.jsonl) always equals
-    // `id`. Without this the CLI auto-generates its own UUID, our id never
-    // matches any file, and hasSdkTranscript()/resume()/fork() +
-    // history-reader lookups all probe a path that never existed — which is
-    // how a live source got mis-flagged "transcript missing" and killed on
-    // fork. SDK rule: sessionId is rejected alongside `resume` UNLESS
-    // forkSession is also set. So set it for create (no resume) and for fork
-    // (resume + forkSession, where `id` is the fork's fresh UUID), but NOT
-    // for plain resume — resume preserves the existing session_id anyway.
     if (!fullOpts.resume || fullOpts.forkSession) {
       fullOpts.sessionId = id
     }
 
-    // Create the AbortController BEFORE query() so we can pass it to the
-    // SDK. This ensures the same AbortSignal flows through to
-    // spawnClaudeCodeProcess, allowing ProcessMonitor to correlate
-    // spawned processes back to sessions via signal identity.
-    const abortController = new AbortController()
-    this.wireAbortController(abortController, id, fullOpts)
-
-    // When resuming we keep the original createdAt from the persisted meta
-    // so the UI's "session age" doesn't reset each time the user clicks
-    // "resume". New sessions start from now().
     const existingMeta = this.store?.get(id)
     const createdAt = existingMeta?.createdAt ?? Date.now()
 
-    // Build the session shell BEFORE query() so canUseTool can capture a
-    // valid reference. `query` is filled in below, after the SDK call.
-    // Order matters: the SDK reads options.canUseTool synchronously from
-    // the options object passed to query(), so fullOpts.canUseTool MUST
-    // be set before that call. Setting it afterwards is silently ignored
-    // and the SDK never invokes our permission gate (manifested as the
-    // permission dialog never appearing in the UI).
     const session: Session = {
       id,
       createdAt,
       lastActivityAt: Date.now(),
-      ...this.snapshotMeta(fullOpts),
-      // Override with the real user-requested mode. snapshotMeta spread in the
-      // SDK-forwarded value (undefined for every mode except plan), so without
-      // this the session would lose the true mode that canUseTool and the UI
-      // depend on.
+      ...this.snapshotMeta(fullOpts, providerName),
       permissionMode: requestedMode,
-      input,
-      // Placeholder; assigned right after the query() call below.
-      query: undefined as unknown as Query,
+      handle: undefined as unknown as ProviderSessionHandle,
       subscribers: new Map(),
       permissionSubscribers: new Map(),
       pending: new Map(),
@@ -797,8 +710,8 @@ export class SessionManager {
       // ring because the SDK loads the transcript as CONTEXT and never
       // re-emits it through the Query stream. Without this seed, the first
       // subscribe replays nothing and the client shows a blank transcript
-      // until a new turn lands. Seeding here — before the pump starts and the
-      // session enters the map — restores the invariant so replay / reconnect
+      // until a new turn lands. Seeding here ?before the pump starts and the
+      // session enters the map ?restores the invariant so replay / reconnect
       // / second-panel subscribe all see the history with zero client-side
       // special-casing. readHistoryPage already normalizes to the live wire
       // shape (see history-reader.ts), so seeded and live frames are
@@ -810,33 +723,27 @@ export class SessionManager {
       messageStatusSubscribers: new Set(),
       recapSubscribers: new Set(),
       sessionClearedSubscribers: new Set(),
-      abortController,
       pumpTask: Promise.resolve(),
       running: true,
       terminated: false,
       pendingTurns: 0,
-      // Preserve gitStartSha across resumes — the persisted meta carries
+      // Preserve gitStartSha across resumes ?the persisted meta carries
       // it forward so the "This session" anchor stays stable even if the
       // server restarts. New sessions get a fresh capture below.
       gitStartSha: existingMeta?.gitStartSha,
-      // Preserve the fast-mode intent across resume/restart. Re-applied to
-      // the SDK after query() spawns (applyFlagSettings is streaming-only
-      // and must run post-spawn). The SDK re-reports fastModeState itself.
       fastMode: existingMeta?.fastMode,
     }
 
-    // Register canUseTool on fullOpts BEFORE query(). See note on
-    // session.query above for why ordering matters.
     if (!fullOpts.canUseTool) {
       const canUseTool = this.permBroker.buildCanUseTool(
         session,
         (s, snapshot) => {
-          // Global broadcast — for desktop notifications on dormant sessions
+          // Global broadcast ?for desktop notifications on dormant sessions
           this.broadcastGlobal({ kind: 'permission_request', sessionId: s.id, request: snapshot })
         },
         // Pending count changed (enqueue / timeout / abort). Rebroadcast
         // the SessionInfo so the sidebar's pendingPermissionCount badge
-        // updates. Skip if the session was unloaded mid-flight — info(s)
+        // updates. Skip if the session was unloaded mid-flight ?info(s)
         // would still work but the broadcast would race the `removed`.
         (s) => {
           if (!this.sessions.has(s.id)) return
@@ -845,45 +752,45 @@ export class SessionManager {
       )
       session.canUseTool = canUseTool
       fullOpts.canUseTool = canUseTool
+    } else {
+      session.canUseTool = fullOpts.canUseTool as Session['canUseTool']
     }
 
-    // Create the Query — spawns the claude CLI subprocess.
-    const q = query({ prompt: input.iterable, options: fullOpts })
-    session.query = q
-
-    // Re-apply the persisted fast-mode intent. applyFlagSettings is a
-    // streaming control request, so it can only run after query() spawns —
-    // hence here rather than via Options. Fire-and-forget: a failure (e.g.
-    // unsupported model, no fast-mode entitlement) is non-fatal and just
-    // means fast mode stays off; the SDK reports the real state via the pump.
-    if (session.fastMode) {
-      void q.applyFlagSettings({ fastMode: true }).catch((err) => {
-        console.warn(`[session ${id}] re-applying fastMode on spawn failed:`, err)
-      })
-    }
-
-    // Re-apply the effort level as a runtime control request. Options.effort
-    // (set via snapshotMeta) already seeds it at spawn, but applyFlagSettings
-    // is the authoritative runtime path and keeps the SDK in sync. The
-    // Settings.effortLevel typedef omits 'max'; cast through to keep all 5.
-    if (session.effortLevel) {
-      void q.applyFlagSettings({ effortLevel: session.effortLevel as 'low' | 'medium' | 'high' | 'xhigh' }).catch((err) => {
-        console.warn(`[session ${id}] applying effortLevel on spawn failed:`, err)
-      })
-    }
+    const sdkOptions = { ...fullOpts } as Options & { provider?: string }
+    delete sdkOptions.provider
+    const handle = provider.createSession({
+      id,
+      provider: providerName,
+      cwd: fullOpts.cwd,
+      model: fullOpts.model,
+      permissionMode: requestedMode,
+      title: fullOpts.title,
+      betas: Array.isArray(fullOpts.betas) ? fullOpts.betas : undefined,
+      effortLevel: session.effortLevel,
+      fastMode: session.fastMode,
+      env: customEnv,
+      mcpServers: fullOpts.mcpServers as Record<string, unknown> | undefined,
+      includePartialMessages: fullOpts.includePartialMessages,
+      resume: fullOpts.resume,
+      forkSession: fullOpts.forkSession,
+      onUserMessageConsumed: (msg) => this.onInputConsumed(id, msg as SDKUserMessage),
+      canUseTool: fullOpts.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
+      providerExtras: { sdkOptions },
+    })
+    session.handle = handle
 
     session.pumpTask = this.pump(session)
     this.sessions.set(id, session)
-    console.log(`[session ${id}] spawned — model=${fullOpts.model ?? 'default'}, permissionMode=${requestedMode ?? 'default'}, resume=${!!fullOpts.resume}`)
+    console.log(`[session ${id}] spawned ?model=${fullOpts.model ?? 'default'}, permissionMode=${requestedMode ?? 'default'}, resume=${!!fullOpts.resume}`)
     // Classify the model's effort capability (keyword-based, synchronous) so
     // the very first `created` frame below already carries the correct
-    // visible/levels state — no follow-up update needed.
+    // visible/levels state ?no follow-up update needed.
     session.effortLevels = effortLevelsForModel(session.model)
     // Brand-new session (or a resume, which also "creates" as far as the
     // UI list is concerned): persist to disk, then broadcast `created`
     // instead of `update`. The frontend `created` handler is the one
     // that knows how to insert, so there's a single canonical origin
-    // for the row — no races with the POST /sessions response.
+    // for the row ?no races with the POST /sessions response.
     this.writeStore(session)
     this.broadcastGlobal({ kind: 'created', session: this.info(session) })
     this.captureGitHead(session)
@@ -907,9 +814,9 @@ export class SessionManager {
       session_id: s.id,
     }
     debugLog(
-      `[session ${id}] send PRE-PUSH — ${text.length} chars, uuid=${userMsg.uuid}, ` +
-      `pendingTurns=${s.pendingTurns}, input.closed=${s.input.closed}, ` +
-      `input.hasWaiter=${s.input.hasWaiter}, input.queueDepth=${s.input.queueDepth}, ` +
+      `[session ${id}] send PRE-PUSH ?${text.length} chars, uuid=${userMsg.uuid}, ` +
+      `pendingTurns=${s.pendingTurns}, input.closed=${s.handle.closed}, ` +
+      `input.queueDepth=${s.handle.queueDepth}, ` +
       `running=${s.running}, terminated=${s.terminated}`,
     )
     this.dispatchUserMessage(s, userMsg)
@@ -927,8 +834,8 @@ export class SessionManager {
     }
     const blockSummary = content.map((b) => b.type).join('+')
     debugLog(
-      `[session ${id}] sendContent PRE-PUSH — blocks=[${blockSummary}], uuid=${userMsg.uuid}, ` +
-      `pendingTurns=${s.pendingTurns}, input.closed=${s.input.closed}`,
+      `[session ${id}] sendContent PRE-PUSH ?blocks=[${blockSummary}], uuid=${userMsg.uuid}, ` +
+      `pendingTurns=${s.pendingTurns}, input.closed=${s.handle.closed}`,
     )
     this.dispatchUserMessage(s, userMsg)
   }
@@ -936,7 +843,7 @@ export class SessionManager {
   /** Shared tail for send() and sendContent(): push into the SDK input
    *  queue and broadcast to live subscribers. */
   private dispatchUserMessage(s: Session, userMsg: SDKUserMessage): void {
-    s.input.push(userMsg)
+    s.handle.enqueueUserMessage(userMsg)
     this.pushToSession(s, userMsg)
   }
 
@@ -944,7 +851,7 @@ export class SessionManager {
    *  record in history, cap the ring buffer, broadcast to subscribers,
    *  update timestamps, reset auto-resume counter, and persist. */
   private pushToSession(s: Session, userMsg: SDKUserMessage): void {
-    // Broadcast + record locally — the SDK's output stream doesn't echo
+    // Broadcast + record locally ?the SDK's output stream doesn't echo
     // user messages back, so without this step the client would never
     // see its own sent text.
     stampReceivedAt(userMsg)
@@ -953,14 +860,14 @@ export class SessionManager {
     s.lastActivityAt = Date.now()
     // Mark the session as mid-turn. We cap at 1 (not a true counter)
     // because the SDK may merge multiple queued user messages into fewer
-    // assistant turns — a true count would inflate permanently. The pump
+    // assistant turns ?a true count would inflate permanently. The pump
     // resets to 1 after each result if more items are still queued.
     if (s.pendingTurns === 0) s.workingSince = Date.now()
     if (s.pendingTurns < 1) s.pendingTurns = 1
-    // User is actively interacting — reset the auto-resume counter so a
+    // User is actively interacting ?reset the auto-resume counter so a
     // future idle timeout gets fresh attempts.
     this.autoResumeCounts.delete(s)
-    // Invalidate the stored recap — a new message means it's stale.
+    // Invalidate the stored recap ?a new message means it's stale.
     // The next idle window triggers a fresh generation.
     this.recapManager.invalidate(s.id)
     // Guard against concurrent unload(): if the session was removed from
@@ -974,12 +881,17 @@ export class SessionManager {
     const s = this.requireLive(id)
     const startedAt = Date.now()
     console.log(
-      `[session ${id}] interrupt requested — pendingTurns=${s.pendingTurns}, ` +
+      `[session ${id}] interrupt requested ?pendingTurns=${s.pendingTurns}, ` +
       `pending perms=${s.pending.size}, ` +
       `workingFor=${s.workingSince ? Date.now() - s.workingSince : 0}ms`,
     )
     try {
-      await s.query.interrupt()
+      await this.requireHandleMethod<() => Promise<void>>(
+        s,
+        'interrupt',
+        'interrupt',
+        'supportsInterrupt',
+      )()
       console.log(`[session ${id}] interrupt() resolved in ${Date.now() - startedAt}ms`)
     } catch (err) {
       console.error(`[session ${id}] interrupt() threw after ${Date.now() - startedAt}ms:`, err)
@@ -991,10 +903,15 @@ export class SessionManager {
 
   async setModel(id: string, model?: string): Promise<SessionInfo> {
     const s = this.requireLive(id)
-    await s.query.setModel(model)
+    await this.requireHandleMethod<(model?: string) => Promise<void>>(
+      s,
+      'setModel',
+      'model switching',
+      'supportsModelSwitch',
+    )(model)
     s.model = model
     s.lastActivityAt = Date.now()
-    // The model changed — recompute its effort capability (keyword-based,
+    // The model changed ?recompute its effort capability (keyword-based,
     // synchronous). The persist() below broadcasts the session-update
     // carrying the new effortLevels.
     s.effortLevels = effortLevelsForModel(s.model)
@@ -1003,7 +920,7 @@ export class SessionManager {
   }
 
   /** Rename a session. Accepts both live and dormant sessions (title is
-   *  pure UI metadata — no SDK call needed). Empty string / whitespace
+   *  pure UI metadata ?no SDK call needed). Empty string / whitespace
    *  clears the title so the UI falls back to the id prefix. */
   rename(id: string, title: string): SessionInfo {
     const trimmed = title.trim() || undefined
@@ -1026,22 +943,27 @@ export class SessionManager {
 
   async setPermissionMode(id: string, mode: PermissionMode): Promise<SessionInfo> {
     const s = this.requireLive(id)
-    // Local state is updated FIRST and unconditionally — it is the source of
+    // Local state is updated FIRST and unconditionally ?it is the source of
     // truth for canUseTool and the UI, and guarantees the switch never fails
-    // (including → bypassPermissions, which the SDK refuses mid-session).
+    // (including ?bypassPermissions, which the SDK refuses mid-session).
     s.permissionMode = mode
     s.lastActivityAt = Date.now()
     // Forward to the SDK so its read-only `plan` steering engages / disengages.
-    //   - switching INTO plan  → forward 'plan'
-    //   - switching OUT of plan (forwarded === undefined) → forward 'default'
+    //   - switching INTO plan  ?forward 'plan'
+    //   - switching OUT of plan (forwarded === undefined) ?forward 'default'
     //     to explicitly release the SDK's plan lock. Sending nothing would
     //     leave the model stuck in read-only mode.
     // All non-plan modes (acceptEdits/bypass/default/auto/dontAsk) resolve to
     // 'default' here and are enforced by canUseTool instead. Any SDK error is
     // swallowed: local state already took effect, so the switch never fails.
-    const forwarded = this.sdkForwardMode(mode)
+    const forwarded = mode === 'plan' ? 'plan' : 'default'
     try {
-      await s.query.setPermissionMode(forwarded ?? 'default')
+      await this.requireHandleMethod<(mode: string) => Promise<void>>(
+        s,
+        'setPermissionMode',
+        'permission mode switching',
+        'supportsFineGrainedPermissions',
+      )(forwarded)
     } catch (err) {
       console.warn(
         `[session ${id}] SDK setPermissionMode(${forwarded ?? 'default'}) failed; ` +
@@ -1055,7 +977,11 @@ export class SessionManager {
 
   async applySettings(id: string, settings: Settings): Promise<SessionInfo> {
     const s = this.requireLive(id)
-    await s.query.applyFlagSettings(settings)
+    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
+      s,
+      'applyFlagSettings',
+      'flag settings',
+    )(settings as Record<string, unknown>)
     s.lastActivityAt = Date.now()
     this.persist(s)
     return this.info(s)
@@ -1065,11 +991,16 @@ export class SessionManager {
    *  applyFlagSettings({ fastMode }) and records it locally so it survives
    *  resume/restart (re-applied on respawn). The SDK reports the actual
    *  runtime state (off/cooldown/on) back through messages, which the pump
-   *  parses into s.fastModeState — so we do NOT optimistically set the
+   *  parses into s.fastModeState ?so we do NOT optimistically set the
    *  runtime state here. */
   async setFastMode(id: string, enabled: boolean): Promise<SessionInfo> {
     const s = this.requireLive(id)
-    await s.query.applyFlagSettings({ fastMode: enabled })
+    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
+      s,
+      'applyFlagSettings',
+      'fast mode',
+      'supportsFastMode',
+    )({ fastMode: enabled })
     s.fastMode = enabled
     s.lastActivityAt = Date.now()
     this.persist(s)
@@ -1079,12 +1010,17 @@ export class SessionManager {
   /** Set the reasoning effort level. Forwards to the SDK via
    *  applyFlagSettings({ effortLevel }) and records it locally so it survives
    *  resume/restart (re-applied on respawn). Unsupported levels for the
-   *  current model are silently downgraded by the SDK — no error. The
+   *  current model are silently downgraded by the SDK ?no error. The
    *  Settings.effortLevel typedef omits 'max', so we cast through to keep all
    *  5 levels (the API and supportedEffortLevels both list 'max'). */
   async setEffortLevel(id: string, level: EffortLevel): Promise<SessionInfo> {
     const s = this.requireLive(id)
-    await s.query.applyFlagSettings({ effortLevel: level as 'low' | 'medium' | 'high' | 'xhigh' })
+    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
+      s,
+      'applyFlagSettings',
+      'effort level',
+      'supportsEffortLevel',
+    )({ effortLevel: level as 'low' | 'medium' | 'high' | 'xhigh' })
     s.effortLevel = level
     s.lastActivityAt = Date.now()
     this.persist(s)
@@ -1093,7 +1029,12 @@ export class SessionManager {
 
   async togglePlugin(id: string, pluginName: string, enabled: boolean): Promise<SessionInfo> {
     const s = this.requireLive(id)
-    await s.query.applyFlagSettings({ enabledPlugins: { [pluginName]: enabled } })
+    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
+      s,
+      'applyFlagSettings',
+      'plugins',
+      'supportsPlugins',
+    )({ enabledPlugins: { [pluginName]: enabled } })
     s.lastActivityAt = Date.now()
     this.persist(s)
     return this.info(s)
@@ -1106,7 +1047,7 @@ export class SessionManager {
    *  control channel. supportedModels/Commands/Agents await the one-time
    *  init handshake; the others await a fresh control_response. On proxy
    *  backends the init handshake can stall, and a busy/wedged subprocess
-   *  can delay control_response — either way the call (and the HTTP
+   *  can delay control_response ?either way the call (and the HTTP
    *  request behind it) hangs with no SDK-side timeout. We don't time it
    *  out here (callers/UI handle that), but we DO measure every call so a
    *  slow init window or wedged subprocess is visible in the logs and can
@@ -1116,10 +1057,10 @@ export class SessionManager {
     try {
       const result = await fn()
       const ms = Date.now() - startedAt
-      // Only the slow ones are interesting — a healthy control round-trip
+      // Only the slow ones are interesting ?a healthy control round-trip
       // is single-digit ms. Warn above 1s so the noise floor stays low.
       if (ms >= 1000) {
-        console.warn(`[session ${id}] SDK ${label} resolved in ${ms}ms (slow — check init handshake / subprocess)`)
+        console.warn(`[session ${id}] SDK ${label} resolved in ${ms}ms (slow ?check init handshake / subprocess)`)
       } else {
         debugLog(`[session ${id}] SDK ${label} resolved in ${ms}ms`)
       }
@@ -1132,38 +1073,72 @@ export class SessionManager {
 
   async supportedModels(id: string) {
     const s = this.requireLive(id)
-    return this.timeSdkControl(id, 'supportedModels', () => s.query.supportedModels())
+    const fn = this.requireHandleMethod<() => Promise<unknown>>(s, 'supportedModels', 'supported models')
+    return this.timeSdkControl(id, 'supportedModels', fn)
   }
 
   async supportedCommands(id: string) {
     const s = this.requireLive(id)
-    return this.timeSdkControl(id, 'supportedCommands', () => s.query.supportedCommands())
+    const fn = this.requireHandleMethod<() => Promise<unknown>>(
+      s,
+      'supportedCommands',
+      'supported commands',
+      'supportsCommands',
+    )
+    return this.timeSdkControl(id, 'supportedCommands', fn)
   }
 
   async supportedAgents(id: string) {
     const s = this.requireLive(id)
-    return this.timeSdkControl(id, 'supportedAgents', () => s.query.supportedAgents())
+    const fn = this.requireHandleMethod<() => Promise<unknown>>(
+      s,
+      'supportedAgents',
+      'supported agents',
+      'supportsAgents',
+    )
+    return this.timeSdkControl(id, 'supportedAgents', fn)
   }
 
   async mcpServerStatus(id: string) {
     const s = this.requireLive(id)
-    return this.timeSdkControl(id, 'mcpServerStatus', () => s.query.mcpServerStatus())
+    const fn = this.requireHandleMethod<() => Promise<unknown>>(
+      s,
+      'mcpServerStatus',
+      'MCP status',
+      'supportsMcp',
+    )
+    return this.timeSdkControl(id, 'mcpServerStatus', fn)
   }
 
   async reconnectMcpServer(id: string, serverName: string): Promise<void> {
     const s = this.requireLive(id)
-    await s.query.reconnectMcpServer(serverName)
+    await this.requireHandleMethod<(name: string) => Promise<void>>(
+      s,
+      'reconnectMcpServer',
+      'MCP reconnect',
+      'supportsMcp',
+    )(serverName)
   }
 
   async toggleMcpServer(id: string, serverName: string, enabled: boolean): Promise<void> {
     const s = this.requireLive(id)
-    await s.query.toggleMcpServer(serverName, enabled)
+    await this.requireHandleMethod<(name: string, enabled: boolean) => Promise<void>>(
+      s,
+      'toggleMcpServer',
+      'MCP toggle',
+      'supportsMcp',
+    )(serverName, enabled)
   }
 
   /** Add/remove MCP servers on a live session via the SDK's setMcpServers API. */
   async setMcpServers(id: string, servers: Record<string, unknown>) {
     const s = this.requireLive(id)
-    return s.query.setMcpServers(servers as Parameters<typeof s.query.setMcpServers>[0])
+    return this.requireHandleMethod<(servers: Record<string, unknown>) => Promise<unknown>>(
+      s,
+      'setMcpServers',
+      'dynamic MCP servers',
+      'supportsMcp',
+    )(servers)
   }
 
   /** Merge global MCP configs with session-specific overrides.
@@ -1195,12 +1170,23 @@ export class SessionManager {
 
   async reloadPlugins(id: string) {
     const s = this.requireLive(id)
-    return s.query.reloadPlugins()
+    return this.requireHandleMethod<() => Promise<unknown>>(
+      s,
+      'reloadPlugins',
+      'plugin reload',
+      'supportsPlugins',
+    )()
   }
 
   async contextUsage(id: string) {
     const s = this.requireLive(id)
-    return this.timeSdkControl(id, 'getContextUsage', () => s.query.getContextUsage())
+    const fn = this.requireHandleMethod<() => Promise<unknown>>(
+      s,
+      'getContextUsage',
+      'context usage',
+      'supportsContextUsage',
+    )
+    return this.timeSdkControl(id, 'getContextUsage', fn)
   }
 
   /** List pending tool-permission requests for a session. */
@@ -1228,7 +1214,7 @@ export class SessionManager {
     const s = this.require(sid)
     // Capture whether this pending is a plan proposal BEFORE broker.decide
     // deletes it from the pending map. Approving an ExitPlanMode request must
-    // also switch the session out of plan mode into an execution mode — the
+    // also switch the session out of plan mode into an execution mode ?the
     // SDK's read-only plan lock is still engaged, so without this the model
     // would be stuck unable to execute the plan it just got approved.
     const isPlanApproval =
@@ -1326,7 +1312,7 @@ export class SessionManager {
 
   /** AsyncIterable of `session-cleared` signal frames for one session.
    *  Mirrors subscribeGitStatus; returns null when the session is unknown.
-   *  Small maxDepth — a clear is a rare, idempotent event and the durable
+   *  Small maxDepth ?a clear is a rare, idempotent event and the durable
    *  truth (the truncated history ring) is replayed on reconnect, so a
    *  dropped live frame self-heals. */
   subscribeSessionCleared(id: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null {
@@ -1337,7 +1323,7 @@ export class SessionManager {
 
   /** Broadcast a `session-cleared` signal to every subscriber of the given
    *  session. No-op when the session is unknown or has no subscribers.
-   *  Signal-only (bare sessionId) — the client resets its transcript store
+   *  Signal-only (bare sessionId) ?the client resets its transcript store
    *  and drops its local cache in response. Called by the pump after a
    *  `/clear`-triggered context reset is confirmed (and the history ring
    *  has already been truncated). */
@@ -1347,7 +1333,7 @@ export class SessionManager {
     if (s.sessionClearedSubscribers.size === 0) return
     const frame = { kind: 'session-cleared' as const, sessionId: id }
     for (const sub of s.sessionClearedSubscribers) {
-      try { sub.push(frame) } catch { /* subscriber dead — skip */ }
+      try { sub.push(frame) } catch { /* subscriber dead ?skip */ }
     }
   }
 
@@ -1373,7 +1359,7 @@ export class SessionManager {
 
   /** Broadcast a `git-status-changed` signal to every subscriber of the
    *  given session. No-op when the session is unknown or has no
-   *  subscribers. The payload is bare (signal-only) — the client side
+   *  subscribers. The payload is bare (signal-only) ?the client side
    *  responds by re-fetching its useGitStatus endpoint. */
   broadcastGitStatusChanged(id: string): void {
     const s = this.sessions.get(id)
@@ -1385,12 +1371,12 @@ export class SessionManager {
     if (s.gitStatusSubscribers.size === 0) return
     const frame = { kind: 'git-status-changed' as const, sessionId: id }
     for (const sub of s.gitStatusSubscribers) {
-      try { sub.push(frame) } catch { /* subscriber dead — skip */ }
+      try { sub.push(frame) } catch { /* subscriber dead ?skip */ }
     }
   }
 
   /** Consume hook wired into each session's input pushable (see spawn /
-   *  autoResume). Fires the instant the SDK reads a turn off the queue —
+   *  autoResume). Fires the instant the SDK reads a turn off the queue ?
    *  either because it was buffered while a previous turn ran, or handed
    *  off directly to a blocked consumer. We:
    *    1. Filter to top-level user messages. Tool results and sub-agent
@@ -1400,7 +1386,7 @@ export class SessionManager {
    *    2. Stamp `consumedAt` on the message object. Because the input
    *       pushable and the history ring hold the SAME object reference
    *       (dispatchUserMessage pushes one object to both), this stamp is
-   *       immediately visible on the historical copy — so a reconnecting
+   *       immediately visible on the historical copy ?so a reconnecting
    *       client replays it as already-consumed with zero extra storage.
    *    3. Broadcast a live `message-consumed` signal so currently-attached
    *       tabs flip the bubble without waiting for a replay. */
@@ -1423,7 +1409,7 @@ export class SessionManager {
     if (s.messageStatusSubscribers.size === 0) return
     const frame = { kind: 'message-consumed' as const, sessionId: id, uuid, consumedAt }
     for (const sub of s.messageStatusSubscribers) {
-      try { sub.push(frame) } catch { /* subscriber dead — skip */ }
+      try { sub.push(frame) } catch { /* subscriber dead ?skip */ }
     }
   }
 
@@ -1431,20 +1417,20 @@ export class SessionManager {
    *  fan out a global session-update so the sidebar (which mirrors
    *  SessionInfo.recap onto its session cards) stays in sync without
    *  needing a separate frame. Called by the RecapManager via the
-   *  broadcastRecap dep. `recap` is undefined to mean "cleared" — both
+   *  broadcastRecap dep. `recap` is undefined to mean "cleared" ?both
    *  the per-session frame and the SessionInfo projection encode that
    *  as undefined. */
   private broadcastSessionRecap(id: string, recap: SessionRecap | undefined): void {
     const s = this.sessions.get(id)
     if (!s) return
-    // Per-session recap channel — drives live UI on the active panel.
+    // Per-session recap channel ?drives live UI on the active panel.
     if (s.recapSubscribers.size > 0) {
       const frame = { kind: 'session-recap-update' as const, sessionId: id, recap }
       for (const sub of s.recapSubscribers) {
-        try { sub.push(frame) } catch { /* subscriber dead — skip */ }
+        try { sub.push(frame) } catch { /* subscriber dead ?skip */ }
       }
     }
-    // Global session-update — sidebar / other tabs see the new recap
+    // Global session-update ?sidebar / other tabs see the new recap
     // through the same SessionInfo projection used everywhere else.
     this.broadcastGlobal({ kind: 'update', session: this.info(s) })
   }
@@ -1483,7 +1469,7 @@ export class SessionManager {
   async delete(id: string): Promise<void> {
     await this.unload(id, { terminate: true, reason: 'deleted' })
     this.store?.remove(id)
-    // Drop any stored recap — otherwise a new session that happens to
+    // Drop any stored recap ?otherwise a new session that happens to
     // reuse this id (rare, but possible under --state-dir swaps) would
     // see the old summary. unload() already calls invalidate() but we
     // do it again here as a safety net for delete-without-unload paths.
@@ -1496,7 +1482,7 @@ export class SessionManager {
    *  during graceful shutdown.
    *
    *  `terminate`: when true, the session is marked terminated in the
-   *  persistence store (prevents future resume) — used on explicit delete
+   *  persistence store (prevents future resume) ?used on explicit delete
    *  and when the Query itself has ended. Default false. */
   async unload(id: string, opts: { terminate?: boolean; reason?: string } = {}): Promise<void> {
     const s = this.sessions.get(id)
@@ -1506,14 +1492,7 @@ export class SessionManager {
       if (opts.reason) s.terminatedReason = opts.reason
     }
     s.running = false
-    // Signal the pump to stop waiting on iter.next(). Without this,
-    // a wedged SDK generator keeps the pump's 60s idle watchdog firing
-    // indefinitely even after the session has been removed.
-    s.abortController.abort()
-    // Unregister from ProcessMonitor so we don't get a stale exit callback
-    // for an intentionally-closed session.
-    this.processMonitor.unregister(s.abortController.signal)
-    s.input.end()
+    s.handle.destroy(opts.reason)
     // When terminating (explicit delete or graceful shutdown), await the
     // pump so the SDK subprocess has time to exit cleanly.
     if (opts.terminate) {
@@ -1525,7 +1504,7 @@ export class SessionManager {
       } catch { /* pump swallows errors internally */ }
     }
     this.permBroker.denyAll(s)
-    // Cancel any pending git-status broadcast — without this, a timer
+    // Cancel any pending git-status broadcast ?without this, a timer
     // scheduled by the last mutating tool_use could still fire after the
     // session is removed (the broadcast itself is a no-op then, but the
     // timer is dead code that should be released up front).
@@ -1533,7 +1512,7 @@ export class SessionManager {
     endAllSubscribers(s)
     // Broadcast the running=false / terminated state BEFORE removing
     // from the map. Without this, the client's copy stays stale at
-    // `running: true` — handleSelect then skips resume, and the user
+    // `running: true` ?handleSelect then skips resume, and the user
     // hits a 409 on their next send. The session is still in the live
     // map at this point so info(s) works correctly.
     if (!opts.terminate) {
@@ -1541,7 +1520,7 @@ export class SessionManager {
     }
     this.sessions.delete(id)
     // Clear the recap state. The session is no longer in the manager's
-    // map so getPhase will return 'unknown' from inside the manager —
+    // map so getPhase will return 'unknown' from inside the manager ?
     // we still call invalidate() to end any subscribers and clear the
     // legacy in-flight slot. Recap is in-memory only, so dropping the
     // session here is the end of the line for it.
@@ -1564,7 +1543,7 @@ export class SessionManager {
         out.push(this.infoFromMeta(meta))
       }
     }
-    // Most recent activity first — matches the old behaviour of live-only
+    // Most recent activity first ?matches the old behaviour of live-only
     // sessions sitting at the top while the user works on them.
     out.sort((a, b) => b.lastActivityAt - a.lastActivityAt)
     return out
@@ -1573,47 +1552,48 @@ export class SessionManager {
   /** List sessions resumable from disk via the SDK's `listSessions()`.
    *
    *  Unlike `list()` (which only knows about sessions THIS app created /
-   *  persisted), this scans `~/.claude/projects/` for every transcript —
+   *  persisted), this scans `~/.claude/projects/` for every transcript ?
    *  including sessions the `claude` CLI created directly in the same
    *  project dirs, which never appear in our sidebar. That's the whole
    *  point of the /resume picker.
    *
    *  Each result is annotated against our live + persisted state:
-   *    - `known`      → already in our store or in memory
-   *    - `running`    → has a live Query right now
-   *    - `terminated` → we've marked it un-resumable (e.g. transcript gone)
+   *    - `known`      ?already in our store or in memory
+   *    - `running`    ?has a live Query right now
+   *    - `terminated` ?we've marked it un-resumable (e.g. transcript gone)
    *
    *  `dir` scopes to a project directory (and its worktrees); omit for all
    *  projects. Sorted newest-first by `lastModified`. SDK errors degrade to
    *  an empty list (mirrors hasSdkTranscript's fail-soft style). */
   async listResumable(opts?: { dir?: string }): Promise<ResumableSession[]> {
-    let raw: SDKSessionInfo[]
-    try {
-      raw = await listSessions(opts?.dir ? { dir: opts.dir } : undefined)
-    } catch (err) {
-      console.warn('[session-manager] listResumable: listSessions threw:', err)
-      return []
-    }
-    const mapped = raw.map((s): ResumableSession => {
-      const live = this.sessions.get(s.sessionId)
-      const meta = this.store?.get(s.sessionId)
-      return {
-        sessionId: s.sessionId,
-        title: s.customTitle ?? s.summary ?? s.firstPrompt,
-        firstPrompt: s.firstPrompt,
-        cwd: s.cwd,
-        createdAt: s.createdAt,
-        lastModified: s.lastModified,
-        gitBranch: s.gitBranch,
-        known: !!live || !!meta,
-        running: !!live && live.running,
-        terminated: live?.terminated ?? meta?.terminated ?? false,
+    const mapped: ResumableSession[] = []
+    for (const provider of this.providers.list()) {
+      if (!provider.listResumable) continue
+      let raw: ResumableSession[]
+      try {
+        raw = await provider.listResumable(opts)
+      } catch (err) {
+        console.warn(`[session-manager] listResumable(${provider.name}) threw:`, err)
+        continue
       }
-    })
+      for (const s of raw) {
+        const live = this.sessions.get(s.sessionId)
+        const meta = this.store?.get(s.sessionId)
+        const providerName = s.provider ?? live?.provider ?? meta?.provider ?? provider.name
+        if (live && live.provider !== providerName) continue
+        if (!live && meta?.provider && meta.provider !== providerName) continue
+        mapped.push({
+          ...s,
+          provider: providerName,
+          known: !!live || !!meta,
+          running: !!live && live.running,
+          terminated: live?.terminated ?? meta?.terminated ?? false,
+        })
+      }
+    }
     mapped.sort((a, b) => b.lastModified - a.lastModified)
     return mapped
   }
-
   /** Cheap count of all sessions (live + persisted) without allocating
    *  a full SessionInfo list. Use for health probes etc. */
   sessionCount(): number {
@@ -1646,7 +1626,7 @@ export class SessionManager {
 
   /** Offset-paginated read of a session's FULL transcript from disk, used by
    *  the frontend to lazy-load messages evicted from the in-memory ring.
-   *  Works for dormant sessions too — reads the JSONL directly and does not
+   *  Works for dormant sessions too ?reads the JSONL directly and does not
    *  require the session to be live. The session must exist in the store
    *  (404 otherwise); a session that never wrote a transcript returns an
    *  empty page. */
@@ -1656,10 +1636,12 @@ export class SessionManager {
   ): Promise<HistoryPage> {
     // Require the session to be known (live or persisted) so we don't serve
     // arbitrary uuids off disk.
-    if (!this.sessions.has(id) && !this.store?.get(id)) {
+    const live = this.sessions.get(id)
+    const meta = this.store?.get(id)
+    if (!live && !meta) {
       throw new HttpError(404, 'session not found')
     }
-    return readHistoryPage(id, opts)
+    return this.readProviderHistoryPage(live?.provider ?? meta?.provider ?? this.defaultProvider, id, opts)
   }
 
   async shutdown(): Promise<void> {
@@ -1681,7 +1663,7 @@ export class SessionManager {
     await Promise.all(ids.map((id) => this.unload(id)))
     // Await remaining pump tasks so SDK subprocesses exit cleanly.
     // unload() without terminate doesn't await the pump (GC speed), but
-    // on shutdown we want a clean exit — give each pump up to 5 s.
+    // on shutdown we want a clean exit ?give each pump up to 5 s.
     if (pumpTasks.length > 0) {
       await Promise.race([
         Promise.allSettled(pumpTasks),
@@ -1700,22 +1682,22 @@ export class SessionManager {
   }
 
   /** Like require(), but additionally ensures the session is alive and
-   *  the Query is still running — the precondition for send/sendContent. */
+   *  the Query is still running ?the precondition for send/sendContent. */
   private requireRunnable(id: string): Session {
     const s = this.require(id)
     if (s.terminated) {
-      console.warn(`[session ${id}] send rejected — session is terminated`)
+      console.warn(`[session ${id}] send rejected ?session is terminated`)
       throw new HttpError(410, `session ${id} is terminated`)
     }
     if (!s.running) {
-      console.warn(`[session ${id}] send rejected — session is not running`)
+      console.warn(`[session ${id}] send rejected ?session is not running`)
       throw new HttpError(409, `session ${id} is not running; resume it first`)
     }
     return s
   }
 
   /** Like require(), but additionally insists the Query is still live.
-   *  Use for any method that forwards a control request to the SDK — the
+   *  Use for any method that forwards a control request to the SDK ?the
    *  subprocess's stdin is closed once `running` flips to false, so a
    *  subsequent `supportedModels` / `getContextUsage` / etc. would otherwise
    *  throw `ProcessTransport is not ready for writing` from deep in the
@@ -1728,10 +1710,36 @@ export class SessionManager {
     return s
   }
 
+  private requireProviderCapability(
+    providerName: string,
+    capability: keyof ProviderCapabilities,
+    action: string,
+  ): void {
+    const provider = this.providers.get(providerName)
+    if (!provider.capabilities[capability]) {
+      throw new HttpError(501, `provider ${providerName} does not support ${action}`)
+    }
+  }
+
+  private requireHandleMethod<T extends (...args: never[]) => unknown>(
+    s: Session,
+    method: keyof ProviderSessionHandle,
+    action: string,
+    capability?: keyof ProviderCapabilities,
+  ): T {
+    if (capability) this.requireProviderCapability(s.provider, capability, action)
+    const fn = s.handle[method]
+    if (typeof fn !== 'function') {
+      throw new HttpError(501, `provider ${s.provider} does not support ${action}`)
+    }
+    return fn.bind(s.handle) as T
+  }
+
   private info(s: Session): SessionInfo {
     const isWorking = s.running && s.pendingTurns > 0
     return {
       id: s.id,
+      provider: s.provider,
       createdAt: s.createdAt,
       lastActivityAt: s.lastActivityAt,
       subscribers: s.subscribers.size,
@@ -1769,10 +1777,10 @@ export class SessionManager {
     if (s.terminated) return 'terminated'
     if (!s.running) return 'dormant'
     // Any in-flight assistant turn, queued user input, or unanswered
-    // tool-permission prompt counts as "working" — none of those are
+    // tool-permission prompt counts as "working" ?none of those are
     // safe moments to summarise the conversation.
     if (s.pendingTurns > 0) return 'working'
-    if (s.input.queueDepth > 0) return 'working'
+    if (s.handle.queueDepth > 0) return 'working'
     if (s.pending.size > 0) return 'working'
     return 'idle'
   }
@@ -1783,6 +1791,7 @@ export class SessionManager {
   private infoFromMeta(meta: SessionMeta): SessionInfo {
     return {
       id: meta.id,
+      provider: meta.provider ?? 'claude',
       createdAt: meta.createdAt,
       lastActivityAt: meta.lastActivityAt,
       subscribers: 0,
@@ -1794,7 +1803,7 @@ export class SessionManager {
       fastMode: meta.fastMode,
       effortLevel: meta.effortLevel,
       // Dormant: no live Query, so the SDK isn't reporting a runtime state.
-      // Leave fastModeState undefined — the UI hides the chip until resume.
+      // Leave fastModeState undefined ?the UI hides the chip until resume.
       running: false,
       terminated: meta.terminated,
       terminatedReason: meta.terminatedReason,
@@ -1806,76 +1815,11 @@ export class SessionManager {
       // A dormant Query holds no canUseTool callbacks; pending is always 0.
       pendingPermissionCount: 0,
       // Terminated stays terminated; everything else is dormant. Recap
-      // is in-memory only (per spec — no persistence), so dormant
+      // is in-memory only (per spec ?no persistence), so dormant
       // sessions always come back without one until the user resumes
       // and the recapManager rebuilds it.
       phase: meta.terminated ? 'terminated' : 'dormant',
       recap: undefined,
-    }
-  }
-
-  /** Which permission mode to forward to the SDK. Only `plan` is forwarded —
-   *  it needs SDK-level read-only model steering (the SDK steers the model to
-   *  research and propose a plan instead of editing) that canUseTool cannot
-   *  replicate; canUseTool can only deny a single edit, not make the model
-   *  behave like a planner. All other modes are enforced by our own canUseTool
-   *  (acceptEdits / bypassPermissions branches in permission-broker.ts), so we
-   *  forward `undefined` (= no SDK-side mode) and keep canUseTool authoritative.
-   *  Verified against SDK 0.3.160. */
-  private sdkForwardMode(mode?: PermissionMode): PermissionMode | undefined {
-    return mode === 'plan' ? 'plan' : undefined
-  }
-
-  /** Inject standard options shared by spawn() and autoResume():
-   *  includePartialMessages, pathToClaudeCodeExecutable, env, and the
-   *  marketplace-enabled plugin paths. */
-  private applyStandardQueryOpts(opts: Options): void {
-    if (opts.includePartialMessages === undefined) {
-      opts.includePartialMessages = true
-    }
-    if (!opts.pathToClaudeCodeExecutable && this.claudeBinary) {
-      opts.pathToClaudeCodeExecutable = this.claudeBinary
-    }
-    // Inject the model-alias env vars so subagents (Task/Agent/Explore)
-    // resolve to a model that actually works. Subagents are spawned by the
-    // CLI subprocess and carry model *aliases* (sonnet/haiku/opus/inherit),
-    // not the explicit `model` ID we pass to the main Query. The CLI resolves
-    // those aliases via ANTHROPIC_DEFAULT_*_MODEL / ANTHROPIC_SMALL_FAST_MODEL;
-    // when those are unset (and the user points at a third-party
-    // ANTHROPIC_BASE_URL that doesn't know Anthropic's default IDs), the
-    // aliases resolve to models the gateway rejects → the subagent call errors
-    // even though the main conversation works. Pin every alias to this
-    // session's effective model so a subagent always uses a model we know is
-    // accepted. We shallow-copy before writing: buildAnthropicEnv() returns a
-    // SHARED cached object, and each session may run a different model, so
-    // mutating it in place would cross-contaminate sessions.
-    //
-    // Known limitation: setModel() mid-session can't re-inject this (the
-    // subprocess env is fixed at spawn), so subagents keep using the model
-    // pinned here. That's still a valid model, so it won't error.
-    const effectiveModel = opts.model || defaultConfig.defaultModel
-    opts.env = {
-      ...(opts.env ?? this.buildAnthropicEnv()),
-      ANTHROPIC_DEFAULT_OPUS_MODEL: effectiveModel,
-      ANTHROPIC_DEFAULT_SONNET_MODEL: effectiveModel,
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: effectiveModel,
-      ANTHROPIC_SMALL_FAST_MODEL: effectiveModel,
-    }
-    // Merge marketplace-enabled plugin paths into Options.plugins. We
-    // append rather than replace so a caller can pass its own plugins
-    // through (e.g. tests or one-off ad-hoc spawns). Each entry is
-    // `{ type: 'local', path }` — the only SdkPluginConfig variant the
-    // SDK currently accepts. Plugins whose dirs disappeared since the
-    // last enable are silently filtered by the store helper.
-    if (this.mpStore) {
-      const enabledPaths = this.mpStore.getEnabledPluginAbsolutePaths()
-      if (enabledPaths.length > 0) {
-        const existing = opts.plugins ?? []
-        opts.plugins = [
-          ...existing,
-          ...enabledPaths.map((path) => ({ type: 'local' as const, path })),
-        ]
-      }
     }
   }
 
@@ -1898,7 +1842,7 @@ export class SessionManager {
         // context reset (after it truncates the history ring).
         broadcastSessionCleared: (id) => this.broadcastSessionCleared(id),
         // Pump calls this when the SDK-reported fast_mode_state changes.
-        // Broadcasts a session-update WITHOUT writing to disk — the runtime
+        // Broadcasts a session-update WITHOUT writing to disk ?the runtime
         // fast-mode state is transient and re-reported after respawn, so it
         // doesn't belong in persisted meta.
         broadcastInfo: (s) => {
@@ -1931,7 +1875,7 @@ export class SessionManager {
     // `result` message. If no turn was completed, resume would fail
     // with "No conversation found with session ID: <uuid>".
     if (!session.lastTurnAt) {
-      console.warn(`[session ${session.id}] auto-resume skipped — no completed turns (no disk data)`)
+      console.warn(`[session ${session.id}] auto-resume skipped ?no completed turns (no disk data)`)
       return false
     }
 
@@ -1944,67 +1888,36 @@ export class SessionManager {
 
     console.log(`[session ${session.id}] auto-resuming (attempt ${resumeCount + 1}/${SessionManager.MAX_AUTO_RESUME})`)
 
-    // Close old input and abort controller
-    session.input.end()
-    session.abortController.abort()
+    session.handle.destroy('auto-resume')
 
-    // Create fresh input and abort controller. Re-wire the same consume
-    // hook so message-consumed frames keep flowing after an auto-resume.
-    const newInput = this.createInputPushable(session.id)
-    const newAbort = new AbortController()
-
-    // Unregister old signal from ProcessMonitor, register new one
-    this.processMonitor.unregister(session.abortController.signal)
-
-    // Build resume options — loads conversation history from disk.
-    // Forward only `plan` to the SDK (same as spawn(), see sdkForwardMode);
-    // all other modes map to undefined and are enforced via canUseTool.
     const resumeOpts: Options = {
       resume: session.id,
       cwd: session.cwd,
       model: session.model,
-      permissionMode: this.sdkForwardMode(session.permissionMode),
+      permissionMode: session.permissionMode,
       title: session.title,
-      // Carry the effort level forward across auto-resume.
       effort: session.effortLevel,
-      // Carry beta flags forward — without this, a 1M-context session
-      // silently downgrades to the model's default window on auto-resume.
-      // See resume() for the cast rationale.
       betas: session.betas as Options['betas'],
     }
-
-    // Wire abort controller + spawn wrapper + process monitor registration
-    // in one call (same as spawn()).
-    this.wireAbortController(newAbort, session.id, resumeOpts)
-
-    // Inject standard options (same as spawn())
-    this.applyStandardQueryOpts(resumeOpts)
-
-    // Reuse the stored canUseTool callback from the original spawn
     if (session.canUseTool) {
       resumeOpts.canUseTool = session.canUseTool
     }
-
-    // Create new Query
-    const q = query({ prompt: newInput.iterable, options: resumeOpts })
-
-    // Re-apply fast-mode intent across the respawn (same rationale as
-    // spawn(): applyFlagSettings is streaming-only, must run post-query).
-    if (session.fastMode) {
-      void q.applyFlagSettings({ fastMode: true }).catch((err) => {
-        console.warn(`[session ${session.id}] re-applying fastMode on auto-resume failed:`, err)
-      })
-    }
-    if (session.effortLevel) {
-      void q.applyFlagSettings({ effortLevel: session.effortLevel as 'low' | 'medium' | 'high' | 'xhigh' }).catch((err) => {
-        console.warn(`[session ${session.id}] applying effortLevel on auto-resume failed:`, err)
-      })
-    }
-
-    // Update session with new references
-    session.input = newInput
-    session.query = q
-    session.abortController = newAbort
+    const provider = this.providers.get(session.provider)
+    session.handle = provider.createSession({
+      id: session.id,
+      provider: session.provider,
+      cwd: session.cwd,
+      model: session.model,
+      permissionMode: session.permissionMode,
+      title: session.title,
+      betas: session.betas,
+      effortLevel: session.effortLevel,
+      fastMode: session.fastMode,
+      resume: session.id,
+      onUserMessageConsumed: (msg) => this.onInputConsumed(session.id, msg as SDKUserMessage),
+      canUseTool: session.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
+      providerExtras: { sdkOptions: resumeOpts },
+    })
     session.running = true
     session.exiting = false
     // Clear any auto-interrupt flag from the previous pump so the GC
@@ -2015,7 +1928,7 @@ export class SessionManager {
     // Broadcast the session update so clients know it's alive again
     this.broadcastGlobal({ kind: 'update', session: this.info(session) })
 
-    // Start new pump — returns immediately, runs in background
+    // Start new pump ?returns immediately, runs in background
     session.pumpTask = this.pump(session)
 
     return true

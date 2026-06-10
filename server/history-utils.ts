@@ -56,3 +56,19 @@ export function stampConsumedAt(msg: unknown): number {
   }
   return (m as { consumedAt?: number }).consumedAt ?? Date.now()
 }
+
+/** System subtypes that should be broadcast to clients and persisted in
+ *  history. Other system frames (init, status, …) are kept in history for
+ *  fastModeState extraction and /clear signaling, but skipped in broadcasts
+ *  to save bandwidth and client memory. Matches history-reader.ts
+ *  KEEP_SYSTEM_SUBTYPES. */
+export const BROADCAST_SYSTEM_SUBTYPES = new Set(['error', 'compact_boundary', 'api_retry'])
+
+/** Check if a message should be broadcast to frontend clients.
+ *  Returns true for all non-system messages, and for system messages with
+ *  subtypes in BROADCAST_SYSTEM_SUBTYPES (error, compact_boundary, api_retry).
+ *  System init/status messages return false. */
+export function shouldBroadcastMessage(msg: { type?: string; subtype?: string }): boolean {
+  if (msg.type !== 'system') return true
+  return BROADCAST_SYSTEM_SUBTYPES.has(msg.subtype ?? '')
+}

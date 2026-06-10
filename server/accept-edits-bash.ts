@@ -42,7 +42,6 @@ const SAFE_WRAPPERS: ReadonlySet<string> = new Set(['timeout', 'nice', 'nohup'])
  *  plain arguments — pipes, redirects, command substitution, chaining,
  *  globbing, quoting, variable expansion, comments, newlines, etc. Their mere
  *  presence forces a prompt. */
-// eslint-disable-next-line no-control-regex
 const SHELL_METACHARACTERS = /[|&;<>()$`\\"'*?[\]{}#~\n\r\t]/
 
 /** A safe `NAME=value` env prefix (e.g. LANG=C, NO_COLOR=1). Conservative:

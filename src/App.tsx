@@ -26,7 +26,7 @@ import { PERMISSION_MODES } from './types'
 import { ACCENT_COLORS } from './theme'
 import { AppearancePanel } from './components/AppearancePanel'
 import { ErrorBoundary } from './components/ErrorBoundary'
-import { IconSettings, IconBell, IconBellOff, IconBot, IconBug, IconBugOff, IconMenu } from './components/icons/ToolIcons'
+import { IconSettings, IconBell, IconBellOff, IconBot, IconMenu } from './components/icons/ToolIcons'
 import { UpdateBanner } from './components/UpdateBanner'
 import { useUpdateInfo } from './hooks/useUpdateInfo'
 import { sessionStoreRegistry } from './session-store/registry'
@@ -48,7 +48,6 @@ const PromptDialog = lazy(() => import('./components/PromptDialog').then((m) => 
 
 import {
   SIDEBAR_ORDER_KEY,
-  SHOW_SYSTEM_EVENTS_KEY,
   SIDEBAR_MIN_KEY,
   SIDEBAR_MAX_KEY,
   SIDEBAR_MIN_DEFAULT,
@@ -212,10 +211,6 @@ export function App() {
   // Groups are optional — sessions without a group appear in the
   // "Ungrouped" sidebar section. No default group is auto-created.
 
-  /** Show SDK bookkeeping messages (system/init, system/status, …) in
-   *  the transcript. Off by default — they're noise for normal use,
-   *  but invaluable when debugging tool wiring or context compaction. */
-  const [showSystemEvents, setShowSystemEvents] = useLocalStorage<boolean>(SHOW_SYSTEM_EVENTS_KEY, false)
   const { sidebarWidth: effectiveSidebarWidth, sidebarResize, setSidebarWidth } = useSidebarResize({ minPx: sidebarMinPx, maxPx: sidebarMaxPx })
 
   const [gitPanelOpenFor, setGitPanelOpenFor] = useState<string | null>(null)
@@ -1606,19 +1601,6 @@ export function App() {
               keyboard promise we don't keep. */}
           <div className="main-toolbar" role="group" aria-label="App actions">
             <button
-              className={`btn btn-icon ${showSystemEvents ? 'active' : ''}`}
-              onClick={() => setShowSystemEvents((v) => !v)}
-              title={
-                showSystemEvents
-                  ? 'Hide SDK system events (init / status / …)'
-                  : 'Show SDK system events (init / status / …) · useful for debugging'
-              }
-              aria-label="Toggle system events"
-              aria-pressed={showSystemEvents}
-            >
-              {showSystemEvents ? <IconBug size={16} /> : <IconBugOff size={16} />}
-            </button>
-            <button
               className={`btn btn-icon ${notifications.enabled ? 'active' : ''}`}
               onClick={() => void notifications.toggle()}
               title={notificationTooltip(notifications.permission, notifications.enabled)}
@@ -1722,7 +1704,6 @@ export function App() {
                     onFocus={focusPanel}
                     onClose={closeSession}
                     onSessionUpdate={updateSession}
-                    showSystemEvents={showSystemEvents}
                     settingsOpen={settingsOpenFor === s.id}
                     onOpenSettings={handleOpenSettings}
                     onCloseSettings={handleCloseSettings}
@@ -1834,14 +1815,16 @@ export function App() {
         </Suspense>
       )}
 
-      <Suspense fallback={null}>
-        <ShortcutHelp
-          open={helpOpen}
-          onClose={() => setHelpOpen(false)}
-          shortcuts={shortcuts}
-          commands={helpCommands}
-        />
-      </Suspense>
+      {helpOpen && (
+        <Suspense fallback={null}>
+          <ShortcutHelp
+            open={helpOpen}
+            onClose={() => setHelpOpen(false)}
+            shortcuts={shortcuts}
+            commands={helpCommands}
+          />
+        </Suspense>
+      )}
 
       {globalSettingsOpen && (
         <Suspense fallback={null}>

@@ -26,6 +26,7 @@ import type { Socket } from 'node:net'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { isUpgradeAuthorized } from './auth.js'
 import type { SessionBroadcaster } from './session-types.js'
+import { shouldBroadcastMessage } from './history-utils.js'
 import {
   WS_PATH,
   type WsClientFrame,
@@ -272,6 +273,12 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
             )
           }
         }
+
+        // Filter out system messages that the frontend doesn't need.
+        // Matches the live broadcast filter in session-pump.ts.
+        replayHistory = replayHistory.filter(
+          (m) => shouldBroadcastMessage(m as { type?: string; subtype?: string }),
+        )
         const REPLAY_CHUNK_SIZE = 50
         if (replayHistory.length <= REPLAY_CHUNK_SIZE) {
           queue.enqueue({
@@ -371,7 +378,15 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
                   .map((c) => c.promise),
               )
               const ch = channels.find((c) => c.kind === winner.kind)!
-              if (winner.result.done) { ch.promise = null; continue }
+              if (winner.result.done) {
+                ch.promise = null
+                // When the primary message channel ends (e.g. subscriber
+                // queue overflow → end()), stop the entire session driver
+                // so the WS write loop drains and closes — the client
+                // detects the close and reconnects with a fresh replay.
+                if (ch.kind === 'msg') stop()
+                continue
+              }
               // Dispatch per channel kind. Each branch maps the channel's value
               // to one or more WS frames; the retag happens once at the bottom.
               switch (winner.kind) {

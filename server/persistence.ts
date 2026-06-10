@@ -23,6 +23,7 @@ import type { JsonFileStoreOptions } from './json-file-store.js'
  *  be safe to ship to the frontend inside SessionInfo. */
 export interface SessionMeta {
   id: string
+  provider?: string
   createdAt: number
   lastActivityAt: number
   cwd?: string
@@ -134,6 +135,7 @@ function coerceMeta(raw: unknown): SessionMeta | null {
   const lastActivityAt = typeof r.lastActivityAt === 'number' ? r.lastActivityAt : createdAt
   return {
     id,
+    provider: typeof r.provider === 'string' ? r.provider : 'claude',
     createdAt,
     lastActivityAt,
     cwd: typeof r.cwd === 'string' ? r.cwd : undefined,

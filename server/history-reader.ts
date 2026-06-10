@@ -35,6 +35,7 @@ import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { glob } from 'node:fs/promises'
+import { BROADCAST_SYSTEM_SUBTYPES } from './history-utils.js'
 
 export interface HistoryPage {
   /** Renderable messages in chronological order, normalized to the live
@@ -59,8 +60,6 @@ interface RawLine {
   message?: { role?: string; content?: unknown }
   [k: string]: unknown
 }
-
-const KEEP_SYSTEM_SUBTYPES = new Set(['error', 'compact_boundary', 'api_retry'])
 
 /** SDK interrupt placeholder. When the user interrupts a turn, the CLI
  *  writes a synthetic `user` text message into the transcript — e.g.
@@ -133,7 +132,7 @@ function isRenderable(o: RawLine): boolean {
     return !isInterruptPlaceholder(o.message?.content)
   }
   if (o.type === 'assistant') return true
-  if (o.type === 'system' && typeof o.subtype === 'string' && KEEP_SYSTEM_SUBTYPES.has(o.subtype)) {
+  if (o.type === 'system' && typeof o.subtype === 'string' && BROADCAST_SYSTEM_SUBTYPES.has(o.subtype)) {
     return true
   }
   return false

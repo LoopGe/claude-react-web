@@ -148,7 +148,7 @@ describe('SessionStore.clearPersisted', () => {
 //
 // These mirror the constants in store.ts (not exported — real code never
 // reads a foreign session's key, and the budget is an internal policy):
-const STORAGE_TOTAL_BUDGET = 3.5 * 1024 * 1024
+const STORAGE_TOTAL_BUDGET = 4 * 1024 * 1024
 const MAX_CACHED_SESSIONS = 20
 
 /** Seed a `claude-web-session:*` entry of approximately `bytes` size with an
@@ -199,7 +199,7 @@ describe('SessionStore storage quota', () => {
   it('evicts oldest entries by byte budget (count under the cap)', () => {
     // 5 large entries (~1MB each = ~5MB total) but only 5 keys — the old
     // count-only policy (cap 20) would evict NOTHING. The byte budget
-    // (3.5MB) must kick in.
+    // (4MB) must kick in.
     const big = 1_000_000
     seedCacheEntry('old-1', 1000, big)
     seedCacheEntry('old-2', 2000, big)
@@ -242,6 +242,7 @@ describe('SessionStore storage quota', () => {
     seedCacheEntry('old-2', 2000, big)
     seedCacheEntry('old-3', 3000, big)
     seedCacheEntry('old-4', 4000, big)
+    seedCacheEntry('old-5', 5000, big)
 
     const realSetItem = Storage.prototype.setItem
     let calls = 0

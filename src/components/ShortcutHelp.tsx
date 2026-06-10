@@ -25,13 +25,10 @@ export function ShortcutHelp({ open, onClose, shortcuts, commands = [] }: Props)
   const visible = shortcuts.filter((s) => s.description)
   const showCommands = commands.length > 0
   // Default to the commands tab when commands are available (the `/help`
-  // entry point); otherwise only the shortcuts tab exists.
-  const [tab, setTab] = useState<Tab>('shortcuts')
-
-  useEffect(() => {
-    if (!open) return
-    setTab(showCommands ? 'commands' : 'shortcuts')
-  }, [open, showCommands])
+  // entry point); otherwise only the shortcuts tab exists. The parent
+  // conditionally renders this component (mounts on open, unmounts on
+  // close) so useState re-initializes fresh each time the dialog opens.
+  const [tab, setTab] = useState<Tab>(commands.length > 0 ? 'commands' : 'shortcuts')
 
   useEffect(() => {
     if (!open) return

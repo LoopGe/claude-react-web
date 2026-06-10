@@ -21,7 +21,6 @@ interface Props {
   index: ReadonlyMap<string, ActiveSubagent>
   onClose: () => void
   onPop: () => void
-  showSystemEvents?: boolean
   /** Tool/plan/question lifecycle maps. These MUST be forwarded to the
    *  nested MessageList — it builds its OWN status context providers, so
    *  without them every tool card inside a drilled-in subagent reads the
@@ -46,7 +45,6 @@ export const SubagentOverlay = memo(function SubagentOverlay({
   index,
   onClose,
   onPop,
-  showSystemEvents,
   toolStatus,
   toolResults,
   planStatus,
@@ -148,7 +146,6 @@ export const SubagentOverlay = memo(function SubagentOverlay({
           <MessageList
             items={items}
             parentToolUseIdFilter={currentId}
-            showSystemEvents={showSystemEvents}
             toolStatus={toolStatus}
             toolResults={toolResults}
             planStatus={planStatus}

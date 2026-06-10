@@ -10,14 +10,15 @@ const STORAGE_PREFIX = 'claude-web-session:'
 // Per-session cap. Kept well below the browser's ~5MB total localStorage
 // quota so a single large transcript can't monopolise storage and starve
 // unrelated keys (session-groups, sidebar-order, …). A session over this
-// is trimmed to its last 200 messages in persistToStorage.
-const STORAGE_MAX_BYTES = 1 * 1024 * 1024 // 1MB per session
+// is trimmed to its last 500 messages in persistToStorage.
+const STORAGE_MAX_BYTES = 2 * 1024 * 1024 // 2MB per session
 // Total byte budget across ALL claude-web-session:* entries. The eviction
 // pass keeps the sum under this so the cache can never fill the ~5MB quota
-// and cause QuotaExceededError on unrelated setItem calls. ~1.5MB headroom
-// is left for every other (small) key.
-const STORAGE_TOTAL_BUDGET = 3.5 * 1024 * 1024 // 3.5MB across all sessions
+// and cause QuotaExceededError on unrelated setItem calls.
+const STORAGE_TOTAL_BUDGET = 4 * 1024 * 1024 // 4MB across all sessions
 const MAX_CACHED_SESSIONS = 20
+/** Number of messages to keep when trimming an oversized transcript. */
+const STORAGE_TRIM_MESSAGES = 500
 
 /** Remove a session's localStorage cache. Called on explicit delete. */
 export function clearSessionStorage(sessionId: string): void {
@@ -78,6 +79,7 @@ function pruneStorageCache(force = false): void {
     }
     // Sort oldest first — evict the least-recently-saved entries.
     entries.sort((a, b) => a.ts - b.ts)
+    let evicted = 0
     while (
       entries.length > 0 &&
       (totalBytes > STORAGE_TOTAL_BUDGET || entries.length > MAX_CACHED_SESSIONS)
@@ -85,6 +87,12 @@ function pruneStorageCache(force = false): void {
       const oldest = entries.shift()!
       localStorage.removeItem(oldest.key)
       totalBytes -= oldest.bytes
+      evicted++
+    }
+    if (evicted > 0) {
+      console.warn(
+        `[pruneStorageCache] Evicted ${evicted} session cache(s), ${entries.length} remaining (${(totalBytes / 1024).toFixed(0)}KB)`,
+      )
     }
   } catch { /* ignore */ }
 }
@@ -123,15 +131,20 @@ function persistToStorage(sessionId: string, state: SessionState): void {
     })),
     lastMessageUuid: state.lastMessageUuid,
   })
-  // Trim oversized transcripts to their last 200 messages so a single
-  // session can't blow past STORAGE_MAX_BYTES.
+  // Trim oversized transcripts to their last STORAGE_TRIM_MESSAGES so a
+  // single session can't blow past STORAGE_MAX_BYTES.
+  if (payload.length > STORAGE_MAX_BYTES) {
+    console.warn(
+      `[persistToStorage] ${sessionId}: payload ${(payload.length / 1024).toFixed(0)}KB > ${(STORAGE_MAX_BYTES / 1024).toFixed(0)}KB limit, trimming from ${state.items.length} to ${STORAGE_TRIM_MESSAGES} messages`,
+    )
+  }
   const toWrite =
     payload.length > STORAGE_MAX_BYTES
       ? JSON.stringify({
           v: 1,
           savedAt: Date.now(),
-          messages: state.messages.slice(-200),
-          items: state.items.slice(-200).map((i) => ({
+          messages: state.messages.slice(-STORAGE_TRIM_MESSAGES),
+          items: state.items.slice(-STORAGE_TRIM_MESSAGES).map((i) => ({
             id: i.id,
             msg: i.msg,
             isCompactSummary: i.isCompactSummary,

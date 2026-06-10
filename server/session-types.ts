@@ -8,15 +8,15 @@ import type {
   PermissionMode,
   PermissionResult,
   PermissionUpdate,
-  Query,
   SDKMessage,
-  SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk'
 import type { Pushable } from './pushable.js'
 import type { SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
 import type { MpStore } from './mp-store.js'
 import type { SessionInfoBase } from '../shared/session-info.js'
+import type { ProviderRegistry } from './providers/registry.js'
+import type { ProviderSessionHandle } from './providers/types.js'
 
 /** Subscriber — each connected client gets one of these. */
 export interface Subscriber {
@@ -82,6 +82,7 @@ export type SessionInfo = SessionInfoBase<PermissionMode>
  *  are annotated from this app's live + persisted state so the picker can
  *  dim/disable rows that can't be resumed. */
 export interface ResumableSession {
+  provider?: string
   sessionId: string
   /** Best display title: customTitle ?? summary ?? firstPrompt. */
   title?: string
@@ -108,6 +109,7 @@ export type { SessionPhase, SessionRecap, SessionRecapStats } from '../shared/se
 
 export interface Session {
   id: string
+  provider: string
   createdAt: number
   lastActivityAt: number
   cwd?: string
@@ -142,8 +144,7 @@ export interface Session {
    *  Not persisted — re-fetched on every spawn (capability tracks the
    *  model + SDK version, not the conversation). */
   effortLevels?: EffortLevel[]
-  input: Pushable<SDKUserMessage>
-  query: Query
+  handle: ProviderSessionHandle
   subscribers: Map<string, Subscriber>
   permissionSubscribers: Map<string, PermissionSubscriber>
   /** Pending tool-use permission requests awaiting a user decision. */
@@ -220,10 +221,6 @@ export interface Session {
    *  sessionId). Driven by the pump when a `/clear`-triggered init lands.
    *  Clients respond by resetting their transcript store + local cache. */
   sessionClearedSubscribers: Set<Pushable<unknown>>
-  /** AbortController whose signal races the pump's `iter.next()` so
-   *  unload() can break a wedged generator without waiting for the SDK
-   *  subprocess to exit. */
-  abortController: AbortController
   /** Stored canUseTool callback for auto-resume. Reused when the Query
    *  exits cleanly and needs to be re-spawned without recreating the
    *  permission handling logic. */
@@ -262,6 +259,8 @@ export function endAllSubscribers(s: Session): void {
 }
 
 export interface SessionManagerOptions {
+  providers?: ProviderRegistry
+  defaultProvider?: string
   historyCap?: number
   /** When set, session metadata is persisted here so dormant sessions
    *  survive restarts. See server/persistence.ts. */

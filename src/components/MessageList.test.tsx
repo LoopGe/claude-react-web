@@ -104,39 +104,6 @@ describe('MessageList', () => {
     expect(container.textContent).toContain('Hello world')
   })
 
-  it('renders system messages when showSystemEvents is true', () => {
-    // System init messages render as "system · init" header (no body content).
-    const msgs = [
-      makeMsg('system', { subtype: 'init' }),
-    ]
-    const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} replayReady showSystemEvents />,
-    )
-    expect(container.textContent).toContain('init')
-  })
-
-  it('hides system messages when showSystemEvents is false', () => {
-    // init messages are hidden unless showSystemEvents is true.
-    const msgs = [
-      makeMsg('system', { subtype: 'init' }),
-    ]
-    const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} replayReady showSystemEvents={false} />,
-    )
-    expect(container.textContent).not.toContain('system · init')
-  })
-
-  it('always shows system error messages regardless of showSystemEvents', () => {
-    // Error system messages render msg.error field, not message.content.
-    const msgs = [
-      makeMsg('system', { subtype: 'error', error: 'something broke' }),
-    ]
-    const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} replayReady showSystemEvents={false} />,
-    )
-    expect(container.textContent).toContain('something broke')
-  })
-
   describe('empty-message filtering (willRenderEmpty)', () => {
     it('drops a tool_result frame whose result was merged into its tool card', () => {
       // The assistant emits a tool_use; the user frame carrying its

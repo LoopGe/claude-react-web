@@ -67,6 +67,8 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
   const [disallowedToolsStr, setDisallowedToolsStr] = useState('')
   const [toolsStr, setToolsStr] = useState('')
   const [mcpServersJson, setMcpServersJson] = useState('')
+  // Custom env vars — key-value rows
+  const [envRows, setEnvRows] = useState<Array<{ id: string; key: string; value: string }>>([])
 
   // Global MCP server config state
   const [globalMcpServers, setGlobalMcpServers] = useState<McpServerConfigMeta[]>([])
@@ -162,6 +164,10 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
       try { mcpServers = JSON.parse(mcpServersJson) } catch { /* ignore — let server reject */ }
     }
 
+    // Build env from key-value rows (only rows with non-empty key)
+    const envEntries = envRows.filter((r) => r.key.trim()).map((r) => [r.key.trim(), r.value])
+    const env = envEntries.length > 0 ? Object.fromEntries(envEntries) : undefined
+
     onSubmit({
       cwd: cwd.trim() || undefined,
       model: model.trim() || undefined,
@@ -183,6 +189,7 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
       tools: csv(toolsStr),
       enabledMcpServers: enabledMcpServers.size > 0 ? Array.from(enabledMcpServers) : undefined,
       mcpServers,
+      env,
     })
   }
 
@@ -595,6 +602,57 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
                     onChange={(e) => setMcpServersJson(e.target.value)}
                   />
                   <span className="hint">Additional MCP servers for this session only (merged with selected global servers).</span>
+                </div>
+                <div className="settings-field">
+                  <label>Environment variables</label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {envRows.map((row) => (
+                      <div key={row.id} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                        <input
+                          className="input"
+                          style={{ flex: 1, fontSize: 12 }}
+                          placeholder="key"
+                          value={row.key}
+                          onChange={(e) => {
+                            const next = envRows.map((r) => (r.id === row.id ? { ...r, key: e.target.value } : r))
+                            setEnvRows(next)
+                          }}
+                        />
+                        <input
+                          className="input"
+                          style={{ flex: 1, fontSize: 12 }}
+                          placeholder="value"
+                          value={row.value}
+                          onChange={(e) => {
+                            const next = envRows.map((r) => (r.id === row.id ? { ...r, value: e.target.value } : r))
+                            setEnvRows(next)
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-icon"
+                          style={{ fontSize: 11, padding: '2px 6px' }}
+                          onClick={() => {
+                            const next = envRows.filter((r) => r.id !== row.id)
+                            setEnvRows(next)
+                          }}
+                          title="Remove variable"
+                          aria-label="Remove variable"
+                        >
+                          <IconX size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{ marginTop: 6, fontSize: 12, padding: '2px 8px' }}
+                    onClick={() => setEnvRows((prev) => [...prev, { id: `env-${Date.now()}-${prev.length}`, key: '', value: '' }])}
+                  >
+                    + Add variable
+                  </button>
+                  <span className="hint">Custom env vars merged into the subprocess environment.</span>
                 </div>
               </div>
             </details>

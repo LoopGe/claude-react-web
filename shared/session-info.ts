@@ -49,6 +49,7 @@ export interface SessionRecap {
 
 export interface SessionInfoBase<PM = string> {
   id: string
+  provider?: string
   createdAt: number
   lastActivityAt: number
   subscribers: number

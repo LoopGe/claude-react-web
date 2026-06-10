@@ -11,7 +11,7 @@ import type { FastModeState, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { Session, SessionBroadcaster } from './session-types.js'
 import { endAllSubscribers } from './session-types.js'
 import { debugLog } from './debug.js'
-import { pushBounded, stampReceivedAt } from './history-utils.js'
+import { pushBounded, stampReceivedAt, shouldBroadcastMessage } from './history-utils.js'
 import { mutatingToolUseId, scheduleGitBroadcast } from './git-broadcast.js'
 import { createLogger } from './log.js'
 
@@ -143,12 +143,12 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
   // membership — the name was already checked at insertion time.
   const pendingMutatingToolUses = new Set<string>()
   try {
-    const iter = session.query[Symbol.asyncIterator]()
+    const iter = session.handle.messages[Symbol.asyncIterator]()
     // Race iter.next() against the session's abort signal so unload() can
     // break a wedged generator immediately instead of waiting for the SDK
     // subprocess to exit on its own. Built ONCE per session: once the abort
     // promise resolves, every subsequent race short-circuits to done.
-    const signal = session.abortController.signal
+    const signal = session.handle.abortSignal
     const abortPromise: Promise<IteratorResult<SDKMessage>> = new Promise((resolve) => {
       if (signal.aborted) {
         resolve({ done: true, value: undefined })
@@ -257,8 +257,22 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // change to avoid a frame per message.
         {
           const fms = fastModeStateOf(msg)
+          log.trace('fastModeState check', {
+            sessionId: session.id,
+            msgType: msg.type,
+            msgSubtype: (msg as { subtype?: string }).subtype,
+            extracted: fms,
+            current: session.fastModeState,
+            changed: fms !== undefined && fms !== session.fastModeState,
+          })
           if (fms !== undefined && fms !== session.fastModeState) {
+            const prev = session.fastModeState
             session.fastModeState = fms
+            log.trace('fastModeState updated', {
+              sessionId: session.id,
+              from: prev,
+              to: fms,
+            })
             deps.broadcastInfo?.(session)
           }
         }
@@ -273,8 +287,15 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // live subscriber broadcast — replay and live paths share this object.
         stampReceivedAt(msg)
         pushBounded(session.history, msg, deps.historyCap)
-        for (const sub of session.subscribers.values()) {
-          try { sub.push(msg) } catch { /* subscriber dead — don't break broadcast to others */ }
+
+        // Only broadcast system messages that the frontend actually needs.
+        // Other system frames (init, status, …) are kept in history for
+        // fastModeState extraction and /clear signaling, but skip the
+        // broadcast to save bandwidth and client memory.
+        if (shouldBroadcastMessage(msg as { type?: string; subtype?: string })) {
+          for (const sub of session.subscribers.values()) {
+            try { sub.push(msg) } catch { /* subscriber dead — don't break broadcast to others */ }
+          }
         }
         msgCount++
         // /clear confirmation: when the user sent `/clear`, the SDK resets
@@ -343,10 +364,10 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // `result` BEFORE calling iter.next() for the next turn, so the
         // queued item is still in our Pushable when we observe `result`.
         if (msg.type === 'result') {
-          const moreQueued = session.input.queueDepth > 0
+          const moreQueued = session.handle.queueDepth > 0
           debugLog(
             `[session ${session.id}] result received — total msgs: ${msgCount}, ` +
-            `input.queueDepth=${session.input.queueDepth}, moreQueued=${moreQueued}`,
+            `input.queueDepth=${session.handle.queueDepth}, moreQueued=${moreQueued}`,
           )
           if (moreQueued) {
             // Keep pendingTurns=1 and workingSince anchored at its existing

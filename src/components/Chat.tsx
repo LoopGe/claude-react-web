@@ -87,8 +87,6 @@ interface Props {
   /** Nonce-stamped request to switch the settings tab — forwarded to
    *  SettingsPanel, which applies it when the nonce changes. */
   settingsTabRequest?: { tab: SettingsTabName; nonce: number } | null
-  /** Forwarded to MessageList. App-level toggle (header bug icon). */
-  showSystemEvents?: boolean
   /** When true, render the Settings overlay on top of this chat panel. */
   settingsOpen?: boolean
   onCloseSettings?: () => void
@@ -135,7 +133,7 @@ interface Props {
 }
 
 export const Chat = memo(function Chat({
-  session, showSystemEvents,
+  session,
   settingsOpen, onCloseSettings,
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
   onSessionUpdate, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, settingsTabRequest, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, onRegisterInjectInput,
@@ -434,7 +432,6 @@ export const Chat = memo(function Chat({
     return out
   }, [stream.items, debouncedQuery])
   // Reset active index when the match set changes (new query or new messages).
-  // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on derived data change
   useEffect(() => { setSearchActiveIdx(0) }, [searchMatches])
   // Ctrl+F opens search on the *focused* panel only. Without the
   // `focused` guard, every mounted Chat would intercept the same
@@ -790,7 +787,6 @@ export const Chat = memo(function Chat({
         <MessageList
           items={stream.items}
           recap={session.recap}
-          showSystemEvents={showSystemEvents}
           replayReady={stream.replayReady}
           streamingContent={stream.streamingContent}
           planStatus={stream.planStatus}
@@ -989,7 +985,6 @@ export const Chat = memo(function Chat({
             index={stream.subagentIndex}
             onClose={closeSubagent}
             onPop={popSubagent}
-            showSystemEvents={showSystemEvents}
             toolStatus={stream.toolStatus}
             toolResults={stream.toolResults}
             planStatus={stream.planStatus}

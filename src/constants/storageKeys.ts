@@ -1,5 +1,4 @@
 export const SIDEBAR_ORDER_KEY = 'claude-react-web:session-order'
-export const SHOW_SYSTEM_EVENTS_KEY = 'claude-react-web:show-system-events'
 export const SIDEBAR_WIDTH_KEY = 'claude-react-web:sidebar-width'
 export const SIDEBAR_MIN_KEY = 'claude-react-web:sidebar-min-px'
 export const SIDEBAR_MAX_KEY = 'claude-react-web:sidebar-max-px'

@@ -1316,4 +1316,38 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     // No session should have spawned.
     expect(mockHandles).toHaveLength(0)
   })
+
+  it('create route 400s when env is not an object', async () => {
+    const res = await app().request('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cwd: '/tmp', env: 'TOKEN=value' }),
+    })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'env must be an object with string values' })
+    expect(mockHandles).toHaveLength(0)
+  })
+
+  it('create route 400s when env contains a non-string value', async () => {
+    const res = await app().request('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cwd: '/tmp', env: { TOKEN: 123 } }),
+    })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'env.TOKEN must be a string' })
+    expect(mockHandles).toHaveLength(0)
+  })
+
+  it('create route forwards valid env overrides', async () => {
+    const res = await app().request('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cwd: '/tmp', env: { TOKEN: 'value', EMPTY: '' } }),
+    })
+    expect(res.status).toBe(201)
+    expect(mockHandles).toHaveLength(1)
+    const env = mockHandles[0].options.env as Record<string, string>
+    expect(env).toMatchObject({ TOKEN: 'value', EMPTY: '' })
+  })
 })

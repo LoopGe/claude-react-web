@@ -189,6 +189,14 @@ function replayReplace(
     for (const message of newer) {
       state = applyMessage(state, message)
     }
+    const finalLen = state.items.length
+    const prevLen = prevState.items.length
+    if (finalLen < prevLen) {
+      console.warn(
+        `[replayReplace] MERGE: items shrunk ${prevLen} → ${finalLen} ` +
+        `(replay=${messages.length}, older=${older.length}, newer=${newer.length})`,
+      )
+    }
     return state
   }
   let state = createInitialSessionState(prevState.sessionId)
@@ -513,6 +521,7 @@ function pruneMapToLive<V>(map: Map<string, V>, live: Set<string>): Map<string, 
  *  is touched. */
 function trimFront(state: SessionState): SessionState {
   if (state.items.length <= MEMORY_ITEM_CAP + MEMORY_TRIM_SLACK) return state
+  const beforeLen = state.items.length
   let cut = state.items.length - MEMORY_ITEM_CAP
   // Snap forward to the first disk-persisted boundary at or after `cut`.
   while (cut < state.items.length && !isTrimBoundary(state.items[cut].msg)) cut++
@@ -523,6 +532,7 @@ function trimFront(state: SessionState): SessionState {
 
   const items = state.items.slice(cut)
   const messages = state.messages.slice(cut)
+  console.warn(`[trimFront] Trimmed ${cut} items (${beforeLen} → ${items.length})`)
   const live = collectLiveToolUseIds(items)
   return {
     ...state,

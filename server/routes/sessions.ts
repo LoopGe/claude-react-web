@@ -20,6 +20,23 @@ function validateEnabledMcpServers(value: unknown): string | null {
   return null
 }
 
+/** Validate the optional `env` field accepted by session creation. The SDK
+ *  expects a string-to-string map for subprocess environment overrides; reject
+ *  malformed input instead of letting object spread coerce arrays/strings into
+ *  numeric env var names or pass non-string values to the child process. */
+function validateEnv(value: unknown): string | null {
+  if (value == null) return null
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    return 'env must be an object with string values'
+  }
+  for (const [key, envValue] of Object.entries(value)) {
+    if (typeof envValue !== 'string') {
+      return `env.${key} must be a string`
+    }
+  }
+  return null
+}
+
 export function buildSessionRouter(sm: SessionManager): Hono {
   const app = new Hono()
 
@@ -29,16 +46,19 @@ export function buildSessionRouter(sm: SessionManager): Hono {
 
   // Create session
   app.post('/sessions', async (c) => {
-    const body = await safeJson<Partial<Options> & { cwd?: string; enabledMcpServers?: string[] }>(c.req)
-    const { enabledMcpServers, mcpServers, ...rest } = body as Record<string, unknown> & {
+    const body = await safeJson<Partial<Options> & { cwd?: string; provider?: string; enabledMcpServers?: string[] }>(c.req)
+    const { enabledMcpServers, mcpServers, env: customEnv, ...rest } = body as Record<string, unknown> & {
       enabledMcpServers?: string[]
       mcpServers?: Record<string, unknown>
+      env?: Record<string, string>
     }
     const enabledErr = validateEnabledMcpServers(enabledMcpServers)
     if (enabledErr) return c.json({ error: enabledErr }, 400)
+    const envErr = validateEnv(customEnv)
+    if (envErr) return c.json({ error: envErr }, 400)
     const mergedMcp = sm.mergeMcpServers(enabledMcpServers, mcpServers)
     if (mergedMcp) rest.mcpServers = mergedMcp
-    const info = sm.create(rest as Options)
+    const info = sm.create(rest as Options & { provider?: string }, customEnv as Record<string, string> | undefined)
     return c.json({ session: info }, 201)
   })
 

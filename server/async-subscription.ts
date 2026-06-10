@@ -6,9 +6,10 @@
 // This helper reduces each call-site to ~5 lines.
 
 /** Default per-subscriber queue cap. When the queue exceeds this length
- *  (because a slow consumer isn't reading fast enough), the oldest entries
- *  are dropped so memory doesn't grow unbounded. */
-export const SUBSCRIBER_QUEUE_CAP = 500
+ *  (because a slow consumer isn't reading fast enough), the subscriber is
+ *  forcibly ended so the client disconnects and replays from the server's
+ *  history ring — silent message drops are worse than a brief reconnect. */
+export const SUBSCRIBER_QUEUE_CAP = 2000
 
 export interface AsyncSubscription<T> {
   /** The async iterable to hand to the HTTP streaming layer. */
@@ -48,11 +49,16 @@ export function createAsyncSubscription<T>(
       queue.push(value)
       const len = queue.length - head
       if (len > SUBSCRIBER_QUEUE_CAP) {
-        // Drop oldest items (consumed + excess unconsumed) so the
-        // effective queue length returns to SUBSCRIBER_QUEUE_CAP.
-        const keep = SUBSCRIBER_QUEUE_CAP
-        queue.splice(0, queue.length - keep)
+        // Queue overflow: the consumer is too slow. Instead of silently
+        // dropping messages (which causes "messages disappear" bugs), end
+        // the subscriber so the client's WS driver loop exits, triggers
+        // a reconnect, and replays from the server's history ring.
+        console.warn(
+          `[async-subscription] Queue overflow (${len}/${SUBSCRIBER_QUEUE_CAP}): ending subscriber to force reconnect + replay`,
+        )
+        queue.length = 0
         head = 0
+        end()
       }
     }
   }

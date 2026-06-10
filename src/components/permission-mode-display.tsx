@@ -12,6 +12,7 @@ import { IconFileText, IconZap, IconPencil, IconBot, IconShield } from './icons/
 /** Human-readable label for a permission mode — used for aria-label and
  *  tooltips so screen readers don't announce raw enum values like
  *  "bypassPermissions". */
+// eslint-disable-next-line react-refresh/only-export-components -- shared constants tightly coupled with this file's components
 export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
   default: 'Default (ask)',
   plan: 'Plan mode',
@@ -21,6 +22,7 @@ export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
   auto: 'Autonomous',
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- shared helper tightly coupled with this file's components
 export function permissionModeLabel(mode: PermissionMode | undefined): string {
   return mode ? (PERMISSION_MODE_LABELS[mode] ?? mode) : 'Default (ask)'
 }

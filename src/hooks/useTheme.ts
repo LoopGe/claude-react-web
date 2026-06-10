@@ -4,8 +4,7 @@
 // per-session accent overrides (which the SessionList colour picker
 // + the New-session dialog feed into).
 //
-// Three things this hook deliberately does NOT own:
-//   - showSystemEvents: a debug toggle, not a theme concern.
+// Two things this hook deliberately does NOT own:
 //   - notifications: separate concern, separate hook.
 //   - keyboard shortcuts: ditto.
 //

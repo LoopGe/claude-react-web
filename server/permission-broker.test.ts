@@ -6,12 +6,42 @@ import type { Session, PendingPermission } from './session-types.js'
 
 function makeFakeSession(overrides: Partial<Session> = {}): Session {
   const ac = new AbortController()
+  const messages = {
+    [Symbol.asyncIterator]() {
+      return {
+        next() { return Promise.resolve({ value: undefined as never, done: true }) },
+        return() { return Promise.resolve({ value: undefined as never, done: true }) },
+      }
+    },
+  }
   return {
     id: 'test-session',
+    provider: 'claude',
     createdAt: Date.now(),
     lastActivityAt: Date.now(),
-    input: { push() {}, end() {}, closed: false, hasWaiter: false, queueDepth: 0, iterable: { [Symbol.asyncIterator]() { return { next() { return Promise.resolve({ value: undefined as never, done: true }) }, return() { return Promise.resolve({ value: undefined as never, done: true }) } } } } },
-    query: { [Symbol.asyncIterator]() { return { next() { return Promise.resolve({ value: undefined as never, done: true }) }, return() { return Promise.resolve({ value: undefined as never, done: true }) } } }, interrupt: vi.fn(async () => {}), setModel: vi.fn(async () => {}), setPermissionMode: vi.fn(async () => {}), applyFlagSettings: vi.fn(async () => {}), supportedModels: vi.fn(async () => []), supportedCommands: vi.fn(async () => []), supportedAgents: vi.fn(async () => []), mcpServerStatus: vi.fn(async () => ({})), reconnectMcpServer: vi.fn(async () => {}), toggleMcpServer: vi.fn(async () => {}), setMcpServers: vi.fn(async () => ({})), reloadPlugins: vi.fn(async () => ({})), getContextUsage: vi.fn(async () => ({})) } as unknown as Session['query'],
+    handle: {
+      provider: 'claude',
+      messages,
+      enqueueUserMessage: vi.fn(),
+      queueDepth: 0,
+      closed: false,
+      abortSignal: ac.signal,
+      abort: vi.fn(() => ac.abort()),
+      destroy: vi.fn(),
+      interrupt: vi.fn(async () => {}),
+      setModel: vi.fn(async () => {}),
+      setPermissionMode: vi.fn(async () => {}),
+      applyFlagSettings: vi.fn(async () => {}),
+      supportedModels: vi.fn(async () => []),
+      supportedCommands: vi.fn(async () => []),
+      supportedAgents: vi.fn(async () => []),
+      mcpServerStatus: vi.fn(async () => ({})),
+      reconnectMcpServer: vi.fn(async () => {}),
+      toggleMcpServer: vi.fn(async () => {}),
+      setMcpServers: vi.fn(async () => ({})),
+      reloadPlugins: vi.fn(async () => ({})),
+      getContextUsage: vi.fn(async () => ({})),
+    },
     subscribers: new Map(),
     permissionSubscribers: new Map(),
     pending: new Map(),
@@ -21,7 +51,6 @@ function makeFakeSession(overrides: Partial<Session> = {}): Session {
     messageStatusSubscribers: new Set(),
     recapSubscribers: new Set(),
     sessionClearedSubscribers: new Set(),
-    abortController: ac,
     pumpTask: Promise.resolve(),
     running: true,
     terminated: false,

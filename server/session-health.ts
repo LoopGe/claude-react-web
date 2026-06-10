@@ -124,7 +124,12 @@ export class SessionHealthMonitor {
       `subscribers=${s.subscribers.size}, history=${s.history.length})`,
     )
     s.autoInterruptedAt = now
-    s.query.interrupt().then(
+    if (!s.handle.interrupt) {
+      console.warn(`[session ${id}] provider does not support interrupt; escalating to unload`)
+      void this.deps.unload(id, { terminate: true, reason: 'stuck' })
+      return
+    }
+    s.handle.interrupt().then(
       () => console.warn(`[session ${id}] auto-interrupt() resolved in ${Date.now() - startedAt}ms`),
       (err) => console.error(`[session ${id}] auto-interrupt() rejected after ${Date.now() - startedAt}ms:`, err),
     )

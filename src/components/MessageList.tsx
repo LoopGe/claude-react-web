@@ -38,10 +38,6 @@ interface Props {
    *  pending → loading skeleton, ready → summary + stats, error → retry
    *  hint. Undefined means "no recap to show". */
   recap?: SessionRecap
-  /** When true, include `system` messages (init/status/etc.) in the
-   *  rendered list. Errors (`subtype === 'error'`) are always shown
-   *  regardless — those carry actual failure info users need to see. */
-  showSystemEvents?: boolean
   /** False while the initial replay from the server is still buffering.
    *  When false, shows a loading skeleton instead of the empty-state
    *  message, preventing a flash of "no messages" on session switch. */
@@ -159,7 +155,7 @@ const MAX_ENTER_BATCH = 4
 const ENTER_MAX_AGE_MS = 10_000
 const KNOWN_IDS_CAP = 4000
 
-export const MessageList = memo(function MessageList({ items, recap, showSystemEvents = false, replayReady = true, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate }: Props) {
+export const MessageList = memo(function MessageList({ items, recap, replayReady = true, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -247,7 +243,7 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
       // gap after every tool call. Kept in lockstep with MessageView via the
       // shared willRenderEmpty.
       if (
-        (showSystemEvents || !item.hiddenByDefault) &&
+        !item.hiddenByDefault &&
         !willRenderEmpty(item.msg, item.isCompactSummary, isResultConsumed)
       ) {
         out.push({
@@ -262,7 +258,7 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
       }
     }
     return out
-  }, [items, showSystemEvents, parentToolUseIdFilter, isResultConsumed])
+  }, [items, parentToolUseIdFilter, isResultConsumed])
 
   // --- Reverse infinite scroll: keep the viewport anchored on prepend ----
   // Virtuoso requires `firstItemIndex` to decrease by exactly the number of
@@ -323,8 +319,6 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
   //   - optimistic→echo swap → in-place replace at an existing index, list
   //     length unchanged → no index >= prevLen → skipped (the optimistic
   //     insert already animated the pop).
-  //   - showSystemEvents toggle → inserts in the middle / re-adds known ids,
-  //     and the ids were already seen → skipped.
   //   - scroll re-mount → id already in knownIdsRef and already consumed from
   //     enterIdsRef → skipped.
   // receivedAt recency disambiguates a freshly-typed first message (animate)
@@ -441,13 +435,13 @@ export const MessageList = memo(function MessageList({ items, recap, showSystemE
   // Virtuoso's followOutput handles the actual scrolling.
   //
   // We count items that match the current `parentToolUseIdFilter` but
-  // *not* `hiddenByDefault` / `showSystemEvents` — toggling system events
-  // changes the rendered length without new messages arriving, which would
-  // inflate the badge. Counting by parent dodges the same trap for the
-  // main transcript: subagent-internal frames stream in continuously while
-  // an Agent runs, but they're hidden in the main list, so they shouldn't
-  // tick the badge there. (The overlay has its own MessageList instance
-  // with the matching filter, so its badge counts correctly too.)
+  // *not* `hiddenByDefault` — system messages are filtered by default,
+  // and only non-hidden items should trigger badge increments.
+  // Counting by parent dodges the same trap for the main transcript:
+  // subagent-internal frames stream in continuously while an Agent runs,
+  // but they're hidden in the main list, so they shouldn't tick the
+  // badge there. (The overlay has its own MessageList instance with the
+  // matching filter, so its badge counts correctly too.)
   const trackedCount = useMemo(() => {
     let count = 0
     for (const item of items) {

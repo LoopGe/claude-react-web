@@ -111,8 +111,6 @@ export interface ChatPanelProps {
   /** Nonce-stamped request to switch the settings tab (forwarded to <Chat> →
    *  SettingsPanel). Null when no request targets this panel. */
   settingsTabRequest?: { tab: SettingsTabName; nonce: number } | null
-  /** Global transcript toggle (forwarded to the inner <Chat>). */
-  showSystemEvents?: boolean
   /** When true, render the Settings overlay on top of this panel. */
   settingsOpen?: boolean
   onOpenSettings: (sessionId: string) => void
@@ -158,7 +156,6 @@ export const ChatPanel = memo(function ChatPanel({
   onOpenSettingsTab,
   onShowHelp,
   settingsTabRequest,
-  showSystemEvents,
   settingsOpen,
   onOpenSettings,
   onCloseSettings,
@@ -623,7 +620,6 @@ export const ChatPanel = memo(function ChatPanel({
             onOpenSettingsTab={onOpenSettingsTab}
             onShowHelp={onShowHelp}
             settingsTabRequest={settingsTabRequest}
-            showSystemEvents={showSystemEvents}
             settingsOpen={settingsOpen}
             onCloseSettings={onCloseSettings}
             gitPanelOpen={gitPanelOpen}
