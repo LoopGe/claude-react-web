@@ -1517,21 +1517,47 @@ body.resizing-col * {
   padding: 40px 20px;
 }
 .empty-state h2 { color: var(--fg); font-weight: 600; }
+.app-empty-state {
+  width: min(460px, calc(100vw - 32px));
+  max-width: 460px;
+  padding: 32px;
+  background: color-mix(in srgb, var(--bg-elev) 74%, transparent);
+  background-image: var(--surface-gradient);
+  border: 1px solid var(--border-subtle, var(--border));
+  border-radius: 18px;
+  box-shadow: var(--card-shadow);
+}
+.app-empty-state h2 {
+  margin: 0;
+  font-size: 24px;
+  letter-spacing: -0.02em;
+}
+.app-empty-state p {
+  line-height: 1.6;
+}
+.app-empty-state-eyebrow {
+  margin: 0 0 8px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.app-empty-state-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
 .empty-state code {
   font-family: var(--mono);
   background: var(--bg-elev);
   padding: 2px 6px;
   border-radius: 4px;
 }
-.empty-state-icon {
-  display: flex;
-  justify-content: center;
-  margin-bottom: 4px;
-  color: var(--accent);
-  opacity: 0.85;
-}
 .empty-state-cta {
-  margin-top: 8px;
+  min-width: 0;
   padding: 9px 18px;
   font-weight: 600;
 }
@@ -1706,21 +1732,6 @@ body.resizing-col * {
   background: var(--btn-hover-bg);
   color: var(--fg);
 }
-
-/* Queue indicator — shows while previous turn is still running. Sits above
-   the context bar so it's the last thing the eye passes over before the
-   composer, making "your message is queued, not lost" visually obvious. */
-.queue-bar {
-  padding: 6px max(16px, calc((100% - 900px) / 2));
-  background: var(--bg-elev);
-  border-top: 1px solid var(--border);
-  color: var(--fg-muted);
-  font-size: 12px;
-  font-family: var(--mono);
-}
-/* When immediately followed by ctx-bar / composer, hand off the divider. */
-.queue-bar + .ctx-bar,
-.queue-bar + .chat-composer { border-top: none; }
 
 /* Session list */
 .session-list {
@@ -3205,6 +3216,36 @@ body.resizing-col * {
 .msg.user.msg-queued {
   opacity: 0.85;
 }
+/* Processing state: the SDK has consumed the message and the model is
+   actively working on it. Uses a pulsing dot similar to the queued
+   indicator but with a slightly faster animation to convey active work
+   rather than passive waiting. Only shown while the session is working. */
+.msg-processing-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.msg-processing-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: msg-processing-pulse 1s ease-in-out infinite;
+}
+.msg-processing-label {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+@keyframes msg-processing-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
 /* User message — right-aligned chat bubble. We shrink the bubble below
    the column width and pin it to the right edge with align-self, which
    works because .chat-messages is align-items: center (i.e. the default
@@ -4687,6 +4728,17 @@ body.resizing-col * {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* Text shimmer: accent highlight sweeps across the label so a live
+     monitor visibly "moves". Same mechanism as .todo-in_progress .todo-text
+     but uses --warn to match the Monitor bar's accent. */
+  background: linear-gradient(90deg,
+    var(--fg) 0%, var(--fg) 35%, var(--warn) 50%, var(--fg) 65%, var(--fg) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: todo-text-shimmer 2s linear infinite;
 }
 
 /* Inline TodoWrite tool-use rendering (inside the message transcript).
@@ -4767,7 +4819,8 @@ body.resizing-col * {
    active row still stands out without any motion. */
 @media (prefers-reduced-motion: reduce) {
   .todo-in_progress .todo-icon,
-  .inline-todo-in_progress .inline-todo-icon {
+  .inline-todo-in_progress .inline-todo-icon,
+  .monitor-icon {
     animation: none;
     transform: translateY(-0.5px);
   }
@@ -4778,6 +4831,12 @@ body.resizing-col * {
     -webkit-text-fill-color: var(--accent);
     color: var(--accent);
     font-weight: 600;
+  }
+  .monitor-text {
+    animation: none;
+    background: none;
+    -webkit-text-fill-color: var(--fg);
+    color: var(--fg);
   }
 }
 
@@ -6101,7 +6160,8 @@ mark.search-hl.search-hl-active {
   box-shadow: var(--overlay-shadow);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   animation: overlay-panel-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
@@ -6112,6 +6172,10 @@ mark.search-hl.search-hl-active {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-elev);
 }
 .git-panel-branch {
   font-family: var(--mono);
@@ -6153,6 +6217,9 @@ mark.search-hl.search-hl-active {
   border-bottom: 1px solid var(--border);
   font-size: 12px;
   flex-shrink: 0;
+  position: sticky;
+  top: 46px; /* height of .git-panel-header */
+  z-index: 2;
 }
 
 .git-panel-empty {
@@ -6182,16 +6249,14 @@ mark.search-hl.search-hl-active {
    summary into a clickable header. The body is plain block flow. */
 .git-panel-section {
   border-bottom: 1px solid var(--border);
+  /* Allow sections to shrink so the overall panel scrolls rather than
+     clipping content. Each section still renders its full content;
+     overflow is handled by the panel's overflow:auto on the section
+     body container. */
   flex-shrink: 0;
 }
 .git-panel-section:last-child {
   border-bottom: 0;
-  /* Allow the final section (typically Recent commits) to scroll
-     internally instead of forcing the whole panel taller. */
-  flex-shrink: 1;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
 }
 .git-panel-section > summary {
   padding: 8px 12px;
@@ -6470,6 +6535,8 @@ mark.search-hl.search-hl-active {
 }
 .git-file-row-line > .git-file-row-toggle {
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
   /* Override the default full-width pad now that we share the row
      with action buttons. */
 }
@@ -8202,6 +8269,14 @@ mark.search-hl.search-hl-active {
   .main-toolbar {
     margin-left: auto;
   }
+  .app-empty-state {
+    width: min(420px, calc(100vw - 24px));
+    padding: 24px;
+    border-radius: 14px;
+  }
+  .app-empty-state h2 {
+    font-size: 22px;
+  }
   .drawer-toggle {
     margin-right: 4px;
   }
@@ -8351,6 +8426,15 @@ mark.search-hl.search-hl-active {
      lifts the text buttons in the actions column to the same floor. */
   .chat-composer-actions .btn {
     min-height: 44px;
+  }
+}
+
+@media (max-width: 420px) {
+  .app-empty-state-actions {
+    flex-direction: column;
+  }
+  .app-empty-state-actions .btn {
+    width: 100%;
   }
 }
 

@@ -39,7 +39,7 @@ import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
 import { ContextMenu } from './ContextMenu'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
-import { IconSearch, IconClock, IconFileText, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown } from './icons/ToolIcons'
+import { IconSearch, IconFileText, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown } from './icons/ToolIcons'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
 import type { AgentInfo, SessionInfo, SlashCommand } from '../types'
@@ -492,7 +492,7 @@ export const Chat = memo(function Chat({
   // Putting the whole hook object in a dep list re-creates callbacks every
   // render and can churn child re-renders (the composer's onChange in
   // particular — that's what caused the "can't send / can't type" freeze).
-  const { trackSentTurn, insertUserMessage, ackUserMessage, rollbackUserMessage, clearError: clearStreamError } = stream
+  const { insertUserMessage, ackUserMessage, rollbackUserMessage, clearError: clearStreamError } = stream
   const {
     attachments: attachmentList,
     setDragOver,
@@ -614,11 +614,6 @@ export const Chat = memo(function Chat({
       setInput('')
       clearAttachments()
       pastedImages.clear()
-      // Server queues this turn in the SDK input iterable; it will be
-      // consumed as soon as the current turn's `result` arrives. Bump the
-      // counter so the chip reflects "waiting in queue". The corresponding
-      // `result` frame in onMessage will decrement it.
-      trackSentTurn()
       // Put focus back on the textarea so the user can keep typing. If
       // they used Enter-to-send the focus is already there; if they
       // clicked the Send button it's currently on the button and the
@@ -633,7 +628,7 @@ export const Chat = memo(function Chat({
       sendingRef.current = false
       setSending(false)
     }
-  }, [input, attachmentList, session.id, history, trackSentTurn, insertUserMessage, ackUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, pastedImages, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp])
+  }, [input, attachmentList, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, pastedImages, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp])
 
   // Focus traps for the two in-panel overlays. The settings overlay is
   // always mounted (toggled via CSS .hidden), so the trap is gated on
@@ -799,6 +794,7 @@ export const Chat = memo(function Chat({
         <MessageList
           items={stream.items}
           recap={session.recap}
+          working={session.working}
           replayReady={stream.replayReady}
           streamingContent={stream.streamingContent}
           planStatus={stream.planStatus}
@@ -833,19 +829,6 @@ export const Chat = memo(function Chat({
       >
         {error ?? ''}
       </div>
-      {/* The queue bar is only interesting when the user has queued extra
-          turns on top of the one currently running — a single pending
-          turn is already covered by the thinking bubble in the
-          transcript. Show it once queuedAhead > 1. */}
-      {session.working && stream.queuedAhead > 1 && (
-        <div className="queue-bar" role="status" aria-live="polite">
-          <IconClock size={14} aria-hidden />
-          <span>
-            {stream.queuedAhead - 1} more message{stream.queuedAhead - 1 === 1 ? '' : 's'} queued, will send automatically.
-          </span>
-        </div>
-      )}
-
       {session.working && (
         <WorkingBubble
           startedAt={session.workingSince}

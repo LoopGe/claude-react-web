@@ -31,6 +31,10 @@ export type { ActiveSubagent } from '../session-store/types'
 
 interface Props {
   items: TranscriptItem[]
+  /** Whether the session is currently processing a turn. Gates the
+   *  "processing" indicator on consumed user messages so it doesn't
+   *  reappear on historical messages after a reconnect. */
+  working?: boolean
   /** Server-pushed AI session recap. Lives on session.recap (NOT in the
    *  history). When present, rendered as a card pinned to the bottom of
    *  the transcript (after items, before the streaming footer) so it
@@ -155,7 +159,7 @@ const MAX_ENTER_BATCH = 4
 const ENTER_MAX_AGE_MS = 10_000
 const KNOWN_IDS_CAP = 4000
 
-export const MessageList = memo(function MessageList({ items, recap, replayReady = true, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate }: Props) {
+export const MessageList = memo(function MessageList({ items, recap, working, replayReady = true, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -748,10 +752,12 @@ export const MessageList = memo(function MessageList({ items, recap, replayReady
           activeMatchInItem={activeMatchInItem}
           sending={item.sending}
           deliveryStatus={item.deliveryStatus}
+          working={working}
+          nextItemType={renderableItems[_index + 1]?.msg?.type}
         />
       </div>
     )
-  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, handleEnterAnimationEnd])
+  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, handleEnterAnimationEnd, working])
 
   // Footer combines two optional rows pinned to the bottom of the
   // transcript: the streaming-typing bubble (live token deltas) and the
@@ -929,6 +935,8 @@ const MessageView = memo(function MessageView({
   activeMatchInItem,
   sending,
   deliveryStatus,
+  working,
+  nextItemType,
 }: {
   msg: SdkMessage
   isCompactSummary?: boolean
@@ -951,6 +959,14 @@ const MessageView = memo(function MessageView({
    *  nothing. Mutually exclusive with `sending` in practice (sending is
    *  the pre-ack optimistic state, deliveryStatus is post-ack). */
   deliveryStatus?: 'queued' | 'consumed'
+  /** Whether the session is currently working. Gates the processing
+   *  indicator so it only shows on active turns, not on historical
+   *  consumed messages after a reconnect. */
+  working?: boolean
+  /** Type of the next message in the transcript. Used to hide the
+   *  processing indicator once the model has started responding
+   *  (assistant/result after a consumed user message). */
+  nextItemType?: string
 }) {
   const type = msg.type
 
@@ -1083,11 +1099,16 @@ const MessageView = memo(function MessageView({
     // Show the "queued" chip only while the turn is genuinely waiting behind
     // an in-flight turn: server-acknowledged (deliveryStatus === 'queued')
     // and not still in the optimistic pre-ack 'sending' state. Once the SDK
-    // consumes it (deliveryStatus flips to 'consumed') the chip disappears —
-    // we deliberately do NOT render a persistent 'consumed/processing' chip,
-    // since every message ends up consumed and that would clutter the whole
-    // transcript. The chip vanishing IS the "now being processed" signal.
+    // consumes it (deliveryStatus flips to 'consumed') the queued chip
+    // disappears and a "processing" chip takes its place — but only while
+    // the session is actively working, so historical consumed messages
+    // after a reconnect don't re-trigger the indicator.
     const showQueued = !sending && deliveryStatus === 'queued'
+    // Show processing only while the session is working AND the model
+    // hasn't started responding yet. Once an assistant/result message
+    // appears after this user turn, the model has moved on — hide the
+    // indicator even if the session is still working on a subsequent turn.
+    const showProcessing = !sending && deliveryStatus === 'consumed' && working && nextItemType !== 'assistant' && nextItemType !== 'result'
     return (
       <div className={`msg user${sending ? ' msg-sending' : ''}${showQueued ? ' msg-queued' : ''}`}>
         <div className="msg-header">
@@ -1111,6 +1132,16 @@ const MessageView = memo(function MessageView({
             >
               <span className="msg-queued-dot" aria-hidden />
               <span className="msg-queued-label">queued</span>
+            </span>
+          )}
+          {showProcessing && (
+            <span
+              className="msg-processing-indicator"
+              title="Processing — the model is working on this message"
+              aria-label="Processing"
+            >
+              <span className="msg-processing-dot" aria-hidden />
+              <span className="msg-processing-label">processing…</span>
             </span>
           )}
         </div>

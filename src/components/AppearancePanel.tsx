@@ -75,9 +75,10 @@ function AppearancePopover({
     const rect = el.getBoundingClientRect()
     const vw = window.innerWidth
     const vh = window.innerHeight
-    const nx = Math.min(anchor.x, vw - rect.width - 4)
-    const ny = Math.min(anchor.y, vh - rect.height - 4)
-    setPos({ x: Math.max(4, nx), y: Math.max(4, ny) })
+    const margin = 12
+    const nx = Math.min(anchor.x, vw - rect.width - margin)
+    const ny = Math.min(anchor.y, vh - rect.height - margin)
+    setPos({ x: Math.max(margin, nx), y: Math.max(margin, ny) })
   }, [anchor.x, anchor.y])
 
   // Outside-click + capture-phase Escape.

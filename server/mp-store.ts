@@ -231,6 +231,21 @@ export class MpStore extends JsonFileStore<MpEntry> {
     else void this.flush()
   }
 
+  /** Resolve a bare plugin name to the SDK compound key "<plugin>@<marketplace>".
+   *  Returns undefined when the name isn't found in any marketplace, or when it
+   *  appears in multiple marketplaces (ambiguous — the caller should fall back
+   *  to the bare name or error). */
+  resolveCompoundKey(bareName: string): string | undefined {
+    let found: string | undefined
+    for (const entry of this.list()) {
+      if (entry.manifest.plugins.some((p) => p.name === bareName)) {
+        if (found) return undefined // ambiguous — same name in multiple marketplaces
+        found = MpStore.keyOf(bareName, entry.id)
+      }
+    }
+    return found
+  }
+
   /** Snapshot the enabled flags for a single marketplace. Used to
    *  populate the plugin-list response. */
   enabledMapFor(marketplace: string): Record<string, boolean> {

@@ -119,7 +119,6 @@ export interface SessionState {
   liveTurn: LiveTurnState | null
   contextUsage: ContextUsage | null
   error: string | null
-  queuedAhead: number
   lastMessageUuid: string | null
   /** IDs of optimistic user messages pending server confirmation.
    *  A Set (not a single pointer) so rapid sequential sends each get
@@ -184,7 +183,6 @@ export type SessionAction =
    *  matching message's deliveryStatus from 'queued' to 'consumed'. */
   | { type: 'MESSAGE_CONSUMED'; uuid: string; consumedAt: number }
   | { type: 'ERROR'; message: string | null }
-  | { type: 'TRACK_SENT_TURN' }
   | { type: 'LIVE_TURN_FLUSH' }
   | { type: 'RESET' }
 
@@ -197,7 +195,6 @@ export interface SessionSnapshot {
   tokenRate: number | null
   contextUsage: ContextUsage | null
   error: string | null
-  queuedAhead: number
   permissionDecisions: ReadonlyMap<string, 'allow' | 'deny'>
   planStatus: ReadonlyMap<string, PlanStatus>
   planContent: ReadonlyMap<string, string>
@@ -228,7 +225,6 @@ export function createInitialSessionState(sessionId: string): SessionState {
     liveTurn: null,
     contextUsage: null,
     error: null,
-    queuedAhead: 0,
     lastMessageUuid: null,
     pendingUserMessageIds: new Set<string>(),
     permissionPending: new Map(),

@@ -26,7 +26,7 @@ import { PERMISSION_MODES } from './types'
 import { ACCENT_COLORS } from './theme'
 import { AppearancePanel } from './components/AppearancePanel'
 import { ErrorBoundary } from './components/ErrorBoundary'
-import { IconSettings, IconBell, IconBellOff, IconBot, IconMenu } from './components/icons/ToolIcons'
+import { IconSettings, IconBell, IconBellOff, IconMenu } from './components/icons/ToolIcons'
 import { UpdateBanner } from './components/UpdateBanner'
 import { useUpdateInfo } from './hooks/useUpdateInfo'
 import { sessionStoreRegistry } from './session-store/registry'
@@ -1670,23 +1670,27 @@ export function App() {
           }}
         >
           {openSessions.length === 0 ? (
-            <div className="empty-state">
-              <div className="empty-state-icon" aria-hidden>
-                <IconBot size={48} />
-              </div>
-              <h2>Start a new session</h2>
+            <div className="empty-state app-empty-state">
+              <p className="app-empty-state-eyebrow">Workspace ready</p>
+              <h2>{sessions.length > 0 ? 'No session open' : 'Start a new session'}</h2>
               <p>
-                Each session is a live Claude Agent SDK <code>Query</code>. Up to {maxOpen} can be
-                open at once.
+                {sessions.length > 0
+                  ? 'Pick a session from the sidebar, resume one from history, or start fresh.'
+                  : `Start a conversation with Claude in this workspace. You can keep up to ${maxOpen} session${maxOpen === 1 ? '' : 's'} open at once.`}
               </p>
-              <button
-                className="btn btn-primary empty-state-cta"
-                onClick={() => setNewSessionDialogOpen(true)}
-              >
-                Create your first session
-              </button>
+              <div className="app-empty-state-actions">
+                <button
+                  className="btn btn-primary empty-state-cta"
+                  onClick={() => setNewSessionDialogOpen(true)}
+                >
+                  New session
+                </button>
+                <button className="btn empty-state-cta" onClick={() => setPaletteOpen(true)}>
+                  Command palette
+                </button>
+              </div>
               <p className="empty-state-hint">
-                or press <kbd>Ctrl</kbd>+<kbd>K</kbd> for the command palette
+                Tip: press <kbd>Ctrl</kbd>+<kbd>K</kbd> anytime to jump to actions.
               </p>
             </div>
           ) : (

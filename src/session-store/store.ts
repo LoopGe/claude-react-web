@@ -408,7 +408,6 @@ export class SessionStore {
       tokenRate: state.liveTurn?.tokenRate ?? null,
       contextUsage: state.contextUsage,
       error: state.error,
-      queuedAhead: state.queuedAhead,
       permissionDecisions: state.permissionDecisions,
       planStatus: state.planStatus,
       planContent: state.planContent,

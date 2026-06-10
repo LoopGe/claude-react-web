@@ -132,8 +132,6 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
       return applyMessageConsumed(state, action.uuid, action.consumedAt)
     case 'ERROR':
       return { ...state, error: action.message }
-    case 'TRACK_SENT_TURN':
-      return { ...state, queuedAhead: state.queuedAhead + 1 }
     case 'LIVE_TURN_FLUSH':
       if (!state.liveTurn || !state.liveTurn.dirty) return state
       return {
@@ -202,10 +200,6 @@ function replayReplace(
     return state
   }
   let state = createInitialSessionState(prevState.sessionId)
-  // queuedAhead is a client-only counter that tracks user messages waiting
-  // in the server-side queue. It must survive replayReplace() — otherwise
-  // a WebSocket reconnect (which triggers a replay) wipes the queue bar.
-  state = { ...state, queuedAhead: prevState.queuedAhead }
   for (const permission of permissions) {
     state = reduceSessionState(state, { type: 'PERMISSION_REQUEST', request: permission })
   }
@@ -732,16 +726,6 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
     next = clearSendingUserItems({
       ...next,
       toolStatus: sweptToolStatus,
-      // Reset to 0 (not decrement). The SDK can merge multiple queued
-      // user messages into a single assistant turn, so N sends might
-      // produce M < N result frames — decrementing per-result then
-      // permanently strands queuedAhead at N - M, and the queue bar
-      // becomes stuck on. Mirror the server's pendingTurns reset
-      // (server/session-pump.ts:174 — "each result represents exactly
-      // one completed turn"). If more messages are still queued after
-      // this turn we briefly under-report, but the next turn's working
-      // state covers the visual "still busy" cue via WorkingBubble.
-      queuedAhead: 0,
       liveTurn: null,
       // Clear any lingering optimistic placeholders — the result frame
       // means the SDK has finished processing, so no server echo for
@@ -766,6 +750,8 @@ function updateTranscript(state: SessionState, message: SdkMessage): SessionStat
   const item = toTranscriptItem(message, prev)
   if (!item) return state
 
+  // Consecutive api_retry frames: replace the previous one in place
+  // (the countdown resets, so the UI only ever shows one card).
   if (
     item.msg.type === 'system' &&
     item.msg.subtype === 'api_retry' &&
@@ -775,6 +761,22 @@ function updateTranscript(state: SessionState, message: SdkMessage): SessionStat
     const items = state.items.slice(0, -1).concat(item)
     const messages = state.messages.slice(0, -1).concat(item.msg)
     return { ...state, items, messages }
+  }
+
+  // Retry cycle ended — a non-retry message landed (assistant output,
+  // system error, etc.). Strip the trailing api_retry card whose
+  // countdown is no longer meaningful; the new message itself carries
+  // the outcome.
+  if (
+    item.msg.subtype !== 'api_retry' &&
+    prev?.msg.type === 'system' &&
+    prev.msg.subtype === 'api_retry'
+  ) {
+    return {
+      ...state,
+      items: [...state.items.slice(0, -1), item],
+      messages: [...state.messages.slice(0, -1), item.msg],
+    }
   }
 
   return {

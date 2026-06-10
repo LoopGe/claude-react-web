@@ -277,94 +277,6 @@ describe('useChatStream', () => {
     expect(result.current.error).toBeNull()
   })
 
-  // ── trackSentTurn ─────────────────────────────────────────────
-
-  it('tracks queued turns', () => {
-    const { result } = renderHook(
-      () => useChatStream('s1', noopPerms),
-    )
-
-    expect(result.current.queuedAhead).toBe(0)
-
-    act(() => {
-      result.current.trackSentTurn()
-    })
-    expect(result.current.queuedAhead).toBe(1)
-
-    // Calling again should increment (shows queue depth to user).
-    act(() => {
-      result.current.trackSentTurn()
-    })
-    expect(result.current.queuedAhead).toBe(2)
-  })
-
-  it('resets queuedAhead on result message', async () => {
-    const { result } = renderHook(
-      () => useChatStream('s1', noopPerms),
-    )
-
-    act(() => {
-      result.current.trackSentTurn()
-    })
-    expect(result.current.queuedAhead).toBe(1)
-
-    // Dispatch replay-done + result in a single act() so they hit the
-    // same listener instance (replay-done sets replayDone=true, then the
-    // result message is processed instead of being queued).
-    act(() => {
-      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
-      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
-      dispatchToSession('s1', {
-        kind: 'message',
-        sessionId: 's1',
-        message: { type: 'result', uuid: 'r1' },
-      })
-    })
-    await waitFor(() => {
-      expect(result.current.queuedAhead).toBe(0)
-    })
-  })
-
-  it('resets queuedAhead to 0 on every result, even when multiple sends are queued', async () => {
-    // Background: the SDK may merge multiple queued user messages into a
-    // single assistant turn (one result for N sends). If we decremented
-    // per-result, queuedAhead would permanently strand at N - M and the
-    // queue bar would stay stuck on. Mirror the server's pendingTurns
-    // reset semantics — every result clears the counter to 0.
-    const { result } = renderHook(
-      () => useChatStream('s1', noopPerms),
-    )
-
-    // Queue 3 messages
-    act(() => {
-      result.current.trackSentTurn()
-      result.current.trackSentTurn()
-      result.current.trackSentTurn()
-    })
-    expect(result.current.queuedAhead).toBe(3)
-
-    // A single result (e.g. SDK merged all three) resets to 0.
-    act(() => {
-      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
-      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
-      dispatchToSession('s1', {
-        kind: 'message',
-        sessionId: 's1',
-        message: { type: 'result', uuid: 'r1' },
-      })
-    })
-    await waitFor(() => {
-      expect(result.current.queuedAhead).toBe(0)
-    })
-
-    // Subsequent sends start counting from a clean baseline so the bar
-    // doesn't over-report a phantom queue.
-    act(() => {
-      result.current.trackSentTurn()
-    })
-    expect(result.current.queuedAhead).toBe(1)
-  })
-
   // ── Token rate ────────────────────────────────────────────────
 
   it('computes token rate from stream_event message_delta', async () => {
@@ -482,7 +394,6 @@ describe('useChatStream', () => {
         sessionId: 's1',
         usage: { totalTokens: 1000 },
       })
-      result.current.trackSentTurn()
       dispatchToSession('s1', {
         kind: 'error',
         sessionId: 's1',
@@ -491,7 +402,6 @@ describe('useChatStream', () => {
     })
 
     expect(result.current.messages).toHaveLength(1)
-    expect(result.current.queuedAhead).toBe(1)
     expect(result.current.contextUsage).not.toBeNull()
 
     act(() => {
@@ -499,7 +409,6 @@ describe('useChatStream', () => {
     })
 
     expect(result.current.messages).toEqual([])
-    expect(result.current.queuedAhead).toBe(0)
     expect(result.current.contextUsage).toBeNull()
     expect(result.current.tokenRate).toBeNull()
     expect(result.current.error).toBeNull()

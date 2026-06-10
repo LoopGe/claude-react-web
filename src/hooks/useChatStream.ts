@@ -54,7 +54,6 @@ export type { ActivePhase }
 export interface ChatStream {
   items: TranscriptItem[]
   messages: SdkMessage[]
-  queuedAhead: number
   error: string | null
   contextUsage: ContextUsage | null
   tokenRate: number | null
@@ -69,7 +68,6 @@ export interface ChatStream {
   activeSubagents: ActiveSubagent[]
   subagentIndex: ReadonlyMap<string, ActiveSubagent>
   replayReady: boolean
-  trackSentTurn: () => void
   /** Optimistically insert the user's message into the transcript so it
    *  appears immediately, before the server echoes it back. Returns the
    *  pendingId so the caller can roll it back if the POST fails. The
@@ -126,7 +124,6 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   const tokenRate = useSessionField(sessionId, 'tokenRate')
   const contextUsage = useSessionField(sessionId, 'contextUsage')
   const error = useSessionField(sessionId, 'error')
-  const queuedAhead = useSessionField(sessionId, 'queuedAhead')
   const permissionDecisions = useSessionField(sessionId, 'permissionDecisions')
   const planStatus = useSessionField(sessionId, 'planStatus')
   const planContent = useSessionField(sessionId, 'planContent')
@@ -349,10 +346,6 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     return error
   }, [hubStatus, error])
 
-  const trackSentTurn = useCallback(() => {
-    store.dispatch({ type: 'TRACK_SENT_TURN' })
-  }, [store])
-
   const insertUserMessage = useCallback((text: string): string => {
     const pendingId = `optimistic:${randomId()}`
     const message: SdkMessage = {
@@ -444,7 +437,6 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     () => ({
       items,
       messages,
-      queuedAhead,
       error: displayedError,
       contextUsage,
       tokenRate,
@@ -459,7 +451,6 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       activeSubagents,
       subagentIndex,
       replayReady,
-      trackSentTurn,
       insertUserMessage,
       ackUserMessage,
       rollbackUserMessage,
@@ -469,6 +460,6 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       hasOlder,
       loadingOlder,
     }),
-    [items, messages, queuedAhead, displayedError, contextUsage, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, replayReady, trackSentTurn, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, loadOlder, hasOlder, loadingOlder],
+    [items, messages, displayedError, contextUsage, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, replayReady, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, loadOlder, hasOlder, loadingOlder],
   )
 }

@@ -4,6 +4,7 @@ import { Hono } from 'hono'
 import type { Options, PermissionMode, Settings } from '@anthropic-ai/claude-agent-sdk'
 import { SessionManager } from '../session-manager.js'
 import { safeJson } from './index.js'
+import type { MpStore } from '../mp-store.js'
 
 const VALID_IMG_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
 
@@ -37,7 +38,7 @@ function validateEnv(value: unknown): string | null {
   return null
 }
 
-export function buildSessionRouter(sm: SessionManager): Hono {
+export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono {
   const app = new Hono()
 
   // List sessions (snapshot only — for push-based updates the frontend
@@ -289,11 +290,16 @@ export function buildSessionRouter(sm: SessionManager): Hono {
     return c.json({ result })
   })
 
-  // Toggle a plugin's enabled state
+  // Toggle a plugin's enabled state.
+  // The SDK's enabledPlugins expects the "plugin@marketplace" compound key
+  // (see MpStore.keyOf). When an MpStore is available we resolve the bare
+  // URL-segment name to that format so the control_request actually matches.
   app.post('/sessions/:id/plugins/:name/toggle', async (c) => {
     const body = await safeJson<{ enabled?: boolean }>(c.req)
     if (typeof body.enabled !== 'boolean') return c.json({ error: 'enabled (boolean) is required' }, 400)
-    const info = await sm.togglePlugin(c.req.param('id'), c.req.param('name'), body.enabled)
+    const bare = c.req.param('name')
+    const pluginKey = mpStore?.resolveCompoundKey(bare) ?? bare
+    const info = await sm.togglePlugin(c.req.param('id'), pluginKey, body.enabled)
     return c.json({ session: info })
   })
 

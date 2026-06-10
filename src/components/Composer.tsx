@@ -605,7 +605,7 @@ export const Composer = memo(function Composer({
         {/* Send / Interrupt share one slot — they're mutually exclusive
             states (idle = Send, mid-turn = Interrupt). While a turn is
             running we show ONLY Interrupt; queuing another message is still
-            possible via Enter in the textarea (queue-bar handles the rest). */}
+            possible via Enter in the textarea. */}
         {canInterrupt ? (
           <button
             className="btn btn-danger btn-icon"
