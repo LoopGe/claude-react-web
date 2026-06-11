@@ -20,8 +20,7 @@ import { useTheme } from './hooks/useTheme'
 import { useToast } from './hooks/useToast'
 import { useWsHub, useWsHubStatus } from './hooks/useWsHub'
 import type { WsServerFrame } from './ws-types'
-import type { SettingsTabName } from './local-commands'
-import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, SidebarSection, SlashCommand } from './types'
+import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, SidebarSection } from './types'
 import { PERMISSION_MODES } from './types'
 import { ACCENT_COLORS } from './theme'
 import { AppearancePanel } from './components/AppearancePanel'
@@ -30,6 +29,7 @@ import { IconSettings, IconBell, IconBellOff, IconMenu } from './components/icon
 import { UpdateBanner } from './components/UpdateBanner'
 import { useUpdateInfo } from './hooks/useUpdateInfo'
 import { sessionStoreRegistry } from './session-store/registry'
+import { useAppOverlays } from './app/useAppOverlays'
 
 // Lazy-load heavy modal/overlay components that are only shown on demand.
 // This keeps the initial bundle lean — the user pays the download cost
@@ -94,19 +94,23 @@ export function App() {
   )
   const [defaults, setDefaults] = useState<Defaults>({})
   const [serverModels, setServerModels] = useState<string[]>([])
-  /** When non-null, the Settings overlay is rendered on top of the chat
-   *  panel with this session id. Previously a single boolean that targeted
-   *  the focused session — making it per-session lets the overlay cover
-   *  just that column instead of the whole viewport. */
-  const [settingsOpenFor, setSettingsOpenFor] = useState<string | null>(null)
-  // Deep-link request to a specific Settings tab (the `/mcp` local command).
-  // The nonce makes every request distinct so SettingsPanel re-applies the
-  // tab even when the panel is already mounted/open on another tab.
-  const [settingsTabRequest, setSettingsTabRequest] = useState<{
-    sessionId: string
-    tab: SettingsTabName
-    nonce: number
-  } | null>(null)
+  const {
+    settingsOpenFor,
+    setSettingsOpenFor,
+    settingsTabRequest,
+    gitPanelOpenFor,
+    setGitPanelOpenFor,
+    helpOpen,
+    setHelpOpen,
+    helpCommands,
+    handleCloseSettings,
+    handleOpenSettings,
+    handleCloseGitPanel,
+    handleOpenGitPanel,
+    openSettingsTab,
+    showHelpWithCommands,
+    toggleShortcutHelp,
+  } = useAppOverlays()
   const [newSessionDialogOpen, setNewSessionDialogOpen] = useState(false)
   const newSessionDialogOpenRef = useRef(newSessionDialogOpen)
   const [resumeDialogOpen, setResumeDialogOpen] = useState(false)
@@ -116,12 +120,6 @@ export function App() {
   // open in a new panel. Null = the global (Mod+Shift+O) resume flow.
   const [resumeTargetPanelId, setResumeTargetPanelId] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
-  const [helpOpen, setHelpOpen] = useState(false)
-  // Slash commands to show in the help dialog. Populated by the `/help`
-  // local command (with the triggering panel's merged command list) and
-  // cleared when help is opened via the Mod+? shortcut, which only shows
-  // keyboard shortcuts.
-  const [helpCommands, setHelpCommands] = useState<SlashCommand[]>([])
   const [historyPanelOpen, setHistoryPanelOpen] = useState(false)
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false)
   // Operational errors and one-shot notifications go through the global
@@ -212,41 +210,6 @@ export function App() {
   // "Ungrouped" sidebar section. No default group is auto-created.
 
   const { sidebarWidth: effectiveSidebarWidth, sidebarResize, setSidebarWidth } = useSidebarResize({ minPx: sidebarMinPx, maxPx: sidebarMaxPx })
-
-  const [gitPanelOpenFor, setGitPanelOpenFor] = useState<string | null>(null)
-  // Open/close handlers enforce mutual exclusion between Settings and
-  // Git panels — only one overlay per chat panel at a time. Each opener
-  // clears the other's state, which keeps the UI predictable when the
-  // user clicks back and forth between the two chips.
-  const handleCloseSettings = useCallback(() => setSettingsOpenFor(null), [])
-  const handleOpenSettings = useCallback((id: string) => {
-    setSettingsOpenFor(id)
-    setGitPanelOpenFor(null)
-  }, [])
-  const handleCloseGitPanel = useCallback(() => setGitPanelOpenFor(null), [])
-  const handleOpenGitPanel = useCallback((id: string) => {
-    setGitPanelOpenFor(id)
-    setSettingsOpenFor(null)
-  }, [])
-  // Deep-link a panel's settings to a specific tab (the `/mcp` local command).
-  // Opens the settings overlay (closing Git, mirroring handleOpenSettings) and
-  // emits a nonce-stamped tab request so SettingsPanel switches even if it's
-  // already open on another tab.
-  const settingsTabNonceRef = useRef(0)
-  const openSettingsTab = useCallback((id: string, tab: SettingsTabName) => {
-    setSettingsOpenFor(id)
-    setGitPanelOpenFor(null)
-    settingsTabNonceRef.current += 1
-    setSettingsTabRequest({ sessionId: id, tab, nonce: settingsTabNonceRef.current })
-  }, [])
-
-  // Open the help dialog with a panel's slash commands (the `/help` local
-  // command). The Mod+? shortcut uses an empty list so it only shows
-  // keyboard shortcuts.
-  const showHelpWithCommands = useCallback((commands: SlashCommand[]) => {
-    setHelpCommands(commands)
-    setHelpOpen(true)
-  }, [])
 
   const { gridTemplate, onDividerMouseDown, draggingDivider, bodyRef, setPanelRatios } = usePanelColumnResize({ openIds, panelMinRatio })
 
@@ -1109,14 +1072,7 @@ export function App() {
         },
         {
           combo: 'mod+?',
-          handler: () => {
-            // Opening via the shortcut shows only keyboard shortcuts —
-            // clear any slash-command list left over from a prior /help.
-            // (Read the current open state from the render-synced ref so
-            // both setters stay top-level calls, not nested in an updater.)
-            if (!helpOpenRef.current) setHelpCommands([])
-            setHelpOpen((v) => !v)
-          },
+          handler: () => toggleShortcutHelp(helpOpenRef.current),
           allowInInput: true,
           description: 'Keyboard shortcuts',
         },
@@ -1185,7 +1141,7 @@ export function App() {
           description: 'Close overlay / Interrupt',
         },
       ],
-      [closeSession],
+      [closeSession, setGitPanelOpenFor, setHelpOpen, setSettingsOpenFor, toggleShortcutHelp],
     )
   useKeyboardShortcuts(shortcuts)
 

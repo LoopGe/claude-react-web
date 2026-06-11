@@ -862,6 +862,31 @@ export async function checkoutBranch(
   return { stashed: true }
 }
 
+// ── Remote operations ─────────────────────────────────────────────────
+
+/** Pull from the tracked remote using fast-forward only. Returns
+ *  `{ updated: true }` when HEAD moved (new commits were fetched and
+ *  applied). If the local branch has diverged from upstream, `--ff-only`
+ *  causes git to exit non-zero instead of creating a merge commit. */
+export async function pullFromRemote(cwd: string): Promise<{ updated: boolean }> {
+  await ensureGitRepo(cwd)
+  const before = (await runGit(cwd, ['rev-parse', 'HEAD'])).stdout.trim()
+  await runGit(cwd, ['pull', '--ff-only'], { timeoutMs: 60_000 })
+  const after = (await runGit(cwd, ['rev-parse', 'HEAD'])).stdout.trim()
+  return { updated: before !== after }
+}
+
+/** Push to the tracked remote. When `force` is true the caller MUST have
+ *  obtained explicit user confirmation (the route enforces `confirm:true`).
+ *  Uses `--force-with-lease` which is safer than bare `--force`: it
+ *  refuses to push when the remote branch has commits we haven't seen. */
+export async function pushToRemote(cwd: string, force?: boolean): Promise<void> {
+  await ensureGitRepo(cwd)
+  const args = ['push']
+  if (force) args.push('--force-with-lease')
+  await runGit(cwd, args, { timeoutMs: 60_000 })
+}
+
 // ── Session anchor + session-scoped diff ──────────────────────────────
 
 /** Hard cap on diff bytes we feed to the AI commit-message model. The

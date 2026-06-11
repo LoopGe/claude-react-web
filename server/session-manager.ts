@@ -843,9 +843,25 @@ export class SessionManager {
   }
 
   /** Shared tail for send() and sendContent(): push into the SDK input
-   *  queue and broadcast to live subscribers. */
+   *  queue and broadcast to live subscribers.
+   *
+   *  The Pushable's onConsume callback stamps `consumedAt` on whatever
+   *  object it receives.  When the SDK is idle (waiter active), that
+   *  stamp fires synchronously during enqueueUserMessage — BEFORE
+   *  pushToSession broadcasts the message to clients.  Without the copy
+   *  the broadcast arrives already carrying consumedAt, so the client
+   *  derives deliveryStatus='consumed' immediately and the 'queued'
+   *  state is never visible, even when the message genuinely sat in the
+   *  queue behind an in-flight turn.
+   *
+   *  Pushing a shallow clone to the SDK isolates the mutation: the copy
+   *  gets consumedAt (visible to the SDK and to the onInputConsumed
+   *  callback that broadcasts the live message-consumed frame), while
+   *  the original stays clean for pushToSession.  The history ring holds
+   *  the original; a reconnecting client still sees consumedAt via the
+   *  stampConsumedAt fallback in history-utils. */
   private dispatchUserMessage(s: Session, userMsg: SDKUserMessage): void {
-    s.handle.enqueueUserMessage(userMsg)
+    s.handle.enqueueUserMessage({ ...userMsg })
     this.pushToSession(s, userMsg)
   }
 

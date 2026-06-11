@@ -33,6 +33,8 @@ import {
   createBranch,
   checkoutBranch,
   getStagedDiff,
+  pullFromRemote,
+  pushToRemote,
 } from '../git.js'
 import { generateCommitMessage } from '../commit-message.js'
 import type { GitStatus } from '../../shared/git-types.js'
@@ -230,6 +232,29 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     // 500 — the caller always gets a usable message.
     const result = await generateCommitMessage(text)
     return c.json(result)
+  })
+
+  app.post('/sessions/:id/git/pull', async (c) => {
+    const id = c.req.param('id')
+    const cwd = getSessionCwd(id)
+    const result = await pullFromRemote(cwd)
+    sm.broadcastGitStatusChanged(id)
+    const [status, branches] = await Promise.all([freshStatus(cwd), listBranches(cwd)])
+    return c.json({ status, branches, updated: result.updated })
+  })
+
+  app.post('/sessions/:id/git/push', async (c) => {
+    const id = c.req.param('id')
+    const cwd = getSessionCwd(id)
+    const body = await safeJson<{ force?: unknown; confirm?: unknown }>(c.req)
+    const force = body.force === true
+    if (force && body.confirm !== true) {
+      throw new HttpError(400, 'force push requires confirm:true')
+    }
+    await pushToRemote(cwd, force)
+    sm.broadcastGitStatusChanged(id)
+    const [status, branches] = await Promise.all([freshStatus(cwd), listBranches(cwd)])
+    return c.json({ status, branches })
   })
 
   return app

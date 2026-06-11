@@ -2,8 +2,8 @@
 //
 // Each operation is a thin wrapper around api.post that:
 //   - Tracks an op-key in `busyOps` so the UI can disable per-button
-//     spinners (e.g. busyOps.has('stage:src/foo.ts') → grey out that
-//     row's stage button only).
+//     spinners, e.g. busyOps.has('stage:src/foo.ts') greys out that
+//     row's stage button only.
 //   - Re-throws API errors so the caller can pipe them into useToast
 //     (or any other notification surface).
 //   - Returns the response payload (not just void) so the caller can
@@ -11,11 +11,11 @@
 //     for the WS refresh to land. This eliminates the 50-100ms flicker
 //     between click and visible update.
 //
-// The hook itself is UI-agnostic — it doesn't render toasts or spinners.
+// The hook itself is UI-agnostic: it doesn't render toasts or spinners.
 // That separation lets GitPanel decide where to put error messages
 // without the hook making assumptions about layout.
 
-import { useCallback, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { api } from './useApi'
 import type { GitStashEntry, GitStatus, GitBranch } from '../../shared/git-types'
 
@@ -40,6 +40,11 @@ interface CheckoutResult extends BranchResult {
   stashed: boolean
 }
 
+interface SyncResult extends WriteResult {
+  branches: GitBranch[]
+  updated?: boolean
+}
+
 export interface UseGitWriteReturn {
   stage: (paths: readonly string[]) => Promise<WriteResult>
   unstage: (paths: readonly string[]) => Promise<WriteResult>
@@ -59,13 +64,15 @@ export interface UseGitWriteReturn {
    *  Commit message. Returns `fallback: true` when the API call failed
    *  and the server produced a synthesised `chore:` message instead. */
   generateCommitMessage: () => Promise<{ message: string; fallback?: boolean }>
-  /** Set of in-flight op keys. Stable identity per render — caller
+  pull: () => Promise<SyncResult>
+  push: (force?: boolean) => Promise<SyncResult>
+  /** Set of in-flight op keys. Stable identity per render; caller
    *  passes individual key strings to disable specific buttons. */
   busyOps: ReadonlySet<string>
 }
 
 export function useGitWrite(sessionId: string | undefined): UseGitWriteReturn {
-  // Plain object → Set so React's identity comparison detects changes.
+  // Plain object -> Set so React's identity comparison detects changes.
   // Mutating a Set in-place wouldn't trigger a re-render.
   const [busyOps, setBusyOps] = useState<Set<string>>(() => new Set())
 
@@ -87,132 +94,80 @@ export function useGitWrite(sessionId: string | undefined): UseGitWriteReturn {
     })
   }, [])
 
-  /** Build the per-session route prefix once. The hook is bound to a
-   *  single session for its lifetime so the prefix doesn't change. */
-  const base = sessionId ? `/sessions/${encodeURIComponent(sessionId)}/git` : ''
+  /** Build the per-session route prefix once. */
+  const base = useMemo(
+    () => (sessionId ? `/sessions/${encodeURIComponent(sessionId)}/git` : ''),
+    [sessionId],
+  )
 
-  /** Reject early if the hook was constructed without a session id —
-   *  callers shouldn't be invoking it in that state, but a defensive
-   *  rejection beats an undefined route. */
-  function ensureSession() {
+  /** Reject early if the hook was constructed without a session id. */
+  const ensureSession = useCallback(() => {
     if (!sessionId) throw new Error('useGitWrite called without a sessionId')
-  }
+  }, [sessionId])
+
+  const postGit = useCallback(<T,>(opKey: string, route: string, body?: unknown): Promise<T> => {
+    ensureSession()
+    return run(opKey, () => api.post<T>(`${base}/${route}`, body))
+  }, [base, ensureSession, run])
 
   const stage = useCallback((paths: readonly string[]) => {
-    ensureSession()
-    return run(
-      `stage:${paths.join(',')}`,
-      () => api.post<WriteResult>(`${base}/stage`, { paths }),
-    )
-  // base depends on sessionId; capturing sessionId is enough to refresh
-  // the closure when it changes (which only happens with a key remount
-  // in practice).
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- base is sessionId-derived
-  }, [sessionId, run])
+    return postGit<WriteResult>(`stage:${paths.join(',')}`, 'stage', { paths })
+  }, [postGit])
 
   const unstage = useCallback((paths: readonly string[]) => {
-    ensureSession()
-    return run(
-      `unstage:${paths.join(',')}`,
-      () => api.post<WriteResult>(`${base}/unstage`, { paths }),
-    )
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- base is sessionId-derived
-  }, [sessionId, run])
+    return postGit<WriteResult>(`unstage:${paths.join(',')}`, 'unstage', { paths })
+  }, [postGit])
 
   const discard = useCallback((paths: readonly string[], untracked: boolean) => {
-    ensureSession()
-    return run(
-      `discard:${paths.join(',')}`,
-      () => api.post<WriteResult>(`${base}/discard`, { paths, untracked, confirm: true }),
-    )
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, run])
+    return postGit<WriteResult>(`discard:${paths.join(',')}`, 'discard', { paths, untracked, confirm: true })
+  }, [postGit])
 
   const commit = useCallback((message: string, amend: boolean) => {
-    ensureSession()
-    // Amend rewrites the previous commit's SHA — the server gates it
-    // behind confirm:true (same as discard / abort / stash-drop). The
-    // GitPanel already surfaces a ConfirmDialog before calling here, so
-    // sending confirm:true is the contract we promised.
+    // Amend rewrites the previous commit's SHA; the server gates it behind
+    // confirm:true. GitPanel already confirms before calling this hook.
     const body = amend ? { message, amend, confirm: true } : { message, amend }
-    return run(
-      amend ? 'commit:amend' : 'commit',
-      () => api.post<WriteResult>(`${base}/commit`, body),
-    )
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, run])
+    return postGit<WriteResult>(amend ? 'commit:amend' : 'commit', 'commit', body)
+  }, [postGit])
 
   const abortMerge = useCallback(() => {
-    ensureSession()
-    return run(
-      'abort-merge',
-      () => api.post<WriteResult>(`${base}/abort-merge`, { confirm: true }),
-    )
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, run])
+    return postGit<WriteResult>('abort-merge', 'abort-merge', { confirm: true })
+  }, [postGit])
 
   const abortRebase = useCallback(() => {
-    ensureSession()
-    return run(
-      'abort-rebase',
-      () => api.post<WriteResult>(`${base}/abort-rebase`, { confirm: true }),
-    )
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, run])
+    return postGit<WriteResult>('abort-rebase', 'abort-rebase', { confirm: true })
+  }, [postGit])
 
   const stashCreate = useCallback((opts?: { message?: string; includeUntracked?: boolean }) => {
-    ensureSession()
-    return run(
-      'stash-create',
-      () => api.post<StashResult>(`${base}/stash`, opts ?? {}),
-    )
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, run])
+    return postGit<StashResult>('stash-create', 'stash', opts ?? {})
+  }, [postGit])
 
   const stashPop = useCallback((index: number) => {
-    ensureSession()
-    return run(
-      `stash-pop:${index}`,
-      () => api.post<StashResult>(`${base}/stash-pop`, { index }),
-    )
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, run])
+    return postGit<StashResult>(`stash-pop:${index}`, 'stash-pop', { index })
+  }, [postGit])
 
   const stashDrop = useCallback((index: number) => {
-    ensureSession()
-    return run(
-      `stash-drop:${index}`,
-      () => api.post<DropResult>(`${base}/stash-drop`, { index, confirm: true }),
-    )
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, run])
+    return postGit<DropResult>(`stash-drop:${index}`, 'stash-drop', { index, confirm: true })
+  }, [postGit])
 
   const createBranch = useCallback((name: string, checkout: boolean, autoStash?: boolean) => {
-    ensureSession()
-    return run(
-      `branch:${name}`,
-      () => api.post<BranchResult>(`${base}/branch`, { name, checkout, autoStash: autoStash ?? false }),
-    )
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, run])
+    return postGit<BranchResult>(`branch:${name}`, 'branch', { name, checkout, autoStash: autoStash ?? false })
+  }, [postGit])
 
   const checkout = useCallback((branch: string, autoStash: boolean) => {
-    ensureSession()
-    return run(
-      `checkout:${branch}`,
-      () => api.post<CheckoutResult>(`${base}/checkout`, { branch, autoStash }),
-    )
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, run])
+    return postGit<CheckoutResult>(`checkout:${branch}`, 'checkout', { branch, autoStash })
+  }, [postGit])
 
   const generateCommitMessage = useCallback(() => {
-    ensureSession()
-    return run(
-      'commit-message',
-      () => api.post<{ message: string; fallback?: boolean }>(`${base}/commit-message`),
-    )
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, run])
+    return postGit<{ message: string; fallback?: boolean }>('commit-message', 'commit-message')
+  }, [postGit])
+
+  const pull = useCallback(() => {
+    return postGit<SyncResult>('pull', 'pull')
+  }, [postGit])
+
+  const push = useCallback((force?: boolean) => {
+    return postGit<SyncResult>('push', 'push', { force: !!force, confirm: !!force })
+  }, [postGit])
 
   return {
     stage,
@@ -227,6 +182,8 @@ export function useGitWrite(sessionId: string | undefined): UseGitWriteReturn {
     createBranch,
     checkout,
     generateCommitMessage,
+    pull,
+    push,
     busyOps,
   }
 }

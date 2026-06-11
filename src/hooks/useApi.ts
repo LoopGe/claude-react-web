@@ -66,6 +66,7 @@ export async function apiRequest<T>(
         ? 'Request cancelled'
         : `Request timed out after ${timeoutMs / 1000}s`
       const timeoutErr = new Error(reason) as ApiError
+      timeoutErr.name = 'AbortError'
       timeoutErr.status = 0
       throw timeoutErr
     }

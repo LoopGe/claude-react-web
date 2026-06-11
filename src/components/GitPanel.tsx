@@ -231,6 +231,43 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
             </span>
           </Tooltip>
         )}
+        {status.upstream && (
+          <span className="git-panel-sync-actions">
+            {status.behind > 0 && (
+              <Tooltip label="Pull (fast-forward only)" placement="bottom">
+                <button
+                  className="git-panel-icon-btn"
+                  disabled={writeOps.busyOps.has('pull') || writeOps.busyOps.has('push')}
+                  onClick={(e) => {
+                    e.preventDefault()
+                    void runOp('Pull', async () => {
+                      const result = await writeOps.pull()
+                      if (!result.updated) toast.success('Already up to date')
+                    })
+                  }}
+                  aria-label="Pull from remote"
+                >
+                  ↓
+                </button>
+              </Tooltip>
+            )}
+            {status.ahead > 0 && (
+              <Tooltip label="Push to remote" placement="bottom">
+                <button
+                  className="git-panel-icon-btn"
+                  disabled={writeOps.busyOps.has('pull') || writeOps.busyOps.has('push')}
+                  onClick={(e) => {
+                    e.preventDefault()
+                    void runOp('Push', () => writeOps.push())
+                  }}
+                  aria-label="Push to remote"
+                >
+                  ↑
+                </button>
+              </Tooltip>
+            )}
+          </span>
+        )}
         {(totals.insertions > 0 || totals.deletions > 0) && (
           <Tooltip
             label={`${totals.insertions} insertion${totals.insertions === 1 ? '' : 's'}, ${totals.deletions} deletion${totals.deletions === 1 ? '' : 's'} across all changes`}

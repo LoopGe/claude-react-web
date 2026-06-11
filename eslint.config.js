@@ -66,7 +66,7 @@ export default [
 
   // Node (server + tests + build scripts)
   {
-    files: ['server/**/*.ts', 'vitest.config.ts', 'vite.config.ts', 'build.mjs'],
+    files: ['server/**/*.ts', 'vitest.config.ts', 'vite.config.ts', 'build.mjs', 'scripts/**/*.mjs'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',
