@@ -1,0 +1,477 @@
+/* ── Command Palette ─────────────────────────────────────────────── */
+
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: var(--backdrop-color);
+  display: flex;
+  justify-content: center;
+  padding-top: min(20vh, 160px);
+}
+
+.palette {
+  width: min(560px, calc(100vw - 40px));
+  /* 100vh fallback for Safari < 15.4 (which doesn't resolve dvh in calc). */
+  max-height: min(480px, calc(100vh - 240px));
+  max-height: min(480px, calc(100dvh - 240px));
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--modal-shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.palette-input {
+  width: 100%;
+  padding: 14px 16px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  font-size: 14px;
+  outline: none;
+}
+.palette-input::placeholder {
+  color: var(--fg-muted);
+}
+
+.palette-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.palette-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.palette-section-label {
+  padding: 8px 14px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+
+.palette-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.palette-item.selected,
+.palette-item:hover {
+  background: var(--bg-elev-2);
+}
+
+.palette-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-item-hint {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Resume-session picker badges ──────────────────────────────────
+   Small neutral pills on each row of ResumeSessionDialog marking
+   running / ended / CLI-origin state. Neutral by default;
+   .resume-badge-running is accent-tinted to echo the sidebar's running
+   indicator. Scoped class name (not a bare `.badge`) to avoid clashing
+   with any future generic badge. */
+.resume-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 1.4;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.resume-badge-running {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+}
+
+/* ── Inline session recap message ──────────────────────────────────
+   Rendered inside the transcript by RecapMessageView, reusing the .msg
+   chrome so it lines up with surrounding messages. The accent-tinted
+   border + subtle background tells the user it's an AI summary, not a
+   real assistant turn. Three states share the same outer card. */
+.recap-msg {
+  border: 1px dashed color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.recap-msg--error {
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+}
+.recap-msg--loading {
+  /* Slightly narrower so the loading state visually reads as transient. */
+  opacity: 0.95;
+}
+
+.recap-msg-loading-body {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+.recap-msg-loading-bar {
+  display: block;
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-elev-2);
+  overflow: hidden;
+  position: relative;
+}
+.recap-msg-loading-bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: recap-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes recap-shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.recap-msg-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed color-mix(in srgb, var(--accent) 25%, var(--border));
+}
+.recap-msg-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--bg-elev-2);
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+/* ── Message search bar ────────────────────────────────────────── */
+
+.message-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.message-search-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  padding: 4px 8px;
+  font-size: 13px;
+  font-family: var(--mono);
+  outline: none;
+}
+.message-search-input:focus {
+  border-color: var(--accent);
+}
+.message-search-count {
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  min-width: 48px;
+  text-align: center;
+}
+.message-search-nav {
+  padding: 2px 8px;
+  font-size: 14px;
+  line-height: 1;
+}
+.message-search-close {
+  padding: 2px 8px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* ── Search result highlighting ──────────────────────────────────── */
+
+mark.search-hl {
+  background: color-mix(in srgb, var(--warn) 40%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+mark.search-hl.search-hl-active {
+  background: var(--warn);
+  color: var(--bg);
+}
+
+/* ── Session ended banner in composer ──────────────────────────── */
+
+.session-ended {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  gap: 2px;
+}
+.session-ended-hint {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+/* ── Global toast host ─────────────────────────────────────────────
+   Fixed-position column anchored to the bottom-right. New toasts append
+   to the bottom (visually stacking up from the corner). Each toast has
+   a slide-in animation and an explicit ✕ button. Stickies (durationMs
+   === 0 in useToast) have no auto-dismiss, so the ✕ is always present.
+   Colours go through CSS variables so the light theme picks them up
+   without overrides. The host itself is `pointer-events: none` so an
+   empty stack never blocks clicks; individual toasts re-enable pointer
+   events for their own buttons. */
+
+.toast-host {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: min(380px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.toast {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  box-shadow: var(--toast-shadow);
+  pointer-events: auto;
+  /* slide in from the top; respects prefers-reduced-motion below */
+  animation: toast-slide-in 180ms ease-out;
+}
+
+/* Countdown progress bar pinned to the toast's bottom edge. Scales from
+   full width down to 0 over the toast's lifetime; colour follows the
+   kind. Pauses in lockstep with the JS dismiss timer on hover. */
+.toast-progress {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  width: 100%;
+  transform-origin: left;
+  background: var(--accent);
+  opacity: 0.8;
+  animation: toast-progress linear forwards;
+}
+.toast-error .toast-progress { background: var(--danger); }
+.toast-success .toast-progress { background: var(--ok); }
+.toast-info .toast-progress { background: var(--accent); }
+.toast:hover .toast-progress { animation-play-state: paused; }
+
+.toast-error {
+  background: color-mix(in srgb, var(--danger) 14%, var(--bg-elev-2));
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+  color: var(--fg);
+}
+.toast-error .toast-icon { color: var(--danger); }
+
+.toast-success {
+  background: color-mix(in srgb, var(--ok) 14%, var(--bg-elev-2));
+  border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
+  color: var(--fg);
+}
+.toast-success .toast-icon { color: var(--ok); }
+
+.toast-info {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev-2));
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  color: var(--fg);
+}
+.toast-info .toast-icon { color: var(--accent); }
+
+.toast-icon {
+  flex-shrink: 0;
+  font-size: 14px;
+  line-height: 1.4;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+}
+
+.toast-message {
+  flex: 1;
+  word-break: break-word;
+}
+
+/* Whole-message click target (used when onClick is set without
+   actionLabel). Inherits the parent's text colour so the toast still
+   reads as a notification, not a hyperlink — but adds an underline on
+   hover/focus to signal interactivity, plus a focus ring for keyboard
+   users. */
+.toast-message-button {
+  flex: 1;
+  word-break: break-word;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.toast-message-button:hover,
+.toast-message-button:focus-visible {
+  text-decoration: underline;
+}
+.toast-message-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Dedicated action button (used when both onClick and actionLabel are
+   set). Tints with the toast's kind colour so an "Open" button on a
+   success toast picks up green, on an error picks up red, etc. — the
+   --kind-tint variable is set per-kind below. */
+.toast-action {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid color-mix(in srgb, var(--kind-tint, var(--accent)) 50%, var(--border));
+  background: color-mix(in srgb, var(--kind-tint, var(--accent)) 18%, transparent);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.toast-action:hover {
+  background: color-mix(in srgb, var(--kind-tint, var(--accent)) 30%, transparent);
+  border-color: color-mix(in srgb, var(--kind-tint, var(--accent)) 70%, var(--border));
+}
+.toast-action:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--kind-tint, var(--accent)) 70%, transparent);
+  outline-offset: 1px;
+}
+
+/* Per-kind tint propagation for .toast-action. Keeps the action button's
+   colour in sync with the surrounding toast variant. */
+.toast-error { --kind-tint: var(--danger); }
+.toast-success { --kind-tint: var(--ok); }
+.toast-info { --kind-tint: var(--accent); }
+
+.toast-dismiss {
+  flex-shrink: 0;
+  margin-left: 4px;
+  padding: 0 4px;
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.4;
+  opacity: 0.7;
+}
+.toast-dismiss:hover {
+  opacity: 1;
+  color: var(--fg);
+}
+
+@keyframes toast-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes toast-progress {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
+  /* Keep the bar visible as a static full-width rule rather than
+     animating it shrink; the JS timer still auto-dismisses on time. */
+  .toast-progress {
+    animation: none;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   Git overlay + panel + chip
+   ─────────────────────────────────────────────────────────────────
+   Mirrors the .settings-overlay pattern: absolute-positioned over the
+   chat body, semi-transparent backdrop, a self-contained panel that
+   sizes to its content. All colours go through CSS variables so the
+   light theme inherits the layout without overrides.
+   */

@@ -1,0 +1,555 @@
+/* Anthropic skin's official typeface pairing — Poppins (headings) + Lora
+   (body). Loaded once; only the [data-skin="anthropic"] blocks below switch
+   the font tokens to reference them, so default/glow are unaffected. The
+   @import must precede all other rules to be valid CSS. */
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Lora:ital,wght@0,400;0,500;0,600;1,400&display=swap');
+
+/* Register --mode-color as a transitionable <color> so mode switches
+   animate smoothly instead of snapping. The initial-value is transparent
+   (invisible) — each .mode-* variant overrides it with a real colour.
+   inherits: true so the panel-level variable reaches child badges. */
+@property --mode-color {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: transparent;
+}
+
+:root {
+  --bg: #0f1115;
+  --bg-elev: #15181f;
+  --bg-elev-2: #1c2029;
+  --border: #262b36;
+  --fg: #e6e8eb;
+  --fg-muted: #8c94a3;
+  --accent: #7b8cde;
+  --accent-strong: #5b6fc7;
+  /* Foreground colour for text/icons placed on top of --accent (e.g. primary
+     CTA buttons). White by default, but useTheme overrides it at runtime via
+     onAccentFor() — switching to dark ink when the chosen accent is light
+     enough that white would be unreadable (e.g. a near-white custom accent).
+     Lives behind a token so components never reference a raw hex. */
+  --on-accent: #ffffff;
+  --danger: #f06363;
+  --ok: #6cc88b;
+  --warn: #e6b450;
+  /* Fast-mode accent — electric violet, distinct from accent/warn/ok so the
+     fast-mode chip reads as its own thing. */
+  --fast: #c08cff;
+  /* Monospace stack. Cascadia (Windows Terminal / VS Code default) and
+     Roboto Mono are listed before the legacy Consolas/Menlo fallbacks so
+     modern terminals render their native glyphs instead of dropping to
+     Consolas. Pure system fonts — nothing is downloaded. */
+  --mono: ui-monospace, 'Cascadia Code', 'Cascadia Mono', SFMono-Regular,
+          'Roboto Mono', Menlo, Monaco, Consolas, monospace;
+  /* Sans stack with explicit CJK fallbacks so mixed CN/EN text keeps a
+     consistent baseline and weight across macOS / Windows / Linux. */
+  --sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'PingFang SC',
+          'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
+  /* Type scale tokens — the canonical font-size steps for new components.
+     Existing one-off px values are migrated incrementally; new code should
+     reference these instead of hardcoding px. */
+  --fs-2xs: 10px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-base: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --app-header-height: 43px;
+  --msg-tool-bg: #101820;
+  --msg-tool-border: #1c2a36;
+  --msg-tool-result-bg: #14202a;
+  --msg-tool-result-border: #1f3240;
+  --msg-system-bg: #1a1a1a;
+  --msg-system-border: #2a2a2a;
+  --msg-error-bg: #2b1616;
+  --msg-error-border: #5a2525;
+  --msg-error-fg: #ffb1b1;
+  --msg-rate-limit-bg: #2b2416;
+  --msg-rate-limit-border: #5a4a25;
+  --msg-rate-limit-fg: #ffe0a0;
+  /* User message bubble derives its color from the theme's accent so the
+     "you" side automatically follows whatever palette is active. Mixed
+     with --bg / --fg so it stays a subtle tint, not a saturated block. */
+  --msg-user-bg: color-mix(in srgb, var(--accent) 28%, var(--bg));
+  --msg-user-border: color-mix(in srgb, var(--accent) 50%, var(--bg));
+  --msg-user-fg: var(--fg);
+  --msg-user-header-fg: color-mix(in srgb, var(--accent) 75%, var(--fg));
+  --msg-user-link-fg: var(--accent);
+  --msg-user-code-bg: color-mix(in srgb, var(--accent) 18%, transparent);
+  --msg-user-pre-bg: color-mix(in srgb, var(--bg) 80%, var(--accent));
+  --msg-user-pre-border: color-mix(in srgb, var(--accent) 25%, transparent);
+  --bg-elev-3: #232830;
+  --btn-hover-bg: #242a35;
+  --btn-hover-border: #3a4150;
+  --drag-over-bg: #1a2030;
+  --assistant-header-fg: #a9b4d6;
+  --code-bg: #0f1115;
+  --code-fg: #c9d1d9;
+  --code-bar-bg: color-mix(in srgb, var(--code-bg) 85%, var(--border));
+  --code-block-border: var(--border);
+  --bg-elev-1: #181c24;
+  /* Syntax-highlighting token colours (atom-one-dark palette) */
+  --hljs-fg: #abb2bf;
+  --hljs-comment: #5c6370;
+  --hljs-keyword: #c678dd;
+  --hljs-red: #e06c75;
+  --hljs-cyan: #56b6c2;
+  --hljs-green: #98c379;
+  --hljs-orange: #d19a66;
+  --hljs-blue: #61aeee;
+  --hljs-yellow: #e6c07b;
+  --plugin-active: var(--ok);
+  --plugin-inactive: #636873;
+  /* Drop-shadow for floating overlays (Git/Settings panels, modals).
+     Defined here so light theme can flatten the alpha — dark needs a
+     deeper shadow against the elevated bg, light needs a softer one. */
+  --overlay-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  /* QR codes need a light quiet zone to scan reliably even in dark theme. */
+  --qr-bg: #ffffff;
+
+  /* ── Effect tokens ────────────────────────────────────────────────
+     These abstract the app's shadows / blur / glow / gradients so a
+     "skin" (e.g. [data-skin="glow"]) can override the *feel* without
+     touching every rule. The DEFAULT skin's values below are exactly
+     the previously-hardcoded values, so default-dark is pixel-identical
+     to before this refactor. The light theme overrides the alphas. */
+  --card-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);      /* small floating popovers/menus */
+  --modal-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);    /* large centred modals */
+  --drawer-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);  /* side drawers */
+  --toast-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  --tooltip-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  --fab-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  /* Scrim behind modals / drawers. */
+  --backdrop-color: rgba(0, 0, 0, 0.55);
+  /* Blur applied to overlay scrims (backdrop-filter). */
+  --glass-blur: blur(2px);
+  /* Surface treatments — default skin keeps them inert (no gradient,
+     no glow) so nothing changes. The glow skin lights them up. */
+  --surface-gradient: none;
+  --dot-glow: none;
+  /* Focus ring + optional glow halo. Default = the existing flat ring. */
+  --focus-ring: 2px solid var(--accent);
+  --focus-glow: none;
+}
+
+[data-theme="light"] {
+  --bg: #ffffff;
+  --bg-elev: #f5f6f8;
+  --bg-elev-2: #ebedf0;
+  --border: #d0d4db;
+  --fg: #1a1d24;
+  --fg-muted: #5e6774;
+  --accent: #4f62c8;
+  --accent-strong: #3b4ea8;
+  --on-accent: #ffffff;
+  --danger: #d93b3b;
+  --ok: #2e9e56;
+  --warn: #c79518;
+  --fast: #8b3fd6;
+  --msg-tool-bg: #f0f4f8;
+  --msg-tool-border: #c8d4e0;
+  --msg-tool-result-bg: #eef3f8;
+  --msg-tool-result-border: #c0d0e0;
+  --msg-system-bg: #f5f5f5;
+  --msg-system-border: #d4d4d4;
+  --msg-error-bg: #fdf0f0;
+  --msg-error-border: #e8b4b4;
+  --msg-error-fg: #a82020;
+  --msg-rate-limit-bg: #fdf8ef;
+  --msg-rate-limit-border: #e8d4a4;
+  --msg-rate-limit-fg: #8a6510;
+  /* --msg-user-* is defined once in :root using color-mix() against the
+     theme variables, so the light theme inherits a re-mixed palette
+     automatically — no per-theme overrides needed. */
+  --bg-elev-3: #dde0e5;
+  --btn-hover-bg: #d8dbe2;
+  --btn-hover-border: #b0b6c1;
+  --drag-over-bg: #e8ecf2;
+  --assistant-header-fg: #5a6a8a;
+  --code-bg: #fafafa;
+  --code-fg: #383a42;
+  --code-bar-bg: #ebedf0;
+  --code-block-border: #d0d4db;
+  --bg-elev-1: #f0f1f4;
+  /* Syntax-highlighting token colours (atom-one-light palette) */
+  --hljs-fg: #383a42;
+  --hljs-comment: #a0a1a7;
+  --hljs-keyword: #a626a4;
+  --hljs-red: #e45649;
+  --hljs-cyan: #0184bc;
+  --hljs-green: #50a14f;
+  --hljs-orange: #986801;
+  --hljs-blue: #4078f2;
+  --hljs-yellow: #c18401;
+  --plugin-active: var(--ok);
+  --plugin-inactive: #9e9e9e;
+  --overlay-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+  --qr-bg: #ffffff;
+  /* Effect tokens — light theme softens shadow alphas and lightens the
+     scrim so floating surfaces don't read as heavy smudges on white. */
+  --card-shadow: 0 8px 28px rgba(0, 0, 0, 0.15);
+  --modal-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  --drawer-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
+  --toast-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  --tooltip-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  --fab-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
+  --backdrop-color: rgba(0, 0, 0, 0.35);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   GLOW SKIN  ([data-skin="glow"])
+   ────────────────────────────────────────────────────────────────────
+   A "skin" is orthogonal to the light/dark mode: it only changes the
+   *feel* (depth, glow, gradients) by overriding the effect tokens and
+   a handful of scoped element treatments. It inherits all the colour
+   tokens from :root (dark) or [data-theme="light"] (light), then layers
+   richer surfaces + a focus/dot glow on top.
+
+   Two blocks below: the dark variant (default) and the light variant
+   (scoped with [data-theme="light"]). Element-level glow rules that are
+   tone-agnostic live in a shared [data-skin="glow"] section at the end.
+   ════════════════════════════════════════════════════════════════════ */
+
+/* ── Glow · dark (default mode) ── */
+[data-skin="glow"] {
+  /* Slightly deeper, cooler base so the glow reads against it. */
+  --bg: #0c0e13;
+  --bg-elev: #14171f;
+  --bg-elev-1: #171b24;
+  --bg-elev-2: #1b1f2a;
+  --bg-elev-3: #232838;
+  --border: #2a3040;
+  /* Softer, larger, accent-tinted shadows. */
+  --card-shadow: 0 8px 30px rgba(0, 0, 0, 0.45), 0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent);
+  --modal-shadow: 0 16px 48px rgba(0, 0, 0, 0.55), 0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent);
+  --drawer-shadow: -10px 0 36px rgba(0, 0, 0, 0.45);
+  --toast-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  --tooltip-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  --fab-shadow: 0 6px 20px color-mix(in srgb, var(--accent) 35%, transparent);
+  --backdrop-color: rgba(6, 8, 12, 0.62);
+  --glass-blur: blur(8px);
+  /* A very faint top-down sheen for elevated surfaces. */
+  --surface-gradient: linear-gradient(180deg, color-mix(in srgb, #fff 4%, transparent), transparent 64%);
+  /* Glow halos. */
+  --dot-glow: 0 0 7px;
+  --focus-glow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent),
+                0 0 18px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* ── Glow · light ── */
+[data-skin="glow"][data-theme="light"] {
+  --bg: #fbfcfe;
+  --bg-elev: #f4f6fa;
+  --bg-elev-1: #eef1f7;
+  --bg-elev-2: #e7ebf3;
+  --bg-elev-3: #dde2ec;
+  --border: #d5dae4;
+  /* On light, glow must be far gentler — alpha-light shadows, no harsh
+     black, accent halo dialled down so it reads as a soft lift. */
+  --card-shadow: 0 8px 28px rgba(40, 50, 80, 0.14), 0 0 0 1px color-mix(in srgb, var(--accent) 14%, transparent);
+  --modal-shadow: 0 16px 44px rgba(40, 50, 80, 0.18), 0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent);
+  --drawer-shadow: -10px 0 32px rgba(40, 50, 80, 0.14);
+  --toast-shadow: 0 8px 24px rgba(40, 50, 80, 0.14);
+  --tooltip-shadow: 0 6px 16px rgba(40, 50, 80, 0.14);
+  --fab-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 30%, transparent);
+  --backdrop-color: rgba(30, 40, 70, 0.32);
+  --surface-gradient: linear-gradient(180deg, color-mix(in srgb, #fff 55%, transparent), transparent 64%);
+  --dot-glow: 0 0 6px;
+  --focus-glow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent),
+                0 0 14px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* ── Glow · shared element treatments (tone-agnostic) ──
+   These apply the effect tokens to concrete elements across the whole
+   app so the glow language is consistent (not just the sidebar). */
+
+/* Elevated surfaces pick up the faint top sheen. Only SINGLE, tall-enough
+   surfaces are listed here — NOT the bottom dock (.ctx-bar + .chat-composer).
+   That dock is several short stacked bars sharing one bg with no dividers;
+   a top-anchored gradient on a 32px-tall .ctx-bar never fades out within its
+   own height, leaving the whole bar brighter than the composer below it — a
+   visible seam. So the dock stays flat bg-elev and looks identical to the
+   default skin; the glow lives in its focus state instead. */
+[data-skin="glow"] .session-list-top,
+[data-skin="glow"] .chat-header,
+[data-skin="glow"] .model-picker,
+[data-skin="glow"] .cmd-picker,
+[data-skin="glow"] .ctx-menu,
+[data-skin="glow"] .appearance-panel,
+[data-skin="glow"] .accent-popover {
+  background-image: var(--surface-gradient);
+}
+
+/* Primary buttons get a subtle gradient + accent glow. */
+[data-skin="glow"] .btn-primary {
+  background-image: linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent), transparent);
+  box-shadow: 0 1px 0 color-mix(in srgb, #fff 22%, transparent) inset,
+              0 2px 10px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* Focused session card / panel: glow halo instead of a flat ring. */
+[data-skin="glow"] .session-item.focused {
+  box-shadow: inset 3px 0 0 var(--accent), var(--focus-glow);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* Status dots glow in their own colour. */
+[data-skin="glow"] .session-status-dot.status-live { box-shadow: var(--dot-glow) color-mix(in srgb, var(--ok) 80%, transparent); }
+[data-skin="glow"] .session-status-dot.status-working { box-shadow: var(--dot-glow) color-mix(in srgb, var(--accent) 85%, transparent); }
+[data-skin="glow"] .session-status-dot.status-err { box-shadow: var(--dot-glow) color-mix(in srgb, var(--danger) 80%, transparent); }
+
+/* Floating surfaces lean on the larger glow shadows already set via tokens.
+   The focus-visible ring also gains the halo for keyboard users. */
+[data-skin="glow"] :focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: var(--focus-glow);
+}
+
+/* ── glow · chat area (the surfaces the user stares at most) ──────────── */
+
+/* Composer: shares one continuous bottom dock with the ctx-bar above it
+   (same bg-elev, no divider between them). The whole dock stays flat bg-elev
+   in glow — no surface gradient — because a top-anchored sheen on the short
+   ctx-bar can't fade out within its own height and leaves it brighter than
+   the composer (a visible seam). So the composer matches the ctx-bar at rest
+   and only lights up on focus — the meaningful moment. */
+[data-skin="glow"] .chat-composer:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent),
+              inset 0 0 20px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* User bubble: lift it with a soft accent halo so "you" pops. */
+[data-skin="glow"] .msg.user {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent),
+              0 2px 18px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+/* Assistant bubble: a very faint ambient depth — no colour, just lift. */
+[data-skin="glow"] .msg.assistant {
+  box-shadow: 0 1px 14px color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+/* Input controls: focus glow ring (default skin only changes border-color). */
+[data-skin="glow"] .input:focus,
+[data-skin="glow"] .textarea:focus,
+[data-skin="glow"] .select:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* ── glow · overlays & sidebar interaction ───────────────────────────── */
+
+/* Modals / palettes / cards already carry a glow shadow via tokens; add an
+   accent rim so the "glow" reads as intentional, not just a deeper shadow. */
+[data-skin="glow"] .modal,
+[data-skin="glow"] .palette,
+[data-skin="glow"] .marketplace-card {
+  background-image: var(--surface-gradient);
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+}
+
+/* Sidebar hover comes alive with a faint glow (complements .focused). */
+[data-skin="glow"] .session-item:hover {
+  box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+[data-skin="glow"] .group-pill:hover {
+  box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+/* ── glow · medium-impact surfaces ───────────────────────────────────── */
+
+/* Danger button + active icon button get tinted glows. */
+[data-skin="glow"] .btn-danger:hover:not(:disabled) {
+  box-shadow: 0 0 12px color-mix(in srgb, var(--danger) 22%, transparent);
+}
+[data-skin="glow"] .btn-icon.active {
+  box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+/* Toasts: reuse the per-variant --kind-tint so each toast glows in its own
+   semantic colour (error=danger, success=ok, info=accent). */
+[data-skin="glow"] .toast {
+  box-shadow: var(--toast-shadow),
+              0 0 16px color-mix(in srgb, var(--kind-tint, var(--accent)) 18%, transparent);
+}
+
+/* Code blocks: subtle accent rim on hover for reading hierarchy. */
+[data-skin="glow"] .code-block:hover .code-block-bar,
+[data-skin="glow"] .code-block:hover > pre,
+[data-skin="glow"] .code-block:hover .msg-body pre {
+  border-color: color-mix(in srgb, var(--accent) 25%, var(--code-block-border));
+}
+
+/* Non-default mode badge: glow so the active permission mode is scannable. */
+[data-skin="glow"] .chat-panel-mode-badge.mode-plan,
+[data-skin="glow"] .chat-panel-mode-badge.mode-bypassPermissions,
+[data-skin="glow"] .chat-panel-mode-badge.mode-dontAsk,
+[data-skin="glow"] .chat-panel-mode-badge.mode-acceptEdits,
+[data-skin="glow"] .chat-panel-mode-badge.mode-auto {
+  box-shadow: 0 0 10px color-mix(in srgb, var(--mode-color, var(--accent)) 28%, transparent);
+}
+
+/* Context-usage fill bar gets a glowing leading edge. */
+[data-skin="glow"] .ctx-bar-fill {
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* Per-session scrollbar thumb gets a faint accent glow. */
+[data-skin="glow"] .chat-panel ::-webkit-scrollbar-thumb {
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   ANTHROPIC SKIN  ([data-skin="anthropic"])
+   ────────────────────────────────────────────────────────────────────
+   Aligned to Anthropic's official brand guidelines:
+     Dark #141413 · Light #faf9f5 · Mid Gray #b0aea5 · Light Gray #e8e6dc
+     Accents — Orange #d97757 · Blue #6a9bcc · Green #788c5d
+     Type — Poppins (headings) + Lora (body).
+   Unlike glow (which only retints effects), this skin sets the full colour
+   palette AND locks the accent to terracotta — useTheme removes its inline
+   --accent override when this skin is active, so the values here win.
+   ════════════════════════════════════════════════════════════════════ */
+
+/* ── Anthropic · dark (warm near-black) ── */
+[data-skin="anthropic"] {
+  --bg: #141413;
+  --bg-elev: #1e1e1c;
+  --bg-elev-1: #242422;
+  --bg-elev-2: #2c2b28;
+  --bg-elev-3: #353430;
+  --border: #353430;
+  --fg: #e8e6dc;
+  --fg-muted: #b0aea5;
+  /* Locked brand accent — terracotta. */
+  --accent: #d97757;
+  --accent-strong: #c25e3f;
+  --on-accent: #141413;
+  --ok: #97ab78;
+  --warn: #d9a441;
+  --danger: #cf6b5c;
+  /* Official typeface pairing. --font-head is consumed by the heading rule
+     below; --sans is the body stack (Lora). Falls back gracefully offline. */
+  --font-head: 'Poppins', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --sans: 'Lora', Georgia, 'PingFang SC', 'Microsoft YaHei', serif;
+  --code-bg: #0f0f0e;
+  --code-block-border: var(--border);
+}
+
+/* ── Anthropic · light (warm paper) ── */
+[data-skin="anthropic"][data-theme="light"] {
+  --bg: #faf9f5;
+  --bg-elev: #f4f2ea;
+  --bg-elev-1: #f0eee6;
+  --bg-elev-2: #e8e6dc;
+  --bg-elev-3: #e0ddd0;
+  --border: #e3e0d6;
+  --fg: #141413;
+  --fg-muted: #6b6862;
+  --accent: #d97757;
+  --accent-strong: #c25e3f;
+  --on-accent: #ffffff;
+  --ok: #5c7040;
+  --warn: #b5841f;
+  --danger: #c0392b;
+  --code-bg: #f3f1e9;
+  --code-block-border: #e3e0d6;
+}
+
+/* Headings adopt Poppins under the Anthropic skin. The base themes never
+   define --font-head, so the var() fallback to --sans leaves them untouched. */
+[data-skin="anthropic"] h1,
+[data-skin="anthropic"] h2,
+[data-skin="anthropic"] h3,
+[data-skin="anthropic"] .appearance-heading {
+  font-family: var(--font-head, var(--sans));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Dot pulse is already disabled globally; nothing motion-based added
+     by the glow skin beyond static shadows, which are safe. */
+}
+
+* {
+  box-sizing: border-box;
+  /* Scrollbar styling. Two implementations: WebKit (Chrome / Edge / Safari)
+     sees ::-webkit-scrollbar rules; Firefox reads scrollbar-width / -color.
+     Kept thin (8px) so it doesn't eat the reading column, and half-opaque
+     so it recedes unless actively hovered. */
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--fg-muted) 45%, transparent) transparent;
+}
+html, body, #root { height: 100%; margin: 0; }
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--fg-muted) 35%, transparent);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+  min-height: 24px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--fg-muted) 70%, transparent);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:active {
+  background: var(--fg-muted);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+/* Per-session accent scrollbar: .chat-panel sets --accent via
+   accentStyle, so all descendants (including Virtuoso's internal
+   scroll container) pick up the session color. */
+.chat-panel * {
+  scrollbar-color: color-mix(in srgb, var(--accent) 45%, transparent) transparent;
+}
+.chat-panel ::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.chat-panel ::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--accent) 70%, transparent);
+}
+.chat-panel ::-webkit-scrollbar-thumb:active {
+  background: var(--accent);
+}
+body {
+  font-family: var(--sans);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: var(--fs-md);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Tabular figures so live-updating numbers in the chrome (counts, sizes,
+     context bar, ahead/behind) keep a fixed column width and don't reflow as
+     digits change. Only affects digit advance width, not glyph shapes. */
+  font-variant-numeric: tabular-nums;
+}
+
+/* Code / input surfaces: enable slashed zero so 0 vs O and 1 vs l stay
+   distinguishable in code, IDs, hashes and diffs, and tabular-nums so digits
+   keep a fixed width. 'zero' is the standardized OpenType slashed-zero
+   feature (safe on any font that supports it; ignored otherwise) — ss01 is
+   deliberately avoided since stylistic sets differ per font. */
+.textarea,
+pre,
+code,
+kbd,
+samp {
+  font-feature-settings: 'zero' 1;
+  font-variant-numeric: slashed-zero tabular-nums;
+}
+
+button, input, textarea, select {
+  font: inherit;
+  color: inherit;
+}
+
+button { cursor: pointer; }

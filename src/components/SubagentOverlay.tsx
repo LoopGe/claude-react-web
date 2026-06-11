@@ -146,6 +146,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
           <MessageList
             items={items}
             parentToolUseIdFilter={currentId}
+            transcriptRevealKey={`subagent:${currentId}`}
             toolStatus={toolStatus}
             toolResults={toolResults}
             planStatus={planStatus}

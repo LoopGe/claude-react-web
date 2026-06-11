@@ -1,0 +1,214 @@
+.btn {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 6px 12px;
+  border-radius: 6px;
+  transition: background 0.1s, border-color 0.1s, transform 0.08s ease;
+}
+.btn:hover:not(:disabled) { background: var(--btn-hover-bg); border-color: var(--btn-hover-border); }
+/* (#4) Press feedback — subtle scale-down on active, restores on release
+   (Apple HIG / Material scale-feedback). transform-only, GPU-composited. */
+.btn:active:not(:disabled) { transform: scale(0.96); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-sm { padding: 2px 8px; font-size: 11px; }
+.btn-primary {
+  background: var(--accent-strong);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.btn-primary:hover:not(:disabled) { background: var(--accent); }
+.btn-danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+}
+.btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+/* Square icon button for header toggles (bell, etc.). Same height as
+   regular .btn but fixed-width and bigger glyph. */
+.btn-icon {
+  padding: 4px 8px;
+  min-width: 34px;
+  height: 30px;
+  font-size: 15px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.btn-icon.active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+}
+
+/* Accent colour picker — a row of small coloured dots in the toolbar. */
+.accent-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+}
+.accent-swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: var(--swatch);
+  padding: 0;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.accent-swatch:hover {
+  border-color: var(--fg-muted);
+  transform: scale(1.15);
+}
+.accent-swatch.active {
+  border-color: var(--fg);
+  box-shadow: 0 0 0 1px var(--bg);
+}
+.accent-swatch-default {
+  --swatch: #8c94a3;
+  border: 2px dashed var(--fg-muted);
+}
+.accent-swatch-default.active {
+  border-color: var(--fg);
+  border-style: solid;
+}
+
+/* Custom-colour swatch: a <label> wrapping a hidden native colour input.
+   When no preset is active it shows a dashed ring + "+"; once a custom
+   colour is picked it fills with that colour like a preset swatch. */
+.accent-swatch-custom {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-style: dashed;
+  border-color: var(--fg-muted);
+}
+.accent-swatch-custom.active {
+  border-style: solid;
+}
+.accent-swatch-custom input[type='color'] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  opacity: 0;
+  cursor: pointer;
+}
+.accent-swatch-custom-plus {
+  font-size: 12px;
+  line-height: 1;
+  color: var(--fg-muted);
+  pointer-events: none;
+}
+
+/* Accent picker trigger: a single swatch button that opens the popover.
+   In the toolbar it also carries `.btn.btn-icon`, so it inherits that
+   button's sizing and hover treatment; we only centre the swatch inside. */
+.accent-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* Never let a flex/grid parent stretch the trigger to full width — it's
+     a compact swatch button, not a field. Matters in the New-session dialog
+     where `.settings-field` is a column flexbox (align-items: stretch). */
+  align-self: flex-start;
+}
+/* Standalone trigger (not carrying `.btn`): give it its own compact button
+   chrome so it reads as a button, not a bare dot. The toolbar trigger has
+   `.btn.btn-icon` for this; `:not(.btn)` keeps the two from fighting over
+   padding (equal specificity would otherwise let the later rule win). */
+.accent-trigger:not(.btn) {
+  padding: 5px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.accent-trigger:not(.btn):hover {
+  border-color: var(--fg-muted);
+}
+.accent-trigger .accent-swatch {
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+}
+.accent-trigger:hover .accent-swatch {
+  border-color: var(--fg-muted);
+}
+
+/* Accent picker popover: reuses the .ctx-menu visual language. Hosts the
+   swatch grid (.accent-picker) laid out 5-per-row so 8 presets + default
+   + custom wrap into two tidy rows. */
+.accent-popover {
+  position: fixed;
+  padding: 10px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--card-shadow);
+  z-index: 1000;
+}
+.accent-popover .accent-picker {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+  padding: 0;
+}
+.accent-popover .accent-swatch {
+  width: 26px;
+  height: 26px;
+}
+/* Full-width section break inside the swatch grid (e.g. before "Recent").
+   Spans every column so the swatches after it start on a fresh row. */
+.accent-picker-divider {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  /* Hairline rule to the right of the label. */
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.accent-picker-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+/* Appearance panel embeds the swatch grid inline (no .accent-popover
+   wrapper), so it would otherwise fall back to the toolbar's single-row
+   inline-flex layout — which overflows once "Recent" colours are saved.
+   Reuse the popover's wrapped grid so presets + custom + recents flow into
+   tidy rows instead of one crowded line. */
+.appearance-section .accent-picker {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+  padding: 0;
+}
+.appearance-section .accent-swatch {
+  width: 26px;
+  height: 26px;
+}
+
+.input, .textarea, .select {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--fg);
+  width: 100%;
+}
+.input:focus, .textarea:focus, .select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.textarea { resize: vertical; min-height: 60px; font-family: var(--mono); font-size: 12.5px; }

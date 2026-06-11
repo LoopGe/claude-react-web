@@ -1,0 +1,963 @@
+/* Layout */
+.app {
+  --sidebar-width: 280px;
+  display: grid;
+  grid-template-columns: var(--sidebar-width) 1fr;
+  /* dvh (dynamic viewport height) accounts for the mobile-browser URL bar
+     collapse — 100vh on iOS/Android Safari/Chrome over-extends and clips
+     content when the chrome retracts. The 100vh line is a fallback for
+     Safari < 15.4 (March 2022), where `dvh` is unrecognised and the
+     property would otherwise resolve to `auto` and collapse the layout. */
+  height: 100vh;
+  height: 100dvh;
+  /* Grid items default to min-height: auto (= content size), which lets the
+     chat message list push the whole page taller than the viewport. Every
+     direct child must be explicitly constrained. */
+  overflow: hidden;
+}
+.sidebar {
+  position: relative;
+  background: var(--bg-elev);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Vertical drag handle sitting on the sidebar's right edge. 4px wide +
+   invisible most of the time, highlights on hover / during drag. The
+   actual resize logic lives in App.tsx via mousedown+mousemove. */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: -2px;
+  width: 4px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 5;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+.sidebar-resizer:hover,
+.sidebar-resizer.dragging {
+  background: var(--accent);
+}
+/* When dragging, lock the cursor globally so it stays col-resize even when
+   the pointer briefly leaves the handle. */
+body.resizing-col,
+body.resizing-col * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+.brand {
+  min-height: var(--app-header-height);
+  padding: 0 16px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.brand-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, color-mix(in srgb, var(--accent) 60%, white), var(--accent));
+  box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+/* App-level toolbar row. After removing the focused-session echo it
+   holds only the right-aligned button cluster, so the row can be
+   shorter than before and its only contents flush-right. */
+.main-header {
+  min-height: var(--app-header-height);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+.main-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* main-body holds up to MAX_OPEN chat panels. The grid-template-columns
+   is set inline (App.tsx) so dividers are real grid tracks rather than
+   gaps, giving us a hoverable/draggable bar between panels. */
+.main-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  background: var(--border);
+  overflow: hidden;
+}
+
+/* 4px vertical divider between two open panels — sits exactly on the
+   border, becomes the accent colour while hovered / dragged. */
+.panel-divider {
+  cursor: col-resize;
+  background: var(--border);
+  transition: background 0.15s ease;
+  z-index: 2;
+}
+.panel-divider:hover,
+.panel-divider.dragging {
+  background: var(--accent);
+}
+
+/* One chat column. The gap between columns is faked via grid-gap + bg, so
+   each panel is opaque on top of the divider. Focused panel gets a subtle
+   accent border on the top. */
+.chat-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+  border-top: 2px solid transparent;
+  overflow: hidden;
+  /* Re-declare the user-bubble vars here so their color-mix() formulas
+     re-evaluate against this panel's --accent. When a session sets a
+     per-session accent via inline style on .chat-panel, the global
+     :root-computed --msg-user-* values would otherwise be inherited as
+     already-resolved colors and ignore the session override. */
+  --msg-user-bg: color-mix(in srgb, var(--accent) 28%, var(--bg));
+  --msg-user-border: color-mix(in srgb, var(--accent) 50%, var(--bg));
+  --msg-user-fg: var(--fg);
+  --msg-user-header-fg: color-mix(in srgb, var(--accent) 75%, var(--fg));
+  --msg-user-link-fg: var(--accent);
+  --msg-user-code-bg: color-mix(in srgb, var(--accent) 18%, transparent);
+  --msg-user-pre-bg: color-mix(in srgb, var(--bg) 80%, var(--accent));
+  --msg-user-pre-border: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.chat-panel.focused { border-top-color: var(--accent); }
+.chat-panel.drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+}
+/* Two-row panel header. Row 1 is the strong signal (slot, status dot,
+   title, chips, close). Row 2 is muted supplementary metadata (cwd,
+   message count, working label). An error band slots in between them
+   when session.error is set. */
+.chat-panel-header {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  /* The whole header is the drag handle for panel swaps. */
+  cursor: grab;
+  user-select: none;
+  min-width: 0;
+}
+.chat-panel-header:active { cursor: grabbing; }
+.chat-panel-header-row1 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  min-width: 0;
+}
+.chat-panel-header-row2 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 2px 10px 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  min-width: 0;
+}
+.chat-panel-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+/* Slot pill — same numeric label as the sidebar card, so users can
+   mentally link "card 2 in sidebar" with "panel 2 in grid". Filled when
+   this panel is focused; hollow otherwise. */
+.chat-panel-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.chat-panel-slot.focused {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+/* Status dot — one of live/working/terminated/err/dormant. Colour and
+   animation map to statusClass() in App.tsx. */
+.chat-panel-status {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--fg-muted);
+}
+.chat-panel-status.live { background: var(--ok); }
+.chat-panel-status.working {
+  background: var(--accent);
+  animation: session-working-pulse 1s ease-in-out infinite;
+}
+.chat-panel-status.err { background: var(--danger); }
+.chat-panel-status.terminated,
+.chat-panel-status.dormant { background: var(--fg-muted); opacity: 0.5; }
+
+/* Unread dot on a non-focused open panel's header. Sits between the
+   status dot and the title — matches the sidebar's .session-item-unread
+   treatment so the two indicators feel consistent. */
+.chat-panel-unread {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  box-shadow: 0 0 0 2px var(--bg);
+}
+
+/* Non-default permission mode visual cue. Two layers:
+   1. .chat-panel.mode-active tints the header background + adds a left
+      border so the panel as a whole reads as "different from default".
+   2. .chat-panel-mode-badge is a small pill near the title — the user's
+      eye lands on the title first, so the cue should be there too. It is
+      also the interactive control: clicking it opens the mode menu (this
+      replaced the old separate "mode" chip in the meta strip).
+   Tinted with --warn (amber) for plan, --danger for bypass/dontAsk,
+   --accent for acceptEdits/auto. In default mode --mode-color is unset
+   and the badge renders muted/neutral (see the rules below). */
+.chat-panel.mode-active .chat-panel-header {
+  background: color-mix(in srgb, var(--mode-color, var(--warn)) 8%, var(--bg-elev));
+  border-bottom-color: color-mix(in srgb, var(--mode-color, var(--warn)) 35%, var(--border));
+  box-shadow: inset 3px 0 0 var(--mode-color, var(--warn));
+}
+.chat-panel.mode-default { --mode-color: var(--fg-muted); }
+.chat-panel.mode-plan { --mode-color: var(--warn); }
+.chat-panel.mode-bypassPermissions { --mode-color: var(--danger); }
+.chat-panel.mode-dontAsk { --mode-color: var(--danger); }
+.chat-panel.mode-acceptEdits { --mode-color: var(--accent); }
+.chat-panel.mode-auto { --mode-color: var(--accent); }
+
+/* Smooth mode-colour transitions on the panel itself. --mode-color is
+   registered via @property so the browser can interpolate it. The header
+   uses color-mix() — because the colour-stop is the only thing that
+   changes, the interpolation Just Works in supporting browsers. */
+.chat-panel {
+  transition: --mode-color 300ms ease;
+}
+.chat-panel.mode-active .chat-panel-header {
+  transition: background 300ms ease, border-bottom-color 300ms ease, box-shadow 300ms ease;
+}
+/* Ensure the header also transitions smoothly when reverting to default
+   mode (losing .mode-active). Without this, the header snaps back. */
+.chat-panel .chat-panel-header {
+  transition: background 300ms ease, border-bottom-color 300ms ease, box-shadow 300ms ease;
+}
+/* Attention-grabbing flash when the permission mode changes. The header
+   briefly brightens (25% → 8% tint) to draw the eye to the mode switch.
+   Set/unset by ChatPanel.tsx via the mode-changing class; removed on
+   animationend so it can replay on the next switch. */
+@keyframes mode-flash {
+  0%   { background: color-mix(in srgb, var(--mode-color) 25%, var(--bg-elev)); }
+  100% { background: color-mix(in srgb, var(--mode-color) 8%, var(--bg-elev)); }
+}
+.chat-panel-header.mode-changing.mode-changing {
+  animation: mode-flash 400ms ease-out;
+}
+/* Mode badge slide transition. On switch the old badge slides out to the
+   left while the new one slides in from the right, producing a lateral
+   "flow" effect. The wrapper clips overflow so the outgoing badge
+   disappears cleanly. */
+@keyframes mode-slide-in {
+  0%   { transform: translateX(50%); opacity: 0; }
+  100% { transform: translateX(0);   opacity: 1; }
+}
+@keyframes mode-slide-out {
+  0%   { transform: translateX(0);    opacity: 1; }
+  100% { transform: translateX(-50%); opacity: 0; }
+}
+
+.chat-panel-mode-badge-wrap {
+  position: relative;
+  display: inline-flex;
+  border-radius: 4px;
+}
+
+.chat-panel-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--mono);
+  /* Default mode: muted, no tint — reads as a quiet control, not a
+     warning. Non-default modes override --mode-color above. */
+  color: var(--mode-color, var(--fg-muted));
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  flex-shrink: 0;
+  user-select: none;
+  line-height: 1.35;
+  cursor: pointer;
+  transition: background 120ms ease, color 300ms ease, transform 120ms ease;
+}
+/* The outgoing badge is positioned absolutely so it overlaps the incoming
+   one and doesn't affect layout while it slides away. It keeps its natural
+   size and slides left out of frame. */
+.chat-panel-mode-badge.mode-slide-out {
+  position: absolute;
+  left: 0;
+  top: 0;
+  animation: mode-slide-out 220ms ease-in forwards;
+  pointer-events: none;
+}
+/* The incoming badge gets the slide-in animation only during a transition. */
+.chat-panel-mode-badge.mode-slide-in {
+  animation: mode-slide-in 280ms ease-out;
+}
+/* Non-default modes get the tinted background; default stays transparent
+   until hover so it doesn't compete with the title. */
+.chat-panel-mode-badge.mode-plan,
+.chat-panel-mode-badge.mode-bypassPermissions,
+.chat-panel-mode-badge.mode-dontAsk,
+.chat-panel-mode-badge.mode-acceptEdits,
+.chat-panel-mode-badge.mode-auto {
+  background: color-mix(in srgb, var(--mode-color, var(--warn)) 12%, transparent);
+}
+.chat-panel-mode-badge:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--mode-color, var(--fg-muted)) 20%, transparent);
+  transform: translateY(-1px);
+}
+.chat-panel-mode-badge:active:not(:disabled) { transform: translateY(0) scale(0.97); }
+.chat-panel-mode-badge:focus-visible {
+  outline: 2px solid var(--mode-color, var(--accent));
+  outline-offset: 1px;
+}
+.chat-panel-mode-badge:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* Fast-mode badge — same pill shape as the mode badge. Muted when off
+   (a quiet, opt-in control), tinted with --fast when on, and rendered in
+   --warn with a "cooldown" label when rate-limited. */
+.chat-panel-fast-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  flex-shrink: 0;
+  user-select: none;
+  line-height: 1.35;
+  cursor: pointer;
+  transition: background 120ms ease, color 200ms ease, transform 120ms ease;
+}
+.chat-panel-fast-badge.fast-on {
+  color: var(--fast);
+  background: color-mix(in srgb, var(--fast) 14%, transparent);
+}
+.chat-panel-fast-badge.fast-cooldown {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+}
+.chat-panel-fast-badge:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--fast) 22%, transparent);
+  transform: translateY(-1px);
+}
+.chat-panel-fast-badge:active:not(:disabled) { transform: translateY(0) scale(0.97); }
+.chat-panel-fast-badge:focus-visible {
+  outline: 2px solid var(--fast);
+  outline-offset: 1px;
+}
+.chat-panel-fast-badge:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* Effort-level badge — same pill shape as the mode badge. Neutral/muted by
+   default; tinted with --accent when set above the default 'high' so the
+   chip quietly signals a non-default reasoning depth. */
+.chat-panel-effort-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  flex-shrink: 0;
+  user-select: none;
+  line-height: 1.35;
+  cursor: pointer;
+  text-transform: lowercase;
+  transition: background 120ms ease, color 200ms ease, transform 120ms ease;
+}
+/* Levels above the default 'high' (xhigh / max) get the accent tint so a
+   raised effort reads as a deliberate, active setting. low/medium/high stay
+   muted — they're the everyday range. */
+.chat-panel-effort-badge.effort-xhigh,
+.chat-panel-effort-badge.effort-max {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.chat-panel-effort-badge:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  transform: translateY(-1px);
+}
+.chat-panel-effort-badge:active:not(:disabled) { transform: translateY(0) scale(0.97); }
+.chat-panel-effort-badge:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.chat-panel-effort-badge:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* Effort-level slider popover — anchored under the effort chip. Reuses the
+   .ctx-menu surface language (elevated bg, border, shadow, pop-in). */
+.effort-slider {
+  position: fixed;
+  width: 240px;
+  padding: 12px 14px 10px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: var(--card-shadow);
+  z-index: 1000;
+  user-select: none;
+  transform-origin: top left;
+  animation: ctx-menu-in 120ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.effort-slider-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.effort-slider-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+.effort-slider-value {
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--mono);
+  color: var(--accent);
+  text-transform: lowercase;
+}
+/* Native range, themed via accent. Track + thumb restyled for both webkit
+   and firefox so the discrete stops read consistently across browsers. */
+.effort-slider-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-elev-2);
+  outline: none;
+  cursor: pointer;
+}
+.effort-slider-range:disabled { cursor: not-allowed; opacity: 0.45; }
+.effort-slider-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg-elev);
+  box-shadow: 0 0 0 1px var(--accent);
+  cursor: pointer;
+}
+.effort-slider-range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg-elev);
+  cursor: pointer;
+}
+.effort-slider-range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+/* Tick labels — clickable named stops under the track. */
+.effort-slider-ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  gap: 2px;
+}
+.effort-slider-tick {
+  flex: 1;
+  padding: 2px 0;
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  text-transform: lowercase;
+  text-align: center;
+  transition: color 120ms ease, background 120ms ease;
+}
+.effort-slider-tick:hover:not(:disabled) { background: var(--bg-elev-2); }
+.effort-slider-tick.active { color: var(--accent); font-weight: 600; }
+.effort-slider-tick:disabled { cursor: not-allowed; }
+
+/* Meta-strip badges — model + git. Both are neutral pills sharing the
+   mode badge's shape (rounded, mono, icon + value, hover/focus/disabled
+   states). They differ only in semantics:
+   - model: an arbitrary value with no risk meaning, so it stays muted.
+   - git: carries state colour (clean = muted, dirty = warn, conflict =
+     danger) the same way the mode badge colour-codes risk.
+   model click → inline editor (.chat-panel-chip-input); git click →
+   opens the Git panel. */
+.chat-panel-model-badge,
+.chat-panel-git-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 180px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  flex-shrink: 1;
+  min-width: 0;
+  user-select: none;
+  line-height: 1.35;
+  cursor: pointer;
+  transition: background 120ms ease, transform 120ms ease;
+}
+.chat-panel-model-badge:hover:not(:disabled),
+.chat-panel-git-badge:hover:not(:disabled) {
+  background: var(--bg-elev-2);
+  transform: translateY(-1px);
+}
+.chat-panel-model-badge:active:not(:disabled),
+.chat-panel-git-badge:active:not(:disabled) {
+  transform: translateY(0) scale(0.97);
+}
+.chat-panel-model-badge.open {
+  background: var(--bg-elev-2);
+}
+.chat-panel-model-badge:focus-visible,
+.chat-panel-git-badge:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.chat-panel-model-badge:disabled,
+.chat-panel-git-badge:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.chat-panel-model-badge-value,
+.chat-panel-git-badge-value {
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-panel-model-badge:disabled .chat-panel-model-badge-value {
+  color: var(--fg-muted);
+}
+/* Git ⎇ glyph: muted, doesn't compete with the branch/status value. */
+.chat-panel-git-badge-icon {
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+/* Git state colour — mirrors the old git-chip variants. */
+.chat-panel-git-badge.dirty .chat-panel-git-badge-value {
+  color: var(--warn);
+}
+.chat-panel-git-badge.conflict .chat-panel-git-badge-value {
+  color: var(--danger);
+}
+
+/* Row 2 pieces: cwd (folder icon + shortened path), message count, and an
+   inline working… chip echoing the status dot for a stronger hint. */
+.chat-panel-cwd {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex-shrink: 1;
+}
+.chat-panel-msgcount {
+  font-family: var(--mono);
+  flex-shrink: 0;
+}
+.chat-panel-working-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.chat-panel-working-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: session-working-pulse 1s ease-in-out infinite;
+}
+
+/* Session error band — shown between row1 and row2 when session.error
+   is set. Red background, one-line ellipsis, tooltip carries the full
+   message if it overflows. */
+.chat-panel-error {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  color: var(--danger);
+  padding: 3px 10px;
+  font-size: 12px;
+  font-family: var(--mono);
+  border-top: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Meta strip that holds the model + git badges. Sits between the panel
+   title (left-aligned) and close button (right-aligned). */
+.chat-panel-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 8px 0 auto;
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+/* Session-settings overlay. Same pattern as .perm-overlay: absolute-
+   positioned inside a specific chat panel, semi-transparent backdrop,
+   centred card. Only covers the one column instead of the whole app. */
+.settings-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--bg) 65%, transparent);
+  backdrop-filter: var(--glass-blur);
+  z-index: 5;
+  overflow-y: auto;
+}
+.settings-overlay.hidden {
+  display: none;
+}
+/* (#1) Overlay entrance — backdrop fades in, the panel scales + lifts.
+   The overlay is always mounted and toggled via `.hidden` (display:none),
+   so the animation replays each time it's revealed. Shared by the git
+   overlay (mounted conditionally) below via .overlay-enter-* keyframes. */
+.settings-overlay:not(.hidden) { animation: overlay-backdrop-in 160ms ease-out both; }
+.settings-overlay:not(.hidden) > .settings-panel { animation: overlay-panel-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.settings-overlay > .settings-panel {
+  width: min(420px, 100%);
+  max-height: 100%;
+  position: static;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--overlay-shadow);
+}
+@keyframes overlay-backdrop-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes overlay-panel-in {
+  from { opacity: 0; transform: scale(0.97) translateY(6px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* Sidebar mode marker: same size/spacing as the pin so it lines up
+   with other inline title icons. The tinted left border on the
+   card itself is the more prominent cue — see .session-item.mode-active. */
+.session-item-mode-badge {
+  margin-right: 4px;
+  font-size: 11px;
+  vertical-align: middle;
+}
+/* mode-active stripe removed from session cards — the ⚡ badge is enough */
+.session-item.mode-plan { --mode-color: var(--warn); }
+.session-item.mode-bypassPermissions { --mode-color: var(--danger); }
+.session-item.mode-dontAsk { --mode-color: var(--danger); }
+.session-item.mode-acceptEdits { --mode-color: var(--accent); }
+.session-item.mode-auto { --mode-color: var(--accent); }
+.session-item.mode-active.focused {
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+.chat-panel-body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+.empty-state {
+  margin: auto;
+  text-align: center;
+  color: var(--fg-muted);
+  max-width: 420px;
+  padding: 40px 20px;
+}
+.empty-state h2 { color: var(--fg); font-weight: 600; }
+.app-empty-state {
+  width: min(460px, calc(100vw - 32px));
+  max-width: 460px;
+  padding: 32px;
+  background: color-mix(in srgb, var(--bg-elev) 74%, transparent);
+  background-image: var(--surface-gradient);
+  border: 1px solid var(--border-subtle, var(--border));
+  border-radius: 18px;
+  box-shadow: var(--card-shadow);
+}
+.app-empty-state h2 {
+  margin: 0;
+  font-size: 24px;
+  letter-spacing: -0.02em;
+}
+.app-empty-state p {
+  line-height: 1.6;
+}
+.app-empty-state-eyebrow {
+  margin: 0 0 8px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.app-empty-state-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+.empty-state code {
+  font-family: var(--mono);
+  background: var(--bg-elev);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.empty-state-cta {
+  min-width: 0;
+  padding: 9px 18px;
+  font-weight: 600;
+}
+.empty-state-hint {
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.empty-state-hint kbd {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+/* ── Prompt dialog input ─────────────────────────────────────── */
+
+.prompt-dialog-input {
+  margin-top: 12px;
+}
+
+/* ── Initial app loading spinner ─────────────────────────────── */
+
+.app-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* See `.app` height comment — 100vh fallback for Safari < 15.4. */
+  height: 100vh;
+  height: 100dvh;
+  background: var(--bg);
+}
+.app-loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: msg-sending-spin 0.8s linear infinite;
+}
+
+/* Inline fallback for lazy-loaded tab/panel content (e.g. Marketplace
+   inside global settings). Quiet by design: a single loading line
+   without a spinner so the existing modal frame stays calm while the
+   chunk hydrates. */
+.lazy-tab-loading {
+  padding: 24px 16px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.error-bar {
+  padding: 8px 18px;
+  background: var(--msg-error-bg);
+  border-bottom: 1px solid var(--msg-error-border);
+  color: var(--msg-error-fg);
+  font-size: 13px;
+}
+/* Visually-hide the error-bar when empty WITHOUT removing it from the
+ * a11y tree. Keeping the live region permanently mounted (instead of
+ * conditionally rendering it only when an error appears) ensures that
+ * screen readers see the mutation when content changes from "" → error
+ * — some SR/browser combos do not announce content that's already
+ * present at mount, so a `{err && <div role=alert>}` pattern can drop
+ * the announcement entirely.
+ *
+ * Standard "sr-only / visually-hidden" recipe: 1×1 absolutely
+ * positioned, clipped, no border/padding. Element stays focusable and
+ * announceable; takes no visual space. */
+.error-bar-empty {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Update notification banner — surfaces "a newer @mi/claude-react-web is
+ * on npm". Sits in the same vertical band as .error-bar (immediately
+ * below the header). Uses the accent colour as a soft tint so it reads
+ * as informational rather than alarming, while keeping enough contrast
+ * for the install command to remain skim-readable. */
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 18px;
+  background: color-mix(in srgb, var(--accent) 15%, var(--bg));
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 40%, var(--bg));
+  color: var(--fg);
+  font-size: 13px;
+}
+.update-banner-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.update-banner-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.update-banner-cmd {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 2px 8px;
+  background: color-mix(in srgb, var(--bg) 65%, var(--accent));
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--bg));
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.update-banner-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+  background: var(--accent);
+  color: var(--on-accent);
+  border: 1px solid var(--accent-strong);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.update-banner-btn:hover {
+  background: var(--accent-strong);
+}
+.update-banner-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* Secondary "Copy" button used when the primary "Update now" is present —
+   quieter so the in-app update reads as the main action. */
+.update-banner-btn-ghost {
+  font-size: 12px;
+  padding: 4px 10px;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--bg));
+  border-radius: 4px;
+  cursor: pointer;
+}
+.update-banner-btn-ghost:hover {
+  background: var(--btn-hover-bg);
+}
+.update-banner-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.update-banner-close:hover {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+}

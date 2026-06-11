@@ -1,0 +1,1452 @@
+/* ── A11y: skip link ───────────────────────────────────────────────
+ *
+ * First focusable element in the DOM. Visually hidden by default
+ * (clipped to a 1px square off-screen), but when it receives keyboard
+ * focus it slides into the top-left corner so a Tab-only user can
+ * jump straight to the chat panels region without traversing the
+ * entire sidebar. Standard WCAG 2.4.1 pattern.
+ */
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 10000;
+  padding: 8px 14px;
+  background: var(--accent);
+  color: var(--on-accent);
+  text-decoration: none;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 13px;
+  /* Off-screen until focused. transform-based hide avoids `display: none`
+     which would also remove from the tab order. */
+  transform: translateY(-150%);
+  transition: transform 0.15s ease;
+}
+.skip-link:focus,
+.skip-link:focus-visible {
+  transform: translateY(0);
+  outline: 2px solid var(--bg);
+  outline-offset: 2px;
+}
+
+/* ── A11y: global keyboard focus ring ───────────────────────────────
+ *
+ * Until this rule existed, the only `:focus-visible` selector in the
+ * stylesheet was on `.msg-copy-btn`. Every other interactive element
+ * (buttons, chips, session items, composer textarea, settings overlay
+ * controls) had no visible focus ring at all — keyboard-only and
+ * screen-reader users had no idea where focus was. WCAG 2.4.7 fail.
+ *
+ * `:focus-visible` only paints when the user reached the element via
+ * keyboard (or programmatic focus-on-error), so mouse clicks on
+ * buttons don't flash the ring.
+ *
+ * Note: we deliberately do NOT set `border-radius` here. Modern
+ * browsers paint `outline` along the element's own border-radius, so
+ * forcing a uniform radius would distort circular elements like
+ * `.accent-swatch` (border-radius: 50%) and pill controls
+ * (border-radius: 999px) into 3px-cornered squares whenever they
+ * received keyboard focus.
+ */
+:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+/* Strip the platform default outline only when our :focus-visible
+ * rule applies — non-keyboard focus (e.g. mouse-click on a button)
+ * still suppresses both, which matches every other modern UI. */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* ── ToolCard chrome ──────────────────────────────────────────────────
+ *
+ * Shared frame for every tool_use card (Edit, Write, Read, Grep, Bash,
+ * etc.). The header carries an icon + title + chip row + status badge +
+ * copy button on a single line; the body holds tool-specific content
+ * (a diff, a chip row, a checklist, etc).
+ *
+ * Each per-tool view supplies its own `.tool-card-${name}` class so it
+ * can override colours / paddings without touching the shared chrome.
+ */
+.tool-card {
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elev);
+  overflow: hidden; /* clip children to the rounded corners */
+  font-size: 13px;
+}
+.tool-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-elev-2);
+  border-bottom: 1px solid var(--border);
+  min-height: 32px;
+  flex-wrap: wrap;
+}
+/* When the card has no body, the header IS the card — drop the bottom
+ * border so the card looks like a single bar instead of an empty
+ * panel.  Read / Grep / Glob / WebSearch / WebFetch all hit this. */
+.tool-card:not(:has(.tool-card-body)) .tool-card-header {
+  border-bottom: none;
+}
+.tool-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  color: var(--fg-muted);
+}
+.tool-card-title {
+  font-weight: 500;
+  color: var(--fg);
+  font-size: 13px;
+  min-width: 0;
+  /* Allow the title to flex but never push past chips/status off-screen */
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-card-title-code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--bg);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.tool-card-spacer {
+  flex: 1;
+  min-width: 4px;
+}
+.tool-card-body {
+  background: var(--bg);
+  font-size: 12.5px;
+}
+
+/* Inline tool_result section merged into the bottom of a tool card.
+   Sits below the card body (or directly under the header for body-less
+   cards like Read/Grep) with a separating border so the result reads as
+   a distinct zone of the same card. */
+.tool-card-result {
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  padding: 2px 6px 4px;
+}
+/* The result <details> already brings its own top margin; collapse it so
+   the section padding controls the spacing. */
+.tool-card-result > .tool-result-details {
+  margin-top: 0;
+}
+/* Error results get a subtle red tint so failures stand out at a glance
+   even while collapsed. */
+.tool-card-result-error {
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+}
+.tool-card-result-error > .tool-result-details > .tool-result-summary {
+  color: var(--danger);
+}
+
+/* File-path title block — bold filename + muted dir suffix.
+ *
+ * Uses inline-flex so a row of file paths in the same card body wraps
+ * nicely; explicit `min-width: 0` lets the dir's text-overflow ellipsis
+ * actually clip when there isn't room. */
+.tool-card-filepath {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+.tool-card-filepath-base {
+  font-family: var(--mono);
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+}
+.tool-card-filepath-badge {
+  font-size: 10.5px;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 6px;
+  text-transform: lowercase;
+  flex-shrink: 0;
+}
+.tool-card-filepath-dir {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Tool status pill — tiny icon + (optional) text inline at the right
+ * end of the header. Three colour variants. The compact form drops the
+ * label and just shows the icon, used for dense rows. */
+.tool-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-family: var(--mono);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+}
+.tool-status-label { line-height: 1; }
+.tool-status-running {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.tool-status-running svg {
+  animation: tool-status-spin 0.9s linear infinite;
+}
+.tool-status-success {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  border-color: color-mix(in srgb, var(--ok) 30%, transparent);
+}
+.tool-status-error {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+}
+.tool-status-compact {
+  padding: 2px;
+  width: 18px;
+  height: 18px;
+  justify-content: center;
+}
+@keyframes tool-status-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Copy button — minimal icon button that only reveals its background on
+ * hover so it doesn't compete with the status badge for attention. */
+.tool-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.tool-copy-btn:hover {
+  background: var(--bg);
+  color: var(--fg);
+  border-color: var(--border);
+}
+.tool-copy-btn.copied {
+  color: var(--ok);
+}
+.tool-copy-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* --- Per-tool body adaptations -------------------------------------------
+ *
+ * Each ToolCard variant tweaks the body padding / colour to match the
+ * shape of its content. The shared chrome stays untouched.
+ */
+
+/* Diff / Edit / Write / NotebookEdit body. We lose the outer border (the
+ * card itself has it now) and reset the file-path bar that previously
+ * lived at the top of the diff — the card header replaces it. */
+.tool-card-diff .tool-card-body {
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-x: auto;
+}
+.diff-block-inner {
+  padding: 4px 0;
+}
+.diff-chunk-label {
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  border-bottom: 1px dashed var(--border);
+  font-family: var(--mono);
+}
+.diff-chunk-label + .diff-lines {
+  padding-top: 2px;
+}
+.diff-line-ctx {
+  color: var(--fg-muted);
+  background: transparent;
+}
+
+/* Click-to-expand truncation block: replaces the old static
+ * "… N more lines" footer with a real <details> the user can open. */
+.diff-truncation-details {
+  border-top: 1px dashed var(--border);
+}
+.diff-truncation-details > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 6px 10px;
+  font-size: 11.5px;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  font-style: italic;
+  user-select: none;
+}
+.diff-truncation-details > summary::-webkit-details-marker { display: none; }
+.diff-truncation-details > summary:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.diff-truncation-details[open] > summary::after {
+  content: ' (click to collapse)';
+  opacity: 0.6;
+}
+.diff-truncation-details[open] {
+  border-bottom: none;
+}
+
+/* Bash / PowerShell body. The header now carries the prompt + first
+ * line; the body only renders the fold (full command) and / or the
+ * description subtitle. */
+.tool-card-bash .bash-tool-line {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  flex: 1;
+  overflow: hidden;
+}
+.tool-card-bash .bash-tool-prompt {
+  color: var(--accent);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.tool-card-bash .bash-tool-command {
+  color: var(--fg);
+  background: transparent;
+  padding: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.tool-card-bash .bash-tool-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 10px;
+}
+.tool-card-bash details.bash-tool-collapsible {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tool-card-bash details.bash-tool-collapsible > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+.tool-card-bash details.bash-tool-collapsible > summary::-webkit-details-marker { display: none; }
+.tool-card-bash details.bash-tool-collapsible > summary:hover .bash-tool-fold-hint {
+  color: var(--accent);
+}
+
+/* Grep / Glob / WebSearch — pattern lives inside the header title.
+ * The card is body-less; nothing extra is needed here, but we adjust
+ * the header padding to feel snug given the small content.
+ *
+ * Each tool gets its own semantic class (tool-card-grep / -glob /
+ * -websearch) so devtools shows what tool you're inspecting; the
+ * pattern-pill styling is one definition shared via the selector
+ * list below.  Adding a fourth pattern-driven tool? Add it here. */
+.tool-card-grep .tool-card-header,
+.tool-card-glob .tool-card-header,
+.tool-card-websearch .tool-card-header,
+.tool-card-read .tool-card-header,
+.tool-card-web .tool-card-header {
+  padding: 6px 10px;
+}
+.tool-card-grep .grep-tool-pattern,
+.tool-card-glob .grep-tool-pattern,
+.tool-card-websearch .grep-tool-pattern {
+  font-family: var(--mono);
+  color: var(--fg);
+  background: var(--bg);
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  font-size: 12.5px;
+  word-break: break-word;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* WebFetch — link styling for the URL anchor in the header title.
+ * Hover underline is the only visible affordance the link is clickable;
+ * the IconExternalLink at the end re-emphasises it. */
+.tool-card-web .web-tool-url {
+  color: var(--accent);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
+}
+.tool-card-web .web-tool-url:hover {
+  text-decoration: underline;
+}
+.tool-card-web .web-tool-prompt {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.45;
+}
+.tool-card-web .web-tool-prompt-marker {
+  color: var(--fg-muted);
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+/* Todo card body — inline checklist sits flush against the header. */
+.tool-card-todo .tool-card-body {
+  padding: 6px 10px 8px;
+}
+.tool-card-todo .inline-todo-list {
+  margin: 0;
+}
+
+/* Task mutation card — body holds optional description / dependency rows. */
+.tool-card-task .tool-card-body {
+  padding: 6px 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tool-card-task .task-mutation-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Unknown-tool fallback — keep the raw JSON readable but clearly
+ * differentiated from the structured cards. */
+.tool-card-unknown .tool-card-body {
+  padding: 0;
+}
+.tool-card-unknown .tool-input {
+  margin: 0;
+  border-radius: 0;
+  padding: 8px 10px;
+  background: var(--bg);
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+}
+
+/* Status chip variant for "danger" — used by NotebookEdit delete chip
+ * and other destructive markers. */
+.tool-chip-danger {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-elev-2));
+}
+.tool-chip-success {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
+  background: color-mix(in srgb, var(--ok) 10%, var(--bg-elev-2));
+}
+
+/* NotebookEdit "deleted" pill, now inside the body of a ToolCard. */
+.tool-card-diff .notebook-edit-deleted {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: var(--danger);
+  font-style: italic;
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+}
+
+/* ── A11y: prefers-reduced-motion ──────────────────────────────────
+ *
+ * Vestibular-sensitive users need motion-on-state-change kept short
+ * (WCAG 2.3.3). State transitions — slides, expands, fades on
+ * navigation — are the trigger; we squash those to a single frame.
+ *
+ * We deliberately do NOT touch `animation-*` here. Several of the
+ * stylesheet's keyframe animations are *load-bearing progress
+ * indicators* (`.app-loading-spinner`, `.msg-sending-spinner`,
+ * `.session-resuming-spinner`, `.session-working-pulse`,
+ * `.working-bubble-pulse`, `.working-dot-bounce`, `.cursor-blink`,
+ * `.recap-shimmer`). Forcing `animation-iteration-count: 1` with a
+ * 0.01ms duration would freeze each one at its end frame — so a user
+ * who opted into reduced-motion would see a static spinner that never
+ * communicates whether work is in progress or stuck. That's worse
+ * than the rotation we're trying to suppress.
+ *
+ * If a specific *decorative* animation (e.g. a celebratory bounce on
+ * success) is added in future, suppress that one with its own
+ * targeted `@media (prefers-reduced-motion)` rule rather than
+ * resurrecting a blanket override.
+ *
+ * The `!important` is necessary because individual rules already
+ * specify their own durations.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* Neutralise the state-change ENTRANCE animations added for overlays,
+     menus, the swap glyph and the jump button — these are decorative
+     motion-on-state-change (WCAG 2.3.3), unlike the load-bearing spinners
+     the global block above deliberately leaves running. Named explicitly so
+     spinners/shimmers keep animating. */
+  .settings-overlay:not(.hidden),
+  .settings-overlay:not(.hidden) > .settings-panel,
+  .git-overlay,
+  .git-overlay > .git-panel,
+  .subagent-overlay,
+  .subagent-overlay-panel,
+  .modal-backdrop,
+  .modal,
+  .ctx-menu,
+  .composer-action-icon,
+  .chat-jump-to-bottom {
+    animation-duration: 0.01ms !important;
+  }
+}
+
+/* ── Tooltip primitive ─────────────────────────────────────────────
+ *
+ * Replaces native `title=""` for elements that need:
+ *   - Keyboard accessibility (focus-visible triggers)
+ *   - Themed styling consistent with the app
+ *   - Predictable cross-platform rendering (native title is OS-styled
+ *     and inconsistent on mobile)
+ *
+ * The bubble is hidden by default via opacity + visibility so it
+ * still participates in `aria-describedby` lookups for AT users.
+ * `pointer-events: none` keeps it from blocking clicks on adjacent UI.
+ *
+ * `.tt-wrap` is `inline-flex` so trigger children align naturally
+ * with surrounding text without inheriting block-level layout.
+ */
+.tt-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.tt-bubble {
+  position: absolute;
+  z-index: 100;
+  padding: 4px 8px;
+  background: var(--bg-elev-3, var(--bg-elev-2));
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  /* Allow long lines to wrap within max-width. Previously `nowrap`
+     forced lines wider than max-width (e.g. the git chip's multi-stat
+     tooltip) to overflow past the bubble's background, making the
+     background look narrower than the text. `normal` keeps short hints
+     on one line while wrapping the long ones inside the box. */
+  white-space: normal;
+  overflow-wrap: break-word;
+  max-width: 280px;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(2px);
+  transition: opacity 80ms ease-out, transform 80ms ease-out, visibility 80ms;
+  box-shadow: var(--tooltip-shadow);
+}
+.tt-wrap:hover > .tt-bubble,
+.tt-wrap:focus-within > .tt-bubble {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+/* Placement: top (default) — bubble above trigger */
+.tt-top > .tt-bubble {
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translate(-50%, 2px);
+}
+.tt-top:hover > .tt-bubble,
+.tt-top:focus-within > .tt-bubble {
+  transform: translate(-50%, 0);
+}
+/* Placement: bottom */
+.tt-bottom > .tt-bubble {
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translate(-50%, -2px);
+}
+.tt-bottom:hover > .tt-bubble,
+.tt-bottom:focus-within > .tt-bubble {
+  transform: translate(-50%, 0);
+}
+/* Placement: left */
+.tt-left > .tt-bubble {
+  right: calc(100% + 6px);
+  top: 50%;
+  transform: translate(2px, -50%);
+}
+.tt-left:hover > .tt-bubble,
+.tt-left:focus-within > .tt-bubble {
+  transform: translate(0, -50%);
+}
+/* Placement: right */
+.tt-right > .tt-bubble {
+  left: calc(100% + 6px);
+  top: 50%;
+  transform: translate(-2px, -50%);
+}
+.tt-right:hover > .tt-bubble,
+.tt-right:focus-within > .tt-bubble {
+  transform: translate(0, -50%);
+}
+
+/* Reduced motion: snap to position without slide animation */
+@media (prefers-reduced-motion: reduce) {
+  .tt-bubble {
+    transition: opacity 0.01ms, visibility 0.01ms !important;
+    transform: none !important;
+  }
+  .tt-wrap:hover > .tt-bubble,
+  .tt-wrap:focus-within > .tt-bubble {
+    transform: none !important;
+  }
+}
+
+/* ── Loading skeletons ─────────────────────────────────────────────
+ * Shimmering placeholder bars shown while async sections fetch. The
+ * gradient sweeps left→right via background-position; reduced-motion
+ * users get a static muted bar (rule below). */
+.skeleton-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px 0;
+}
+.skeleton-row {
+  height: 14px;
+  border-radius: 5px;
+  background: linear-gradient(
+    90deg,
+    var(--bg-elev-2) 0%,
+    var(--bg-elev-3) 40%,
+    var(--bg-elev-2) 80%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.3s ease-in-out infinite;
+}
+/* Vary row widths so the block reads as content, not a solid box. */
+.skeleton-row:nth-child(3n + 1) { width: 92%; }
+.skeleton-row:nth-child(3n + 2) { width: 76%; }
+.skeleton-row:nth-child(3n + 3) { width: 85%; }
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-row {
+    animation: none;
+    background: var(--bg-elev-2);
+  }
+}
+.sidebar-skeleton { padding: 10px 12px; }
+.git-section-skeleton { padding: 6px 4px; }
+.skeleton-group.git-section-skeleton .skeleton-row { height: 12px; }
+
+/* Muted "no items" notes shared by sidebar + settings empty states.
+   Replaces inline style objects so spacing/colour live with the theme. */
+.sidebar-empty-note,
+.settings-empty-note {
+  color: var(--fg-muted);
+  font-size: 12px;
+  text-align: center;
+  padding: 20px;
+}
+.settings-empty-note {
+  font-size: 13px;
+  text-align: left;
+  padding: 6px 0 0;
+}
+
+/* ── Settings panel cards (Plugin / MCP server) ────────────────────
+ * Shared chrome extracted from inline styles. The status dot's colour
+ * is dynamic (status-driven), passed via the --dot custom property so
+ * components still reference theme tokens, not raw hex. */
+.settings-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.settings-section-head h4 { margin: 0; }
+.settings-section-head-actions { display: flex; gap: 6px; }
+.settings-apply-btn { align-self: flex-start; }
+.settings-note {
+  color: var(--fg-muted);
+  font-size: 13px;
+  margin-top: 6px;
+}
+.settings-detail { margin-top: 6px; }
+.settings-detail-tight { margin-top: 4px; }
+.settings-detail > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.settings-detail-body { margin-top: 4px; }
+.settings-raw-pre {
+  max-height: 200px;
+  overflow: auto;
+  margin-top: 6px;
+}
+.settings-kv-row {
+  font-size: 12px;
+  padding: 2px 0;
+  display: flex;
+  gap: 6px;
+}
+.settings-kv-row code { font-weight: 500; }
+.settings-kv-source { color: var(--fg-muted); font-size: 11px; }
+.settings-kv-tokens { margin-left: auto; color: var(--fg-muted); font-size: 11px; }
+
+.settings-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+.settings-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg);
+}
+.settings-card-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dot, var(--fg-muted));
+  flex-shrink: 0;
+}
+.settings-card-name {
+  font-weight: 500;
+  font-size: 13px;
+  flex: 1;
+}
+.settings-card-badge {
+  font-size: 10px;
+  color: var(--fg-muted);
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+.settings-card-badge.global {
+  color: var(--accent);
+  border-color: var(--accent);
+  margin-left: 6px;
+  font-weight: 400;
+}
+.settings-card-meta {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.settings-card-path {
+  padding: 2px 10px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  background: var(--bg);
+}
+.settings-card-body {
+  padding: 4px 10px 8px;
+  background: var(--bg);
+}
+.settings-card-grouplabel {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  margin-bottom: 2px;
+}
+.settings-card-grouplabel.spaced { margin-top: 4px; }
+.settings-card-item {
+  font-size: 12px;
+  padding: 2px 0;
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.settings-card-item code { font-weight: 500; }
+.settings-card-desc {
+  color: var(--fg-muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-card-error {
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--danger);
+  background: var(--bg);
+}
+.settings-mcp-head {
+  margin-bottom: 8px;
+}
+.settings-mcp-count {
+  margin-top: 0;
+}
+.settings-mcp-empty {
+  padding: 24px 0;
+  text-align: center;
+}
+.settings-mcp-card {
+  margin-bottom: 6px;
+}
+.settings-mcp-card-head {
+  flex-wrap: wrap;
+}
+.settings-mcp-card-head .settings-card-name {
+  min-width: 120px;
+}
+.settings-mcp-actions,
+.settings-mcp-confirm {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.settings-mcp-actions {
+  margin-left: auto;
+  justify-content: flex-end;
+}
+.settings-mcp-path {
+  border-top: 1px solid var(--border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-mcp-result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 5px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+.settings-mcp-result > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 500;
+}
+.settings-mcp-result.status-connected > span:first-child { color: var(--ok); }
+.settings-mcp-result.status-needs-auth > span:first-child { color: var(--warn); }
+.settings-mcp-result.status-failed > span:first-child { color: var(--danger); }
+.settings-mcp-result-error {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-mcp-tools {
+  border-top: 1px solid var(--border);
+}
+.settings-mcp-tools-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.settings-mcp-tool-item code {
+  font-family: var(--mono);
+}
+.settings-tag { font-size: 10px; }
+.settings-tag.readonly { color: var(--ok); }
+.settings-tag.destructive { color: var(--danger); }
+.settings-tag.openworld { color: var(--warn); }
+.btn-xs { padding: 1px 6px; font-size: 11px; }
+.settings-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg) 70%, var(--bg-elev-2));
+}
+.settings-model-list-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+.settings-model-sort-btn,
+.settings-model-add-btn {
+  border-radius: 999px;
+  padding-inline: 10px;
+  background: var(--bg-elev-1);
+}
+.settings-model-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) auto auto;
+  gap: 6px;
+  align-items: center;
+  padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--border) 86%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg) 82%, var(--bg-elev-2));
+  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+.settings-model-row:hover {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+  background: color-mix(in srgb, var(--bg-elev-2) 72%, var(--accent) 4%);
+}
+.settings-model-row.default {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg));
+}
+.settings-model-row:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 56%, var(--border));
+}
+.settings-model-rank {
+  justify-self: stretch;
+  text-align: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 6px;
+  color: var(--fg-muted);
+  background: var(--bg-elev-1);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+.settings-model-row.default .settings-model-rank {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.settings-model-id {
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--fg);
+  background: var(--bg-elev-1);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-model-move {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev-1);
+}
+.settings-model-action {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+.settings-model-move .settings-model-action + .settings-model-action {
+  border-left: 1px solid var(--border);
+}
+.settings-model-row > .settings-model-action {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev-1);
+}
+.settings-model-action:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-elev-2));
+}
+.settings-model-action.danger:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 42%, var(--border));
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-elev-2));
+}
+.settings-model-action:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+.settings-model-add-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  padding-top: 2px;
+}
+.settings-model-input,
+.settings-model-select {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.settings-model-input {
+  background: var(--bg-elev-1);
+}
+.settings-model-select-wrap {
+  position: relative;
+  width: 100%;
+}
+.settings-model-select {
+  appearance: none;
+  -webkit-appearance: none;
+  min-height: 34px;
+  padding-right: 34px;
+  background: var(--bg-elev-1);
+}
+.settings-model-select-icon {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--fg-muted);
+  pointer-events: none;
+  transition: color 120ms ease;
+}
+.settings-model-select-wrap:focus-within .settings-model-select-icon {
+  color: var(--accent);
+}
+@media (max-width: 560px) {
+  .settings-model-row {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+  .settings-model-move {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+  .settings-model-action {
+    grid-row: 2;
+    width: 100%;
+  }
+  .settings-model-move .settings-model-action { flex: 1; }
+  .settings-model-row > .settings-model-action {
+    grid-column: 1 / -1;
+  }
+}
+.settings-readonly-value {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+  border-radius: 6px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-readonly-value.mono {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+/* New-session dialog: width + small icon close button (was inline). */
+.modal-new-session { width: min(560px, 92vw); }
+.btn-icon-sm {
+  padding: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.modal-footer-actions { display: flex; gap: 8px; }
+.session-item-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ============================================================
+   Tablet adaptation (769–1024px)
+   ------------------------------------------------------------
+   Between phone (drawer) and desktop: the static sidebar stays
+   but is capped narrower to leave more room for chat panels.
+   --sidebar-width is set inline on .app (App.tsx) so a plain
+   variable override would lose to inline specificity; instead
+   we cap the grid column with min(), which still reads the live
+   (drag-resized) width but never exceeds the tablet ceiling.
+   ============================================================ */
+@media (min-width: 769px) and (max-width: 1024px) {
+  .app {
+    grid-template-columns: min(var(--sidebar-width), 240px) 1fr;
+  }
+}
+
+/* ============================================================
+   Mobile / narrow-viewport adaptation (≤768px)
+   ------------------------------------------------------------
+   Single-panel mode (maxOpen forced to 1 in App.tsx via
+   useIsMobile) + drawer sidebar. Keep this block last so its
+   overrides win without needing !important. The breakpoint is
+   mirrored in src/hooks/useIsMobile.ts (MOBILE_BREAKPOINT).
+   ============================================================ */
+@media (max-width: 768px) {
+  /* Sidebar leaves the grid flow and becomes a sliding drawer; the
+     single remaining column lets <main> fill the width. */
+  .app {
+    grid-template-columns: 1fr;
+    /* --app-vh is set by useVisualViewportHeight to the keyboard-excluded
+       height; falls back to 100dvh when the API is unavailable. */
+    height: var(--app-vh, 100dvh);
+  }
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(85vw, 320px);
+    z-index: 50;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    border-right: 1px solid var(--border);
+    box-shadow: var(--overlay-shadow);
+  }
+  .app.drawer-open .sidebar {
+    transform: translateX(0);
+  }
+  /* Drag-to-resize is meaningless for a fixed-width drawer, and its
+     absolute positioning would land off-screen. */
+  .sidebar-resizer {
+    display: none;
+  }
+
+  /* Full-screen scrim behind the open drawer. */
+  .drawer-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: var(--backdrop-color);
+  }
+
+  /* Push the hamburger to the left edge; the rest of the toolbar
+     (notifications, theme, settings) stays flush-right. */
+  .main-header {
+    justify-content: flex-start;
+  }
+  .main-toolbar {
+    margin-left: auto;
+  }
+  .app-empty-state {
+    width: min(420px, calc(100vw - 24px));
+    padding: 24px;
+    border-radius: 14px;
+  }
+  .app-empty-state h2 {
+    font-size: 22px;
+  }
+  .drawer-toggle {
+    margin-right: 4px;
+  }
+
+  /* Touch devices can't hover, so hover-revealed action buttons would be
+     permanently invisible. Make them always visible at this breakpoint. */
+  .session-item-delete,
+  .code-block:hover .code-block-copy,
+  .code-block-copy,
+  .git-file-actions {
+    opacity: 1;
+  }
+
+  /* Enlarge icon-button hit areas to the 44px touch-target guideline
+     (Apple HIG 44pt / Material 48dp). */
+  .btn-icon {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* Kill the legacy 300ms double-tap-zoom delay on tappable controls so
+     taps feel instant. `manipulation` only disables double-tap-zoom and
+     double-tap-to-scroll — it still permits panning/pinch, so applying it
+     here never interferes with the horizontal scrolling of code blocks
+     (those elements aren't matched anyway). */
+  button,
+  .btn,
+  a,
+  [role="button"] {
+    touch-action: manipulation;
+  }
+
+  /* The subagent inspector is a right-edge drawer on desktop
+     (width: min(50%,640px); min-width: 320px). On a phone that min-width
+     leaves only a sliver of scrim and overflows below 320px — make it a
+     full-width sheet instead. */
+  .subagent-overlay-panel {
+    width: 100%;
+    min-width: 0;
+    border-left: none;
+  }
+
+  /* The slash-command picker floats with min-width:280px which can punch
+     past a narrow viewport. Let it shrink and cap it to the screen. */
+  .cmd-picker {
+    min-width: 0;
+    max-width: calc(100vw - 24px);
+  }
+
+  /* Settings & Git overlays: turn the centered card into a bottom sheet
+     that rises from the panel's lower edge — easier to reach one-handed.
+     safe-area padding keeps the sheet clear of the home-indicator. */
+  .settings-overlay,
+  .git-overlay {
+    align-items: flex-end;
+    padding: 8px 8px max(8px, env(safe-area-inset-bottom));
+  }
+  .settings-overlay > .settings-panel,
+  .git-overlay > .git-panel {
+    width: 100%;
+    max-height: 100%;
+    border-radius: 12px 12px 0 0;
+  }
+
+  /* Global settings modal → bottom sheet. .modal-backdrop is shared by every
+     modal (new-session, marketplace, …), so :has() scopes this to the global
+     settings one only — the others keep their centered-card treatment. The
+     modal has 8 tabs in a flex row with no wrap/scroll: on a phone they need
+     ~714px but only ~313px exists, leaving half the tabs unreachable. */
+  .modal-backdrop:has(> .global-settings-modal) {
+    align-items: flex-end;
+    padding: 0;
+  }
+  .global-settings-modal {
+    width: 100%;
+    max-width: 100%;
+    max-height: 90dvh;
+    border-radius: 12px 12px 0 0;
+    /* Clear the home-indicator at the sheet's bottom edge. */
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  /* Let the tab row scroll horizontally instead of overflowing; the tabs must
+     not shrink below their label width or they become unreadable. */
+  .global-settings-tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: none; /* Firefox: hide the scrollbar, swipe still works */
+  }
+  .global-settings-tabs::-webkit-scrollbar {
+    display: none; /* WebKit: same */
+  }
+  .global-settings-tab {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  /* Command palette: sit higher on small screens so the keyboard doesn't
+     bury it and more results are visible. dvh tracks the mobile URL-bar
+     collapse (matches the .palette max-height convention above). */
+  .palette-backdrop {
+    padding-top: 8vh;
+    padding-top: 8dvh;
+  }
+
+  /* ── Safe areas (notch / Dynamic Island / home-indicator) ──────────
+     Enabled by viewport-fit=cover in index.html. Each fixed edge of the
+     UI reserves the corresponding inset so content never sits under the
+     status bar, camera cutout, or the gesture home-indicator. max() keeps
+     the existing padding as a floor on devices that report a 0 inset. */
+
+  /* App-level top toolbar (holds the hamburger): clear the status bar /
+     notch above and the rounded screen corners on the sides. */
+  .main-header {
+    padding-top: max(6px, env(safe-area-inset-top));
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
+  }
+
+  /* The drawer is a fixed full-height panel pinned to the left edge, so its
+     header (.brand) and footer must dodge the top inset and the home bar. */
+  .sidebar {
+    padding-left: env(safe-area-inset-left);
+  }
+  .sidebar .brand {
+    min-height: calc(var(--app-header-height) + env(safe-area-inset-top));
+    padding-top: env(safe-area-inset-top);
+  }
+
+  /* Bottom composer: lift the controls above the home-indicator and clear
+     the side insets (relevant in landscape, where the notch is sideways). */
+  .chat-composer {
+    padding-left: max(16px, env(safe-area-inset-left));
+    padding-right: max(16px, env(safe-area-inset-right));
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+
+  /* The composer textarea inherits .textarea's 12.5px. iOS Safari auto-zooms
+     the whole page when a focused input's font-size is < 16px, so every tap
+     into the box jolts the layout. 16px is the documented threshold that
+     suppresses that zoom — only raised on mobile to keep the desktop density. */
+  .chat-composer textarea {
+    font-size: 16px;
+  }
+
+  /* Send / Interrupt are text buttons (.btn, ~30px tall), below the 44px
+     touch target. The paperclip is a .btn-icon already covered above; this
+     lifts the text buttons in the actions column to the same floor. */
+  .chat-composer-actions .btn {
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 420px) {
+  .app-empty-state-actions {
+    flex-direction: column;
+  }
+  .app-empty-state-actions .btn {
+    width: 100%;
+  }
+}
+
+/* ============================================================
+   Short viewports — phone landscape, split-screen, tiny windows
+   ------------------------------------------------------------
+   A landscape phone leaves very little vertical room; once the
+   on-screen keyboard appears the message list can vanish entirely.
+   Trim the fixed vertical chrome so the conversation stays usable.
+   max-height (not orientation) is the real signal — it also catches
+   small floating windows and split-screen multitasking. */
+@media (max-height: 480px) {
+  /* Shorter composer so the textarea can't eat the whole height; the
+     message list keeps the remaining space. */
+  .chat-composer textarea {
+    max-height: 96px;
+  }
+  /* Tighten the top toolbar to buy back a row of content. */
+  .main-header {
+    min-height: 37px;
+    padding-top: 3px;
+    padding-bottom: 3px;
+  }
+  .brand {
+    min-height: 37px;
+  }
+  /* The command palette is normally pushed down 8dvh; on a short screen
+     that wastes precious height — pin it near the top instead. */
+  .palette-backdrop {
+    padding-top: 4vh;
+    padding-top: 4dvh;
+  }
+}
+
+/* ── "Open on phone" settings tab (QR access) ────────────────────── */
+
+.share-tab {
+  padding: 4px 2px;
+}
+.share-tab-hint {
+  margin: 0 0 8px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.share-tab-qr {
+  display: flex;
+  justify-content: center;
+  margin: 12px 0 16px;
+}
+/* White quiet-zone box so the code scans in dark theme too. */
+.share-tab-qr-img {
+  width: 220px;
+  height: 220px;
+  background: var(--qr-bg);
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.share-tab-qr-img svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.share-tab-select {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-bottom: 12px;
+  max-width: 240px;
+}
+.share-tab-url-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+.share-tab-url {
+  flex: 1;
+  background: var(--code-bg);
+  border: 1px solid var(--code-block-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  word-break: break-all;
+  display: flex;
+  align-items: center;
+}
+.share-tab-url code {
+  font-size: 12px;
+  color: var(--code-fg);
+}
+.share-tab-warn {
+  margin: 12px 0 0;
+  color: var(--warn, var(--fg-muted));
+  font-size: 12px;
+  line-height: 1.5;
+}

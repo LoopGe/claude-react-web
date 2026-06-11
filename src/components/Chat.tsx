@@ -796,6 +796,7 @@ export const Chat = memo(function Chat({
           recap={session.recap}
           working={session.working}
           replayReady={stream.replayReady}
+          transcriptRevealKey={session.id}
           streamingContent={stream.streamingContent}
           planStatus={stream.planStatus}
           planContent={stream.planContent}

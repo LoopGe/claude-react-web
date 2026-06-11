@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render } from '@testing-library/react'
+import { render, waitFor } from '@testing-library/react'
 import type { SdkMessage } from '../types'
 import type { TranscriptItem } from '../session-store/types'
 
@@ -31,9 +31,11 @@ vi.mock('react-virtuoso', () => ({
     components?: { Footer?: React.ComponentType }
   }) => (
     <div data-testid="virtuoso-mock">
-      {data.map((item, i) => (
-        <div key={i}>{itemContent(i, item)}</div>
-      ))}
+      <div data-testid="virtuoso-item-list">
+        {data.map((item, i) => (
+          <div key={i}>{itemContent(i, item)}</div>
+        ))}
+      </div>
       {components?.Footer && <components.Footer />}
     </div>
   ),
@@ -79,6 +81,71 @@ describe('MessageList', () => {
     expect(container.textContent).toContain('Loading messages')
   })
 
+  it('adds transcript reveal only after keyed messages are ready', async () => {
+    const msgs = [
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Ready now' }] },
+      }),
+    ]
+    const items = toItems(msgs as SdkMessage[])
+
+    const { container, rerender } = render(
+      <MessageList items={items} replayReady={false} transcriptRevealKey="session-a" />,
+    )
+    expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal')).toBe(false)
+
+    rerender(<MessageList items={items} replayReady transcriptRevealKey="session-a" />)
+    await waitFor(() => {
+      expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal')).toBe(true)
+      expect(container.querySelector('.virtuoso-item-wrapper')?.classList.contains('transcript-item-reveal')).toBe(true)
+    })
+
+    rerender(<MessageList items={[]} replayReady transcriptRevealKey="session-b" />)
+    rerender(<MessageList items={items} replayReady transcriptRevealKey="session-b" />)
+    expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal')).toBe(false)
+    expect(container.querySelector('.virtuoso-item-wrapper')?.classList.contains('transcript-item-reveal')).toBe(false)
+  })
+
+  it('does not hide keyless filtered subagent transcripts behind reveal pending state', () => {
+    const msgs = [
+      makeMsg('assistant', {
+        parent_tool_use_id: 'agent-1',
+        message: { content: [{ type: 'text', text: 'Subagent detail' }] },
+      }),
+    ]
+
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} parentToolUseIdFilter="agent-1" replayReady />,
+    )
+
+    const messages = container.querySelector('.chat-messages')
+    expect(container.textContent).toContain('Subagent detail')
+    expect(messages?.classList.contains('chat-messages-reveal-pending')).toBe(false)
+  })
+
+  it('reveals filtered subagent transcripts when keyed', async () => {
+    const msgs = [
+      makeMsg('assistant', {
+        parent_tool_use_id: 'agent-1',
+        message: { content: [{ type: 'text', text: 'Subagent detail' }] },
+      }),
+    ]
+
+    const { container } = render(
+      <MessageList
+        items={toItems(msgs as SdkMessage[])}
+        parentToolUseIdFilter="agent-1"
+        replayReady
+        transcriptRevealKey="subagent:agent-1"
+      />,
+    )
+
+    await waitFor(() => {
+      expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal')).toBe(true)
+      expect(container.querySelector('.virtuoso-item-wrapper')?.classList.contains('transcript-item-reveal')).toBe(true)
+    })
+  })
+
   it('filters out stream_event messages', () => {
     const msgs = [
       makeMsg('user', { message: { content: [{ type: 'text', text: 'hi' }] } }),
@@ -102,6 +169,26 @@ describe('MessageList', () => {
       <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
     )
     expect(container.textContent).toContain('Hello world')
+  })
+
+  it('renders result stats with clean separators', () => {
+    const msgs = [
+      makeMsg('result', {
+        num_turns: 3,
+        duration_ms: 129100,
+        total_cost_usd: 18.891,
+        usage: {
+          input_tokens: 337000,
+          output_tokens: 3100,
+        },
+      }),
+    ]
+
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+    )
+
+    expect(container.querySelector('.result-meta')?.textContent).toBe('3 turns \u00b7 129.1s \u00b7 337k in \u00b7 3.1k out \u00b7 $18.8910')
   })
 
   describe('empty-message filtering (willRenderEmpty)', () => {

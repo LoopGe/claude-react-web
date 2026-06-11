@@ -1,0 +1,1845 @@
+.msg.tool { background: var(--msg-tool-bg); border-style: dashed; border-color: var(--msg-tool-border); }
+.msg.tool-result { background: var(--msg-tool-result-bg); border-color: var(--msg-tool-result-border); }
+/* Subagent assistant turns — same silhouette as a regular assistant card
+   but dimmed and with a dotted left rail, so it reads as "nested" rather
+   than as the main thread speaking. */
+.msg.assistant.subagent {
+  opacity: 0.78;
+  border-left: 3px dashed color-mix(in srgb, var(--fg-muted) 55%, transparent);
+  padding-left: 8px;
+}
+.msg.assistant.subagent .msg-header > span:first-child::before { content: '↳ '; }
+.msg.system { background: var(--msg-system-bg); border-color: var(--msg-system-border); font-family: var(--mono); font-size: 12px; }
+.msg.error { background: var(--msg-error-bg); border-color: var(--msg-error-border); color: var(--msg-error-fg); }
+.msg.error.rate-limit { background: var(--msg-rate-limit-bg); border-color: var(--msg-rate-limit-border); color: var(--msg-rate-limit-fg); }
+.msg.api-retry { background: var(--msg-rate-limit-bg); border-color: var(--msg-rate-limit-border); color: var(--msg-rate-limit-fg); font-family: var(--mono); font-size: 12px; }
+/* Turn-complete marker. NOT a card — a centered hairline divider with a
+   success tick and de-emphasised tabular metadata. Shares the .msg.recap
+   divider vocabulary so a turn boundary reads consistently with a recap /
+   plan-mode boundary. Green is reduced to the tick alone (was a full fill)
+   so it signals "done" without competing with real message content. */
+.msg.result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  background: none;
+  padding: 2px 0;
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  animation: result-fade-in 150ms ease-out;
+}
+.msg.result::before,
+.msg.result::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+  min-width: 12px;
+}
+.result-mark {
+  color: var(--ok, var(--accent));
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.result-meta {
+  white-space: nowrap;
+  /* Tabular figures so cost/duration digits share a fixed width. */
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+/* Interrupted: tint the tick + divider + metadata with the warn color
+   instead of green, so an aborted turn is distinguishable without relying
+   on the glyph alone (color-not-only). */
+.msg.result.interrupted { color: var(--msg-rate-limit-fg); }
+.msg.result.interrupted::before,
+.msg.result.interrupted::after { background: color-mix(in srgb, var(--warn, var(--danger)) 45%, var(--border)); }
+.msg.result.interrupted .result-mark { color: var(--warn, var(--danger)); }
+@keyframes result-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .msg.result { animation: none; }
+}
+
+.msg-body { word-wrap: break-word; }
+.msg-body code {
+  font-family: var(--mono);
+  background: var(--bg-elev-2);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.msg-body pre {
+  background: var(--code-bg);
+  border: 1px solid var(--code-block-border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  margin: 8px 0;
+}
+.msg-body pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+}
+
+/* Fenced code-block wrapper (language label + copy button). Rendered
+   by Markdown.tsx's <CodeBlock> inside react-markdown's `pre` override. */
+.code-block { position: relative; margin: 8px 0; }
+.code-block-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  background: var(--code-bar-bg);
+  border: 1px solid var(--code-block-border);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+}
+.code-block-lang {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+}
+.code-block-copy {
+  background: none;
+  border: 1px solid var(--code-block-border);
+  border-radius: 4px;
+  padding: 1px 8px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.code-block:hover .code-block-copy { opacity: 1; }
+.code-block-copy:hover { background: var(--bg-elev); color: var(--fg); }
+/* Remove top rounding from <pre> inside a code-block so it sits flush
+   under the bar. */
+.code-block > pre {
+  margin-top: 0;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+/* Markdown render-error fallback. Markdown wraps its renderer in an
+   ErrorBoundary that swaps in `<pre class="md md-fallback">` when a
+   plugin throws. The subtle danger-tinted border tells the reader the
+   text is shown raw because rendering failed, without screaming. */
+.md-fallback {
+  border-left: 2px solid color-mix(in srgb, var(--danger) 50%, transparent);
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+  padding: 8px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Syntax-highlighting token colours, scoped to .md so they only apply
+   inside chat messages. Colours are driven by --hljs-* variables so the
+   light / dark theme palettes are swapped automatically. */
+.md .hljs {
+  color: var(--hljs-fg);
+}
+.md .hljs-comment,
+.md .hljs-quote { color: var(--hljs-comment); font-style: italic; }
+.md .hljs-doctag,
+.md .hljs-keyword,
+.md .hljs-formula { color: var(--hljs-keyword); }
+.md .hljs-section,
+.md .hljs-name,
+.md .hljs-selector-tag,
+.md .hljs-deletion,
+.md .hljs-subst { color: var(--hljs-red); }
+.md .hljs-literal { color: var(--hljs-cyan); }
+.md .hljs-string,
+.md .hljs-regexp,
+.md .hljs-addition,
+.md .hljs-attribute,
+.md .hljs-meta .hljs-string { color: var(--hljs-green); }
+.md .hljs-attr,
+.md .hljs-variable,
+.md .hljs-template-variable,
+.md .hljs-type,
+.md .hljs-selector-class,
+.md .hljs-selector-attr,
+.md .hljs-selector-pseudo,
+.md .hljs-number { color: var(--hljs-orange); }
+.md .hljs-symbol,
+.md .hljs-bullet,
+.md .hljs-link,
+.md .hljs-meta,
+.md .hljs-selector-id,
+.md .hljs-title { color: var(--hljs-blue); }
+.md .hljs-built_in,
+.md .hljs-title.class_,
+.md .hljs-class .hljs-title { color: var(--hljs-yellow); }
+.md .hljs-emphasis { font-style: italic; }
+.md .hljs-strong { font-weight: bold; }
+.md .hljs-link { text-decoration: underline; }
+
+/* Markdown renderer (react-markdown output) */
+.md > *:first-child { margin-top: 0; }
+.md > *:last-child { margin-bottom: 0; }
+.md p { margin: 6px 0; line-height: 1.55; }
+.md h1, .md h2, .md h3, .md h4 { margin: 14px 0 6px; font-weight: 600; line-height: 1.3; }
+.md h1 { font-size: 1.4em; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+.md h2 { font-size: 1.22em; }
+.md h3 { font-size: 1.08em; }
+.md h4 { font-size: 1em; color: var(--fg-muted); }
+.md ul, .md ol { margin: 6px 0; padding-left: 24px; }
+.md li { margin: 2px 0; line-height: 1.5; }
+.md li > p { margin: 2px 0; }
+.md blockquote {
+  border-left: 3px solid var(--border);
+  padding: 2px 10px;
+  margin: 8px 0;
+  color: var(--fg-muted);
+}
+.md a { color: var(--accent); text-decoration: none; }
+.md a:hover { text-decoration: underline; }
+.md hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+.md table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 13px;
+  display: block;
+  overflow-x: auto;
+}
+.md table th, .md table td {
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  text-align: left;
+}
+.md table th { background: var(--bg-elev-2); font-weight: 600; }
+.md img { max-width: 100%; border-radius: 4px; }
+.md input[type="checkbox"] { margin-right: 6px; }
+.tool-input {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-top: 4px;
+  background: var(--bg);
+  padding: 8px 10px;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+/* Collapsed-by-default wrapper for individual tool_result blocks. */
+.tool-result-details {
+  margin-top: 4px;
+}
+.tool-result-details[open] {
+  background: var(--bg);
+  border-radius: 4px;
+}
+.tool-result-summary {
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  padding: 4px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tool-result-summary:hover {
+  background: var(--bg-elev);
+}
+/* When open, hide the summary's own background so it blends with the
+   body container (which already has var(--bg)). */
+.tool-result-details[open] > .tool-result-summary {
+  background: transparent;
+  border-bottom: 1px solid var(--border);
+  border-radius: 4px 4px 0 0;
+  margin-bottom: 0;
+}
+/* Reset margin on .tool-input when it lives inside the details block
+   so padding comes from the [open] container, not double-margin. */
+.tool-result-details[open] > .tool-input {
+  margin-top: 0;
+  background: transparent;
+  padding-top: 4px;
+}
+
+/* Diff view for Edit / Write tool_use blocks */
+.diff-block {
+  font-family: var(--mono);
+  font-size: 12px;
+  margin-top: 4px;
+  background: var(--bg);
+  border-radius: 4px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+}
+.diff-file-path {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg-elev-2);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 500;
+  /* See .diff-line note below — same horizontal-scroll concern applies
+     here so the header bg covers the full content width. */
+  min-width: max-content;
+}
+.diff-lines { padding: 4px 0; }
+.diff-line {
+  display: flex;
+  padding: 1px 10px;
+  white-space: pre;
+  min-height: 18px;
+  /* `min-width: max-content` makes each row grow to its widest text so
+     the row's background colour (red for del, green for add) follows the
+     full horizontal scroll. Without it, the row is clipped to .diff-block's
+     viewport width and the colour cuts off mid-scroll while the text
+     keeps going — visible as a hard edge between coloured row and
+     uncoloured continuation. */
+  min-width: max-content;
+}
+.diff-line-del {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+.diff-line-add {
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--ok);
+}
+.diff-line-marker {
+  width: 16px;
+  flex-shrink: 0;
+  text-align: center;
+  user-select: none;
+}
+.diff-line-text { flex: 1; }
+.diff-truncation {
+  padding: 4px 10px;
+  color: var(--fg-muted);
+  font-style: italic;
+  border-top: 1px dashed var(--border);
+  /* Match .diff-line so the dashed top-border spans the full scroll width. */
+  min-width: max-content;
+}
+
+/* Settings panel */
+.settings-panel {
+  background: var(--bg-elev);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+/* Only the body scrolls; the header + tab bar stay pinned above it,
+   matching the global settings modal layout. */
+.settings-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.settings-panel-header {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.settings-panel-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.settings-section {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.settings-section h4 {
+  margin: 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
+}
+.settings-field { display: flex; flex-direction: column; gap: 4px; }
+.settings-field label { font-size: 12px; color: var(--fg-muted); }
+.settings-field .hint { font-size: 12px; color: var(--fg-muted); }
+
+/* Flag settings editor tabs */
+.fse-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 10px;
+}
+.fse-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+.fse-tab:hover { color: var(--fg); }
+.fse-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.fse-tab:disabled { opacity: .5; cursor: default; }
+.fse-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+
+/* Recent-model quick-pick chips under the Model input. */
+.recent-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+.recent-chip {
+  display: inline-flex;
+  align-items: stretch;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  font-size: 11.5px;
+}
+.recent-chip-use {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  font-family: var(--mono);
+  padding: 3px 6px;
+  cursor: pointer;
+}
+.recent-chip-use:hover { background: var(--bg); }
+.recent-chip-forget {
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--border);
+  color: var(--fg-muted);
+  padding: 3px 6px;
+  cursor: pointer;
+}
+.recent-chip-forget:hover { color: var(--danger); background: var(--bg); }
+
+/* Modal (directory picker) */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--backdrop-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  /* (#2) Backdrop fades, the modal lifts in — same motion language as the
+     per-panel overlays, reusing overlay-backdrop-in. */
+  animation: overlay-backdrop-in 160ms ease-out both;
+}
+.modal {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: min(680px, 92vw);
+  max-height: 84vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: var(--modal-shadow);
+  animation: overlay-panel-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-header h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.modal-toolbar {
+  display: flex;
+  gap: 6px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  align-items: center;
+}
+.modal-toolbar .toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.modal-path {
+  display: flex;
+  gap: 6px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-crumbs {
+  padding: 8px 16px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  gap: 2px;
+}
+.crumb {
+  background: none;
+  border: none;
+  color: var(--accent);
+  padding: 2px 4px;
+  border-radius: 3px;
+  font: inherit;
+  cursor: pointer;
+}
+.crumb:hover { background: var(--bg-elev-2); }
+.crumb-sep { color: var(--fg-muted); }
+.modal-error {
+  padding: 8px 16px;
+  background: var(--msg-error-bg);
+  color: var(--msg-error-fg);
+  font-size: 13px;
+  border-bottom: 1px solid var(--msg-error-border);
+}
+.modal-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 4px;
+}
+.modal-list-item {
+  background: transparent;
+  border: 1px solid transparent;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font: inherit;
+  color: inherit;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  cursor: pointer;
+  overflow: hidden;
+}
+.modal-list-item:hover { background: var(--bg-elev-2); border-color: var(--border); }
+.modal-list-item:focus { outline: 1px solid var(--accent); }
+.folder-icon { flex-shrink: 0; display: inline-flex; align-items: center; }
+.folder-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.modal-empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--fg-muted);
+  grid-column: 1 / -1;
+}
+.modal-footer {
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.modal-footer .hint { font-size: 12px; color: var(--fg-muted); }
+
+/* Global settings modal */
+.global-settings-modal {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: min(700px, 92vw);
+  max-height: 84vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: var(--modal-shadow);
+  position: relative;
+}
+.global-settings-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  padding: 0 16px;
+  gap: 0;
+}
+.global-settings-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 10px 16px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.global-settings-tab:hover {
+  color: var(--fg);
+}
+.global-settings-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.global-settings-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+/* Shortcut help overlay */
+.shortcut-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.shortcut-table td:last-child {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.shortcut-table th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--fg-muted);
+  padding: 4px 0 8px;
+  border-bottom: 1px solid var(--border);
+}
+.shortcut-table td {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-light, var(--border));
+}
+.shortcut-table td:first-child {
+  width: 120px;
+  overflow-wrap: anywhere;
+}
+.shortcut-table kbd {
+  display: inline-block;
+  max-width: 100%;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+/* Permission dialog */
+.modal-section {
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.perm-headline {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.perm-sub {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  line-height: 1.45;
+}
+.perm-summary {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+.perm-badge {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+.perm-preview {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.perm-row { display: flex; gap: 10px; align-items: baseline; }
+.perm-row-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--fg-muted);
+  min-width: 72px;
+}
+.perm-row-value {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  word-break: break-all;
+  flex: 1;
+}
+.perm-raw-toggle {
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 12px;
+  text-decoration: underline;
+  padding: 2px 0;
+  align-self: flex-start;
+  cursor: pointer;
+}
+.perm-raw {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  max-height: 260px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  margin: 0;
+}
+
+/* TodoChecklist — sticky floating panel at the top of the chat area. */
+.todo-panel {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  padding: 10px max(20px, calc((100% - 900px) / 2));
+  font-size: 13px;
+  /* Subtle accent glow so the panel doesn't feel like just another
+     divider — it's actionable context the user should glance at. */
+  border-top: 2px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+.todo-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.todo-panel-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+}
+.todo-panel-count {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: var(--bg);
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+.todo-panel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.todo-item {
+  display: flex;
+  /* center (not baseline): an SVG has no text baseline, so baseline
+     alignment pins the icon's bottom edge to the text baseline and it
+     reads as sitting too high. center aligns the icon box to the line
+     box's vertical middle. Safe here because .todo-text is nowrap. */
+  align-items: center;
+  gap: 8px;
+  line-height: 1.4;
+}
+.todo-icon {
+  flex-shrink: 0;
+  width: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  /* Optical nudge: Latin glyphs sit on-centre at 0, CJK ink rides ~1px
+     high in the em box so the icon looks ~1px low. No single value
+     satisfies both — 0.5px splits the difference (sub-pixel on 1x,
+     crisp on HiDPI). */
+  transform: translateY(-0.5px);
+}
+.todo-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Status colours */
+.todo-completed { color: var(--fg-muted); }
+.todo-completed .todo-text { text-decoration: line-through; }
+.todo-completed .todo-icon { color: var(--ok); }
+.todo-in_progress { color: var(--fg); }
+.todo-in_progress .todo-icon {
+  color: var(--accent);
+  /* Slow breathing pulse — same 2s period as the text shimmer below so
+     the two read as one synchronized "working" rhythm. */
+  animation: todo-icon-pulse 2s ease-in-out infinite;
+}
+.todo-in_progress .todo-text {
+  /* Text shimmer: an accent highlight sweeps across the label so the
+     active task visibly "moves". Reuses the project's shimmer vocabulary
+     (recap bar, skeleton rows). background-clip:text paints the gradient
+     onto the glyphs; coexists with the existing nowrap+ellipsis. */
+  background: linear-gradient(90deg,
+    var(--fg) 0%, var(--fg) 35%, var(--accent) 50%, var(--fg) 65%, var(--fg) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: todo-text-shimmer 2s linear infinite;
+}
+.todo-pending { color: var(--fg-muted); }
+.todo-pending .todo-icon { opacity: 0.5; }
+
+/* Monitor bar — surfaces currently-running Monitor background tasks. Shares
+   the visual vocabulary of .todo-panel (sticky, top glow, count chip, pulsing
+   icon) but uses --warn for the accent so it reads as distinct from the
+   Checklist. */
+.monitor-bar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  border-top: 2px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+  padding: 10px max(20px, calc((100% - 900px) / 2));
+  font-size: 13px;
+}
+.monitor-bar-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.monitor-bar-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--warn);
+}
+.monitor-bar-count {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: var(--bg);
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+.monitor-bar-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.monitor-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  line-height: 1.4;
+  color: var(--fg);
+}
+.monitor-icon {
+  flex-shrink: 0;
+  width: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--warn);
+  transform: translateY(-0.5px);
+  /* Reuse the checklist's breathing pulse so a live monitor visibly "moves". */
+  animation: todo-icon-pulse 2s ease-in-out infinite;
+}
+.monitor-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* Text shimmer: accent highlight sweeps across the label so a live
+     monitor visibly "moves". Same mechanism as .todo-in_progress .todo-text
+     but uses --warn to match the Monitor bar's accent. */
+  background: linear-gradient(90deg,
+    var(--fg) 0%, var(--fg) 35%, var(--warn) 50%, var(--fg) 65%, var(--fg) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: todo-text-shimmer 2s linear infinite;
+}
+
+/* Inline TodoWrite tool-use rendering (inside the message transcript).
+   Replaces the raw JSON dump with a compact, readable checklist. */
+.inline-todo-list {
+  list-style: none;
+  margin: 6px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12.5px;
+}
+.inline-todo-item {
+  display: flex;
+  /* flex-start (not baseline/center): text here can wrap to multiple
+     lines. baseline pins the icon's bottom to the text baseline (icon
+     reads too high); center would centre the icon against the whole
+     wrapped block instead of the first line. flex-start + a first-line-
+     height icon box keeps the icon aligned to line 1. */
+  align-items: flex-start;
+  gap: 6px;
+  line-height: 1.45;
+}
+.inline-todo-icon {
+  flex-shrink: 0;
+  width: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  /* Match the first text line's box height so the centred icon lands on
+     that line's optical middle, then the same 0.5px CJK/Latin nudge as
+     the sticky panel. */
+  height: calc(1.45em);
+  transform: translateY(-0.5px);
+}
+.inline-todo-text {
+  flex: 1;
+  min-width: 0;
+}
+.inline-todo-completed { color: var(--fg-muted); }
+.inline-todo-completed .inline-todo-text { text-decoration: line-through; }
+.inline-todo-completed .inline-todo-icon { color: var(--ok); }
+.inline-todo-in_progress { color: var(--fg); }
+.inline-todo-in_progress .inline-todo-icon {
+  color: var(--accent);
+  animation: todo-icon-pulse 2s ease-in-out infinite;
+}
+.inline-todo-in_progress .inline-todo-text {
+  background: linear-gradient(90deg,
+    var(--fg) 0%, var(--fg) 35%, var(--accent) 50%, var(--fg) 65%, var(--fg) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: todo-text-shimmer 2s linear infinite;
+}
+.inline-todo-pending { color: var(--fg-muted); }
+.inline-todo-pending .inline-todo-icon { opacity: 0.5; }
+
+/* "In progress" activity animations — shared by the sticky panel and the
+   inline card. The icon breathes and a highlight sweeps the label, both
+   on the same 2s period so they read as one rhythm. */
+@keyframes todo-icon-pulse {
+  0%, 100% { opacity: 0.55; transform: translateY(-0.5px) scale(0.9); }
+  50%      { opacity: 1;    transform: translateY(-0.5px) scale(1.12); }
+}
+@keyframes todo-text-shimmer {
+  0%   { background-position: 150% 0; }
+  100% { background-position: -50% 0; }
+}
+/* Reduced-motion: these are decorative "it's working" cues, not the only
+   status signal (icon shape + colour + bright text already differentiate
+   in_progress), so per the stylesheet's a11y policy we suppress them with
+   a targeted rule. The shimmer falls back to a solid accent label so the
+   active row still stands out without any motion. */
+@media (prefers-reduced-motion: reduce) {
+  .todo-in_progress .todo-icon,
+  .inline-todo-in_progress .inline-todo-icon,
+  .monitor-icon {
+    animation: none;
+    transform: translateY(-0.5px);
+  }
+  .todo-in_progress .todo-text,
+  .inline-todo-in_progress .inline-todo-text {
+    animation: none;
+    background: none;
+    -webkit-text-fill-color: var(--accent);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .monitor-text {
+    animation: none;
+    background: none;
+    -webkit-text-fill-color: var(--fg);
+    color: var(--fg);
+  }
+}
+
+/* --- Shared tool-input chip ------------------------------------------
+   Tiny pill used by Bash/Read/Grep/Task views for modifier flags. Kept
+   close to the body font-size so a row of chips lines up against the
+   command/pattern text without crowding it. */
+.tool-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  font-size: 10.5px;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+.tool-chip-accent {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev-2));
+}
+
+/* --- Bash inline view ------------------------------------------------ */
+.bash-tool {
+  margin-top: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.bash-tool-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.bash-tool-prompt {
+  color: var(--accent);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.bash-tool-command {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: transparent;
+  padding: 0;
+}
+.bash-tool-desc {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.45;
+}
+.bash-tool-desc-marker {
+  color: var(--fg-muted);
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+details.bash-tool-collapsible {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+details.bash-tool-collapsible > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+details.bash-tool-collapsible > summary::-webkit-details-marker { display: none; }
+.bash-tool-fold-hint {
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-style: italic;
+  margin-left: 14px; /* align with command after the $ prompt + gap */
+}
+.bash-tool-full {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+/* --- Read inline view ----------------------------------------------- */
+.read-tool {
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+/* The Read view reuses .diff-file-path for the header — the existing
+   styling already covers what we need. The range subline lives below. */
+.read-tool-range {
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  background: var(--bg);
+}
+
+/* --- Grep inline view ----------------------------------------------- */
+.grep-tool {
+  margin-top: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+}
+.grep-tool-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+}
+.grep-tool-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.grep-tool-pattern {
+  font-family: var(--mono);
+  color: var(--fg);
+  background: var(--bg-elev-2);
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  font-size: 12.5px;
+  word-break: break-word;
+}
+
+/* --- WebFetch inline view ------------------------------------------- */
+.web-tool {
+  margin-top: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.web-tool-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  min-width: 0;
+}
+.web-tool-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.web-tool-url {
+  font-family: var(--mono);
+  color: var(--accent);
+  text-decoration: none;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+.web-tool-url:hover {
+  text-decoration: underline;
+}
+.web-tool-prompt {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.45;
+}
+.web-tool-prompt-marker {
+  color: var(--fg-muted);
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+/* --- NotebookEdit inline view --------------------------------------- */
+.notebook-edit-meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border-bottom: 1px dashed var(--border);
+  background: var(--bg);
+}
+.notebook-edit-deleted {
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  font-style: italic;
+  background: color-mix(in srgb, var(--danger) 6%, var(--bg));
+}
+
+/* --- TaskCreate / TaskUpdate inline view ---------------------------- */
+.task-mutation {
+  margin-top: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.task-mutation-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+}
+.task-mutation-verb {
+  padding: 1px 7px;
+  font-family: var(--mono);
+  font-weight: 600;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.task-mutation-verb.verb-create {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+}
+.task-mutation-verb.verb-update {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.task-mutation-id {
+  font-family: var(--mono);
+  color: var(--fg);
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.task-mutation-status {
+  padding: 1px 7px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  text-transform: lowercase;
+  letter-spacing: 0;
+}
+.task-mutation-status.status-completed {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
+  background: color-mix(in srgb, var(--ok) 10%, var(--bg-elev-2));
+}
+.task-mutation-status.status-in_progress {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev-2));
+}
+.task-mutation-status.status-deleted {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-elev-2));
+}
+.task-mutation-owner {
+  font-family: var(--mono);
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--fg);
+}
+.task-mutation-subject {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--fg);
+  line-height: 1.4;
+}
+.task-mutation-desc {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  line-height: 1.45;
+}
+.task-mutation-deps {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+.task-mutation-deps code {
+  background: var(--bg-elev-2);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+  color: var(--fg);
+}
+
+/* --- Plan card -------------------------------------------------------
+   ExitPlanMode renders the proposed plan inline. Markdown body lives in
+   .plan-card-body; the header carries an icon + status pill (pending /
+   approved / rejected). Amber-tinted to match the plan-mode panel cue.
+   Used both inline in transcripts (ToolUseBlock) and in the permission
+   dialog (PermissionDialog) — keep the styles agnostic of context. */
+.plan-card {
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--border));
+  border-left: 3px solid var(--warn);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--warn) 6%, var(--bg-elev));
+  margin: 8px 0;
+  /* overflow:clip clips to the border-radius (so .plan-card-allowed's
+     bottom background respects the rounded corners) without establishing
+     a new BFC.
+
+     IMPORTANT — do NOT add `min-height: 0` here. In the PermissionDialog
+     this card is a flex child of .modal-section (flex:1; min-height:0;
+     overflow-y:auto). Setting min-height:0 lets the flex algorithm shrink
+     the card below its content height, and `overflow:clip` then silently
+     clips the overflowing markdown — .modal-section never sees overflow,
+     so its scrollbar never appears. With min-height:auto (the default),
+     the card grows to fit its content; when content exceeds the
+     available height, .modal-section overflows and scrolls correctly. */
+  overflow: clip;
+}
+.plan-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--warn) 25%, var(--border));
+  font-size: 13px;
+}
+.plan-card-icon {
+  font-size: 14px;
+}
+.plan-card-title {
+  font-weight: 600;
+  color: var(--fg);
+}
+.plan-card-status {
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+  color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+}
+.plan-card-status.approved {
+  background: color-mix(in srgb, var(--ok) 18%, transparent);
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 35%, transparent);
+}
+.plan-card-status.rejected {
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+}
+.plan-card-body {
+  padding: 4px 14px;
+  font-size: 13.5px;
+  /* The Markdown component's first/last children carry their own margins;
+     trim them so the body sits flush inside the card. */
+}
+.plan-card-body > :first-child { margin-top: 8px; }
+.plan-card-body > :last-child { margin-bottom: 10px; }
+.plan-card-empty {
+  padding: 8px 0;
+  color: var(--fg-muted);
+  font-style: italic;
+  font-size: 12.5px;
+}
+.plan-card-allowed {
+  padding: 8px 14px 10px;
+  border-top: 1px dashed color-mix(in srgb, var(--warn) 25%, var(--border));
+  background: color-mix(in srgb, var(--warn) 4%, transparent);
+}
+.plan-card-allowed-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+.plan-card-allowed-list {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 12px;
+  color: var(--fg);
+}
+.plan-card-allowed-item {
+  margin: 2px 0;
+}
+.plan-card-allowed-item code {
+  background: var(--bg-elev-2);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+/* Collapsible variant — used by Chat to wrap the plan card in a <details>
+   so long plans fold by default. The summary doubles as the header. */
+details.plan-card-collapsible {
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--border));
+  border-left: 3px solid var(--warn);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--warn) 6%, var(--bg-elev));
+  margin: 8px 0;
+  overflow: clip;
+}
+details.plan-card-collapsible > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 8px 12px;
+  user-select: none;
+}
+details.plan-card-collapsible > summary::-webkit-details-marker { display: none; }
+details.plan-card-collapsible[open] > summary {
+  border-bottom: 1px solid color-mix(in srgb, var(--warn) 25%, var(--border));
+}
+details.plan-card-collapsible > summary > .plan-card-header {
+  border-bottom: none;
+  padding: 0;
+}
+/* Override .msg-body pre styles that leak into code blocks inside plan
+   cards. Without these, the <pre> gets a duplicate background, border,
+   and border-radius that conflict with the .code-block wrapper design. */
+.plan-card-body .code-block {
+  overflow: hidden;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.plan-card-body .code-block-bar {
+  border: none;
+  border-radius: 0;
+}
+.plan-card-body .code-block > pre {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* --- QuestionDialog --------------------------------------------------
+   Interactive dialog shown when the SDK calls AskUserQuestion. Reuses
+   .perm-overlay / .perm-card for the frame; the rest below styles the
+   per-question forms and selectable options. */
+.question-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.question-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.question-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--fg-muted);
+}
+.question-chip {
+  background: var(--bg-elev-2);
+  color: var(--accent);
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+}
+.question-index {
+  font-family: var(--mono);
+}
+.question-mode {
+  color: var(--warn);
+}
+.question-text {
+  font-size: 14px;
+  color: var(--fg);
+  line-height: 1.45;
+  font-weight: 500;
+}
+.question-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.question-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.question-option:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+.question-option.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev));
+}
+.question-option-marker {
+  font-size: 16px;
+  color: var(--fg-muted);
+  line-height: 1.2;
+  display: inline-flex;
+  align-items: center;
+}
+.question-option.selected .question-option-marker {
+  color: var(--accent);
+}
+.question-option-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.question-option-label {
+  font-weight: 500;
+  font-size: 13.5px;
+}
+.question-option-desc {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  line-height: 1.45;
+}
+.question-option-preview {
+  margin-top: 4px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  max-height: 160px;
+  overflow: auto;
+}
+.question-skip {
+  align-self: flex-start;
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 0;
+  text-decoration: underline dotted;
+}
+.question-skip:disabled {
+  opacity: 0.4;
+  cursor: default;
+  text-decoration: none;
+}
+.question-skip:hover:not(:disabled) {
+  color: var(--fg);
+}
+.question-other-input {
+  /* Sibling of .question-option (not nested inside its body), so we
+   * have to manually indent past the option's padding-left (12px) +
+   * marker (~16px) + flex gap (10px) to keep the typed text visually
+   * aligned with the "Other" label and the other options' content. */
+  width: calc(100% - 38px);
+  margin-left: 38px;
+  margin-top: 4px;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.question-other-input:focus {
+  border-color: var(--accent);
+}
+/* Answered state — question block after the user submits. */
+.question-block-answered {
+  opacity: 0.85;
+}
+.question-answered-badge {
+  color: var(--ok);
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.question-answer-display {
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--fg);
+}
+
+/* --- Inline AskUserQuestion card -------------------------------------
+   Rendered inside the transcript by ToolUseBlock when the model asks
+   a question. Pending cards auto-expand so the user can read the
+   prompt; resolved cards collapse to a one-line summary so long
+   transcripts stay scannable. Accent-tinted to read as informational
+   (vs amber/warn for plans). */
+details.question-inline-card {
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg-elev));
+  margin: 8px 0;
+  overflow: clip;
+}
+details.question-inline-card > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 8px 12px;
+  user-select: none;
+}
+details.question-inline-card > summary::-webkit-details-marker { display: none; }
+details.question-inline-card[open] > summary {
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+}
+.question-inline-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.question-inline-icon {
+  font-size: 14px;
+}
+.question-inline-title {
+  font-weight: 600;
+  color: var(--fg);
+}
+.question-inline-status {
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.question-inline-status.answered {
+  background: color-mix(in srgb, var(--ok) 18%, transparent);
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 35%, transparent);
+}
+.question-inline-status.skipped {
+  background: color-mix(in srgb, var(--fg-muted) 12%, transparent);
+  color: var(--fg-muted);
+  border-color: color-mix(in srgb, var(--fg-muted) 30%, transparent);
+}
+/* "Click to answer" pill on a minimized pending question card. Sits after
+   the status chip (which has margin-left:auto). */
+.question-inline-reopen {
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  cursor: pointer;
+  background: var(--accent);
+  color: var(--on-accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  white-space: nowrap;
+}
+.question-inline-reopen:hover {
+  background: color-mix(in srgb, var(--accent) 85%, #000);
+}
+/* A minimized card pulls focus — brighter left rail + subtle ring so the
+   user can find their way back to the open question. */
+details.question-inline-card-minimized {
+  border-left-width: 3px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.question-inline-body {
+  padding: 10px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.question-inline-empty {
+  color: var(--fg-muted);
+  font-style: italic;
+  font-size: 12.5px;
+}
+.question-inline-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.question-inline-item.skipped {
+  opacity: 0.65;
+}
+.question-inline-item-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--fg-muted);
+}
+.question-inline-skipped-badge {
+  margin-left: auto;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg-muted) 12%, transparent);
+  color: var(--fg-muted);
+  border: 1px solid color-mix(in srgb, var(--fg-muted) 30%, transparent);
+}
+.question-inline-options {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.question-inline-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 12.5px;
+}
+.question-inline-option.selected {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-elev));
+}
+.question-inline-option-marker {
+  font-size: 14px;
+  color: var(--fg-muted);
+  line-height: 1.2;
+  margin-top: 1px;
+  display: inline-flex;
+  align-items: center;
+}
+.question-inline-option.selected .question-inline-option-marker {
+  color: var(--accent);
+}
+.question-inline-option-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.question-inline-option-label {
+  font-weight: 500;
+  color: var(--fg);
+}
+.question-inline-option-desc {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  line-height: 1.45;
+}
+.question-inline-option-custom-tag {
+  font-size: 10.5px;
+  color: var(--fg-muted);
+  font-weight: 400;
+  margin-left: 4px;
+}

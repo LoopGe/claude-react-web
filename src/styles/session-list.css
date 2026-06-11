@@ -1,0 +1,931 @@
+/* Session list */
+.session-list {
+  padding: 10px;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.session-list-top {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* The "New session" button doubles as a drop target for folders dragged
+   from the OS file manager. Dashed outline + slight scale makes the
+   affordance obvious while the drag is in progress. */
+.new-session-btn {
+  transition: outline-color 0.15s ease, background-color 0.15s ease;
+  outline: 2px dashed transparent;
+  outline-offset: 2px;
+}
+.new-session-btn.drop-target {
+  outline-color: var(--accent);
+}
+.session-filter {
+  position: relative;
+  display: flex;
+}
+.session-filter .input { width: 100%; padding-left: 28px; padding-right: 26px; }
+.session-filter-icon {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  color: var(--fg-muted);
+  pointer-events: none;
+}
+.session-filter-clear {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+.session-filter-clear:hover { background: var(--bg-elev-2); color: var(--fg); }
+
+/* ── Group pills (horizontal row in sidebar top area) ── */
+.group-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.group-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--bg-elev-2);
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  user-select: none;
+}
+.group-pill:hover {
+  background: var(--bg-elev-3);
+  color: var(--fg);
+  border-color: var(--accent);
+}
+/* Active group — its sessions currently occupy the main panels. Accent
+   border + faint accent wash + brightened text gives the row a clear
+   "you are here" anchor (Navigation: Active State). */
+.group-pill.active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: var(--accent);
+  color: var(--fg);
+}
+.group-pill.active .group-pill-count {
+  opacity: 0.9;
+}
+.group-pill-count {
+  font-size: 10px;
+  opacity: 0.7;
+  margin-left: 1px;
+}
+.group-pill-new {
+  border-style: dashed;
+  opacity: 0.8;
+}
+.group-pill-new:hover { opacity: 1; }
+.group-pill-input {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  border: 1px solid var(--accent);
+  background: var(--bg-elev-1);
+  color: var(--fg);
+  outline: none;
+  width: 80px;
+}
+
+/* ── Session section (grouped sidebar view) ── */
+.session-section {
+  display: flex;
+  flex-direction: column;
+}
+.session-section-header {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
+  padding: 8px 12px 4px;
+  user-select: none;
+}
+
+/* ── Group header (collapsible, inside sidebar) ── */
+.session-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+  border-left: 3px solid transparent;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.session-group-header:hover {
+  background: var(--bg-elev-2);
+}
+/* Active group highlight — when this group's sessions occupy the main panels. */
+.session-section.group-active .session-group-header {
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.group-collapse-arrow {
+  background: none;
+  border: none;
+  padding: 0;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.group-collapse-arrow:hover {
+  color: var(--accent);
+}
+.group-header-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.group-header-count {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--fg-muted);
+  background: var(--bg-elev-2);
+  border-radius: 8px;
+  padding: 0 5px;
+  min-width: 16px;
+  text-align: center;
+}
+.group-sessions {
+  display: flex;
+  flex-direction: column;
+}
+.group-empty {
+  font-size: 12px;
+  color: var(--fg-muted);
+  padding: 4px 12px 8px 32px;
+  font-style: italic;
+  /* Make the whole "empty" area a comfortable drop target — otherwise
+     an empty group becomes impossible to drop into (the label line is
+     so narrow that hitting it during a drag is finicky). */
+  min-height: 28px;
+  border-radius: 6px;
+  transition: background 0.12s, border 0.12s;
+  border: 1px dashed transparent;
+}
+/* Drop target highlights while a session card is being dragged over a
+   group. The header/body share the same visual language as the
+   existing `.new-session-btn.drop-target` so users get a consistent
+   "this surface will accept the drop" signal across the sidebar. */
+.session-group-header.drop-target {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+.group-sessions.drop-target {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  outline: 2px dashed color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: -2px;
+  border-radius: 6px;
+}
+.group-empty.drop-target {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-style: normal;
+}
+
+/* Ungrouped section — slightly muted header to distinguish from groups. */
+.session-section-ungrouped .session-section-header {
+  color: var(--fg-muted);
+  opacity: 0.8;
+}
+.ungrouped-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ungrouped-header-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--fg-muted);
+}
+.session-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  background: transparent;
+  text-align: left;
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+.session-item:hover { background: var(--bg-elev-2); }
+@media (prefers-reduced-motion: reduce) {
+  .session-item { transition: none; }
+}
+
+/* Idle tint for cards that have a per-session accent chosen. We paint a
+   3px coloured rail on the left edge and wash the card body with a very
+   faint accent tint so the colour is visible even when the card is
+   neither focused nor open. The focused / open / unread states layer on
+   top via their own box-shadow rules — those keep their precedence
+   because the rail uses `border-left` rather than `inset` shadow. */
+.session-item.tinted {
+  border-left: 3px solid var(--accent);
+  padding-left: 7px; /* 10 - 3, so the text baseline stays put */
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+.session-item.tinted:hover {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev-2));
+}
+/* When a tinted card is also focused, keep the inset accent stripe
+   (which normally sits at the left edge) but nudge it off the same
+   pixel row as the border-left so both are visible. */
+.session-item.tinted.focused {
+  box-shadow: inset 3px 0 0 var(--accent-strong);
+}
+.session-item.terminated { opacity: 0.6; }
+.session-item.dormant { opacity: 0.75; border-style: dashed; }
+.session-item.resuming { cursor: progress; opacity: 0.5; }
+.session-resuming-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--fg-muted);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: msg-sending-spin 0.8s linear infinite;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+/* Inline rename input: mimics the title's text styling so the card
+   doesn't visually jump when entering edit mode. */
+.session-item-rename-input {
+  /* Break out of the parent <strong>'s overflow:hidden/ellipsis/nowrap
+     box so the typed characters aren't visually clipped (the parent
+     would otherwise truncate the inline text flow that includes the
+     input's rendered glyphs in some browsers). */
+  display: inline-block;
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  /* Force the foreground color — inheriting through <strong> in a few
+     theme combos has produced invisible text. */
+  color: var(--fg);
+  -webkit-text-fill-color: var(--fg);
+  caret-color: var(--fg);
+  font: inherit;
+  font-weight: 600;
+  padding: 1px 4px;
+  outline: none;
+}
+
+/* Error summary line — truncated one-liner under the title, full text
+   available via the badge + this line's own tooltip. */
+.session-item-error {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--danger);
+  overflow: hidden;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+.session-item-error svg {
+  flex-shrink: 0;
+}
+.session-item-error > :last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Per-panel permission overlay. Unlike the full-screen modal it used to
+   be, this one only covers its own chat panel — the other 1-2 panels
+   in the grid stay fully interactive while the user decides. */
+.perm-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--bg) 65%, transparent);
+  backdrop-filter: var(--glass-blur);
+  z-index: 4;
+}
+/* useFocusTrap moves focus onto the overlay container itself (via an
+   injected tabindex=-1) instead of its first action button. Programmatic
+   focus on a -1 element won't trigger :focus-visible, but suppress any
+   default outline so the backdrop never shows a stray focus frame. The
+   container is a wrapper, not an interactive control — children keep their
+   own focus styles. */
+.git-overlay[tabindex="-1"]:focus,
+.settings-overlay[tabindex="-1"]:focus,
+.perm-overlay[tabindex="-1"]:focus {
+  outline: none;
+}
+.perm-card {
+  width: min(520px, 100%);
+  max-height: 100%;
+  overflow: hidden;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--overlay-shadow);
+  display: flex;
+  flex-direction: column;
+}
+/* Plan approvals are markdown-heavy and benefit from extra width.
+   720px keeps it readable but still narrower than a typical 3-up
+   panel column on a 1440px display. */
+.perm-card.perm-card-plan {
+  width: min(720px, 100%);
+}
+.perm-card .modal-header,
+.perm-card .modal-footer {
+  flex-shrink: 0;
+}
+/* Minimize (×) button in the QuestionDialog header — hides the dialog so
+   the user can read the conversation behind it; the question stays pending
+   and the inline message card re-opens it. */
+.question-minimize-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.question-minimize-btn:hover:not(:disabled) {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+}
+.question-minimize-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Custom right-click menu. Positioned absolutely by the parent. */
+.ctx-menu {
+  position: fixed;
+  min-width: 180px;
+  padding: 4px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: var(--card-shadow);
+  z-index: 1000;
+  font-size: 13px;
+  user-select: none;
+  /* (#2) Pop in from the anchor — scale + fade, top-origin so it reads as
+     unfolding from the click point. */
+  transform-origin: top left;
+  animation: ctx-menu-in 120ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes ctx-menu-in {
+  from { opacity: 0; transform: scale(0.96) translateY(-4px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+.ctx-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  background: none;
+  border: none;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+  border-radius: 4px;
+  font: inherit;
+}
+.ctx-menu-item:hover:not(:disabled) { background: var(--bg-elev-2); }
+.ctx-menu-item:disabled { color: var(--fg-muted); cursor: not-allowed; }
+.ctx-menu-item.danger { color: var(--danger); }
+.ctx-menu-item.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+}
+.ctx-menu-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  opacity: 0.75;
+}
+.ctx-menu-label { flex: 1; }
+.ctx-menu-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 2px;
+}
+
+/* ── Model picker — searchable dropdown anchored under the header chip ──
+   Combines the slash/command-palette listbox pattern with ctx-menu's
+   fixed anchoring. Reuses theme variables only (no hardcoded colours). */
+.model-picker {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  width: 300px;
+  max-width: calc(100vw - 16px);
+  max-height: min(420px, calc(100vh - 80px));
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--card-shadow);
+  z-index: 1000;
+  overflow: hidden;
+}
+
+/* ── Appearance panel (skin + mode + accent) ── */
+.appearance-panel {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 264px;
+  max-width: calc(100vw - 24px);
+  padding: 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--card-shadow);
+  z-index: 1000;
+}
+.appearance-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.appearance-heading {
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
+}
+/* Anthropic skin locks its accent — show a static swatch + label instead
+   of the pickable swatch grid. */
+.appearance-accent-locked {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 2px;
+}
+.appearance-accent-locked-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  flex: none;
+}
+.appearance-accent-locked-label {
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+.appearance-skin-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.appearance-skin-card {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px;
+  /* Reserve room on the right so the active check mark never overlaps the
+     label/desc text — matters now that three skins share the row. */
+  padding-right: 24px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev-1);
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.appearance-skin-card:hover { background: var(--bg-elev-2); }
+.appearance-skin-card.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.appearance-skin-label {
+  min-width: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.appearance-skin-desc {
+  min-width: 0;
+  font-size: var(--fs-2xs);
+  color: var(--fg-muted);
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.appearance-skin-check {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  color: var(--accent);
+  display: inline-flex;
+}
+.appearance-mode-row {
+  display: flex;
+  gap: 6px;
+}
+.appearance-mode-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 4px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev-1);
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: var(--fs-xs);
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.appearance-mode-btn:hover { background: var(--bg-elev-2); color: var(--fg); }
+.appearance-mode-btn.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--fg);
+}
+.model-picker-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+.model-picker-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--fg);
+  font-size: 13px;
+  font-family: var(--mono);
+}
+.model-picker-input::placeholder {
+  color: var(--fg-muted);
+}
+.model-picker-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px;
+}
+.model-picker-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+.model-picker-heading {
+  padding: 6px 8px 2px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+.model-picker-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.model-picker-item.selected {
+  background: var(--bg-elev-2);
+}
+.model-picker-item.active {
+  color: var(--accent);
+}
+.model-picker-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.model-picker-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+.model-picker-item-label {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-picker-item-sub {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Slash command picker — anchored above the composer textarea */
+.cmd-picker {
+  position: fixed;
+  min-width: 280px;
+  max-width: 420px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: var(--card-shadow);
+  z-index: 1000;
+  font-size: 13px;
+  user-select: none;
+}
+.cmd-picker-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  background: none;
+  border: none;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+  border-radius: 4px;
+  font: inherit;
+}
+.cmd-picker-item.active {
+  background: var(--bg-elev-2);
+}
+.cmd-picker-item:hover:not(.active) {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.cmd-picker-name {
+  font-family: var(--mono);
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.cmd-picker-args {
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.cmd-picker-desc {
+  color: var(--fg-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-left: auto;
+}
+.cmd-picker-empty {
+  padding: 8px 10px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  text-align: center;
+}
+.cmd-picker-group-header {
+  padding: 6px 10px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--fg-muted);
+  user-select: none;
+}
+/* Drag & drop — visual feedback only. The reorder is driven by React state
+   (sidebarOrder in App.tsx), so the DOM only reshuffles AFTER drop, not
+   during hover. */
+.session-item { cursor: grab; }
+.session-item:active { cursor: grabbing; }
+.session-item.dragging { opacity: 0.35; }
+/* An insertion line painted either above or below the hovered card. We
+   use an outline on a pseudo-element so it doesn't steal pointer events. */
+.session-item.drop-before { box-shadow: 0 -2px 0 var(--accent) inset; }
+.session-item.drop-after { box-shadow: 0 2px 0 var(--accent) inset; }
+.session-item.focused.drop-before,
+.session-item.focused.drop-after { box-shadow: inset 2px 0 0 var(--accent), 0 -2px 0 var(--accent) inset; }
+/* A session whose panel is currently open (but not the one focused) —
+   dashed accent border on the left + slightly raised background, so all
+   open sessions are obviously distinct from unopened ones even when none
+   of them is focused. */
+.session-item.open {
+  background: var(--bg-elev-2);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
+}
+/* The focused panel wins the strongest highlight — solid accent stripe
+   + accent border. Matches the accent border on the chat panel itself. */
+.session-item.focused {
+  background: var(--bg-elev-2);
+  border-color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+/* Slot pill: small square badge to the left of the title that shows
+   which main-area column this session occupies. Hollow for open,
+   filled for focused. */
+.session-item-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  border-radius: 4px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  vertical-align: middle;
+}
+.session-item-slot.focused {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+/* Unread sessions nudge the title right to make room for the dot. */
+.session-item-unread {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-right: 6px;
+  vertical-align: middle;
+  box-shadow: 0 0 0 2px var(--bg);
+}
+.session-item.unread strong { color: var(--fg); }
+/* Pending-permission count badge — appears next to the title when the
+   session has tool permission / AskUserQuestion requests waiting on the
+   user. Pulses gently so dormant tabs don't get missed. Uses --warn
+   (amber) rather than --danger because routine prompts shouldn't read
+   as errors. */
+.session-item-perm-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--warn);
+  color: var(--bg);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  margin-right: 6px;
+  vertical-align: middle;
+  animation: session-perm-badge-pulse 1.6s ease-in-out infinite;
+}
+@keyframes session-perm-badge-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 60%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 0%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .session-item-perm-badge { animation: none; }
+}
+@keyframes session-working-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+.session-item-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.session-item-id { font-family: var(--mono); font-size: 12px; color: var(--fg-muted); }
+.session-item-meta { font-size: 12px; color: color-mix(in srgb, var(--fg-muted) 80%, transparent); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The model is the most useful at-a-glance datum in the meta row — lift it
+   above the muted msg/viewer counts so the eye lands on it first. Derived
+   from theme tokens (no hardcoded hex) so light/dark both adapt. */
+.session-item-model { color: color-mix(in srgb, var(--fg) 65%, var(--fg-muted)); }
+.session-item-cwd {
+  display: flex;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  overflow: hidden;
+}
+.session-item-cwd > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+/* Status chip — a coloured dot carries the primary signal, the short
+   label is a muted companion (kept so meaning never relies on colour
+   alone). No background fill, so the chip recedes and the title stays
+   the focal point of the card. */
+.session-item-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  line-height: 1;
+  color: var(--fg-muted);
+}
+.session-status-label {
+  letter-spacing: 0.01em;
+}
+.session-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--fg-muted);
+}
+/* live = healthy/running → semantic green */
+.session-status-dot.status-live { background: var(--ok); }
+.session-item-badge.status-live .session-status-label { color: color-mix(in srgb, var(--ok) 70%, var(--fg-muted)); }
+/* working = actively processing → accent, gently pulsing */
+.session-status-dot.status-working {
+  background: var(--accent);
+  animation: session-working-pulse 1s ease-in-out infinite;
+}
+.session-item-badge.status-working .session-status-label { color: var(--accent); }
+/* err → danger */
+.session-status-dot.status-err { background: var(--danger); }
+.session-item-badge.status-err .session-status-label { color: var(--danger); }
+/* dormant = not running → hollow muted ring */
+.session-status-dot.status-dormant {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--fg-muted);
+}
+/* ended = terminated → small solid muted dot (already the default bg) */
+.session-status-dot.status-ended { background: var(--fg-muted); }
+@media (prefers-reduced-motion: reduce) {
+  .session-status-dot.status-working { animation: none; }
+}
+.session-item-delete {
+  opacity: 0;
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  padding: 0 4px;
+}
+.session-item:hover .session-item-delete { opacity: 1; }
+.session-item-delete:hover { color: var(--danger); }
