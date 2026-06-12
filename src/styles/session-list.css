@@ -18,7 +18,7 @@
    from the OS file manager. Dashed outline + slight scale makes the
    affordance obvious while the drag is in progress. */
 .new-session-btn {
-  transition: outline-color 0.15s ease, background-color 0.15s ease;
+  transition: outline-color var(--motion-duration-fast) var(--motion-ease-standard), background-color var(--motion-duration-fast) var(--motion-ease-standard);
   outline: 2px dashed transparent;
   outline-offset: 2px;
 }
@@ -28,8 +28,26 @@
 .session-filter {
   position: relative;
   display: flex;
+  max-height: 36px;
+  opacity: 1;
+  transform: translateY(0);
+  overflow: hidden;
+  transition:
+    max-height var(--motion-duration-base) var(--motion-ease-standard),
+    opacity var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-base) var(--motion-ease-standard);
+}
+.session-filter.collapsed {
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(calc(-1 * var(--motion-distance-sm)));
 }
 .session-filter .input { width: 100%; padding-left: 28px; padding-right: 26px; }
+@media (prefers-reduced-motion: reduce) {
+  .session-filter { transition: none; }
+  .session-filter.collapsed { transform: none; }
+}
 .session-filter-icon {
   position: absolute;
   left: 8px;
@@ -75,7 +93,10 @@
   border: 1px solid var(--border);
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard);
   user-select: none;
 }
 .group-pill:hover {
@@ -142,7 +163,9 @@
   font-weight: 600;
   color: var(--fg);
   border-left: 3px solid transparent;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .session-group-header:hover {
   background: var(--bg-elev-2);
@@ -164,7 +187,7 @@
   color: var(--fg-muted);
   flex-shrink: 0;
   cursor: pointer;
-  transition: color 0.15s;
+  transition: color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .group-collapse-arrow:hover {
   color: var(--accent);
@@ -199,7 +222,9 @@
      so narrow that hitting it during a drag is finicky). */
   min-height: 28px;
   border-radius: 6px;
-  transition: background 0.12s, border 0.12s;
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard);
   border: 1px dashed transparent;
 }
 /* Drop target highlights while a session card is being dragged over a
@@ -249,11 +274,39 @@
   border: 1px solid transparent;
   background: transparent;
   text-align: left;
-  transition: background 0.12s ease, box-shadow 0.12s ease;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard), box-shadow var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.session-item-shell {
+  display: grid;
+  grid-template-rows: 1fr;
+  width: 100%;
+  min-width: 0;
+  transition:
+    grid-template-rows var(--motion-duration-moderate) var(--motion-ease-standard),
+    opacity var(--motion-duration-base) var(--motion-ease-standard),
+    transform var(--motion-duration-base) var(--motion-ease-standard);
+}
+.session-item-shell > .session-item {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+.session-item-shell.deleting {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transform: translateY(calc(-1 * var(--motion-distance-xs))) scale(var(--motion-scale-enter));
+}
+.session-item-shell.deleting > .session-item {
+  overflow: hidden;
 }
 .session-item:hover { background: var(--bg-elev-2); }
+.session-item.deleting { pointer-events: none; }
 @media (prefers-reduced-motion: reduce) {
-  .session-item { transition: none; }
+  .session-item,
+  .session-item-shell { transition: none; }
+  .session-item-shell.deleting { transform: none; }
 }
 
 /* Idle tint for cards that have a per-session accent chosen. We paint a
@@ -421,10 +474,10 @@
   /* (#2) Pop in from the anchor — scale + fade, top-origin so it reads as
      unfolding from the click point. */
   transform-origin: top left;
-  animation: ctx-menu-in 120ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both;
 }
 @keyframes ctx-menu-in {
-  from { opacity: 0; transform: scale(0.96) translateY(-4px); }
+  from { opacity: 0; transform: scale(var(--motion-scale-enter)) translateY(calc(-1 * var(--motion-distance-sm))); }
   to   { opacity: 1; transform: scale(1) translateY(0); }
 }
 .ctx-menu-item {
@@ -478,7 +531,7 @@
   z-index: 1000;
   overflow: hidden;
   transform-origin: top left;
-  animation: ctx-menu-in 120ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both;
 }
 
 /* ── Appearance panel (skin + mode + accent) ── */
@@ -496,7 +549,7 @@
   box-shadow: var(--card-shadow);
   z-index: 1000;
   transform-origin: top left;
-  animation: ctx-menu-in 120ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both;
 }
 .appearance-section {
   display: flex;
@@ -550,7 +603,9 @@
   color: var(--fg);
   cursor: pointer;
   text-align: left;
-  transition: border-color 0.15s ease, background 0.15s ease;
+  transition:
+    border-color var(--motion-duration-fast) var(--motion-ease-standard),
+    background var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .appearance-skin-card:hover { background: var(--bg-elev-2); }
 .appearance-skin-card.active {
@@ -595,7 +650,10 @@
   color: var(--fg-muted);
   cursor: pointer;
   font-size: var(--fs-xs);
-  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+  transition:
+    border-color var(--motion-duration-fast) var(--motion-ease-standard),
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .appearance-mode-btn:hover { background: var(--bg-elev-2); color: var(--fg); }
 .appearance-mode-btn.active {
@@ -858,7 +916,8 @@
   0%, 100% { opacity: 0.4; transform: scale(0.85); }
   50% { opacity: 1; transform: scale(1.1); }
 }
-.session-item-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.session-item-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-width: 0; }
+.session-item-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-item-id { font-family: var(--mono); font-size: 12px; color: var(--fg-muted); }
 .session-item-meta { font-size: 12px; color: color-mix(in srgb, var(--fg-muted) 80%, transparent); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The model is the most useful at-a-glance datum in the meta row — lift it

@@ -17,6 +17,7 @@ import {
   IconCopy,
   IconLoader,
 } from './icons/ToolIcons'
+import { AnimatedDetails } from './AnimatedCollapse'
 import { useToolResult, useToolStatus } from '../hooks/usePlanStatus'
 import type { ToolResultEntry, ToolStatus } from '../session-store/types'
 import type { Block } from '../types'
@@ -191,10 +192,13 @@ export const ToolResultDetails = memo(function ToolResultDetails({
           return truncate(texts || formatJson(content), 4000)
         })()
   return (
-    <details className={`tool-result-details ${className}`.trim()}>
-      <summary className="tool-result-summary">{preview}</summary>
+    <AnimatedDetails
+      className={`tool-result-details ${className}`.trim()}
+      summaryClassName="tool-result-summary"
+      summary={preview}
+    >
       <div className="tool-input">{body}</div>
-    </details>
+    </AnimatedDetails>
   )
 })
 

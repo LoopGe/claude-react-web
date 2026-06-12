@@ -23,6 +23,7 @@ import { memo, useState } from 'react'
 import { useGitDiff, useGitLog, useGitBranches, useGitStashes } from '../hooks/useGitStatus'
 import { useGitWrite } from '../hooks/useGitWrite'
 import { ConfirmDialog } from './ConfirmDialog'
+import { AnimatedCollapse, AnimatedDetails } from './AnimatedCollapse'
 import { Tooltip } from './Tooltip'
 import { IconX, IconSparkles, IconChevronDown, IconChevronRight, IconCheck, IconAlertTriangle } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
@@ -496,32 +497,40 @@ interface SectionProps {
 }
 
 function Section({ title, count, defaultOpen, children, actions, changeTotals }: SectionProps) {
+  const summary = (
+    <>
+      <span className="git-panel-section-title">{title}</span>
+      {changeTotals && (changeTotals.insertions > 0 || changeTotals.deletions > 0) && (
+        <span className="git-section-change-totals">
+          {changeTotals.insertions > 0 && <span className="git-file-additions">+{changeTotals.insertions}</span>}
+          {changeTotals.deletions > 0 && <span className="git-file-deletions">-{changeTotals.deletions}</span>}
+        </span>
+      )}
+      {count !== null && <span className="git-panel-section-count">{count}</span>}
+      {actions && (
+        // Stop the click from bubbling into <summary> (which would
+        // toggle the section). The outer wrapper preserves the
+        // grid-end alignment.
+        <span
+          className="git-panel-section-actions"
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          {actions}
+        </span>
+      )}
+    </>
+  )
+
   return (
-    <details className="git-panel-section" open={defaultOpen}>
-      <summary>
-        <span className="git-panel-section-title">{title}</span>
-        {changeTotals && (changeTotals.insertions > 0 || changeTotals.deletions > 0) && (
-          <span className="git-section-change-totals">
-            {changeTotals.insertions > 0 && <span className="git-file-additions">+{changeTotals.insertions}</span>}
-            {changeTotals.deletions > 0 && <span className="git-file-deletions">−{changeTotals.deletions}</span>}
-          </span>
-        )}
-        {count !== null && <span className="git-panel-section-count">{count}</span>}
-        {actions && (
-          // Stop the click from bubbling into <summary> (which would
-          // toggle the section). The outer wrapper preserves the
-          // grid-end alignment.
-          <span
-            className="git-panel-section-actions"
-            onClick={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            {actions}
-          </span>
-        )}
-      </summary>
-      <div className="git-panel-section-body">{children}</div>
-    </details>
+    <AnimatedDetails
+      className="git-panel-section"
+      defaultOpen={defaultOpen}
+      summary={summary}
+      contentClassName="git-panel-section-body"
+    >
+      {children}
+    </AnimatedDetails>
   )
 }
 
@@ -542,7 +551,8 @@ interface FileRowProps {
 
 function FileRow({ file, cwd, staged, writeOps, onError, askConfirm }: FileRowProps) {
   const [open, setOpen] = useState(false)
-  const { data: diff, loading, error } = useGitDiff(cwd, file.path, staged, open)
+  const [renderDiff, setRenderDiff] = useState(false)
+  const { data: diff, loading, error } = useGitDiff(cwd, file.path, staged, renderDiff)
 
   const stageBusy = writeOps.busyOps.has(`stage:${file.path}`)
   const unstageBusy = writeOps.busyOps.has(`unstage:${file.path}`)
@@ -555,7 +565,12 @@ function FileRow({ file, cwd, staged, writeOps, onError, askConfirm }: FileRowPr
         <button
           type="button"
           className="git-file-row-toggle"
-          onClick={() => setOpen((v) => !v)}
+          onClick={() => {
+            setOpen((v) => {
+              if (!v) setRenderDiff(true)
+              return !v
+            })
+          }}
           title={file.renamedFrom ? `${file.renamedFrom} → ${file.path}` : file.path}
         >
           <span className={`git-file-status status-${file.status}`}>{file.status}</span>
@@ -629,18 +644,24 @@ function FileRow({ file, cwd, staged, writeOps, onError, askConfirm }: FileRowPr
           )}
         </div>
       </div>
-      {open && (
-        <div className="git-file-diff-wrap">
-          {loading && <div className="git-file-diff-loading">Loading diff…</div>}
-          {error && <div className="git-file-diff-error">{error}</div>}
-          {diff && diff.isBinary && (
-            <div className="git-file-diff-binary">Binary file — no preview</div>
-          )}
-          {diff && !diff.isBinary && (
-            <DiffView text={diff.text} truncated={diff.truncated} totalLines={diff.totalLines} />
-          )}
-        </div>
-      )}
+      <AnimatedCollapse
+        open={open}
+        className="git-file-diff-collapse"
+        onExitComplete={() => setRenderDiff(false)}
+      >
+        {renderDiff && (
+          <div className="git-file-diff-wrap">
+            {loading && <div className="git-file-diff-loading">Loading diff...</div>}
+            {error && <div className="git-file-diff-error">{error}</div>}
+            {diff && diff.isBinary && (
+              <div className="git-file-diff-binary">Binary file - no preview</div>
+            )}
+            {diff && !diff.isBinary && (
+              <DiffView text={diff.text} truncated={diff.truncated} totalLines={diff.totalLines} />
+            )}
+          </div>
+        )}
+      </AnimatedCollapse>
     </div>
   )
 }
@@ -805,8 +826,12 @@ function CommitSection({
   }
 
   return (
-    <details className="git-panel-section" open={hasStaged}>
-      <summary>
+    <AnimatedDetails
+      key={hasStaged ? 'staged' : 'empty'}
+      className="git-panel-section"
+      defaultOpen={hasStaged}
+      summary={(
+        <>
         <span className="git-panel-section-title">Commit</span>
         <span
           className="git-panel-section-actions"
@@ -827,7 +852,9 @@ function CommitSection({
             {generateBusy ? '…' : <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconSparkles size={12} /> Generate</span>}
           </button>
         </span>
-      </summary>
+        </>
+      )}
+    >
       <div className="git-panel-section-body git-commit-form">
         <textarea
           className="git-commit-textarea"
@@ -878,7 +905,7 @@ function CommitSection({
           )}
         </div>
       </div>
-    </details>
+    </AnimatedDetails>
   )
 }
 
@@ -962,12 +989,12 @@ function BranchesSection({ sessionId, currentBranch, writeOps, onError, askConfi
   }
 
   return (
-    <details
+    <AnimatedDetails
       className="git-panel-section"
       open={open}
-      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
-    >
-      <summary>
+      onOpenChange={setOpen}
+      summary={(
+        <>
         <span className="git-panel-section-title">Branches</span>
         <span
           className="git-panel-section-actions"
@@ -979,7 +1006,9 @@ function BranchesSection({ sessionId, currentBranch, writeOps, onError, askConfi
             onClick={(e) => { e.preventDefault(); setNewBranchOpen((v) => !v) }}
           >+ new</button>
         </span>
-      </summary>
+        </>
+      )}
+    >
       <div className="git-panel-section-body">
         {newBranchOpen && (
           <div className="git-new-branch-form">
@@ -1035,7 +1064,7 @@ function BranchesSection({ sessionId, currentBranch, writeOps, onError, askConfi
           )
         })}
       </div>
-    </details>
+    </AnimatedDetails>
   )
 }
 
@@ -1053,12 +1082,12 @@ function StashesSection({ sessionId, writeOps, onError, askConfirm }: StashesSec
   const stashes = useGitStashes(sessionId, open)
 
   return (
-    <details
+    <AnimatedDetails
       className="git-panel-section"
       open={open}
-      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
-    >
-      <summary>
+      onOpenChange={setOpen}
+      summary={(
+        <>
         <span className="git-panel-section-title">Stashes</span>
         <span className="git-panel-section-count">{stashes.data?.length ?? '·'}</span>
         <span
@@ -1076,7 +1105,9 @@ function StashesSection({ sessionId, writeOps, onError, askConfirm }: StashesSec
             }}
           >Stash all</button>
         </span>
-      </summary>
+        </>
+      )}
+    >
       <div className="git-panel-section-body">
         {stashes.loading && <Skeleton rows={2} className="git-section-skeleton" />}
         {stashes.error && <div className="git-section-empty git-commits-error">{stashes.error}</div>}
@@ -1131,7 +1162,7 @@ function StashesSection({ sessionId, writeOps, onError, askConfirm }: StashesSec
           )
         })}
       </div>
-    </details>
+    </AnimatedDetails>
   )
 }
 

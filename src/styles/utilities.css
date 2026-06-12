@@ -21,7 +21,7 @@
   /* Off-screen until focused. transform-based hide avoids `display: none`
      which would also remove from the tab order. */
   transform: translateY(-150%);
-  transition: transform 0.15s ease;
+  transition: transform var(--motion-duration-base) var(--motion-ease-enter);
 }
 .skip-link:focus,
 .skip-link:focus-visible {
@@ -255,7 +255,10 @@
   color: var(--fg-muted);
   cursor: pointer;
   flex-shrink: 0;
-  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .tool-copy-btn:hover {
   background: var(--bg);
@@ -323,11 +326,11 @@
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
-.diff-truncation-details[open] > summary::after {
+.diff-truncation-details[data-state="open"] > summary::after {
   content: ' (click to collapse)';
   opacity: 0.6;
 }
-.diff-truncation-details[open] {
+.diff-truncation-details[data-state="open"] {
   border-bottom: none;
 }
 
@@ -606,8 +609,11 @@
   pointer-events: none;
   opacity: 0;
   visibility: hidden;
-  transform: translateY(2px);
-  transition: opacity 80ms ease-out, transform 80ms ease-out, visibility 80ms;
+  transform: translateY(var(--motion-distance-xs));
+  transition:
+    opacity var(--motion-duration-instant) var(--motion-ease-standard),
+    transform var(--motion-duration-instant) var(--motion-ease-standard),
+    visibility var(--motion-duration-instant);
   box-shadow: var(--tooltip-shadow);
 }
 .tt-wrap:hover > .tt-bubble,
@@ -620,7 +626,7 @@
 .tt-top > .tt-bubble {
   bottom: calc(100% + 6px);
   left: 50%;
-  transform: translate(-50%, 2px);
+  transform: translate(-50%, var(--motion-distance-xs));
 }
 .tt-top:hover > .tt-bubble,
 .tt-top:focus-within > .tt-bubble {
@@ -630,7 +636,7 @@
 .tt-bottom > .tt-bubble {
   top: calc(100% + 6px);
   left: 50%;
-  transform: translate(-50%, -2px);
+  transform: translate(-50%, calc(-1 * var(--motion-distance-xs)));
 }
 .tt-bottom:hover > .tt-bubble,
 .tt-bottom:focus-within > .tt-bubble {
@@ -640,7 +646,7 @@
 .tt-left > .tt-bubble {
   right: calc(100% + 6px);
   top: 50%;
-  transform: translate(2px, -50%);
+  transform: translate(var(--motion-distance-xs), -50%);
 }
 .tt-left:hover > .tt-bubble,
 .tt-left:focus-within > .tt-bubble {
@@ -650,7 +656,7 @@
 .tt-right > .tt-bubble {
   left: calc(100% + 6px);
   top: 50%;
-  transform: translate(-2px, -50%);
+  transform: translate(calc(-1 * var(--motion-distance-xs)), -50%);
 }
 .tt-right:hover > .tt-bubble,
 .tt-right:focus-within > .tt-bubble {
@@ -708,6 +714,24 @@
 .sidebar-skeleton { padding: 10px 12px; }
 .git-section-skeleton { padding: 6px 4px; }
 .skeleton-group.git-section-skeleton .skeleton-row { height: 12px; }
+
+
+/* Shared measured-height collapse used by details/accordion UI. */
+.animated-collapse {
+  overflow: hidden;
+  min-height: 0;
+}
+.animated-collapse.animating {
+  will-change: height, opacity;
+}
+.animated-collapse-content {
+  min-height: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animated-collapse.animating {
+    will-change: auto;
+  }
+}
 
 /* Muted "no items" notes shared by sidebar + settings empty states.
    Replaces inline style objects so spacing/colour live with the theme. */
@@ -952,7 +976,10 @@
   border: 1px solid color-mix(in srgb, var(--border) 86%, transparent);
   border-radius: 10px;
   background: color-mix(in srgb, var(--bg) 82%, var(--bg-elev-2));
-  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+  transition:
+    border-color var(--motion-duration-fast) var(--motion-ease-standard),
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .settings-model-row:hover {
   border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
@@ -1012,7 +1039,10 @@
   border-radius: 0;
   background: transparent;
   color: var(--fg-muted);
-  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+  transition:
+    border-color var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard),
+    background var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .settings-model-move .settings-model-action + .settings-model-action {
   border-left: 1px solid var(--border);
@@ -1068,7 +1098,7 @@
   transform: translateY(-50%);
   color: var(--fg-muted);
   pointer-events: none;
-  transition: color 120ms ease;
+  transition: color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .settings-model-select-wrap:focus-within .settings-model-select-icon {
   color: var(--accent);
@@ -1162,7 +1192,7 @@
     width: min(85vw, 320px);
     z-index: 50;
     transform: translateX(-100%);
-    transition: transform 0.2s ease;
+    transition: transform var(--motion-duration-moderate) var(--motion-ease-standard);
     border-right: 1px solid var(--border);
     box-shadow: var(--overlay-shadow);
   }

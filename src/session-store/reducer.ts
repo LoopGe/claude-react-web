@@ -445,10 +445,12 @@ function ackUserMessage(
   }
 
   const current = state.items[idx]
+  const consumedAt = state.pendingConsumedMessages.get(serverUuid)
   const msg: SdkMessage = {
     ...current.msg,
     uuid: serverUuid,
     ...(typeof receivedAt === 'number' ? { receivedAt } : {}),
+    ...(typeof consumedAt === 'number' ? { consumedAt } : {}),
   }
   const item = toTranscriptItem(msg, state.items[idx - 1])
   if (!item) return { ...state, pendingUserMessageIds: nextIds }
@@ -461,8 +463,14 @@ function ackUserMessage(
   const messages = msgIdx >= 0 ? state.messages.slice() : state.messages
   if (msgIdx >= 0) messages[msgIdx] = msg
 
-  nextIds.add(serverUuid)
-  return { ...state, items, messages, pendingUserMessageIds: nextIds }
+  if (typeof consumedAt !== 'number') nextIds.add(serverUuid)
+  let pendingConsumedMessages: ReadonlyMap<string, number> = state.pendingConsumedMessages
+  if (typeof consumedAt === 'number') {
+    const nextConsumedMessages = new Map(state.pendingConsumedMessages)
+    nextConsumedMessages.delete(serverUuid)
+    pendingConsumedMessages = nextConsumedMessages
+  }
+  return { ...state, items, messages, pendingUserMessageIds: nextIds, pendingConsumedMessages }
 }
 
 function clearSendingUserItems(state: SessionState): SessionState {
@@ -488,7 +496,11 @@ function clearSendingUserItems(state: SessionState): SessionState {
  *  the affected TranscriptItem so deliveryStatus re-derives. */
 function applyMessageConsumed(state: SessionState, uuid: string, consumedAt: number): SessionState {
   const idx = state.items.findIndex((it) => it.id === uuid)
-  if (idx < 0) return state
+  if (idx < 0) {
+    if (state.pendingConsumedMessages.get(uuid) === consumedAt) return state
+    const pendingConsumedMessages = rememberPendingConsumed(state.pendingConsumedMessages, uuid, consumedAt)
+    return { ...state, pendingConsumedMessages }
+  }
   const item = state.items[idx]
   if (item.deliveryStatus === 'consumed') return state
   // Stamp the underlying message so a later re-derivation (and any code
@@ -504,7 +516,13 @@ function applyMessageConsumed(state: SessionState, uuid: string, consumedAt: num
   )
   const messages = mIdx >= 0 ? state.messages.slice() : state.messages
   if (mIdx >= 0) messages[mIdx] = nextMsg
-  return { ...state, items, messages }
+  let pendingConsumedMessages: ReadonlyMap<string, number> = state.pendingConsumedMessages
+  if (pendingConsumedMessages.has(uuid)) {
+    const nextConsumedMessages = new Map(pendingConsumedMessages)
+    nextConsumedMessages.delete(uuid)
+    pendingConsumedMessages = nextConsumedMessages
+  }
+  return { ...state, items, messages, pendingConsumedMessages }
 }
 
 // --- Memory bound: front-trim the in-memory transcript -----------------
@@ -518,6 +536,22 @@ const MEMORY_ITEM_CAP = 1000
 // trimming runs once every SLACK appends (not every message), keeping the
 // common append path allocation-free.
 const MEMORY_TRIM_SLACK = 256
+const PENDING_CONSUMED_CAP = 64
+
+function rememberPendingConsumed(
+  pending: ReadonlyMap<string, number>,
+  uuid: string,
+  consumedAt: number,
+): Map<string, number> {
+  const next = new Map(pending)
+  next.set(uuid, consumedAt)
+  while (next.size > PENDING_CONSUMED_CAP) {
+    const oldest = next.keys().next().value
+    if (typeof oldest !== 'string') break
+    next.delete(oldest)
+  }
+  return next
+}
 
 /** Union of every tool_use_id referenced by `items` — both the tool_use
  *  (assistant) and tool_result (user) sides. Used to prune the toolUseId-keyed
@@ -601,6 +635,16 @@ function trimFront(state: SessionState): SessionState {
 }
 
 function applyMessage(state: SessionState, message: SdkMessage): SessionState {
+  const messageUuid = typeof message.uuid === 'string' ? message.uuid : null
+  const existingConsumedAt = messageUuid
+    ? state.items.find((it) => it.id === messageUuid)?.msg.consumedAt
+    : undefined
+  const pendingConsumedAt = messageUuid ? state.pendingConsumedMessages.get(messageUuid) : undefined
+  const effectiveConsumedAt = typeof pendingConsumedAt === 'number' ? pendingConsumedAt : existingConsumedAt
+  const incomingMessage: SdkMessage = typeof effectiveConsumedAt === 'number'
+    ? { ...message, consumedAt: effectiveConsumedAt }
+    : message
+
   // When the server echoes back the user message we sent, replace the
   // optimistic placeholder IN PLACE and return early. Falling through
   // to updateTranscript below would append the real message a second
@@ -613,13 +657,13 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   // the optimistic — without this guard, a tool_result that lands while
   // pendingUserMessageIds is still populated would replace the typed text
   // with a JSON tool result and silently drop what the user wrote.
-  const incomingParent = message.parent_tool_use_id
+  const incomingParent = incomingMessage.parent_tool_use_id
   if (
-    message.type === 'user' &&
+    incomingMessage.type === 'user' &&
     state.pendingUserMessageIds.size > 0 &&
     incomingParent == null
   ) {
-    const real = toTranscriptItem(message, undefined)
+    const real = toTranscriptItem(incomingMessage, undefined)
     if (real) {
       // Find the first optimistic placeholder that still exists in items.
       // Echoes arrive in the same order the user sent, so the oldest
@@ -642,13 +686,20 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
         if (msgIdx >= 0) messages[msgIdx] = real.msg
         const nextIds = new Set(state.pendingUserMessageIds)
         nextIds.delete(matchedId)
+        let pendingConsumedMessages: ReadonlyMap<string, number> = state.pendingConsumedMessages
+        if (messageUuid && pendingConsumedMessages.has(messageUuid)) {
+          const nextConsumedMessages = new Map(pendingConsumedMessages)
+          nextConsumedMessages.delete(messageUuid)
+          pendingConsumedMessages = nextConsumedMessages
+        }
         return {
           ...state,
           items,
           messages,
           eventCount: state.eventCount + 1,
-          lastMessageUuid: typeof message.uuid === 'string' ? message.uuid : state.lastMessageUuid,
+          lastMessageUuid: messageUuid ?? state.lastMessageUuid,
           pendingUserMessageIds: nextIds,
+          pendingConsumedMessages,
         }
       }
       // All pending IDs pointed at rows that are no longer in items
@@ -663,8 +714,8 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
     eventCount: state.eventCount + 1,
   }
 
-  if (typeof message.uuid === 'string') {
-    next.lastMessageUuid = message.uuid
+  if (messageUuid) {
+    next.lastMessageUuid = messageUuid
   }
 
   // If this is a TOP-LEVEL user message that wasn't matched above
@@ -673,15 +724,21 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   // tool_result/subagent user frames (parent_tool_use_id != null) —
   // those are unrelated to the user's typed input and the real echo
   // may still be on its way.
-  if (message.type === 'user' && next.pendingUserMessageIds.size > 0 && incomingParent == null) {
+  if (incomingMessage.type === 'user' && next.pendingUserMessageIds.size > 0 && incomingParent == null) {
     next = { ...next, pendingUserMessageIds: new Set<string>() }
   }
 
-  next = updateLiveTurn(next, message)
-  next = updateTranscript(next, message)
-  next = updateIndexes(next, message)
+  next = updateLiveTurn(next, incomingMessage)
+  next = updateTranscript(next, incomingMessage)
+  next = updateIndexes(next, incomingMessage)
 
-  if (message.type === 'result') {
+  if (messageUuid && next.pendingConsumedMessages.has(messageUuid)) {
+    const pendingConsumedMessages = new Map(next.pendingConsumedMessages)
+    pendingConsumedMessages.delete(messageUuid)
+    next = { ...next, pendingConsumedMessages }
+  }
+
+  if (incomingMessage.type === 'result') {
     // Reconcile any tool still marked 'running' at turn end. A `result`
     // frame means the turn is definitively over — within a normal turn
     // every tool_result lands BEFORE the result, so anything still

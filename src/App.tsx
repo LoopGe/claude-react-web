@@ -74,6 +74,7 @@ export function App() {
    *  Hidden from the sidebar optimistically; the real delete fires when the
    *  timer lapses (or is cancelled by Undo). */
   const [pendingDeleteIds, setPendingDeleteIds] = useState<Set<string>>(new Set())
+  const [deletingSessionIds, setDeletingSessionIds] = useState<Set<string>>(new Set())
   /** Ordered list of open session ids (oldest first). Length ≤ maxOpen. */
   const [openIds, setOpenIds] = useState<string[]>([])
   /** Which of the open panels is currently focused (controls settings
@@ -686,7 +687,7 @@ export function App() {
    *  would be nonsensical, and by the delayed path below once the undo
    *  window lapses. */
   const performDelete = useCallback(
-    async (id: string) => {
+    async (id: string): Promise<boolean> => {
       try {
         await api.delete(`/sessions/${id}`)
         closeSession(id)
@@ -712,8 +713,10 @@ export function App() {
         )
         // Server pushes a `removed` event on the global SSE, which
         // re-prunes session state — no need to GET /sessions here.
+        return true
       } catch (e) {
         toast.error(`Couldn't delete session: ${(e as Error).message}`)
+        return false
       }
     },
     [closeSession, setGroups, handleSessionColorChange, toast],
@@ -725,6 +728,7 @@ export function App() {
    *  the sidebar immediately, fire the real delete after a delay, and let
    *  the user cancel the timer within the window. */
   const pendingDeleteTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  const pendingDeleteHideTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
 
   /** Cancel a queued delete (Undo). Restores the card by clearing the
    *  optimistic-hide id. */
@@ -734,6 +738,17 @@ export function App() {
       clearTimeout(timer)
       pendingDeleteTimers.current.delete(id)
     }
+    const hideTimer = pendingDeleteHideTimers.current.get(id)
+    if (hideTimer) {
+      clearTimeout(hideTimer)
+      pendingDeleteHideTimers.current.delete(id)
+    }
+    setDeletingSessionIds((prev) => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
     setPendingDeleteIds((prev) => {
       if (!prev.has(id)) return prev
       const next = new Set(prev)
@@ -748,19 +763,41 @@ export function App() {
       if (pendingDeleteTimers.current.has(id)) return
       const session = sessions.find((s) => s.id === id)
       const label = session?.title ?? id.slice(0, 8)
-      // Optimistically hide the card so the sidebar reflects the intent
-      // instantly — the actual API call is deferred.
-      setPendingDeleteIds((prev) => new Set(prev).add(id))
-      const UNDO_MS = 5000
-      const timer = setTimeout(() => {
-        pendingDeleteTimers.current.delete(id)
-        setPendingDeleteIds((prev) => {
+      // Play a short local exit animation first, then hide the card for
+      // the Undo grace window. The irreversible API call is still deferred.
+      setDeletingSessionIds((prev) => new Set(prev).add(id))
+      const EXIT_ANIMATION_MS = 260
+      const UNDO_MS = 8000
+      const hideTimer = setTimeout(() => {
+        pendingDeleteHideTimers.current.delete(id)
+        setPendingDeleteIds((prev) => new Set(prev).add(id))
+        setDeletingSessionIds((prev) => {
           if (!prev.has(id)) return prev
           const next = new Set(prev)
           next.delete(id)
           return next
         })
-        void performDelete(id)
+      }, EXIT_ANIMATION_MS)
+      pendingDeleteHideTimers.current.set(id, hideTimer)
+      const timer = setTimeout(() => {
+        clearTimeout(hideTimer)
+        pendingDeleteHideTimers.current.delete(id)
+        pendingDeleteTimers.current.delete(id)
+        void performDelete(id).then((deleted) => {
+          if (deleted) return
+          setPendingDeleteIds((prev) => {
+            if (!prev.has(id)) return prev
+            const next = new Set(prev)
+            next.delete(id)
+            return next
+          })
+          setDeletingSessionIds((prev) => {
+            if (!prev.has(id)) return prev
+            const next = new Set(prev)
+            next.delete(id)
+            return next
+          })
+        })
       }, UNDO_MS)
       pendingDeleteTimers.current.set(id, timer)
       toast.info(`Deleted "${label}"`, {
@@ -778,9 +815,12 @@ export function App() {
   // pending intent, which is the safe default for an irreversible action.
   useEffect(() => {
     const timers = pendingDeleteTimers.current
+    const hideTimers = pendingDeleteHideTimers.current
     return () => {
       for (const t of timers.values()) clearTimeout(t)
+      for (const t of hideTimers.values()) clearTimeout(t)
       timers.clear()
+      hideTimers.clear()
     }
   }, [])
 
@@ -1479,6 +1519,7 @@ export function App() {
           serverModels={serverModels}
           resumingIds={resuming}
           unread={unread}
+          deletingIds={deletingSessionIds}
           sessionColors={sessionColors}
           onSessionColorChange={handleSessionColorChange}
           onSelect={handleSelectFromSidebar}

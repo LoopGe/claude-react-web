@@ -11,7 +11,7 @@
   overflow-y: auto;
   /* (#1) Entrance — mounts conditionally, so the animation fires on mount.
      Reuses the same keyframes as the settings overlay for one motion. */
-  animation: overlay-backdrop-in 160ms ease-out both;
+  animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both;
 }
 .git-overlay > .git-panel {
   width: min(520px, 100%);
@@ -24,7 +24,7 @@
   flex-direction: column;
   overflow-x: hidden;
   overflow-y: auto;
-  animation: overlay-panel-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both;
 }
 
 .git-panel-header {
@@ -153,8 +153,8 @@
   width: 10px;
   display: inline-block;
 }
-.git-panel-section[open] > summary::before { content: '▾'; }
-.git-panel-section[open] > summary { background: var(--bg-elev-1); }
+.git-panel-section[data-state="open"] > summary::before { content: '▾'; }
+.git-panel-section[data-state="open"] > summary { background: var(--bg-elev-1); }
 .git-panel-section-title { flex: 1; }
 .git-panel-section-count {
   font-family: var(--mono);
@@ -420,7 +420,7 @@
   gap: 2px;
   padding-right: 8px;
   opacity: 0;
-  transition: opacity 0.1s ease-out;
+  transition: opacity var(--motion-duration-fast) var(--motion-ease-standard);
   flex-shrink: 0;
 }
 .git-file-row:hover .git-file-actions,

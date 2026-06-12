@@ -54,6 +54,23 @@
   --fs-base: 13px;
   --fs-md: 14px;
   --fs-lg: 16px;
+  /* Motion tokens: shared durations/easings/distances for UI transitions. */
+  --motion-duration-instant: 80ms;
+  --motion-duration-fast: 120ms;
+  --motion-duration-base: 180ms;
+  --motion-duration-moderate: 240ms;
+  --motion-duration-slow: 320ms;
+  --motion-ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-ease-enter: var(--motion-ease-standard);
+  --motion-ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --motion-ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
+  --motion-distance-2xs: 1px;
+  --motion-distance-xs: 2px;
+  --motion-distance-sm: 4px;
+  --motion-distance-md: 8px;
+  --motion-distance-lg: 14px;
+  --motion-scale-enter: 0.98;
+  --motion-scale-press: 0.97;
   --app-header-height: 43px;
   --msg-tool-bg: #101820;
   --msg-tool-border: #1c2a36;

@@ -24,16 +24,18 @@ vi.mock('react-virtuoso', () => ({
   Virtuoso: ({
     data,
     itemContent,
+    firstItemIndex = 0,
     components,
   }: {
     data: unknown[]
     itemContent: (index: number, item: unknown) => React.ReactNode
+    firstItemIndex?: number
     components?: { Footer?: React.ComponentType }
   }) => (
     <div data-testid="virtuoso-mock">
       <div data-testid="virtuoso-item-list">
         {data.map((item, i) => (
-          <div key={i}>{itemContent(i, item)}</div>
+          <div key={i}>{itemContent(i + firstItemIndex, item)}</div>
         ))}
       </div>
       {components?.Footer && <components.Footer />}
@@ -170,6 +172,45 @@ describe('MessageList', () => {
       <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
     )
     expect(container.textContent).toContain('Hello world')
+  })
+
+  it('marks renderable first and last rows for symmetric outer spacing', () => {
+    const msgs = [
+      makeMsg('system', { subtype: 'status' }),
+      makeMsg('user', { message: { content: [{ type: 'text', text: 'first' }] } }),
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'middle' }] } }),
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'last' }] } }),
+      makeMsg('system', { subtype: 'status' }),
+    ]
+
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+    )
+
+    const rows = Array.from(container.querySelectorAll('.virtuoso-item-wrapper'))
+    expect(rows).toHaveLength(3)
+    expect(rows[0].classList.contains('transcript-first-item')).toBe(true)
+    expect(rows[0].classList.contains('transcript-last-item')).toBe(false)
+    expect(rows[1].classList.contains('transcript-first-item')).toBe(false)
+    expect(rows[1].classList.contains('transcript-last-item')).toBe(false)
+    expect(rows[2].classList.contains('transcript-first-item')).toBe(false)
+    expect(rows[2].classList.contains('transcript-last-item')).toBe(true)
+  })
+
+  it('uses renderable positions for next item checks under offset firstItemIndex', () => {
+    const msgs = [
+      makeMsg('system', { subtype: 'status' }),
+      makeMsg('user', { message: { content: [{ type: 'text', text: 'question' }] } }),
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'answer' }] } }),
+    ]
+    const items = toItems(msgs as SdkMessage[])
+    items[1].deliveryStatus = 'consumed'
+
+    const { container } = render(
+      <MessageList items={items} replayReady working />,
+    )
+
+    expect(container.querySelector('.msg-processing-indicator')).toBeNull()
   })
 
   it('renders streaming content outside the virtualized transcript', () => {

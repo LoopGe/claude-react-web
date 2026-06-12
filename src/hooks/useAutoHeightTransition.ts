@@ -22,7 +22,7 @@ export function useAutoHeightTransition<T extends HTMLElement>(
   options: AutoHeightTransitionOptions = {},
 ): AutoHeightTransitionControls {
   const {
-    durationMs = 320,
+    durationMs = 240,
     easing = 'cubic-bezier(0.22, 1, 0.36, 1)',
     measureTargetHeight,
     observe,

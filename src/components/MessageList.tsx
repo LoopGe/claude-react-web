@@ -118,6 +118,7 @@ interface RenderableItem {
   id: string
   msg: SdkMessage
   isCompactSummary: boolean
+  renderableIndex: number
   itemIndex: number
   /** Optimistic placeholder still in flight 闂?drives the user bubble's
    *  "sending" spinner. Cleared automatically by the reducer when the
@@ -295,6 +296,7 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
           id: item.id,
           msg: item.msg,
           isCompactSummary: item.isCompactSummary,
+          renderableIndex: out.length,
           itemIndex: i,
           sending: item.sending,
           deliveryStatus: item.deliveryStatus,
@@ -806,6 +808,8 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
     const isEntering = enterIdsRef.current.has(item.id)
     const className = [
       'virtuoso-item-wrapper',
+      item === renderableItems[0] ? 'transcript-first-item' : '',
+      item === renderableItems[renderableItems.length - 1] ? 'transcript-last-item' : '',
       isEntering ? 'msg-enter' : '',
     ].filter(Boolean).join(' ')
     return (
@@ -822,7 +826,7 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
           sending={item.sending}
           deliveryStatus={item.deliveryStatus}
           working={working}
-          nextItemType={renderableItems[_index + 1]?.msg?.type}
+          nextItemType={renderableItems[item.renderableIndex + 1]?.msg?.type}
         />
       </div>
     )

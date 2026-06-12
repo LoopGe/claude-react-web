@@ -2,6 +2,7 @@ import { memo } from 'react'
 import { Markdown } from '../Markdown'
 import { ToolUseBlock } from '../ToolUseBlock'
 import { ToolResultDetails } from '../ToolCard'
+import { AnimatedDetails } from '../AnimatedCollapse'
 import type { Block } from '../../types'
 import { formatJson } from '../../utils/format'
 
@@ -30,13 +31,18 @@ export const BlockView = memo(function BlockView({ block, searchQuery, activeMat
     if (block.thinking.trim().length === 0) return null
     const preview = block.thinking.replace(/\s+/g, ' ').trim().slice(0, 120)
     return (
-      <details className="thinking-details">
-        <summary className="thinking-summary">
-          <span className="thinking-label">thinking</span>
-          <span className="thinking-preview">{preview}</span>
-        </summary>
+      <AnimatedDetails
+        className="thinking-details"
+        summaryClassName="thinking-summary"
+        summary={(
+          <>
+            <span className="thinking-label">thinking</span>
+            <span className="thinking-preview">{preview}</span>
+          </>
+        )}
+      >
         <pre className="thinking-body">{block.thinking}</pre>
-      </details>
+      </AnimatedDetails>
     )
   }
   if (block.type === 'tool_use') {

@@ -303,7 +303,7 @@ mark.search-hl.search-hl-active {
   box-shadow: var(--toast-shadow);
   pointer-events: auto;
   /* slide in from the top; respects prefers-reduced-motion below */
-  animation: toast-slide-in 180ms ease-out;
+  animation: toast-slide-in var(--motion-duration-base) var(--motion-ease-enter);
 }
 
 /* Countdown progress bar pinned to the toast's bottom edge. Scales from
@@ -439,7 +439,7 @@ mark.search-hl.search-hl-active {
 @keyframes toast-slide-in {
   from {
     opacity: 0;
-    transform: translateY(-12px);
+    transform: translateY(calc(-1 * var(--motion-distance-md)));
   }
   to {
     opacity: 1;

@@ -389,6 +389,41 @@ describe('PermissionBroker', () => {
       expect(pending.kind).toBe('question')
     })
 
+    it('keeps AskUserQuestion pending past permissionTimeoutMs', async () => {
+      const session = makeFakeSession()
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const ac = new AbortController()
+
+      const promise = canUseTool('AskUserQuestion', {
+        questions: [{ question: 'Color?', options: [{ label: 'Red' }] }],
+      }, {
+        toolUseID: 'tu-q1',
+        signal: ac.signal,
+        title: 'Ask',
+        displayName: 'AskUserQuestion',
+        description: '',
+        suggestions: [],
+      })
+
+      expect(session.pending.size).toBe(1)
+      const pending = Array.from(session.pending.values())[0]
+      expect(pending.kind).toBe('question')
+      expect(pending.timeoutTimer).toBeNull()
+
+      vi.advanceTimersByTime(5001)
+
+      expect(session.pending.size).toBe(1)
+      broker.answerQuestion(session, pending.id, ['Red'])
+
+      const result = await promise
+      expect(result.behavior).toBe('deny')
+      if (result.behavior === 'deny') {
+        expect(result.message).toContain('Color?')
+        expect(result.message).toContain('Red')
+      }
+      expect(session.pending.size).toBe(0)
+    })
+
     it('times out and auto-denies when permissionTimeoutMs > 0', async () => {
       const session = makeFakeSession()
       const canUseTool = broker.buildCanUseTool(session, vi.fn())

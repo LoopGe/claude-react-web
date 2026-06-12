@@ -37,7 +37,7 @@
   cursor: col-resize;
   z-index: 5;
   background: transparent;
-  transition: background 0.15s ease;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .sidebar-resizer:hover,
 .sidebar-resizer.dragging {
@@ -108,7 +108,7 @@ body.resizing-col * {
 .panel-divider {
   cursor: col-resize;
   background: var(--border);
-  transition: background 0.15s ease;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard);
   z-index: 2;
 }
 .panel-divider:hover,
@@ -269,15 +269,15 @@ body.resizing-col * {
    uses color-mix() — because the colour-stop is the only thing that
    changes, the interpolation Just Works in supporting browsers. */
 .chat-panel {
-  transition: --mode-color 300ms ease;
+  transition: --mode-color var(--motion-duration-moderate) var(--motion-ease-standard);
 }
 .chat-panel.mode-active .chat-panel-header {
-  transition: background 300ms ease, border-bottom-color 300ms ease, box-shadow 300ms ease;
+  transition: background var(--motion-duration-moderate) var(--motion-ease-standard), border-bottom-color var(--motion-duration-moderate) var(--motion-ease-standard), box-shadow var(--motion-duration-moderate) var(--motion-ease-standard);
 }
 /* Ensure the header also transitions smoothly when reverting to default
    mode (losing .mode-active). Without this, the header snaps back. */
 .chat-panel .chat-panel-header {
-  transition: background 300ms ease, border-bottom-color 300ms ease, box-shadow 300ms ease;
+  transition: background var(--motion-duration-moderate) var(--motion-ease-standard), border-bottom-color var(--motion-duration-moderate) var(--motion-ease-standard), box-shadow var(--motion-duration-moderate) var(--motion-ease-standard);
 }
 /* Attention-grabbing flash when the permission mode changes. The header
    briefly brightens (25% → 8% tint) to draw the eye to the mode switch.
@@ -288,7 +288,7 @@ body.resizing-col * {
   100% { background: color-mix(in srgb, var(--mode-color) 8%, var(--bg-elev)); }
 }
 .chat-panel-header.mode-changing.mode-changing {
-  animation: mode-flash 400ms ease-out;
+  animation: mode-flash var(--motion-duration-slow) var(--motion-ease-standard);
 }
 /* Mode badge slide transition. On switch the old badge slides out to the
    left while the new one slides in from the right, producing a lateral
@@ -327,7 +327,7 @@ body.resizing-col * {
   user-select: none;
   line-height: 1.35;
   cursor: pointer;
-  transition: background 120ms ease, color 300ms ease, transform 120ms ease;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard), color var(--motion-duration-moderate) var(--motion-ease-standard), transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
 /* The outgoing badge is positioned absolutely so it overlaps the incoming
    one and doesn't affect layout while it slides away. It keeps its natural
@@ -336,12 +336,12 @@ body.resizing-col * {
   position: absolute;
   left: 0;
   top: 0;
-  animation: mode-slide-out 220ms ease-in forwards;
+  animation: mode-slide-out var(--motion-duration-moderate) var(--motion-ease-exit) forwards;
   pointer-events: none;
 }
 /* The incoming badge gets the slide-in animation only during a transition. */
 .chat-panel-mode-badge.mode-slide-in {
-  animation: mode-slide-in 280ms ease-out;
+  animation: mode-slide-in var(--motion-duration-moderate) var(--motion-ease-enter);
 }
 /* Non-default modes get the tinted background; default stays transparent
    until hover so it doesn't compete with the title. */
@@ -354,9 +354,9 @@ body.resizing-col * {
 }
 .chat-panel-mode-badge:hover:not(:disabled) {
   background: color-mix(in srgb, var(--mode-color, var(--fg-muted)) 20%, transparent);
-  transform: translateY(-1px);
+  transform: translateY(calc(-1 * var(--motion-distance-2xs)));
 }
-.chat-panel-mode-badge:active:not(:disabled) { transform: translateY(0) scale(0.97); }
+.chat-panel-mode-badge:active:not(:disabled) { transform: translateY(0) scale(var(--motion-scale-press)); }
 .chat-panel-mode-badge:focus-visible {
   outline: 2px solid var(--mode-color, var(--accent));
   outline-offset: 1px;
@@ -385,7 +385,7 @@ body.resizing-col * {
   user-select: none;
   line-height: 1.35;
   cursor: pointer;
-  transition: background 120ms ease, color 200ms ease, transform 120ms ease;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard), color var(--motion-duration-base) var(--motion-ease-standard), transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .chat-panel-fast-badge.fast-on {
   color: var(--fast);
@@ -397,9 +397,9 @@ body.resizing-col * {
 }
 .chat-panel-fast-badge:hover:not(:disabled) {
   background: color-mix(in srgb, var(--fast) 22%, transparent);
-  transform: translateY(-1px);
+  transform: translateY(calc(-1 * var(--motion-distance-2xs)));
 }
-.chat-panel-fast-badge:active:not(:disabled) { transform: translateY(0) scale(0.97); }
+.chat-panel-fast-badge:active:not(:disabled) { transform: translateY(0) scale(var(--motion-scale-press)); }
 .chat-panel-fast-badge:focus-visible {
   outline: 2px solid var(--fast);
   outline-offset: 1px;
@@ -429,7 +429,7 @@ body.resizing-col * {
   line-height: 1.35;
   cursor: pointer;
   text-transform: lowercase;
-  transition: background 120ms ease, color 200ms ease, transform 120ms ease;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard), color var(--motion-duration-base) var(--motion-ease-standard), transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
 /* Levels above the default 'high' (xhigh / max) get the accent tint so a
    raised effort reads as a deliberate, active setting. low/medium/high stay
@@ -441,9 +441,9 @@ body.resizing-col * {
 }
 .chat-panel-effort-badge:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 20%, transparent);
-  transform: translateY(-1px);
+  transform: translateY(calc(-1 * var(--motion-distance-2xs)));
 }
-.chat-panel-effort-badge:active:not(:disabled) { transform: translateY(0) scale(0.97); }
+.chat-panel-effort-badge:active:not(:disabled) { transform: translateY(0) scale(var(--motion-scale-press)); }
 .chat-panel-effort-badge:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
@@ -466,7 +466,7 @@ body.resizing-col * {
   z-index: 1000;
   user-select: none;
   transform-origin: top left;
-  animation: ctx-menu-in 120ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both;
 }
 .effort-slider-head {
   display: flex;
@@ -540,7 +540,7 @@ body.resizing-col * {
   cursor: pointer;
   text-transform: lowercase;
   text-align: center;
-  transition: color 120ms ease, background 120ms ease;
+  transition: color var(--motion-duration-fast) var(--motion-ease-standard), background var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .effort-slider-tick:hover:not(:disabled) { background: var(--bg-elev-2); }
 .effort-slider-tick.active { color: var(--accent); font-weight: 600; }
@@ -573,16 +573,16 @@ body.resizing-col * {
   user-select: none;
   line-height: 1.35;
   cursor: pointer;
-  transition: background 120ms ease, transform 120ms ease;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard), transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .chat-panel-model-badge:hover:not(:disabled),
 .chat-panel-git-badge:hover:not(:disabled) {
   background: var(--bg-elev-2);
-  transform: translateY(-1px);
+  transform: translateY(calc(-1 * var(--motion-distance-2xs)));
 }
 .chat-panel-model-badge:active:not(:disabled),
 .chat-panel-git-badge:active:not(:disabled) {
-  transform: translateY(0) scale(0.97);
+  transform: translateY(0) scale(var(--motion-scale-press));
 }
 .chat-panel-model-badge.open {
   background: var(--bg-elev-2);
@@ -701,8 +701,8 @@ body.resizing-col * {
    The overlay is always mounted and toggled via `.hidden` (display:none),
    so the animation replays each time it's revealed. Shared by the git
    overlay (mounted conditionally) below via .overlay-enter-* keyframes. */
-.settings-overlay:not(.hidden) { animation: overlay-backdrop-in 160ms ease-out both; }
-.settings-overlay:not(.hidden) > .settings-panel { animation: overlay-panel-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.settings-overlay:not(.hidden) { animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both; }
+.settings-overlay:not(.hidden) > .settings-panel { animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both; }
 .settings-overlay > .settings-panel {
   width: min(420px, 100%);
   max-height: 100%;
@@ -716,7 +716,7 @@ body.resizing-col * {
   to   { opacity: 1; }
 }
 @keyframes overlay-panel-in {
-  from { opacity: 0; transform: scale(0.97) translateY(6px); }
+  from { opacity: 0; transform: scale(var(--motion-scale-enter)) translateY(var(--motion-distance-md)); }
   to   { opacity: 1; transform: scale(1) translateY(0); }
 }
 

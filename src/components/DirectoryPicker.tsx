@@ -7,8 +7,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../hooks/useApi'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { buildCrumbs } from '../utils/paths'
 import { IconFolder, IconX } from './icons/ToolIcons'
+import { AnimatedCollapse } from './AnimatedCollapse'
 
 interface DirEntry {
   name: string
@@ -43,8 +45,37 @@ export function DirectoryPicker({ initialPath, onPick, onClose }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const listBoxRef = useRef<HTMLDivElement>(null)
+  const listContentRef = useRef<HTMLDivElement>(null)
+
+  const listAnimationKey = [
+    loading ? 'loading' : 'ready',
+    list?.path ?? '',
+    list?.entries.length ?? 0,
+  ].join('|')
+
+  const measureListHeight = useCallback(() => {
+    const listBox = listBoxRef.current
+    const content = listContentRef.current
+    if (!listBox || !content) return null
+    const modal = listBox.closest('.modal') as HTMLElement | null
+    const footer = modal?.querySelector('.modal-footer') as HTMLElement | null
+    const availableModalHeight = modal?.parentElement?.clientHeight
+      ? modal.parentElement.clientHeight * 0.84
+      : Number.POSITIVE_INFINITY
+    const availableListHeight = Math.max(0, availableModalHeight - listBox.offsetTop - (footer?.offsetHeight ?? 0))
+    const listStyle = window.getComputedStyle(listBox)
+    const verticalPadding = parseFloat(listStyle.paddingTop) + parseFloat(listStyle.paddingBottom)
+    const contentHeight = content.scrollHeight + verticalPadding
+    return Math.min(contentHeight, availableListHeight || contentHeight)
+  }, [])
+
+  const { captureHeight: captureListHeight } = useAutoHeightTransition(listBoxRef, listAnimationKey, {
+    measureTargetHeight: measureListHeight,
+    observe: listContentRef,
+  })
 
   const loadList = useCallback(async (p: string, hidden: boolean) => {
+    captureListHeight()
     setLoading(true)
     setError(null)
     try {
@@ -58,7 +89,7 @@ export function DirectoryPicker({ initialPath, onPick, onClose }: Props) {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [captureListHeight])
 
   // Bootstrap: load home + initial listing
   useEffect(() => {
@@ -174,26 +205,30 @@ export function DirectoryPicker({ initialPath, onPick, onClose }: Props) {
           ))}
         </div>
 
-        {error && <div className="modal-error">{error}</div>}
+        <AnimatedCollapse open={!!error} className="modal-error-collapse">
+          {error && <div className="modal-error">{error}</div>}
+        </AnimatedCollapse>
 
         <div className="modal-list" ref={listBoxRef}>
-          {loading ? (
-            <div className="modal-empty">Loading…</div>
-          ) : list && list.entries.length > 0 ? (
-            list.entries.map((e) => (
-              <button
-                key={e.path}
-                className="modal-list-item"
-                onDoubleClick={() => void loadList(e.path, showHidden)}
-                onClick={() => setDraft(e.path)}
-              >
-                <span className="folder-icon"><IconFolder size={14} /></span>
-                <span className="folder-name">{e.name}</span>
-              </button>
-            ))
-          ) : (
-            <div className="modal-empty">{list ? '(empty directory)' : 'Loading…'}</div>
-          )}
+          <div className="modal-list-content" ref={listContentRef}>
+            {loading ? (
+              <div className="modal-empty">Loading...</div>
+            ) : list && list.entries.length > 0 ? (
+              list.entries.map((e) => (
+                <button
+                  key={e.path}
+                  className="modal-list-item"
+                  onDoubleClick={() => void loadList(e.path, showHidden)}
+                  onClick={() => setDraft(e.path)}
+                >
+                  <span className="folder-icon"><IconFolder size={14} /></span>
+                  <span className="folder-name">{e.name}</span>
+                </button>
+              ))
+            ) : (
+              <div className="modal-empty">{list ? '(empty directory)' : 'Loading...'}</div>
+            )}
+          </div>
         </div>
 
         <div className="modal-footer">

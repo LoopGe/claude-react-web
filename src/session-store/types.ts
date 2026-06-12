@@ -125,6 +125,11 @@ export interface SessionState {
    *  their own placeholder that is replaced independently when the
    *  server echo arrives. */
   pendingUserMessageIds: ReadonlySet<string>
+  /** message-consumed frames that arrived before the matching message row.
+   *  The WS channels are independent, so an idle session can deliver the
+   *  consumed signal before the user-message broadcast. Cache it here and
+   *  apply it when the row appears instead of leaving the bubble queued. */
+  pendingConsumedMessages: ReadonlyMap<string, number>
   permissionPending: Map<string, PermissionRequest>
   permissionDecisions: Map<string, 'allow' | 'deny'>
   pidToToolUseId: Map<string, string>
@@ -227,6 +232,7 @@ export function createInitialSessionState(sessionId: string): SessionState {
     error: null,
     lastMessageUuid: null,
     pendingUserMessageIds: new Set<string>(),
+    pendingConsumedMessages: new Map<string, number>(),
     permissionPending: new Map(),
     permissionDecisions: new Map(),
     pidToToolUseId: new Map(),

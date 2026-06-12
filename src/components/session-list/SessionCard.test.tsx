@@ -29,6 +29,7 @@ const baseProps: SessionCardProps = {
   isResuming: false,
   hasUnread: false,
   isDragging: false,
+  isDeleting: false,
   dropPosition: null,
   isRenaming: false,
   renameDraft: '',

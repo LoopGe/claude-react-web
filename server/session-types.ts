@@ -276,8 +276,9 @@ export interface SessionManagerOptions {
    *  internal platform-native-package resolution, which can pick a
    *  wrong libc variant on some systems. */
   claudeBinary?: string
-  /** Timeout (ms) for pending tool-permission requests. Auto-denies
-   *  if the user doesn't respond in time. 0 = no timeout. */
+  /** Timeout (ms) for pending ordinary tool-permission requests.
+   *  Auto-denies if the user does not respond in time. AskUserQuestion
+   *  prompts are excluded and wait until answer/skip/abort. 0 = no timeout. */
   permissionTimeoutMs?: number
   /** Maximum time (ms) a session can stay "working" before the GC
    *  auto-interrupts it. 0 = disabled. */

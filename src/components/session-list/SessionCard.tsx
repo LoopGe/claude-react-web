@@ -23,6 +23,8 @@ export interface SessionCardProps {
   hasUnread: boolean
   /** True when this card is the one being dragged. Fades the card out. */
   isDragging: boolean
+  /** True while the delete-exit animation is playing. */
+  isDeleting: boolean
   /** Insertion-line hint when another card is dragged over this one. */
   dropPosition: 'before' | 'after' | null
   /** True when this card's inline rename input is active. */
@@ -73,6 +75,7 @@ export const SessionCard = memo(function SessionCard({
   isResuming,
   hasUnread,
   isDragging,
+  isDeleting,
   dropPosition,
   isRenaming,
   accentStyle,
@@ -146,6 +149,7 @@ export const SessionCard = memo(function SessionCard({
         isResuming ? 'resuming' : '',
         hasUnread ? 'unread' : '',
         isDragging ? 'dragging' : '',
+        isDeleting ? 'deleting' : '',
         dropPosition === 'before' ? 'drop-before' : '',
         dropPosition === 'after' ? 'drop-after' : '',
         accentStyle ? 'tinted' : '',
@@ -155,8 +159,8 @@ export const SessionCard = memo(function SessionCard({
       style={accentStyle}
       role="button"
       tabIndex={0}
-      aria-disabled={isResuming}
-      draggable={!isMobile && !isResuming && !!onReorder}
+      aria-disabled={isResuming || isDeleting}
+      draggable={!isMobile && !isResuming && !isDeleting && !!onReorder}
       onDragStart={(e) => {
         if (!onReorder) return
         onDragStart(e, s.id)
@@ -189,8 +193,8 @@ export const SessionCard = memo(function SessionCard({
           onReorder(payload.id, s.id, position)
         }
       }}
-      onClick={() => !isResuming && onSelect(s.id)}
-      onKeyDown={(e) => !isResuming && (e.key === 'Enter' || e.key === ' ') && onSelect(s.id)}
+      onClick={() => !isResuming && !isDeleting && onSelect(s.id)}
+      onKeyDown={(e) => !isResuming && !isDeleting && (e.key === 'Enter' || e.key === ' ') && onSelect(s.id)}
     >
       <div className="session-item-row">
         <strong className="session-item-title">

@@ -32,6 +32,7 @@ import { useQuestionAnswers } from '../hooks/useQuestionAnswers'
 import { useReopenQuestion } from '../hooks/useReopenQuestion'
 import { SubagentCard } from './SubagentCard'
 import { ToolCard } from './ToolCard'
+import { AnimatedDetails } from './AnimatedCollapse'
 import {
   IconAlertCircle,
   IconCheck,
@@ -270,12 +271,11 @@ const PlanCard = memo(function PlanCard({
   const defaultOpen = status === 'pending'
 
   return (
-    <details
+    <AnimatedDetails
       key={status}
       className={`plan-card-collapsible plan-card-status-${status}`}
-      open={defaultOpen}
-    >
-      <summary>
+      defaultOpen={defaultOpen}
+      summary={(
         <div className="plan-card-header">
           <span className="plan-card-icon" aria-hidden>
             <IconClipboardList size={14} />
@@ -285,7 +285,8 @@ const PlanCard = memo(function PlanCard({
             {statusLabel}
           </span>
         </div>
-      </summary>
+      )}
+    >
       <div className="plan-card-body">
         {body ? <Markdown text={body} /> : (
           <div className="plan-card-empty">
@@ -309,7 +310,7 @@ const PlanCard = memo(function PlanCard({
           </ul>
         </div>
       )}
-    </details>
+    </AnimatedDetails>
   )
 })
 
@@ -357,26 +358,25 @@ const QuestionCard = memo(function QuestionCard({
     return answers.every((a) => a.answer == null) ? 'skipped' : 'answered'
   })()
   // The dialog is minimized (hidden) but the question is still awaiting an
-  // answer — let the user click this card to bring the dialog back.
+  // answer; let the user click this card to bring the dialog back.
   const isMinimized = status === 'pending' && !!toolUseId && minimizedToolUseIds.has(toolUseId)
   const statusLabel = status
   const statusTitle =
     status === 'answered'
-      ? 'You answered — Claude received your selections.'
+      ? 'You answered - Claude received your selections.'
       : status === 'skipped'
-        ? 'You skipped every question — Claude is continuing without guidance.'
+        ? 'You skipped every question - Claude is continuing without guidance.'
         : 'Pending your answer.'
-  // `key` forces a remount when status flips so the <details> open
-  // attribute re-applies — same trick PlanCard uses.
+  // `key` forces a remount when status flips so the default-open state
+  // re-applies; same trick PlanCard uses.
   const defaultOpen = status === 'pending'
 
   return (
-    <details
+    <AnimatedDetails
       key={status}
       className={`question-inline-card question-inline-card-${status}${isMinimized ? ' question-inline-card-minimized' : ''}`}
-      open={defaultOpen}
-    >
-      <summary>
+      defaultOpen={defaultOpen}
+      summary={(
         <div className="question-inline-header">
           <span className="question-inline-icon" aria-hidden>
             <IconMessageQuestion size={14} />
@@ -391,8 +391,8 @@ const QuestionCard = memo(function QuestionCard({
             <button
               type="button"
               className="question-inline-reopen"
-              // <summary>'s default click toggles the <details>; stop it so
-              // re-opening the dialog doesn't also collapse/expand the card.
+              // <summary>'s click toggles the details; stop it so reopening
+              // the dialog does not also collapse/expand the card.
               onClick={(e) => {
                 e.preventDefault()
                 e.stopPropagation()
@@ -404,23 +404,23 @@ const QuestionCard = memo(function QuestionCard({
             </button>
           )}
         </div>
-      </summary>
-      <div className="question-inline-body">
-        {questions.length === 0 ? (
-          <div className="question-inline-empty">(no questions in tool input)</div>
-        ) : (
-          questions.map((q, i) => (
-            <QuestionItemView
-              key={i}
-              index={i}
-              question={q}
-              answer={answers?.[i]}
-              status={status}
-            />
-          ))
-        )}
-      </div>
-    </details>
+      )}
+      contentClassName="question-inline-body"
+    >
+      {questions.length === 0 ? (
+        <div className="question-inline-empty">(no questions in tool input)</div>
+      ) : (
+        questions.map((q, i) => (
+          <QuestionItemView
+            key={i}
+            index={i}
+            question={q}
+            answer={answers?.[i]}
+            status={status}
+          />
+        ))
+      )}
+    </AnimatedDetails>
   )
 })
 
@@ -722,12 +722,14 @@ const ExpandableDiff = memo(function ExpandableDiff({
           />
         ))}
       </div>
-      <details className="diff-truncation-details">
-        <summary>
+      <AnimatedDetails
+        className="diff-truncation-details"
+        summary={(
           <span className="diff-truncation-summary">
-            … show {total - MAX_PREVIEW_LINES} more line{total - MAX_PREVIEW_LINES === 1 ? '' : 's'} ({total} total)
+            ... show {total - MAX_PREVIEW_LINES} more line{total - MAX_PREVIEW_LINES === 1 ? '' : 's'} ({total} total)
           </span>
-        </summary>
+        )}
+      >
         <div className="diff-lines">
           {hidden.map((line, i) => (
             <DiffLine
@@ -739,7 +741,7 @@ const ExpandableDiff = memo(function ExpandableDiff({
             />
           ))}
         </div>
-      </details>
+      </AnimatedDetails>
     </>
   )
 })
@@ -915,16 +917,18 @@ const BashToolView = memo(function BashToolView({ input, toolName, toolUseId }: 
       {(tooLong || description) && (
         <div className="bash-tool-body">
           {tooLong && (
-            <details className="bash-tool-collapsible">
-              <summary>
+            <AnimatedDetails
+              className="bash-tool-collapsible"
+              summary={(
                 <span className="bash-tool-fold-hint">
                   {remaining > 0
-                    ? `… show ${remaining} more line${remaining === 1 ? '' : 's'} (${lines.length} total)`
-                    : `… show full command (${command.length} chars)`}
+                    ? `... show ${remaining} more line${remaining === 1 ? '' : 's'} (${lines.length} total)`
+                    : `... show full command (${command.length} chars)`}
                 </span>
-              </summary>
+              )}
+            >
               <pre className="bash-tool-full"><code>{command}</code></pre>
-            </details>
+            </AnimatedDetails>
           )}
           {description && (
             <div className="bash-tool-desc">

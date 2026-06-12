@@ -65,6 +65,8 @@ export interface ServerConfig {
   readonly commitMessageModel: string
   readonly maxUploadBytes: number
   readonly historyCap: number
+  /** Timeout for ordinary tool-permission prompts. AskUserQuestion
+   *  prompts intentionally do not expire. */
   readonly permissionTimeoutMs: number
   readonly workingStuckMs: number
   readonly maxOpenPanels: number

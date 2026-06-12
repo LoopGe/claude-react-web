@@ -51,19 +51,19 @@
    `.msg-enter`: switching sessions is a whole-transcript transition, not a
    batch of live message arrivals. */
 .chat-messages.chat-messages-reveal {
-  animation: transcript-reveal 180ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation: transcript-reveal var(--motion-duration-base) var(--motion-ease-enter) backwards;
 }
 .chat-messages.chat-messages-reveal-pending {
   opacity: 0;
-  transform: translateY(6px);
+  transform: translateY(var(--motion-distance-md));
 }
 .virtuoso-item-wrapper.transcript-item-reveal {
-  animation: transcript-item-reveal 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: transcript-item-reveal var(--motion-duration-moderate) var(--motion-ease-enter) both;
 }
 @keyframes transcript-reveal {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(var(--motion-distance-md));
   }
   to {
     opacity: 1;
@@ -73,7 +73,7 @@
 @keyframes transcript-item-reveal {
   from {
     opacity: 0;
-    transform: translateY(14px);
+    transform: translateY(var(--motion-distance-lg));
     filter: blur(4px);
   }
   to {
@@ -106,15 +106,18 @@
 .virtuoso-item-wrapper {
   display: flex;
   flex-direction: column;
-  /* 7px top + 7px bottom 鈫?14px between adjacent items (matches the old
-     gap), and the first/last item gets a 7px inset from the header/composer
-     now that .chat-messages no longer carries a container padding. */
+  /* 7px top + 7px bottom gives 14px between adjacent items. Real
+     transcript first/last rows get one extra 7px so their outside
+     edge also totals 14px; class-based because Virtuoso can mount a
+     window whose DOM first-child is not the transcript first message. */
   padding-top: 7px;
   padding-bottom: 7px;
   padding-left: max(20px, calc((100% - 900px) / 2));
   padding-right: max(20px, calc((100% - 900px) / 2));
   contain: layout style;
 }
+.virtuoso-item-wrapper.transcript-first-item { padding-top: 14px; }
+.virtuoso-item-wrapper.transcript-last-item { padding-bottom: 14px; }
 /* Virtuoso Footer doesn't go through .virtuoso-item-wrapper, so transcript
    metadata needs the same centering padding to align with message rows. */
 .virtuoso-footer-wrapper {
@@ -132,10 +135,10 @@
   flex: 0 0 auto;
   min-height: 0;
   overflow: hidden;
-  animation: streaming-region-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: streaming-region-in var(--motion-duration-base) var(--motion-ease-enter) both;
 }
 .chat-streaming-region.exiting {
-  animation: streaming-region-out 180ms ease-in both;
+  animation: streaming-region-out var(--motion-duration-base) var(--motion-ease-exit) both;
 }
 .streaming-footer-wrapper {
   display: flex;
@@ -149,7 +152,7 @@
   from {
     opacity: 0;
     max-height: 0;
-    transform: translateY(14px);
+    transform: translateY(var(--motion-distance-lg));
   }
   to {
     opacity: 1;
@@ -166,7 +169,7 @@
   to {
     opacity: 0;
     max-height: 0;
-    transform: translateY(14px);
+    transform: translateY(var(--motion-distance-lg));
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -175,7 +178,7 @@
     animation: none;
   }
 }
-/* Empty state 鈥?shown when there are zero messages. Needs explicit
+/* Empty state 閳?shown when there are zero messages. Needs explicit
    centering since .chat-messages is no longer a flex container. */
 .chat-messages-empty {
   display: flex;
@@ -186,7 +189,7 @@
   text-align: center;
 }
 
-/* Floating "scroll to bottom" button 鈥?visible only when the user has
+/* Floating "scroll to bottom" button 閳?visible only when the user has
    scrolled up. Shows a count badge when new messages arrived meanwhile. */
 .chat-older-history {
   display: flex;
@@ -227,13 +230,13 @@
   z-index: 3;
   /* (#6) Float up + scale in when it mounts (user scrolled away from the
      bottom) so it appears rather than snapping into place. */
-  animation: jump-to-bottom-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
-  transition: transform 0.08s ease, filter 0.1s ease;
+  animation: jump-to-bottom-in var(--motion-duration-base) var(--motion-ease-enter) both;
+  transition: transform var(--motion-duration-instant) var(--motion-ease-standard), filter var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .chat-jump-to-bottom:hover { filter: brightness(1.08); }
-.chat-jump-to-bottom:active { transform: scale(0.94); }
+.chat-jump-to-bottom:active { transform: scale(var(--motion-scale-press)); }
 @keyframes jump-to-bottom-in {
-  from { opacity: 0; transform: translateY(12px) scale(0.85); }
+  from { opacity: 0; transform: translateY(var(--motion-distance-md)) scale(0.92); }
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 .chat-jump-to-bottom-count {
@@ -297,9 +300,9 @@
   transform-origin: left center;
   transform: scaleX(var(--ctx-progress, 0));
   will-change: transform;
-  transition: transform 0.3s ease;
+  transition: transform var(--motion-duration-moderate) var(--motion-ease-standard);
 }
-/* All levels use accent 鈥?urgency is conveyed by the percentage text. */
+/* All levels use accent 閳?urgency is conveyed by the percentage text. */
 .ctx-bar-empty .ctx-bar-fill { background: var(--border); }
 
 .chat-composer {
@@ -313,11 +316,11 @@
   display: flex;
   gap: 8px;
   position: relative;
-  transition: background 0.1s, outline-color 0.1s;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard), outline-color var(--motion-duration-fast) var(--motion-ease-standard);
   outline: 2px dashed transparent;
   outline-offset: -8px;
 }
-/* Drag-over state 鈥?outline in-set so it frames the composer without
+/* Drag-over state 閳?outline in-set so it frames the composer without
    shifting any layout. */
 .chat-composer-drag {
   background: var(--drag-over-bg);
@@ -344,13 +347,13 @@
 .chat-composer-actions { display: flex; flex-direction: column; gap: 6px; }
 /* Spin the loader glyph during the brief optimistic-send window (before the
    server flips `working` true and the button swaps to Interrupt). Reuses the
-   existing msg-sending-spin keyframes 鈥?a load-bearing progress indicator, so
+   existing msg-sending-spin keyframes 閳?a load-bearing progress indicator, so
    it deliberately keeps animating under prefers-reduced-motion (see the
    reduced-motion block's note). */
 .composer-send-spinner { animation: msg-sending-spin 0.8s linear infinite; }
-/* (#5) Send 鈬?Interrupt swap. The two buttons occupy one slot and are
+/* (#5) Send 閳?Interrupt swap. The two buttons occupy one slot and are
    mutually exclusive, so React remounts the glyph whenever canInterrupt
-   flips 鈥?the icon fades + scales in (no rotate) so the change reads as a
+   flips 閳?the icon fades + scales in (no rotate) so the change reads as a
    smooth crossfade rather than a hard cut. */
 .composer-action-toggle .composer-toggle-send-line,
 .composer-action-toggle .composer-toggle-send-head,
@@ -358,9 +361,9 @@
   transform-box: fill-box;
   transform-origin: center;
   transition:
-    opacity 140ms ease-out,
-    transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
-    stroke-dashoffset 180ms cubic-bezier(0.22, 1, 0.36, 1);
+    opacity var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-base) var(--motion-ease-standard),
+    stroke-dashoffset var(--motion-duration-base) var(--motion-ease-standard);
 }
 .composer-action-toggle .composer-toggle-send-line,
 .composer-action-toggle .composer-toggle-send-head {
@@ -377,7 +380,7 @@
 .composer-action-toggle.interrupt .composer-toggle-send-head {
   opacity: 0;
   stroke-dashoffset: 1;
-  transform: translateY(-2px) scale(0.9);
+  transform: translateY(calc(-1 * var(--motion-distance-xs))) scale(0.9);
 }
 .composer-action-toggle.interrupt .composer-toggle-stop {
   opacity: 1;
@@ -436,9 +439,9 @@
   max-width: 900px;
 }
 
-/* Recap / compact-boundary marker. Not a message bubble 鈥?it's a
+/* Recap / compact-boundary marker. Not a message bubble 閳?it's a
    horizontal divider with a pair of labels explaining what the SDK
-   just did ("Recap (auto) 路 50k 鈫?8k tokens 路 saved 84% 路 320ms"). */
+   just did ("Recap (auto) 璺?50k 閳?8k tokens 璺?saved 84% 璺?320ms"). */
 .msg.recap {
   display: flex;
   align-items: center;
@@ -472,7 +475,7 @@
   max-width: 420px;
 }
 
-/* EnterPlanMode marker 鈥?a thin inline cue (NOT a card) shown when the model
+/* EnterPlanMode marker 閳?a thin inline cue (NOT a card) shown when the model
    enters plan mode. Reuses the recap accent vocabulary so it reads as a mode
    transition rather than a tool result. All colors come from existing theme
    variables, so it adapts to light/dark automatically. */
@@ -501,7 +504,7 @@
   text-overflow: ellipsis;
 }
 
-/* Compact-summary card 鈥?the user-role "summary" frame that the SDK
+/* Compact-summary card 閳?the user-role "summary" frame that the SDK
    injects right after a compact_boundary. Tinted with the recap accent
    but card-shaped (not a divider) so it clearly belongs to the recap
    rather than being a user-authored message. */
@@ -567,7 +570,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.thinking-details[open] .thinking-preview {
+.thinking-details[data-state="open"] .thinking-preview {
   display: none;
 }
 .thinking-body {
@@ -585,7 +588,7 @@
   align-items: center;
   gap: 8px;
 }
-/* Inline message timestamp 鈥?pushed to the right edge of the header.
+/* Inline message timestamp 閳?pushed to the right edge of the header.
    Tabular figures so the seconds digit doesn't shift the layout as it
    ticks. Lowercase (the header is uppercased) and de-emphasised so the
    time reads as metadata, not content. */
@@ -604,7 +607,7 @@
    was previously justify-content: space-between with exactly two children;
    now there are up to three, so an explicit auto margin is clearer. */
 .msg-header > span:first-child { margin-right: auto; }
-/* "Sending鈥? indicator on the user bubble while the server hasn't
+/* "Sending閳? indicator on the user bubble while the server hasn't
    acknowledged yet. Replaced with no indicator (this entire row is
    removed) the moment the broadcast lands. */
 .msg-sending-indicator {
@@ -641,7 +644,7 @@
 /* Queued state: the server has the message but the SDK is still finishing
    the current turn, so it sits in the input queue. Mirrors the sending
    indicator shape (small chip in the header) but uses a pulsing dot rather
-   than a spinner 鈥?it's a passive "waiting" state, not active work. */
+   than a spinner 閳?it's a passive "waiting" state, not active work. */
 .msg-queued-indicator {
   display: inline-flex;
   align-items: center;
@@ -703,10 +706,10 @@
   0%, 100% { opacity: 0.35; }
   50% { opacity: 1; }
 }
-/* User message 鈥?right-aligned chat bubble. We shrink the bubble below
+/* User message 閳?right-aligned chat bubble. We shrink the bubble below
    the column width and pin it to the right edge with align-self, which
    works because .chat-messages is align-items: center (i.e. the default
-   per-child axis is cross-axis 鈫?align-self overrides it per-msg). */
+   per-child axis is cross-axis 閳?align-self overrides it per-msg). */
 .msg.user {
   align-self: flex-end;
   width: auto;
@@ -725,7 +728,7 @@
   border-color: var(--msg-user-pre-border);
 }
 
-/* Assistant message 鈥?sizes to its content so short replies render as
+/* Assistant message 閳?sizes to its content so short replies render as
    compact bubbles instead of full-column blocks. The 900px ceiling
    keeps long prose, code blocks, and tables capped at the readable
    column width; flex-start pins it to the left edge. */
@@ -738,7 +741,7 @@
 }
 .msg.assistant .msg-header { color: var(--assistant-header-fg); font-weight: 600; }
 
-/* Live streaming bubble 鈥?rendered outside Virtuoso while a turn is
+/* Live streaming bubble 閳?rendered outside Virtuoso while a turn is
    in progress. Matches assistant card styling but without the header.
 
    It carries a "breathing glow" border so the in-progress turn is easy to
@@ -788,17 +791,17 @@
 /* New-message entrance animation ("blur + rise"). Applied for one play to
    the item wrapper of a genuinely-new live arrival (see MessageList's gate),
    then stripped on animationend so scroll re-mounts don't replay it. The
-   class lives on .virtuoso-item-wrapper 鈥?animating the wrapper (not the
+   class lives on .virtuoso-item-wrapper 閳?animating the wrapper (not the
    inner .msg) keeps the bubble's own align-self / max-width intact. The
    wrapper already has `contain: layout style`, so the transform stays
    isolated and can't reflow sibling messages. */
 .virtuoso-item-wrapper.msg-enter {
-  animation: msg-enter-rise 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: msg-enter-rise var(--motion-duration-moderate) var(--motion-ease-enter) both;
 }
 @keyframes msg-enter-rise {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(var(--motion-distance-md));
     filter: blur(6px);
   }
   to {
@@ -842,8 +845,8 @@
   padding-top: 10px;
   padding-bottom: 10px;
   /* The bubble drops its right padding (.streaming-msg padding-right: 0) to
-     reclaim horizontal space, so re-apply a small right inset here 鈥?inside
-     the scroll viewport 鈥?to keep text and the scrollbar off the border. */
+     reclaim horizontal space, so re-apply a small right inset here 閳?inside
+     the scroll viewport 閳?to keep text and the scrollbar off the border. */
   padding-right: 8px;
   /* Cap the live bubble's height so a long in-progress turn doesn't push
      the whole transcript off-screen. Past the cap the body scrolls
@@ -919,7 +922,7 @@
   max-height: 400px;
   /* Note: we used to set `min-height: 80px` to bound CLS during base64
      decode, but that permanently letterboxes any image whose intrinsic
-     height is < 80px (e.g. a 32脳32 icon). The `decoding="async"` on the
+     height is < 80px (e.g. a 32鑴?2 icon). The `decoding="async"` on the
      <img> already lets the browser keep paint smooth; if the bubble
      "pops" by a few pixels at decode time, that's preferable to a
      screenshot of a small icon being padded with empty whitespace. */
@@ -934,7 +937,7 @@
   margin-bottom: 4px;
 }
 
-/* "Thinking" bar 鈥?compact status strip shown above the context bar
+/* "Thinking" bar 閳?compact status strip shown above the context bar
    when the SDK is mid-turn. Pulses a subtle accent border and shows
    bouncing dots + elapsed time. */
 .working-bar {
@@ -966,7 +969,7 @@
   letter-spacing: 0.02em;
 }
 /* Elapsed-time label. Font-variant-numeric: tabular-nums keeps digits
-   from jumping around as seconds tick over 鈥?the badge width stays
+   from jumping around as seconds tick over 閳?the badge width stays
    constant. */
 .working-timer {
   color: var(--accent);
@@ -1014,14 +1017,14 @@
 
 @keyframes working-dot-bounce {
   0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
-  30% { transform: translateY(-4px); opacity: 1; }
+  30% { transform: translateY(calc(-1 * var(--motion-distance-sm))); opacity: 1; }
 }
 @keyframes working-bubble-pulse {
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
   50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 }
 
-/* 鈹€鈹€ Subagent chips in the working bar 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* 閳光偓閳光偓 Subagent chips in the working bar 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓 */
 .working-bar-sep {
   width: 1px;
   height: 14px;
@@ -1098,7 +1101,7 @@
   white-space: nowrap;
 }
 
-/* Inline subagent placeholder card 鈥?replaces the raw tool_use JSON
+/* Inline subagent placeholder card 閳?replaces the raw tool_use JSON
    for Agent / Task / Explore. Whole card is a button to keep a single
    click target consistent with how the chip works in WorkingBubble. */
 .subagent-card {
@@ -1109,7 +1112,7 @@
   border-radius: 6px;
   color: var(--fg);
   overflow: hidden;
-  transition: border-color 0.12s;
+  transition: border-color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .subagent-card:hover {
   border-color: var(--accent);
@@ -1126,7 +1129,7 @@
   text-align: left;
   cursor: pointer;
   color: inherit;
-  transition: background 0.12s;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .subagent-card-header:hover {
   background: var(--bg-elev-2);
@@ -1167,7 +1170,7 @@
 .subagent-card-interrupted .subagent-card-status { color: var(--warn, var(--danger)); }
 .subagent-card-open { color: var(--fg-muted); font-size: 12px; }
 
-/* Subagent overlay 鈥?same per-panel pattern as .settings-overlay but
+/* Subagent overlay 閳?same per-panel pattern as .settings-overlay but
    pinned to the right half of the column instead of centred. Backdrop
    covers the rest of the column so the user can click outside the
    panel to close. */
@@ -1180,8 +1183,8 @@
   display: flex;
   justify-content: flex-end;
   /* (#1/#2) Backdrop fades in; the drawer slides from the right edge
-     (directional continuity 鈥?it lives on the right of the column). */
-  animation: overlay-backdrop-in 160ms ease-out both;
+     (directional continuity 閳?it lives on the right of the column). */
+  animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both;
 }
 .subagent-overlay-panel {
   width: min(50%, 640px);
@@ -1192,7 +1195,7 @@
   display: flex;
   flex-direction: column;
   box-shadow: var(--drawer-shadow);
-  animation: subagent-drawer-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: subagent-drawer-in var(--motion-duration-base) var(--motion-ease-enter) both;
 }
 @keyframes subagent-drawer-in {
   from { opacity: 0; transform: translateX(24px); }
@@ -1225,7 +1228,7 @@
 }
 /* Layout placeholder rendered when there is no Back button (stack
  * depth = 1). Same width footprint as `.subagent-overlay-back` so
- * drilling between depth 1 鈬?2 does not shift the title sideways. */
+ * drilling between depth 1 閳?2 does not shift the title sideways. */
 .subagent-overlay-back-spacer {
   display: inline-block;
   width: 28px;

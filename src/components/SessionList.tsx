@@ -39,6 +39,8 @@ interface Props {
   /** Map of sessionId → true when the session has a newer lastTurnAt than
    *  the user has seen (and isn't currently open). */
   unread?: Record<string, boolean>
+  /** Ids playing the local delete-exit animation before the Undo grace hide. */
+  deletingIds?: Set<string>
   onSelect: (id: string) => void
   onCreate: (form: NewSessionForm) => void
   onDelete: (id: string) => void
@@ -115,6 +117,7 @@ export const SessionList = memo(function SessionList({
   serverModels,
   resumingIds,
   unread,
+  deletingIds,
   sessionColors,
   onSessionColorChange,
   groups,
@@ -381,37 +384,42 @@ export const SessionList = memo(function SessionList({
   /** Render a SessionCard with all shared props pre-bound. Extracted from
    *  the 3 render sites (grouped, ungrouped-section, flat) to avoid
    *  duplicating 17+ props. */
-  const renderCard = useCallback((s: SessionInfo, containerGroupId?: string) => (
-    <SessionCard
-      key={s.id}
-      session={s}
-      slotIdx={openIdSlotMap.get(s.id) ?? -1}
-      isOpen={openIdSet.has(s.id)}
-      isFocused={s.id === focusedId}
-      isResuming={resumingIds?.has(s.id) ?? false}
-      hasUnread={!!unread?.[s.id]}
-      isDragging={draggingId === s.id}
-      dropPosition={dropHint && dropHint.id === s.id ? dropHint.position : null}
-      isRenaming={renamingId === s.id}
-      accentStyle={accentStyleMap.get(s.id)}
-      containerGroupId={containerGroupId}
-      onSelect={onSelect}
-      onDelete={onDelete}
-      onContextMenu={handleCardContextMenu}
-      onDragStart={handleCardDragStart}
-      onDragEnd={handleCardDragEnd}
-      onSetDropHint={handleSetDropHint}
-      onClearDropHint={handleClearDropHint}
-      onReorder={onReorder}
-      onReorderInGroup={onReorderInGroup}
-      renameDraft={renameDraft}
-      onRenameDraftChange={handleRenameDraftChange}
-      onCommitRename={commitRename}
-      onCancelRename={cancelRename}
-      onStartRename={startRename}
-      onAskConfirm={handleAskConfirm}
-    />
-  ), [openIdSlotMap, openIdSet, focusedId, resumingIds, unread, draggingId, dropHint, renamingId, accentStyleMap, onSelect, onDelete, handleCardContextMenu, handleCardDragStart, handleCardDragEnd, handleSetDropHint, handleClearDropHint, onReorder, onReorderInGroup, renameDraft, handleRenameDraftChange, commitRename, cancelRename, startRename, handleAskConfirm])
+  const renderCard = useCallback((s: SessionInfo, containerGroupId?: string) => {
+    const isDeleting = deletingIds?.has(s.id) ?? false
+    return (
+      <div key={s.id} className={`session-item-shell${isDeleting ? ' deleting' : ''}`}>
+        <SessionCard
+          session={s}
+          slotIdx={openIdSlotMap.get(s.id) ?? -1}
+          isOpen={openIdSet.has(s.id)}
+          isFocused={s.id === focusedId}
+          isResuming={resumingIds?.has(s.id) ?? false}
+          hasUnread={!!unread?.[s.id]}
+          isDragging={draggingId === s.id}
+          isDeleting={isDeleting}
+          dropPosition={dropHint && dropHint.id === s.id ? dropHint.position : null}
+          isRenaming={renamingId === s.id}
+          accentStyle={accentStyleMap.get(s.id)}
+          containerGroupId={containerGroupId}
+          onSelect={onSelect}
+          onDelete={onDelete}
+          onContextMenu={handleCardContextMenu}
+          onDragStart={handleCardDragStart}
+          onDragEnd={handleCardDragEnd}
+          onSetDropHint={handleSetDropHint}
+          onClearDropHint={handleClearDropHint}
+          onReorder={onReorder}
+          onReorderInGroup={onReorderInGroup}
+          renameDraft={renameDraft}
+          onRenameDraftChange={handleRenameDraftChange}
+          onCommitRename={commitRename}
+          onCancelRename={cancelRename}
+          onStartRename={startRename}
+          onAskConfirm={handleAskConfirm}
+        />
+      </div>
+    )
+  }, [openIdSlotMap, openIdSet, focusedId, resumingIds, unread, deletingIds, draggingId, dropHint, renamingId, accentStyleMap, onSelect, onDelete, handleCardContextMenu, handleCardDragStart, handleCardDragEnd, handleSetDropHint, handleClearDropHint, onReorder, onReorderInGroup, renameDraft, handleRenameDraftChange, commitRename, cancelRename, startRename, handleAskConfirm])
 
   /** Resolve which ordered list a session belongs to and, when it lives in
    *  a group, that group's id. The flat view orders `visibleSessions`; the
@@ -491,34 +499,34 @@ export const SessionList = memo(function SessionList({
         >
           + New session
         </button>
-        {/* Filter input — visible only when there are at least a handful
-            of sessions. Below that the filter is more friction than help. */}
-        {sessions.length > 3 && (
-          <div className="session-filter">
-            <span className="session-filter-icon" aria-hidden>
-              <IconSearch size={13} />
-            </span>
-            <input
-              className="input"
-              type="text"
-              aria-label="Filter sessions"
-              placeholder="Filter by title / cwd / id…"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-            />
-            {filter && (
-              <button
-                type="button"
-                className="session-filter-clear"
-                onClick={() => setFilter('')}
-                aria-label="Clear filter"
-                title="Clear"
-              >
-                <IconX size={12} />
-              </button>
-            )}
-          </div>
-        )}
+        {/* Filter input: visible only when there are at least a handful
+            of sessions. Keep it mounted so threshold changes animate instead
+            of snapping in/out. */}
+        <div className={`session-filter${sessions.length > 3 || filter ? '' : ' collapsed'}`}>
+          <span className="session-filter-icon" aria-hidden>
+            <IconSearch size={13} />
+          </span>
+          <input
+            className="input"
+            type="text"
+            aria-label="Filter sessions"
+            placeholder="Filter by title / cwd / id..."
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            tabIndex={sessions.length > 3 || filter ? 0 : -1}
+          />
+          {filter && (
+            <button
+              type="button"
+              className="session-filter-clear"
+              onClick={() => setFilter('')}
+              aria-label="Clear filter"
+              title="Clear"
+            >
+              <IconX size={12} />
+            </button>
+          )}
+        </div>
         {/* Group pills — horizontal row of clickable group chips. */}
         <div className="group-pills">
           {groups.map((g) => (

@@ -101,6 +101,62 @@ describe('reducer: optimistic user message + server echo', () => {
     expect(isEmpty(state.pendingUserMessageIds)).toBe(true)
   })
 
+  it('applies a consumed signal that arrives before the REST ack', () => {
+    let state = createInitialSessionState('s1')
+    state = applyOptimistic(state, 'hello', 'optimistic:abc')
+
+    state = reduceSessionState(state, {
+      type: 'MESSAGE_CONSUMED',
+      uuid: 'real-ack-uuid',
+      consumedAt: 456,
+    })
+    expect(state.items[0].sending).toBe(true)
+
+    state = applyAck(state, 'optimistic:abc', 'real-ack-uuid')
+    expect(state.items).toHaveLength(1)
+    expect(state.items[0].id).toBe('real-ack-uuid')
+    expect(state.items[0].deliveryStatus).toBe('consumed')
+    expect(state.items[0].msg.consumedAt).toBe(456)
+    expect(isEmpty(state.pendingUserMessageIds)).toBe(true)
+    expect(state.pendingConsumedMessages.size).toBe(0)
+  })
+
+  it('applies a consumed signal that arrives before the user message broadcast', () => {
+    let state = createInitialSessionState('s1')
+
+    state = reduceSessionState(state, {
+      type: 'MESSAGE_CONSUMED',
+      uuid: 'real-1',
+      consumedAt: 789,
+    })
+    expect(state.pendingConsumedMessages.get('real-1')).toBe(789)
+
+    state = applyServerEcho(state, 'hello', 'real-1')
+    expect(state.items).toHaveLength(1)
+    expect(state.items[0].deliveryStatus).toBe('consumed')
+    expect(state.items[0].msg.consumedAt).toBe(789)
+    expect(state.pendingConsumedMessages.size).toBe(0)
+  })
+
+  it('does not downgrade an acked consumed row when the user message broadcast arrives later', () => {
+    let state = createInitialSessionState('s1')
+    state = applyOptimistic(state, 'hello', 'optimistic:abc')
+    state = applyAck(state, 'optimistic:abc', 'real-ack-uuid')
+    state = reduceSessionState(state, {
+      type: 'MESSAGE_CONSUMED',
+      uuid: 'real-ack-uuid',
+      consumedAt: 456,
+    })
+    expect(state.items[0].deliveryStatus).toBe('consumed')
+
+    state = applyServerEcho(state, 'hello', 'real-ack-uuid')
+    expect(state.items).toHaveLength(1)
+    expect(state.items[0].id).toBe('real-ack-uuid')
+    expect(state.items[0].deliveryStatus).toBe('consumed')
+    expect(state.items[0].msg.consumedAt).toBe(456)
+    expect(state.pendingConsumedMessages.size).toBe(0)
+  })
+
   it('appends normally when no optimistic is pending', () => {
     let state = createInitialSessionState('s1')
     state = applyServerEcho(state, 'hello', 'real-1')

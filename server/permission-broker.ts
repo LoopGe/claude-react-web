@@ -44,7 +44,9 @@ const READONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
 ])
 
 export interface PermissionBrokerOptions {
-  /** Timeout (ms) for pending requests. 0 = no timeout. */
+  /** Timeout (ms) for ordinary tool-permission prompts.
+   *  AskUserQuestion is excluded and waits until answer/skip/abort.
+   *  0 = no timeout. */
   permissionTimeoutMs: number
 }
 
@@ -192,7 +194,10 @@ export class PermissionBroker {
             toolUseID: ctx.toolUseID,
           }
         }
-        return this.createPendingRequest(session, ctx, broadcastReq, broadcastRes, onPendingChanged, permissionTimeoutMs, (pid, wrappedResolve, abortHandler, timeoutTimer) => ({
+        // Interactive questions intentionally do not use permissionTimeoutMs.
+        // Matching Claude Code CLI, choices stay available until the user
+        // answers/skips or the underlying tool call is aborted.
+        return this.createPendingRequest(session, ctx, broadcastReq, broadcastRes, onPendingChanged, 0, (pid, wrappedResolve, abortHandler, timeoutTimer) => ({
           kind: 'question' as const,
           id: pid,
           toolName: 'AskUserQuestion',
