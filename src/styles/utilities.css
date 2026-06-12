@@ -552,9 +552,16 @@
   .modal-backdrop,
   .modal,
   .ctx-menu,
-  .composer-action-icon,
+  .model-picker,
+  .appearance-panel,
   .chat-jump-to-bottom {
     animation-duration: 0.01ms !important;
+  }
+  .notification-icon .notification-icon-slash,
+  .composer-action-toggle .composer-toggle-send-line,
+  .composer-action-toggle .composer-toggle-send-head,
+  .composer-action-toggle .composer-toggle-stop {
+    transition-duration: 0.01ms !important;
   }
 }
 

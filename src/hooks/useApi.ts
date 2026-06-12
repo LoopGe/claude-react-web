@@ -59,14 +59,15 @@ export async function apiRequest<T>(
     if (!res.ok) throw toApiError(res, body)
     return body as T
   } catch (err) {
-    // Use duck-typing instead of `err instanceof DOMException` to avoid
-    // ReferenceError in environments where DOMException is not defined.
-    if (err instanceof Error && err.name === 'AbortError') {
+    // Use duck-typing instead of instanceof checks: DOMException may not
+    // inherit from Error in every test/browser runtime, and DOMException can
+    // be undefined in some environments.
+    if (err && typeof err === 'object' && 'name' in err && err.name === 'AbortError') {
       const reason = callerSignal?.aborted
         ? 'Request cancelled'
         : `Request timed out after ${timeoutMs / 1000}s`
       const timeoutErr = new Error(reason) as ApiError
-      timeoutErr.name = 'AbortError'
+      if (callerSignal?.aborted) timeoutErr.name = 'AbortError'
       timeoutErr.status = 0
       throw timeoutErr
     }

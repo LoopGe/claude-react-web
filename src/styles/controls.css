@@ -40,7 +40,19 @@
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
 }
-
+.notification-icon .notification-icon-slash {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 0;
+  transition: stroke-dashoffset 180ms cubic-bezier(0.22, 1, 0.36, 1), opacity 120ms ease-out;
+}
+.notification-icon.enabled .notification-icon-slash {
+  opacity: 0;
+  stroke-dashoffset: 1;
+}
+.notification-icon.disabled .notification-icon-slash {
+  opacity: 1;
+  stroke-dashoffset: 0;
+}
 /* Accent colour picker — a row of small coloured dots in the toolbar. */
 .accent-picker {
   display: inline-flex;

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, waitFor } from '@testing-library/react'
+import { act, render, waitFor } from '@testing-library/react'
 import type { SdkMessage } from '../types'
 import type { TranscriptItem } from '../session-store/types'
 
@@ -65,6 +65,7 @@ function toItems(msgs: SdkMessage[]): TranscriptItem[] {
 describe('MessageList', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.useRealTimers()
   })
 
   it('shows empty state when messages are empty', () => {
@@ -169,6 +170,48 @@ describe('MessageList', () => {
       <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
     )
     expect(container.textContent).toContain('Hello world')
+  })
+
+  it('renders streaming content outside the virtualized transcript', () => {
+    const msgs = [
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Settled message' }] },
+      }),
+    ]
+
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} replayReady streamingContent="Live tokens" />,
+    )
+
+    const streaming = container.querySelector('.streaming-footer-wrapper')
+    expect(streaming).not.toBeNull()
+    expect(streaming?.textContent).toContain('Live tokens')
+    expect(streaming?.closest('[data-testid="virtuoso-mock"]')).toBeNull()
+    expect(container.querySelector('.chat-streaming-region')?.contains(streaming)).toBe(true)
+  })
+
+  it('animates streaming content out before unmounting it', () => {
+    vi.useFakeTimers()
+    const msgs = [
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Settled message' }] },
+      }),
+    ]
+
+    const { container, rerender } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} replayReady streamingContent="Live tokens" />,
+    )
+
+    rerender(<MessageList items={toItems(msgs as SdkMessage[])} replayReady streamingContent={null} />)
+
+    expect(container.querySelector('.chat-streaming-region')?.classList.contains('exiting')).toBe(true)
+    expect(container.textContent).toContain('Live tokens')
+
+    act(() => {
+      vi.advanceTimersByTime(180)
+    })
+
+    expect(container.querySelector('.chat-streaming-region')).toBeNull()
   })
 
   it('renders result stats with clean separators', () => {

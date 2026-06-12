@@ -5,6 +5,7 @@ import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState
 import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from '../hooks/useApi'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { useToast } from '../hooks/useToast'
 import type { AgentInfo, McpServerConfigMeta, McpServerStatus, ModelInfo, PermissionMode, Plugin, SessionInfo, SlashCommand } from '../types'
 import { PERMISSION_MODES } from '../types'
@@ -353,6 +354,42 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
     { key: 'mcp', label: 'MCP Servers' },
   ]
 
+  const panelBodyRef = useRef<HTMLDivElement | null>(null)
+  const panelContentRef = useRef<HTMLDivElement | null>(null)
+  const heightAnimationKey = [
+    tab,
+    busy,
+    loadingMeta,
+    loadingUsage,
+    models.length,
+    mcp.length,
+    commands.length,
+    agents.length,
+    pluginGroups.length,
+    reloadedPlugins.length,
+    detailedUsage ? 'detailed' : 'summary',
+    usage?.totalTokens ?? 0,
+  ].join('|')
+  const measureSettingsBodyHeight = useCallback(() => {
+    const body = panelBodyRef.current
+    const content = panelContentRef.current
+    if (!body || !content) return null
+    const overlay = body.closest('.settings-overlay') as HTMLElement | null
+    const availablePanelHeight = overlay?.clientHeight ?? Number.POSITIVE_INFINITY
+    const availableBodyHeight = Math.max(0, availablePanelHeight - body.offsetTop)
+    return Math.min(content.scrollHeight, availableBodyHeight || content.scrollHeight)
+  }, [])
+  const { captureHeight: captureSettingsHeight } = useAutoHeightTransition(panelBodyRef, heightAnimationKey, {
+    measureTargetHeight: measureSettingsBodyHeight,
+    observe: panelContentRef,
+  })
+
+  const switchTab = useCallback((nextTab: SettingsTab) => {
+    if (nextTab === tab) return
+    captureSettingsHeight()
+    setTab(nextTab)
+  }, [captureSettingsHeight, tab])
+
   return (
     <aside className="settings-panel" aria-label="Session settings">
       <div className="settings-panel-header">
@@ -369,7 +406,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
           <button
             key={t.key}
             className={`global-settings-tab${tab === t.key ? ' active' : ''}`}
-            onClick={() => setTab(t.key)}
+            onClick={() => switchTab(t.key)}
           >
             {t.label}
           </button>
@@ -382,7 +419,8 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
 
       {/* Scrollable body — header + tab bar stay pinned above it, mirroring
           the global settings modal (where only .global-settings-body scrolls). */}
-      <div className="settings-panel-body">
+      <div ref={panelBodyRef} className="settings-panel-body">
+        <div ref={panelContentRef} className="settings-panel-content">
       {tab === 'general' && (
       <>
       <div className="settings-section">
@@ -579,6 +617,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
         ))}
       </div>
       )}
+        </div>
       </div>
 
       {showMarketplace && createPortal(

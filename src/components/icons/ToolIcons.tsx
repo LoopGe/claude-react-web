@@ -388,6 +388,15 @@ export function IconBell(props: IconProps) {
     </Icon>
   )
 }
+export function IconBellToggle(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+      <path d="M13.7 21a2 2 0 0 1-3.4 0" />
+      <path className="notification-icon-slash" d="m2 2 20 20" pathLength={1} />
+    </Icon>
+  )
+}
 
 export function IconBellOff(props: IconProps) {
   return (
@@ -475,6 +484,17 @@ export function IconSquare(props: IconProps) {
   return (
     <Icon {...props}>
       <rect x="4" y="4" width="16" height="16" rx="2" />
+    </Icon>
+  )
+}
+export function IconSendInterruptToggle(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <g className="composer-toggle-send">
+        <path className="composer-toggle-send-line" d="M12 20V4" pathLength={1} />
+        <path className="composer-toggle-send-head" d="m7 9 5-5 5 5" pathLength={1} />
+      </g>
+      <rect className="composer-toggle-stop" x="5" y="5" width="14" height="14" rx="2" pathLength={1} />
     </Icon>
   )
 }

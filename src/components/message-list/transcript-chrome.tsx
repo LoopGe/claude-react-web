@@ -86,7 +86,7 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
   })
 
   return (
-    <div className="virtuoso-footer-wrapper">
+    <div className="streaming-footer-wrapper">
       <div ref={msgRef} className="msg msg-assistant streaming-msg">
         <div ref={bodyRef} className="msg-body assistant-body streaming-plain" aria-live="polite" aria-atomic="false">
           {content}

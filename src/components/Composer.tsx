@@ -15,7 +15,7 @@ import { useToast } from '../hooks/useToast'
 import type { PastedImage, SlashCommand } from '../types'
 import { CommandPicker } from './CommandPicker'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
-import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconArrowUp, IconSquare, IconLoader } from './icons/ToolIcons'
+import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconSendInterruptToggle, IconLoader } from './icons/ToolIcons'
 
 interface Props {
   input: string
@@ -602,36 +602,26 @@ export const Composer = memo(function Composer({
         >
           <IconPaperclip size={18} />
         </button>
-        {/* Send / Interrupt share one slot — they're mutually exclusive
-            states (idle = Send, mid-turn = Interrupt). While a turn is
-            running we show ONLY Interrupt; queuing another message is still
-            possible via Enter in the textarea. */}
-        {canInterrupt ? (
-          <button
-            className="btn btn-danger btn-icon"
-            type="button"
-            onClick={onInterrupt}
-            title="Interrupt the current turn"
-            aria-label="Interrupt the current turn"
-          >
-            <IconSquare size={16} className="composer-action-icon" />
-          </button>
-        ) : (
-          <button
-            className="btn btn-primary btn-icon"
-            type="button"
-            onClick={onSend}
-            disabled={!canSend}
-            title="Send message (Enter)"
-            aria-label="Send message"
-          >
-            {sending ? (
-              <IconLoader size={18} className="composer-send-spinner" />
-            ) : (
-              <IconArrowUp size={18} className="composer-action-icon" />
-            )}
-          </button>
-        )}
+        {/* Send / Interrupt share one stable control; the SVG morphs between
+            arrow and stop-square so the state change reads as an in-icon
+            transition instead of a whole-button swap. */}
+        <button
+          className={'btn btn-icon ' + (canInterrupt ? 'btn-danger' : 'btn-primary')}
+          type="button"
+          onClick={canInterrupt ? onInterrupt : onSend}
+          disabled={!canInterrupt && !canSend}
+          title={canInterrupt ? 'Interrupt the current turn' : 'Send message (Enter)'}
+          aria-label={canInterrupt ? 'Interrupt the current turn' : 'Send message'}
+        >
+          {sending && !canInterrupt ? (
+            <IconLoader size={18} className="composer-send-spinner" />
+          ) : (
+            <IconSendInterruptToggle
+              size={canInterrupt ? 16 : 18}
+              className={'composer-action-toggle ' + (canInterrupt ? 'interrupt' : 'send')}
+            />
+          )}
+        </button>
       </div>
       <input
         ref={fileInputRef}

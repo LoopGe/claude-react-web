@@ -3,6 +3,7 @@
 
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { api } from '../hooks/useApi'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { formatBytes } from '../utils/format'
 import { IconX, IconCheck, IconArrowUp, IconArrowDown, IconChevronDown } from './icons/ToolIcons'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
@@ -77,6 +78,8 @@ export function GlobalSettingsModal({
   onUpdate,
 }: Props) {
   const [tab, setTab] = useState<Tab>('api')
+  const settingsBodyRef = useRef<HTMLDivElement | null>(null)
+  const settingsContentRef = useRef<HTMLDivElement | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -299,6 +302,40 @@ export function GlobalSettingsModal({
     { key: 'about', label: 'About' },
   ]
 
+  const heightAnimationKey = [
+    tab,
+    loading,
+    err ?? '',
+    modelList.length,
+    mcpServers.length,
+    testing,
+    testResult ? 'tested' : 'untested',
+    updateInfo?.latest ?? '',
+    updateError ?? '',
+  ].join('|')
+  const measureSettingsBodyHeight = useCallback(() => {
+    const body = settingsBodyRef.current
+    const content = settingsContentRef.current
+    if (!body || !content) return null
+    const modal = body.closest('.global-settings-modal') as HTMLElement | null
+    const footer = modal?.querySelector('.modal-footer') as HTMLElement | null
+    const availableModalHeight = modal?.parentElement?.clientHeight ? modal.parentElement.clientHeight * 0.84 : Number.POSITIVE_INFINITY
+    const availableBodyHeight = Math.max(0, availableModalHeight - body.offsetTop - (footer?.offsetHeight ?? 0))
+    const bodyStyle = window.getComputedStyle(body)
+    const bodyVerticalPadding = parseFloat(bodyStyle.paddingTop) + parseFloat(bodyStyle.paddingBottom)
+    const contentHeight = content.scrollHeight + bodyVerticalPadding
+    return Math.min(contentHeight, availableBodyHeight || contentHeight)
+  }, [])
+  const { captureHeight: captureSettingsBodyHeight } = useAutoHeightTransition(settingsBodyRef, heightAnimationKey, {
+    measureTargetHeight: measureSettingsBodyHeight,
+    observe: settingsContentRef,
+  })
+  const switchTab = useCallback((nextTab: Tab) => {
+    if (nextTab === tab) return
+    captureSettingsBodyHeight()
+    setTab(nextTab)
+  }, [captureSettingsBodyHeight, tab])
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div
@@ -320,7 +357,7 @@ export function GlobalSettingsModal({
             <button
               key={t.key}
               className={`global-settings-tab${tab === t.key ? ' active' : ''}`}
-              onClick={() => setTab(t.key)}
+              onClick={() => switchTab(t.key)}
             >
               {t.label}
             </button>
@@ -329,7 +366,8 @@ export function GlobalSettingsModal({
 
         {err && <div className="modal-error">{err}</div>}
 
-        <div className="global-settings-body">
+        <div ref={settingsBodyRef} className="global-settings-body">
+          <div ref={settingsContentRef} className="global-settings-body-content">
           {loading ? (
             <div style={{ padding: 40, textAlign: 'center', color: 'var(--fg-muted)' }}>Loading…</div>
           ) : (
@@ -409,6 +447,7 @@ export function GlobalSettingsModal({
               )}
             </>
           )}
+          </div>
         </div>
 
         <div className="modal-footer">

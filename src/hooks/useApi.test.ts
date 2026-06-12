@@ -67,6 +67,27 @@ describe('apiRequest', () => {
     const result = await apiRequest<string>('/text')
     expect(result).toBe('hello')
   })
+
+  it('preserves AbortError name for caller-cancelled requests', async () => {
+    vi.stubGlobal('fetch', vi.fn((_url, init) =>
+      new Promise((_resolve, reject) => {
+        const signal = (init as RequestInit).signal
+        signal?.addEventListener('abort', () => {
+          reject(new DOMException('aborted', 'AbortError'))
+        })
+      }),
+    ))
+
+    const ac = new AbortController()
+    const request = apiRequest('/slow', { signal: ac.signal })
+    ac.abort()
+
+    await expect(request).rejects.toMatchObject({
+      name: 'AbortError',
+      message: 'Request cancelled',
+      status: 0,
+    } satisfies Partial<ApiError>)
+  })
 })
 
 describe('api helpers', () => {

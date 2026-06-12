@@ -25,7 +25,7 @@ import { PERMISSION_MODES } from './types'
 import { ACCENT_COLORS } from './theme'
 import { AppearancePanel } from './components/AppearancePanel'
 import { ErrorBoundary } from './components/ErrorBoundary'
-import { IconSettings, IconBell, IconBellOff, IconMenu } from './components/icons/ToolIcons'
+import { IconSettings, IconBellToggle, IconMenu } from './components/icons/ToolIcons'
 import { UpdateBanner } from './components/UpdateBanner'
 import { useUpdateInfo } from './hooks/useUpdateInfo'
 import { sessionStoreRegistry } from './session-store/registry'
@@ -1568,7 +1568,10 @@ export function App() {
               disabled={notifications.permission === 'unsupported'}
               aria-label="Toggle desktop notifications"
             >
-              {notifications.enabled ? <IconBell size={16} /> : <IconBellOff size={16} />}
+              <IconBellToggle
+                size={16}
+                className={`notification-icon ${notifications.enabled ? 'enabled' : 'disabled'}`}
+              />
             </button>
             <AppearancePanel
               skin={skin}

@@ -163,6 +163,7 @@ const NEAR_BOTTOM_PX = 200
 const MAX_ENTER_BATCH = 4
 const ENTER_MAX_AGE_MS = 10_000
 const KNOWN_IDS_CAP = 4000
+const STREAMING_EXIT_MS = 180
 
 export const MessageList = memo(function MessageList({ items, recap, working, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
@@ -194,6 +195,41 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
    *  bottom. Badge number on the jump-to-bottom button. */
   const [unseenCount, setUnseenCount] = useState(0)
   const unseenCountRef = useRef(0)
+  const liveStreamingContent = streamingContent ?? null
+  const [streamingPresence, setStreamingPresence] = useState(() => ({
+    source: liveStreamingContent,
+    content: liveStreamingContent,
+    exiting: false,
+  }))
+  const streamingExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const nextStreamingPresence = liveStreamingContent !== streamingPresence.source
+    ? liveStreamingContent != null
+      ? { source: liveStreamingContent, content: liveStreamingContent, exiting: false }
+      : { source: null, content: streamingPresence.content, exiting: streamingPresence.content != null }
+    : streamingPresence
+
+  if (nextStreamingPresence !== streamingPresence) {
+    setStreamingPresence(nextStreamingPresence)
+  }
+
+  useEffect(() => {
+    if (streamingExitTimerRef.current) {
+      clearTimeout(streamingExitTimerRef.current)
+      streamingExitTimerRef.current = null
+    }
+    if (!streamingPresence.exiting) return
+    streamingExitTimerRef.current = setTimeout(() => {
+      streamingExitTimerRef.current = null
+      setStreamingPresence({ source: null, content: null, exiting: false })
+    }, STREAMING_EXIT_MS)
+    return () => {
+      if (streamingExitTimerRef.current) {
+        clearTimeout(streamingExitTimerRef.current)
+        streamingExitTimerRef.current = null
+      }
+    }
+  }, [streamingPresence.exiting])
 
   // EnterPlanMode has no lifecycle map (it renders as a stateless marker and
   // nothing consumes its result), so its result ids aren't in any of the maps
@@ -559,32 +595,6 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
     return () => ro.disconnect()
   }, [renderableItems.length])
 
-  // Streaming-content auto-follow. Virtuoso's `followOutput` only fires
-  // when `data` changes, but streamingContent lives in the Footer slot 闂?  // its DOM grows every ~80ms flush without `data` changing, so without
-  // this effect the typing text silently overflows below the viewport.
-  // We bypass Virtuoso here and write scrollTop directly because the
-  // Footer is not addressable via scrollToIndex (which targets items).
-  // Mirrors the ResizeObserver branch: only re-pins when the user was
-  // already at the bottom 闂?if they scrolled up to read history mid-
-  // stream, atBottomRef goes false and we stop fighting their scroll.
-  //
-  // The scrollTop write runs in a LAYOUT effect (synchronously after the DOM
-  // mutation, BEFORE the browser paints) rather than a passive effect + rAF.
-  // The old passive-effect + requestAnimationFrame path was deferred twice 闂?  // React runs passive effects after paint, and the rAF pushed the write to
-  // the *next* frame again 闂?so every 80ms flush painted one frame with the
-  // grown footer but the bottom still off-screen, then yanked it back on the
-  // following frame: a visible per-flush jitter. A layout effect pins the
-  // bottom in the same frame the taller content is committed, so the bottom
-  // never paints off-screen. Cost: one synchronous reflow per flush (~12/s),
-  // which is cheap next to the visible jump it removes.
-  useLayoutEffect(() => {
-    if (streamingContent == null) return
-    if (!atBottomRef.current) return
-    const el = scrollerRef.current
-    if (!el) return
-    el.scrollTop = el.scrollHeight
-  }, [streamingContent])
-
   // Authoritative scroll-state listener 闂?covers two cases that
   // Virtuoso's `atBottomStateChange` alone gets wrong:
   //
@@ -831,15 +841,16 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
   const messagesClassName = isTranscriptRevealPending
     ? 'chat-messages chat-messages-reveal-pending'
     : 'chat-messages'
+  const visibleStreamingContent = nextStreamingPresence.content
+  const streamingRegionClassName = nextStreamingPresence.exiting
+    ? 'chat-streaming-region exiting'
+    : 'chat-streaming-region'
   /* eslint-enable react-hooks/refs */
 
-  // Footer combines two optional rows pinned to the bottom of the
-  // transcript: the streaming-typing bubble (live token deltas) and the
-  // session-recap card. They're rendered together 闂?phase-wise the recap
-  // only fires when the session is idle, but the server doesn't enforce
-  // that on the broadcast side, so we don't gate either on the other.
+  // Virtuoso Footer is reserved for transcript metadata that belongs after
+  // the message history. Live streaming text is rendered outside the
+  // virtualized message area so it can behave as a separate region.
   const virtuosoComponents = useMemo(() => {
-    const hasStreaming = streamingContent != null
     const hasRecap = recap != null
     // The Header slot shows a "loading older history" affordance pinned to
     // the top. Only relevant for the main transcript (loadOlder provided).
@@ -848,16 +859,11 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
     if (showOlderHeader) {
       components.Header = () => <OlderHistoryHeader loading={loadingOlder} />
     }
-    if (hasStreaming || hasRecap) {
-      components.Footer = () => (
-        <>
-          {hasStreaming && <StreamingFooter content={streamingContent} />}
-          {hasRecap && <RecapFooter recap={recap} />}
-        </>
-      )
+    if (hasRecap) {
+      components.Footer = () => <RecapFooter recap={recap} />
     }
     return components
-  }, [streamingContent, recap, loadOlder, loadingOlder, hasOlder])
+  }, [recap, loadOlder, loadingOlder, hasOlder])
 
   return (
     <PlanStatusProvider value={planStatus}>
@@ -867,6 +873,7 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
     <ToolResultProvider value={toolResults}>
     <ResultConsumedCtx.Provider value={isResultConsumed}>
     <div className="chat-messages-wrap">
+      <div className="chat-messages-stage">
       <div ref={messagesElRef} key={transcriptRevealKey} className={messagesClassName} onAnimationEnd={handleTranscriptRevealEnd}>
         {renderableItems.length === 0 ? (
           <div className="chat-messages-empty">
@@ -912,6 +919,12 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
           <IconArrowDown size={16} aria-hidden />
           {unseenCount > 0 && <span className="chat-jump-to-bottom-count" aria-hidden>{unseenCount}</span>}
         </button>
+      )}
+      </div>
+      {visibleStreamingContent != null && (
+        <div className={streamingRegionClassName} aria-hidden={nextStreamingPresence.exiting}>
+          <StreamingFooter content={visibleStreamingContent} />
+        </div>
       )}
     </div>
     </ResultConsumedCtx.Provider>
