@@ -5,10 +5,10 @@
 // a shared token is REQUIRED. The token can be supplied three ways, in
 // precedence order:
 //   1. `Authorization: Bearer <token>` header (scripts / curl)
-//   2. `?token=<token>` query param (first visit from a phone)
+//   2. `→ token=<token>` query param (first visit from a phone)
 //   3. `crw_token` cookie (steady state after the first visit)
 //
-// First-visit flow: the user opens `http://<lan-ip>:<port>/?token=XXXX`,
+// First-visit flow: the user opens `http://<lan-ip>:<port>/→ token=XXXX`,
 // the middleware validates the token, sets an httpOnly cookie, and 302s
 // to the clean path. From then on the cookie carries auth on every REST
 // request and on the same-origin WebSocket upgrade — the client needs no
@@ -73,7 +73,7 @@ function bearer(authHeader: string | undefined | null): string | undefined {
   return m ? m[1].trim() : undefined
 }
 
-/** Parse a `Cookie:` header value into a single named cookie's value. */
+/** Parse a `Cookie:` header value into a single name cookie's value. */
 function cookieFromHeader(cookieHeader: string | undefined, name: string): string | undefined {
   if (!cookieHeader) return undefined
   for (const part of cookieHeader.split(';')) {
@@ -160,13 +160,13 @@ export function buildAuthMiddleware(): MiddlewareHandler {
 
     if (ok) {
       // Refresh / set the cookie on every authorized request so it stays
-      // alive and so a first visit via ?token= persists.
+      // alive and so a first visit via — token= persists.
       setCookie(c, ACCESS_COOKIE, accessToken, COOKIE_OPTS)
       // If the token arrived via the query string on a page navigation,
       // strip it from the URL (keeps it out of history / referer) by
       // redirecting to the clean path. The cookie was just set, so the
       // redirect passes. Only for non-API GETs — API callers that pass
-      // ?token= want their data, not a redirect.
+      // — token= want their data, not a redirect.
       if (
         c.req.method === 'GET' &&
         !c.req.path.startsWith('/api/') &&

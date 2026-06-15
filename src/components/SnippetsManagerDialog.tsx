@@ -20,11 +20,12 @@ import type { ComposerSnippet, ComposerSnippetsApi } from '../hooks/useComposerS
 import { useFocusTrap } from '../hooks/useFocusTrap'
 
 interface Props {
+  open?: boolean
   api: ComposerSnippetsApi
   onClose: () => void
 }
 
-export function SnippetsManagerDialog({ api, onClose }: Props) {
+export function SnippetsManagerDialog({ open = true, api, onClose }: Props) {
   const dialogRef = useRef<HTMLDivElement>(null)
   useFocusTrap(dialogRef)
 
@@ -110,14 +111,14 @@ export function SnippetsManagerDialog({ api, onClose }: Props) {
   // outside the dialog (autofill popup, browser chrome).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
+      if (!open || e.key !== 'Escape') return
       e.preventDefault()
       e.stopPropagation()
       tryClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [tryClose])
+  }, [open, tryClose])
 
   // Override useFocusTrap's first-child autofocus. The trap's effect
   // also runs after mount; this one runs after-after so it wins. We
@@ -130,11 +131,13 @@ export function SnippetsManagerDialog({ api, onClose }: Props) {
   return (
     <div
       className="perm-overlay"
+      data-state={open ? 'open' : 'closing'}
       role="dialog"
-      aria-modal="true"
+      aria-modal={open ? 'true' : 'false'}
+      aria-hidden={!open}
       aria-label="Manage composer snippets"
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) tryClose()
+        if (open && e.target === e.currentTarget) tryClose()
       }}
     >
       <div className="perm-card snippets-manager-card" ref={dialogRef}>

@@ -465,7 +465,11 @@
   z-index: 100;
   /* (#2) Backdrop fades, the modal lifts in — same motion language as the
      per-panel overlays, reusing overlay-backdrop-in. */
-  animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both;
+}
+.modal-backdrop[data-state="open"] { animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both; }
+.modal-backdrop[data-state="closing"] {
+  pointer-events: none;
+  animation: overlay-backdrop-out var(--motion-duration-base) var(--motion-ease-exit) both;
 }
 .modal {
   background: var(--bg-elev);
@@ -477,8 +481,9 @@
   flex-direction: column;
   overflow: hidden;
   box-shadow: var(--modal-shadow);
-  animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both;
 }
+.modal-backdrop[data-state="open"] > .modal { animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both; }
+.modal-backdrop[data-state="closing"] > .modal { animation: overlay-panel-out var(--motion-duration-base) var(--motion-ease-exit) both; }
 .modal-header {
   display: flex;
   justify-content: space-between;
@@ -607,6 +612,8 @@
   box-shadow: var(--modal-shadow);
   position: relative;
 }
+.modal-backdrop[data-state="open"] > .global-settings-modal { animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both; }
+.modal-backdrop[data-state="closing"] > .global-settings-modal { animation: overlay-panel-out var(--motion-duration-base) var(--motion-ease-exit) both; }
 .global-settings-tabs {
   display: flex;
   border-bottom: 1px solid var(--border);

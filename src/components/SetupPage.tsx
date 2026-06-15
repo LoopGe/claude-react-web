@@ -110,7 +110,7 @@ export function SetupPage({ onConfigured }: Props) {
   const [updateRegistry, setUpdateRegistry] = useState('https://registry.npmjs.org')
   // `enabled: false` — no auto-probe on mount. During setup the registry
   // isn't saved yet, so the only meaningful probe is the explicit "Check
-  // now" below, which passes the typed value as an override. `info` here
+  // now" below, which passes the type value as an override. `info` here
   // therefore only ever reflects an override probe, never the saved config.
   const updateProbe = useUpdateInfo(false)
   // The exact (trimmed) registry value the last "Check now" probed. We only
@@ -368,7 +368,7 @@ export function SetupPage({ onConfigured }: Props) {
   // option — hijacking those would silently skip the step instead of
   // doing what the user expected (e.g. pressing Enter on the "Add"
   // button on Step 2 would suppress the synthetic click via
-  // preventDefault and lose the typed model id).
+  // preventDefault and lose the type model id).
   const handleKeyDown = (e: React.KeyboardEvent<HTMLFormElement>) => {
     if (e.key !== 'Enter' || step >= LAST_STEP) return
     const target = e.target as HTMLElement
@@ -379,16 +379,10 @@ export function SetupPage({ onConfigured }: Props) {
   }
 
   return (
-    <div style={styles.container}>
-      <style>{`
-        @keyframes setup-spin { to { transform: rotate(360deg); } }
-        @media (prefers-reduced-motion: reduce) {
-          .setup-spinner { animation: none !important; }
-        }
-      `}</style>
-      <div style={styles.card}>
-        <h1 style={styles.title}>Welcome to Claude Web</h1>
-        <p style={styles.subtitle}>
+    <div className="setup-page">
+      <div className="setup-card">
+        <h1 className="setup-title">Welcome to Claude Web</h1>
+        <p className="setup-subtitle">
           {stepMeta(step).subtitle}
         </p>
 
@@ -401,7 +395,7 @@ export function SetupPage({ onConfigured }: Props) {
          *  be filtered out of NVDA/VO button lists, making the wizard's
          *  position-indicator inaccessible. Future-step dots are disabled
          *  because they really aren't reachable. */}
-        <ol style={styles.progress} aria-label="Setup progress">
+        <ol className="setup-progress" aria-label="Setup progress">
           {STEPS.map(({ id: s, short }, idx) => {
             const isCurrent = s === step
             const isVisited = s < step
@@ -411,7 +405,7 @@ export function SetupPage({ onConfigured }: Props) {
             // use idx+1 so users see Step 1..5, not Step 0..4.
             const displayOrdinal = idx + 1
             return (
-              <li key={s} style={styles.progressItem}>
+              <li key={s} className="setup-progress-item">
                 <button
                   type="button"
                   onClick={() => {
@@ -422,55 +416,56 @@ export function SetupPage({ onConfigured }: Props) {
                   disabled={!isVisited && !isCurrent}
                   aria-current={isCurrent ? 'step' : undefined}
                   aria-label={`Step ${displayOrdinal} of ${TOTAL_STEPS}: ${short} (${stateLabel})`}
-                  style={{
-                    ...styles.progressDot,
-                    ...(isCurrent ? styles.progressDotCurrent : null),
-                    ...(isVisited ? styles.progressDotVisited : null),
-                    cursor: isVisited ? 'pointer' : 'default',
-                  }}
+                  className={[
+                    'setup-progress-dot',
+                    isCurrent ? 'current' : '',
+                    isVisited ? 'visited' : '',
+                    isVisited ? 'clickable' : '',
+                  ].filter(Boolean).join(' ')}
                 />
               </li>
             )
           })}
         </ol>
-        <p style={styles.stepCounter}>
+        <p className="setup-step-counter">
           Step {step + 1} of {TOTAL_STEPS}
         </p>
 
-        <form onSubmit={(e) => e.preventDefault()} onKeyDown={handleKeyDown} style={styles.form}>
+        <form onSubmit={(e) => e.preventDefault()} onKeyDown={handleKeyDown} className="setup-form">
+          <div key={step} className="setup-step-body">
           {step === 0 && (
-            <div style={styles.field}>
-              <label style={styles.label}>Claude CLI Environment</label>
+            <div className="setup-field setup-field-environment">
+              <label className="setup-label">Claude CLI Environment</label>
 
               {healthChecking && (
-                <div style={styles.healthRow}>
+                <div className="setup-health-row setup-health-row-checking">
                   <span
                     className="setup-spinner"
                     style={{ ...styles.spinner, borderTopColor: 'var(--accent)' }}
                     aria-hidden="true"
                   />
-                  <span style={styles.hint}>Probing local Claude CLI…</span>
+                  <span className="setup-hint">Probing local Claude CLI…</span>
                 </div>
               )}
 
               {!healthChecking && health?.ok && (
                 <>
-                  <div style={{ ...styles.healthRow, ...styles.healthRowOk }}>
-                    <span style={styles.healthIcon} aria-hidden="true"><IconCheck size={14} /></span>
+                  <div className="setup-health-row setup-health-row-ok">
+                    <span className="setup-health-icon" aria-hidden="true"><IconCheck size={14} /></span>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <p style={{ ...styles.hint, color: 'var(--fg)' }}>
                         Claude CLI is ready
                         {health.version ? ` — ${health.version}` : '.'}
                       </p>
                       {health.binary && (
-                        <p style={styles.prefilledHint}>
+                        <p className="setup-prefilled-hint">
                           Detected at <code style={styles.code}>{health.binary}</code>
                         </p>
                       )}
                     </div>
                   </div>
                 {!autoAdvanced && (
-                  <p style={styles.hint}>
+                  <p className="setup-hint">
                     Continuing to the next step automatically…
                   </p>
                 )}
@@ -479,31 +474,31 @@ export function SetupPage({ onConfigured }: Props) {
 
               {!healthChecking && health && !health.ok && (
                 <>
-                  <div style={{ ...styles.healthRow, ...styles.healthRowFail }}>
-                    <span style={styles.healthIcon} aria-hidden="true">!</span>
+                  <div className="setup-health-row setup-health-row-fail">
+                    <span className="setup-health-icon" aria-hidden="true">!</span>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <p style={{ ...styles.hint, color: 'var(--fg)' }}>
                         Claude CLI was not detected on this server.
                       </p>
                       {health.error && (
-                        <p style={styles.prefilledHint}>{health.error}</p>
+                        <p className="setup-prefilled-hint">{health.error}</p>
                       )}
                     </div>
                   </div>
-                  <p style={styles.label}>Install</p>
-                  <p style={styles.hint}>
+                  <p className="setup-label">Install</p>
+                  <p className="setup-hint">
                     Run this in a terminal on the machine hosting this server:
                   </p>
-                  <pre style={styles.codeBlock}>
+                  <pre className="setup-code-block">
                     <code>npm install -g @anthropic-ai/claude-code</code>
                   </pre>
-                  <p style={styles.hint}>
+                  <p className="setup-hint">
                     Or, if the binary already exists somewhere unusual, set
                     {' '}
                     <code style={styles.code}>CLAUDE_CODE_BINARY</code> to its
                     path and restart the server. Once installed, click Recheck.
                   </p>
-                  <p style={styles.hint}>
+                  <p className="setup-hint">
                     You can still continue without it — sessions will fail to
                     start until the CLI is available, but you can finish the
                     rest of setup now.
@@ -515,11 +510,11 @@ export function SetupPage({ onConfigured }: Props) {
 
           {step === 1 && (
             <>
-              <div style={styles.field}>
-                <label style={styles.label} htmlFor="auth-token">
+              <div className="setup-field">
+                <label className="setup-label" htmlFor="auth-token">
                   Auth Token <span style={styles.required} aria-hidden="true">*</span>
                 </label>
-                <p id="auth-token-hint" style={styles.hint}>
+                <p id="auth-token-hint" className="setup-hint">
                   Your Anthropic API key. You can find it at{' '}
                   <a
                     href="https://console.anthropic.com/settings/keys"
@@ -565,7 +560,7 @@ export function SetupPage({ onConfigured }: Props) {
                   </button>
                 </div>
                 {tokenPrefilled && (
-                  <p style={styles.prefilledHint}>
+                  <p className="setup-prefilled-hint">
                     Pre-filled from{' '}
                     <code style={styles.code}>~/.claude/settings.json</code>. Edit
                     to override.
@@ -578,11 +573,11 @@ export function SetupPage({ onConfigured }: Props) {
                  *  message, which is mounted whenever `error` is set. */}
               </div>
 
-              <div style={styles.field}>
-                <label style={styles.label} htmlFor="base-url">
+              <div className="setup-field">
+                <label className="setup-label" htmlFor="base-url">
                   Base URL <span style={styles.optional}>(optional)</span>
                 </label>
-                <p id="base-url-hint" style={styles.hint}>
+                <p id="base-url-hint" className="setup-hint">
                   Override the API endpoint if using a proxy or relay. Defaults to{' '}
                   <code style={styles.code}>https://api.anthropic.com</code>.
                 </p>
@@ -607,7 +602,7 @@ export function SetupPage({ onConfigured }: Props) {
                   spellCheck={false}
                 />
                 {baseUrlPrefilled && (
-                  <p style={styles.prefilledHint}>
+                  <p className="setup-prefilled-hint">
                     Pre-filled from{' '}
                     <code style={styles.code}>~/.claude/settings.json</code>. Edit
                     to override.
@@ -619,13 +614,13 @@ export function SetupPage({ onConfigured }: Props) {
 
           {step === 2 && (
             <>
-              <div style={styles.field}>
-                <label style={styles.label}>Available Models</label>
-                <p style={styles.hint}>
+              <div className="setup-field">
+                <label className="setup-label">Available Models</label>
+                <p className="setup-hint">
                   First model is the default. Add model IDs one at a time.
                 </p>
                 {modelsPrefilled && (
-                  <p style={styles.prefilledHint}>
+                  <p className="setup-prefilled-hint">
                     Pre-filled from{' '}
                     <code style={styles.code}>~/.claude/settings.json</code>{' '}
                     (ANTHROPIC_DEFAULT_*_MODEL). Edit to override.
@@ -678,18 +673,18 @@ export function SetupPage({ onConfigured }: Props) {
                     </button>
                   </div>
                   {duplicateMsg && (
-                    <p role="status" style={styles.duplicateMsg}>
+                    <p role="status" className="setup-duplicate-msg">
                       {duplicateMsg}
                     </p>
                   )}
                 </div>
               </div>
 
-              <div style={styles.field}>
-                <label style={styles.label}>
+              <div className="setup-field">
+                <label className="setup-label">
                   Recap Model <span style={styles.optional}>(optional)</span>
                 </label>
-                <p style={styles.hint}>
+                <p className="setup-hint">
                   Model used for AI session summaries. Leave empty to use the default (first model).
                 </p>
                 <select
@@ -704,11 +699,11 @@ export function SetupPage({ onConfigured }: Props) {
                 </select>
               </div>
 
-              <div style={styles.field}>
-                <label style={styles.label}>
+              <div className="setup-field">
+                <label className="setup-label">
                   Commit Message Model <span style={styles.optional}>(optional)</span>
                 </label>
-                <p style={styles.hint}>
+                <p className="setup-hint">
                   Model used for AI-generated commit messages in the Git panel. Leave empty to use the default.
                 </p>
                 <select
@@ -723,21 +718,21 @@ export function SetupPage({ onConfigured }: Props) {
                 </select>
               </div>
 
-              <p style={styles.hint}>
+              <p className="setup-hint">
                 You can edit the model list later from the global settings panel.
               </p>
             </>
           )}
 
           {step === 3 && (
-            <div style={styles.field}>
-              <label style={styles.label}>Desktop Notifications</label>
-              <p style={styles.hint}>
+            <div className="setup-field">
+              <label className="setup-label">Desktop Notifications</label>
+              <p className="setup-hint">
                 Get notified when Claude finishes a turn while this tab is in
                 the background.
               </p>
               {notifications.permission === 'denied' ? (
-                <p style={styles.hint}>
+                <p className="setup-hint">
                   Notifications are blocked. Enable them in your browser's site
                   settings, then reload.
                 </p>
@@ -754,18 +749,18 @@ export function SetupPage({ onConfigured }: Props) {
                   {notifications.enabled ? <><IconBell size={14} /> Enabled</> : <><IconBellOff size={14} /> Disabled</>}
                 </button>
               )}
-              <p style={styles.hint}>
+              <p className="setup-hint">
                 You can toggle this anytime from the bell icon in the header.
               </p>
             </div>
           )}
 
           {step === 4 && (
-            <div style={styles.field}>
-              <label style={styles.label} htmlFor="update-registry">
+            <div className="setup-field">
+              <label className="setup-label" htmlFor="update-registry">
                 Update registry <span style={styles.optional}>(optional)</span>
               </label>
-              <p id="update-registry-hint" style={styles.hint}>
+              <p id="update-registry-hint" className="setup-hint">
                 The npm registry probed for the <code style={styles.code}>latest</code>{' '}
                 dist-tag to tell you when a new version of Claude Web is
                 available. Leave empty to disable update checks.
@@ -778,7 +773,7 @@ export function SetupPage({ onConfigured }: Props) {
                   setUpdateRegistry(e.target.value)
                   // A previous probe's result describes the OLD URL — drop it
                   // the moment the field changes so a stale "up to date" / error
-                  // line doesn't appear to vouch for the newly-typed value.
+                  // line doesn't appear to vouch for the newly-type value.
                   if (updateProbe.info) setProbedRegistry(null)
                 }}
                 placeholder="https://registry.npmjs.org"
@@ -805,7 +800,7 @@ export function SetupPage({ onConfigured }: Props) {
                 {/* Only show a result when it describes the value currently
                  *  in the box (probedRegistry === the trimmed input). */}
                 {probedRegistry !== null && probedRegistry === updateRegistry.trim() && !updateProbe.refreshing && (
-                  <span style={styles.hint} role="status">
+                  <span className="setup-hint" role="status">
                     {updateProbe.error || updateProbe.info?.error ? (
                       <span style={{ color: 'var(--msg-error-fg)' }}>
                         Couldn’t reach registry: {updateProbe.error || updateProbe.info?.error}
@@ -820,7 +815,7 @@ export function SetupPage({ onConfigured }: Props) {
                   </span>
                 )}
               </div>
-              <p style={styles.hint}>
+              <p className="setup-hint">
                 You can change this later from the About tab in the global
                 settings panel.
               </p>
@@ -828,9 +823,9 @@ export function SetupPage({ onConfigured }: Props) {
           )}
 
           {step === 5 && (
-            <div style={styles.field}>
-              <label style={styles.label}>You're all set</label>
-              <p style={styles.hint}>
+            <div className="setup-field">
+              <label className="setup-label">You're all set</label>
+              <p className="setup-hint">
                 Create your first session to start chatting with Claude. You
                 can drop a folder onto the{' '}
                 <code style={styles.code}>+ New session</code> button later to
@@ -842,19 +837,21 @@ export function SetupPage({ onConfigured }: Props) {
                *  Skip / Create buttons go disabled and the user has no
                *  context for why. This hint surfaces the cause. */}
               {!tokenValid && (
-                <p role="alert" style={styles.fieldError}>
+                <p role="alert" className="setup-field-error">
                   Auth token is missing — click step 1 above to fix it.
                 </p>
               )}
             </div>
           )}
 
+          </div>
+
           {/* Submission error — rendered in the footer so it persists
            *  across back/forward navigation. Step 1 references this id
            *  via aria-describedby on auth-token; Step 4 uses it for
            *  /config/setup or /config refresh failures. */}
           {error && (
-            <p id="auth-token-error" role="alert" style={styles.fieldError}>
+            <p id="auth-token-error" role="alert" className="setup-field-error">
               {error}
             </p>
           )}
@@ -969,89 +966,6 @@ export function SetupPage({ onConfigured }: Props) {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  container: {
-    position: 'fixed',
-    inset: 0,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    background: 'var(--bg)',
-    fontFamily: 'inherit',
-    zIndex: 9999,
-    overflowY: 'auto',
-    padding: 16,
-    boxSizing: 'border-box',
-  },
-  card: {
-    width: '100%',
-    maxWidth: 480,
-    padding: '40px 36px',
-    background: 'var(--bg-elev)',
-    border: '1px solid var(--border)',
-    borderRadius: 12,
-    boxSizing: 'border-box',
-  },
-  title: {
-    margin: '0 0 8px',
-    fontSize: 22,
-    fontWeight: 600,
-    color: 'var(--fg)',
-  },
-  subtitle: {
-    margin: '0 0 20px',
-    fontSize: 14,
-    color: 'var(--fg-muted)',
-    lineHeight: 1.5,
-  },
-  progress: {
-    display: 'flex',
-    gap: 8,
-    listStyle: 'none',
-    margin: '0 0 6px',
-    padding: 0,
-  },
-  progressItem: {
-    flex: 1,
-  },
-  progressDot: {
-    display: 'block',
-    width: '100%',
-    height: 4,
-    border: 0,
-    padding: 0,
-    borderRadius: 2,
-    background: 'var(--border)',
-    transition: 'background 0.15s',
-  },
-  progressDotVisited: {
-    background: 'var(--accent)',
-    opacity: 0.55,
-  },
-  progressDotCurrent: {
-    background: 'var(--accent)',
-    opacity: 1,
-  },
-  stepCounter: {
-    margin: '0 0 20px',
-    fontSize: 11,
-    color: 'var(--fg-muted)',
-    textAlign: 'right',
-  },
-  form: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 20,
-  },
-  field: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 6,
-  },
-  label: {
-    fontSize: 13,
-    fontWeight: 600,
-    color: 'var(--fg)',
-  },
   required: {
     color: 'var(--danger)',
   },
@@ -1133,7 +1047,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 6,
     color: 'var(--on-accent)',
     cursor: 'pointer',
-    transition: 'opacity 0.15s',
+    transition: 'opacity var(--motion-duration-fast) var(--motion-ease-standard)',
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1153,24 +1067,6 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 6,
     color: 'var(--fg)',
     cursor: 'pointer',
-  },
-  prefilledHint: {
-    margin: '4px 0 0',
-    fontSize: 11,
-    color: 'var(--fg-muted)',
-    lineHeight: 1.4,
-  },
-  fieldError: {
-    margin: '4px 0 0',
-    fontSize: 12,
-    color: 'var(--msg-error-fg)',
-    lineHeight: 1.4,
-  },
-  duplicateMsg: {
-    margin: '6px 0 0',
-    fontSize: 11,
-    color: 'var(--fg-muted)',
-    lineHeight: 1.4,
   },
   smallIconBtn: {
     width: 32,
@@ -1205,52 +1101,9 @@ const styles: Record<string, React.CSSProperties> = {
     width: 14,
     height: 14,
     borderRadius: '50%',
-    border: '2px solid rgba(255, 255, 255, 0.35)',
+    border: '2px solid color-mix(in srgb, var(--on-accent) 35%, transparent)',
     borderTopColor: 'var(--on-accent)',
-    animation: 'setup-spin 0.7s linear infinite',
+    animation: 'setup-spin 0.8s linear infinite',
     flexShrink: 0,
-  },
-  healthRow: {
-    display: 'flex',
-    gap: 10,
-    alignItems: 'flex-start',
-    padding: '10px 12px',
-    background: 'var(--bg-elev-2)',
-    border: '1px solid var(--border)',
-    borderRadius: 6,
-  },
-  healthRowOk: {
-    borderColor: 'var(--accent)',
-  },
-  healthRowFail: {
-    borderColor: 'var(--danger)',
-  },
-  healthIcon: {
-    fontFamily: 'var(--mono)',
-    fontWeight: 700,
-    fontSize: 13,
-    lineHeight: '20px',
-    width: 20,
-    height: 20,
-    flexShrink: 0,
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 10,
-    background: 'var(--bg-elev)',
-    color: 'var(--fg)',
-    border: '1px solid var(--border)',
-  },
-  codeBlock: {
-    margin: 0,
-    padding: '10px 12px',
-    fontSize: 12,
-    fontFamily: 'var(--mono)',
-    background: 'var(--bg-elev-2)',
-    border: '1px solid var(--border)',
-    borderRadius: 6,
-    color: 'var(--fg)',
-    overflowX: 'auto',
-    whiteSpace: 'pre',
   },
 }

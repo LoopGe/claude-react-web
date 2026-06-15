@@ -33,6 +33,7 @@ export interface QuestionDraft {
 }
 
 interface Props {
+  open?: boolean
   request: QuestionRequest
   /** Array of per-question answers. Indices align with `request.questions`.
    *  Single-select answers are a label string; multi-select are string[];
@@ -52,7 +53,7 @@ interface Props {
   onDraftChange?: (draft: QuestionDraft) => void
 }
 
-export function QuestionDialog({ request, onSubmit, onSkipAll, onMinimize, initialDraft, onDraftChange }: Props) {
+export function QuestionDialog({ open = true, request, onSubmit, onSkipAll, onMinimize, initialDraft, onDraftChange }: Props) {
   // Map question index → chosen label (or array for multi-select).
   // `null` means the user hasn't chosen anything for this question yet —
   // treated as "skip" on submit.
@@ -208,16 +209,18 @@ export function QuestionDialog({ request, onSubmit, onSkipAll, onMinimize, initi
   }
 
   const submit = useCallback(() => {
+    if (!open) return
     if (busy) return
     setBusy(true)
     onSubmit(choices)
-  }, [busy, choices, onSubmit])
+  }, [busy, choices, onSubmit, open])
 
   const cancel = useCallback(() => {
+    if (!open) return
     if (busy) return
     setBusy(true)
     onSkipAll()
-  }, [busy, onSkipAll])
+  }, [busy, onSkipAll, open])
   useLayoutEffect(() => { cancelRef.current = cancel })
 
   // Escape should cancel/skip — not fall through to the global Escape
@@ -244,7 +247,14 @@ export function QuestionDialog({ request, onSubmit, onSkipAll, onMinimize, initi
   const hasAnyAnswer = choices.some((c) => c != null)
 
   return (
-    <div className="perm-overlay" role="dialog" aria-modal="true" ref={dialogRef}>
+    <div
+      className="perm-overlay"
+      data-state={open ? 'open' : 'closing'}
+      role="dialog"
+      aria-modal={open ? 'true' : 'false'}
+      aria-hidden={!open}
+      ref={dialogRef}
+    >
       <div className="perm-card">
         <div className="modal-header">
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -373,7 +383,7 @@ function QuestionBlock({ index, question, value, onSingle, onMulti, onSkip, othe
          * The toggle and the input are SIBLINGS, not nested. Earlier we
          * tried both <button>(input inside) and <div role=button>(input
          * inside): the first hits a Chrome bug where Space inside the
-         * nested input activates the outer button (clearing the typed
+         * nested input activates the outer button (clearing the type
          * text), and the second violates the WAI-ARIA rule that role=
          * button must not contain interactive descendants (NVDA/VO read
          * the input value into the button's accessible name). A real

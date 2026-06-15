@@ -99,6 +99,7 @@ export interface ChatStream {
 export interface PermissionHandlers {
   onRequest: (req: PermissionRequest) => void
   onResolved: (res: PermissionResolved) => void
+  onCleared?: () => void
 }
 
 /** Clear all cached session state. Used in tests to avoid cross-test leaks. */
@@ -317,6 +318,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
           // plain reset() would schedule — otherwise that timer rewrites the
           // key with the empty state and the cache reappears).
           store.clearPersisted()
+          permsRef.current.onCleared?.()
           // Block reverse-paging: the on-disk transcript still holds the
           // pre-clear messages; without this, scrolling up would pull them
           // back in. Reset on session switch (see the paging effect below).

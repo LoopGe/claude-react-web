@@ -92,7 +92,7 @@ export { isVersionNewer } from '../shared/update-info.js'
  *  silently rewriting the URL would surprise the user. They wrote the
  *  value into the config; we use it as-is. */
 async function fetchLatestFromNpm(packageName: string, registry: string): Promise<string> {
-  // Use the scoped name with a literal `/` between scope and name. We
+  // Use the scope name with a literal `/` between scope and name. We
   // tried encoding the slash to `%2F` (the form the npm CLI uses for the
   // package metadata root), but Artifactory's npm endpoint returns 404
   // for `/<scope>%2F<name>/latest` — its dist-tag handler only accepts
@@ -105,7 +105,7 @@ async function fetchLatestFromNpm(packageName: string, registry: string): Promis
   const encoded = packageName
   // Trim ONE trailing slash off the registry base so we don't end up
   // with `https://host//pkg/latest`. We don't strip multiple — a path
-  // the user actually typed (e.g. `/api/npm/mi-npm/`) keeps its shape
+  // the user actually type (e.g. `/api/npm/mi-npm/`) keeps its shape
   // beyond that single defensive trim.
   const base = registry.endsWith('/') ? registry.slice(0, -1) : registry
   const url = `${base}/${encoded}/latest`

@@ -1,14 +1,14 @@
 // Verifies the interactive (clickable) toast paths added to ToastHost:
-//   1. `onClick` without `actionLabel` → message itself becomes a button
+//   1. `onClick` without `actionLabel` — message itself becomes a button
 //      that fires onClick AND auto-dismisses.
-//   2. `onClick` with `actionLabel` → dedicated action button; clicking
+//   2. `onClick` with `actionLabel` — dedicated action button; clicking
 //      it fires onClick AND auto-dismisses; the message stays plain text.
-//   3. ✕ button still dismisses without firing onClick (so a user can
+//   3. Dismiss button still dismisses without firing onClick (so a user can
 //      kill the notification without triggering the jump action).
 
 import { useEffect, useRef } from 'react'
-import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { afterEach, describe, it, expect, vi } from 'vitest'
+import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { ToastProvider } from './ToastProvider'
 import { ToastHost } from './ToastHost'
 import { useToast } from '../hooks/useToast'
@@ -17,7 +17,7 @@ function Harness({ onMount }: { onMount: (toast: ReturnType<typeof useToast>) =>
   const toast = useToast()
   // Fire exactly once, AFTER the first render commits. Calling onMount
   // during render is NOT safe: onMount pushes a toast (setToasts in the
-  // provider), which re-renders this child, which calls onMount again →
+  // provider), which re-renders this child, which calls onMount again ?
   // an infinite render loop that pins the CPU and hangs the test worker.
   // A mount effect with a ref guard schedules the toast once and lets the
   // render settle. testing-library flushes effects inside act(), so the
@@ -39,8 +39,10 @@ function setup(onMount: (toast: ReturnType<typeof useToast>) => void) {
   )
 }
 
+afterEach(() => cleanup())
+
 describe('ToastHost — interactive toasts', () => {
-  it('whole message is clickable when onClick is set without actionLabel', () => {
+  it('whole message is clickable when onClick is set without actionLabel', async () => {
     const onClick = vi.fn()
     setup((toast) => {
       toast.info('Open session abc123', { onClick })
@@ -50,11 +52,11 @@ describe('ToastHost — interactive toasts', () => {
     const btn = screen.getByRole('button', { name: 'Open session abc123' })
     fireEvent.click(btn)
     expect(onClick).toHaveBeenCalledOnce()
-    // After clicking, the toast is dismissed.
-    expect(screen.queryByText('Open session abc123')).toBeNull()
+    // After clicking, the toast is dismissed after the exit animation.
+    await waitFor(() => expect(screen.queryByText('Open session abc123')).toBeNull())
   })
 
-  it('renders a separate action button when actionLabel is provided', () => {
+  it('renders a separate action button when actionLabel is provided', async () => {
     const onClick = vi.fn()
     setup((toast) => {
       toast.error("Couldn't resume session: oops", {
@@ -70,11 +72,11 @@ describe('ToastHost — interactive toasts', () => {
     const action = screen.getByRole('button', { name: 'Open' })
     fireEvent.click(action)
     expect(onClick).toHaveBeenCalledOnce()
-    // Toast dismissed after action click.
-    expect(screen.queryByText("Couldn't resume session: oops")).toBeNull()
+    // Toast dismissed after the exit animation.
+    await waitFor(() => expect(screen.queryByText("Couldn't resume session: oops")).toBeNull())
   })
 
-  it('✕ dismisses without firing onClick', () => {
+  it('dismisses without firing onClick', async () => {
     const onClick = vi.fn()
     setup((toast) => {
       toast.info('Tap to open', { onClick })
@@ -82,6 +84,6 @@ describe('ToastHost — interactive toasts', () => {
     const dismiss = screen.getByRole('button', { name: /Dismiss Info/i })
     fireEvent.click(dismiss)
     expect(onClick).not.toHaveBeenCalled()
-    expect(screen.queryByText('Tap to open')).toBeNull()
+    await waitFor(() => expect(screen.queryByText('Tap to open')).toBeNull())
   })
 })

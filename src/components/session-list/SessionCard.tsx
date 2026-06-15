@@ -133,6 +133,7 @@ export const SessionCard = memo(function SessionCard({
     live: 'live',
     dormant: 'dormant',
   }
+  const permissionMode = s.permissionMode ?? 'default'
 
   return (
     <div
@@ -153,8 +154,7 @@ export const SessionCard = memo(function SessionCard({
         dropPosition === 'before' ? 'drop-before' : '',
         dropPosition === 'after' ? 'drop-after' : '',
         accentStyle ? 'tinted' : '',
-        (s.permissionMode ?? 'default') !== 'default' ? 'mode-active' : '',
-        (s.permissionMode ?? 'default') !== 'default' ? `mode-${s.permissionMode}` : '',
+        `mode-${permissionMode}`,
       ].filter(Boolean).join(' ')}
       style={accentStyle}
       role="button"
@@ -232,16 +232,14 @@ export const SessionCard = memo(function SessionCard({
               </span>
             </Tooltip>
           )}
-          {(s.permissionMode ?? 'default') !== 'default' && s.permissionMode && (
-            <Tooltip label={permissionModeLabel(s.permissionMode)} placement="right">
-              <span
-                className={`session-item-mode-badge mode-${s.permissionMode}`}
-                aria-label={`Permission mode: ${permissionModeLabel(s.permissionMode)}`}
-              >
-                <PermissionModeIcon mode={s.permissionMode} size={12} />
-              </span>
-            </Tooltip>
-          )}
+          <Tooltip label={permissionModeLabel(permissionMode)} placement="right">
+            <span
+              className={`session-item-mode-badge mode-${permissionMode}`}
+              aria-label={`Permission mode: ${permissionModeLabel(permissionMode)}`}
+            >
+              <PermissionModeIcon mode={permissionMode} size={12} />
+            </span>
+          </Tooltip>
           {isRenaming ? (
             <input
               ref={renameInputRef}

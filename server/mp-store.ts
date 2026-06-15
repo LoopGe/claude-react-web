@@ -12,7 +12,7 @@
 //
 // We extend JsonFileStore to inherit the debounced atomic write machinery,
 // using `index` as the marketplace map and tracking enabledPlugins as a
-// side field. Serialisation merges both back into the on-disk shape;
+// side fiel?. Serialisation merges both back into the on-disk shape;
 // parsing populates both in `load()`.
 
 import { promises as fs, existsSync } from 'node:fs'
@@ -22,7 +22,12 @@ import { homedir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import type { JsonFileStoreOptions } from './json-file-store.js'
-import { isValidParsedSource, type MarketplaceManifest } from './marketplace-parser.js'
+import {
+  MANIFEST_REL_PATH,
+  isValidParsedSource,
+  parseMarketplace,
+  type MarketplaceManifest,
+} from './marketplace-parser.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,10 +42,10 @@ export interface MpEntry {
   source: { type: 'https'; url: string; ref?: string }
   /** Absolute path to the cloned repo on disk. */
   cloneDir: string
-  /** Epoch ms when the marketplace was first added. */
+  /** Epoch ms when the marketplace was first adde?. */
   addedAt: number
   /** Epoch ms of the most recent successful refresh. Equals addedAt
-   *  immediately after add. */
+   *  immediately after ad?. */
   lastRefreshedAt: number
   /** HEAD SHA of the most recent successful clone/pull. */
   lastSha: string
@@ -61,13 +66,13 @@ interface MpFileShape {
 export type MpStoreOptions = JsonFileStoreOptions
 
 export class MpStore extends JsonFileStore<MpEntry> {
-  /** Side state: `<plugin>@<marketplace>` → enabled. Sits alongside the
+  /** Side state: `<plugin>@<marketplace>` ?enabled. Sits alongside the
    *  `index` (which JsonFileStore manages for us). Mutations call
    *  `markDirty()` which wraps the base class's debounce timer. */
   private enabled = new Map<string, boolean>()
 
   /** Subdir under `dir` where cloned repos live. Each marketplace gets its
-   *  own folder named by its slug. */
+   *  own folder name by its slug. */
   readonly cacheDir: string
 
   /** Holds clones of EXTERNAL repos referenced by `git-subdir` plugins.
@@ -87,7 +92,7 @@ export class MpStore extends JsonFileStore<MpEntry> {
   }
 
   /** Deterministic on-disk dir for an external repo pinned at `sha`. Same
-   *  (url, sha) → same dir, so multiple git-subdir plugins from one repo
+   *  (url, sha) — same dir, so multiple git-subdir plugins from one repo
    *  clone it once. */
   externalCloneDir(url: string, sha: string): string {
     const hash = createHash('sha256').update(`${url}\0${sha}`).digest('hex').slice(0, 16)
@@ -105,10 +110,10 @@ export class MpStore extends JsonFileStore<MpEntry> {
       return []
     }
     const obj = parsed as Partial<MpFileShape>
-    // Pull enabledPlugins straight off the parsed object — load() reads
+    // Pull enabledPlugins straight off the parsed object ?load() reads
     // both halves, but only entries[] flows back through the base class
     // template. Overwrite our side state in place rather than via a
-    // separate hook so we don't add a second template method.
+    // separate hook so we don't add a second template metho?.
     if (obj.enabledPlugins && typeof obj.enabledPlugins === 'object' && !Array.isArray(obj.enabledPlugins)) {
       this.enabled.clear()
       for (const [k, v] of Object.entries(obj.enabledPlugins)) {
@@ -135,13 +140,14 @@ export class MpStore extends JsonFileStore<MpEntry> {
   }
 
   /** Load both halves of the file into memory. Same shape as
-   *  McpConfigStore.load() — missing/corrupt → empty store. */
+   *  McpConfigStore.load() — missing/corrupt — empty store. */
   async load(): Promise<MpEntry[]> {
     try {
       const raw = await fs.readFile(this.file, 'utf8')
       const entries = this.parseItems(raw)
       this.initEntries(entries)
-      return entries
+      await this.reparseCachedManifests(entries)
+      return this.list()
     } catch (err) {
       const e = err as NodeJS.ErrnoException
       if (e.code === 'ENOENT') return []
@@ -162,7 +168,7 @@ export class MpStore extends JsonFileStore<MpEntry> {
       const candidate = `${stem}-${i}`
       if (!this.has(candidate)) return candidate
     }
-    // Pathological fallback (1000 collisions for the same stem? something
+    // Pathological fallback (1000 collisions for the same stemd something
     // is very wrong) — append a timestamp to guarantee uniqueness.
     return `${stem}-${Date.now()}`
   }
@@ -177,7 +183,7 @@ export class MpStore extends JsonFileStore<MpEntry> {
   }
 
   /** Hard-remove an entry: drop from index, drop all enabledPlugins
-   *  scoped to this marketplace, recursively delete the clone dir.
+   *  scope to this marketplace, recursively delete the clone dir.
    *  Filesystem errors are swallowed — the store is still updated so a
    *  stale clone dir doesn't keep the user from re-adding. */
   async removeEntry(id: string): Promise<void> {
@@ -224,8 +230,8 @@ export class MpStore extends JsonFileStore<MpEntry> {
     }
     // The JsonFileStore base class only schedules flushes on
     // upsert/remove of items in `index`. Side-state mutations need a
-    // manual nudge — re-upserting is the cheapest way to set dirty
-    // without inventing a new template method.
+    // manual nudge ?re-upserting is the cheapest way to set dirty
+    // without inventing a new template metho?.
     const owner = this.get(marketplace)
     if (owner) this.upsert(owner)
     else void this.flush()
@@ -239,7 +245,7 @@ export class MpStore extends JsonFileStore<MpEntry> {
     let found: string | undefined
     for (const entry of this.list()) {
       if (entry.manifest.plugins.some((p) => p.name === bareName)) {
-        if (found) return undefined // ambiguous — same name in multiple marketplaces
+        if (found) return undefined // ambiguous ?same name in multiple marketplaces
         found = MpStore.keyOf(bareName, entry.id)
       }
     }
@@ -267,8 +273,7 @@ export class MpStore extends JsonFileStore<MpEntry> {
     // Dedupe: two enabled plugins can resolve to the same dir (e.g. a `url`
     // git-subdir plugin pointing at a repo root, or the same path reached via
     // two marketplaces). The SDK loads each entry of Options.plugins, so a
-    // duplicate path would register the plugin — and its commands/agents —
-    // twice. Collapse to a set.
+    // duplicate path would register the plugin — and its commands/agents —    // twice. Collapse to a set.
     const seen = new Set<string>()
     const push = (p: string) => {
       if (seen.has(p)) return
@@ -288,7 +293,7 @@ export class MpStore extends JsonFileStore<MpEntry> {
       if (plugin.source && plugin.source.kind === 'git-subdir') {
         // The plugin's files live in an external repo cloned lazily on
         // enable. Resolve its eventual subdir; skip silently if the clone
-        // hasn't happened (or vanished) — handing the SDK a missing path
+        // hasn't happened (or vanished) ?handing the SDK a missing path
         // would fail the spawn.
         const abs = resolvePath(
           this.externalCloneDir(plugin.source.url, plugin.source.sha),
@@ -296,8 +301,7 @@ export class MpStore extends JsonFileStore<MpEntry> {
         )
         if (existsSync(abs)) push(abs)
       } else if (plugin.dir) {
-        // In-repo plugin. Left unguarded (no existsSync) intentionally —
-        // the dir was verified to exist at parse time.
+        // In-repo plugin. Left unguarded (no existsSync) intentionally —        // the dir was verified to exist at parse time.
         push(plugin.dir)
       }
     }
@@ -349,28 +353,48 @@ export class MpStore extends JsonFileStore<MpEntry> {
     }
     return out
   }
+
+  /** Re-parse already-cloned marketplace manifests with the current parser.
+   *  The persisted file caches parsed manifests for fast route reads, but older
+   *  app versions may have cached a lossy parse. Loading from the local clone
+   *  lets parser fixes take effect without requiring a network refresh. */
+  private async reparseCachedManifests(entries: MpEntry[]): Promise<void> {
+    let changed = false
+    for (const entry of entries) {
+      if (!existsSync(join(entry.cloneDir, MANIFEST_REL_PATH))) continue
+      try {
+        const { manifest } = await parseMarketplace(entry.cloneDir)
+        const displayName = manifest.name || entry.displayName
+        if (displayName === entry.displayName && sameManifest(entry.manifest, manifest)) continue
+        this.upsert({ ...entry, displayName, manifest })
+        changed = true
+      } catch (err) {
+        console.warn(`[mp-store] failed to reparse cached marketplace ${entry.id}: ${(err as Error).message}`)
+      }
+    }
+    if (changed) await this.flush()
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Default state directory. Mirrors `defaultStateDir` from persistence.ts —
- *  duplicated here so callers don't need to import that module. */
+/** Default state directory. Mirrors `defaultStateDir` from persistence.ts — *  duplicated here so callers don't need to import that module. */
 export function defaultMpStateDir(): string {
   return resolvePath(homedir(), DEFAULT_DIR_NAME)
 }
 
 /** Derive a slug from a git URL. Examples:
- *    https://github.com/owner/repo.git → repo
- *    https://github.com/owner/repo     → repo
- *    https://example.com/foo/bar/      → bar
+ *    https://github.com/owner/repo.git — repo
+ *    https://github.com/owner/repo     — repo
+ *    https://example.com/foo/bar/      — bar
  *  Falls back to "marketplace" for un-parseable inputs. */
 function deriveSlug(url: string): string {
   let raw = url.trim()
   // Strip protocol + leading slashes so the last meaningful segment wins.
-  raw = raw.replace(/^https?:\/\//, '').replace(/\/+$/, '')
-  // Drop trailing .git so https://.../foo.git → foo, not foo.git.
+  raw = raw.replace(/^https:\/\//, '').replace(/\/+$/, '')
+  // Drop trailing .git so https://.../foo.git ?foo, not foo.git.
   raw = raw.replace(/\.git$/i, '')
   const segs = raw.split('/').filter(Boolean)
   const last = segs[segs.length - 1] ?? ''
@@ -422,4 +446,8 @@ function coerceMpEntry(raw: unknown, fallbackId: string): MpEntry | null {
     lastSha,
     manifest,
   }
+}
+
+function sameManifest(current: MarketplaceManifest, next: MarketplaceManifest): boolean {
+  return JSON.stringify(current) === JSON.stringify(next)
 }

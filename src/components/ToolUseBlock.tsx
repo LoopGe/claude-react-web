@@ -64,7 +64,7 @@ import { extractToolUseId } from '../session-store/normalize'
 import type { Block, QuestionSpec } from '../types'
 
 // Per-tool input view. Each view receives the raw tool_use input (loosely
-// typed because SDK schemas drift) and falls back to formatJson internally
+// type because SDK schemas drift) and falls back to formatJson internally
 // when the shape is unexpected. `toolName` is forwarded so a single view
 // can serve more than one tool (e.g. BashToolView covers both Bash and
 // PowerShell, branching on the name to swap the prompt glyph).

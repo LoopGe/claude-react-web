@@ -181,7 +181,7 @@ function totalCacheBytes(): number {
 }
 
 describe('SessionStore storage quota', () => {
-  // Date.now drives both the 60s prune throttle (module-scoped _lastPruneAt)
+  // Date.now drives both the 60s prune throttle (module-scope _lastPruneAt)
   // and the savedAt of freshly-written entries. Mock it to a large, strictly
   // increasing value per test so (a) the throttle never blocks a prune across
   // tests, and (b) the session we write is always the newest → survives.

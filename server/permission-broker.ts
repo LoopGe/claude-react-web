@@ -28,13 +28,14 @@ import { HttpError } from './errors.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import { createLogger } from './log.js'
 import { isAutoApprovableEditBash, isInScopeEditTool } from './accept-edits-bash.js'
+import { isAutoApprovableEditPowerShell } from './accept-edits-powershell.js'
 import { isReadOnlyBash } from './readonly-bash.js'
 
 const log = createLogger('broker')
 
 /** Read-only built-in tools that `dontAsk` mode auto-approves. Conservative
  *  first cut: only tools that purely read/inspect. WebFetch/WebSearch (network)
- *  and TodoWrite (mutates todo state) are intentionally excluded → they get
+ *  and TodoWrite (mutates todo state) are intentionally excluded — they get
  *  auto-denied under dontAsk. Bash is handled separately via isReadOnlyBash. */
 const READONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   'Read',
@@ -82,7 +83,7 @@ export class PermissionBroker {
       abortHandler: () => void,
       timeoutTimer: ReturnType<typeof setTimeout> | null,
     ) => P,
-    label?: string,
+    label: string,
   ): Promise<PermissionResult> {
     return new Promise<PermissionResult>((resolve) => {
       const pid = randomUUID()
@@ -92,8 +93,8 @@ export class PermissionBroker {
             if (!session.pending.has(pid)) return
             session.pending.delete(pid)
             try { ctx.signal.removeEventListener('abort', abortHandler) } catch { /* */ }
-            log.warn(`[session ${session.id}] permission ${pid} timed out after ${timeoutMs}ms — auto-denying`)
-            resolve({ behavior: 'deny', message: 'Permission request timed out — no user response.', interrupt: false, toolUseID: ctx.toolUseID })
+            log.warn(`[session ${session.id}] permission ${pid} timed out after ${timeoutMs}ms ?auto-denying`)
+            resolve({ behavior: 'deny', message: 'Permission request timed out ?no user response.', interrupt: false, toolUseID: ctx.toolUseID })
             broadcastRes(session, pid, {
               behavior: 'deny',
               persisted: false,
@@ -133,14 +134,14 @@ export class PermissionBroker {
    *  permissionSubscribers happens internally.
    *
    *  `onPendingChanged` fires whenever the session's pending map mutates
-   *  via this broker — enqueue, timeout, or abort. The manager uses it
+   *  via this broker ?enqueue, timeout, or abort. The manager uses it
    *  to rebroadcast SessionInfo so the sidebar can show a pending-count
    *  badge. (decide/answerQuestion/denyAll are NOT routed through here
    *  because the manager already follows them with its own persist/
    *  broadcast.)
    *
    *  IMPORTANT: `session` must be the fully-constructed Session object.
-   *  Calling this before the session is assigned would pass undefined. */
+   *  Calling this before the session is assigned would pass undefine?. */
   buildCanUseTool(
     session: Session,
     onPermissionRequest: (session: Session, snapshot: PermissionRequestSnapshot) => void,
@@ -159,21 +160,21 @@ export class PermissionBroker {
     const permissionTimeoutMs = this.permissionTimeoutMs
 
     const canUseTool: CanUseTool = async (toolName, toolInput, ctx) => {
-      // Per-call trace — gated through the scoped logger. To enable just
+      // Per-call trace ?gated through the scope logger. To enable just
       // this scope without flooding the rest:
       //   LOG_LEVEL=debug LOG_SCOPES=broker
       // Used to investigate whether subagent tool calls actually route
       // through canUseTool (key signal: does `agentID=<uuid>` ever appear
-      // for a subagent's Bash, and does sessionMode reflect bypass?).
+      // for a subagent's Bash, and does sessionMode reflect bypassd).
       log.debug(
-        `canUseTool fired — tool=${toolName} ` +
+        `canUseTool fired ?tool=${toolName} ` +
         `agentID=${ctx.agentID ?? 'main'} ` +
         `sessionMode=${session.permissionMode ?? 'default'} ` +
         `toolUseID=${ctx.toolUseID}`,
       )
       // `AskUserQuestion` is an interactive tool (not a permission check)
       // but it still routes through canUseTool. Intercepting here is the
-      // only reliable way to override its output — PreToolUse.block and
+      // only reliable way to override its output ?PreToolUse.block and
       // PostToolUse.updatedToolOutput were tested against SDK 2.1.133
       // and neither actually short-circuits the built-in "no interactive
       // UI" placeholder handler. canUseTool deny+message DOES short-
@@ -187,7 +188,7 @@ export class PermissionBroker {
           return {
             behavior: 'deny',
             message: JSON.stringify({
-              note: 'AskUserQuestion input was malformed — no valid questions found.',
+              note: 'AskUserQuestion input was malformed ?no valid questions found.',
               answers: [],
             }),
             interrupt: false,
@@ -196,7 +197,7 @@ export class PermissionBroker {
         }
         // Interactive questions intentionally do not use permissionTimeoutMs.
         // Matching Claude Code CLI, choices stay available until the user
-        // answers/skips or the underlying tool call is aborted.
+        // answers/skips or the underlying tool call is aborte?.
         return this.createPendingRequest(session, ctx, broadcastReq, broadcastRes, onPendingChanged, 0, (pid, wrappedResolve, abortHandler, timeoutTimer) => ({
           kind: 'question' as const,
           id: pid,
@@ -208,13 +209,13 @@ export class PermissionBroker {
           signal: ctx.signal,
           abortHandler,
           timeoutTimer,
-        }), `AskUserQuestion permission request — ${questions.length} question(s)`)
+        }), `AskUserQuestion permission request ?${questions.length} question(s)`)
       }
       // EnterPlanMode is the plan-mode ENTRY signal — the model announces it
       // is about to start planning. Its input is empty (no plan to review), so
       // it is NOT a permission request and must NOT raise a plan-review card.
       // Auto-allow it (the transcript renders a lightweight inline marker).
-      // NOTE: semantically opposite to ExitPlanMode below — see
+      // NOTE: semantically opposite to ExitPlanMode below ?see
       // src/constants/toolNames.ts (PLAN_TOOL_NAMES vs ENTER_PLAN_MODE_TOOL_NAME).
       if (toolName === 'EnterPlanMode') {
         return {
@@ -223,8 +224,7 @@ export class PermissionBroker {
           toolUseID: ctx.toolUseID,
         }
       }
-      // ExitPlanMode is a plan PROPOSAL: "I'm done planning, here's the plan —
-      // should I start executing?" It requires human review of the proposed
+      // ExitPlanMode is a plan PROPOSAL: "I'm done planning, here's the plan —      // should I start executing?" It requires human review of the proposed
       // plan regardless of permission mode. This check MUST come before the
       // bypassPermissions early-return so that even in bypass mode the user
       // sees the plan card and can approve or reject it.
@@ -244,7 +244,7 @@ export class PermissionBroker {
           signal: ctx.signal,
           abortHandler,
           timeoutTimer,
-        }), `plan review request — ${toolName}`)
+        }), `plan review request - ${toolName}`)
       }
       // `acceptEdits` auto-approves pure file-editing tools so the user isn't
       // prompted for every Edit/Write. Non-edit tools (Bash, etc.) fall through
@@ -253,7 +253,7 @@ export class PermissionBroker {
       // bypassPermissions: with a canUseTool callback present the SDK routes
       // EVERY tool through us, so its built-in acceptEdits auto-allow never
       // fires. Placed AFTER the ExitPlanMode check so plan review is never
-      // skipped.
+      // skippe?.
       if (session.permissionMode === 'acceptEdits') {
         // File-editing tools: auto-approve ONLY when the target path is inside
         // the working directory (official semantics — edits outside cwd still
@@ -266,10 +266,15 @@ export class PermissionBroker {
         // fail-closed — anything unprovable (shell metacharacters, paths
         // outside cwd, traversal, unknown commands, sed) falls through to a
         // prompt. Mirrors official Claude Code acceptEdits semantics.
+        const command = (toolInput as { command?: unknown })?.command
+        const commandText = typeof command === 'string' ? command : undefined
         const isSafeBash =
           toolName === 'Bash' &&
-          isAutoApprovableEditBash((toolInput as { command?: unknown })?.command, session.cwd)
-        if (isInScopeEdit || isSafeBash) {
+          isAutoApprovableEditBash(commandText, session.cwd)
+        const isSafePowerShell =
+          toolName === 'PowerShell' &&
+          isAutoApprovableEditPowerShell(commandText, session.cwd)
+        if (isInScopeEdit || isSafeBash || isSafePowerShell) {
           return {
             behavior: 'allow',
             updatedInput: toolInput,
@@ -336,7 +341,7 @@ export class PermissionBroker {
         signal: ctx.signal,
         abortHandler,
         timeoutTimer,
-      }), `tool permission request — ${toolName}`)
+      }), `tool permission request - ${toolName}`)
     }
 
     return canUseTool
@@ -382,7 +387,7 @@ export class PermissionBroker {
   ): void {
     const p = session.pending.get(pid)
     if (!p) throw new HttpError(404, `pending permission ${pid} not found`)
-    log.info(`[session ${session.id}] decide ${pid} — ${decision.behavior} (${p.toolName})`)
+    log.info(`[session ${session.id}] decide ${pid} -> ${decision.behavior} (${p.toolName})`)
     if (p.kind === 'question') {
       throw new HttpError(
         400,

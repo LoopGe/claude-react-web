@@ -121,7 +121,7 @@ describe('parseMarketplace', () => {
 
   it('honours plugin.source as a string shorthand pointing at the repo root', async () => {
     // Real-world manifest seen in the wild: { "source": "./" } means the
-    // plugin lives at the cloned repo root, not in a subdir named after it.
+    // plugin lives at the cloned repo root, not in a subdir name after it.
     writeManifest(repo, {
       name: 'M',
       plugins: [

@@ -16,6 +16,12 @@ describe('isReadOnlyBash — allowed (read-only)', () => {
     expect(isReadOnlyBash('git diff HEAD')).toBe(true)
     expect(isReadOnlyBash('git show')).toBe(true)
     expect(isReadOnlyBash('git rev-parse HEAD')).toBe(true)
+    expect(isReadOnlyBash('git branch')).toBe(true)
+    expect(isReadOnlyBash('git branch -a')).toBe(true)
+    expect(isReadOnlyBash('git tag --list')).toBe(true)
+    expect(isReadOnlyBash('git remote -v')).toBe(true)
+    expect(isReadOnlyBash('git remote show origin')).toBe(true)
+    expect(isReadOnlyBash('git remote get-url origin')).toBe(true)
   })
 
   it('strips safe wrappers and env prefixes', () => {
@@ -46,6 +52,12 @@ describe('isReadOnlyBash — denied (fail-closed)', () => {
     expect(isReadOnlyBash('git reset --hard')).toBe(false)
     expect(isReadOnlyBash('git clean -fd')).toBe(false)
     expect(isReadOnlyBash('git config user.name x')).toBe(false) // writes .git/config
+    expect(isReadOnlyBash('git branch new-feature')).toBe(false)
+    expect(isReadOnlyBash('git branch -D old-feature')).toBe(false)
+    expect(isReadOnlyBash('git tag v1.0.0')).toBe(false)
+    expect(isReadOnlyBash('git tag -d v1.0.0')).toBe(false)
+    expect(isReadOnlyBash('git remote add origin https://example.com/repo.git')).toBe(false)
+    expect(isReadOnlyBash('git diff --output=patch.diff HEAD')).toBe(false)
     expect(isReadOnlyBash('git')).toBe(false) // bare git
   })
 

@@ -55,7 +55,7 @@ describe('paginateJsonl — filtering', () => {
       {
         type: 'user',
         uuid: 'u1',
-        message: { role: 'user', content: 'why does [Request interrupted by user] show up?' },
+        message: { role: 'user', content: 'why does [Request interrupted by user] show upd' },
       },
     ])
     const page = paginateJsonl(raw, SID, { limit: 100 })
@@ -167,6 +167,20 @@ describe('paginateJsonl — pagination', () => {
     expect((page.messages as Array<{ uuid: string }>).map((m) => m.uuid)).toEqual(['a3', 'u4'])
   })
 
+  it('drops rows before a raw afterUuid boundary', () => {
+    const withClear = jsonl([
+      { type: 'user', uuid: 'u0', message: { role: 'user', content: 'before' } },
+      { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [] } },
+      { type: 'system', subtype: 'init', uuid: 'clear-init' },
+      { type: 'user', uuid: 'u2', message: { role: 'user', content: 'after' } },
+      { type: 'assistant', uuid: 'a3', message: { role: 'assistant', content: [] } },
+    ])
+    const page = paginateJsonl(withClear, SID, { limit: 10, afterUuid: 'clear-init' })
+    expect(page.totalCount).toBe(2)
+    expect(page.hasMore).toBe(false)
+    expect((page.messages as Array<{ uuid: string }>).map((m) => m.uuid)).toEqual(['u2', 'a3'])
+  })
+
   it('clamps limit and handles empty transcript', () => {
     expect(paginateJsonl('', SID, { limit: 100 })).toEqual({
       messages: [],
@@ -174,5 +188,21 @@ describe('paginateJsonl — pagination', () => {
       startIndex: 0,
       hasMore: false,
     })
+  })
+})
+
+describe('historyEntriesFromJsonl', () => {
+  it('returns chronological renderable entries with indexes after clear boundary', async () => {
+    const { historyEntriesFromJsonl } = await import('./history-reader.js')
+    const raw = jsonl([
+      { type: 'user', uuid: 'before', message: { role: 'user', content: 'before' } },
+      { type: 'system', subtype: 'init', uuid: 'clear-init' },
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'find me' } },
+      { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] } },
+    ])
+
+    const entries = historyEntriesFromJsonl(raw, SID, { afterUuid: 'clear-init' })
+    expect(entries.map((entry) => entry.index)).toEqual([0, 1])
+    expect(entries.map((entry) => (entry.message as { uuid: string }).uuid)).toEqual(['u1', 'a1'])
   })
 })

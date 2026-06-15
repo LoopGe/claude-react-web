@@ -887,7 +887,7 @@ export async function pushToRemote(cwd: string, force?: boolean): Promise<void> 
   await runGit(cwd, args, { timeoutMs: 60_000 })
 }
 
-// ── Session anchor + session-scoped diff ──────────────────────────────
+// ── Session anchor + session-scope diff ──────────────────────────────
 
 /** Hard cap on diff bytes we feed to the AI commit-message model. The
  *  diff is base64-free plain text; the limit is set well below typical

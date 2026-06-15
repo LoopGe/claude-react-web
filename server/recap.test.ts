@@ -541,7 +541,7 @@ describe('recap', () => {
 
     it('detects language from user messages only (assistant text ignored)', async () => {
       // Assistant text in Chinese should NOT cause Chinese to be selected
-      // when the user has only typed English. This matters because once a
+      // when the user has only type English. This matters because once a
       // recap is wrong, assistant turns may quote it back, polluting the signal.
       mockFetchSuccess('summary')
       const messages = [

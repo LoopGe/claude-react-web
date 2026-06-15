@@ -28,6 +28,7 @@ import { Tooltip } from './Tooltip'
 import { IconX, IconSparkles, IconChevronDown, IconChevronRight, IconCheck, IconAlertTriangle } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
 import { useToast } from '../hooks/useToast'
+import { usePresenceValue } from '../hooks/useExitPresence'
 import type {
   GitFileEntry,
   GitStatusResponse,
@@ -88,6 +89,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   const toast = useToast()
   const [confirm, setConfirm] = useState<ConfirmState | null>(null)
   const [confirmBusy, setConfirmBusy] = useState(false)
+  const confirmPresence = usePresenceValue(confirm)
   const [commitMessage, setCommitMessage] = useState('')
 
   // Helper used inside event handlers: run a write op and translate
@@ -467,14 +469,15 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         <CommitList cwd={cwd} />
       </Section>
 
-      {confirm && (
+      {confirmPresence.value && (
         <ConfirmDialog
-          title={confirm.title}
-          message={confirm.message}
-          confirmLabel={confirm.confirmLabel}
-          destructive={confirm.destructive}
+          open={confirm != null}
+          title={confirmPresence.value.title}
+          message={confirmPresence.value.message}
+          confirmLabel={confirmPresence.value.confirmLabel}
+          destructive={confirmPresence.value.destructive}
           busy={confirmBusy}
-          onConfirm={confirm.onConfirm}
+          onConfirm={confirmPresence.value.onConfirm}
           onCancel={() => { if (!confirmBusy) setConfirm(null) }}
         />
       )}

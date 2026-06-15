@@ -655,7 +655,7 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   // message (parent_tool_use_id === null/undefined). Subagent
   // tool_result frames are also `type: 'user'` but should never clobber
   // the optimistic — without this guard, a tool_result that lands while
-  // pendingUserMessageIds is still populated would replace the typed text
+  // pendingUserMessageIds is still populated would replace the type text
   // with a JSON tool result and silently drop what the user wrote.
   const incomingParent = incomingMessage.parent_tool_use_id
   if (
@@ -722,7 +722,7 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   // (e.g. arrived but all optimistic placeholders were already gone),
   // clear pendingUserMessageIds to be safe. Don't clear on
   // tool_result/subagent user frames (parent_tool_use_id != null) —
-  // those are unrelated to the user's typed input and the real echo
+  // those are unrelated to the user's type input and the real echo
   // may still be on its way.
   if (incomingMessage.type === 'user' && next.pendingUserMessageIds.size > 0 && incomingParent == null) {
     next = { ...next, pendingUserMessageIds: new Set<string>() }

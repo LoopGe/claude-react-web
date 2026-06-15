@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os'
 
 interface MockQueryHandle {
   options: Record<string, unknown>
+  consumed: unknown[]
   emit: (msg: unknown) => void
   finish: () => void
   throwError: (err: unknown) => void
@@ -80,7 +81,9 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
       const drainOne = () => {
         if (!promptIter || done || drainInFlight) return
         drainInFlight = true
-        promptIter.next().finally(() => { drainInFlight = false })
+        promptIter.next().then((r) => {
+          if (!r.done) handle.consumed.push(r.value)
+        }).finally(() => { drainInFlight = false })
       }
       // Initial drain: SDK consumes the first user message to start its
       // first turn.
@@ -96,6 +99,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
 
       const handle: MockQueryHandle = {
         options,
+        consumed: [],
         emit: (msg) => {
           if (done) return
           if (waiter) pushResolved({ value: msg, done: false })
@@ -104,7 +108,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
           // message to start its next turn. Mirror that here so tests
           // exercising back-to-back turns see the input queue drain
           // between turns.
-          if ((msg as { type?: string })?.type === 'result') drainOne()
+          if ((msg as { type?: string }).type === 'result') drainOne()
         },
         finish: () => {
           done = true
@@ -193,6 +197,8 @@ describe('isClearCommand', () => {
     expect(isClearCommand('/Clear')).toBe(true)
     expect(isClearCommand('  /clear  ')).toBe(true)
     expect(isClearCommand('/clear extra args')).toBe(true)
+    expect(isClearCommand('/reset')).toBe(true)
+    expect(isClearCommand('/new')).toBe(true)
   })
 
   it('does not match look-alikes or embedded uses', () => {
@@ -382,6 +388,69 @@ describe('SessionManager', () => {
     sub.unsubscribe()
   })
 
+  it('clear() sends a control command without adding a user bubble', async () => {
+    const info = sm.create({})
+    mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
+    await tick()
+
+    await sm.clear(info.id)
+    await tick()
+
+    expect(mockHandles[0].consumed[mockHandles[0].consumed.length - 1]).toMatchObject({
+      type: 'user',
+      message: { role: 'user', content: '/clear' },
+    })
+    const beforeConfirm = sm.getHistory(info.id)!
+    expect(beforeConfirm.some((m) => (m as { message: { content: unknown } }).message.content === '/clear')).toBe(false)
+  })
+
+  it('clear() drops queued user turns before enqueueing the control command', async () => {
+    const info = sm.create({})
+    sm.send(info.id, 'first')
+    sm.send(info.id, 'second queued')
+
+    await sm.clear(info.id)
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    await tick()
+
+    const consumedTexts = mockHandles[0].consumed.map(
+      (m) => (m as { message: { content: unknown } }).message.content,
+    )
+    expect(consumedTexts).toEqual(['first', '/clear'])
+  })
+
+  it('clear confirmation truncates history and persists the raw boundary uuid', async () => {
+    const info = sm.create({})
+    mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
+    await tick()
+    await sm.clear(info.id)
+
+    const cleared = sm.subscribeSessionCleared(info.id)!
+    const nextCleared = cleared.iterable[Symbol.asyncIterator]().next()
+    mockHandles[0].emit({ type: 'system', subtype: 'init', uuid: 'clear-init', session_id: info.id })
+    await tick()
+
+    await expect(nextCleared).resolves.toMatchObject({ value: { kind: 'session-cleared', sessionId: info.id } })
+    expect(sm.getHistory(info.id)!.map((m) => (m as { uuid?: string }).uuid)).toEqual(['clear-init'])
+    expect(store.get(info.id)?.clearBoundaryUuid).toBe('clear-init')
+    cleared.unsubscribe()
+  })
+
+  it('clear confirmation resets stale working state from the interrupted turn', async () => {
+    const info = sm.create({})
+    sm.send(info.id, 'busy')
+    expect(sm.get(info.id).working).toBe(true)
+
+    await sm.clear(info.id)
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    await tick()
+    mockHandles[0].emit({ type: 'system', subtype: 'init', uuid: 'clear-init', session_id: info.id })
+    await tick()
+
+    expect(sm.get(info.id).working).toBe(false)
+    expect(sm.get(info.id).phase).toBe('idle')
+  })
+
   it('subscribeContextUsage() hands a fresh subscriber the last cached snapshot', async () => {
     // A tab that attaches BETWEEN turns (reconnect / new panel / refresh)
     // should see the Context bar value immediately rather than waiting for
@@ -459,14 +528,14 @@ describe('SessionManager', () => {
     const canUseTool = mockHandles[0].options.canUseTool as (
       tool: string,
       input: unknown,
-      ctx: { signal: AbortSignal; toolUseID: string; suggestions?: unknown },
-    ) => Promise<{ behavior: string; message?: string }>
+      ctx: { signal: AbortSignal; toolUseID: string; suggestions: unknown },
+    ) => Promise<{ behavior: string; message: string }>
     expect(canUseTool).toBeTypeOf('function')
     const ctrl = new AbortController()
     const permissionPromise = canUseTool(
       'Bash',
       { command: 'ls' },
-      { signal: ctrl.signal, toolUseID: 'tu-1' },
+      { signal: ctrl.signal, toolUseID: 'tu-1', suggestions: [] },
     )
 
     // Give the manager a microtask to park the pending request.
@@ -851,18 +920,18 @@ describe('SessionManager', () => {
       tool: string,
       input: unknown,
       ctx: { signal: AbortSignal; toolUseID: string },
-    ) => Promise<{ behavior: string; message?: string; interrupt?: boolean; toolUseID?: string }>
+    ) => Promise<{ behavior: string; message: string; interruptd: boolean; toolUseID: string }>
     const ctrl = new AbortController()
     const promise = canUseTool(
       'AskUserQuestion',
       {
         questions: [
           {
-            question: 'Which language?',
+            question: 'Which languaged',
             options: [{ label: 'english' }, { label: 'chinese' }],
           },
           {
-            question: 'Which frameworks?',
+            question: 'Which frameworksd',
             multiSelect: true,
             options: [{ label: 'react' }, { label: 'vue' }, { label: 'svelte' }],
           },
@@ -875,13 +944,13 @@ describe('SessionManager', () => {
     sm.answerQuestion(info.id, pid, ['chinese', ['react', 'svelte']])
     const resolved = await promise
     expect(resolved.behavior).toBe('deny')
-    expect(resolved.interrupt).toBe(false)
+    expect((resolved as { interrupt?: boolean }).interrupt).toBe(false)
     expect(resolved.toolUseID).toBe('tu-question-2')
     // The message body is the JSON the model reads as tool_result.
     const parsed = JSON.parse(resolved.message!)
     expect(parsed.answers).toEqual([
-      { question: 'Which language?', answer: 'chinese' },
-      { question: 'Which frameworks?', answer: ['react', 'svelte'] },
+      { question: 'Which languaged', answer: 'chinese' },
+      { question: 'Which frameworksd', answer: ['react', 'svelte'] },
     ])
     // Pending cleared on answer.
     expect(sm.listPending(info.id)).toHaveLength(0)
@@ -893,7 +962,7 @@ describe('SessionManager', () => {
       tool: string,
       input: unknown,
       ctx: { signal: AbortSignal; toolUseID: string },
-    ) => Promise<{ behavior: string; message?: string }>
+    ) => Promise<{ behavior: string; message: string }>
     const ctrl = new AbortController()
     const promise = canUseTool(
       'AskUserQuestion',
@@ -1025,7 +1094,7 @@ describe('SessionManager', () => {
       tool: string,
       input: unknown,
       ctx: { signal: AbortSignal; toolUseID: string },
-    ) => Promise<{ behavior: string; message?: string }>
+    ) => Promise<{ behavior: string; message: string }>
     const ctrl = new AbortController()
     const promise = canUseTool(
       'AskUserQuestion',
@@ -1049,13 +1118,13 @@ describe('SessionManager', () => {
         // a session the CLI created — unknown to this app
         { sessionId: 'cli-xyz', firstPrompt: 'Hello from CLI', cwd: '/tmp/cli', lastModified: 500 },
         // customTitle wins over summary/firstPrompt for the display title
-        { sessionId: 'titled', customTitle: 'My Title', summary: 'ignored', lastModified: 400, gitBranch: 'main' },
+        { sessionId: 'title', customTitle: 'My Title', summary: 'ignored', lastModified: 400, gitBranch: 'main' },
       ])
 
       const list = await sm.listResumable()
 
-      // Sorted newest-first by lastModified: cli-xyz(500) > titled(400) > live(300)
-      expect(list.map((s) => s.sessionId)).toEqual(['cli-xyz', 'titled', live.id])
+      // Sorted newest-first by lastModified: cli-xyz(500) > title(400) > live(300)
+      expect(list.map((s) => s.sessionId)).toEqual(['cli-xyz', 'title', live.id])
 
       const cli = list.find((s) => s.sessionId === 'cli-xyz')!
       expect(cli.known).toBe(false)
@@ -1067,9 +1136,9 @@ describe('SessionManager', () => {
       expect(liveRow.running).toBe(true)
       expect(liveRow.title).toBe('Live one')
 
-      const titled = list.find((s) => s.sessionId === 'titled')!
-      expect(titled.title).toBe('My Title')
-      expect(titled.gitBranch).toBe('main')
+      const title = list.find((s) => s.sessionId === 'title')!
+      expect(title.title).toBe('My Title')
+      expect(title.gitBranch).toBe('main')
     })
 
     it('forwards the dir scope to the SDK', async () => {

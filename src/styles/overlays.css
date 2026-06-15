@@ -9,6 +9,11 @@
   justify-content: center;
   padding-top: min(20vh, 160px);
 }
+.palette-backdrop[data-state="open"] { animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both; }
+.palette-backdrop[data-state="closing"] {
+  pointer-events: none;
+  animation: overlay-backdrop-out var(--motion-duration-base) var(--motion-ease-exit) both;
+}
 
 .palette {
   width: min(560px, calc(100vw - 40px));
@@ -23,6 +28,8 @@
   flex-direction: column;
   overflow: hidden;
 }
+.palette-backdrop[data-state="open"] > .palette { animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both; }
+.palette-backdrop[data-state="closing"] > .palette { animation: overlay-panel-out var(--motion-duration-base) var(--motion-ease-exit) both; }
 
 .palette-input {
   width: 100%;
@@ -281,13 +288,30 @@ mark.search-hl.search-hl-active {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 0;
   width: min(380px, calc(100vw - 32px));
   pointer-events: none;
 }
 
+.toast-shell {
+  display: grid;
+  grid-template-rows: 1fr;
+  width: 100%;
+  padding-bottom: 8px;
+  overflow: hidden;
+  transition:
+    grid-template-rows var(--motion-duration-base) var(--motion-ease-exit),
+    padding-bottom var(--motion-duration-base) var(--motion-ease-exit);
+}
+
+.toast-shell-exiting {
+  grid-template-rows: 0fr;
+  padding-bottom: 0;
+}
+
 .toast {
   position: relative;
+  min-height: 0;
   overflow: hidden;
   display: flex;
   align-items: flex-start;
@@ -304,6 +328,15 @@ mark.search-hl.search-hl-active {
   pointer-events: auto;
   /* slide in from the top; respects prefers-reduced-motion below */
   animation: toast-slide-in var(--motion-duration-base) var(--motion-ease-enter);
+}
+
+.toast-exiting {
+  pointer-events: none;
+  animation: toast-slide-out var(--motion-duration-base) var(--motion-ease-exit) forwards;
+}
+
+.toast-exiting .toast-progress {
+  animation-play-state: paused;
 }
 
 /* Countdown progress bar pinned to the toast's bottom edge. Scales from
@@ -447,6 +480,17 @@ mark.search-hl.search-hl-active {
   }
 }
 
+@keyframes toast-slide-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(calc(-1 * var(--motion-distance-md))) scale(var(--motion-scale-enter));
+  }
+}
+
 @keyframes toast-progress {
   from {
     transform: scaleX(1);
@@ -457,6 +501,9 @@ mark.search-hl.search-hl-active {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .toast-shell {
+    transition: none;
+  }
   .toast {
     animation: none;
   }
@@ -475,3 +522,23 @@ mark.search-hl.search-hl-active {
    sizes to its content. All colours go through CSS variables so the
    light theme inherits the layout without overrides.
    */
+
+.palette-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.palette-item-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.palette-item-message {
+  align-items: flex-start;
+}

@@ -1,4 +1,4 @@
-// Minimal typed wrapper around localStorage with a React-friendly update API.
+// Minimal type wrapper around localStorage with a React-friendly update API.
 //
 // SSR-safe (checks typeof window), JSON-encoded, and quietly ignores storage
 // errors (quota exceeded, disabled storage, etc.). Returns the same tuple

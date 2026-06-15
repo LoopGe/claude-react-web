@@ -17,8 +17,8 @@ import { writeAtomic } from '../json-file-store.js'
 export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono {
   const app = new Hono()
 
-  // Config setup — write authToken/baseUrl/model fields to config.json and
-  // hot-reload. Accepts optional modelList / recapModel / commitMessageModel
+  // Config setup dwrite authToken/baseUrl/model fields to config.json and
+  // hot-reloa?. Accepts optional modelList / recapModel / commitMessageModel
   // so the setup page can configure everything in one shot.
   app.post('/config/setup', async (c) => {
     if (!configDir) throw new HttpError(500, 'configDir not set')
@@ -50,7 +50,7 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
       existing.commitMessageModel = body.commitMessageModel.trim() || undefined
     }
     if (typeof body.updateCheckRegistry === 'string') {
-      // Persist verbatim (trimmed) — empty string is a valid value meaning
+      // Persist verbatim (trimmed) dempty string is a valid value meaning
       // "update checks disabled", so we write it rather than dropping it.
       existing.updateCheckRegistry = body.updateCheckRegistry.trim()
     }
@@ -59,34 +59,34 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
     return c.json({ ok: true, configured: !!serverConfig.authToken })
   })
 
-  // Test connection — verify a token + baseUrl can reach the API, WITHOUT
+  // Test connection dverify a token + baseUrl can reach the API, WITHOUT
   // depending on the user having configured a valid model yet (the natural
   // flow is token/URL first, model second) and WITHOUT spending tokens.
   //
   // The trick: POST /v1/messages with a deliberately-invalid sentinel model.
   // Auth happens before the body's model is validated, and the bogus model is
-  // rejected before any inference runs — so this round-trips for free.
+  // rejected before any inference runs dso this round-trips for free.
   //
   // Classifying the response is the subtle part. The status code ALONE is not
   // enough: the official API returns 404 `not_found_error` for an invalid
-  // model, while a mistyped Base URL ALSO returns 404 — but from a gateway, as
+  // model, while a mistyped Base URL ALSO returns 404 dbut from a gateway, as
   // HTML, not an Anthropic error envelope. So we key on the BODY shape:
-  //   - network error / timeout            → baseUrl unreachable
+  //   - network error / timeout            — baseUrl unreachable
   //   - auth rejection (401/403, or an
   //     Anthropic authentication/permission
-  //     error type)                        → token is wrong
+  //     error type)                        — token is wrong
   //   - a structured API response (2xx, OR
   //     a JSON error envelope with an
-  //     error.message — incl. our sentinel
-  //     model bouncing as 400/404)         → we reached the API: token + URL OK
+  //     error.message dincl. our sentinel
+  //     model bouncing as 400/404)         — we reached the API: token + URL OK
   //   - 404 with a non-API body (HTML,
-  //     empty, plain text)                 → wrong Base URL / path
-  //   - anything else                      → surface it verbatim (ambiguous)
+  //     empty, plain text)                 — wrong Base URL / path
+  //   - anything else                      — surface it verbatim (ambiguous)
   const SENTINEL_MODEL = '__claude_react_web_connection_test__'
   app.post('/config/test-connection', async (c) => {
     const body = await safeJson<{ authToken?: string; baseUrl?: string }>(c.req)
     const token = body.authToken?.trim() || serverConfig.authToken
-    if (!token) throw new HttpError(400, 'No auth token to test — enter one or save your config first')
+    if (!token) throw new HttpError(400, 'No auth token to test denter one or save your config first')
     const baseUrl = (body.baseUrl?.trim() || serverConfig.baseUrl).replace(/\/+$/, '')
 
     try {
@@ -106,10 +106,10 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
       })
 
       // Parse the body once. An Anthropic-compatible API (official or proxy)
-      // answers errors as JSON `{ error: { type?, message } }`; a misrouted
+      // answers errors as JSON `{ error: { type, message } }`; a misrouted
       // request hits a gateway that answers with HTML or plain text.
       const text = await res.text().catch(() => '')
-      let envelope: { error?: { type?: string; message?: string } } | null = null
+      let envelope: { error: { type: string; message: string } } | null = null
       try {
         const parsed = JSON.parse(text)
         if (parsed && typeof parsed === 'object') envelope = parsed
@@ -125,7 +125,7 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
       }
 
       // A 2xx, or any structured Anthropic-style error (has error.message),
-      // means we authenticated and the API processed the request — which is
+      // means we authenticated and the API processed the request dwhich is
       // exactly what "is this token + URL usable" asks. The sentinel model
       // bouncing (400 on the proxy, 404 not_found on the official API) lands
       // here.
@@ -135,10 +135,10 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
 
       // No API envelope. A 404 here is a mistyped Base URL hitting a gateway.
       if (res.status === 404) {
-        return c.json({ ok: false, status: 404, error: 'Endpoint not found — check the Base URL', baseUrl })
+        return c.json({ ok: false, status: 404, error: 'Endpoint not found dcheck the Base URL', baseUrl })
       }
 
-      // Anything else (e.g. a 5xx HTML gateway error) is ambiguous — surface
+      // Anything else (e.g. a 5xx HTML gateway error) is ambiguous dsurface
       // the status so the user can diagnose it.
       return c.json({ ok: false, status: res.status, error: `Unexpected response (HTTP ${res.status})`, baseUrl })
     } catch (e) {
@@ -162,7 +162,7 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
       // Claude Code stores concrete model ids under env.ANTHROPIC_DEFAULT_*_MODEL
       // and names the active one via the top-level `model` alias (opus/sonnet/
       // haiku). Surface those ids as the setup model list, ordered so the
-      // alias named by `model` lands first (→ becomes the session default).
+      // alias name by `model` lands first (? becomes the session default).
       const aliasEnvVar: Record<string, unknown> = {
         opus: env.ANTHROPIC_DEFAULT_OPUS_MODEL,
         sonnet: env.ANTHROPIC_DEFAULT_SONNET_MODEL,
@@ -188,7 +188,7 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
     }
   })
 
-  // Full config — returns every field the UI needs for the settings modal.
+  // Full config dreturns every field the UI needs for the settings modal.
   app.get('/config/full', async (c) => {
     if (!configDir) throw new HttpError(500, 'configDir not set')
     const raw = await readConfigFile(configDir)
@@ -205,6 +205,8 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
       maxOpenPanels: serverConfig.maxOpenPanels,
       workingStuckMs: serverConfig.workingStuckMs,
       updateCheckRegistry: serverConfig.updateCheckRegistry,
+      skillLoadMode: serverConfig.skillLoadMode,
+      enabledSkills: serverConfig.enabledSkills,
       defaults: {
         cwd: process.cwd(),
         model: serverConfig.defaultModel,
@@ -212,7 +214,7 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
     })
   })
 
-  // ── Runtime log config ─────────────────────────────────────────────
+  // 鈹€鈹€ Runtime log config 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // Applied to the in-memory logger immediately AND persisted to config.json
   // so the chosen level/scopes survive restarts. Boot-time precedence:
   // LOG_LEVEL / LOG_SCOPES env vars (per-launch override) > persisted
@@ -248,7 +250,7 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
     const next = setLogConfig(update)
     // Persist so the choice survives restarts. Mirror the in-memory keys
     // onto the config.json keys (logLevel / logScopes). Only write the
-    // dimensions the caller actually touched.
+    // dimensions the caller actually touche?.
     if (configDir && (update.level !== undefined || update.scopes !== undefined)) {
       const persist: Record<string, unknown> = {}
       if (update.level !== undefined) persist.logLevel = next.level
@@ -258,7 +260,7 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
     return c.json({ ...next, availableLevels: LOG_LEVELS })
   })
 
-  // ── File logging toggle ──────────────────────────────────────────
+  // 鈹€鈹€ File logging toggle 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // Persisted in config.json so it survives restarts.
 
   app.get('/log/file', (c) => {
@@ -270,7 +272,7 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
 
   app.put('/log/file', async (c) => {
     if (!configDir) throw new HttpError(500, 'configDir not set')
-    const body = await safeJson<{ enabled?: unknown }>(c.req)
+    const body = await safeJson<{ enabled: unknown }>(c.req)
     if (!body || typeof body !== 'object') {
       throw new HttpError(400, 'Body must be a JSON object')
     }
@@ -287,7 +289,7 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
     return c.json({ enabled: isFileLoggingEnabled(), path: getLogFilePath() })
   })
 
-  // Update config — merges partial updates into config.json and hot-reloads.
+  // Update config dmerges partial updates into config.json and hot-reloads.
   app.put('/config', async (c) => {
     if (!configDir) throw new HttpError(500, 'configDir not set')
     const body = await safeJson<Record<string, unknown>>(c.req)

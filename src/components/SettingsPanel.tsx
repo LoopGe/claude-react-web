@@ -13,6 +13,7 @@ import { FlagSettingsEditor } from './FlagSettingsEditor'
 import { ContextBar } from './ContextBar'
 import { IconChevronUp, IconChevronDown } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
+import { useExitPresence } from '../hooks/useExitPresence'
 
 // MarketplaceTab and McpInstaller are heavy modal-within-modal
 // components opened only on user intent (Browse plugins / Add MCP).
@@ -63,6 +64,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
   const [globalMcpNames, setGlobalMcpNames] = useState<Set<string>>(new Set())
   const [showMcpInstaller, setShowMcpInstaller] = useState(false)
   const [mcpInstallerEdit, setMcpInstallerEdit] = useState<McpServerConfigMeta | undefined>(undefined)
+  const mcpInstallerPresence = useExitPresence(showMcpInstaller)
   const [busy, setBusy] = useState(false)
   // True until the initial models/MCP/usage fetch settles. Drives skeleton
   // placeholders so the lists don't flash "No MCP servers" before data lands.
@@ -640,9 +642,10 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
         document.body,
       )}
 
-      {showMcpInstaller && (
+      {mcpInstallerPresence.shouldRender && (
         <Suspense fallback={null}>
           <McpInstaller
+            open={showMcpInstaller}
             server={mcpInstallerEdit}
             onSave={handleMcpInstallerSave}
             onClose={() => { setShowMcpInstaller(false); setMcpInstallerEdit(undefined) }}

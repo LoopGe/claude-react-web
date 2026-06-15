@@ -4,7 +4,7 @@
 // Why this exists: most slash commands (e.g. /init, /review) are real SDK /
 // plugin commands and must be POSTed through to the `claude` subprocess. But a
 // few actions are purely UI-level (e.g. /resume, which should pop the
-// in-app resume picker scoped to the current panel). Those are registered here
+// in-app resume picker scope to the current panel). Those are registered here
 // and matched in Chat.send() before any network call.
 //
 // Extensibility: to add a new local command, append an entry to LOCAL_COMMANDS
@@ -20,10 +20,10 @@ import type { SlashCommand } from './types'
 export type SettingsTabName = 'general' | 'context' | 'plugins' | 'mcp'
 
 export interface LocalCommandContext {
-  /** Session id of the panel the command was typed in. */
+  /** Session id of the panel the command was type in. */
   sessionId: string
   /** The merged slash-command list (local + SDK) for the panel the command
-   *  was typed in. Used by /help to populate the help dialog. */
+   *  was type in. Used by /help to populate the help dialog. */
   commands: SlashCommand[]
   /** Open the resume picker so the chosen historical session REPLACES the
    *  given panel (not a new panel). `panelSessionId` is the slot to replace. */
@@ -33,6 +33,8 @@ export interface LocalCommandContext {
   /** Open the in-app help dialog, listing the given slash commands plus the
    *  global keyboard shortcuts. */
   showHelp: (commands: SlashCommand[]) => void
+  /** Clear this session's conversation context via the server control path. */
+  clearSession: (sessionId: string) => void
   // Future: clearInput, fork, etc.
 }
 
@@ -59,6 +61,12 @@ export const LOCAL_COMMANDS: LocalCommand[] = [
     name: 'help',
     description: 'Show available slash commands and keyboard shortcuts',
     run: (ctx) => ctx.showHelp(ctx.commands),
+  },
+  {
+    name: 'clear',
+    description: 'Clear conversation history and context',
+    aliases: ['reset', 'new'],
+    run: (ctx) => ctx.clearSession(ctx.sessionId),
   },
 ]
 

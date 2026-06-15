@@ -10,6 +10,9 @@ export type Toast = {
   message: string
   /** 0 = sticky, no auto-dismiss. Otherwise milliseconds before auto-clear. */
   durationMs: number
+  /** True while the toast is playing its exit animation. It remains in
+   *  the list briefly so CSS can animate out before the provider removes it. */
+  exiting?: boolean
   /** Optional click handler. When set, the toast becomes interactive:
    *  - If `actionLabel` is also provided, it renders as a separate action
    *    button between the message and the dismiss ✕.

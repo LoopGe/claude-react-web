@@ -14,7 +14,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 // --- SDK mock ---------------------------------------------------------------
-// Same shape as session-manager.test.ts but scoped here so the files can run
+// Same shape as session-manager.test.ts but scope here so the files can run
 // independently (vi.mock hoists and would conflict if shared).
 
 interface MockQueryHandle {

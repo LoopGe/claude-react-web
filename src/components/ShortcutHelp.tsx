@@ -42,13 +42,13 @@ export function ShortcutHelp({ open, onClose, shortcuts, commands = [] }: Props)
     return () => window.removeEventListener('keydown', onKey, true)
   }, [open, onClose])
 
-  if (!open) return null
-
   return (
     <div
       className="modal-backdrop"
+      data-state={open ? 'open' : 'closing'}
+      aria-hidden={!open}
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose()
+        if (open && e.target === e.currentTarget) onClose()
       }}
     >
       <div className="modal" style={{ maxWidth: 440 }}>

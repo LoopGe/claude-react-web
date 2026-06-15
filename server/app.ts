@@ -132,7 +132,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
     await next()
     const ms = Date.now() - start
     if (c.req.path !== '/api/health') {
-      // Route through the scoped logger (not bare console.log) so this — the
+      // Route through the scope logger (not bare console.log) so this — the
       // highest-volume log line — actually reaches the file sink when file
       // logging is enabled. Bare console.log bypasses writeToFile().
       httpLog.info(`[${c.req.method}] ${c.req.path} → ${c.res.status} (${ms}ms)`)

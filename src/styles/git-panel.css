@@ -11,7 +11,11 @@
   overflow-y: auto;
   /* (#1) Entrance — mounts conditionally, so the animation fires on mount.
      Reuses the same keyframes as the settings overlay for one motion. */
-  animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both;
+}
+.git-overlay[data-state="open"] { animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both; }
+.git-overlay[data-state="closing"] {
+  pointer-events: none;
+  animation: overlay-backdrop-out var(--motion-duration-base) var(--motion-ease-exit) both;
 }
 .git-overlay > .git-panel {
   width: min(520px, 100%);
@@ -24,8 +28,9 @@
   flex-direction: column;
   overflow-x: hidden;
   overflow-y: auto;
-  animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both;
 }
+.git-overlay[data-state="open"] > .git-panel { animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both; }
+.git-overlay[data-state="closing"] > .git-panel { animation: overlay-panel-out var(--motion-duration-base) var(--motion-ease-exit) both; }
 
 .git-panel-header {
   display: flex;

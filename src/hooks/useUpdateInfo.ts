@@ -28,7 +28,7 @@ interface UseUpdateInfo {
   error: string | null
   /** Force a fresh probe. With no argument, probes the registry the server
    *  has persisted (`?force=1`). Pass `registryOverride` to instead probe a
-   *  URL the user has typed but not yet saved (`?registry=<url>`) — used by
+   *  URL the user has type but not yet saved (`?registry=<url>`) — used by
    *  the setup wizard and the About tab's "Check now" so the result reflects
    *  the in-progress edit rather than the stale saved value. An empty string
    *  is a meaningful override ("test the disabled state"), distinct from
@@ -55,7 +55,7 @@ export function useUpdateInfo(enabled: boolean): UseUpdateInfo {
   const inFlightRef = useRef<{ force: boolean; controller: AbortController } | null>(null)
   // A force/override probe requested while the unforced mount probe was
   // still in flight. We remember the override value too (not just a bool)
-  // so the escalated follow-up probes the URL the user actually typed,
+  // so the escalated follow-up probes the URL the user actually type,
   // rather than collapsing to a plain `?force=1` against the saved value.
   const pendingForceRef = useRef<{ override?: string } | null>(null)
   const mountedRef = useRef(true)

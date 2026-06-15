@@ -18,6 +18,7 @@ import { randomId } from '../utils/uuid'
 /** Hard cap on simultaneously visible toasts. New ones evict the oldest
  *  so a tight loop of failures can't push the column past the viewport. */
 const MAX_TOASTS = 3
+const TOAST_EXIT_MS = 180
 
 /** Default lifetime for `error` / `success` / `info`. Uniform 8s so the
  *  progress bar reads the same across kinds; callers can still override
@@ -46,10 +47,33 @@ type TimerEntry = {
 
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
+  const toastsRef = useRef<Toast[]>([])
   // id → timer entry. Kept in a ref so `dismiss`/`show`/`pause`/`resume`
   // can manage timers without the effect re-running on every state
   // change. Cleared on unmount.
   const timersRef = useRef<Map<string, TimerEntry>>(new Map())
+  // id — final removal timeout after the exit animation has started. This
+  // keeps dismissed toasts mounted long enough for CSS to animate them out.
+  const removalTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+
+  const commitToasts = useCallback((next: Toast[]) => {
+    toastsRef.current = next
+    setToasts(next)
+  }, [])
+
+  const removeNow = useCallback((id: string) => {
+    const entry = timersRef.current.get(id)
+    if (entry) {
+      clearTimeout(entry.handle)
+      timersRef.current.delete(id)
+    }
+    const removal = removalTimersRef.current.get(id)
+    if (removal) {
+      clearTimeout(removal)
+      removalTimersRef.current.delete(id)
+    }
+    commitToasts(toastsRef.current.filter((t) => t.id !== id))
+  }, [commitToasts])
 
   const dismiss = useCallback((id: string) => {
     const entry = timersRef.current.get(id)
@@ -57,8 +81,15 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       clearTimeout(entry.handle)
       timersRef.current.delete(id)
     }
-    setToasts((prev) => prev.filter((t) => t.id !== id))
-  }, [])
+    if (removalTimersRef.current.has(id)) return
+
+    const hasToast = toastsRef.current.some((t) => t.id === id && !t.exiting)
+    if (!hasToast) return
+
+    commitToasts(toastsRef.current.map((t) => (t.id === id ? { ...t, exiting: true } : t)))
+    const removal = setTimeout(() => removeNow(id), TOAST_EXIT_MS)
+    removalTimersRef.current.set(id, removal)
+  }, [commitToasts, removeNow])
 
   const pause = useCallback((id: string) => {
     const entry = timersRef.current.get(id)
@@ -73,11 +104,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     const entry = timersRef.current.get(id)
     if (!entry || entry.startedAt !== null) return
     entry.startedAt = Date.now()
-    entry.handle = setTimeout(() => {
-      timersRef.current.delete(id)
-      setToasts((prev) => prev.filter((t) => t.id !== id))
-    }, entry.remaining)
-  }, [])
+    entry.handle = setTimeout(() => dismiss(id), entry.remaining)
+  }, [dismiss])
 
   const show = useCallback(
     (kind: ToastKind, message: string, opts?: PushOptions): string => {
@@ -85,42 +113,45 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       const durationMs = opts?.durationMs ?? DEFAULT_DURATIONS[kind]
       const onClick = opts?.onClick
       const actionLabel = opts?.actionLabel
-      setToasts((prev) => {
-        const next = [
-          ...prev,
-          { id, kind, message, durationMs, onClick, actionLabel },
-        ]
-        // Evict from the front so the most recent toasts stay visible.
-        // Evicted ids also need their timers cleared.
-        while (next.length > MAX_TOASTS) {
-          const dropped = next.shift()!
-          const entry = timersRef.current.get(dropped.id)
-          if (entry) {
-            clearTimeout(entry.handle)
-            timersRef.current.delete(dropped.id)
-          }
+      const active = toastsRef.current.filter((t) => !t.exiting)
+      const overflow = Math.max(0, active.length + 1 - MAX_TOASTS)
+      const evictedIds = new Set(active.slice(0, overflow).map((t) => t.id))
+      for (const droppedId of evictedIds) {
+        const entry = timersRef.current.get(droppedId)
+        if (entry) {
+          clearTimeout(entry.handle)
+          timersRef.current.delete(droppedId)
         }
-        return next
-      })
+      }
+      commitToasts([
+        ...toastsRef.current.map((t) => (evictedIds.has(t.id) ? { ...t, exiting: true } : t)),
+        { id, kind, message, durationMs, onClick, actionLabel },
+      ])
+      for (const droppedId of evictedIds) {
+        if (removalTimersRef.current.has(droppedId)) continue
+        const removal = setTimeout(() => removeNow(droppedId), TOAST_EXIT_MS)
+        removalTimersRef.current.set(droppedId, removal)
+      }
       if (durationMs > 0) {
-        const handle = setTimeout(() => {
-          timersRef.current.delete(id)
-          setToasts((prev) => prev.filter((t) => t.id !== id))
-        }, durationMs)
+        const handle = setTimeout(() => dismiss(id), durationMs)
         timersRef.current.set(id, { handle, startedAt: Date.now(), remaining: durationMs })
       }
       return id
     },
-    [],
+    [commitToasts, dismiss, removeNow],
   )
 
   // Clear pending timers on unmount so they can't setState on an
   // unmounted provider (StrictMode double-mount also benefits).
   useEffect(() => {
     const timers = timersRef.current
+    const removalTimers = removalTimersRef.current
     return () => {
       for (const e of timers.values()) clearTimeout(e.handle)
       timers.clear()
+      toastsRef.current = []
+      for (const removal of removalTimers.values()) clearTimeout(removal)
+      removalTimers.clear()
     }
   }, [])
 

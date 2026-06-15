@@ -16,6 +16,8 @@ import { buildHealthRouter } from './health-routes.js'
 import { buildMpRouter } from './mp-marketplace.js'
 import { buildGitWriteRouter } from './git-write.js'
 import { buildUpdateRouter } from './update-routes.js'
+import { buildSearchRouter } from './search.js'
+import { buildSkillsRouter } from './skills.js'
 
 /** Parse JSON body, returning 400 on malformed input instead of silently
  *  falling back to an empty object. */
@@ -45,17 +47,19 @@ export function buildApiRouter(
   app.route('/', buildHealthRouter(claudeBinary))
   app.route('/', buildConfigRouter(sm, configDir))
   app.route('/', buildSessionRouter(sm, mpStore))
+  app.route('/', buildSkillsRouter(sm))
   app.route('/', buildUploadRouter(sm))
   app.route('/', buildPermissionRouter(sm))
   app.route('/', buildRecapRouter(sm))
+  app.route('/', buildSearchRouter(sm))
   // Homegrown git-repo marketplace lives under /mp/*. Only mounted when an
-  // MpStore was provided — other buildApp callers (tests, standalone
+  // MpStore was provided ? other buildApp callers (tests, standalone
   // tooling) skip it cleanly.
   if (mpStore) {
     app.route('/', buildMpRouter(sm, mpStore))
   }
   app.route('/', buildGitWriteRouter(sm))
-  // Update checker — exposes GET /update-info for the in-app upgrade
+  // Update checker ? exposes GET /update-info for the in-app upgrade
   // prompt. Stateless, so no SessionManager or store dependency.
   app.route('/', buildUpdateRouter())
 

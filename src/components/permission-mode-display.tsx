@@ -27,8 +27,8 @@ export function permissionModeLabel(mode: PermissionMode | undefined): string {
   return mode ? (PERMISSION_MODE_LABELS[mode] ?? mode) : 'Default (ask)'
 }
 
-/** Small SVG glyph for a permission mode. Returns null for the default
- *  mode (no badge shown). `size` defaults to 13 to suit inline badges. */
+/** Small SVG glyph for a permission mode. Default renders a neutral shield;
+ *  unknown modes return null. `size` defaults to 13 to suit inline badges. */
 export function PermissionModeIcon({
   mode,
   size = 13,

@@ -8,6 +8,7 @@ import { shortenPath } from '../../utils/paths'
 import { AccentPicker } from '../AccentPicker'
 import type { McpServerConfigMeta, NewSessionForm, PermissionMode, SessionGroup } from '../../types'
 import { PERMISSION_MODES } from '../../types'
+import { useExitPresence } from '../../hooks/useExitPresence'
 
 // McpInstaller is only opened when the user clicks "Add MCP" from inside
 // this dialog. Lazy-load to keep NewSessionDialog itself lean.
@@ -18,6 +19,7 @@ import { ONE_M_CONTEXT_BETA } from '../../constants/contextSteps'
 import { RECENT_MODELS_KEY, RECENT_MODELS_CAP_KEY, RECENT_MODELS_CAP_DEFAULT, RECENT_CWDS_KEY, RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT } from '../../constants/recentKeys'
 
 export interface NewSessionDialogProps {
+  open?: boolean
   defaults: { cwd?: string; model?: string }
   /** Overrides defaults.cwd when set. Used by the drag-to-new-session
    *  shortcut, which wants to prefill with the dropped folder rather
@@ -37,7 +39,7 @@ export interface NewSessionDialogProps {
   maxOpen: number
 }
 
-export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, activeGroupId, groups, serverModels, maxOpen }: NewSessionDialogProps) {
+export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, onCancel, activeGroupId, groups, serverModels, maxOpen }: NewSessionDialogProps) {
   const [cwd, setCwd] = useState<string>(initialCwd ?? defaults.cwd ?? '')
   const [model, setModel] = useState<string>(defaults.model ?? '')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
@@ -49,6 +51,7 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
   const [accent, setAccent] = useState<string | undefined>(undefined)
   const [groupId, setGroupId] = useState<string>(activeGroupId ?? '')
   const [showPicker, setShowPicker] = useState(false)
+  const pickerPresence = useExitPresence(showPicker)
   // Guards against double-submit: the parent unmounts this dialog on
   // success, but a slow create call would otherwise let an impatient
   // user click "Create" twice and spawn duplicate sessions.
@@ -75,6 +78,7 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
   const [enabledMcpServers, setEnabledMcpServers] = useState<Set<string>>(new Set())
   const [showMcpInstaller, setShowMcpInstaller] = useState(false)
   const [mcpInstallerEdit, setMcpInstallerEdit] = useState<McpServerConfigMeta | undefined>(undefined)
+  const mcpInstallerPresence = useExitPresence(showMcpInstaller)
 
   const [recentModels, setRecentModels] = useLocalStorage<string[]>(RECENT_MODELS_KEY, [])
   const [recentCwds, setRecentCwds] = useLocalStorage<string[]>(RECENT_CWDS_KEY, [])
@@ -198,11 +202,11 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
   // with one keypress.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !showPicker) onCancel()
+      if (open && e.key === 'Escape' && !showPicker) onCancel()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onCancel, showPicker])
+  }, [onCancel, open, showPicker])
 
   // Trap Tab focus inside the dialog and restore focus to the trigger on
   // close, matching PermissionDialog / QuestionDialog behaviour.
@@ -254,9 +258,11 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
     <>
       <div
         className="modal-backdrop"
+        data-state={open ? 'open' : 'closing'}
         role="dialog"
-        aria-modal="true"
-        onMouseDown={(e) => e.target === e.currentTarget && onCancel()}
+        aria-modal={open ? 'true' : 'false'}
+        aria-hidden={!open}
+        onMouseDown={(e) => open && e.target === e.currentTarget && onCancel()}
       >
         <div className="modal modal-new-session" ref={dialogRef}>
           <div className="modal-header">
@@ -672,8 +678,9 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
         </div>
       </div>
 
-      {showPicker && (
+      {pickerPresence.shouldRender && (
         <DirectoryPicker
+          open={showPicker}
           initialPath={cwd || defaults.cwd}
           onPick={(p) => {
             setCwd(p)
@@ -683,9 +690,10 @@ export function NewSessionDialog({ defaults, initialCwd, onSubmit, onCancel, act
         />
       )}
 
-      {showMcpInstaller && (
+      {mcpInstallerPresence.shouldRender && (
         <Suspense fallback={null}>
           <McpInstaller
+            open={showMcpInstaller}
             server={mcpInstallerEdit}
             onSave={handleMcpInstallerSave}
             onClose={() => { setShowMcpInstaller(false); setMcpInstallerEdit(undefined) }}

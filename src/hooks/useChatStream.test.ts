@@ -241,7 +241,7 @@ describe('useChatStream', () => {
     })
   })
 
-  it('surfaces session-scoped errors', () => {
+  it('surfaces session-scope errors', () => {
     const { result } = renderHook(
       () => useChatStream('s1', noopPerms),
     )

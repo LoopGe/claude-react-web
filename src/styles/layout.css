@@ -466,7 +466,11 @@ body.resizing-col * {
   z-index: 1000;
   user-select: none;
   transform-origin: top left;
-  animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both;
+}
+.effort-slider[data-state="open"] { animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both; }
+.effort-slider[data-state="closing"] {
+  pointer-events: none;
+  animation: ctx-menu-out var(--motion-duration-fast) var(--motion-ease-exit) both;
 }
 .effort-slider-head {
   display: flex;
@@ -701,8 +705,13 @@ body.resizing-col * {
    The overlay is always mounted and toggled via `.hidden` (display:none),
    so the animation replays each time it's revealed. Shared by the git
    overlay (mounted conditionally) below via .overlay-enter-* keyframes. */
-.settings-overlay:not(.hidden) { animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both; }
-.settings-overlay:not(.hidden) > .settings-panel { animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both; }
+.settings-overlay[data-state="open"] { animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both; }
+.settings-overlay[data-state="open"] > .settings-panel { animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both; }
+.settings-overlay[data-state="closing"] {
+  pointer-events: none;
+  animation: overlay-backdrop-out var(--motion-duration-base) var(--motion-ease-exit) both;
+}
+.settings-overlay[data-state="closing"] > .settings-panel { animation: overlay-panel-out var(--motion-duration-base) var(--motion-ease-exit) both; }
 .settings-overlay > .settings-panel {
   width: min(420px, 100%);
   max-height: 100%;
@@ -715,28 +724,34 @@ body.resizing-col * {
   from { opacity: 0; }
   to   { opacity: 1; }
 }
+@keyframes overlay-backdrop-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
 @keyframes overlay-panel-in {
   from { opacity: 0; transform: scale(var(--motion-scale-enter)) translateY(var(--motion-distance-md)); }
   to   { opacity: 1; transform: scale(1) translateY(0); }
 }
+@keyframes overlay-panel-out {
+  from { opacity: 1; transform: scale(1) translateY(0); }
+  to   { opacity: 0; transform: scale(var(--motion-scale-enter)) translateY(var(--motion-distance-sm)); }
+}
 
-/* Sidebar mode marker: same size/spacing as the pin so it lines up
-   with other inline title icons. The tinted left border on the
-   card itself is the more prominent cue — see .session-item.mode-active. */
+/* Sidebar mode marker: always rendered so permission modes keep identical
+   title spacing. Default uses a muted icon; non-default modes tint via
+   --mode-color for quick scanning without changing the card silhouette. */
 .session-item-mode-badge {
   margin-right: 4px;
   font-size: 11px;
   vertical-align: middle;
+  color: var(--mode-color, var(--fg-muted));
 }
-/* mode-active stripe removed from session cards — the ⚡ badge is enough */
+.session-item.mode-default { --mode-color: var(--fg-muted); }
 .session-item.mode-plan { --mode-color: var(--warn); }
 .session-item.mode-bypassPermissions { --mode-color: var(--danger); }
 .session-item.mode-dontAsk { --mode-color: var(--danger); }
 .session-item.mode-acceptEdits { --mode-color: var(--accent); }
 .session-item.mode-auto { --mode-color: var(--accent); }
-.session-item.mode-active.focused {
-  box-shadow: 0 0 0 1px var(--accent) inset;
-}
 .chat-panel-body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
 .empty-state {
   margin: auto;
@@ -755,6 +770,7 @@ body.resizing-col * {
   border: 1px solid var(--border-subtle, var(--border));
   border-radius: 18px;
   box-shadow: var(--card-shadow);
+  animation: app-empty-state-in var(--motion-duration-moderate) var(--motion-ease-enter) both;
 }
 .app-empty-state h2 {
   margin: 0;
@@ -819,15 +835,62 @@ body.resizing-col * {
   /* See `.app` height comment — 100vh fallback for Safari < 15.4. */
   height: 100vh;
   height: 100dvh;
+  padding: 24px;
   background: var(--bg);
 }
+.app-loading-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: min(340px, calc(100vw - 48px));
+  padding: 14px 16px;
+  background: color-mix(in srgb, var(--bg-elev) 82%, transparent);
+  background-image: var(--surface-gradient);
+  border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
+  border-radius: 14px;
+  box-shadow: var(--card-shadow);
+  animation: app-loading-card-in var(--motion-duration-moderate) var(--motion-ease-enter) both;
+}
+.app-loading-dot {
+  width: 12px;
+  height: 12px;
+}
+.app-loading-copy {
+  min-width: 0;
+}
+.app-loading-title {
+  margin: 0;
+  color: var(--fg);
+  font-size: 14px;
+  font-weight: 700;
+}
+.app-loading-subtitle {
+  margin: 2px 0 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
 .app-loading-spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid var(--border);
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--border);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: msg-sending-spin 0.8s linear infinite;
+}
+@keyframes app-loading-card-in {
+  from { opacity: 0; transform: translateY(var(--motion-distance-md)) scale(var(--motion-scale-enter)); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes app-empty-state-in {
+  from { opacity: 0; transform: translateY(var(--motion-distance-lg)) scale(var(--motion-scale-enter)); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-loading-card,
+  .app-empty-state {
+    animation: none;
+  }
 }
 
 /* Inline fallback for lazy-loaded tab/panel content (e.g. Marketplace

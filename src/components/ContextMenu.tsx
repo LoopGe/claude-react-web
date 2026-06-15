@@ -29,9 +29,10 @@ interface Props {
   y: number
   items: ContextMenuItem[]
   onClose: () => void
+  isExiting?: boolean
 }
 
-export const ContextMenu = memo(function ContextMenu({ x, y, items, onClose }: Props) {
+export const ContextMenu = memo(function ContextMenu({ x, y, items, onClose, isExiting = false }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   // Measured position after layout — nudged inward if the menu would
   // otherwise overflow the viewport.
@@ -72,8 +73,10 @@ export const ContextMenu = memo(function ContextMenu({ x, y, items, onClose }: P
     <div
       ref={ref}
       className="ctx-menu"
+      data-state={isExiting ? 'closing' : 'open'}
       style={{ left: pos.x, top: pos.y }}
       role="menu"
+      aria-hidden={isExiting}
       // Stop mousedown so the outside-click listener above (which is on
       // window) doesn't fire when the user clicks the menu itself.
       onMouseDown={(e) => e.stopPropagation()}

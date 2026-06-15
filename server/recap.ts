@@ -256,7 +256,7 @@ async function callAnthropic(transcript: string, language: string | null): Promi
  *  busy session, dormant session, missing auth) are handled inside.
  *
  *  Why a class rather than module-level state: the previous file used
- *  module-scoped Maps for cache + inflight, which made per-instance
+ *  module-scope Maps for cache + inflight, which made per-instance
  *  isolation in tests painful and tied recap lifetime to the process
  *  rather than the SessionManager that owns it. */
 export class RecapManager {

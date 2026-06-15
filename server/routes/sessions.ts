@@ -5,6 +5,7 @@ import type { Options, PermissionMode, Settings } from '@anthropic-ai/claude-age
 import { SessionManager } from '../session-manager.js'
 import { safeJson } from './index.js'
 import type { MpStore } from '../mp-store.js'
+import { isUserSelectablePermissionMode, permissionModeList } from '../permission-modes.js'
 
 const VALID_IMG_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
 
@@ -57,6 +58,9 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     if (enabledErr) return c.json({ error: enabledErr }, 400)
     const envErr = validateEnv(customEnv)
     if (envErr) return c.json({ error: envErr }, 400)
+    if (rest.permissionMode != null && !isUserSelectablePermissionMode(rest.permissionMode)) {
+      return c.json({ error: `permissionMode must be one of ${permissionModeList()}` }, 400)
+    }
     const mergedMcp = await sm.mergeMcpServersAsync(enabledMcpServers, mcpServers)
     if (mergedMcp) rest.mcpServers = mergedMcp
     const info = sm.create(rest as Options & { provider?: string }, customEnv as Record<string, string> | undefined)
@@ -66,7 +70,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   // List sessions resumable from disk (the /resume picker). Scans
   // ~/.claude/projects/ via the SDK, including CLI-created sessions this
   // app never tracked. Registered BEFORE /sessions/:id so "resumable" is
-  // not captured as an :id param. Optional ?dir scopes to a project dir.
+  // not captured as an :id param. Optional ddir scopes to a project dir.
   app.get('/sessions/resumable', async (c) => {
     const dir = c.req.query('dir') || undefined
     const sessions = await sm.listResumable({ dir })
@@ -88,7 +92,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   // Patch session metadata (title).
   app.patch('/sessions/:id', async (c) => {
     const id = c.req.param('id')
-    const body = await safeJson<{ title?: string }>(c.req)
+    const body = await safeJson<{ title: string }>(c.req)
     if (typeof body.title !== 'string') return c.json({ error: 'title is required' }, 400)
     const info = sm.rename(id, body.title)
     return c.json({ session: info })
@@ -110,7 +114,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   app.post('/sessions/:id/messages', async (c) => {
     const id = c.req.param('id')
     const body = await safeJson<{ text?: string; content?: unknown[] }>(c.req)
-    let accepted: { uuid?: string; receivedAt?: number }
+    let accepted: { uuid: string; receivedAt: number }
 
     if (Array.isArray(body.content) && body.content.length > 0) {
       let totalBase64 = 0
@@ -133,12 +137,12 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
         return c.json({ error: 'total image payload too large' }, 413)
       }
       console.log(`[http] POST /sessions/${id}/messages — content array with ${body.content.length} blocks`)
-      accepted = sm.sendContent(id, body.content as Array<{ type: string; [k: string]: unknown }>) as { uuid?: string; receivedAt?: number }
+      accepted = sm.sendContent(id, body.content as Array<{ type: string; [k: string]: unknown }>) as unknown as { uuid: string; receivedAt: number }
     } else {
       const text = typeof body.text === 'string' ? body.text : ''
       if (!text.trim()) return c.json({ error: 'text is required' }, 400)
       console.log(`[http] POST /sessions/${id}/messages — ${text.length} chars`)
-      accepted = sm.send(id, text) as { uuid?: string; receivedAt?: number }
+      accepted = sm.send(id, text) as unknown as { uuid: string; receivedAt: number }
     }
     return c.json({ ok: true, message: { uuid: accepted.uuid, receivedAt: accepted.receivedAt } })
   })
@@ -170,9 +174,15 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     return c.json({ ok: true })
   })
 
+  // Clear conversation context without rendering `/clear` as a user bubble.
+  app.post('/sessions/:id/clear', async (c) => {
+    const session = await sm.clear(c.req.param('id'))
+    return c.json({ ok: true, session })
+  })
+
   // Change model
   app.post('/sessions/:id/model', async (c) => {
-    const body = await safeJson<{ model?: string }>(c.req)
+    const body = await safeJson<{ model: string }>(c.req)
     const info = await sm.setModel(c.req.param('id'), body.model)
     return c.json({ session: info })
   })
@@ -181,6 +191,9 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   app.post('/sessions/:id/permission-mode', async (c) => {
     const body = await safeJson<{ mode?: PermissionMode }>(c.req)
     if (!body.mode) return c.json({ error: 'mode is required' }, 400)
+    if (!isUserSelectablePermissionMode(body.mode)) {
+      return c.json({ error: `mode must be one of ${permissionModeList()}` }, 400)
+    }
     const info = await sm.setPermissionMode(c.req.param('id'), body.mode)
     return c.json({ session: info })
   })
@@ -196,7 +209,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   // the SDK via applyFlagSettings; the SDK reports the real runtime state back
   // through messages (parsed by the pump into session.fastModeState).
   app.post('/sessions/:id/fast-mode', async (c) => {
-    const body = await safeJson<{ enabled?: boolean }>(c.req)
+    const body = await safeJson<{ enabled: boolean }>(c.req)
     const info = await sm.setFastMode(c.req.param('id'), body.enabled === true)
     return c.json({ session: info })
   })
@@ -231,12 +244,12 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   // nor label produces an invisible row that looks like a layout bug.
   app.get('/sessions/:id/models', async (c) => {
     type SdkModelInfo = {
-      value?: string
-      displayName?: string
-      description?: string
-      supportsFastMode?: boolean
-      supportsEffort?: boolean
-      supportedEffortLevels?: ('low' | 'medium' | 'high' | 'xhigh' | 'max')[]
+      value: string
+      displayName: string
+      description: string
+      supportsFastMode: boolean
+      supportsEffort: boolean
+      supportedEffortLevels: ('low' | 'medium' | 'high' | 'xhigh' | 'max')[]
     }
     const raw = (await sm.supportedModels(c.req.param('id'))) as unknown as SdkModelInfo[]
     const models = raw
@@ -278,7 +291,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
 
   // Enable or disable an MCP server
   app.post('/sessions/:id/mcp/:name/toggle', async (c) => {
-    const body = await safeJson<{ enabled?: boolean }>(c.req)
+    const body = await safeJson<{ enabled: boolean }>(c.req)
     if (typeof body.enabled !== 'boolean') return c.json({ error: 'enabled (boolean) is required' }, 400)
     await sm.toggleMcpServer(c.req.param('id'), c.req.param('name'), body.enabled)
     return c.json({ ok: true })
@@ -295,7 +308,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   // (see MpStore.keyOf). When an MpStore is available we resolve the bare
   // URL-segment name to that format so the control_request actually matches.
   app.post('/sessions/:id/plugins/:name/toggle', async (c) => {
-    const body = await safeJson<{ enabled?: boolean }>(c.req)
+    const body = await safeJson<{ enabled: boolean }>(c.req)
     if (typeof body.enabled !== 'boolean') return c.json({ error: 'enabled (boolean) is required' }, 400)
     const bare = c.req.param('name')
     const pluginKey = mpStore?.resolveCompoundKey(bare) ?? bare

@@ -18,6 +18,7 @@ import { ContextMenu } from './ContextMenu'
 import { IconX, IconChevronRight, IconChevronDown, IconSquare, IconPencil, IconTrash, IconSearch } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
 import { Virtuoso } from 'react-virtuoso'
+import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
 
 interface Props {
   sessions: SessionInfo[]
@@ -146,6 +147,7 @@ export const SessionList = memo(function SessionList({
 }: Props) {
   const [uncontrolledShow, setUncontrolledShow] = useState(false)
   const showDialog = newSessionDialogOpen ?? uncontrolledShow
+  const newSessionPresence = useExitPresence(showDialog)
   const setShowDialog = (v: boolean) => {
     if (onNewSessionDialogChange) onNewSessionDialogChange(v)
     else setUncontrolledShow(v)
@@ -201,6 +203,8 @@ export const SessionList = memo(function SessionList({
   const [confirmBusy, setConfirmBusy] = useState(false)
   const [promptState, setPromptState] = useState<PromptState | null>(null)
   const [promptBusy, setPromptBusy] = useState(false)
+  const confirmPresence = usePresenceValue(confirmState)
+  const promptPresence = usePresenceValue(promptState)
   /** Pending group pill context menu target — the group id whose
    *  right-click context menu should open. Null when menu is closed. */
   const [groupMenuTarget, setGroupMenuTarget] = useState<string | null>(null)
@@ -245,6 +249,37 @@ export const SessionList = memo(function SessionList({
     }
     return result
   }, [sidebarSections, filter])
+
+  /** Capture the current sidebar card positions and return a function that
+   *  animates any moved cards after React applies a reorder. This is the
+   *  classic FLIP pattern, scope to explicit Move up/down actions so normal
+   *  drag/drop keeps its existing direct feel. */
+  const prepareMoveAnimation = useCallback(() => {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return () => {}
+    const before = new Map<string, DOMRect>()
+    for (const el of document.querySelectorAll<HTMLElement>('[data-session-card-id]')) {
+      before.set(el.dataset.sessionCardId ?? '', el.getBoundingClientRect())
+    }
+    return () => {
+      window.requestAnimationFrame(() => {
+        for (const el of document.querySelectorAll<HTMLElement>('[data-session-card-id]')) {
+          const id = el.dataset.sessionCardId ?? ''
+          const prev = before.get(id)
+          if (!prev) continue
+          const next = el.getBoundingClientRect()
+          const deltaY = prev.top - next.top
+          if (Math.abs(deltaY) < 1) continue
+          el.animate(
+            [
+              { transform: `translateY(${deltaY}px)` },
+              { transform: 'translateY(0)' },
+            ],
+            { duration: 180, easing: 'cubic-bezier(.2,.8,.2,1)' },
+          )
+        }
+      })
+    }
+  }, [])
 
   // Auto-focus the new-group name input when it appears.
   useEffect(() => {
@@ -387,7 +422,7 @@ export const SessionList = memo(function SessionList({
   const renderCard = useCallback((s: SessionInfo, containerGroupId?: string) => {
     const isDeleting = deletingIds?.has(s.id) ?? false
     return (
-      <div key={s.id} className={`session-item-shell${isDeleting ? ' deleting' : ''}`}>
+      <div key={s.id} className={`session-item-shell${isDeleting ? ' deleting' : ''}`} data-session-card-id={s.id}>
         <SessionCard
           session={s}
           slotIdx={openIdSlotMap.get(s.id) ?? -1}
@@ -455,17 +490,21 @@ export const SessionList = memo(function SessionList({
       if (idx < 0) return
       if (direction === 'up') {
         if (idx === 0) return
+        const animateMove = prepareMoveAnimation()
         const target = sib.list[idx - 1]
         if (sib.groupId && onReorderInGroup) onReorderInGroup(id, target.id, 'before', sib.groupId)
         else onReorder?.(id, target.id, 'before')
+        animateMove()
       } else {
         if (idx >= sib.list.length - 1) return
+        const animateMove = prepareMoveAnimation()
         const target = sib.list[idx + 1]
         if (sib.groupId && onReorderInGroup) onReorderInGroup(id, target.id, 'after', sib.groupId)
         else onReorder?.(id, target.id, 'after')
+        animateMove()
       }
     },
-    [resolveSiblings, onReorder, onReorderInGroup],
+    [resolveSiblings, onReorder, onReorderInGroup, prepareMoveAnimation],
   )
 
   /** Determine whether a group's sessions currently occupy the main-area
@@ -788,8 +827,9 @@ export const SessionList = memo(function SessionList({
         />
       )}
 
-      {showDialog && (
+      {newSessionPresence.shouldRender && (
         <NewSessionDialog
+          open={showDialog}
           defaults={defaults}
           serverModels={serverModels}
           initialCwd={prefilledCwd}
@@ -863,41 +903,51 @@ export const SessionList = memo(function SessionList({
       })()}
 
       {/* Confirm dialog (replaces window.confirm) */}
-      {confirmState && (
-        <ConfirmDialog
-          title={confirmState.title}
-          message={confirmState.message}
-          confirmLabel={confirmState.confirmLabel}
-          destructive={confirmState.destructive}
-          busy={confirmBusy}
-          onConfirm={confirmState.onConfirm}
-          onCancel={() => { if (!confirmBusy) setConfirmState(null) }}
-        />
-      )}
+      {(() => {
+        const confirmDialog = confirmPresence.value
+        if (!confirmDialog) return null
+        return (
+          <ConfirmDialog
+            open={confirmState != null}
+            title={confirmDialog.title}
+            message={confirmDialog.message}
+            confirmLabel={confirmDialog.confirmLabel}
+            destructive={confirmDialog.destructive}
+            busy={confirmBusy}
+            onConfirm={confirmDialog.onConfirm}
+            onCancel={() => { if (!confirmBusy) setConfirmState(null) }}
+          />
+        )
+      })()}
 
       {/* Prompt dialog (replaces window.prompt for group rename) */}
-      {promptState && (
-        <PromptDialog
-          title={promptState.title}
-          message={promptState.message}
-          defaultValue={promptState.defaultValue}
-          confirmLabel={promptState.confirmLabel}
-          placeholder={promptState.placeholder}
-          busy={promptBusy}
-          onConfirm={(value) => {
-            void (async () => {
-              setPromptBusy(true)
-              try {
-                await promptState.onConfirm(value)
-              } finally {
-                setPromptBusy(false)
-                setPromptState(null)
-              }
-            })()
-          }}
-          onCancel={() => { if (!promptBusy) setPromptState(null) }}
-        />
-      )}
+      {(() => {
+        const promptDialog = promptPresence.value
+        if (!promptDialog) return null
+        return (
+          <PromptDialog
+            open={promptState != null}
+            title={promptDialog.title}
+            message={promptDialog.message}
+            defaultValue={promptDialog.defaultValue}
+            confirmLabel={promptDialog.confirmLabel}
+            placeholder={promptDialog.placeholder}
+            busy={promptBusy}
+            onConfirm={(value) => {
+              void (async () => {
+                setPromptBusy(true)
+                try {
+                  await promptDialog.onConfirm(value)
+                } finally {
+                  setPromptBusy(false)
+                  setPromptState(null)
+                }
+              })()
+            }}
+            onCancel={() => { if (!promptBusy) setPromptState(null) }}
+          />
+        )
+      })()}
     </>
   )
 })

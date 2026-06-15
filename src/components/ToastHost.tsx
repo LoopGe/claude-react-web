@@ -49,16 +49,19 @@ export function ToastHost() {
         return (
           <div
             key={t.id}
-            className={`toast toast-${t.kind}${interactive ? ' toast-interactive' : ''}`}
-            // Errors are assertive so screen readers read them immediately;
-            // success/info are polite and queue behind any in-flight read.
-            role={t.kind === 'error' ? 'alert' : 'status'}
-            aria-live={t.kind === 'error' ? 'assertive' : 'polite'}
-            // Hover pauses the auto-dismiss countdown so users get time to
-            // read; the CSS progress bar pauses in lockstep via :hover.
-            onMouseEnter={() => pause(t.id)}
-            onMouseLeave={() => resume(t.id)}
+            className={`toast-shell${t.exiting ? ' toast-shell-exiting' : ''}`}
           >
+            <div
+              className={`toast toast-${t.kind}${interactive ? ' toast-interactive' : ''}${t.exiting ? ' toast-exiting' : ''}`}
+              // Errors are assertive so screen readers read them immediately;
+              // success/info are polite and queue behind any in-flight read.
+              role={t.kind === 'error' ? 'alert' : 'status'}
+              aria-live={t.kind === 'error' ? 'assertive' : 'polite'}
+              // Hover pauses the auto-dismiss countdown so users get time to
+              // read; the CSS progress bar pauses in lockstep via :hover.
+              onMouseEnter={() => { if (!t.exiting) pause(t.id) }}
+              onMouseLeave={() => { if (!t.exiting) resume(t.id) }}
+            >
             <span className="toast-icon" aria-hidden="true">
               {KIND_ICON[t.kind]}
             </span>
@@ -69,6 +72,7 @@ export function ToastHost() {
                 type="button"
                 className="toast-message toast-message-button"
                 onClick={handleAction}
+                disabled={t.exiting}
               >
                 {t.message}
               </button>
@@ -80,6 +84,7 @@ export function ToastHost() {
                 type="button"
                 className="toast-action"
                 onClick={handleAction}
+                disabled={t.exiting}
               >
                 {t.actionLabel}
               </button>
@@ -89,6 +94,7 @@ export function ToastHost() {
               className="toast-dismiss"
               onClick={() => dismiss(t.id)}
               aria-label={`Dismiss ${KIND_LABEL[t.kind]}`}
+              disabled={t.exiting}
             >
               <IconX size={12} />
             </button>
@@ -102,6 +108,7 @@ export function ToastHost() {
                 aria-hidden="true"
               />
             )}
+          </div>
           </div>
         )
       })}

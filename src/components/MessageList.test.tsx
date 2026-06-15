@@ -13,36 +13,101 @@ vi.stubGlobal(
   },
 )
 
-// Stub scrollIntoView — used by some sub-components.
+// Stub scrollIntoView / scrollTo - used by virtualized scrolling paths.
 Element.prototype.scrollIntoView = vi.fn()
+Element.prototype.scrollTo = vi.fn(function (this: Element, xOrOptions?: ScrollToOptions | number, y?: number) {
+  const top = typeof xOrOptions === 'number' ? y : xOrOptions?.top
+  if (typeof top === 'number') {
+    Object.defineProperty(this, 'scrollTop', {
+      configurable: true,
+      value: top,
+      writable: true,
+    })
+  }
+})
 
-// Mock Virtuoso to render all items directly — Virtuoso needs real
+const virtuosoMockState = vi.hoisted(() => ({
+  atBottomReport: undefined as boolean | undefined,
+  reportBeforeRef: false,
+  scrollHeight: 0,
+  clientHeight: 0,
+  scrollTop: 0,
+  streamingSpacerHeight: 0,
+}))
+
+// Mock Virtuoso to render all items directly - Virtuoso needs real
 // DOM dimensions to compute which items are visible, which jsdom
 // doesn't provide. This mock renders the full list so we can test
 // message filtering and rendering logic.
-vi.mock('react-virtuoso', () => ({
-  Virtuoso: ({
-    data,
-    itemContent,
-    firstItemIndex = 0,
-    components,
-  }: {
-    data: unknown[]
-    itemContent: (index: number, item: unknown) => React.ReactNode
-    firstItemIndex?: number
-    components?: { Footer?: React.ComponentType }
-  }) => (
-    <div data-testid="virtuoso-mock">
-      <div data-testid="virtuoso-item-list">
-        {data.map((item, i) => (
-          <div key={i}>{itemContent(i + firstItemIndex, item)}</div>
-        ))}
-      </div>
-      {components?.Footer && <components.Footer />}
-    </div>
-  ),
-}))
+vi.mock('react-virtuoso', async () => {
+  const React = await vi.importActual<typeof import('react')>('react')
+  return {
+    Virtuoso: ({
+      data,
+      itemContent,
+      firstItemIndex = 0,
+      components,
+      scrollerRef,
+      atBottomStateChange,
+    }: {
+      data: unknown[]
+      itemContent: (index: number, item: unknown) => React.ReactNode
+      firstItemIndex?: number
+      components?: { Footer?: React.ComponentType }
+      scrollerRef?: (ref: HTMLElement | Window | null) => void
+      atBottomStateChange?: (atBottom: boolean) => void
+    }) => {
+      const mockScrollerRef = React.useRef<HTMLDivElement | null>(null)
 
+      React.useLayoutEffect(() => {
+        const el = mockScrollerRef.current
+        if (!el) return
+        Object.defineProperties(el, {
+          scrollHeight: { configurable: true, get: () => virtuosoMockState.scrollHeight },
+          clientHeight: { configurable: true, get: () => virtuosoMockState.clientHeight },
+          scrollTop: {
+            configurable: true,
+            get: () => virtuosoMockState.scrollTop,
+            set: (value: number) => { virtuosoMockState.scrollTop = value },
+          },
+        })
+        const spacer = el.querySelector<HTMLElement>('.virtuoso-streaming-spacer')
+        if (spacer) {
+          Object.defineProperty(spacer, 'getBoundingClientRect', {
+            configurable: true,
+            value: () => ({ height: virtuosoMockState.streamingSpacerHeight }),
+          })
+        }
+        if (virtuosoMockState.reportBeforeRef && virtuosoMockState.atBottomReport != null) {
+          atBottomStateChange?.(virtuosoMockState.atBottomReport)
+        }
+        scrollerRef?.(el)
+        if (!virtuosoMockState.reportBeforeRef && virtuosoMockState.atBottomReport != null) {
+          atBottomStateChange?.(virtuosoMockState.atBottomReport)
+        }
+        return () => scrollerRef?.(null)
+      }, [atBottomStateChange, scrollerRef])
+
+      return (
+        <div ref={mockScrollerRef} data-testid="virtuoso-mock">
+          <div data-testid="virtuoso-item-list">
+            {data.map((item, i) => (
+              <div key={i}>{itemContent(i + firstItemIndex, item)}</div>
+            ))}
+          </div>
+          {virtuosoMockState.streamingSpacerHeight > 0 && (
+            <div
+              className="virtuoso-streaming-spacer"
+              style={{ height: virtuosoMockState.streamingSpacerHeight }}
+              aria-hidden
+            />
+          )}
+          {components?.Footer && <components.Footer />}
+        </div>
+      )
+    },
+  }
+})
 // Import AFTER mock.
 import { MessageList } from './MessageList'
 import { SubagentProvider } from '../hooks/useSubagentContext'
@@ -68,6 +133,12 @@ describe('MessageList', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.useRealTimers()
+    virtuosoMockState.atBottomReport = undefined
+    virtuosoMockState.reportBeforeRef = false
+    virtuosoMockState.scrollHeight = 0
+    virtuosoMockState.clientHeight = 0
+    virtuosoMockState.scrollTop = 0
+    virtuosoMockState.streamingSpacerHeight = 0
   })
 
   it('shows empty state when messages are empty', () => {
@@ -229,6 +300,102 @@ describe('MessageList', () => {
     expect(streaming?.textContent).toContain('Live tokens')
     expect(streaming?.closest('[data-testid="virtuoso-mock"]')).toBeNull()
     expect(container.querySelector('.chat-streaming-region')?.contains(streaming)).toBe(true)
+    expect(container.querySelector('.chat-messages-stage')?.contains(streaming)).toBe(true)
+  })
+
+  it('hides jump-to-bottom when the scroller cannot scroll down', async () => {
+    virtuosoMockState.atBottomReport = false
+    virtuosoMockState.reportBeforeRef = true
+    virtuosoMockState.scrollHeight = 100
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.scrollTop = 0
+
+    const msgs = [
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Short message' }] },
+      }),
+    ]
+
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+    )
+
+    await waitFor(() => {
+      expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+    })
+  })
+
+  it('ignores an initial not-at-bottom report when DOM geometry is already at bottom', async () => {
+    virtuosoMockState.atBottomReport = false
+    virtuosoMockState.reportBeforeRef = false
+    virtuosoMockState.scrollHeight = 200
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.scrollTop = 100
+
+    const msgs = [
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Bottom-aligned subagent detail' }] },
+        parent_tool_use_id: 'agent-1',
+      }),
+    ]
+
+    const { container } = render(
+      <MessageList
+        items={toItems(msgs as SdkMessage[])}
+        parentToolUseIdFilter="agent-1"
+        transcriptRevealKey="subagent:agent-1"
+        replayReady
+      />,
+    )
+
+    await waitFor(() => {
+      expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+    })
+  })
+
+  it('ignores the transparent streaming spacer when deciding whether to show jump-to-bottom', async () => {
+    virtuosoMockState.atBottomReport = false
+    virtuosoMockState.reportBeforeRef = true
+    virtuosoMockState.scrollHeight = 180
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.scrollTop = 0
+    virtuosoMockState.streamingSpacerHeight = 80
+
+    const msgs = [
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Short settled message' }] },
+      }),
+    ]
+
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+    )
+
+    await waitFor(() => {
+      expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+    })
+  })
+
+  it('shows jump-to-bottom when the scroller can scroll down', async () => {
+    virtuosoMockState.atBottomReport = false
+    virtuosoMockState.reportBeforeRef = true
+    virtuosoMockState.scrollHeight = 200
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.scrollTop = 0
+
+    const msgs = [
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Scrollable message' }] },
+      }),
+    ]
+
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+    )
+
+    await waitFor(() => {
+      expect(container.querySelector('.chat-jump-to-bottom')).not.toBeNull()
+    })
   })
 
   it('animates streaming content out before unmounting it', () => {

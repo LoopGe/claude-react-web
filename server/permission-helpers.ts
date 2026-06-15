@@ -92,7 +92,7 @@ export function formatQuestionAnswers(questions: QuestionSpec[], answers: Questi
  * Rewrite SDK-provided suggestions to target the current session scope.
  *
  * The SDK hands us `suggestions: PermissionUpdate[]` with whatever destination
- * it picked (often 'userSettings' or 'projectSettings'). For session-scoped
+ * it picked (often 'userSettings' or 'projectSettings'). For session-scope
  * allow-always, we force every addRules/setMode/addDirectories update to
  * `destination: 'session'`, so the change only lives as long as this Query.
  */

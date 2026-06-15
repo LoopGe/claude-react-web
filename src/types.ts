@@ -6,7 +6,7 @@ import type { SessionInfoBase } from '../shared/session-info'
 
 export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto'
 
-// User-selectable permission modes (dropdown + Shift+Tab cycle). `auto` is
+// User-selectable permission modes (dropdowns/chip menus). `auto` is
 // intentionally omitted: it depends on a server-side classifier + specific
 // models + account eligibility that aren't available on this deployment's
 // backend, so it can't function here (it would silently behave like default).
@@ -17,6 +17,16 @@ export const PERMISSION_MODES: PermissionMode[] = [
   'plan',
   'bypassPermissions',
   'dontAsk',
+]
+
+// Keyboard cycle mirrors the interactive Claude Code flow as closely as this
+// backend can support: `auto` is unavailable here and `dontAsk` is deliberately
+// excluded so a shortcut cannot accidentally enter no-prompt lockdown mode.
+export const PERMISSION_MODE_CYCLE: PermissionMode[] = [
+  'default',
+  'acceptEdits',
+  'plan',
+  'bypassPermissions',
 ]
 
 /** Reasoning effort level — controls how many tokens the model spends.
@@ -55,7 +65,7 @@ export interface ResumableSession {
   terminated: boolean
 }
 
-/** A named collection of sessions for quick group switching. Each session
+/** A name collection of sessions for quick group switching. Each session
  *  belongs to at most one group (exclusive membership). Sessions not in any
  *  group are "ungrouped" and appear in a separate sidebar section. Each
  *  group holds at most `maxOpen` sessions. Order of sessionIds determines

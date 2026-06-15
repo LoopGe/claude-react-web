@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 
 interface Props {
+  open?: boolean
   title: string
   message: React.ReactNode
   defaultValue: string
@@ -21,6 +22,7 @@ interface Props {
 }
 
 export function PromptDialog({
+  open = true,
   title,
   message,
   defaultValue,
@@ -42,12 +44,12 @@ export function PromptDialog({
       if (e.key === 'Escape') {
         e.preventDefault()
         e.stopPropagation()
-        if (!busy) onCancel()
+        if (open && !busy) onCancel()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [busy, onCancel])
+  }, [busy, onCancel, open])
 
   const trimmed = value.trim()
   const canSubmit = trimmed.length > 0 && trimmed !== defaultValue.trim() && !busy
@@ -59,11 +61,13 @@ export function PromptDialog({
   return (
     <div
       className="perm-overlay"
+      data-state={open ? 'open' : 'closing'}
       role="dialog"
-      aria-modal="true"
+      aria-modal={open ? 'true' : 'false'}
+      aria-hidden={!open}
       aria-label={title}
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget && !busy) onCancel()
+        if (open && e.target === e.currentTarget && !busy) onCancel()
       }}
     >
       <div className="perm-card" ref={dialogRef}>

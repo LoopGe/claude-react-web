@@ -8,7 +8,7 @@
 //   - HttpError thrown from server/git.ts is translated to JSON by the
 //     global onError handler in app.ts.
 //
-// All three endpoints are GET / cwd-scoped. Writes (stage/unstage/commit)
+// All three endpoints are GET / cwd-scope. Writes (stage/unstage/commit)
 // live under /api/sessions/:id/git/* in routes/git-write.ts.
 
 import { Hono } from 'hono'

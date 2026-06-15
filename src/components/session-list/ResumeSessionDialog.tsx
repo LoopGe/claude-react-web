@@ -16,6 +16,7 @@ import { shortenPath } from '../../utils/paths'
 import type { ResumableSession } from '../../types'
 
 export interface ResumeSessionDialogProps {
+  open?: boolean
   /** Default working directory — used to scope the initial "this project"
    *  list. When empty, the dialog opens in "all projects" mode. */
   defaultCwd?: string
@@ -41,7 +42,7 @@ function timeAgo(ms: number): string {
   return new Date(ms).toLocaleDateString()
 }
 
-export function ResumeSessionDialog({ defaultCwd, onResume, onCancel }: ResumeSessionDialogProps) {
+export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCancel }: ResumeSessionDialogProps) {
   const [query, setQuery] = useState('')
   const [allProjects, setAllProjects] = useState(!defaultCwd)
   const [sessions, setSessions] = useState<ResumableSession[]>([])
@@ -107,7 +108,7 @@ export function ResumeSessionDialog({ defaultCwd, onResume, onCancel }: ResumeSe
   }, [selectedIndex])
 
   const choose = (s: ResumableSession | undefined) => {
-    if (!s || s.terminated) return
+    if (!open || !s || s.terminated) return
     onResume(s.sessionId)
   }
 
@@ -121,7 +122,7 @@ export function ResumeSessionDialog({ defaultCwd, onResume, onCancel }: ResumeSe
     } else if (e.key === 'Enter' && filtered.length > 0) {
       e.preventDefault()
       choose(filtered[selectedIndex])
-    } else if (e.key === 'Escape') {
+    } else if (open && e.key === 'Escape') {
       // Stop the bubble so App's window-level Esc handler doesn't also fire
       // (it would redundantly close this same dialog, or worse fall through
       // to interrupt the focused session if our state ref lagged a tick).
@@ -134,9 +135,11 @@ export function ResumeSessionDialog({ defaultCwd, onResume, onCancel }: ResumeSe
   return (
     <div
       className="modal-backdrop"
+      data-state={open ? 'open' : 'closing'}
       role="dialog"
-      aria-modal="true"
-      onMouseDown={(e) => e.target === e.currentTarget && onCancel()}
+      aria-modal={open ? 'true' : 'false'}
+      aria-hidden={!open}
+      onMouseDown={(e) => open && e.target === e.currentTarget && onCancel()}
     >
       <div className="modal modal-resume-session" ref={dialogRef} onKeyDown={handleKeyDown}>
         <div className="modal-header">
@@ -151,7 +154,7 @@ export function ResumeSessionDialog({ defaultCwd, onResume, onCancel }: ResumeSe
             ref={inputRef}
             className="input"
             type="text"
-            placeholder="Search sessions by title, prompt, or path…"
+            placeholder="Search sessions by title, prompt, or path..."
             value={query}
             onChange={(e) => {
               setQuery(e.target.value)
@@ -188,7 +191,7 @@ export function ResumeSessionDialog({ defaultCwd, onResume, onCancel }: ResumeSe
             aria-label="Resumable sessions"
             style={{ marginTop: 10, maxHeight: '50vh', overflowY: 'auto' }}
           >
-            {loading && <div className="palette-empty">Loading…</div>}
+            {loading && <div className="palette-empty">Loading...</div>}
             {!loading && error && (
               <div className="palette-empty">Couldn't load sessions: {error}</div>
             )}

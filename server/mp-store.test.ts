@@ -1,12 +1,13 @@
 // MpStore round-trip + slug + collision-suffix tests.
 //
-// We don't exercise the cacheDir or git-clone paths here — those are
+// We don't exercise the cacheDir or git-clone paths here ?those are
 // covered by the route tests which mock git-clone. This file is purely
 // about persistence semantics.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { rmSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { MANIFEST_REL_PATH } from './marketplace-parser.js'
 import { MpStore, type MpEntry } from './mp-store.js'
 import type { MarketplaceManifest } from './marketplace-parser.js'
 import { tempDir } from './__test-utils__/index.js'
@@ -61,6 +62,59 @@ describe('MpStore', () => {
     expect(loaded).toHaveLength(1)
     expect(loaded[0].id).toBe('mkt1')
     expect(s2.get('mkt1')?.manifest.plugins[0].name).toBe('plugA')
+  })
+
+  it('re-parses cached clone manifests on load', async () => {
+    const cloneDir = join(dir, 'marketplace-cache', 'official')
+    const manifestPath = join(cloneDir, MANIFEST_REL_PATH)
+    mkdirSync(dirname(manifestPath), { recursive: true })
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        name: 'official',
+        plugins: [
+          { name: 'legacy-local' },
+          {
+            name: 'atlassian',
+            description: 'Atlassian tools',
+            category: 'productivity',
+            source: {
+              source: 'url',
+              url: 'https://github.com/atlassian/atlassian-mcp-server.git',
+              sha: 'f4911dba81f25782c88815b03deabf444cd46e0d',
+            },
+          },
+        ],
+      }),
+      'utf8',
+    )
+    mkdirSync(join(cloneDir, 'legacy-local'), { recursive: true })
+
+    const s = new MpStore({ stateDir: dir })
+    await s.load()
+    s.upsert(fakeEntry('official', {
+      displayName: 'old official',
+      cloneDir,
+      manifest: fakeManifest(['legacy-local']),
+    }))
+    await s.flush()
+
+    const reloaded = new MpStore({ stateDir: dir })
+    const loaded = await reloaded.load()
+
+    expect(loaded).toHaveLength(1)
+    expect(reloaded.get('official')?.displayName).toBe('official')
+    expect(reloaded.get('official')?.manifest.plugins.map((p) => p.name)).toEqual(['legacy-local', 'atlassian'])
+    expect(reloaded.get('official')?.manifest.plugins.find((p) => p.name === 'atlassian')?.source).toEqual({
+      kind: 'git-subdir',
+      url: 'https://github.com/atlassian/atlassian-mcp-server.git',
+      subPath: '.',
+      ref: undefined,
+      sha: 'f4911dba81f25782c88815b03deabf444cd46e0d',
+    })
+
+    const raw = JSON.parse(readFileSync(join(dir, 'marketplaces.json'), 'utf8')) as { marketplaces: Record<string, MpEntry> }
+    expect(raw.marketplaces.official.manifest.plugins.map((p) => p.name)).toEqual(['legacy-local', 'atlassian'])
   })
 
   it('persists and reloads enabled-plugin flags', async () => {
@@ -164,7 +218,7 @@ describe('MpStore', () => {
     const s = new MpStore({ stateDir: dir })
     await s.load()
     // Stage an enabled flag for a marketplace that doesn't exist by
-    // hand-writing the JSON file, then reload.
+    // hand-writing the JSON file, then reloa?.
     mkdirSync(dir, { recursive: true })
     writeFileSync(
       join(dir, 'marketplaces.json'),
@@ -186,7 +240,7 @@ describe('MpStore', () => {
     const a = s.externalCloneDir(url, sha)
     const b = s.externalCloneDir(url, sha)
     expect(a).toBe(b)
-    // Different sha → different dir.
+    // Different sha ?different dir.
     expect(s.externalCloneDir(url, 'f'.repeat(40))).not.toBe(a)
     // Lives under the _external cache.
     expect(a.startsWith(s.externalCacheDir)).toBe(true)
@@ -208,10 +262,10 @@ describe('MpStore', () => {
     }))
     s.setEnabled('adobe', 'mkt1', true)
 
-    // Not cloned yet → excluded.
+    // Not cloned yet ?excluded.
     expect(s.getEnabledPluginAbsolutePaths()).toEqual([])
 
-    // Materialise the external clone subdir → now resolved.
+    // Materialise the external clone subdir ?now resolved.
     const cloneDir = s.externalCloneDir(url, sha)
     const full = join(cloneDir, subPath)
     mkdirSync(full, { recursive: true })

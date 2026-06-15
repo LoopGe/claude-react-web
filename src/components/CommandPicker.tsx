@@ -7,7 +7,7 @@ import { pluginTagOf } from '../utils/text'
 
 interface Props {
   commands: SlashCommand[]
-  /** Text typed after the leading "/". Used to filter the list. */
+  /** Text type after the leading "/". Used to filter the list. */
   query: string
   /** Index of the keyboard-highlighted item (after filtering). */
   selectedIndex: number

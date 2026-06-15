@@ -546,16 +546,35 @@
      motion-on-state-change (WCAG 2.3.3), unlike the load-bearing spinners
      the global block above deliberately leaves running. Named explicitly so
      spinners/shimmers keep animating. */
-  .settings-overlay:not(.hidden),
-  .settings-overlay:not(.hidden) > .settings-panel,
-  .git-overlay,
-  .git-overlay > .git-panel,
+  .settings-overlay[data-state="open"],
+  .settings-overlay[data-state="closing"],
+  .settings-overlay[data-state="open"] > .settings-panel,
+  .settings-overlay[data-state="closing"] > .settings-panel,
+  .git-overlay[data-state="open"],
+  .git-overlay[data-state="closing"],
+  .git-overlay[data-state="open"] > .git-panel,
+  .git-overlay[data-state="closing"] > .git-panel,
   .subagent-overlay,
   .subagent-overlay-panel,
-  .modal-backdrop,
-  .modal,
+  .subagent-overlay-body-forward,
+  .subagent-overlay-body-back,
+  .palette-backdrop[data-state="open"],
+  .palette-backdrop[data-state="closing"],
+  .palette-backdrop[data-state="open"] > .palette,
+  .palette-backdrop[data-state="closing"] > .palette,
+  .modal-backdrop[data-state="open"],
+  .modal-backdrop[data-state="closing"],
+  .modal-backdrop[data-state="open"] > .modal,
+  .modal-backdrop[data-state="closing"] > .modal,
+  .modal-backdrop[data-state="open"] > .global-settings-modal,
+  .modal-backdrop[data-state="closing"] > .global-settings-modal,
+  .perm-overlay[data-state="open"],
+  .perm-overlay[data-state="closing"],
+  .perm-overlay[data-state="open"] > .perm-card,
+  .perm-overlay[data-state="closing"] > .perm-card,
   .ctx-menu,
   .model-picker,
+  .effort-slider,
   .appearance-panel,
   .chat-jump-to-bottom {
     animation-duration: 0.01ms !important;
@@ -1269,6 +1288,10 @@
     width: 100%;
     min-width: 0;
     border-left: none;
+    animation-name: subagent-sheet-in;
+  }
+  .subagent-overlay[data-state="closing"] .subagent-overlay-panel {
+    animation-name: subagent-sheet-out;
   }
 
   /* The slash-command picker floats with min-width:280px which can punch
@@ -1360,8 +1383,8 @@
   /* Bottom composer: lift the controls above the home-indicator and clear
      the side insets (relevant in landscape, where the notch is sideways). */
   .chat-composer {
-    padding-left: max(16px, env(safe-area-inset-left));
-    padding-right: max(16px, env(safe-area-inset-right));
+    padding-left: max(var(--chat-reading-min-inset), env(safe-area-inset-left));
+    padding-right: max(var(--chat-reading-min-inset), env(safe-area-inset-right));
     padding-bottom: max(12px, env(safe-area-inset-bottom));
   }
 
@@ -1486,4 +1509,116 @@
   color: var(--warn, var(--fg-muted));
   font-size: 12px;
   line-height: 1.5;
+}
+
+/* Skills management in global settings */
+.settings-radio-stack {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+.settings-radio-stack label,
+.settings-skill-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.settings-skill-allowlist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+.settings-skill-check {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.settings-skill-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(260px, 1.2fr);
+  gap: 12px;
+  margin-top: 8px;
+}
+.settings-skill-list {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+.settings-skill-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-bg);
+  color: var(--fg);
+  padding: 8px;
+  cursor: pointer;
+}
+.settings-skill-row:hover,
+.settings-skill-row.active {
+  background: var(--btn-hover-bg);
+}
+.settings-skill-name {
+  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-skill-desc {
+  grid-column: 1 / -1;
+  color: var(--fg-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-skill-editor {
+  min-width: 0;
+}
+.settings-inline-fields {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 10px 0;
+}
+.settings-skill-editor > .settings-card > .input {
+  width: calc(100% - 20px);
+  margin: 8px 10px 0;
+}
+.settings-skill-editor > .settings-card > .btn {
+  margin: 8px 10px 10px;
+}
+.settings-skill-edit-card {
+  display: flex;
+  flex-direction: column;
+}
+.settings-skill-textarea {
+  min-height: 280px;
+  margin: 8px 10px 0;
+  width: calc(100% - 20px);
+  font-family: var(--mono);
+  font-size: 12px;
+  resize: vertical;
+}
+.settings-actions-row {
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px 10px;
+}
+.settings-error {
+  color: var(--danger);
+  font-size: 12px;
+  padding: 6px 0;
+}
+@media (max-width: 760px) {
+  .settings-skill-grid {
+    grid-template-columns: 1fr;
+  }
 }

@@ -21,6 +21,9 @@ interface Props {
   index: ReadonlyMap<string, ActiveSubagent>
   onClose: () => void
   onPop: () => void
+  isExiting?: boolean
+  transitionDirection?: 'forward' | 'back' | null
+  onExited?: () => void
   /** Tool/plan/question lifecycle maps. These MUST be forwarded to the
    *  nested MessageList — it builds its OWN status context providers, so
    *  without them every tool card inside a drilled-in subagent reads the
@@ -45,6 +48,9 @@ export const SubagentOverlay = memo(function SubagentOverlay({
   index,
   onClose,
   onPop,
+  isExiting = false,
+  transitionDirection = null,
+  onExited,
   toolStatus,
   toolResults,
   planStatus,
@@ -58,20 +64,24 @@ export const SubagentOverlay = memo(function SubagentOverlay({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
+      if (isExiting) return
       if (stack.length > 1) onPop()
       else onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [stack.length, onClose, onPop])
+  }, [isExiting, stack.length, onClose, onPop])
 
   // If the referenced subagent vanishes from the index (session reset,
   // fork, etc.) the overlay would render null and the stack would be
   // stuck non-empty — close/back become silent no-ops. Drive a real
   // close so subsequent open() calls work.
   useEffect(() => {
-    if (currentId && !current) onClose()
-  }, [currentId, current, onClose])
+    if (currentId && !current) {
+      if (onExited) onExited()
+      else onClose()
+    }
+  }, [currentId, current, onClose, onExited])
 
   if (!currentId || !current) return null
 
@@ -94,7 +104,14 @@ export const SubagentOverlay = memo(function SubagentOverlay({
       aria-modal="false"
       aria-label="Subagent details"
       onMouseDown={(e) => {
+        if (isExiting) return
         if (e.target === e.currentTarget) onClose()
+      }}
+      data-state={isExiting ? 'closing' : 'open'}
+      onAnimationEnd={(e) => {
+        if (e.target === e.currentTarget && isExiting && e.animationName === 'subagent-backdrop-out') {
+          onExited?.()
+        }
       }}
     >
       <div className="subagent-overlay-panel">
@@ -104,6 +121,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
               type="button"
               className="subagent-overlay-back"
               onClick={onPop}
+              disabled={isExiting}
               title="Back to outer subagent"
               aria-label="Back"
             >
@@ -136,13 +154,20 @@ export const SubagentOverlay = memo(function SubagentOverlay({
             type="button"
             className="subagent-overlay-close"
             onClick={onClose}
+            disabled={isExiting}
             title="Close (Esc)"
             aria-label="Close"
           >
             <IconX size={14} />
           </button>
         </div>
-        <div className="subagent-overlay-body">
+        <div
+          key={currentId}
+          className={[
+            'subagent-overlay-body',
+            transitionDirection ? `subagent-overlay-body-${transitionDirection}` : '',
+          ].filter(Boolean).join(' ')}
+        >
           <MessageList
             items={items}
             parentToolUseIdFilter={currentId}

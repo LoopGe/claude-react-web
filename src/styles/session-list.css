@@ -402,6 +402,11 @@
   backdrop-filter: var(--glass-blur);
   z-index: 4;
 }
+.perm-overlay[data-state="open"] { animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both; }
+.perm-overlay[data-state="closing"] {
+  pointer-events: none;
+  animation: overlay-backdrop-out var(--motion-duration-base) var(--motion-ease-exit) both;
+}
 /* useFocusTrap moves focus onto the overlay container itself (via an
    injected tabindex=-1) instead of its first action button. Programmatic
    focus on a -1 element won't trigger :focus-visible, but suppress any
@@ -424,6 +429,8 @@
   display: flex;
   flex-direction: column;
 }
+.perm-overlay[data-state="open"] > .perm-card { animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both; }
+.perm-overlay[data-state="closing"] > .perm-card { animation: overlay-panel-out var(--motion-duration-base) var(--motion-ease-exit) both; }
 /* Plan approvals are markdown-heavy and benefit from extra width.
    720px keeps it readable but still narrower than a typical 3-up
    panel column on a 1440px display. */
@@ -474,11 +481,19 @@
   /* (#2) Pop in from the anchor — scale + fade, top-origin so it reads as
      unfolding from the click point. */
   transform-origin: top left;
-  animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both;
+}
+.ctx-menu[data-state="open"] { animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both; }
+.ctx-menu[data-state="closing"] {
+  pointer-events: none;
+  animation: ctx-menu-out var(--motion-duration-fast) var(--motion-ease-exit) both;
 }
 @keyframes ctx-menu-in {
   from { opacity: 0; transform: scale(var(--motion-scale-enter)) translateY(calc(-1 * var(--motion-distance-sm))); }
   to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes ctx-menu-out {
+  from { opacity: 1; transform: scale(1) translateY(0); }
+  to   { opacity: 0; transform: scale(var(--motion-scale-enter)) translateY(calc(-1 * var(--motion-distance-xs))); }
 }
 .ctx-menu-item {
   display: flex;
@@ -531,7 +546,11 @@
   z-index: 1000;
   overflow: hidden;
   transform-origin: top left;
-  animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both;
+}
+.model-picker[data-state="open"] { animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both; }
+.model-picker[data-state="closing"] {
+  pointer-events: none;
+  animation: ctx-menu-out var(--motion-duration-fast) var(--motion-ease-exit) both;
 }
 
 /* ── Appearance panel (skin + mode + accent) ── */

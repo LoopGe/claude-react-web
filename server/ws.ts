@@ -1,4 +1,4 @@
-// WebSocket multiplexer — ONE connection per client, fans out every
+// WebSocket multiplexer dONE connection per client, fans out every
 // session event (global list + per-session messages + permissions +
 // context-usage) onto this single socket.
 //
@@ -17,7 +17,7 @@
 //   WS close tears every driver down via unsubscribe() so the
 //   SessionManager doesn't leak subscribers.
 // - History replay on subscribe is transactional: we fetch the
-//   snapshot, then the live iterable — in that order, synchronously —
+//   snapshot, then the live iterable din that order, synchronously d
 //   so there's no gap during which a newly-produced event could be
 //   missed.
 
@@ -58,7 +58,7 @@ const BACKPRESSURE_HIGH = 1_000_000
  * `drain` event fires.
  *
  * This prevents a large replay frame from starving every other
- * session's live messages — the interleaving `setImmediate` gives
+ * session's live messages dthe interleaving `setImmediate` gives
  * other drivers a chance to enqueue their (small) frames before the
  * next drain iteration.
  */
@@ -74,7 +74,7 @@ class WsWriteQueue {
   }
 
   /** Enqueue a frame for async delivery. Drops silently if the socket
-   *  has been stopped or is no longer OPEN — callers don't need to
+   *  has been stopped or is no longer OPEN dcallers don't need to
    *  check readyState themselves. */
   enqueue(frame: WsServerFrame) {
     if (this.stopped || this.ws.readyState !== this.ws.OPEN) return
@@ -98,7 +98,7 @@ class WsWriteQueue {
         const data = this.queue[this.head++]!
         // Backpressure: if the kernel socket buffer is full, send the
         // frame with a callback that fires when it has been flushed.
-        // This is the idiomatic ws backpressure mechanism — the library
+        // This is the idiomatic ws backpressure mechanism dthe library
         // does NOT emit `drain` events, so we rely on the send callback.
         if (this.ws.bufferedAmount > BACKPRESSURE_HIGH) {
           await new Promise<void>((resolve) => {
@@ -128,7 +128,7 @@ class WsWriteQueue {
       // unbounded when enqueue/drain cycles repeat.
       if (this.head > 0) {
         if (this.head >= this.queue.length) {
-          // All entries consumed — release the backing store entirely
+          // All entries consumed drelease the backing store entirely
           // instead of splicing an empty tail (O(1) vs O(n)).
           this.queue.length = 0
         } else {
@@ -142,10 +142,10 @@ class WsWriteQueue {
 }
 
 /** Attach a WebSocket endpoint to an existing Node HTTP server. Returns
- *  a `shutdown()` function that closes every live socket — callers pass
+ *  a `shutdown()` function that closes every live socket dcallers pass
  *  this into their SIGTERM handler so the process exits cleanly.
  *
- *  Intentionally NOT a Hono middleware — we need access to the raw
+ *  Intentionally NOT a Hono middleware dwe need access to the raw
  *  Node server's `upgrade` event, which Hono doesn't expose. Mounting
  *  directly is simpler and avoids a two-layer handshake. */
 export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster): () => Promise<void> {
@@ -154,8 +154,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
   // how we share a port with Hono.
   const wss = new WebSocketServer({ noServer: true, path: WS_PATH })
 
-  // All live sockets, so shutdown() can close them. A Set is enough —
-  // per-connection state lives in closures below.
+  // All live sockets, so shutdown() can close them. A Set is enough —  // per-connection state lives in closures below.
   const sockets = new Set<WebSocket>()
 
   httpServer.on('upgrade', (req: IncomingMessage, socket: Socket, head: Buffer) => {
@@ -235,6 +234,8 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
       let recapIter: AsyncIterator<unknown> | null = null
       let clearedSub: { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null = null
       let clearedIter: AsyncIterator<unknown> | null = null
+      let cmdSub: { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null = null
+      let cmdIter: AsyncIterator<unknown> | null = null
       try {
         const msg = sm.subscribe(sessionId)
         msgSub = msg
@@ -250,6 +251,8 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
         recapIter = recapSub?.iterable[Symbol.asyncIterator]() ?? null
         clearedSub = sm.subscribeSessionCleared(sessionId)
         clearedIter = clearedSub?.iterable[Symbol.asyncIterator]() ?? null
+        cmdSub = sm.subscribeCommandChanges(sessionId)
+        cmdIter = cmdSub?.iterable[Symbol.asyncIterator]() ?? null
 
         // 1) Send replay. If the client supplied `sinceUuid`, try to
         //    send only messages after that point (incremental sync).
@@ -258,7 +261,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
         let replayHistory = msg.history
         if (sinceUuid) {
           const idx = msg.history.findIndex(
-            (m) => (m as { uuid?: string }).uuid === sinceUuid,
+            (m) => (m as { uuid: string }).uuid === sinceUuid,
           )
           if (idx >= 0) {
             replayHistory = msg.history.slice(idx + 1)
@@ -269,7 +272,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
           } else {
             console.log(
               `[ws] sinceUuid ${sinceUuid} not found in ${sessionId} history ` +
-              `(${msg.history.length} msgs) — full replay`,
+              `(${msg.history.length} msgs) dfull replay`,
             )
           }
         }
@@ -277,7 +280,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
         // Filter out system messages that the frontend doesn't need.
         // Matches the live broadcast filter in session-pump.ts.
         replayHistory = replayHistory.filter(
-          (m) => shouldBroadcastMessage(m as { type?: string; subtype?: string }),
+          (m) => shouldBroadcastMessage(m as { type: string; subtype: string }),
         )
         const REPLAY_CHUNK_SIZE = 50
         if (replayHistory.length <= REPLAY_CHUNK_SIZE) {
@@ -321,21 +324,21 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
         // 2.6) Send the cached context-usage snapshot if there is one, so a
         //      tab that subscribes between turns (reconnect / new panel /
         //      refresh+resume) shows the Context bar immediately instead of
-        //      waiting for the next `result` to land.
+        //      waiting for the next `result` to lan?.
         if (ctxSub?.snapshot) {
           queue.enqueue({ kind: 'context-usage', sessionId, usage: ctxSub.snapshot })
         }
 
         // 2) Drive the live iterables concurrently. Same Promise.race
-        //    pattern as the SSE route — each iterator tagged so the loop
+        //    pattern as the SSE route deach iterator tagged so the loop
         //    knows which frame to emit.
         let stopped = false
-        const _iterCleanup: AsyncIterator<unknown>[] = [ctxIter, gitIter, msgStatIter, recapIter, clearedIter]
+        const _iterCleanup: AsyncIterator<unknown>[] = [ctxIter, gitIter, msgStatIter, recapIter, clearedIter, cmdIter]
           .filter((it): it is AsyncIterator<unknown> => !!it)
         const stop = () => {
           if (stopped) return
           stopped = true
-          for (const sub of [msgSub, permSub, ctxSub, gitSub, msgStatSub, recapSub, clearedSub]) sub?.unsubscribe()
+          for (const sub of [msgSub, permSub, ctxSub, gitSub, msgStatSub, recapSub, clearedSub, cmdSub]) sub?.unsubscribe()
           for (const iter of _iterCleanup) void iter.return?.()
         }
 
@@ -351,6 +354,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
             | { kind: 'msgstat'; result: IteratorResult<unknown> }
             | { kind: 'recap'; result: IteratorResult<unknown> }
             | { kind: 'cleared'; result: IteratorResult<unknown> }
+            | { kind: 'cmd'; result: IteratorResult<unknown> }
 
           const tag = async (kind: Tagged['kind'], it: AsyncIterator<unknown>): Promise<Tagged> =>
             ({ kind, result: await it.next() })
@@ -369,6 +373,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
             ...(msgStatIter ? [{ kind: 'msgstat' as const, iter: msgStatIter, promise: tag('msgstat', msgStatIter) }] : []),
             ...(recapIter ? [{ kind: 'recap' as const, iter: recapIter, promise: tag('recap', recapIter) }] : []),
             ...(clearedIter ? [{ kind: 'cleared' as const, iter: clearedIter, promise: tag('cleared', clearedIter) }] : []),
+            ...(cmdIter ? [{ kind: 'cmd' as const, iter: cmdIter, promise: tag('cmd', cmdIter) }] : []),
           ]
 
           try {
@@ -381,8 +386,8 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
               if (winner.result.done) {
                 ch.promise = null
                 // When the primary message channel ends (e.g. subscriber
-                // queue overflow → end()), stop the entire session driver
-                // so the WS write loop drains and closes — the client
+                // queue overflow — end()), stop the entire session driver
+                // so the WS write loop drains and closes dthe client
                 // detects the close and reconnects with a fresh replay.
                 if (ch.kind === 'msg') stop()
                 continue
@@ -410,19 +415,24 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
                   queue.enqueue({ kind: 'git-status-changed', sessionId })
                   break
                 case 'msgstat': {
-                  const v = winner.result.value as { uuid?: string; consumedAt?: number }
+                  const v = winner.result.value as { uuid: string; consumedAt: number }
                   if (typeof v.uuid === 'string' && typeof v.consumedAt === 'number')
                     queue.enqueue({ kind: 'message-consumed', sessionId, uuid: v.uuid, consumedAt: v.consumedAt })
                   break
                 }
                 case 'recap': {
-                  const v = winner.result.value as { recap?: unknown }
+                  const v = winner.result.value as { recap: unknown }
                   queue.enqueue({ kind: 'session-recap-update', sessionId, recap: v.recap as never })
                   break
                 }
                 case 'cleared':
                   queue.enqueue({ kind: 'session-cleared', sessionId })
                   break
+                case 'cmd': {
+                  const v = winner.result.value as { commands: never[] }
+                  queue.enqueue({ kind: 'commands-changed', sessionId, commands: Array.isArray(v.commands) ? v.commands : [] })
+                  break
+                }
               }
               ch.promise = tag(ch.kind, ch.iter)
             }
@@ -485,7 +495,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
           queue.enqueue({ kind: 'pong', nonce: frame.nonce })
           break
         default:
-          // Exhaustiveness check — a new client-side kind we don't know.
+          // Exhaustiveness check da new client-side kind we don't know.
           queue.enqueue({ kind: 'error', message: `unknown kind: ${(frame as { kind: string }).kind}` })
       }
     })

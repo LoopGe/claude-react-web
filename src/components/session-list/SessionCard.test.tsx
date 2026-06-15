@@ -96,6 +96,16 @@ describe('SessionCard', () => {
     expect(card?.classList.contains('open')).toBe(true)
   })
 
+  it('renders a permission mode badge for default mode without card-level active styling', () => {
+    const { container } = render(<SessionCard {...baseProps} />)
+    const card = container.querySelector('.session-item')
+    const badge = container.querySelector('.session-item-mode-badge')
+    expect(card?.classList.contains('mode-default')).toBe(true)
+    expect(card?.classList.contains('mode-active')).toBe(false)
+    expect(badge).not.toBeNull()
+    expect(badge?.getAttribute('aria-label')).toBe('Permission mode: Default (ask)')
+  })
+
   it('calls onSelect when clicked', () => {
     const onSelect = vi.fn()
     const { container } = render(<SessionCard {...baseProps} onSelect={onSelect} />)

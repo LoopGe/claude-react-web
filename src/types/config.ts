@@ -1,3 +1,5 @@
+import type { SkillLoadMode } from '../../shared/skills'
+
 export interface Defaults {
   cwd?: string
   model?: string
@@ -27,5 +29,7 @@ export interface FullServerConfig {
   /** Empty string when the user hasn't configured a registry — the
    *  update checker treats that as "disabled". */
   updateCheckRegistry: string
+  skillLoadMode: SkillLoadMode
+  enabledSkills: string[]
   defaults: Defaults
 }

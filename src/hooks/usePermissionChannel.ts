@@ -19,7 +19,7 @@ export type PermissionDecision =
   | { behavior: 'deny'; message?: string }
 
 /** Execution modes a session can switch into when a plan is approved. */
-export type PlanTargetMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'auto'
+export type PlanTargetMode = 'default' | 'acceptEdits' | 'bypassPermissions'
 
 export type QuestionAnswer = string | string[] | null
 

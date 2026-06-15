@@ -34,6 +34,14 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     this.input.push(message)
   }
 
+  sendControlMessage(message: AgentUserMessage): void {
+    this.input.push(message)
+  }
+
+  clearQueuedInput(): number {
+    return this.input.clearQueue()
+  }
+
   abort(): void {
     this.abortController.abort()
   }
@@ -50,7 +58,7 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     return this.query.interrupt()
   }
 
-  setModel(model?: string): Promise<void> {
+  setModel(model: string): Promise<void> {
     return this.query.setModel(model)
   }
 
@@ -92,6 +100,10 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
 
   reloadPlugins(): Promise<unknown> {
     return this.query.reloadPlugins()
+  }
+
+  reloadSkills(): Promise<unknown> {
+    return this.query.reloadSkills()
   }
 
   getContextUsage(): Promise<unknown> {

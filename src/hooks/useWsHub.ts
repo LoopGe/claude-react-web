@@ -35,9 +35,9 @@ export type WsHubStatus = 'connecting' | 'online' | 'reconnecting'
 
 interface WsHubApi {
   /** Register a global listener. Receives ALL frames (including
-   *  session-scoped ones). Returns an unregister fn. */
+   *  session-scope ones). Returns an unregister fn. */
   addListener: (fn: WsHubListener) => () => void
-  /** Register a session-scoped listener. Only receives frames whose
+  /** Register a session-scope listener. Only receives frames whose
    *  `sessionId` field matches. This is O(1) dispatch per frame
    *  (indexed by sessionId) instead of O(N) global fan-out — use it
    *  in useChatStream for per-panel message handling. Returns an
@@ -193,7 +193,7 @@ export function WsHubProvider({ children, url }: ProviderProps) {
           console.error('[wsHub] listener threw:', err)
         }
       }
-      // Fan out to session-scoped listeners (O(1) lookup by sessionId).
+      // Fan out to session-scope listeners (O(1) lookup by sessionId).
       // This is the fast path used by useChatStream — each panel only
       // processes frames for its own session without scanning others.
       const sid = 'sessionId' in frame ? (frame as { sessionId?: string }).sessionId : undefined

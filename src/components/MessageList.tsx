@@ -2,7 +2,7 @@
 //
 // Uses react-virtuoso to render only the visible slice of messages,
 // keeping DOM node count bounded regardless of transcript length.
-// Keeps the list pinned to the bottom unless the user scrolls up 闂?once
+// Keeps the list pinned to the bottom unless the user scrolls up — once
 // they do, new messages append silently instead of yanking the viewport.
 // Filters out `stream_event` partials (the final assistant message
 // carries the complete content, so showing both just flickers).
@@ -41,7 +41,7 @@ interface Props {
    *  history). When present, rendered as a card pinned to the bottom of
    *  the transcript (after items, before the streaming footer) so it
    *  reads as the latest "narrator" entry. Three states drive the chrome:
-   *  pending 闂?loading skeleton, ready 闂?summary + stats, error 闂?retry
+   *  pending — loading skeleton, ready — summary + stats, error — retry
    *  hint. Undefined means "no recap to show". */
   recap?: SessionRecap
   /** False while the initial replay from the server is still buffering.
@@ -75,7 +75,7 @@ interface Props {
    *  scrolled into view and visually highlighted as the active search
    *  result. -1 means no active result. */
   searchActiveMsgIdx?: number
-  /** Local match index inside the active item 闂?i.e. for the message
+  /** Local match index inside the active item —i.e. for the message
    *  pointed at by `searchActiveMsgIdx`, this names which of its
    *  matches is the user's current navigation target. Lets the
    *  renderer style ONE specific `<mark>` differently (warn-coloured
@@ -85,7 +85,7 @@ interface Props {
   searchActiveMatchInItem?: number
   /** Filter mode for parent_tool_use_id:
    *  - undefined / null: only show root messages (parent_tool_use_id == null).
-   *    This is the default for the main transcript 闂?subagent-internal
+   *    This is the default for the main transcript —subagent-internal
    *    messages are hidden and replaced by SubagentCards in their parent's
    *    tool_use slot.
    *  - string: only show messages whose parent_tool_use_id matches.
@@ -114,13 +114,13 @@ interface Props {
  *  result scrolling (search indices reference the full, unfiltered list). */
 interface RenderableItem {
   /** Stable per-message id (SdkMessage uuid, or a synthetic fallback).
-   *  Drives the new-message entrance-animation gate 闂?see knownIdsRef. */
+   *  Drives the new-message entrance-animation gate —see knownIdsRef. */
   id: string
   msg: SdkMessage
   isCompactSummary: boolean
   renderableIndex: number
   itemIndex: number
-  /** Optimistic placeholder still in flight 闂?drives the user bubble's
+  /** Optimistic placeholder still in flight —drives the user bubble's
    *  "sending" spinner. Cleared automatically by the reducer when the
    *  server's broadcast lands and the optimistic gets swapped out. */
   sending?: boolean
@@ -143,24 +143,43 @@ const EMPTY_QUESTION_ANSWERS: ReadonlyMap<string, QuestionAnswerEntry[]> = new M
 const EMPTY_TOOL_STATUS: ReadonlyMap<string, ToolStatus> = new Map()
 const EMPTY_TOOL_RESULTS: ReadonlyMap<string, ToolResultEntry> = new Map()
 
-/** Distance from the bottom (px) within which we treat the user as
- *  "still at the bottom" for follow-mode and the jump-to-bottom button.
- *  Virtuoso's own atBottomStateChange uses pixel-perfect detection,
- *  which is too strict 闂?a single line of streaming output can flip
- *  it false while the user clearly hasn't scrolled away. We override
- *  Virtuoso's verdict with this tolerance both in `atBottomStateChange`
- *  (so its `false` doesn't kill follow-mode) and in the scroll handler
- *  (so re-entering the band restores follow-mode). */
-const NEAR_BOTTOM_PX = 200
+/** Pixel tolerance for direct bottom checks. Keep this tiny to cover
+ *  fractional scroll values without treating a visibly offset viewport as
+ *  being at the bottom. */
+const BOTTOM_EPSILON_PX = 2
+
+const getStreamingSpacerHeight = (el: HTMLElement) => {
+  const spacer = el.querySelector<HTMLElement>('.virtuoso-streaming-spacer')
+  if (!spacer) return 0
+
+  const rectHeight = spacer.getBoundingClientRect().height
+  if (rectHeight > 0) return rectHeight
+
+  const styleHeight = Number.parseFloat(spacer.style.height || getComputedStyle(spacer).height)
+  return Number.isFinite(styleHeight) ? styleHeight : 0
+}
+
+const getDistanceFromBottom = (el: HTMLElement) => (
+  Math.max(0, el.scrollHeight - getStreamingSpacerHeight(el) - el.scrollTop - el.clientHeight)
+)
+
+const getBottomGeometry = (el: HTMLElement) => {
+  const distanceFromBottom = getDistanceFromBottom(el)
+  const atBottom = distanceFromBottom <= BOTTOM_EPSILON_PX
+  return { atBottom, canJumpToBottom: !atBottom }
+}
+
+type FollowMode = 'restore' | 'disable-now' | 'disable-debounced' | 'preserve'
+type BottomSyncMode = FollowMode | 'confirm-away'
 
 /** Entrance-animation gate tunables (see the gate block in MessageList).
- *  MAX_ENTER_BATCH 闂?only animate when the tail grows by at most this many
+ *  MAX_ENTER_BATCH —only animate when the tail grows by at most this many
  *    ids at once; a larger jump means a bulk load (replay / page), not a
  *    live trickle.
- *  ENTER_MAX_AGE_MS 闂?a tail id only animates if its receivedAt is within
+ *  ENTER_MAX_AGE_MS — a tail id only animates if its receivedAt is within
  *    this window of now; filters disk-restored history whose timestamps are
  *    stale even if it somehow reaches the tail path.
- *  KNOWN_IDS_CAP 闂?hard bound on the seen-id set for very long sessions. */
+ *  KNOWN_IDS_CAP —hard bound on the seen-id set for very long sessions. */
 const MAX_ENTER_BATCH = 4
 const ENTER_MAX_AGE_MS = 10_000
 const KNOWN_IDS_CAP = 4000
@@ -171,12 +190,15 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
   const scrollerRef = useRef<HTMLElement | null>(null)
+  const streamingRegionRef = useRef<HTMLDivElement | null>(null)
+  const [streamingOverlayHeight, setStreamingOverlayHeight] = useState(0)
   // `atBottom` is state (not a ref) because the jump-to-bottom button's
   // visibility needs to re-render when it changes. The ref-mirror keeps
   // callbacks readable without a stale-closure dance.
   const [atBottom, setAtBottom] = useState(true)
   const atBottomRef = useRef(true)
-  // Debounced "should follow" ref 闂?filters out transient isAtBottom=false
+  const [canJumpToBottom, setCanJumpToBottom] = useState(false)
+  // Debounced "should follow" ref —filters out transient isAtBottom=false
   // spikes that Virtuoso emits during rapid/batch item additions (the
   // scroll-to-bottom animation hasn't settled yet, so Virtuoso's internal
   // isAtBottom momentarily flips false). Only after isAtBottom stays false
@@ -185,7 +207,7 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
   const followTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Tracks the previous scrollTop so the scroll handler can detect
   // *user-driven* upward scrolls (scrollTop decreasing) and bypass the
-  // follow-disable debounce 闂?see the scroll-listener effect for why.
+  // follow-disable debounce —see the scroll-listener effect for why.
   const lastScrollTopRef = useRef(0)
   const [followDebounceRaw] = useLocalStorage<number>(
     'claude-react-web:follow-debounce-ms',
@@ -196,6 +218,100 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
    *  bottom. Badge number on the jump-to-bottom button. */
   const [unseenCount, setUnseenCount] = useState(0)
   const unseenCountRef = useRef(0)
+
+  const clearFollowTimer = useCallback(() => {
+    if (followTimerRef.current == null) return
+    clearTimeout(followTimerRef.current)
+    followTimerRef.current = null
+  }, [])
+
+  const clearUnseen = useCallback(() => {
+    if (unseenCountRef.current === 0) return
+    unseenCountRef.current = 0
+    setUnseenCount(0)
+  }, [])
+
+  const setBottomState = useCallback((nextAtBottom: boolean) => {
+    if (atBottomRef.current === nextAtBottom) return
+    atBottomRef.current = nextAtBottom
+    setAtBottom(nextAtBottom)
+  }, [])
+
+  const scrollScrollerToBottom = useCallback((behavior: 'auto' | 'smooth' = 'auto') => {
+    const el = scrollerRef.current
+    if (el) {
+      el.scrollTo({ top: el.scrollHeight, behavior })
+      return
+    }
+    virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior })
+  }, [])
+
+  const syncBottomState = useCallback((
+    nextAtBottom: boolean,
+    followMode: FollowMode,
+  ) => {
+    if (nextAtBottom || followMode !== 'disable-debounced') {
+      setBottomState(nextAtBottom)
+    }
+
+    if (nextAtBottom) {
+      clearUnseen()
+    }
+
+    if (followMode === 'restore') {
+      clearFollowTimer()
+      shouldFollowRef.current = true
+      return
+    }
+
+    if (followMode === 'disable-now') {
+      clearFollowTimer()
+      shouldFollowRef.current = false
+      return
+    }
+
+    if (followMode === 'disable-debounced' && followTimerRef.current == null) {
+      followTimerRef.current = setTimeout(() => {
+        followTimerRef.current = null
+        const el = scrollerRef.current
+        if (!el) {
+          setCanJumpToBottom(false)
+          setBottomState(false)
+          shouldFollowRef.current = false
+          return
+        }
+
+        const geometry = getBottomGeometry(el)
+        setCanJumpToBottom(geometry.canJumpToBottom)
+        setBottomState(geometry.atBottom)
+        if (geometry.atBottom) {
+          clearUnseen()
+          shouldFollowRef.current = true
+        } else {
+          shouldFollowRef.current = false
+        }
+      }, FOLLOW_DEBOUNCE_MS)
+    }
+  }, [FOLLOW_DEBOUNCE_MS, clearFollowTimer, clearUnseen, setBottomState])
+
+  const syncBottomGeometry = useCallback((
+    el: HTMLElement | null = scrollerRef.current,
+    modeWhenAway: BottomSyncMode = 'preserve',
+  ) => {
+    if (!el) {
+      setCanJumpToBottom(false)
+      return null
+    }
+    const geometry = getBottomGeometry(el)
+    const delayAway = modeWhenAway === 'confirm-away' && !geometry.atBottom && atBottomRef.current
+    setCanJumpToBottom(delayAway ? false : geometry.canJumpToBottom)
+    syncBottomState(
+      geometry.atBottom,
+      geometry.atBottom ? 'restore' : modeWhenAway === 'confirm-away' ? 'disable-debounced' : modeWhenAway,
+    )
+    return geometry
+  }, [syncBottomState])
+
   const liveStreamingContent = streamingContent ?? null
   const [streamingPresence, setStreamingPresence] = useState(() => ({
     source: liveStreamingContent,
@@ -209,6 +325,7 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
       ? { source: liveStreamingContent, content: liveStreamingContent, exiting: false }
       : { source: null, content: streamingPresence.content, exiting: streamingPresence.content != null }
     : streamingPresence
+  const hasVisibleStreamingContent = nextStreamingPresence.content != null
 
   if (nextStreamingPresence !== streamingPresence) {
     setStreamingPresence(nextStreamingPresence)
@@ -246,7 +363,7 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
 
   // Subagent (Agent/Task/Explore) results are merged inline into SubagentCard
   // once captured (record.result set). Fold those ids into the predicate so
-  // their standalone orphan bubble is suppressed 闂?same merge treatment as a
+  // their standalone orphan bubble is suppressed — same merge treatment as a
   // generic tool card. Only ids whose result has actually landed count; a
   // still-running subagent has no result bubble to suppress yet.
   const subagentCtx = useSubagentContext()
@@ -272,7 +389,7 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
       const parent = item.msg.parent_tool_use_id
       // Filter by parent_tool_use_id:
       //  - main transcript (filter == null): show only root messages
-      //    闂?subagent children are surfaced via SubagentCard placeholders
+      //    —subagent children are surfaced via SubagentCard placeholders
       //    in their parent's tool_use slot, and the full inner stream
       //    lives in SubagentOverlay.
       //  - overlay (filter == "<id>"): show only direct children of that
@@ -309,14 +426,14 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
 
   // --- Reverse infinite scroll: keep the viewport anchored on prepend ----
   // Virtuoso requires `firstItemIndex` to decrease by exactly the number of
-  // items prepended, in the SAME render that grows `data` at the front 闂?  // otherwise the viewport jumps. We detect a front-prepend by checking
+  // items prepended, in the SAME render that grows `data` at the front —  // otherwise the viewport jumps. We detect a front-prepend by checking
   // whether the previous first renderable message moved to a later index.
   //
   // Computed during render (refs, not state) so `firstItemIndex` and `data`
   // commit together. The `msg === prev` short-circuit makes this a no-op on
   // ordinary appends/streaming; the findIndex only runs on the rare prepend
   // or full-rebuild render. If a discarded concurrent render mutates the
-  // ref, the next real render self-corrects (prev still matches) 闂?worst
+  // ref, the next real render self-corrects (prev still matches) —worst
   // case a single missed adjustment, never compounding drift.
   const INITIAL_FIRST_ITEM_INDEX = 1_000_000
   const firstItemIndexRef = useRef(INITIAL_FIRST_ITEM_INDEX)
@@ -330,7 +447,7 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
   // above), so it's safe despite the rule. Disabled narrowly for this block.
   /* eslint-disable react-hooks/refs */
   if (first == null) {
-    // Empty list (session switch / cleared) 闂?reset the anchor.
+    // Empty list (session switch / cleared) —reset the anchor.
     firstItemIndexRef.current = INITIAL_FIRST_ITEM_INDEX
     prevFirstMsgRef.current = null
   } else if (prevFirstMsgRef.current == null) {
@@ -341,7 +458,7 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
       // `movedTo` items were inserted ahead of the previous first item.
       firstItemIndexRef.current -= movedTo
     } else if (movedTo < 0) {
-      // Previous first item is gone (replay rebuild / reset) 闂?re-anchor.
+      // Previous first item is gone (replay rebuild / reset) —re-anchor.
       firstItemIndexRef.current = INITIAL_FIRST_ITEM_INDEX
     }
     prevFirstMsgRef.current = first
@@ -351,29 +468,29 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
 
   // --- New-message entrance animation gate -------------------------------
   // Goal: play a one-shot "rise + blur-in" on messages that genuinely just
-  // ARRIVED live 闂?never on the initial replay, session switches, loadOlder
-  // history prepends, the optimistic闂佹剚鍋呮慨鈧琧ho user-message swap, or Virtuoso
+  // ARRIVED live —never on the initial replay, session switches, loadOlder
+  // history prepends, the optimistic echo user-message swap, or Virtuoso
   // re-mounting an off-screen row as the user scrolls.
   //
   // The discriminator is "a small batch of previously-unseen ids appended at
   // the TAIL of a non-empty list, each stamped with a recent wall-clock
   // receivedAt". That single rule excludes every non-arrival case:
-  //   - initial replay / session switch 闂?grows from empty (prevLen 0) or
-  //     adds many ids at once 闂?skipped by the prevLen>0 + batch-size guards.
-  //   - loadOlder prepend 闂?ids appear at the FRONT, not at indices >=
-  //     prevLen 闂?not tail-appends 闂?skipped.
-  //   - optimistic闂佹剚鍋呮慨鈧琧ho swap 闂?in-place replace at an existing index, list
-  //     length unchanged 闂?no index >= prevLen 闂?skipped (the optimistic
+  //   - initial replay / session switch —grows from empty (prevLen 0) or
+  //     adds many ids at once —skipped by the prevLen>0 + batch-size guards.
+  //   - loadOlder prepend —ids appear at the FRONT, not at indices >=
+  //     prevLen —not tail-appends —skipped.
+  //   - optimistic echo swap — in-place replace at an existing index, list
+  //     length unchanged —no index >= prevLen —skipped (the optimistic
   //     insert already animated the pop).
-  //   - scroll re-mount 闂?id already in knownIdsRef and already consumed from
-  //     enterIdsRef 闂?skipped.
-  // receivedAt recency disambiguates a freshly-typed first message (animate)
+  //   - scroll re-mount —id already in knownIdsRef and already consumed from
+  //     enterIdsRef —skipped.
+  // receivedAt recency disambiguates a freshly-type first message (animate)
   // from a replayed single-message session (history timestamp is stale).
   const knownIdsRef = useRef<Set<string>>(new Set())
   const enterIdsRef = useRef<Set<string>>(new Set())
   const prevLenRef = useRef(0)
   // Tracks the id of the last renderable item so the gate can detect an
-  // in-place echo replacement (optimistic id 闂?server uuid at the same
+  // in-place echo replacement (optimistic id → server uuid at the same
   // tail position) and transfer the entering flag for a seamless animation.
   const prevLastIdRef = useRef<string | null>(null)
   // Whole-transcript reveal gate. It arms only for the first ready transcript
@@ -389,9 +506,9 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
     const curLen = renderableItems.length
     // Tail-append candidates: ids at index >= prevLen that we've never seen.
     // Only consider when growing the list by a small delta (live arrivals
-    // trickle in 1闂? at a time; bulk loads add many at once).
+    // trickle in 1— at a time; bulk loads add many at once).
     //
-    // prevLen may be 0 for the very first message in a session 闂?that case
+    // prevLen may be 0 for the very first message in a session —that case
     // is fine because receivedAt recency (ENTER_MAX_AGE_MS) and batch-size
     // guards (MAX_ENTER_BATCH) together prevent initial replay / session-
     // switch bulk loads from animating. A disk-restored single-message
@@ -505,7 +622,7 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
     void loadOlder()
   }, [loadOlder, hasOlder, loadingOlder])
 
-  // Reverse map: full items[] index 闂?Virtuoso (renderableItems) index.
+  // Reverse map: full items[] index —Virtuoso (renderableItems) index.
   // Needed because search indices reference the full, unfiltered list.
   const itemToVirtIdx = useMemo(() => {
     const map = new Map<number, number>()
@@ -534,7 +651,7 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
   // Virtuoso's followOutput handles the actual scrolling.
   //
   // We count items that match the current `parentToolUseIdFilter` but
-  // *not* `hiddenByDefault` 闂?system messages are filtered by default,
+  // *not* `hiddenByDefault` —system messages are filtered by default,
   // and only non-hidden items should trigger badge increments.
   // Counting by parent dodges the same trap for the main transcript:
   // subagent-internal frames stream in continuously while an Agent runs,
@@ -560,120 +677,92 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
     lastCountRef.current = trackedCount
     if (delta <= 0) return
     if (atBottomRef.current) {
-      if (unseenCountRef.current !== 0) {
-        unseenCountRef.current = 0
-        setUnseenCount(0)
-      }
+      clearUnseen()
     } else {
-      // Keep the ref in lockstep with state 闂?the scroll-near-bottom
-      // handler reads `unseenCountRef.current` to decide whether to
-      // clear. Updating only state would leave the ref at 0 and the
-      // handler would silently no-op, leaving the badge stuck.
+      // Keep the ref in lockstep with state: the bottom-state sync reads
+      // `unseenCountRef.current` to decide whether to clear. Updating only
+      // state would leave the ref at 0 and the handler would silently no-op,
+      // leaving the badge stuck.
       unseenCountRef.current += delta
       setUnseenCount(unseenCountRef.current)
     }
-  }, [trackedCount])
+  }, [clearUnseen, trackedCount])
 
-  // Viewport-shrink trigger: the TodoChecklist panel appears/grows below
-  // the scroll container, which eats vertical space. Without this
-  // effect, the bottom messages slide above the fold and `atBottom`
-  // silently flips false, so future followOutput stops working.
-  // ResizeObserver re-pins to bottom whenever the viewport shrinks
-  // *and* the user was already at the bottom.
+  // Viewport geometry trigger: panels above/below the scroller can change the
+  // available height without firing a scroll event. Keep the jump button and
+  // bottom-follow state in sync with the real DOM geometry on every resize.
   useEffect(() => {
     const el = scrollerRef.current
     if (!el || typeof ResizeObserver === 'undefined') return
     let lastHeight = el.clientHeight
     const ro = new ResizeObserver(() => {
-      if (!scrollerRef.current) return
-      const now = scrollerRef.current.clientHeight
+      const current = scrollerRef.current
+      if (!current) return
+      syncBottomGeometry(current, 'confirm-away')
+      const now = current.clientHeight
       const shrunk = now < lastHeight
       lastHeight = now
       if (shrunk && atBottomRef.current) {
-        virtuosoRef.current?.scrollToIndex({ index: renderableItems.length - 1, behavior: 'auto' })
+        scrollScrollerToBottom('auto')
       }
     })
     ro.observe(el)
     return () => ro.disconnect()
-  }, [renderableItems.length])
+  }, [renderableItems.length, scrollScrollerToBottom, syncBottomGeometry])
 
-  // Authoritative scroll-state listener 闂?covers two cases that
-  // Virtuoso's `atBottomStateChange` alone gets wrong:
-  //
-  //   1. RESTORE follow when the user scrolls back into the bottom
-  //      band (distance < NEAR_BOTTOM_PX). Virtuoso only fires its
-  //      callback at the pixel-perfect bottom; without this listener
-  //      a scroll to e.g. distance=50 leaves follow disabled forever.
-  //      This restoration is unconditional 闂?it does NOT gate on
-  //      `unseenCount`. Earlier the gate `unseenCount !== 0` made
-  //      restoration impossible if no new messages arrived during
-  //      the scroll-up window, leaving the user stuck out of follow
-  //      with no feedback.
-  //
-  //   2. DISABLE follow IMMEDIATELY when the user actively scrolls
-  //      up past the band (scrollTop decreasing AND distance >=
-  //      NEAR_BOTTOM_PX). The 150 ms debounce in `atBottomStateChange`
-  //      exists to filter Virtuoso's transient `false` during the
-  //      scroll-to-bottom *animation* 闂?but a real user-initiated
-  //      scroll-up is not that. Waiting 150 ms means the very next
-  //      data item (tool_result, new assistant turn) lands during the
-  //      window with `shouldFollowRef` still true and yanks the user
-  //      back to the bottom. Detecting scrollTop decrease lets us
-  //      bypass the debounce on genuine user input.
+  useEffect(() => {
+    const el = streamingRegionRef.current
+    if (!el) {
+      setStreamingOverlayHeight(0)
+      return
+    }
+
+    const updateHeight = () => {
+      const height = Math.ceil(el.getBoundingClientRect().height)
+      setStreamingOverlayHeight((prev) => (prev === height ? prev : height))
+      if (atBottomRef.current) scrollScrollerToBottom('auto')
+    }
+
+    updateHeight()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(updateHeight)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [hasVisibleStreamingContent, scrollScrollerToBottom])
+
+  // Authoritative scroll-state listener. Virtuoso's callback can miss
+  // native scroll intent, so direct DOM geometry decides whether the
+  // viewport is actually at the bottom. Any upward scroll away from that
+  // direct bottom state disables follow immediately, while scrolling back
+  // to the real bottom restores follow and clears the unseen badge.
   useEffect(() => {
     const el = scrollerRef.current
     if (!el) return
     lastScrollTopRef.current = el.scrollTop
     const handler = () => {
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-      const isNearBottom = distanceFromBottom < NEAR_BOTTOM_PX
       const prevScrollTop = lastScrollTopRef.current
       lastScrollTopRef.current = el.scrollTop
       const isScrollingUp = el.scrollTop < prevScrollTop
-
-      if (isNearBottom) {
-        // Re-enter the bottom band 闂?restore follow + clear badge.
-        if (followTimerRef.current != null) {
-          clearTimeout(followTimerRef.current)
-          followTimerRef.current = null
-        }
-        shouldFollowRef.current = true
-        if (!atBottomRef.current) {
-          atBottomRef.current = true
-          setAtBottom(true)
-        }
-        if (unseenCountRef.current !== 0) {
-          unseenCountRef.current = 0
-          setUnseenCount(0)
-        }
-      } else if (isScrollingUp && shouldFollowRef.current) {
-        // User dragged the viewport upward past the band 闂?kill follow
-        // now, before the pending data-item arrival uses it.
-        if (followTimerRef.current != null) {
-          clearTimeout(followTimerRef.current)
-          followTimerRef.current = null
-        }
-        shouldFollowRef.current = false
-      }
+      syncBottomGeometry(el, isScrollingUp ? 'disable-now' : 'preserve')
     }
+    syncBottomGeometry(el, 'confirm-away')
     el.addEventListener('scroll', handler, { passive: true })
     return () => el.removeEventListener('scroll', handler)
-  }, [renderableItems.length])
+  }, [renderableItems.length, syncBottomGeometry, streamingOverlayHeight])
 
   // Clean up the follow debounce timer on unmount.
   useEffect(() => () => {
-    if (followTimerRef.current != null) clearTimeout(followTimerRef.current)
-  }, [])
+    clearFollowTimer()
+  }, [clearFollowTimer])
 
   const jumpToBottom = useCallback(() => {
-    virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'smooth' })
-    unseenCountRef.current = 0
-    setUnseenCount(0)
-  }, [])
+    scrollScrollerToBottom('smooth')
+    clearUnseen()
+  }, [clearUnseen, scrollScrollerToBottom])
 
   // --- Scroll to previous / next user message ----------------------------
   // Data-array (0-based, Virtuoso `scrollToIndex` space) indices of every
-  // *real* user message 闂?the same discriminator MessageView uses to pick
+  // *real* user message — the same discriminator MessageView uses to pick
   // the "msg user" bubble branch: a root frame (no parent_tool_use_id), not
   // a compact-summary, carrying no tool_result block. Recomputed only when
   // the rendered list changes.
@@ -692,7 +781,7 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
     return out
   }, [renderableItems])
   // Mirror in a ref so the (stable) navigate callback reads the latest list
-  // without being re-created 闂?keeps its registered identity constant. Synced
+  // without being re-created — keeps its registered identity constant. Synced
   // in an effect (not during render) to respect the refs-in-render rule.
   const userMsgIndicesRef = useRef<number[]>(userMsgIndices)
   useEffect(() => {
@@ -735,67 +824,49 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
     virtuosoRef.current?.scrollToIndex({ index: target, behavior: 'smooth', align: 'start' })
   }, [])
 
-  // Expose the navigator to the parent (Chat 闂?App 闂?session context menu).
+  // Expose the navigator to the parent (Chat —App — session context menu).
   useEffect(() => {
     onRegisterNavigate?.(navigate)
   }, [onRegisterNavigate, navigate])
 
   const scrollerRefCb = useCallback((ref: HTMLElement | Window | null) => {
-    if (ref && ref instanceof HTMLElement) scrollerRef.current = ref
-  }, [])
+    const prev = scrollerRef.current
+    if (prev && prev !== ref) prev.classList.remove('chat-virtuoso-scroller')
+    if (ref && ref instanceof HTMLElement) {
+      ref.classList.add('chat-virtuoso-scroller')
+      scrollerRef.current = ref
+      syncBottomGeometry(ref, 'confirm-away')
+      return
+    }
+    scrollerRef.current = null
+    syncBottomGeometry(null)
+  }, [syncBottomGeometry])
 
   const followOutput = useCallback(() => (shouldFollowRef.current ? 'smooth' : false), [])
 
   const atBottomStateChange = useCallback((reportedAtBottom: boolean) => {
-    // Virtuoso's at-bottom check is pixel-perfect; we use a NEAR_BOTTOM_PX
-    // tolerance everywhere else (scroll handler, button visibility intent).
-    // Without this override, a slight upward scroll inside the tolerance
-    // band fires `false` here and starts the follow-disable timer 闂?which
-    // racing against the scroll handler's restoration produces the bug
-    // where follow flickers off seconds after the user thought they were
-    // safely back at the bottom.
-    let isAtBottom = reportedAtBottom
-    if (!isAtBottom) {
-      const el = scrollerRef.current
-      if (el) {
-        const distance = el.scrollHeight - el.scrollTop - el.clientHeight
-        if (distance < NEAR_BOTTOM_PX) isAtBottom = true
-      }
+    // Prefer direct DOM geometry so the button and follow-mode use the
+    // same bottom definition. Fall back to Virtuoso's report if the
+    // scroller is not attached yet.
+    const el = scrollerRef.current
+    if (el) {
+      syncBottomGeometry(el, 'confirm-away')
+      return
     }
-    // UI state: update immediately for jump-to-bottom button.
-    atBottomRef.current = isAtBottom
-    setAtBottom(isAtBottom)
-    if (isAtBottom && unseenCountRef.current !== 0) {
-      unseenCountRef.current = 0
-      setUnseenCount(0)
-    }
-    // Debounced follow state: only stop following after
-    // isAtBottom stays false for FOLLOW_DEBOUNCE_MS. During
-    // batch item additions Virtuoso transiently reports false
-    // while the scroll animation settles 闂?the debounce
-    // filters those out so the follow chain doesn't break.
-    if (isAtBottom) {
-      if (followTimerRef.current != null) {
-        clearTimeout(followTimerRef.current)
-        followTimerRef.current = null
-      }
-      shouldFollowRef.current = true
-    } else {
-      if (followTimerRef.current == null) {
-        followTimerRef.current = setTimeout(() => {
-          followTimerRef.current = null
-          shouldFollowRef.current = false
-        }, FOLLOW_DEBOUNCE_MS)
-      }
-    }
-  }, [FOLLOW_DEBOUNCE_MS])
+
+    setCanJumpToBottom(!reportedAtBottom)
+    syncBottomState(
+      reportedAtBottom,
+      reportedAtBottom ? 'restore' : 'disable-debounced',
+    )
+  }, [syncBottomGeometry, syncBottomState])
 
   const itemContent = useCallback((_index: number, item: RenderableItem) => {
     // Only pipe `activeMatchInItem` into the message that actually
     // contains the active navigation target. Every other message gets
     // `undefined` so its <mark>s render at the default colour. This
     // is what lets the user visually tell "next match" jumps from one
-    // hit to another even within the same message 闂?without per-match
+    // hit to another even within the same message —without per-match
     // resolution we'd be stuck at message granularity.
     const isActiveItem =
       searchActiveMsgIdx != null &&
@@ -851,9 +922,9 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
     : 'chat-streaming-region'
   /* eslint-enable react-hooks/refs */
 
-  // Virtuoso Footer is reserved for transcript metadata that belongs after
-  // the message history. Live streaming text is rendered outside the
-  // virtualized message area so it can behave as a separate region.
+  // Virtuoso Footer is reserved for transcript metadata and invisible bottom
+  // breathing room. The live streaming bubble is an overlay, so the spacer
+  // lets settled messages scroll underneath it instead of being obscured.
   const virtuosoComponents = useMemo(() => {
     const hasRecap = recap != null
     // The Header slot shows a "loading older history" affordance pinned to
@@ -863,11 +934,16 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
     if (showOlderHeader) {
       components.Header = () => <OlderHistoryHeader loading={loadingOlder} />
     }
-    if (hasRecap) {
-      components.Footer = () => <RecapFooter recap={recap} />
+    if (hasRecap || streamingOverlayHeight > 0) {
+      components.Footer = () => (
+        <>
+          {hasRecap && <RecapFooter recap={recap} />}
+          {streamingOverlayHeight > 0 && <StreamingOverlaySpacer height={streamingOverlayHeight} />}
+        </>
+      )
     }
     return components
-  }, [recap, loadOlder, loadingOlder, hasOlder])
+  }, [recap, streamingOverlayHeight, loadOlder, loadingOlder, hasOlder])
 
   return (
     <PlanStatusProvider value={planStatus}>
@@ -903,8 +979,8 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
             // arriving mid-stream) mounts at an estimated height, so totalHeight
             // is wrong for one frame; the ResizeObserver then corrects it and
             // `followOutput` re-pins to bottom, yanking scrollTop by
-            // (actual 闂?estimated). That one-frame scroll correction shifts the
-            // streaming footer bubble as a block 闂?the "闂佽桨鑳剁换婵堢礊鐎ｎ剚宕夐柛鎰絻琚? jitter. By
+            // (actual —estimated). That one-frame scroll correction shifts the
+            // streaming footer bubble as a block — the "streaming footer" jitter. By
             // pre-rendering tail items offscreen they're already measured before
             // becoming the anchor, so no post-insert scroll correction happens.
             // Rows are memoized, so the extra offscreen DOM is cheap.
@@ -913,23 +989,27 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
           />
         )}
       </div>
-      {!atBottom && (
+      {canJumpToBottom && !atBottom && (
         <button
           type="button"
           className="chat-jump-to-bottom"
           onClick={jumpToBottom}
-          aria-label={unseenCount > 0 ? `Scroll to latest 闂?${unseenCount} new message${unseenCount === 1 ? '' : 's'}` : 'Scroll to latest messages'}
+          aria-label={unseenCount > 0 ? `Scroll to latest: ${unseenCount} new message${unseenCount === 1 ? '' : 's'}` : 'Scroll to latest messages'}
         >
           <IconArrowDown size={16} aria-hidden />
           {unseenCount > 0 && <span className="chat-jump-to-bottom-count" aria-hidden>{unseenCount}</span>}
         </button>
       )}
-      </div>
       {visibleStreamingContent != null && (
-        <div className={streamingRegionClassName} aria-hidden={nextStreamingPresence.exiting}>
+        <div
+          ref={streamingRegionRef}
+          className={streamingRegionClassName}
+          aria-hidden={nextStreamingPresence.exiting}
+        >
           <StreamingFooter content={visibleStreamingContent} />
         </div>
       )}
+      </div>
     </div>
     </ResultConsumedCtx.Provider>
     </ToolResultProvider>
@@ -953,7 +1033,7 @@ const MessageView = memo(function MessageView({
   msg: SdkMessage
   isCompactSummary?: boolean
   searchQuery?: string
-  /** Local match index inside this message 闂?when set, the Markdown
+  /** Local match index inside this message —when set, the Markdown
    *  renderer marks the Nth `<mark>` as the active navigation target.
    *  Caller computes the index per-message and passes `undefined` (or
    *  -1) for messages that aren't the user's current focus. For
@@ -962,7 +1042,7 @@ const MessageView = memo(function MessageView({
    *  the local sub-index. */
   activeMatchInItem?: number
   /** When true, render the user bubble with a "sending" spinner.
-   *  Only meaningful for type='user' messages 闂?propagated from the
+   *  Only meaningful for type='user' messages —propagated from the
    *  TranscriptItem's optimistic-placeholder flag. */
   sending?: boolean
   /** Queue-delivery state of a top-level user turn. 'queued' renders a
@@ -983,12 +1063,12 @@ const MessageView = memo(function MessageView({
   const type = msg.type
 
   // Whether this turn ended because the user interrupted it. Read directly
-  // from the SDK result message's `terminal_reason` 闂?the subprocess's
+  // from the SDK result message's `terminal_reason` — the subprocess's
   // authoritative report of why the turn stopped (`aborted_streaming` /
   // `aborted_tools` are the two user-interrupt reasons). Because it lives on
   // `msg` itself, it survives Virtuoso unmount/remount; the old approach
   // stored it in transient component state seeded from a one-shot ref, so a
-  // re-mounted result row lost the flag and flipped 闂?back to 闂?
+  // re-mounted result row lost the flag and flipped back to normal
   const isInterrupted =
     type === 'result' &&
     (msg.terminal_reason === 'aborted_streaming' || msg.terminal_reason === 'aborted_tools')
@@ -996,10 +1076,10 @@ const MessageView = memo(function MessageView({
   // Memoise the block list so the child `BlockView` / `ToolResultBlock`
   // memos actually hit. `getBlocks(msg)` returns a *fresh* array (and
   // fresh inner object) every call when `msg.message.content` is a
-  // string 闂?the common case for plain text messages. Without this
+  // string — the common case for plain text messages. Without this
   // memo, every keystroke in the search box rebuilds every block of
   // every message, even though the underlying message hasn't changed.
-  // Stable `msg` reference (the store hands us immutable items) 闂?  // stable `blocks` 闂?stable `block` props 闂?memos hit.
+  // Stable `msg` reference (the store hands us immutable items) —  // stable `blocks` —stable `block` props —memos hit.
   const blocks = useMemo(() => getBlocks(msg), [msg])
 
   // Active-match plumbing for multi-text-block assistant messages.
@@ -1012,7 +1092,7 @@ const MessageView = memo(function MessageView({
   // view the highlighter uses, so the sums line up with what the
   // user can actually navigate to.
   // NOTE: this hook MUST stay at the top level (before any conditional
-  // `return`), even though only the assistant branch consumes it 闂?  // calling it inside `if (type === 'assistant')` changes the hook
+  // `return`), even though only the assistant branch consumes it —  // calling it inside `if (type === 'assistant')` changes the hook
   // count between renders of different message types (React error #310).
   const blockActiveIdx = useMemo(() => {
     const out: Array<number | undefined> = blocks.map(() => undefined)
@@ -1035,7 +1115,7 @@ const MessageView = memo(function MessageView({
 
   // The result-consumed predicate is built ONCE by MessageList and shared via
   // context, so willRenderEmpty (the item filter) and this render path use the
-  // exact same instance 闂?they can't drift. Read unconditionally per
+  // exact same instance — they can't drift. Read unconditionally per
   // rules-of-hooks even though only the user branch uses it.
   const isResultConsumed = useResultConsumed()
 
@@ -1043,7 +1123,7 @@ const MessageView = memo(function MessageView({
     const userContent = extractUserText(msg)
     // Tool results that have been consumed by their card (generic ToolCard
     // inline merge, or PlanCard / QuestionCard) are suppressed here. Only
-    // ORPHAN results 闂?whose tool_use_id matched no card 闂?fall through to
+    // ORPHAN results —whose tool_use_id matched no card —fall through to
     // the standalone bubble below, so no result is ever silently dropped.
     const allToolBlocks = blocks.filter((b) => b.type === 'tool_result')
     const toolBlocks = allToolBlocks.filter(
@@ -1052,21 +1132,21 @@ const MessageView = memo(function MessageView({
 
     // Synthetic "conversation summary" frame that the SDK injects right
     // after compact_boundary. It has role=user because the model will
-    // consume it as the next turn's input, but the human never typed it.
+    // consume it as the next turn's input, but the human never type it.
     // Render it collapsed, wired to the preceding Recap divider.
     if (isCompactSummary) {
       return <CompactSummary text={userContent ?? ''} />
     }
 
-    // A `user` frame is synthetic (i.e. NOT typed by the human) in two
+    // A `user` frame is synthetic (i.e. NOT type by the human) in two
     // overlapping cases:
-    //   1. It carries at least one `tool_result` block 闂?the SDK uses
+    //   1. It carries at least one `tool_result` block — the SDK uses
     //      the user role to feed tool output back to the model.
     //      Notably, top-level tool calls like `Agent` produce a user
     //      frame with `tool_result` but NO `parent_tool_use_id` (the
     //      result goes to the *main* thread; parent_tool_use_id is only
     //      set for subagent-internal tool hops).
-    //   2. It has a non-null `parent_tool_use_id` 闂?this is a subagent
+    //   2. It has a non-null `parent_tool_use_id` —this is a subagent
     //      (Task/Agent worker) internal conversation message,
     //      forwarded only when `forwardSubagentText: true`.
     // Real user input always has neither: parent_tool_use_id is null
@@ -1110,13 +1190,13 @@ const MessageView = memo(function MessageView({
     // an in-flight turn: server-acknowledged (deliveryStatus === 'queued')
     // and not still in the optimistic pre-ack 'sending' state. Once the SDK
     // consumes it (deliveryStatus flips to 'consumed') the queued chip
-    // disappears and a "processing" chip takes its place 闂?but only while
+    // disappears and a "processing" chip takes its place —but only while
     // the session is actively working, so historical consumed messages
     // after a reconnect don't re-trigger the indicator.
     const showQueued = !sending && deliveryStatus === 'queued'
     // Show processing only while the session is working AND the model
     // hasn't started responding yet. Once an assistant/result message
-    // appears after this user turn, the model has moved on 闂?hide the
+    // appears after this user turn, the model has moved on —hide the
     // indicator even if the session is still working on a subsequent turn.
     const showProcessing = !sending && deliveryStatus === 'consumed' && working && nextItemType !== 'assistant' && nextItemType !== 'result'
     return (
@@ -1127,7 +1207,7 @@ const MessageView = memo(function MessageView({
           {sending && (
             <span
               className="msg-sending-indicator"
-              title="Sending 闂?waiting for the server to acknowledge"
+              title="Sending - waiting for the server to acknowledge"
               aria-label="Sending"
             >
               <span className="msg-sending-spinner" aria-hidden />
@@ -1137,7 +1217,7 @@ const MessageView = memo(function MessageView({
           {showQueued && (
             <span
               className="msg-queued-indicator"
-              title="Queued 闂?the assistant is finishing the current turn; this message will be picked up next"
+              title="Queued - the assistant is finishing the current turn; this message will be picked up next"
               aria-label="Queued, waiting for the current turn to finish"
             >
               <span className="msg-queued-dot" aria-hidden />
@@ -1147,7 +1227,7 @@ const MessageView = memo(function MessageView({
           {showProcessing && (
             <span
               className="msg-processing-indicator"
-              title="Processing 闂?the model is working on this message"
+              title="Processing - the model is working on this message"
               aria-label="Processing"
             >
               <span className="msg-processing-dot" aria-hidden />
@@ -1174,13 +1254,13 @@ const MessageView = memo(function MessageView({
     // forwardSubagentText on) carry the same shape as main-thread
     // assistant turns but with a non-null parent_tool_use_id. Label
     // them distinctly so users can tell which model produced which
-    // output 闂?without this, a subagent's `tool_use: Bash` would look
+    // output —without this, a subagent's `tool_use: Bash` would look
     // identical to the main model running Bash.
     const isSubagent = msg.parent_tool_use_id != null
     // Suppress assistant messages with no visible content. The SDK can emit
     // a standalone assistant message whose only block is an empty
-    // (signature-only) thinking block 闂?BlockView renders it as null, but
-    // the surrounding card would still paint an empty "闂?assistant" shell.
+    // (signature-only) thinking block —BlockView renders it as null, but
+    // the surrounding card would still paint an empty "— assistant" shell.
     // The visibility rule lives in willRenderEmpty so renderableItems can
     // drop these before they become empty Virtuoso items (see that fn).
     if (willRenderEmpty(msg, isCompactSummary, isResultConsumed)) return null
@@ -1203,13 +1283,13 @@ const MessageView = memo(function MessageView({
   if (type === 'result') {
     const cost = typeof msg.total_cost_usd === 'number' ? `$${msg.total_cost_usd.toFixed(4)}` : ''
     const durMs = typeof msg.duration_ms === 'number' ? Math.round(msg.duration_ms) : null
-    // Render sub-second durations as ms, 闂?s as one-decimal seconds 闂?a
+    // Render sub-second durations as ms, —s as one-decimal seconds — a
     // bare "1234ms" reads slower than "1.2s" at a glance.
     const dur = durMs == null ? '' : durMs >= 1000 ? `${(durMs / 1000).toFixed(1)}s` : `${durMs}ms`
     const turns =
       typeof msg.num_turns === 'number' ? `${msg.num_turns} turn${msg.num_turns === 1 ? '' : 's'}` : ''
     // Token usage from the SDK's result payload. `input_tokens` is the
-    // turn-accumulated prompt total and 闂?per the Anthropic API 闂?does NOT
+    // turn-accumulated prompt total and —per the Anthropic API —does NOT
     // include cache tokens, so the true input volume sums all three input
     // buckets. `output_tokens` is what the model actually generated.
     const usage = (msg as {
@@ -1249,7 +1329,7 @@ const MessageView = memo(function MessageView({
         </div>
         <div className="msg-body">
           {isRateLimit ? (
-            <>Too many requests 闂?the API rate limit was hit. Your message was saved; send it again in a moment.</>
+            <>Too many requests - the API rate limit was hit. Your message was saved; send it again in a moment.</>
           ) : (
             raw
           )}
@@ -1325,7 +1405,7 @@ function CompactBoundary({ msg }: { msg: SdkMessage }) {
       </span>
       <span className="recap-meta">
         {pre !== undefined && post !== undefined
-          ? `${formatTokens(pre)} 闂?${formatTokens(post)} tokens${savings}${duration}`
+          ? `${formatTokens(pre)} -> ${formatTokens(post)} tokens${savings}${duration}`
           : 'Conversation compacted to fit the context window.'}
       </span>
     </div>
@@ -1333,8 +1413,8 @@ function CompactBoundary({ msg }: { msg: SdkMessage }) {
 }
 
 /** Wire shape of an `api_retry` system frame. The fields are all
- *  optional from the renderer's perspective 闂?older / partial frames
- *  may omit any of them 闂?but the cast lives here once instead of at
+ *  optional from the renderer's perspective —older / partial frames
+ *  may omit any of them —but the cast lives here once instead of at
  *  every read site. */
 interface ApiRetryMessage {
   attempt?: number
@@ -1353,14 +1433,14 @@ interface ApiRetryMessage {
  *  Anchor strategy: we derive an absolute `deadline` (wall-clock ms at
  *  which the retry will fire) by combining the message's mount time
  *  with `retry_delay_ms`. The deadline is held in state and reset only
- *  when a fresh frame lands with a different `retry_delay_ms` 闂?the
+ *  when a fresh frame lands with a different `retry_delay_ms` — the
  *  reducer replaces consecutive `api_retry` frames in place
  *  (`reducer.ts:298-300`) so this component gets new props rather than
  *  remounting. Reading deadline-now is monotonic across that prop
  *  change; the previous baseline+delay split could briefly show a
  *  garbled number for one render after a new frame.
  *
- *  We stop the interval at remainingMs 闂?0 闂?the next attempt is in
+ *  We stop the interval at remainingMs → 0 — the next attempt is in
  *  flight; either it succeeds (no more frames) or a new frame arrives
  *  and the effect restarts the timer. */
 function ApiRetryView({ msg }: { msg: SdkMessage }) {
@@ -1373,11 +1453,11 @@ function ApiRetryView({ msg }: { msg: SdkMessage }) {
 
   // We hold an absolute `deadline` (wall-clock ms at which the retry
   // fires) and a ticking `now`. Combining the two in a single state
-  // object means a delayMs prop change updates both together 闂?no
+  // object means a delayMs prop change updates both together —no
   // render where deadline is "new" but now is from the previous frame.
   //
   // Caveat: when `delayMs` changes mid-component-life (the reducer
-  // replaces consecutive api_retry frames in place 闂?see
+  // replaces consecutive api_retry frames in place —see
   // `reducer.ts:298-300`), there's a single render between prop change
   // and effect-firing where we still use the old deadline. React
   // batches the effect's setState into the same microtask, so visually
@@ -1397,7 +1477,7 @@ function ApiRetryView({ msg }: { msg: SdkMessage }) {
     if (delayMs <= 0) return
     // Clear the interval the first tick that crosses the deadline, so a
     // long-lived api_retry message that's already counted to "retrying
-    // now闂? stops costing us a render per second forever. A new
+    // now— stops costing us a render per second forever. A new
     // api_retry frame with a different delayMs re-runs this effect
     // (deps include delayMs) and starts a fresh interval.
     const id = window.setInterval(() => {
@@ -1421,14 +1501,14 @@ function ApiRetryView({ msg }: { msg: SdkMessage }) {
   // Once we've ticked down to 0 the next attempt is mid-flight; "now"
   // is more honest than "in 0s".
   const phase = seconds > 0 ? `retrying in ${seconds}s` : 'retrying now'
-  // Suppress the "/0" tail when max_retries is missing 闂?better to
+  // Suppress the "/0" tail when max_retries is missing —better to
   // show just the attempt number than a nonsense fraction.
   const attemptText =
     maxRetries > 0 ? `attempt ${attempt}/${maxRetries}` : `attempt ${attempt}`
   return (
     <div className="msg api-retry">
       <div className="msg-header">
-        <span>{label} 闂?{phase} ({attemptText})</span>
+        <span>{label} - {phase} ({attemptText})</span>
       </div>
     </div>
   )
@@ -1438,7 +1518,7 @@ function ApiRetryView({ msg }: { msg: SdkMessage }) {
  *
  *  After `system/compact_boundary`, the SDK pushes a synthetic user-role
  *  frame whose content is a prose summary of the previous conversation
- *  闂?it's the next turn's input prompt, but it wasn't typed by the
+ *  —it's the next turn's input prompt, but it wasn't type by the
  *  human. Rendering it as a "YOU" bubble is the behaviour this
  *  component exists to prevent: users see a huge wall of AI-authored
  *  text attributed to themselves and rightly get confused.
@@ -1449,7 +1529,7 @@ function ApiRetryView({ msg }: { msg: SdkMessage }) {
 function CompactSummary({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false)
   const charCount = text.length
-  // Grab the first "Summary:" headline as a peek if we can 闂?the SDK
+  // Grab the first "Summary:" headline as a peek if we can — the SDK
   // template usually starts with boilerplate, then a Summary header.
   const peek = text.slice(0, 140).replace(/\s+/g, ' ').trim()
   return (
@@ -1478,12 +1558,12 @@ function CompactSummary({ text }: { text: string }) {
 
 /** Rendering for the session.recap field, driven by its 3-state
  *  status discriminator from the shared SessionRecap type:
- *    pending 闂?loading skeleton (LLM call in flight)
- *    ready   闂?AI summary + stats
- *    error   闂?failure message (Alt+R retries)
+ *    pending — loading skeleton (LLM call in flight)
+ *    ready   — AI summary + stats
+ *    error   —failure message (Alt+R retries)
  *
  *  The card is anchored at the bottom of the transcript via Virtuoso's
- *  Footer slot 闂?see virtuosoComponents above. It is NOT a synthetic
+ *  Footer slot —see virtuosoComponents above. It is NOT a synthetic
  *  SDK message; the previous design (recap as a `type:'recap'` message
  *  spliced into history) was replaced because:
  *    1. recap is metadata about the session, not part of the
@@ -1522,7 +1602,7 @@ const RecapFooter = memo(function RecapFooter({ recap }: { recap: SessionRecap }
     )
   }
 
-  // status === 'ready' 闂?summary and stats may still legitimately be
+  // status === 'ready' — summary and stats may still legitimately be
   // missing if the server constructed the ready frame defensively;
   // bail rather than render a half-card.
   if (!recap.summary || !recap.stats) return null
@@ -1558,6 +1638,10 @@ const RecapFooter = memo(function RecapFooter({ recap }: { recap: SessionRecap }
   )
 })
 
+const StreamingOverlaySpacer = memo(function StreamingOverlaySpacer({ height }: { height: number }) {
+  return <div className="virtuoso-streaming-spacer" style={{ height }} aria-hidden />
+})
+
 function formatCost(usd: number): string {
   if (usd === 0) return '$0'
   if (usd < 0.01) return '<$0.01'
@@ -1568,7 +1652,7 @@ function formatCost(usd: number): string {
 const MAX_VISIBLE_SUBAGENTS = 5
 
 /** Self-ticking elapsed-time text. Isolating the 1Hz interval here means
- *  only this tiny text node re-renders each second 闂?the parent WorkingBubble
+ *  only this tiny text node re-renders each second — the parent WorkingBubble
  *  (and its subagent chip row) stay memoized and skip the per-second commit.
  *
  *  `startedAt` is the turn/subagent start timestamp (ms epoch). When absent
@@ -1615,7 +1699,7 @@ export const WorkingBubble = memo(function WorkingBubble({
   tokenRate?: number | null
   activePhase?: import('../hooks/useChatStream').ActivePhase
   /** When provided, each subagent chip becomes a button that calls this
-   *  with the chip's toolUseId 闂?the host (Chat) opens the overlay
+   *  with the chip's toolUseId — the host (Chat) opens the overlay
    *  pointed at that subagent. */
   onOpenSubagent?: (toolUseId: string) => void
 }) {
@@ -1662,7 +1746,7 @@ export const WorkingBubble = memo(function WorkingBubble({
             key={a.toolUseId}
             type={clickable ? 'button' : undefined}
             className={`subagent-chip${clickable ? ' subagent-chip-clickable' : ''}`}
-            title={clickable ? `Open subagent details 闂?${a.label}` : a.label}
+            title={clickable ? `Open subagent details - ${a.label}` : a.label}
             onClick={clickable ? () => onOpenSubagent(a.toolUseId) : undefined}
           >
             <span className="subagent-chip-dots" aria-hidden>

@@ -31,12 +31,13 @@ interface HomeResult {
 }
 
 interface Props {
+  open?: boolean
   initialPath?: string
   onPick: (path: string) => void
   onClose: () => void
 }
 
-export function DirectoryPicker({ initialPath, onPick, onClose }: Props) {
+export function DirectoryPicker({ open = true, initialPath, onPick, onClose }: Props) {
   const [path, setPath] = useState<string>(initialPath ?? '')
   const [draft, setDraft] = useState<string>(initialPath ?? '')
   const [home, setHome] = useState<HomeResult | null>(null)
@@ -120,7 +121,7 @@ export function DirectoryPicker({ initialPath, onPick, onClose }: Props) {
   // overlay always handles it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (open && e.key === 'Escape') {
         e.stopImmediatePropagation()
         e.preventDefault()
         onClose()
@@ -128,12 +129,17 @@ export function DirectoryPicker({ initialPath, onPick, onClose }: Props) {
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [onClose])
+  }, [onClose, open])
 
   const crumbs = buildCrumbs(path)
 
   return (
-    <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div
+      className="modal-backdrop"
+      data-state={open ? 'open' : 'closing'}
+      aria-hidden={!open}
+      onMouseDown={(e) => open && e.target === e.currentTarget && onClose()}
+    >
       <div className="modal">
         <div className="modal-header">
           <h3>Pick a working directory</h3>
@@ -250,4 +256,3 @@ export function DirectoryPicker({ initialPath, onPick, onClose }: Props) {
     </div>
   )
 }
-

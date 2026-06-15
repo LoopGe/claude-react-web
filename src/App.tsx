@@ -20,8 +20,10 @@ import { useTheme } from './hooks/useTheme'
 import { useToast } from './hooks/useToast'
 import { useWsHub, useWsHubStatus } from './hooks/useWsHub'
 import type { WsServerFrame } from './ws-types'
+import type { MessageSearchHit } from '../shared/search-results'
+import type { MessageJumpTarget } from '../shared/message-jump'
 import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, SidebarSection } from './types'
-import { PERMISSION_MODES } from './types'
+import { PERMISSION_MODE_CYCLE } from './types'
 import { ACCENT_COLORS } from './theme'
 import { AppearancePanel } from './components/AppearancePanel'
 import { ErrorBoundary } from './components/ErrorBoundary'
@@ -30,6 +32,7 @@ import { UpdateBanner } from './components/UpdateBanner'
 import { useUpdateInfo } from './hooks/useUpdateInfo'
 import { sessionStoreRegistry } from './session-store/registry'
 import { useAppOverlays } from './app/useAppOverlays'
+import { useExitPresence, usePresenceValue } from './hooks/useExitPresence'
 
 // Lazy-load heavy modal/overlay components that are only shown on demand.
 // This keeps the initial bundle lean — the user pays the download cost
@@ -75,7 +78,7 @@ export function App() {
    *  timer lapses (or is cancelled by Undo). */
   const [pendingDeleteIds, setPendingDeleteIds] = useState<Set<string>>(new Set())
   const [deletingSessionIds, setDeletingSessionIds] = useState<Set<string>>(new Set())
-  /** Ordered list of open session ids (oldest first). Length ≤ maxOpen. */
+  /** Ordered list of open session ids (oldest first). Length <= maxOpen. */
   const [openIds, setOpenIds] = useState<string[]>([])
   /** Which of the open panels is currently focused (controls settings
    *  panel target + clears unread when selected). */
@@ -122,10 +125,11 @@ export function App() {
   const [resumeTargetPanelId, setResumeTargetPanelId] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [historyPanelOpen, setHistoryPanelOpen] = useState(false)
+  const [messageJumpTarget, setMessageJumpTarget] = useState<MessageJumpTarget | null>(null)
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false)
   // Operational errors and one-shot notifications go through the global
   // toast hub (mounted in main.tsx). Use `toast.error(...)` for anything
-  // a user can dismiss/scan; persistent connection state (Reconnecting…)
+  // a user can dismiss/scan; persistent connection state (Reconnecting...)
   // is rendered separately as an inline banner — it's a status, not a
   // notification.
   const toast = useToast()
@@ -158,14 +162,19 @@ export function App() {
 
   // Composer snippets — a SINGLE global instance shared by every panel
   // (previously each Chat panel owned its own copy). Backed by the server
-  // (/api/snippets → disk) so they survive reloads and never disagree
+  // (/api/snippets — disk) so they survive reloads and never disagree
   // between panels. The manager + save dialogs render once at this level.
   const snippets = useComposerSnippets()
   const [showSnippetsManager, setShowSnippetsManager] = useState(false)
-  /** Set when the user picks "Save current input as snippet…" in a panel's
+  /** Set when the user picks "Save current input as snippet…  in a panel's
    *  composer. Holds the textarea snapshot so later edits don't mutate the
    *  captured content before the label is confirmed. */
   const [pendingSnippetSave, setPendingSnippetSave] = useState<{ content: string } | null>(null)
+  const resumeDialogPresence = useExitPresence(resumeDialogOpen)
+  const globalSettingsPresence = useExitPresence(globalSettingsOpen)
+  const snippetSavePresence = usePresenceValue(pendingSnippetSave)
+  const snippetsManagerPresence = useExitPresence(showSnippetsManager)
+  const helpPresence = useExitPresence(helpOpen)
   const snippetsRefresh = snippets.refresh
   const openSnippetsManager = useCallback(() => {
     // Pull the latest from the server each time the manager opens so a
@@ -178,9 +187,9 @@ export function App() {
   }, [])
   /** Max number of chat panels open at once, and max sessions per group.
    *  Shared setting because the main grid and groups should agree on
-   *  capacity. Server-driven via /api/config → config.json. */
+   *  capacity. Server-driven via /api/config — config.json. */
   const [serverMaxOpen, setServerMaxOpen] = useState<number>(3)
-  // True at/below the mobile breakpoint (≤768px). Drives single-panel mode
+  // True at/below the mobile breakpoint (<=768px). Drives single-panel mode
   // and the drawer sidebar.
   const isMobile = useIsMobile()
   // Swipe the drawer left to dismiss it — only active as a mobile drawer.
@@ -248,6 +257,7 @@ export function App() {
   const settingsOpenForRef = useRef(settingsOpenFor)
   const gitPanelOpenForRef = useRef(gitPanelOpenFor)
   const handleSelectRef = useRef<(id: string) => void>(() => {})
+  const jumpNonceRef = useRef(0)
   // Per-session interrupt callbacks registered by <Chat> components.
   // The ESC shortcut in the keyboard handler uses this to trigger the
   // same code-path as the Composer's interrupt button.
@@ -286,7 +296,7 @@ export function App() {
   resumeDialogOpenRef.current = resumeDialogOpen
   /* eslint-enable react-hooks/refs */
 
-  // When the panel capacity shrinks (e.g. desktop → mobile resize/rotation
+  // When the panel capacity shrinks (e.g. desktop — mobile resize/rotation
   // drops maxOpen to 1), `openSession`'s eviction only gates NEW opens — it
   // never retroactively trims already-open panels. Without this, narrowing
   // the viewport would leave 3 panels crammed into one column. Trim down to
@@ -330,7 +340,7 @@ export function App() {
   // keep seeing. Status comes from its own context (useWsHubStatus) so
   // hub identity stays stable across status flips.
   const hubStatus = useWsHubStatus()
-  const reconnectingBanner = hubStatus === 'reconnecting' ? 'Reconnecting to server…' : null
+  const reconnectingBanner = hubStatus === 'reconnecting' ? 'Reconnecting to server...' : null
 
   useEffect(() => {
     const off = hub.addListener((frame: WsServerFrame) => {
@@ -371,8 +381,7 @@ export function App() {
             return next
           })
           // If the update belongs to the currently-focused session AND
-          // the window is focused, the user is actively watching it —
-          // bump lastSeenTurn so a new turn doesn't render as unread
+          // the window is focused, the user is actively watching it —           // bump lastSeenTurn so a new turn doesn't render as unread
           // after the panel is closed, or in a non-focused open-panel
           // sibling. Mirrors maybeNotify's visibility gate so the two
           // behaviours stay consistent.
@@ -401,7 +410,7 @@ export function App() {
             return [frame.session, ...prev]
           })
           // Seed the edge-detector so a session that spawns already
-          // working doesn't fire a notification on its first true→false
+          // working doesn't fire a notification on its first true→ false
           // transition when the user is still watching it.
           seedWorkingState(frame.session.id, frame.session.working)
           break
@@ -425,7 +434,7 @@ export function App() {
           // Prune the deleted id from persisted sidebar order and group
           // membership. This is the authoritative real-time delete signal
           // (also fires for cross-tab deletes), so it's safe to remove here
-          // — unlike the snapshot handler, which could fire on an
+          // Unlike the snapshot handler, which could fire on an
           // incomplete session list and drop still-live members.
           setSidebarOrder((prev) =>
             prev.includes(frame.id) ? prev.filter((id) => id !== frame.id) : prev,
@@ -486,7 +495,7 @@ export function App() {
     return off
   }, [hub, maybeNotify, maybePermissionNotify, seedWorkingState, pruneSession, setLastSeenTurn, setSidebarOrder, setGroups])
 
-  // Hub status → reconnecting banner is derived inline (single ternary
+  // Hub status — reconnecting banner is derived inline (single ternary
   // above) — no effect needed.
 
   // When the window regains focus, bump the currently-focused session's
@@ -507,8 +516,8 @@ export function App() {
   }, [setLastSeenTurn])
 
   /** Push a session id onto the open list. Rules:
-   *  - Already open → just focus it, no reshuffle.
-   *  - Not open but ≥ maxOpen already → evict the oldest non-focused id.
+   *  - Already open — just focus it, no reshuffle.
+   *  - Not open but >= maxOpen already — evict the oldest non-focused id.
    *  - Append to the end and focus it.
    *  Also bumps the session's lastSeenTurn so opening clears unread. */
   const openSession = useCallback(
@@ -556,7 +565,7 @@ export function App() {
   const handleAddToGroup = useCallback(
     (sessionId: string, groupId: string) => {
       setGroups((prev) => {
-        // Empty groupId → just remove from all groups (ungroup).
+        // Empty groupId — just remove from all groups (ungroup).
         if (!groupId) {
           return prev.map((g) => ({
             ...g,
@@ -671,7 +680,7 @@ export function App() {
         permissionMode: source.permissionMode,
         title: source.title ? `${source.title} (copy)` : undefined,
         // Carry forward the beta flags so a 1M-context session stays 1M
-        // when copied. Without this, "new like this" silently downgrades
+        // when copie?. Without this, "new like this" silently downgrades
         // the window.
         betas: source.betas,
         groupId: sourceGroup?.id,
@@ -764,7 +773,7 @@ export function App() {
       const session = sessions.find((s) => s.id === id)
       const label = session?.title ?? id.slice(0, 8)
       // Play a short local exit animation first, then hide the card for
-      // the Undo grace window. The irreversible API call is still deferred.
+      // the Undo grace window. The irreversible API call is still deferre?.
       setDeletingSessionIds((prev) => new Set(prev).add(id))
       const EXIT_ANIMATION_MS = 260
       const UNDO_MS = 8000
@@ -869,7 +878,7 @@ export function App() {
         for (const id of valid) next[id] = now
         return next
       })
-      // Resume dormant sessions in the background.
+      // Resume dormant sessions in the backgroun?.
       for (const id of valid) {
         const s = sessions.find((x) => x.id === id)
         if (s && !s.running && !s.terminated) {
@@ -933,13 +942,13 @@ export function App() {
 
       const sessionGroup = groups.find((g) => g.sessionIds.includes(id))
 
-      // Ungrouped session → single-panel mode (replace all open panels).
+      // Ungrouped session — single-panel mode (replace all open panels).
       if (!sessionGroup) {
         setLastSeenTurn((prev) => ({ ...prev, [id]: s.lastTurnAt ?? Date.now() }))
         if (!s.running && !s.terminated && !resumingRef.current.has(id)) {
           // Resume FIRST, then open the panel — this ensures Chat mounts
           // with the session already running on the server, so the hub
-          // subscribe → replay flow is fully ready. Without this, the
+          // subscribe — replay flow is fully ready. Without this, the
           // panel shows a dormant placeholder that flashes to "loading"
           // when resume completes, and the replay may arrive before the
           // hub subscribe fires, losing messages.
@@ -987,6 +996,21 @@ export function App() {
   // eslint-disable-next-line react-hooks/refs -- intentional render-time ref sync, same rationale as the block above
   handleSelectRef.current = handleSelect
 
+  const handleSelectMessage = useCallback(
+    (hit: MessageSearchHit, query: string) => {
+      const target: MessageJumpTarget = {
+        nonce: ++jumpNonceRef.current,
+        sessionId: hit.sessionId,
+        query,
+        messageUuid: hit.messageUuid,
+        messageIndex: hit.messageIndex,
+        matchOrdinal: hit.matchOrdinal,
+      }
+      setMessageJumpTarget(target)
+      void handleSelect(hit.sessionId)
+    },
+    [handleSelect],
+  )
   // Sidebar selection wrapper: on mobile, also close the drawer after picking
   // a session. Memoised so SessionList's `renderCard` useCallback (which lists
   // onSelect as a dependency) keeps a stable identity — an inline arrow here
@@ -1032,7 +1056,7 @@ export function App() {
     document.title = count > 0 ? `(${count}) claude-react-web` : 'claude-react-web'
   }, [unread])
 
-  /** Open sessions, rendered in the order they were opened. Filter by
+  /** Open sessions, rendered in the order they were opene?. Filter by
    *  what the server currently reports so a deleted-on-server session
    *  disappears on the next poll. */
   const openSessions = useMemo(
@@ -1097,7 +1121,7 @@ export function App() {
           // ("Open" a past session) has no browser default.
           combo: 'mod+shift+o',
           handler: () => setResumeDialogOpen(true),
-          description: 'Resume session…',
+          description: 'Resume session...',
         },
         {
           combo: 'mod+k',
@@ -1111,7 +1135,7 @@ export function App() {
           description: 'Browse input history',
         },
         {
-          combo: 'mod+?',
+          combo: 'mod+x',
           handler: () => toggleShortcutHelp(helpOpenRef.current),
           allowInInput: true,
           description: 'Keyboard shortcuts',
@@ -1124,8 +1148,8 @@ export function App() {
             const s = sessionsRef.current.find((x) => x.id === fid)
             if (!s) return
             const cur = (s.permissionMode ?? 'default') as PermissionMode
-            const idx = PERMISSION_MODES.indexOf(cur)
-            const next = PERMISSION_MODES[(idx + 1) % PERMISSION_MODES.length]
+            const idx = PERMISSION_MODE_CYCLE.indexOf(cur)
+            const next = idx >= 0 ? PERMISSION_MODE_CYCLE[(idx + 1) % PERMISSION_MODE_CYCLE.length] : 'default'
             void api.post(`/sessions/${fid}/permission-mode`, { mode: next })
           },
           description: 'Cycle permission mode',
@@ -1144,7 +1168,7 @@ export function App() {
             // Escape ownership is two-tier:
             //   1. Focus-trapped dialogs (PermissionDialog, QuestionDialog) and
             //      nested overlays (DirectoryPicker) handle Escape LOCALLY and
-            //      stop propagation — they need custom semantics (deny / skip /
+            //      stop propagation xthey need custom semantics (deny / skip /
             //      dismiss-just-this-layer) and must NOT fall through to the
             //      "interrupt session" branch below.
             //   2. Every other non-trapping overlay routes through this single
@@ -1164,7 +1188,7 @@ export function App() {
               const focused = sessionsRef.current.find((s) => s.id === focusedIdRef.current)
               if (focused?.working) {
                 // Use the registered interrupt callback (set by <Chat>).
-                // The result message's "interrupted" (⊘) label is derived
+                // The result message's "interrupted" (?) label is derived
                 // from the SDK `terminal_reason`, not from this call-path.
                 const fn = interruptFnsRef.current.get(focusedIdRef.current)
                 if (fn) {
@@ -1187,7 +1211,7 @@ export function App() {
 
   /** Final sidebar order: sidebarOrder[] wins for ids it contains; anything
    *  not listed falls back to the server's lastActivityAt sort. Ids in the
-   *  saved order but no longer present on the server are dropped. */
+   *  saved order but no longer present on the server are droppe?. */
   const orderedSessions = useMemo(() => {
     // Sessions in the Undo grace window are hidden from the sidebar but
     // still live on the server until the timer commits the delete.
@@ -1211,10 +1235,7 @@ export function App() {
   /** Grouped sidebar view: groups -> ungrouped. Sessions not in any group
    *  appear in the "Ungrouped" section at the bottom. */
   const sidebarSections = useMemo((): SidebarSection[] => {
-    const visible = pendingDeleteIds.size
-      ? sessions.filter((s) => !pendingDeleteIds.has(s.id))
-      : sessions
-    const byId = new Map(visible.map((s) => [s.id, s]))
+    const byId = new Map(orderedSessions.map((s) => [s.id, s]))
 
     // 1. Group sections.
     const sections: SidebarSection[] = []
@@ -1233,7 +1254,7 @@ export function App() {
 
     // 2. Ungrouped sessions (not in any group).
     const ungrouped: SessionInfo[] = []
-    for (const s of visible) {
+    for (const s of orderedSessions) {
       if (!groupedIds.has(s.id)) ungrouped.push(s)
     }
     if (ungrouped.length > 0) {
@@ -1241,7 +1262,7 @@ export function App() {
     }
 
     return sections
-  }, [sessions, groups, pendingDeleteIds])
+  }, [orderedSessions, groups])
 
   /** Reorder callback wired to the sidebar's DnD. Moves `draggedId` so it
    *  lands either before or after `targetId`. Dropping on itself is a
@@ -1348,7 +1369,7 @@ export function App() {
   const openAtSlot = useCallback(
     (id: string, targetId: string, lastTurnAt: number | undefined) => {
       setOpenIds((prev) => {
-        // Already open? Just swap into the target slot.
+        // Already openx Just swap into the target slot.
         if (prev.includes(id)) {
           const i = prev.indexOf(id)
           const j = prev.indexOf(targetId)
@@ -1414,7 +1435,7 @@ export function App() {
   )
 
   // Opened from a panel's `/resume`: remember which slot to replace, then pop
-  // the picker. onResume (below) branches on resumeTargetPanelId.
+  // the picker. onResume (below) branches on resumeTargetPanelI?.
   const requestResumeForPanel = useCallback((panelSessionId: string) => {
     setResumeTargetPanelId(panelSessionId)
     setResumeDialogOpen(true)
@@ -1469,14 +1490,21 @@ export function App() {
     // snapshot would still reflect the previous URL (or `disabled`)
     // until the cache TTL expires. A force refresh here makes "save"
     // feel responsive — the banner / About tab reflect the new URL
-    // before the modal is fully closed.
+    // before the modal is fully close?.
     updateInfo.refresh()
   }, [refreshConfigResponse, updateInfo])
 
   if (isConfigured === null) {
     return (
       <div className="app-loading">
-        <div className="app-loading-spinner" />
+        <div className="app-loading-card" role="status" aria-live="polite">
+          <span className="brand-dot app-loading-dot" aria-hidden />
+          <div className="app-loading-copy">
+            <p className="app-loading-title">Claude Web</p>
+            <p className="app-loading-subtitle">Loading workspace...</p>
+          </div>
+          <div className="app-loading-spinner" aria-hidden />
+        </div>
       </div>
     )
   }
@@ -1485,7 +1513,14 @@ export function App() {
       <Suspense
         fallback={
           <div className="app-loading">
-            <div className="app-loading-spinner" />
+            <div className="app-loading-card" role="status" aria-live="polite">
+              <span className="brand-dot app-loading-dot" aria-hidden />
+              <div className="app-loading-copy">
+                <p className="app-loading-title">Claude Web</p>
+                <p className="app-loading-subtitle">Preparing setup...</p>
+              </div>
+              <div className="app-loading-spinner" aria-hidden />
+            </div>
           </div>
         }
       >
@@ -1572,8 +1607,7 @@ export function App() {
       {/* tabIndex={-1} makes the landmark a programmatic focus target so
           activating the skip-link (`href="#main"`) actually moves focus
           here. Without it, the browser scrolls into view but focus stays
-          at the link, and the next Tab walks back through the sidebar —
-          defeating the whole point of the skip-link. */}
+          at the link, and the next Tab walks back through the sidebar ?           defeating the whole point of the skip-link. */}
       <main className="main" id="main" tabIndex={-1} aria-label="Chat panels">
         <header className="main-header">
           {/* Hamburger toggles the drawer sidebar. Rendered only on mobile;
@@ -1591,7 +1625,7 @@ export function App() {
           )}
           {/* The header used to echo the focused session's title / model /
               mode / cwd, but with up to three panels open that information
-              is already visible inside each ChatPanel header — duplicating
+              is already visible inside each ChatPanel header ? duplicating
               it at the top was both redundant and subtly wrong (it looked
               like "the active session" when all three are active). Now the
               row holds only the app-level toolbar. */}
@@ -1714,6 +1748,7 @@ export function App() {
                     onClose={closeSession}
                     onSessionUpdate={updateSession}
                     settingsOpen={settingsOpenFor === s.id}
+                    messageJumpTarget={messageJumpTarget?.sessionId === s.id ? messageJumpTarget : null}
                     onOpenSettings={handleOpenSettings}
                     onCloseSettings={handleCloseSettings}
                     gitPanelOpen={gitPanelOpenFor === s.id}
@@ -1764,6 +1799,7 @@ export function App() {
           onClose={() => setPaletteOpen(false)}
           shortcuts={shortcuts}
           sessions={sessions}
+          onSelectMessage={handleSelectMessage}
           onSelectSession={(id) => {
             if (openIds.includes(id)) {
               setFocusedId(id)
@@ -1788,13 +1824,14 @@ export function App() {
         />
       </Suspense>
 
-      {resumeDialogOpen && (
+      {resumeDialogPresence.shouldRender && (
         <Suspense fallback={null}>
           <ResumeSessionDialog
+            open={resumeDialogOpen}
             defaultCwd={defaults.cwd}
             onResume={(id) => {
               setResumeDialogOpen(false)
-              // Panel-scoped `/resume`: replace that panel's slot with the
+              // Panel-scope `/resume`: replace that panel's slot with the
               // picked session instead of opening a new panel.
               if (resumeTargetPanelId) {
                 const target = resumeTargetPanelId
@@ -1824,7 +1861,7 @@ export function App() {
         </Suspense>
       )}
 
-      {helpOpen && (
+      {helpPresence.shouldRender && (
         <Suspense fallback={null}>
           <ShortcutHelp
             open={helpOpen}
@@ -1835,9 +1872,10 @@ export function App() {
         </Suspense>
       )}
 
-      {globalSettingsOpen && (
+      {globalSettingsPresence.shouldRender && (
         <Suspense fallback={null}>
           <GlobalSettingsModal
+            open={globalSettingsOpen}
             onClose={() => setGlobalSettingsOpen(false)}
             onSaved={handleGlobalSettingsSaved}
             updateInfo={updateInfo.info}
@@ -1853,31 +1891,37 @@ export function App() {
       {/* Composer snippet dialogs — rendered ONCE at app level (a single
           global instance shared by every panel). Use .perm-overlay which
           covers the viewport and centers the card. */}
-      {pendingSnippetSave && (
-        <Suspense fallback={null}>
-          <PromptDialog
-            title="Save snippet"
-            message={
-              <>
-                <p>Pick a label for this snippet. The current composer text will be saved as its content.</p>
-                <pre className="snippet-save-preview">{pendingSnippetSave.content}</pre>
-              </>
-            }
-            defaultValue=""
-            confirmLabel="Save"
-            placeholder="Snippet label"
-            onConfirm={(label) => {
-              snippets.add(label, pendingSnippetSave.content)
-              setPendingSnippetSave(null)
-            }}
-            onCancel={() => setPendingSnippetSave(null)}
-          />
-        </Suspense>
-      )}
+      {(() => {
+        const snippetSave = snippetSavePresence.value
+        if (!snippetSave) return null
+        return (
+          <Suspense fallback={null}>
+            <PromptDialog
+              open={pendingSnippetSave != null}
+              title="Save snippet"
+              message={
+                <>
+                  <p>Pick a label for this snippet. The current composer text will be saved as its content.</p>
+                  <pre className="snippet-save-preview">{snippetSave.content}</pre>
+                </>
+              }
+              defaultValue=""
+              confirmLabel="Save"
+              placeholder="Snippet label"
+              onConfirm={(label) => {
+                snippets.add(label, snippetSave.content)
+                setPendingSnippetSave(null)
+              }}
+              onCancel={() => setPendingSnippetSave(null)}
+            />
+          </Suspense>
+        )
+      })()}
 
-      {showSnippetsManager && (
+      {snippetsManagerPresence.shouldRender && (
         <Suspense fallback={null}>
           <SnippetsManagerDialog
+            open={showSnippetsManager}
             api={snippets}
             onClose={() => setShowSnippetsManager(false)}
           />

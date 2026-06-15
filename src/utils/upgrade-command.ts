@@ -1,7 +1,7 @@
 // Builds the shell command shown in the update banner and the About tab.
 //
 // Two things make a hardcoded `npx <name>@latest` wrong:
-//   1. The published name may change (scoped vs unscoped) — using the wrong
+//   1. The published name may change (scope vs unscoped) — using the wrong
 //      one installs a different package or 404s.
 //   2. It may live on a private registry — without `--registry=<…>` the
 //      command hits the public registry instead.

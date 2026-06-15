@@ -16,6 +16,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { INPUT_HISTORY_KEY } from './Chat'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import { normalizeEntries } from '../hooks/useInputHistory'
+import { useExitPresence } from '../hooks/useExitPresence'
 
 interface Props {
   open: boolean
@@ -43,6 +44,7 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
   const [selectedIndex, setSelectedIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const presence = useExitPresence(open)
 
   // Split into current-session vs. everything-else, each deduped & filtered.
   const { sessionItems, otherItems, flat } = useMemo(() => {
@@ -111,7 +113,7 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
     return () => window.removeEventListener('keydown', onKey, true)
   }, [open, onClose])
 
-  if (!open) return null
+  if (!presence.shouldRender) return null
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
@@ -149,8 +151,12 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
   )
 
   return (
-    <div className="palette-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
-      <div className="palette" role="dialog" aria-modal="true" aria-label="Input history" onKeyDown={handleKeyDown}>
+    <div
+      className="palette-backdrop"
+      data-state={open ? 'open' : 'closing'}
+      onMouseDown={(e) => { if (open && e.target === e.currentTarget) onClose() }}
+    >
+      <div className="palette" role="dialog" aria-modal={open ? 'true' : 'false'} aria-label="Input history" onKeyDown={handleKeyDown}>
         <input
           ref={inputRef}
           className="palette-input"

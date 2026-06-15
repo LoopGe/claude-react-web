@@ -10,7 +10,7 @@
 // - Inbound: subscribe / unsubscribe / ping. User turns go through REST.
 // - Outbound: self-describing frames with no stream-order dependency.
 
-// --- inbound (client → server) -----------------------------------------------
+// --- inbound (client — server) -----------------------------------------------
 
 /** Ask the server to start streaming events for `sessionId` on this
  *  connection. The server responds with a `replay` frame (possibly empty)
@@ -43,7 +43,7 @@ export interface WsPing {
 
 export type WsClientFrame = WsSubscribe | WsUnsubscribe | WsPing
 
-// --- outbound (server → client) ----------------------------------------------
+// --- outbound (server — client) ----------------------------------------------
 
 /** Initial session list snapshot + subsequent updates. */
 export interface WsSessionsSnapshot<Session> {
@@ -159,7 +159,7 @@ export interface WsMessageConsumed {
  *  Carries the full SessionRecap shape (or undefined to mean "cleared by
  *  invalidate"). The same shape rides on SessionInfo for full session
  *  updates; this dedicated frame exists so live tabs see the lifecycle
- *  transitions (pending → ready) without the server having to fan out a
+ *  transitions (pending — ready) without the server having to fan out a
  *  whole SessionInfo object on every recap step.
  *
  *  Recap is parameterised because the browser uses an inline copy of the
@@ -185,6 +185,16 @@ export interface WsSessionCleared {
   sessionId: string
 }
 
+
+/** Full slash-command list changed inside a running session. The SDK emits
+ *  this after dynamic skill/command discovery or reload; clients should
+ *  replace their cached command list for the session with this payload. */
+export interface WsCommandsChanged<Command> {
+  kind: 'commands-changed'
+  sessionId: string
+  commands: Command[]
+}
+
 /** Heartbeat reply. */
 export interface WsPong {
   kind: 'pong'
@@ -201,7 +211,7 @@ export interface WsError {
   sessionId?: string
 }
 
-export type WsServerFrame<Session, Msg, Perm, Decision, Recap> =
+export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never> =
   | WsSessionsSnapshot<Session>
   | WsSessionUpdate<Session>
   | WsSessionCreated<Session>
@@ -217,6 +227,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap> =
   | WsMessageConsumed
   | WsSessionRecapUpdate<Recap>
   | WsSessionCleared
+  | WsCommandsChanged<Command>
   | WsPong
   | WsError
 

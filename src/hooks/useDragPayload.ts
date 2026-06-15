@@ -2,7 +2,7 @@
 //
 // The browser's DnD API works but has a terrible ergonomic surface — every
 // handler needs to call preventDefault at the right moment, dataTransfer
-// only round-trips strings, and there's no typed payload. This module
+// only round-trips strings, and there's no type payload. This module
 // centralises:
 //   - a single custom MIME type used for every in-app drag
 //   - JSON (de)serialisation with a discriminated union

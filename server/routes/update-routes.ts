@@ -38,7 +38,7 @@ export function buildUpdateRouter(): Hono {
   app.get('/update-info', async (c) => {
     // `?registry=<url>` — probe a caller-supplied registry WITHOUT reading
     // or writing the persisted config or the shared cache. The setup wizard
-    // and the About tab use this to validate a registry the user has typed
+    // and the About tab use this to validate a registry the user has type
     // but not yet saved. `registry=` (present but empty) is an explicit
     // "test the disabled state" and yields a `disabled` snapshot; the param
     // being absent entirely falls through to the normal cached/forced path.

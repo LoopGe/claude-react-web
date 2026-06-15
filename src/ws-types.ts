@@ -5,11 +5,11 @@
 // (unknown for SDK messages, PermissionRequest for permission payloads)
 // so the frontend never imports `@anthropic-ai/claude-agent-sdk`.
 
-import type { PermissionRequest, SessionInfo } from './types'
+import type { PermissionRequest, SessionInfo, SlashCommand } from './types'
 import type { SessionRecap } from '../shared/session-info.js'
 import type * as shared from '../shared/ws-protocol.js'
 
-// --- inbound (client → server) -----------------------------------------------
+// --- inbound (client — server) -----------------------------------------------
 // These need no type parameters — re-export directly.
 export type {
   WsSubscribe,
@@ -18,7 +18,7 @@ export type {
   WsClientFrame,
 } from '../shared/ws-protocol.js'
 
-// --- outbound (server → client) ----------------------------------------------
+// --- outbound (server — client) ----------------------------------------------
 // Instantiate generic frames with the browser's payload types.
 
 export type WsSessionsSnapshot = shared.WsSessionsSnapshot<SessionInfo>
@@ -34,14 +34,15 @@ export type WsMessage = shared.WsMessage<unknown>
 export type WsPermissionRequest = shared.WsPermissionRequest<PermissionRequest>
 export type WsPermissionResolved = shared.WsPermissionResolved<shared.PermissionDecision>
 export type WsSessionRecapUpdate = shared.WsSessionRecapUpdate<SessionRecap>
-export type { WsContextUsage, WsGitStatusChanged, WsMessageConsumed, WsSessionCleared, WsPong, WsError, PermissionDecision } from '../shared/ws-protocol.js'
+export type { WsContextUsage, WsGitStatusChanged, WsMessageConsumed, WsSessionCleared, WsCommandsChanged, WsPong, WsError, PermissionDecision } from '../shared/ws-protocol.js'
 
 export type WsServerFrame = shared.WsServerFrame<
   SessionInfo,
   unknown,
   PermissionRequest,
   shared.PermissionDecision,
-  SessionRecap
+  SessionRecap,
+  SlashCommand
 >
 
 export { WS_PATH } from '../shared/ws-protocol.js'

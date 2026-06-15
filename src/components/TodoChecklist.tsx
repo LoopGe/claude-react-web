@@ -225,7 +225,7 @@ function extractFromTaskEvents(messages: SdkMessage[]): Todo[] | null {
   }
 
   // Index of the most recent genuine user-INPUT message (text/image the user
-  // typed — NOT a tool_result, which the SDK also wraps in a `user` frame).
+  // type — NOT a tool_result, which the SDK also wraps in a `user` frame).
   // This is the cleanup boundary: a completed task whose last create/update
   // predates this turn belongs to a previous request the user has moved on
   // from, so it's stale and gets cleaned up. Tasks touched at or after this
@@ -341,8 +341,8 @@ function extractFromTaskEvents(messages: SdkMessage[]): Todo[] | null {
   return out
 }
 
-/** True for a genuine user-typed message (text and/or image blocks), false
- *  for the `user`-typed frames the SDK uses to carry tool_results. Mirrors
+/** True for a genuine user-type message (text and/or image blocks), false
+ *  for the `user`-type frames the SDK uses to carry tool_results. Mirrors
  *  the discriminator in server/session-pump.ts: a frame is input iff it
  *  carries NO tool_result block. A string content body is plain text → input. */
 function isUserInputMessage(msg: SdkMessage): boolean {

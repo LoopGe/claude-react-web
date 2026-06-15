@@ -28,6 +28,7 @@ interface Props {
   /** Called with the chosen concrete model id. */
   onSelect: (model: string) => void
   onClose: () => void
+  isExiting?: boolean
 }
 
 /** A flattened, selectable row. `kind` drives the value passed to onSelect. */
@@ -43,7 +44,7 @@ interface Row {
   select: () => void
 }
 
-export function ModelPicker({ anchor, current, options, disabled, onSelect, onClose }: Props) {
+export function ModelPicker({ anchor, current, options, disabled, onSelect, onClose, isExiting = false }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
@@ -187,9 +188,11 @@ export function ModelPicker({ anchor, current, options, disabled, onSelect, onCl
     <div
       ref={ref}
       className="model-picker"
+      data-state={isExiting ? 'closing' : 'open'}
       style={{ left: pos.x, top: pos.y }}
       role="dialog"
       aria-label="Select model"
+      aria-hidden={isExiting}
       onMouseDown={(e) => e.stopPropagation()}
       onKeyDown={handleKeyDown}
     >

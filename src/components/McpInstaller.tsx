@@ -10,6 +10,7 @@ import type { McpServerConfigMeta, McpServerInput } from '../types'
 import { IconX } from './icons/ToolIcons'
 
 interface Props {
+  open?: boolean
   /** If set, we're editing an existing server (name is locked). */
   server?: McpServerConfigMeta
   onSave: () => void
@@ -30,7 +31,7 @@ function recordFromRows(rows: KvRow[]): Record<string, string> | undefined {
   return entries.length > 0 ? Object.fromEntries(entries) : undefined
 }
 
-export function McpInstaller({ server, onSave, onClose }: Props) {
+export function McpInstaller({ open = true, server, onSave, onClose }: Props) {
   const isEdit = !!server
 
   const [name, setName] = useState(server?.name ?? '')
@@ -56,10 +57,10 @@ export function McpInstaller({ server, onSave, onClose }: Props) {
 
   // Esc closes
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    const onKey = (e: KeyboardEvent) => { if (open && e.key === 'Escape') onClose() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [onClose, open])
 
   const updateRow = (rows: KvRow[], setter: (r: KvRow[]) => void, id: string, field: 'key' | 'value', val: string) => {
     setter(rows.map((r) => (r.id === id ? { ...r, [field]: val } : r)))
@@ -124,7 +125,7 @@ export function McpInstaller({ server, onSave, onClose }: Props) {
         } else {
           if (url.trim() !== (server!.url ?? '')) update.url = url.trim()
         }
-        // Only send env/headers when user typed new values
+        // Only send env/headers when user type new values
         const envUpdate = recordFromRows(envRows.filter((r) => r.value.trim()))
         if (envUpdate) update.env = envUpdate
         const hdrUpdate = recordFromRows(headerRows.filter((r) => r.value.trim()))
@@ -147,7 +148,12 @@ export function McpInstaller({ server, onSave, onClose }: Props) {
   // without the portal this modal's `inset:0` resolves against the narrow
   // chat-panel column instead of the viewport, rendering it tiny.
   return createPortal(
-    <div className="modal-backdrop" onClick={onClose}>
+    <div
+      className="modal-backdrop"
+      data-state={open ? 'open' : 'closing'}
+      aria-hidden={!open}
+      onClick={() => { if (open) onClose() }}
+    >
       <div className="modal" style={{ width: 'min(520px, 92vw)' }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h3>{isEdit ? `Edit: ${server!.name}` : 'Add MCP Server'}</h3>

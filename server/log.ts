@@ -1,4 +1,4 @@
-// Lightweight scoped logger with level filtering.
+// Lightweight scope logger with level filtering.
 //
 // Usage:
 //   const log = createLogger('broker')

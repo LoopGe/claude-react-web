@@ -126,7 +126,7 @@ function persistToStorage(sessionId: string, state: SessionState): void {
       id: i.id,
       isCompactSummary: i.isCompactSummary,
       hiddenByDefault: i.hiddenByDefault,
-      // Store msg as raw object — SdkMessage is loosely typed
+      // Store msg as raw object — SdkMessage is loosely type
       msg: i.msg,
     })),
     lastMessageUuid: state.lastMessageUuid,

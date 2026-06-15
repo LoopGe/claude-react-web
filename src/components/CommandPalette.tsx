@@ -1,17 +1,10 @@
-// Command palette — fuzzy-searchable list of actions and sessions.
-//
-// Triggered globally via Mod+K. Shows a search input at the top and a
-// scrollable list of matching commands below. Users can navigate with
-// arrow keys, confirm with Enter, and dismiss with Escape.
-//
-// Two kinds of items appear in the list:
-//   1. Registered keyboard shortcuts (from useKeyboardShortcuts) —
-//      labelled with their combo and a description.
-//   2. Open sessions — labelled with their title or id so the user can
-//      quick-switch without touching the sidebar.
+// Command palette - fuzzy-searchable list of actions, sessions, and message hits.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { MessageSearchHit, MessageSearchResponse } from '../../shared/search-results.js'
 import type { Shortcut } from '../hooks/useKeyboardShortcuts'
+import { api } from '../hooks/useApi'
+import { useExitPresence } from '../hooks/useExitPresence'
 import type { SessionInfo } from '../types'
 import { formatCombo } from '../utils/format-combo'
 
@@ -21,79 +14,146 @@ interface Props {
   shortcuts: Shortcut[]
   sessions: SessionInfo[]
   onSelectSession: (id: string) => void
+  onSelectMessage: (hit: MessageSearchHit, query: string) => void
 }
+
+type PaletteSection = 'Commands' | 'Sessions' | 'Messages'
 
 interface PaletteItem {
   id: string
+  section: PaletteSection
   label: string
   hint?: string
+  detail?: string
   action: () => void
 }
 
-export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSession }: Props) {
+function messageLabel(hit: MessageSearchHit): string {
+  return hit.sessionTitle || hit.sessionId.slice(0, 12)
+}
+
+export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSession, onSelectMessage }: Props) {
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
+  const [messageHits, setMessageHits] = useState<MessageSearchHit[]>([])
+  const [messageSearchLoading, setMessageSearchLoading] = useState(false)
+  const [messageSearchError, setMessageSearchError] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const presence = useExitPresence(open)
+  const trimmedQuery = query.trim()
 
-  // Build the full item list once per open.
-  const items: PaletteItem[] = useMemo(() => {
+  const localItems: PaletteItem[] = useMemo(() => {
     const result: PaletteItem[] = []
-    // Keyboard shortcuts
-    for (const s of shortcuts) {
-      if (!s.description) continue
+    for (const shortcut of shortcuts) {
+      if (!shortcut.description) continue
       result.push({
-        id: `shortcut:${s.combo}`,
-        label: s.description,
-        hint: formatCombo(s.combo),
-        action: () => s.handler(new KeyboardEvent('keydown')),
+        id: `shortcut:${shortcut.combo}`,
+        section: 'Commands',
+        label: shortcut.description,
+        hint: formatCombo(shortcut.combo),
+        action: () => shortcut.handler(new KeyboardEvent('keydown')),
       })
     }
-    // Sessions
-    for (const s of sessions) {
-      const label = s.title || s.id.slice(0, 12)
+    for (const session of sessions) {
+      const label = session.title || session.id.slice(0, 12)
       result.push({
-        id: `session:${s.id}`,
+        id: `session:${session.id}`,
+        section: 'Sessions',
         label,
-        hint: s.cwd,
-        action: () => onSelectSession(s.id),
+        hint: session.cwd,
+        action: () => onSelectSession(session.id),
       })
     }
     return result
   }, [shortcuts, sessions, onSelectSession])
 
-  const filtered = useMemo(() => {
-    if (!query) return items
-    const q = query.toLowerCase()
-    return items.filter(
-      (it) => it.label.toLowerCase().includes(q) || it.hint?.toLowerCase().includes(q),
-    )
-  }, [items, query])
+  useEffect(() => {
+    if (!open || trimmedQuery.length < 2) {
+      setMessageHits([])
+      setMessageSearchLoading(false)
+      setMessageSearchError(false)
+      return
+    }
 
-  // Reset state when opening. The synchronous setState is intentional:
-  // this is a UI-level reset that must happen before the first paint so
-  // the user never sees stale content from a previous invocation.
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      setMessageSearchLoading(true)
+      setMessageSearchError(false)
+      void api
+        .get<MessageSearchResponse>(`/search/messages?q=${encodeURIComponent(trimmedQuery)}&limit=20`, {
+          signal: controller.signal,
+          timeoutMs: 10_000,
+        })
+        .then((res) => {
+          if (!controller.signal.aborted) setMessageHits(res.hits)
+        })
+        .catch((err) => {
+          if (controller.signal.aborted) return
+          console.warn('[command-palette] message search failed:', err)
+          setMessageHits([])
+          setMessageSearchError(true)
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setMessageSearchLoading(false)
+        })
+    }, 180)
+
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [open, trimmedQuery])
+
+  const filtered = useMemo(() => {
+    const local = (() => {
+      if (!trimmedQuery) return localItems
+      const q = trimmedQuery.toLowerCase()
+      return localItems.filter(
+        (item) => item.label.toLowerCase().includes(q) || item.hint?.toLowerCase().includes(q),
+      )
+    })()
+
+    if (trimmedQuery.length < 2) return local
+
+    return [
+      ...local,
+      ...messageHits.map((hit): PaletteItem => ({
+        id: `message:${hit.id}`,
+        section: 'Messages',
+        label: messageLabel(hit),
+        hint: hit.matchCount > 1 ? `${hit.matchCount} matches` : '1 match',
+        detail: hit.snippet,
+        action: () => onSelectMessage(hit, trimmedQuery),
+      })),
+    ]
+  }, [localItems, messageHits, onSelectMessage, trimmedQuery])
+
   /* eslint-disable react-hooks/set-state-in-effect -- intentional UI reset on open */
   useLayoutEffect(() => {
     if (open) {
       setQuery('')
       setSelectedIndex(0)
+      setMessageHits([])
+      setMessageSearchLoading(false)
+      setMessageSearchError(false)
     }
   }, [open])
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  // Auto-focus the input on mount / open.
   useLayoutEffect(() => {
     if (open) inputRef.current?.focus()
   }, [open])
 
-  // Keep selected item in view.
   useEffect(() => {
-    const el = listRef.current?.children[selectedIndex] as HTMLElement | undefined
+    setSelectedIndex((index) => Math.min(index, Math.max(0, filtered.length - 1)))
+  }, [filtered.length])
+
+  useEffect(() => {
+    const el = listRef.current?.querySelectorAll<HTMLElement>('[data-palette-option]')[selectedIndex]
     el?.scrollIntoView({ block: 'nearest' })
   }, [selectedIndex])
 
-  // Capture-phase Escape so it fires even if a child is focused.
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
@@ -106,34 +166,45 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
     return () => window.removeEventListener('keydown', onKey, true)
   }, [open, onClose])
 
-  if (!open) return null
+  if (!presence.shouldRender) return null
+
+  const runSelected = () => {
+    filtered[selectedIndex]?.action()
+    onClose()
+  }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
-      setSelectedIndex((i) => Math.min(i + 1, filtered.length - 1))
+      setSelectedIndex((index) => Math.min(index + 1, filtered.length - 1))
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
-      setSelectedIndex((i) => Math.max(i - 1, 0))
+      setSelectedIndex((index) => Math.max(index - 1, 0))
     } else if (e.key === 'Enter' && filtered.length > 0) {
       e.preventDefault()
-      filtered[selectedIndex]?.action()
-      onClose()
+      runSelected()
     } else if (e.key === 'Tab') {
-      // Focus trap: keep Tab inside the palette.
       e.preventDefault()
       inputRef.current?.focus()
     }
   }
 
+  let lastSection: PaletteSection | null = null
+  const showSearching = trimmedQuery.length >= 2 && messageSearchLoading && messageHits.length === 0
+  const showSearchError = trimmedQuery.length >= 2 && messageSearchError && messageHits.length === 0
+
   return (
-    <div className="palette-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
-      <div className="palette" role="dialog" aria-modal="true" aria-label="Command palette" onKeyDown={handleKeyDown}>
+    <div
+      className="palette-backdrop"
+      data-state={open ? 'open' : 'closing'}
+      onMouseDown={(e) => { if (open && e.target === e.currentTarget) onClose() }}
+    >
+      <div className="palette" role="dialog" aria-modal={open ? 'true' : 'false'} aria-label="Command palette" onKeyDown={handleKeyDown}>
         <input
           ref={inputRef}
           className="palette-input"
           type="text"
-          placeholder="Search commands and sessions…"
+          placeholder="Search commands, sessions, and messages..."
           value={query}
           onChange={(e) => { setQuery(e.target.value); setSelectedIndex(0) }}
           aria-label="Search"
@@ -142,26 +213,37 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
           aria-activedescendant={filtered[selectedIndex] ? `palette-item-${selectedIndex}` : undefined}
         />
         <div className="palette-list" ref={listRef} id="palette-list" role="listbox">
-          {filtered.length === 0 && (
+          {filtered.length === 0 && !showSearching && !showSearchError && (
             <div className="palette-empty">No matches</div>
           )}
-          {filtered.map((item, i) => (
-            <button
-              key={item.id}
-              id={`palette-item-${i}`}
-              className={`palette-item${i === selectedIndex ? ' selected' : ''}`}
-              role="option"
-              aria-selected={i === selectedIndex}
-              onMouseEnter={() => setSelectedIndex(i)}
-              onClick={() => { item.action(); onClose() }}
-            >
-              <span className="palette-item-label">{item.label}</span>
-              {item.hint && <span className="palette-item-hint">{item.hint}</span>}
-            </button>
-          ))}
+          {filtered.map((item, index) => {
+            const showSection = item.section !== lastSection
+            lastSection = item.section
+            return (
+              <div key={item.id}>
+                {showSection && <div className="palette-section-label">{item.section}</div>}
+                <button
+                  id={`palette-item-${index}`}
+                  className={`palette-item${index === selectedIndex ? ' selected' : ''}${item.detail ? ' palette-item-message' : ''}`}
+                  role="option"
+                  aria-selected={index === selectedIndex}
+                  data-palette-option="true"
+                  onMouseEnter={() => setSelectedIndex(index)}
+                  onClick={() => { item.action(); onClose() }}
+                >
+                  <span className="palette-item-main">
+                    <span className="palette-item-label">{item.label}</span>
+                    {item.detail && <span className="palette-item-detail">{item.detail}</span>}
+                  </span>
+                  {item.hint && <span className="palette-item-hint">{item.hint}</span>}
+                </button>
+              </div>
+            )
+          })}
+          {showSearching && <div className="palette-empty">Searching messages...</div>}
+          {showSearchError && <div className="palette-empty">Message search failed</div>}
         </div>
       </div>
     </div>
   )
 }
-

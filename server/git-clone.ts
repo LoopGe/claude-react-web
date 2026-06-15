@@ -41,7 +41,7 @@ const NON_INTERACTIVE_ENV: NodeJS.ProcessEnv = {
 
 /** Reject everything that isn't a plain `https://` URL. We deliberately
  *  don't allow `git://`, `ssh://`, file paths, or `owner/repo` shorthand
- *  in v1 — the user explicitly scoped the source list to https-only.
+ *  in v1 — the user explicitly scope the source list to https-only.
  *  Callers can normalise / expand other forms before passing in. */
 export function assertHttpsUrl(url: string): void {
   if (typeof url !== 'string' || !url) {
@@ -143,7 +143,7 @@ export async function gitCloneAtSha(
     await runGitOutside(['-C', dest, 'checkout', opts.sha], undefined, CLONE_TIMEOUT_MS)
   } catch (err) {
     // The default clone may not contain a sha that lives only on an
-    // unmerged ref. If the manifest named a ref, fetch it and retry once.
+    // unmerged ref. If the manifest name a ref, fetch it and retry once.
     if (opts.ref && typeof opts.ref === 'string' && !opts.ref.includes('\0') && opts.ref.length <= 256) {
       await runGitOutside(['-C', dest, 'fetch', 'origin', opts.ref], undefined, FULL_CLONE_TIMEOUT_MS)
       await runGitOutside(['-C', dest, 'checkout', opts.sha], undefined, CLONE_TIMEOUT_MS)

@@ -6,6 +6,12 @@ describe('matchLocalCommand', () => {
     expect(matchLocalCommand('/resume')?.name).toBe('resume')
     expect(matchLocalCommand('/mcp')?.name).toBe('mcp')
     expect(matchLocalCommand('/help')?.name).toBe('help')
+    expect(matchLocalCommand('/clear')?.name).toBe('clear')
+  })
+
+  it('matches clear aliases', () => {
+    expect(matchLocalCommand('/reset')?.name).toBe('clear')
+    expect(matchLocalCommand('/new')?.name).toBe('clear')
   })
 
   it('/mcp run() opens the mcp settings tab for its panel', () => {
@@ -17,6 +23,7 @@ describe('matchLocalCommand', () => {
       requestResumeForPanel: () => {},
       openSettingsTab: (id, tab) => { opened = { id, tab } },
       showHelp: () => {},
+      clearSession: () => {},
     })
     expect(opened).toEqual({ id: 'sess-1', tab: 'mcp' })
   })
@@ -31,8 +38,23 @@ describe('matchLocalCommand', () => {
       requestResumeForPanel: () => {},
       openSettingsTab: () => {},
       showHelp: (cmds) => { shown = cmds },
+      clearSession: () => {},
     })
     expect(shown).toBe(panelCommands)
+  })
+
+  it('/clear run() calls the clear control hook for its panel', () => {
+    const cmd = matchLocalCommand('/clear')!
+    let cleared: string | null = null
+    cmd.run({
+      sessionId: 'sess-1',
+      commands: [],
+      requestResumeForPanel: () => {},
+      openSettingsTab: () => {},
+      showHelp: () => {},
+      clearSession: (id) => { cleared = id },
+    })
+    expect(cleared).toBe('sess-1')
   })
 
   it('matches with surrounding whitespace', () => {

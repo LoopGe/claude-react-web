@@ -4,6 +4,7 @@ import { Hono } from 'hono'
 import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
 import { SessionManager } from '../session-manager.js'
 import { safeJson } from './index.js'
+import { isPlanApprovalTargetMode, permissionModeList, PLAN_APPROVAL_TARGET_MODES } from '../permission-modes.js'
 
 export function buildPermissionRouter(sm: SessionManager): Hono {
   const app = new Hono()
@@ -19,13 +20,16 @@ export function buildPermissionRouter(sm: SessionManager): Hono {
   app.post('/sessions/:id/permissions/:pid/decide', async (c) => {
     const id = c.req.param('id')
     const pid = c.req.param('pid')
-    const raw = await safeJson<{ behavior?: unknown; persistForSession?: unknown; message?: unknown; planTargetMode?: unknown }>(c.req)
+    const raw = await safeJson<{ behavior: unknown; persistForSession: unknown; message: unknown; planTargetMode: unknown }>(c.req)
     if (raw.behavior === 'allow') {
       // planTargetMode: when approving an ExitPlanMode (plan proposal), the
       // execution mode the session should switch to. Ignored for non-plan
-      // approvals. Validated against the known modes; anything else is dropped.
-      const VALID_TARGETS = ['default', 'acceptEdits', 'bypassPermissions', 'auto'] as const
-      const planTargetMode = VALID_TARGETS.includes(raw.planTargetMode as typeof VALID_TARGETS[number])
+      // approvals. Explicit unsupported values are rejected so `auto` cannot
+      // sneak in through the plan-approval path on this backend.
+      if (raw.planTargetMode != null && !isPlanApprovalTargetMode(raw.planTargetMode)) {
+        return c.json({ error: `planTargetMode must be one of ${permissionModeList(PLAN_APPROVAL_TARGET_MODES)}` }, 400)
+      }
+      const planTargetMode = isPlanApprovalTargetMode(raw.planTargetMode)
         ? (raw.planTargetMode as PermissionMode)
         : undefined
       await sm.decide(id, pid, {
@@ -49,7 +53,7 @@ export function buildPermissionRouter(sm: SessionManager): Hono {
   app.post('/sessions/:id/permissions/:pid/answer-question', async (c) => {
     const id = c.req.param('id')
     const pid = c.req.param('pid')
-    const raw = await safeJson<{ answers?: unknown }>(c.req)
+    const raw = await safeJson<{ answers: unknown }>(c.req)
     if (!Array.isArray(raw.answers)) {
       return c.json({ error: 'answers must be an array' }, 400)
     }

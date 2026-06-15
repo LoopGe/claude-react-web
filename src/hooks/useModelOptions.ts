@@ -10,7 +10,7 @@
 //       gateway advertises extra models (e.g. *-omni) the user didn't ask
 //       for, so the picker would show entries beyond the configured list.
 //       Only the user's own config drives the dropdown.
-//   - recents: localStorage models the user typed in NewSession before,
+//   - recents: localStorage models the user type in NewSession before,
 //       kept separate so the picker can show a "Recent" group and so the
 //       list isn't empty while the API call is in flight / fails.
 //

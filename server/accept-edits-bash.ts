@@ -42,7 +42,7 @@ const SAFE_WRAPPERS: ReadonlySet<string> = new Set(['timeout', 'nice', 'nohup'])
  *  plain arguments — pipes, redirects, command substitution, chaining,
  *  globbing, quoting, variable expansion, comments, newlines, etc. Their mere
  *  presence forces a prompt. */
-const SHELL_METACHARACTERS = /[|&;<>()$`\\"'*?[\]{}#~\n\r\t]/
+const SHELL_METACHARACTERS = /[|&;<>()$`\\"'*?\[\]{}#~\n\r\t]/
 
 /** A safe `NAME=value` env prefix (e.g. LANG=C, NO_COLOR=1). Conservative:
  *  name is UPPER_SNAKE, value is a bare token with no shell-significant
@@ -93,14 +93,32 @@ export function isAutoApprovableEditBash(command: unknown, cwd?: string): boolea
   if (!SAFE_COMMANDS.has(cmd)) return false
   i++
 
-  // Remaining tokens are arguments. Flags (leading '-') are allowed. Every
-  // non-flag token must be an in-scope path (relative, or absolute-inside-cwd).
+  // Remaining tokens are arguments. Only bare switches are allowed; flags with
+  // attached values are rejected because many coreutils flags embed paths (for
+  // example `--target-directory=/tmp`). Every non-flag token must be an
+  // auto-approvable edit path (inside cwd and not a sensitive config path).
   const args = tokens.slice(i)
+  let optionsEnded = false
   for (const arg of args) {
-    if (arg.startsWith('-')) continue // flag, e.g. -r, -p, --recursive
-    if (!isInScopePath(arg, cwd)) return false
+    if (!optionsEnded && arg === '--') {
+      optionsEnded = true
+      continue
+    }
+    if (!optionsEnded && arg.startsWith('-')) {
+      if (!isSafeBareFlag(arg)) return false
+      continue
+    }
+    if (!isAutoApprovableEditPath(arg, cwd)) return false
   }
   return true
+}
+
+/** True for simple switches such as `-r`, `-rf`, `-p`, `-R`, `--recursive`.
+ *  Anything with an attached value (`--foo=bar`, `-Ipattern`) fails closed so
+ *  paths cannot be hidden inside option payloads. */
+function isSafeBareFlag(arg: string): boolean {
+  if (arg.includes('=')) return false
+  return /^-{1,2}[A-Za-z][A-Za-z0-9-]*$/.test(arg)
 }
 
 /** True iff path `p` is inside the working directory `cwd`.
@@ -130,6 +148,62 @@ export function isInScopePath(p: string, cwd?: string): boolean {
   if (rel === '') return true // p resolves to cwd itself
   if (rel.startsWith('..') || isAbsolute(rel)) return false
   return true
+}
+
+const SENSITIVE_DIR_NAMES: ReadonlySet<string> = new Set([
+  '.git',
+  '.claude',
+  '.vscode',
+])
+
+const SENSITIVE_BASENAMES: ReadonlySet<string> = new Set([
+  '.bashrc',
+  '.bash_profile',
+  '.bash_login',
+  '.profile',
+  '.zshrc',
+  '.zprofile',
+  '.zshenv',
+  '.zlogin',
+  '.zlogout',
+  '.kshrc',
+  '.cshrc',
+  '.tcshrc',
+  'config.fish',
+  'fish_variables',
+  'profile.ps1',
+  'microsoft.powershell_profile.ps1',
+])
+
+/** Sensitive project/user config paths that Claude Code's safety checks keep
+ *  out of acceptEdits fast-path approval. This intentionally checks only path
+ *  components (not loose substrings), so `.gitignore` and `.claude-plugin/`
+ *  are not confused with `.git/` or `.claude/`. */
+export function isSensitiveAutoEditPath(p: string, cwd?: string): boolean {
+  const rel = cwd ? relativePathForInspection(p, cwd) : p
+  if (rel == null) return false
+  const segments = rel.split(/[\\/]+/).filter(Boolean)
+  if (segments.length === 0) return false
+  const lowered = segments.map((segment) => segment.toLowerCase())
+  if (lowered.some((segment) => SENSITIVE_DIR_NAMES.has(segment))) return true
+  const basename = lowered[lowered.length - 1]
+  return SENSITIVE_BASENAMES.has(basename)
+}
+
+function relativePathForInspection(p: string, cwd: string): string | null {
+  if (!p) return null
+  if (!cwd) return p
+  const target = resolvePath(cwd, p)
+  const rel = relativePath(cwd, target)
+  if (rel === '') return ''
+  if (rel.startsWith('..') || isAbsolute(rel)) return null
+  return rel
+}
+
+/** Auto-accept path predicate: inside the session cwd and outside sensitive
+ *  control/config areas that should still prompt even in acceptEdits mode. */
+export function isAutoApprovableEditPath(p: string, cwd?: string): boolean {
+  return isInScopePath(p, cwd) && !isSensitiveAutoEditPath(p, cwd)
 }
 
 /** Stricter relative-only check (no cwd available): rejects absolute paths,
@@ -164,7 +238,7 @@ const EDIT_TOOL_PATH_FIELD: Record<string, string> = {
  * still prompt.
  *
  * Fail-closed: an unknown tool, a missing/non-string path field, or a path
- * that resolves outside cwd all return false (→ the broker prompts).
+ * that resolves outside cwd all return false (— the broker prompts).
  *
  * @param toolName  one of Edit/Write/MultiEdit/NotebookEdit
  * @param input     the tool's input object
@@ -176,5 +250,5 @@ export function isInScopeEditTool(toolName: string, input: unknown, cwd?: string
   if (!field) return false
   const path = (input as Record<string, unknown> | null | undefined)?.[field]
   if (typeof path !== 'string' || !path) return false
-  return isInScopePath(path, cwd)
+  return isAutoApprovableEditPath(path, cwd)
 }

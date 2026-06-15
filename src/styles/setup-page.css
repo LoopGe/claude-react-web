@@ -1,0 +1,250 @@
+/* First-run setup wizard --------------------------------------------------- */
+.setup-page {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 16px;
+  box-sizing: border-box;
+  overflow-y: auto;
+  background: var(--bg);
+  font-family: inherit;
+  z-index: 9999;
+}
+
+.setup-card {
+  width: 100%;
+  max-width: 480px;
+  padding: 40px 36px;
+  box-sizing: border-box;
+  background: var(--bg-elev);
+  background-image: var(--surface-gradient);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--card-shadow);
+  animation: setup-card-in var(--motion-duration-moderate) var(--motion-ease-enter) both;
+}
+
+.setup-title {
+  margin: 0 0 8px;
+  color: var(--fg);
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.setup-subtitle {
+  margin: 0 0 20px;
+  color: var(--fg-muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.setup-progress {
+  display: flex;
+  gap: 8px;
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+}
+
+.setup-progress-item {
+  flex: 1;
+}
+
+.setup-progress-dot {
+  display: block;
+  width: 100%;
+  height: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: var(--border);
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    opacity var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+.setup-progress-dot.visited {
+  background: var(--accent);
+  opacity: 0.55;
+}
+
+.setup-progress-dot.current {
+  background: var(--accent);
+  opacity: 1;
+}
+
+.setup-progress-dot.clickable {
+  cursor: pointer;
+}
+
+.setup-progress-dot.clickable:hover,
+.setup-progress-dot.current {
+  transform: scaleY(1.35);
+}
+
+.setup-step-counter {
+  margin: 0 0 20px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  text-align: right;
+}
+
+.setup-form,
+.setup-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.setup-step-body {
+  transform-origin: top center;
+  animation: setup-step-in var(--motion-duration-base) var(--motion-ease-enter) both;
+}
+
+.setup-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.setup-label {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.setup-hint {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.setup-prefilled-hint {
+  margin: 4px 0 0;
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.setup-field-error {
+  margin: 4px 0 0;
+  color: var(--msg-error-fg);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.setup-duplicate-msg {
+  margin: 6px 0 0;
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.setup-health-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  animation: setup-status-in var(--motion-duration-base) var(--motion-ease-enter) both;
+  transition:
+    border-color var(--motion-duration-fast) var(--motion-ease-standard),
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+.setup-health-row-ok {
+  border-color: var(--accent);
+}
+
+.setup-health-row-fail {
+  border-color: var(--danger);
+}
+
+.setup-health-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elev);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 20px;
+}
+
+.setup-code-block {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  color: var(--fg);
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre;
+}
+
+@keyframes setup-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes setup-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-distance-lg)) scale(var(--motion-scale-enter));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes setup-step-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-distance-md));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes setup-status-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-distance-sm));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setup-card,
+  .setup-step-body,
+  .setup-health-row {
+    animation: none;
+  }
+
+  .setup-progress-dot,
+  .setup-health-row {
+    transition: none;
+  }
+}

@@ -7,8 +7,8 @@ import {
   type SDKSessionInfo,
 } from '@anthropic-ai/claude-agent-sdk'
 import { config as defaultConfig } from '../../config.js'
-import { readHistoryPage } from '../../history-reader.js'
-import type { HistoryPage } from '../../history-reader.js'
+import { readHistoryEntries, readHistoryPage } from '../../history-reader.js'
+import type { HistoryEntry, HistoryPage } from '../../history-reader.js'
 import type { SessionMeta } from '../../persistence.js'
 import type { MpStore } from '../../mp-store.js'
 import { createPushable } from '../../pushable.js'
@@ -116,8 +116,12 @@ export class ClaudeProvider implements AgentProvider {
     return raw.map((session) => this.toResumable(session))
   }
 
-  readHistoryPage(id: string, opts: { before?: number; beforeUuid?: string; limit: number }): Promise<HistoryPage> {
+  readHistoryPage(id: string, opts: { before?: number; beforeUuid?: string; limit: number; afterUuid?: string }): Promise<HistoryPage> {
     return readHistoryPage(id, opts)
+  }
+
+  readHistoryEntries(id: string, opts: { afterUuid?: string }): Promise<HistoryEntry[]> {
+    return readHistoryEntries(id, opts)
   }
 
   async hasTranscript(meta: SessionMeta): Promise<boolean> {

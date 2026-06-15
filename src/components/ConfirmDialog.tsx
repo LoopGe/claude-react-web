@@ -17,6 +17,7 @@ import { useEffect, useRef } from 'react'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 
 interface Props {
+  open?: boolean
   title: string
   /** ReactNode so callers can render multi-line text or `<code>file/path</code>`
    *  for clarity, without us trying to parse markdown. */
@@ -37,6 +38,7 @@ interface Props {
 }
 
 export function ConfirmDialog({
+  open = true,
   title,
   message,
   confirmLabel,
@@ -57,23 +59,25 @@ export function ConfirmDialog({
       if (e.key === 'Escape') {
         e.preventDefault()
         e.stopPropagation()
-        if (!busy) onCancel()
+        if (open && !busy) onCancel()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [busy, onCancel])
+  }, [busy, onCancel, open])
 
   return (
     <div
       className="perm-overlay"
+      data-state={open ? 'open' : 'closing'}
       role="dialog"
-      aria-modal="true"
+      aria-modal={open ? 'true' : 'false'}
+      aria-hidden={!open}
       aria-label={title}
       // Click on the backdrop dismisses; click on the card itself
       // bubbles back into our own onMouseDown which discards.
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget && !busy) onCancel()
+        if (open && e.target === e.currentTarget && !busy) onCancel()
       }}
     >
       <div className="perm-card" ref={dialogRef}>
@@ -102,7 +106,7 @@ export function ConfirmDialog({
             // button is the active element from the start.
             autoFocus
           >
-            {busy ? 'Working…' : confirmLabel}
+            {busy ? 'Working...' : confirmLabel}
           </button>
         </div>
       </div>

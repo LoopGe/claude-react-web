@@ -42,7 +42,7 @@ export interface SessionMeta {
    *  re-spawn (resume / restart / fork). */
   effortLevel?: EffortLevel
   /** Monotonic counter of user turns seen; used as a rough "is there
-   *  anything to resume?" hint for the UI. */
+   *  anything to resumed" hint for the UI. */
   messageCount: number
   /** Present once the underlying Query has finished or errored. Terminated
    *  sessions stay in the index (so the user can read the transcript), but
@@ -54,6 +54,10 @@ export interface SessionMeta {
    *  unread badges when a turn completes while the user is looking at
    *  another session. */
   lastTurnAt?: number
+  /** Raw SDK transcript uuid of the post-/clear init frame. When present,
+   *  history reads and resume seeding must ignore rows before this boundary
+   *  so a refreshed tab cannot page pre-clear messages back into view. */
+  clearBoundaryUuid?: string
   /** Snapshot of HEAD captured when the session was first spawned.
    *  Survives across process restarts so the GitPanel "This session"
    *  view stays anchored even if the server is bounced mid-conversation. */
@@ -156,6 +160,7 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     terminatedReason: typeof r.terminatedReason === 'string' ? r.terminatedReason : undefined,
     error: typeof r.error === 'string' ? r.error : undefined,
     lastTurnAt: typeof r.lastTurnAt === 'number' ? r.lastTurnAt : undefined,
+    clearBoundaryUuid: typeof r.clearBoundaryUuid === 'string' ? r.clearBoundaryUuid : undefined,
     gitStartSha: typeof r.gitStartSha === 'string' ? r.gitStartSha : undefined,
   }
 }

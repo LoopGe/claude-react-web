@@ -18,6 +18,10 @@ let pushableSeq = 0
 export interface Pushable<T> {
   iterable: AsyncIterable<T>
   push: (item: T) => void
+  /** Drop items that are queued but not yet consumed by the SDK. Returns the
+   *  number of discarded items. Does not affect an item already handed to a
+   *  waiting consumer. */
+  clearQueue: () => number
   end: () => void
   closed: boolean
   /** Diagnostic: true when a consumer is blocked on next() waiting for data. */
@@ -76,6 +80,14 @@ export function createPushable<T>(
           debugLog(`[${id}] push #${pushCallCount} → queued (no waiter, queue depth now: ${queue.length})`)
         }
       }
+    },
+    clearQueue() {
+      const dropped = queue.length
+      if (dropped > 0) {
+        queue.length = 0
+        debugLog(`[${id}] clearQueue() dropped ${dropped} queued item(s)`)
+      }
+      return dropped
     },
     end() {
       if (ended) return
@@ -138,6 +150,7 @@ export function createPushable<T>(
   return {
     iterable,
     push: (item) => state.push(item),
+    clearQueue: () => state.clearQueue(),
     end: () => state.end(),
     get closed() {
       return state.closed

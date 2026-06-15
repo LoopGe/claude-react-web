@@ -1,8 +1,15 @@
 import { describe, it, expect } from 'vitest'
 import { resolve, join } from 'node:path'
-import { isAutoApprovableEditBash, isInScopeRelativePath, isInScopePath, isInScopeEditTool } from './accept-edits-bash.js'
+import {
+  isAutoApprovableEditBash,
+  isAutoApprovableEditPath,
+  isInScopeRelativePath,
+  isInScopePath,
+  isInScopeEditTool,
+  isSensitiveAutoEditPath,
+} from './accept-edits-bash.js'
 
-describe('isAutoApprovableEditBash — allowed', () => {
+describe('isAutoApprovableEditBash ?allowed', () => {
   it('approves bare whitelisted commands on relative paths', () => {
     expect(isAutoApprovableEditBash('mkdir foo')).toBe(true)
     expect(isAutoApprovableEditBash('touch src/a.txt')).toBe(true)
@@ -39,7 +46,7 @@ describe('isAutoApprovableEditBash — allowed', () => {
   })
 })
 
-describe('isAutoApprovableEditBash — denied (fail-closed)', () => {
+describe('isAutoApprovableEditBash ?denied (fail-closed)', () => {
   it('denies non-string / empty', () => {
     expect(isAutoApprovableEditBash(undefined)).toBe(false)
     expect(isAutoApprovableEditBash(null)).toBe(false)
@@ -93,6 +100,20 @@ describe('isAutoApprovableEditBash — denied (fail-closed)', () => {
   it('denies a wrapper with no following command', () => {
     expect(isAutoApprovableEditBash('timeout')).toBe(false)
     expect(isAutoApprovableEditBash('LANG=C')).toBe(false)
+  })
+
+  it('denies flags with attached values because they may hide paths', () => {
+    expect(isAutoApprovableEditBash('cp a --target-directory=C:/Windows')).toBe(false)
+    expect(isAutoApprovableEditBash('mv a --target-directory=/tmp')).toBe(false)
+    expect(isAutoApprovableEditBash('touch --reference=C:/Windows/win.ini a')).toBe(false)
+    expect(isAutoApprovableEditBash('mkdir --mode=755 a')).toBe(false)
+  })
+
+  it('denies sensitive config paths even when they are relative', () => {
+    expect(isAutoApprovableEditBash('rm .git/config')).toBe(false)
+    expect(isAutoApprovableEditBash('touch .claude/settings.json')).toBe(false)
+    expect(isAutoApprovableEditBash('mkdir .vscode')).toBe(false)
+    expect(isAutoApprovableEditBash('touch .bashrc')).toBe(false)
   })
 })
 
@@ -168,18 +189,48 @@ describe('isInScopeEditTool', () => {
     expect(isInScopeEditTool('NotebookEdit', { notebook_path: resolve('/other/nb.ipynb') }, cwd)).toBe(false)
   })
 
+  it('rejects sensitive config paths inside cwd', () => {
+    expect(isInScopeEditTool('Write', { file_path: fwd(join(cwd, '.git/config')) }, cwd)).toBe(false)
+    expect(isInScopeEditTool('Write', { file_path: fwd(join(cwd, '.claude/settings.json')) }, cwd)).toBe(false)
+    expect(isInScopeEditTool('Write', { file_path: fwd(join(cwd, '.vscode/settings.json')) }, cwd)).toBe(false)
+    expect(isInScopeEditTool('Write', { file_path: fwd(join(cwd, '.bashrc')) }, cwd)).toBe(false)
+  })
+
+  it('does not confuse similarly name safe paths with sensitive dirs', () => {
+    expect(isInScopeEditTool('Write', { file_path: fwd(join(cwd, '.gitignore')) }, cwd)).toBe(true)
+    expect(isInScopeEditTool('Write', { file_path: fwd(join(cwd, '.claude-plugin/manifest.json')) }, cwd)).toBe(true)
+  })
+
   it('fail-closed on unknown tool / missing / non-string path', () => {
     expect(isInScopeEditTool('Bash', { command: 'rm x' }, cwd)).toBe(false)
     expect(isInScopeEditTool('Write', {}, cwd)).toBe(false)
     expect(isInScopeEditTool('Write', { file_path: 123 }, cwd)).toBe(false)
     expect(isInScopeEditTool('Write', null, cwd)).toBe(false)
-    // NotebookEdit reads notebook_path, not file_path → missing → false
+    // NotebookEdit reads notebook_path, not file_path — missing — false
     expect(isInScopeEditTool('NotebookEdit', { file_path: fwd(join(cwd, 'x')) }, cwd)).toBe(false)
   })
 
   it('without cwd, accepts only relative paths', () => {
     expect(isInScopeEditTool('Write', { file_path: 'a.txt' })).toBe(true)
     expect(isInScopeEditTool('Write', { file_path: '/etc/x' })).toBe(false)
+  })
+})
+
+describe('sensitive acceptEdits paths', () => {
+  const cwd = resolve('/projects/app')
+
+  it('detects sensitive dirs and shell profile files component-wise', () => {
+    expect(isSensitiveAutoEditPath(join(cwd, '.git/config'), cwd)).toBe(true)
+    expect(isSensitiveAutoEditPath(join(cwd, '.claude/settings.json'), cwd)).toBe(true)
+    expect(isSensitiveAutoEditPath(join(cwd, '.vscode/settings.json'), cwd)).toBe(true)
+    expect(isSensitiveAutoEditPath(join(cwd, '.config/fish/config.fish'), cwd)).toBe(true)
+    expect(isSensitiveAutoEditPath(join(cwd, 'Microsoft.PowerShell_profile.ps1'), cwd)).toBe(true)
+  })
+
+  it('keeps ordinary project files auto-approvable', () => {
+    expect(isAutoApprovableEditPath(join(cwd, 'src/app.ts'), cwd)).toBe(true)
+    expect(isAutoApprovableEditPath(join(cwd, '.gitignore'), cwd)).toBe(true)
+    expect(isAutoApprovableEditPath(join(cwd, '.claude-plugin/manifest.json'), cwd)).toBe(true)
   })
 })
 

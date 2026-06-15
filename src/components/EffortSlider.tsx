@@ -7,7 +7,7 @@
 //
 // The slider is a native <input type="range"> over the index into `levels`
 // (step 1), so keyboard arrows and click-to-position work for free. Tick
-// labels under the track let the user see and click the named stops.
+// labels under the track let the user see and click the name stops.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -24,9 +24,10 @@ interface Props {
   /** Called with the chosen level when the user moves the slider. */
   onSelect: (level: EffortLevel) => void
   onClose: () => void
+  isExiting?: boolean
 }
 
-export function EffortSlider({ anchor, levels, current, disabled, onSelect, onClose }: Props) {
+export function EffortSlider({ anchor, levels, current, disabled, onSelect, onClose, isExiting = false }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<{ x: number; y: number }>(anchor)
 
@@ -129,9 +130,11 @@ export function EffortSlider({ anchor, levels, current, disabled, onSelect, onCl
     <div
       ref={ref}
       className="effort-slider"
+      data-state={isExiting ? 'closing' : 'open'}
       style={{ left: pos.x, top: pos.y }}
       role="dialog"
       aria-label="Select effort level"
+      aria-hidden={isExiting}
       onMouseDown={(e) => e.stopPropagation()}
       // Rendered in a portal on document.body so the popover lives OUTSIDE
       // the ChatPanel header's `draggable` subtree. Otherwise dragging the
@@ -153,7 +156,7 @@ export function EffortSlider({ anchor, levels, current, disabled, onSelect, onCl
         type="range"
         min={0}
         max={maxIndex}
-        // Fine step gives 无级 (continuous) glide between named stops; we
+        // Fine step gives 无级 (continuous) glide between name stops; we
         // snap to the nearest integer level only on release (commitDrag).
         step={0.01}
         value={value}

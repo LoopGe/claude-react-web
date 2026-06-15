@@ -169,7 +169,7 @@ describe('reducer: optimistic user message + server echo', () => {
     // Tool_result frames also arrive as type=user but with
     // parent_tool_use_id set. They must not clobber the optimistic
     // placeholder — without the parent_tool_use_id guard, the user
-    // would see their typed text replaced by a JSON tool result.
+    // would see their type text replaced by a JSON tool result.
     let state = createInitialSessionState('s1')
     state = applyOptimistic(state, 'real user input', 'optimistic:abc')
     expect(hasId(state.pendingUserMessageIds, 'optimistic:abc')).toBe(true)

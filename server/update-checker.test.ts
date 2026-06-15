@@ -120,7 +120,7 @@ describe('checkForUpdates', () => {
     expect(getCachedUpdateInfo()).toMatchObject(info)
   })
 
-  it('uses a literal slash in scoped names so Artifactory accepts the URL', async () => {
+  it('uses a literal slash in scope names so Artifactory accepts the URL', async () => {
     // Regression: encoding `/` to `%2F` makes Artifactory's npm endpoint
     // return 404 on the dist-tag path (`…/<scope>%2F<name>/latest`).
     // Every registry we care about accepts the literal-slash form, so we

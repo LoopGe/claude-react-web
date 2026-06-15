@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
@@ -28,8 +28,11 @@ import { Hono } from 'hono'
 import { createErrorHandler } from './errors.js'
 import { tempDir } from './__test-utils__/index.js'
 
+// Git process startup is noticeably slower on Windows under the full Vitest
+// pool, so keep the git integration suite from flaking at the 5s default.
+vi.setConfig({ testTimeout: 20_000 })
 // Probe git availability synchronously at module load so `it.skipIf(...)`
-// — evaluated at registration time, not run time — sees the correct value.
+// ?evaluated at registration time, not run time ?sees the correct value.
 // An async beforeAll would set `gitOk` too late; the skip flags would have
 // already crystallised at the initial `false` and skipped the whole suite.
 const gitOk = ((): boolean => {
@@ -63,7 +66,7 @@ function gitCommitAll(cwd: string, message: string): string {
 }
 
 /** Build a Hono app wrapping the git router with the same onError hook
- *  the production app uses, so HttpError → JSON conversion is exercised. */
+ *  the production app uses, so HttpError — JSON conversion is exercised. */
 function buildApp(): Hono {
   const app = new Hono()
   app.onError(createErrorHandler('[test]'))
@@ -220,7 +223,7 @@ describe('git-routes', () => {
       gitInit(dir)
       writeFileSync(join(dir, 'a.txt'), 'a\n')
       gitCommitAll(dir, 'init')
-      // Manually drop a rebase-merge dir — simulating an in-progress rebase
+      // Manually drop a rebase-merge dir ?simulating an in-progress rebase
       // without having to actually trigger conflict resolution.
       mkdirSync(join(dir, '.git', 'rebase-merge'), { recursive: true })
       const app = buildApp()
@@ -282,10 +285,10 @@ describe('git-routes', () => {
       const stagedBody = await json<{ text: string }>(staged)
       const worktree = await app.request(`/api/git/diff?cwd=${encodeURIComponent(dir)}&path=a.txt&staged=0`)
       const worktreeBody = await json<{ text: string }>(worktree)
-      // staged: HEAD → index   (one → two)
+      // staged: HEAD ?index   (one ?two)
       expect(stagedBody.text).toContain('-one')
       expect(stagedBody.text).toContain('+two')
-      // worktree: index → working tree   (two → three)
+      // worktree: index ?working tree   (two ?three)
       expect(worktreeBody.text).toContain('-two')
       expect(worktreeBody.text).toContain('+three')
     })
@@ -626,7 +629,7 @@ describe('git-routes', () => {
         writeFileSync(join(dir, 'a.txt'), 'on-other\n')
         await stageFiles(dir, ['a.txt'])
         await commitChanges(dir, 'other-version', false)
-        // Back to main, modify a.txt locally — switching to 'other'
+        // Back to main, modify a.txt locally ?switching to 'other'
         // would now overwrite the local change.
         await checkoutBranch(dir, 'main', false)
         writeFileSync(join(dir, 'a.txt'), 'local-uncommitted\n')
@@ -703,7 +706,7 @@ describe('git-routes', () => {
 
       it.skipIf(!gitOk)('returns undefined for an unborn HEAD', async () => {
         gitInit(dir)
-        // No commits yet — HEAD points at refs/heads/main but it doesn't exist.
+        // No commits yet ?HEAD points at refs/heads/main but it doesn't exist.
         const captured = await tryCaptureGitHead(dir)
         expect(captured).toBeUndefined()
       })
@@ -733,7 +736,7 @@ describe('git-routes', () => {
         const r = await getStagedDiff(dir)
         expect(r.truncated).toBe(false)
         expect(r.text).toContain('a.txt')
-        // Unstaged b.txt must NOT appear — Generate runs against `--cached` only.
+        // Unstaged b.txt must NOT appear ?Generate runs against `--cached` only.
         expect(r.text).not.toContain('b.txt')
       })
 

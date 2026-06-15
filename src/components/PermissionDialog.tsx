@@ -22,6 +22,7 @@ import { IconClipboardList, IconLock } from './icons/ToolIcons'
 type PermissionRequestPermission = Extract<PermissionRequest, { kind: 'permission' }>
 
 interface Props {
+  open?: boolean
   request: PermissionRequestPermission
   onDecide: (
     decision:
@@ -41,7 +42,7 @@ interface Props {
   currentMode?: PermissionMode
 }
 
-export const PermissionDialog = memo(function PermissionDialog({ request, onDecide, planContentMap, currentMode }: Props) {
+export const PermissionDialog = memo(function PermissionDialog({ open = true, request, onDecide, planContentMap, currentMode }: Props) {
   const [showRaw, setShowRaw] = useState(false)
   const [busy, setBusy] = useState(false)
   // Ref provides a synchronous guard so that rapid double-clicks
@@ -70,7 +71,7 @@ export const PermissionDialog = memo(function PermissionDialog({ request, onDeci
     const el = dialogRef.current
     if (!el) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !busyRef.current) {
+      if (open && e.key === 'Escape' && !busyRef.current) {
         e.preventDefault()
         e.stopPropagation()
         click({ behavior: 'deny' })
@@ -132,7 +133,14 @@ export const PermissionDialog = memo(function PermissionDialog({ request, onDeci
   // panel* (absolutely positioned overlay within .chat-messages-wrap or
   // the Chat root).
   return (
-    <div className="perm-overlay" role="dialog" aria-modal="true" ref={dialogRef}>
+    <div
+      className="perm-overlay"
+      data-state={open ? 'open' : 'closing'}
+      role="dialog"
+      aria-modal={open ? 'true' : 'false'}
+      aria-hidden={!open}
+      ref={dialogRef}
+    >
       <div className={`perm-card ${isPlanRequest ? 'perm-card-plan' : ''}`}>
         <div className="modal-header">
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 10 }}>

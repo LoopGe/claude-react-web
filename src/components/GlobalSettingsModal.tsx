@@ -1,16 +1,18 @@
 // Global application settings modal. Edits config.json fields and manages
 // MCP server configs. All changes are persisted server-side on Save.
 
-import { lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { api } from '../hooks/useApi'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { formatBytes } from '../utils/format'
 import { IconX, IconCheck, IconArrowUp, IconArrowDown, IconChevronDown } from './icons/ToolIcons'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
 import type { FullServerConfig } from '../types/config'
+import type { SkillLoadMode, SkillRecord, SkillsListResponse } from '../../shared/skills'
 import type { McpConnectionTestResult, McpServerConfigMeta, McpServerTool } from '../types'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
+import { useExitPresence } from '../hooks/useExitPresence'
 import type { UpdateActionResult, UpdateInfo } from '../../shared/update-info'
 import { isVersionNewer } from '../../shared/update-info'
 
@@ -24,13 +26,13 @@ const McpInstaller = lazy(() =>
 const MarketplaceTab = lazy(() =>
   import('./MarketplaceTab').then((m) => ({ default: m.MarketplaceTab })),
 )
-// ShareTab pulls in the `qrcode` dependency — lazy-load it so that weight
+// ShareTab pulls in the `qrcode` dependency ? lazy-load it so that weight
 // only lands when the user opens the "Open on phone" tab.
 const ShareTab = lazy(() =>
   import('./ShareTab').then((m) => ({ default: m.ShareTab })),
 )
 
-type Tab = 'api' | 'models' | 'server' | 'mcp' | 'marketplace' | 'share' | 'logs' | 'about'
+type Tab = 'api' | 'models' | 'server' | 'skills' | 'mcp' | 'marketplace' | 'share' | 'logs' | 'about'
 
 type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'trace'
 
@@ -52,6 +54,7 @@ interface LogConfig {
 }
 
 interface Props {
+  open?: boolean
   onClose: () => void
   /** Called after config is saved so the parent can refresh its state. */
   onSaved?: () => void
@@ -68,6 +71,7 @@ interface Props {
 }
 
 export function GlobalSettingsModal({
+  open = true,
   onClose,
   onSaved,
   updateInfo,
@@ -84,48 +88,54 @@ export function GlobalSettingsModal({
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-  // ── API tab state ──
+  // — API tab state ?
   const [authToken, setAuthToken] = useState('')
   const [authTokenMasked, setAuthTokenMasked] = useState<string | undefined>()
   const [authTokenDirty, setAuthTokenDirty] = useState(false)
   const [baseUrl, setBaseUrl] = useState('')
 
-  // ── Connection-test state (API tab) ──
+  // — Connection-test state (API tab) ?
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null)
 
-  // ── Models tab state ──
+  // — Models tab state ?
   const [modelList, setModelList] = useState<string[]>([])
   const [recapModel, setRecapModel] = useState('')
   const [commitMessageModel, setCommitMessageModel] = useState('')
   const [newModel, setNewModel] = useState('')
 
-  // ── Server tab state ──
+  // — Server tab state ?
   const [maxUploadBytes, setMaxUploadBytes] = useState(0)
   const [historyCap, setHistoryCap] = useState(500)
   const [maxOpenPanels, setMaxOpenPanels] = useState(3)
   const [workingStuckMs, setWorkingStuckMs] = useState(0)
+  const [defaultCwd, setDefaultCwd] = useState('')
 
-  // ── About tab state ──
+  // Skills tab state
+  const [skillLoadMode, setSkillLoadMode] = useState<SkillLoadMode>('default')
+  const [enabledSkills, setEnabledSkills] = useState<string[]>([])
+
+  // — About tab state ?
   // The registry URL is editable from the About tab. Empty string =
   // feature disabled (matches server-side semantics in
   // applyParsedConfig — empty trims to '' and the checker treats that
   // as `{ disabled: true }`).
   const [updateCheckRegistry, setUpdateCheckRegistry] = useState('')
 
-  // ── MCP tab state ──
+  // — MCP tab state ?
   const [mcpServers, setMcpServers] = useState<McpServerConfigMeta[]>([])
   const [showMcpInstaller, setShowMcpInstaller] = useState(false)
   const [mcpInstallerEdit, setMcpInstallerEdit] = useState<McpServerConfigMeta | undefined>()
+  const mcpInstallerPresence = useExitPresence(showMcpInstaller)
 
   const dialogRef = useRef<HTMLDivElement>(null)
 
   // Esc to close
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    const onKey = (e: KeyboardEvent) => { if (open && e.key === 'Escape') onClose() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [onClose, open])
 
   // Focus management: trap Tab inside the dialog, autofocus the first
   // focusable element on open, and restore focus to the trigger element
@@ -148,6 +158,9 @@ export function GlobalSettingsModal({
         setMaxOpenPanels(cfg.maxOpenPanels ?? 3)
         setWorkingStuckMs(cfg.workingStuckMs ?? 0)
         setUpdateCheckRegistry(cfg.updateCheckRegistry ?? '')
+        setDefaultCwd(cfg.defaults?.cwd ?? '')
+        setSkillLoadMode(cfg.skillLoadMode ?? 'default')
+        setEnabledSkills(cfg.enabledSkills ?? [])
       } catch (e) {
         if ((e as Error).name !== 'AbortError') setErr((e as Error).message)
       } finally {
@@ -208,6 +221,8 @@ export function GlobalSettingsModal({
         // delete, so the next reload reverts to the default empty
         // string.
         updateCheckRegistry: updateCheckRegistry.trim() || null,
+        skillLoadMode,
+        enabledSkills: enabledSkills.length > 0 ? enabledSkills : null,
       }
       if (authTokenDirty && authToken.trim()) {
         updates.authToken = authToken.trim()
@@ -231,7 +246,7 @@ export function GlobalSettingsModal({
       // Send the token only when the user edited it (otherwise the server
       // falls back to the saved token — the client never holds the plaintext
       // of an already-saved token). Always send baseUrl so an unsaved URL
-      // edit is what gets validated.
+      // edit is what gets validate?.
       const r = await api.post<ConnectionTestResult>(
         '/config/test-connection',
         {
@@ -295,6 +310,7 @@ export function GlobalSettingsModal({
     { key: 'api', label: 'API' },
     { key: 'models', label: 'Models' },
     { key: 'server', label: 'Server' },
+    { key: 'skills', label: 'Skills' },
     { key: 'mcp', label: 'MCP Servers' },
     { key: 'marketplace', label: 'Marketplace' },
     { key: 'share', label: 'Open on phone' },
@@ -308,6 +324,8 @@ export function GlobalSettingsModal({
     err ?? '',
     modelList.length,
     mcpServers.length,
+    skillLoadMode,
+    enabledSkills.join(','),
     testing,
     testResult ? 'tested' : 'untested',
     updateInfo?.latest ?? '',
@@ -337,12 +355,17 @@ export function GlobalSettingsModal({
   }, [captureSettingsBodyHeight, tab])
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div
+      className="modal-backdrop"
+      data-state={open ? 'open' : 'closing'}
+      onClick={() => { if (open) onClose() }}
+    >
       <div
         ref={dialogRef}
         className="global-settings-modal"
         role="dialog"
-        aria-modal="true"
+        aria-modal={open ? 'true' : 'false'}
+        aria-hidden={!open}
         aria-label="Settings"
         onClick={(e) => e.stopPropagation()}
       >
@@ -369,7 +392,7 @@ export function GlobalSettingsModal({
         <div ref={settingsBodyRef} className="global-settings-body">
           <div ref={settingsContentRef} className="global-settings-body-content">
           {loading ? (
-            <div style={{ padding: 40, textAlign: 'center', color: 'var(--fg-muted)' }}>Loading…</div>
+            <div style={{ padding: 40, textAlign: 'center', color: 'var(--fg-muted)' }}>Loading...</div>
           ) : (
             <>
               {tab === 'api' && (
@@ -412,6 +435,15 @@ export function GlobalSettingsModal({
                   onWorkingStuckMsChange={setWorkingStuckMs}
                 />
               )}
+              {tab === 'skills' && (
+                <SkillsTab
+                  cwd={defaultCwd}
+                  skillLoadMode={skillLoadMode}
+                  enabledSkills={enabledSkills}
+                  onSkillLoadModeChange={setSkillLoadMode}
+                  onEnabledSkillsChange={setEnabledSkills}
+                />
+              )}
               {tab === 'mcp' && (
                 <McpTab
                   servers={mcpServers}
@@ -423,12 +455,12 @@ export function GlobalSettingsModal({
                 />
               )}
               {tab === 'marketplace' && (
-                <Suspense fallback={<div className="lazy-tab-loading">Loading marketplace…</div>}>
+                <Suspense fallback={<div className="lazy-tab-loading">Loading marketplace...</div>}>
                   <MarketplaceTab />
                 </Suspense>
               )}
               {tab === 'share' && (
-                <Suspense fallback={<div className="lazy-tab-loading">Loading…</div>}>
+                <Suspense fallback={<div className="lazy-tab-loading">Loading...</div>}>
                   <ShareTab />
                 </Suspense>
               )}
@@ -455,14 +487,15 @@ export function GlobalSettingsModal({
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn" onClick={onClose}>Cancel</button>
             <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
-              {saving ? 'Saving…' : 'Save'}
+              {saving ? 'Saving...' : 'Save'}
             </button>
           </div>
         </div>
 
-        {showMcpInstaller && (
+        {mcpInstallerPresence.shouldRender && (
           <Suspense fallback={null}>
             <McpInstaller
+              open={showMcpInstaller}
               server={mcpInstallerEdit}
               onSave={() => { setShowMcpInstaller(false); setMcpInstallerEdit(undefined); void refreshMcp() }}
               onClose={() => { setShowMcpInstaller(false); setMcpInstallerEdit(undefined) }}
@@ -474,7 +507,7 @@ export function GlobalSettingsModal({
   )
 }
 
-// ── Tab contents ─────────────────────────────────────────────────
+// — Tab contents ?????????????
 
 function ApiTab({
   authToken, authTokenMasked, authTokenDirty, baseUrl,
@@ -491,7 +524,7 @@ function ApiTab({
   testResult: ConnectionTestResult | null
   onTest: () => void
 }) {
-  // Can only test if there's a token to test — either a freshly-typed one or
+  // Can only test if there's a token to test ?either a freshly-type one or
   // a previously-saved one (signalled by the masked value being present).
   const canTest = (authTokenDirty && !!authToken.trim()) || !!authTokenMasked
   return (
@@ -520,7 +553,7 @@ function ApiTab({
           disabled={testing || !canTest}
           title={!canTest ? 'Enter a token first' : 'Send a minimal request to verify the token and URL'}
         >
-          {testing ? 'Testing…' : 'Test connection'}
+          {testing ? 'Testing...' : 'Test connection'}
         </button>
         {testResult && (
           testResult.ok ? (
@@ -529,7 +562,7 @@ function ApiTab({
             </span>
           ) : (
             <span style={{ fontSize: 12, color: 'var(--danger)' }}>
-              ✗ {testResult.status ? `${testResult.status}: ` : ''}{testResult.error ?? 'Failed'}
+              ? {testResult.status ? `${testResult.status}: ` : ''}{testResult.error ?? 'Failed'}
             </span>
           )
         )}
@@ -567,9 +600,9 @@ function ModelsTab({
               <button
                 className="btn btn-xs settings-model-sort-btn"
                 onClick={onSortModels}
-                title="Sort alphabetically (A→Z)"
+                title="Sort alphabetically (A-Z)"
               >
-                A→Z
+                A-Z
               </button>
             </div>
           )}
@@ -691,7 +724,7 @@ function ServerTab({
       />
       <NumberField
         label="Max Open Panels"
-        hint="Side-by-side chat panels (2–5)"
+        hint="Side-by-side chat panels (2-5)"
         value={maxOpenPanels}
         onChange={onMaxOpenPanelsChange}
         min={2}
@@ -708,6 +741,215 @@ function ServerTab({
   )
 }
 
+function SkillsTab({
+  cwd,
+  skillLoadMode,
+  enabledSkills,
+  onSkillLoadModeChange,
+  onEnabledSkillsChange,
+}: {
+  cwd: string
+  skillLoadMode: SkillLoadMode
+  enabledSkills: string[]
+  onSkillLoadModeChange: (mode: SkillLoadMode) => void
+  onEnabledSkillsChange: (skills: string[]) => void
+}) {
+  const [skills, setSkills] = useState<SkillRecord[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [selected, setSelected] = useState<SkillRecord | null>(null)
+  const [content, setContent] = useState('')
+  const [draftName, setDraftName] = useState('')
+  const [draftDescription, setDraftDescription] = useState('')
+  const [draftScope, setDraftScope] = useState<'project' | 'user'>('project')
+  const [savingSkill, setSavingSkill] = useState(false)
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const query = cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''
+      const res = await api.get<SkillsListResponse>(`/skills${query}`)
+      setSkills(res.skills ?? [])
+      if (selected) {
+        const next = (res.skills ?? []).find((s) => s.scope === selected.scope && s.name === selected.name) ?? null
+        setSelected(next)
+      }
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }, [cwd, selected])
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  const skillNames = useMemo(() => Array.from(new Set(skills.map((s) => s.name))).sort((a, b) => a.localeCompare(b)), [skills])
+
+  const toggleEnabled = (name: string) => {
+    const exists = enabledSkills.includes(name)
+    onEnabledSkillsChange(exists ? enabledSkills.filter((s) => s !== name) : [...enabledSkills, name].sort((a, b) => a.localeCompare(b)))
+  }
+
+  const openSkill = async (skill: SkillRecord) => {
+    setError(null)
+    try {
+      const query = skill.scope === 'project' && cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''
+      const res = await api.get<{ skill: SkillRecord }>(`/skills/${skill.scope}/${encodeURIComponent(skill.name)}${query}`)
+      setSelected(res.skill)
+      setContent(res.skill.content ?? '')
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
+  const createNewSkill = async () => {
+    const name = draftName.trim()
+    if (!name) return
+    setSavingSkill(true)
+    setError(null)
+    try {
+      const res = await api.post<{ skill: SkillRecord }>('/skills', {
+        scope: draftScope,
+        cwd: draftScope === 'project' ? cwd : undefined,
+        name,
+        description: draftDescription.trim() || undefined,
+      })
+      setDraftName('')
+      setDraftDescription('')
+      await refresh()
+      await openSkill(res.skill)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setSavingSkill(false)
+    }
+  }
+
+  const saveSelectedSkill = async () => {
+    if (!selected) return
+    setSavingSkill(true)
+    setError(null)
+    try {
+      const res = await api.put<{ skill: SkillRecord }>(`/skills/${selected.scope}/${encodeURIComponent(selected.name)}`, {
+        cwd: selected.scope === 'project' ? cwd : undefined,
+        content,
+      })
+      setSelected(res.skill)
+      setContent(res.skill.content ?? content)
+      await refresh()
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setSavingSkill(false)
+    }
+  }
+
+  const deleteSelectedSkill = async () => {
+    if (!selected) return
+    if (!window.confirm(`Delete ${selected.scope} skill "${selected.name}"?`)) return
+    setSavingSkill(true)
+    setError(null)
+    try {
+      const query = selected.scope === 'project' && cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''
+      await api.delete(`/skills/${selected.scope}/${encodeURIComponent(selected.name)}${query}`)
+      setSelected(null)
+      setContent('')
+      await refresh()
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setSavingSkill(false)
+    }
+  }
+
+  return (
+    <div className="settings-skills-tab">
+      <Field label="Session Skill Loading" hint="Applies when a session starts. File edits below hot-reload active sessions when the SDK supports it.">
+        <div className="settings-radio-stack">
+          <label><input type="radio" checked={skillLoadMode === 'default'} onChange={() => onSkillLoadModeChange('default')} /> SDK default</label>
+          <label><input type="radio" checked={skillLoadMode === 'all'} onChange={() => onSkillLoadModeChange('all')} /> Enable all discovered skills</label>
+          <label><input type="radio" checked={skillLoadMode === 'allowlist'} onChange={() => onSkillLoadModeChange('allowlist')} /> Enable selected skills only</label>
+        </div>
+      </Field>
+
+      {skillLoadMode === 'allowlist' && (
+        <div className="settings-skill-allowlist">
+          {skillNames.length === 0 && <div className="settings-empty-note">No skills discovered yet.</div>}
+          {skillNames.map((name) => (
+            <label key={name} className="settings-skill-check">
+              <input type="checkbox" checked={enabledSkills.includes(name)} onChange={() => toggleEnabled(name)} />
+              <span>{name}</span>
+            </label>
+          ))}
+        </div>
+      )}
+
+      <div className="settings-section-head">
+        <span className="settings-note">{skills.length} filesystem skill{skills.length !== 1 ? 's' : ''}</span>
+        <button className="btn btn-sm" onClick={() => void refresh()} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</button>
+      </div>
+      {error && <div className="settings-error">{error}</div>}
+
+      <div className="settings-skill-grid">
+        <div className="settings-skill-list">
+          {skills.length === 0 && <div className="settings-empty-note">Create a project or user skill to get starte?.</div>}
+          {skills.map((skill) => (
+            <button
+              key={`${skill.scope}:${skill.name}`}
+              className={`settings-skill-row${selected?.scope === skill.scope && selected?.name === skill.name ? ' active' : ''}`}
+              onClick={() => void openSkill(skill)}
+            >
+              <span className="settings-skill-name">{skill.name}</span>
+              <span className="settings-card-badge">{skill.scope}</span>
+              {!skill.valid && <span className="settings-card-badge">invalid</span>}
+              <span className="settings-skill-desc">{skill.description || skill.errors[0] || 'No description'}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="settings-skill-editor">
+          <div className="settings-card">
+            <div className="settings-card-head">
+              <span className="settings-card-name">New Skill</span>
+            </div>
+            <div className="settings-inline-fields">
+              <select className="input" value={draftScope} onChange={(e) => setDraftScope(e.target.value as 'project' | 'user')}>
+                <option value="project">Project</option>
+                <option value="user">User</option>
+              </select>
+              <input className="input" placeholder="skill-name" value={draftName} onChange={(e) => setDraftName(e.target.value)} />
+            </div>
+            <input className="input" placeholder="Description" value={draftDescription} onChange={(e) => setDraftDescription(e.target.value)} />
+            <button className="btn btn-sm" onClick={() => void createNewSkill()} disabled={savingSkill || !draftName.trim()}>Create</button>
+          </div>
+
+          {selected ? (
+            <div className="settings-card settings-skill-edit-card">
+              <div className="settings-card-head">
+                <span className="settings-card-name">{selected.name}</span>
+                <span className="settings-card-badge">{selected.scope}</span>
+              </div>
+              <div className="settings-card-path">{selected.path}</div>
+              {selected.errors.length > 0 && (
+                <div className="settings-error">{selected.errors.join('; ')}</div>
+              )}
+              <textarea className="input settings-skill-textarea" value={content} onChange={(e) => setContent(e.target.value)} spellCheck={false} />
+              <div className="settings-actions-row">
+                <button className="btn btn-sm primary" onClick={() => void saveSelectedSkill()} disabled={savingSkill}>Save Skill</button>
+                <button className="btn btn-sm" onClick={() => void deleteSelectedSkill()} disabled={savingSkill}>Delete</button>
+              </div>
+            </div>
+          ) : (
+            <div className="settings-empty-note">Select a skill to edit its SKILL.m?.</div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
 function McpTab({
   servers, onAdd, onEdit, onDelete, onToggle, onRefresh,
 }: {
@@ -730,7 +972,7 @@ function McpTab({
       </div>
       {servers.length === 0 && (
         <div className="settings-empty-note settings-mcp-empty">
-          No MCP servers configured. Click "Add Server" to get started.
+          No MCP servers configure?. Click "Add Server" to get starte?.
         </div>
       )}
       {servers.map((srv) => (
@@ -823,7 +1065,7 @@ function McpCard({
         success: false,
         status: 'needs-auth',
         authRequired: true,
-        error: 'Authorization window opened. After finishing auth, this list refreshes automatically; click Test to verify.',
+        error: 'Authorization window opene?. After finishing auth, this list refreshes automatically; click Test to verify.',
       })
     } catch (e) {
       setTestResult({ success: false, status: 'failed', error: (e as Error).message })
@@ -861,14 +1103,14 @@ function McpCard({
         )}
         <div className="settings-mcp-actions">
           <button className="btn btn-sm" onClick={() => void runTest()} disabled={testing || authBusy}>
-            {testing ? 'Testing…' : 'Test'}
+            {testing ? 'Testing...' : 'Test'}
           </button>
           <button className="btn btn-sm" onClick={() => void listTools()} disabled={testing || authBusy}>
             List tools
           </button>
           {isRemote && (
             <button className="btn btn-sm" onClick={() => void startAuth()} disabled={testing || authBusy}>
-              {authBusy ? 'Auth…' : server.oauthAuthorized ? 'Re-auth' : 'Auth'}
+              {authBusy ? 'Auth...' : server.oauthAuthorized ? 'Re-auth' : 'Auth'}
             </button>
           )}
           {isRemote && server.oauthAuthorized && (
@@ -942,7 +1184,7 @@ function McpToolsList({ tools, loading, onClose }: { tools: McpServerTool[]; loa
         <span className="settings-card-grouplabel">Tools</span>
         <button className="btn btn-xs" onClick={onClose}>Hide</button>
       </div>
-      {loading && <div className="settings-card-desc">Loading tools…</div>}
+      {loading && <div className="settings-card-desc">Loading tools...</div>}
       {!loading && tools.length === 0 && <div className="settings-card-desc">No tools returned by this server.</div>}
       {!loading && tools.map((tool) => (
         <div key={tool.name} className="settings-card-item settings-mcp-tool-item">
@@ -957,7 +1199,7 @@ function McpToolsList({ tools, loading, onClose }: { tools: McpServerTool[]; loa
   )
 }
 
-// ── Logs tab ─────────────────────────────────────────────────────
+// — Logs tab ??????????????
 
 /** Runtime log-level / scope-filter control and file-logging toggle.
  *  Level/scopes are in-memory only (reset on restart). File logging is
@@ -969,7 +1211,7 @@ function LogsTab() {
   const [err, setErr] = useState<string | null>(null)
   const [savedAt, setSavedAt] = useState<number | null>(null)
 
-  // ── File logging state ──
+  // — File logging state ?
   const [fileLogEnabled, setFileLogEnabled] = useState(false)
   const [fileLogPath, setFileLogPath] = useState<string | null>(null)
   const [fileBusy, setFileBusy] = useState(false)
@@ -1027,7 +1269,7 @@ function LogsTab() {
   }, [fileLogEnabled])
 
   if (!config) {
-    return <div style={{ padding: 16, color: 'var(--fg-muted)' }}>Loading log config…</div>
+    return <div style={{ padding: 16, color: 'var(--fg-muted)' }}>Loading log config...</div>
   }
 
   const onScopesBlur = () => {
@@ -1045,7 +1287,7 @@ function LogsTab() {
     <div>
       <Field
         label="Level"
-        hint="Threshold — only messages at this level or higher get printed. Affects all scopes."
+        hint="Threshold - only messages at this level or higher get printe?. Affects all scopes."
       >
         <select
           className="input"
@@ -1101,7 +1343,7 @@ function LogsTab() {
           disabled={fileBusy}
           onClick={toggleFileLogging}
         >
-          {fileBusy ? '…' : fileLogEnabled ? 'ON' : 'OFF'}
+          {fileBusy ? '...' : fileLogEnabled ? 'ON' : 'OFF'}
         </button>
       </Field>
 
@@ -1115,7 +1357,7 @@ function LogsTab() {
   )
 }
 
-// ── About / Updates ──────────────────────────────────────────────
+// — About / Updates ????????????
 //
 // Shows the running version, the latest npm version (or an error), the
 // last-checked timestamp, and a "Check now" button. The data is owned
@@ -1136,7 +1378,7 @@ function AboutTab({
   refreshing: boolean
   error: string | null
   /** Force a fresh probe. The optional argument lets the caller probe a
-   *  registry the user has typed but not yet saved — passed by "Check now"
+   *  registry the user has type but not yet saved — passed by "Check now"
    *  so the result reflects the in-progress edit rather than the stale
    *  saved value. */
   onRefresh?: (registryOverride?: string) => void
@@ -1187,7 +1429,7 @@ function AboutTab({
           // The on-disk package was verifiably upgraded — tell the user the
           // exact version that landed and that a restart applies it.
           toast.success(
-            `Installed ${res.installedVersion ?? res.latest ?? 'the latest version'} on disk — restart the server to apply.`,
+            `Installed ${res.installedVersion ?? res.latest ?? 'the latest version'} on disk - restart the server to apply.`,
           )
         } else {
           // Install ran but the on-disk version didn't advance — npm reported
@@ -1203,7 +1445,7 @@ function AboutTab({
       } else {
         // Server declined to install (npx / unknown). Point the user at the
         // copy-command instead.
-        toast.info('In-app update isn’t available for this install — copy the command below.')
+        toast.info('In-app update is not available for this install - copy the command below.')
       }
     } catch (e) {
       setUpdateError(e instanceof Error ? e.message : String(e))
@@ -1220,7 +1462,7 @@ function AboutTab({
         hint={restartPending ? undefined : 'The version of the currently running server process.'}
       >
         <div style={{ fontSize: 13, fontFamily: 'var(--mono)' }}>
-          {info?.current ?? '—'}
+          {info?.current ?? '?'}
         </div>
       </Field>
       {restartPending && (
@@ -1263,8 +1505,8 @@ function AboutTab({
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 13, fontFamily: 'var(--mono)' }}>
             {disabled
-              ? '—'
-              : info?.latest ?? (info?.checking ? 'checking…' : '—')}
+              ? '?'
+              : info?.latest ?? (info?.checking ? 'checking...' : '?')}
           </span>
           {hasUpdate && (
             <span
@@ -1312,7 +1554,7 @@ function AboutTab({
       <div style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
         <button
           className="btn"
-          // Probe the CURRENTLY-TYPED registry, not the saved value — the
+          // Probe the CURRENTLY-TYPED registry, not the saved value - the
           // user may be editing the field and wants to validate the new URL
           // before committing it with Save. We no longer gate on the saved
           // `disabled` snapshot; instead we gate on the live input being
@@ -1321,16 +1563,16 @@ function AboutTab({
           disabled={refreshing || !onRefresh || !registry.trim() || updating}
           title={!registry.trim() ? 'Enter a registry URL above first.' : undefined}
         >
-          {refreshing ? 'Checking…' : 'Check now'}
+          {refreshing ? 'Checking...' : 'Check now'}
         </button>
         {canUpdateInApp && (
           <button
             className="btn btn-primary"
             onClick={() => void runUpdate()}
             disabled={updating || refreshing}
-            title="Run `npm i -g …@latest` on the server, then restart to apply."
+            title="Run `npm i -g <package>@latest` on the server, then restart to apply."
           >
-            {updating ? 'Updating…' : 'Update now'}
+            {updating ? 'Updating...' : 'Update now'}
           </button>
         )}
       </div>
@@ -1354,7 +1596,7 @@ function formatRelative(ms: number): string {
   return `${day}d ago`
 }
 
-// ── Shared primitives ────────────────────────────────────────────
+// — Shared primitives ???????????
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (

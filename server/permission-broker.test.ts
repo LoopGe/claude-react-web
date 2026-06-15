@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { PermissionBroker } from './permission-broker.js'
 import type { Session, PendingPermission } from './session-types.js'
 
-// ─── Helpers ─────────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ Helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 function makeFakeSession(overrides: Partial<Session> = {}): Session {
   const ac = new AbortController()
@@ -23,6 +23,8 @@ function makeFakeSession(overrides: Partial<Session> = {}): Session {
       provider: 'claude',
       messages,
       enqueueUserMessage: vi.fn(),
+      sendControlMessage: vi.fn(),
+      clearQueuedInput: vi.fn(() => 0),
       queueDepth: 0,
       closed: false,
       abortSignal: ac.signal,
@@ -41,6 +43,7 @@ function makeFakeSession(overrides: Partial<Session> = {}): Session {
       setMcpServers: vi.fn(async () => ({})),
       reloadPlugins: vi.fn(async () => ({})),
       getContextUsage: vi.fn(async () => ({})),
+      reloadSkills: vi.fn(async () => ({})),
     },
     subscribers: new Map(),
     permissionSubscribers: new Map(),
@@ -49,6 +52,7 @@ function makeFakeSession(overrides: Partial<Session> = {}): Session {
     contextUsageSubscribers: new Set(),
     gitStatusSubscribers: new Set(),
     messageStatusSubscribers: new Set(),
+    commandSubscribers: new Set(),
     recapSubscribers: new Set(),
     sessionClearedSubscribers: new Set(),
     pumpTask: Promise.resolve(),
@@ -105,7 +109,7 @@ function makeQuestionPermission(overrides: Record<string, unknown> = {}): Pendin
   return { ...base, ...overrides } as unknown as PendingPermission
 }
 
-// ─── Tests ───────────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ Tests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 describe('PermissionBroker', () => {
   let broker: PermissionBroker
@@ -119,7 +123,7 @@ describe('PermissionBroker', () => {
     vi.useRealTimers()
   })
 
-  // ─── buildCanUseTool ────────────────────────────────────────────
+  // 鈹€鈹€鈹€ buildCanUseTool 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   describe('buildCanUseTool', () => {
     it('auto-allows in bypassPermissions mode', async () => {
@@ -157,7 +161,7 @@ describe('PermissionBroker', () => {
         updatedInput: input,
         toolUseID: 'tu-1',
       })
-      // No prompt was raised.
+      // No prompt was raise?.
       expect(session.pending.size).toBe(0)
     })
 
@@ -165,6 +169,18 @@ describe('PermissionBroker', () => {
       const session = makeFakeSession({ permissionMode: 'acceptEdits', cwd: '/work/app' })
       const canUseTool = broker.buildCanUseTool(session, vi.fn())
       canUseTool('Write', { file_path: '/etc/passwd', content: 'x' }, {
+        toolUseID: 'tu-1',
+        signal: new AbortController().signal,
+        title: 'Write file', displayName: 'Write', description: '', suggestions: [],
+      })
+      expect(session.pending.size).toBe(1)
+      expect(Array.from(session.pending.values())[0].toolName).toBe('Write')
+    })
+
+    it('still prompts for edit tools targeting sensitive paths inside cwd in acceptEdits mode', () => {
+      const session = makeFakeSession({ permissionMode: 'acceptEdits', cwd: '/work/app' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      canUseTool('Write', { file_path: '/work/app/.git/config', content: 'x' }, {
         toolUseID: 'tu-1',
         signal: new AbortController().signal,
         title: 'Write file', displayName: 'Write', description: '', suggestions: [],
@@ -240,7 +256,7 @@ describe('PermissionBroker', () => {
       expect(Array.from(session.pending.values())[0].toolName).toBe('ExitPlanMode')
     })
 
-    // ─── dontAsk mode ──────────────────────────────────────────────
+    // 鈹€鈹€鈹€ dontAsk mode 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     const ctx = (toolUseID = 'tu-1') => ({
       toolUseID,
       signal: new AbortController().signal,
@@ -374,7 +390,7 @@ describe('PermissionBroker', () => {
       const canUseTool = broker.buildCanUseTool(session, vi.fn())
       const ac = new AbortController()
       canUseTool('AskUserQuestion', {
-        questions: [{ question: 'Color?', options: [{ label: 'Red' }] }],
+        questions: [{ question: 'Colord', options: [{ label: 'Red' }] }],
       }, {
         toolUseID: 'tu-q1',
         signal: ac.signal,
@@ -395,7 +411,7 @@ describe('PermissionBroker', () => {
       const ac = new AbortController()
 
       const promise = canUseTool('AskUserQuestion', {
-        questions: [{ question: 'Color?', options: [{ label: 'Red' }] }],
+        questions: [{ question: 'Colord', options: [{ label: 'Red' }] }],
       }, {
         toolUseID: 'tu-q1',
         signal: ac.signal,
@@ -418,9 +434,28 @@ describe('PermissionBroker', () => {
       const result = await promise
       expect(result.behavior).toBe('deny')
       if (result.behavior === 'deny') {
-        expect(result.message).toContain('Color?')
+        expect(result.message).toContain('Colord')
         expect(result.message).toContain('Red')
       }
+      expect(session.pending.size).toBe(0)
+    })
+
+    it('auto-approves whitelisted PowerShell edit commands in acceptEdits mode', async () => {
+      const session = makeFakeSession({ permissionMode: 'acceptEdits', cwd: '/work/app' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const result = await canUseTool('PowerShell', { command: 'Remove-Item -Force src/tmp' }, {
+        toolUseID: 'tu-1',
+        signal: new AbortController().signal,
+        title: 'Run PowerShell',
+        displayName: 'PowerShell',
+        description: '',
+        suggestions: [],
+      })
+      expect(result).toEqual({
+        behavior: 'allow',
+        updatedInput: { command: 'Remove-Item -Force src/tmp' },
+        toolUseID: 'tu-1',
+      })
       expect(session.pending.size).toBe(0)
     })
 
@@ -476,7 +511,7 @@ describe('PermissionBroker', () => {
     })
   })
 
-  // ─── decide ─────────────────────────────────────────────────────
+  // 鈹€鈹€鈹€ decide 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   describe('decide', () => {
     it('resolves a pending permission with allow', () => {
@@ -548,7 +583,7 @@ describe('PermissionBroker', () => {
     })
   })
 
-  // ─── answerQuestion ─────────────────────────────────────────────
+  // 鈹€鈹€鈹€ answerQuestion 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   describe('answerQuestion', () => {
     it('resolves a question with formatted answers', () => {
@@ -593,7 +628,7 @@ describe('PermissionBroker', () => {
     })
   })
 
-  // ─── denyAll ────────────────────────────────────────────────────
+  // 鈹€鈹€鈹€ denyAll 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   describe('denyAll', () => {
     it('denies all pending permissions', () => {
@@ -621,7 +656,7 @@ describe('PermissionBroker', () => {
     })
   })
 
-  // ─── listPending ────────────────────────────────────────────────
+  // 鈹€鈹€鈹€ listPending 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   describe('listPending', () => {
     it('returns snapshots of all pending permissions', () => {
@@ -638,7 +673,7 @@ describe('PermissionBroker', () => {
     })
   })
 
-  // ─── subscribePermissions ───────────────────────────────────────
+  // 鈹€鈹€鈹€ subscribePermissions 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   describe('subscribePermissions', () => {
     it('returns a snapshot of pending and an iterable', () => {

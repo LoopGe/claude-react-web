@@ -1,4 +1,4 @@
-// Chat panel — orchestrates the stream, attachments, permissions, and
+// Chat panel ?orchestrates the stream, attachments, permissions, and
 // renders the message list + composer. Side-effect hooks live in their
 // own files; this module only wires things together.
 //
@@ -42,8 +42,11 @@ import { exportConversation, exportConversationJson } from '../utils/exportConve
 import { IconSearch, IconFileText, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown } from './icons/ToolIcons'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
+import { useWsHub } from '../hooks/useWsHub'
+import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
 import type { AgentInfo, SessionInfo, SlashCommand } from '../types'
 import type { GitStatusResponse } from '../../shared/git-types'
+import type { MessageJumpTarget } from '../../shared/message-jump'
 import { LOCAL_COMMANDS, matchLocalCommand } from '../local-commands'
 import type { SettingsTabName } from '../local-commands'
 
@@ -66,16 +69,16 @@ function writeDraft(sessionId: string, draft: string): void {
     if (draft) window.sessionStorage.setItem(DRAFT_KEY_PREFIX + sessionId, draft)
     else window.sessionStorage.removeItem(DRAFT_KEY_PREFIX + sessionId)
   } catch {
-    /* quota or SecurityError — drafts are best-effort */
+    /* quota or SecurityError ?drafts are best-effort */
   }
 }
 
 interface Props {
   session: SessionInfo
-  /** Reserved for future push updates — currently unused because session
+  /** Reserved for future push updates ?currently unused because session
    *  state is tracked via the WebSocket hub + top-level session list poll. */
   onSessionUpdate: (s: SessionInfo) => void
-  /** Open the resume picker scoped to this panel — the chosen session
+  /** Open the resume picker scope to this panel — the chosen session
    *  replaces this panel's slot. Invoked by the `/resume` local command. */
   onRequestResumeForPanel: (panelSessionId: string) => void
   /** Open this panel's settings overlay on a specific tab. Invoked by the
@@ -84,9 +87,10 @@ interface Props {
   /** Open the in-app help dialog with the given slash commands. Invoked by
    *  the `/help` local command. */
   onShowHelp: (commands: SlashCommand[]) => void
-  /** Nonce-stamped request to switch the settings tab — forwarded to
+  /** Nonce-stamped request to switch the settings tab ?forwarded to
    *  SettingsPanel, which applies it when the nonce changes. */
   settingsTabRequest?: { tab: SettingsTabName; nonce: number } | null
+  messageJumpTarget?: MessageJumpTarget | null
   /** When true, render the Settings overlay on top of this chat panel. */
   settingsOpen?: boolean
   onCloseSettings?: () => void
@@ -144,7 +148,7 @@ export const Chat = memo(function Chat({
   session,
   settingsOpen, onCloseSettings,
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
-  onSessionUpdate, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, settingsTabRequest, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, onRegisterInjectInput,
+  onSessionUpdate, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, settingsTabRequest, messageJumpTarget, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, onRegisterInjectInput,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onOpenSettingsPanel,
 }: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
@@ -154,11 +158,13 @@ export const Chat = memo(function Chat({
   const [sending, setSending] = useState(false)
   // SettingsPanel is kept mounted (CSS-hidden) once shown so its internal
   // state survives close/reopen. We defer its first mount — and thus its
-  // lazy chunk download — until the user first opens it. Latches true and
+  // lazy chunk download ?until the user first opens it. Latches true and
   // never resets for the lifetime of this Chat mount.
   const settingsEverOpened = useRef(false)
   if (settingsOpen) settingsEverOpened.current = true
-  // Synchronous reentrancy guard. setSending is async — between two
+  const settingsPresence = useExitPresence(!!settingsOpen)
+  const gitPresence = useExitPresence(!!gitPanelOpen)
+  // Synchronous reentrancy guard. setSending is async ?between two
   // rapid keypresses (e.g. Enter pressed twice within one frame), React
   // hasn't committed the state update yet, so the closure inside send()
   // sees `sending === false` both times and POSTs twice. The ref flips
@@ -167,14 +173,15 @@ export const Chat = memo(function Chat({
   const sendingRef = useRef(false)
   const [localError, setLocalError] = useState<string | null>(null)
   /** Increments whenever we want the Composer's textarea refocused.
-   *  Bumped after a successful send — otherwise the click on the Send
+   *  Bumped after a successful send ?otherwise the click on the Send
    *  button would leave focus on the button, breaking the
    *  type-enter-type-enter flow. */
   const [composerFocusSignal, setComposerFocusSignal] = useState(0)
 
-  // Slash commands — cached per session so switching away and back
+  // Slash commands ?cached per session so switching away and back
   // doesn't re-fetch. The SDK subprocess returns the list via a
   // control request; 410 on dormant sessions is expected and ignored.
+  const hub = useWsHub()
   const [commands, setCommands] = useState<SlashCommand[]>([])
   const commandsCacheRef = useRef<Map<string, SlashCommand[]>>(new Map())
   useEffect(() => {
@@ -199,16 +206,25 @@ export const Chat = memo(function Chat({
     }
   }, [session.id, session.running])
 
+
+  useEffect(() => {
+    return hub.addSessionListener(session.id, (frame) => {
+      if (frame.kind !== 'commands-changed') return
+      const next = frame.commands ?? []
+      commandsCacheRef.current.set(session.id, next)
+      setCommands(next)
+    })
+  }, [hub, session.id])
   // Local commands (e.g. /resume, /mcp) merged in ONLY for the Composer's "/"
   // picker, so they're discoverable. They're handled in-app by send()'s
-  // matchLocalCommand check. The SDK may ALSO advertise a same-named command
+  // matchLocalCommand check. The SDK may ALSO advertise a same-name command
   // (Claude Code ships a built-in /mcp): local wins, so we drop any SDK entry
-  // whose name collides — otherwise the picker shows duplicates and React
+  // whose name collides ?otherwise the picker shows duplicates and React
   // warns on the duplicate `key={cmd.name}`. Deliberately NOT passed to
   // SettingsPanel (which uses the raw `commands` for the skills/plugins
   // catalog — a client command doesn't belong there).
   const mergedCommands = useMemo<SlashCommand[]>(() => {
-    const localNames = new Set(LOCAL_COMMANDS.map((c) => c.name))
+    const localNames = new Set(LOCAL_COMMANDS.flatMap((c) => [c.name, ...(c.aliases ?? [])]))
     return [
       ...LOCAL_COMMANDS.map((c) => ({
         name: c.name,
@@ -220,9 +236,9 @@ export const Chat = memo(function Chat({
     ]
   }, [commands])
 
-  // Agents — fetched once per session, refreshed after plugin reload.
-  // Cached per session (like commands) so switching away and back — or a
-  // session.running flip from auto-resume — doesn't re-issue the blocking
+  // Agents ?fetched once per session, refreshed after plugin reload.
+  // Cached per session (like commands) so switching away and back ?or a
+  // session.running flip from auto-resume ?doesn't re-issue the blocking
   // /agents control request (it's gated on the SDK init handshake, which
   // can stall on proxy backends and hang the UI). The agents list is
   // static for a given session, so the cache is safe until plugin reload.
@@ -287,38 +303,49 @@ export const Chat = memo(function Chat({
   )
 
   // Shell-style history is persisted in one localStorage ring but partitioned
-  // by session: composer navigation (Mod+↑/↓, Ctrl+P/N) only walks this
+  // by session: composer navigation (Mod+?? Ctrl+P/N) only walks this
   // session's entries, so one panel never surfaces another's prompts. The
   // Mod+Shift+H panel still reads the whole ring across sessions.
   const history = useInputHistory(INPUT_HISTORY_KEY, session.id)
 
-  // Permissions first — its onRequest/onResolved are passed into the
+  // Permissions first ?its onRequest/onResolved are passed into the
   // stream hook so SDK messages and permission events share one WebSocket.
   const permissions = usePermissionChannel(session.id)
   const stream = useChatStream(session.id, {
     onRequest: permissions.onRequest,
     onResolved: permissions.onResolved,
+    onCleared: permissions.reset,
   })
   const attachments = useAttachments(session.id, session.cwd)
   const pastedImages = usePastedImages()
 
-  // ── Subagent overlay state ────────────────────────────────
+  // 鈹€鈹€ Subagent overlay state 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // Stack of toolUseIds: empty = closed; otherwise the last entry is the
   // currently-shown subagent. Pushed when the user clicks a SubagentCard
   // (either in the main transcript or inside the overlay itself, for
   // nested drill-down). Popped on the back button; cleared on close.
   const [subagentStack, setSubagentStack] = useState<string[]>([])
+  const [subagentClosing, setSubagentClosing] = useState(false)
+  const [subagentTransitionDirection, setSubagentTransitionDirection] = useState<'forward' | 'back' | null>(null)
   const openSubagent = useCallback((toolUseId: string) => {
-    setSubagentStack((prev) => {
-      // Don't push the same id twice in a row (idempotent open).
-      if (prev[prev.length - 1] === toolUseId) return prev
-      return [...prev, toolUseId]
-    })
-  }, [])
+    if (subagentStack[subagentStack.length - 1] === toolUseId) return
+    setSubagentClosing(false)
+    setSubagentTransitionDirection(subagentStack.length > 0 ? 'forward' : null)
+    setSubagentStack((prev) => [...prev, toolUseId])
+  }, [subagentStack])
   const popSubagent = useCallback(() => {
+    setSubagentTransitionDirection('back')
     setSubagentStack((prev) => prev.slice(0, -1))
   }, [])
-  const closeSubagent = useCallback(() => setSubagentStack([]), [])
+  const closeSubagent = useCallback(() => {
+    setSubagentClosing(true)
+    setSubagentTransitionDirection(null)
+  }, [])
+  const handleSubagentExited = useCallback(() => {
+    setSubagentClosing(false)
+    setSubagentStack([])
+    setSubagentTransitionDirection(null)
+  }, [])
   // Memoize the provider value so SubagentCard's `memo()` survives
   // unrelated Chat re-renders. Both providers below share this object.
   const subagentCtxValue = useMemo(
@@ -326,7 +353,7 @@ export const Chat = memo(function Chat({
     [stream.subagentIndex, stream.messages, openSubagent],
   )
 
-  // ── AskUserQuestion minimize / re-open ──────────────────────
+  // 鈹€鈹€ AskUserQuestion minimize / re-open 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // A minimized question dialog is hidden (not resolved) so the user can
   // read the conversation behind it; the inline QuestionCard re-opens it.
   // Keyed by the pending request's `id`.
@@ -360,7 +387,7 @@ export const Chat = memo(function Chat({
     },
     [permissions.pending],
   )
-  // Map the minimized request ids → tool_use_ids so the inline card (which
+  // Map the minimized request ids ?tool_use_ids so the inline card (which
   // only knows its tool_use_id) can tell whether it's currently minimized.
   const minimizedToolUseIds = useMemo(() => {
     const out = new Set<string>()
@@ -373,6 +400,11 @@ export const Chat = memo(function Chat({
     () => ({ minimizedToolUseIds, onReopen: reopenQuestion }),
     [minimizedToolUseIds, reopenQuestion],
   )
+  const activePendingRequest = permissions.pending[0]
+  const activeVisiblePendingRequest = activePendingRequest?.kind === 'question' && minimizedQ.has(activePendingRequest.id)
+    ? null
+    : activePendingRequest
+  const pendingDialogPresence = usePresenceValue(activeVisiblePendingRequest)
   // Drop minimize/draft state once a question resolves (no longer pending) so
   // the set and ref don't accumulate stale ids over a long session.
   useEffect(() => {
@@ -393,7 +425,7 @@ export const Chat = memo(function Chat({
     }
   }, [permissions.pending])
 
-  // ── In-chat search ──────────────────────────────────────────
+  // 鈹€鈹€ In-chat search 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const [searchOpen, setSearchOpen] = useState(false)
   // Seed for the search input, captured from the current selection at open time.
   const [searchSeed, setSearchSeed] = useState('')
@@ -401,7 +433,7 @@ export const Chat = memo(function Chat({
   // (single-line, trimmed) so they can search the highlighted text directly.
   const openSearch = useCallback(() => {
     const sel = window.getSelection()?.toString() ?? ''
-    // Ignore multi-line / oversized selections — those aren't useful as a query.
+    // Ignore multi-line / oversized selections ?those aren't useful as a query.
     const seed = sel.trim()
     setSearchSeed(seed && !seed.includes('\n') && seed.length <= 200 ? seed : '')
     setSearchOpen(true)
@@ -422,7 +454,7 @@ export const Chat = memo(function Chat({
    *
    *  We carry the per-item index alongside the global one so the
    *  active-mark highlighter can colour the precise `<mark>` the user
-   *  is currently on — without it, "next match" jumps inside the same
+   *  is currently on ?without it, "next match" jumps inside the same
    *  message would be invisible (same outline, no scroll change).
    *
    *  Matching uses the canonical `plainText` field — same view the
@@ -441,6 +473,57 @@ export const Chat = memo(function Chat({
   }, [stream.items, debouncedQuery])
   // Reset active index when the match set changes (new query or new messages).
   useEffect(() => { setSearchActiveIdx(0) }, [searchMatches])
+
+  const handledJumpNonceRef = useRef<number | null>(null)
+  const [pendingJump, setPendingJump] = useState<MessageJumpTarget | null>(null)
+  useEffect(() => {
+    if (!messageJumpTarget || messageJumpTarget.sessionId !== session.id) return
+    if (handledJumpNonceRef.current === messageJumpTarget.nonce) return
+    handledJumpNonceRef.current = messageJumpTarget.nonce
+
+    setSearchSeed(messageJumpTarget.query)
+    setSearchQuery(messageJumpTarget.query)
+    setSearchActiveIdx(0)
+    setSearchOpen(true)
+    setPendingJump(messageJumpTarget)
+  }, [messageJumpTarget, session.id])
+
+  useEffect(() => {
+    if (!pendingJump) return
+    if (debouncedQuery !== pendingJump.query) return
+
+    const itemIdx = pendingJump.messageUuid
+      ? stream.items.findIndex((item) => item.msg.uuid === pendingJump.messageUuid)
+      : -1
+    if (itemIdx >= 0) {
+      const beforeTarget = stream.items.slice(0, itemIdx)
+      let globalIdx = 0
+      for (const item of beforeTarget) globalIdx += countMatches(item.plainText, pendingJump.query)
+      setSearchActiveIdx(globalIdx)
+      setPendingJump(null)
+      return
+    }
+
+    if (!stream.hasOlder) {
+      const visibleMatches = stream.items.reduce(
+        (total, item) => total + countMatches(item.plainText, pendingJump.query),
+        0,
+      )
+      if (pendingJump.matchOrdinal != null && visibleMatches > pendingJump.matchOrdinal) {
+        setSearchActiveIdx(pendingJump.matchOrdinal)
+      }
+      setPendingJump(null)
+      return
+    }
+    if (stream.loadingOlder) return
+
+    let cancelled = false
+    void stream.loadOlder().then((loaded) => {
+      if (!cancelled && loaded === 0) setPendingJump(null)
+    })
+    return () => { cancelled = true }
+  }, [debouncedQuery, pendingJump, stream.hasOlder, stream.items, stream.loadOlder, stream.loadingOlder])
+
   // Ctrl+F opens search on the *focused* panel only. Without the
   // `focused` guard, every mounted Chat would intercept the same
   // keydown event and all search bars would open simultaneously.
@@ -473,7 +556,7 @@ export const Chat = memo(function Chat({
     onLiveMessageCount?.(stream.messages.length)
   }, [stream.messages.length, onLiveMessageCount])
 
-  // Session recap — phase-driven auto-generation. The hook reads
+  // Session recap ?phase-driven auto-generation. The hook reads
   // session.phase + session.lastTurnAt + session.recap (all kept current
   // by App-level WS frames) and schedules a single POST /recap when the
   // session has been idle for IDLE_THRESHOLD_MS with no fresh recap
@@ -491,7 +574,7 @@ export const Chat = memo(function Chat({
   // Pull out the specific functions/values we actually use downstream.
   // Putting the whole hook object in a dep list re-creates callbacks every
   // render and can churn child re-renders (the composer's onChange in
-  // particular — that's what caused the "can't send / can't type" freeze).
+  // particular ?that's what caused the "can't send / can't type" freeze).
   const { insertUserMessage, ackUserMessage, rollbackUserMessage, clearError: clearStreamError } = stream
   const {
     attachments: attachmentList,
@@ -514,7 +597,7 @@ export const Chat = memo(function Chat({
   const onDragOver = useCallback(
     (e: React.DragEvent) => {
       // Needed for drop to fire. Only visually highlight when actual files
-      // are being dragged — ignore text selections etc.
+      // are being dragged ?ignore text selections etc.
       if (!e.dataTransfer.types.includes('Files')) return
       e.preventDefault()
       setDragOver(true)
@@ -548,8 +631,23 @@ export const Chat = memo(function Chat({
     [uploadFiles],
   )
 
+  const requestClearSession = useCallback((sessionId: string) => {
+    clearError()
+    questionDraftsRef.current.clear()
+    setMinimizedQ(new Set())
+    void api.post(`/sessions/${sessionId}/clear`, {})
+      .then(() => {
+        permissions.reset()
+        clearAttachments()
+        pastedImages.clear()
+      })
+      .catch((e) => {
+        setLocalError((e as Error).message)
+      })
+  }, [clearAttachments, clearError, pastedImages, permissions])
+
   const send = useCallback(async () => {
-    // Synchronous guard FIRST — before any await or React state read,
+    // Synchronous guard FIRST ?before any await or React state read,
     // so two rapid Enter presses (within one frame) can't both pass.
     if (sendingRef.current) return
     const text = input.trim()
@@ -565,6 +663,7 @@ export const Chat = memo(function Chat({
         requestResumeForPanel: onRequestResumeForPanel,
         openSettingsTab: onOpenSettingsTab,
         showHelp: onShowHelp,
+        clearSession: requestClearSession,
       })
       return
     }
@@ -576,7 +675,7 @@ export const Chat = memo(function Chat({
     clearError()
     const preamble =
       attachmentList.length > 0
-        ? `Attached file${attachmentList.length === 1 ? '' : 's'} (absolute path${attachmentList.length === 1 ? '' : 's'} — use the Read tool to open):\n` +
+        ? `Attached file${attachmentList.length === 1 ? '' : 's'} (absolute path${attachmentList.length === 1 ? '' : 's'} - use the Read tool to open):\n` +
           attachmentList.map((a) => `- ${a.path}`).join('\n') +
           '\n\n'
         : ''
@@ -587,7 +686,7 @@ export const Chat = memo(function Chat({
     // sendContent runs, so by the time the POST resolves the broadcast
     // is already on its way. With this ordering the broadcast lands on
     // an existing pendingUserMessageId and reducer.applyMessage replaces
-    // the placeholder by id — which works regardless of content shape
+    // the placeholder by id ?which works regardless of content shape
     // (multimodal arrays included). Previously the optimistic insert
     // ran AFTER await, so the broadcast arrived first and the dedup
     // (which compares content with ===) failed for image arrays,
@@ -628,7 +727,7 @@ export const Chat = memo(function Chat({
       sendingRef.current = false
       setSending(false)
     }
-  }, [input, attachmentList, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, pastedImages, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp])
+  }, [input, attachmentList, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, pastedImages, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, requestClearSession])
 
   // Focus traps for the two in-panel overlays. The settings overlay is
   // always mounted (toggled via CSS .hidden), so the trap is gated on
@@ -648,7 +747,7 @@ export const Chat = memo(function Chat({
   }, [session.id])
 
   // Expose the interrupt callback to the parent so the ESC shortcut in
-  // App.tsx can trigger the same code-path. The "interrupted" (⊘) result
+  // App.tsx can trigger the same code-path. The "interrupted" (? result
   // label is now derived from the SDK result message's `terminal_reason`,
   // not from any client-side interrupt flag.
   useEffect(() => {
@@ -680,12 +779,12 @@ export const Chat = memo(function Chat({
   }, [])
 
   // Note: we used to poll /sessions/:id 500ms after every SDK message to
-  // keep the header badges fresh. That added O(messages × sessions) HTTP
+  // keep the header badges fresh. That added O(messages 脳 sessions) HTTP
   // requests on top of the WebSocket streams, and with three panels open it was
   // enough to saturate the browser's HTTP/1.1 connection pool. Model /
   // permissionMode only change via user actions (which already update
   // session state), and `working` is now derived from the message stream
-  // itself (result messages clear it) — so no background poll is needed.
+  // itself (result messages clear it) ?so no background poll is needed.
 
   // Stable wrappers so Composer's React.memo isn't defeated by inline arrows.
   const handleSend = useCallback(() => void send(), [send])
@@ -768,7 +867,7 @@ export const Chat = memo(function Chat({
       )}
 
       <MessageSearch
-        key={searchOpen ? 'search-open' : undefined}
+        key={searchOpen ? `search-open:${searchSeed}` : undefined}
         open={searchOpen}
         onClose={() => {
           setSearchOpen(false)
@@ -818,7 +917,7 @@ export const Chat = memo(function Chat({
       <TodoChecklist messages={stream.messages} working={session.working} />
       <MonitorBar messages={stream.messages} />
 
-      {/* Always-mounted live region — see `.error-bar-empty` in styles.css.
+      {/* Always-mounted live region ?see `.error-bar-empty` in styles.css.
           Keeping the region in the DOM (just visually hidden when empty)
           guarantees a screen reader announces the content mutation when an
           error arrives, instead of relying on the SR to notice that a
@@ -875,16 +974,16 @@ export const Chat = memo(function Chat({
       />
 
       {/* Pending permission dialogs. The question dialog closes
-          immediately on submit — the parent drops it from the pending
+          immediately on submit ?the parent drops it from the pending
           queue optimistically (see usePermissionChannel). */}
       {(() => {
-        // Active pending question — show the interactive dialog, unless the
-        // user minimized it (then it lives only as the inline message card).
-        const pendingHead = permissions.pending[0]
-        if (pendingHead?.kind === 'question' && !minimizedQ.has(pendingHead.id)) {
+        const pendingHead = pendingDialogPresence.value
+        const pendingDialogOpen = activeVisiblePendingRequest?.id === pendingHead?.id
+        if (pendingHead?.kind === 'question') {
           return (
             <QuestionDialog
               key={pendingHead.id}
+              open={pendingDialogOpen}
               request={pendingHead}
               initialDraft={questionDraftsRef.current.get(pendingHead.id)}
               onDraftChange={(draft) => {
@@ -904,11 +1003,11 @@ export const Chat = memo(function Chat({
           )
         }
 
-        // Pending tool permission (not a question).
         if (pendingHead?.kind === 'permission') {
           return (
             <PermissionDialog
               key={pendingHead.id}
+              open={pendingDialogOpen}
               request={pendingHead}
               onDecide={(d) => void permissions.decide(pendingHead.id, d)}
               planContentMap={stream.planContent}
@@ -922,12 +1021,14 @@ export const Chat = memo(function Chat({
 
       <div
         ref={settingsOverlayRef}
-        className={`settings-overlay${settingsOpen ? '' : ' hidden'}`}
+        className={`settings-overlay${settingsPresence.shouldRender ? '' : ' hidden'}`}
+        data-state={settingsOpen ? 'open' : settingsPresence.isExiting ? 'closing' : 'closed'}
         role="dialog"
         aria-modal={settingsOpen ? 'true' : 'false'}
+        aria-hidden={!settingsOpen}
         aria-label="Session settings"
         onMouseDown={(e) => {
-          if (e.target === e.currentTarget) onCloseSettings?.()
+          if (settingsOpen && e.target === e.currentTarget) onCloseSettings?.()
         }}
       >
         {settingsEverOpened.current && (
@@ -947,15 +1048,17 @@ export const Chat = memo(function Chat({
         )}
       </div>
 
-      {gitPanelOpen && (
+      {gitPresence.shouldRender && (
         <div
           ref={gitOverlayRef}
           className="git-overlay"
+          data-state={gitPanelOpen ? 'open' : 'closing'}
           role="dialog"
-          aria-modal="true"
+          aria-modal={gitPanelOpen ? 'true' : 'false'}
+          aria-hidden={!gitPanelOpen}
           aria-label="Git"
           onMouseDown={(e) => {
-            if (e.target === e.currentTarget) onCloseGitPanel?.()
+            if (gitPanelOpen && e.target === e.currentTarget) onCloseGitPanel?.()
           }}
         >
           <Suspense fallback={null}>
@@ -981,6 +1084,9 @@ export const Chat = memo(function Chat({
             index={stream.subagentIndex}
             onClose={closeSubagent}
             onPop={popSubagent}
+            isExiting={subagentClosing}
+            transitionDirection={subagentTransitionDirection}
+            onExited={handleSubagentExited}
             toolStatus={stream.toolStatus}
             toolResults={stream.toolResults}
             planStatus={stream.planStatus}

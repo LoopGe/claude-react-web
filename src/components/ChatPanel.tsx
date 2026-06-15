@@ -14,6 +14,7 @@ import { useGitStatus } from '../hooks/useGitStatus'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { statusClass, statusLabel, shortenModel } from '../utils/session-status'
 import { useModelOptions } from '../hooks/useModelOptions'
+import { usePresenceValue } from '../hooks/useExitPresence'
 import { ModelPicker } from './ModelPicker'
 import { EffortSlider } from './EffortSlider'
 import { shortenPath } from '../utils/paths'
@@ -23,9 +24,10 @@ import type { EffortLevel, PermissionMode, SessionInfo, SlashCommand } from '../
 import type { SettingsTabName } from '../local-commands'
 import { PERMISSION_MODES, EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL } from '../types'
 import type { GitStatus } from '../../shared/git-types'
+import type { MessageJumpTarget } from '../../shared/message-jump'
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 
-/** Chip text generator: "main" when clean, "main ↑2 ●5 ?1" when dirty.
+/** Chip text generator: "main" when clean, "main ahead 1 dirty 1 ?1" when dirty.
  *  Each suffix is suppressed at zero so the chip stays compact when the
  *  repo is in the common steady state. */
 function gitChipText(s: GitStatus): string {
@@ -33,9 +35,9 @@ function gitChipText(s: GitStatus): string {
   const branch = s.branch ?? '?'
   const dirty = s.staged.length + s.unstaged.length
   const segments: string[] = [branch]
-  if (s.ahead > 0) segments.push(`↑${s.ahead}`)
-  if (s.behind > 0) segments.push(`↓${s.behind}`)
-  if (dirty > 0) segments.push(`●${dirty}`)
+  if (s.ahead > 0) segments.push(`ahead ${s.ahead}`)
+  if (s.behind > 0) segments.push(`behind ${s.behind}`)
+  if (dirty > 0) segments.push(`dirty ${dirty}`)
   if (s.untracked.length > 0) segments.push(`?${s.untracked.length}`)
   return segments.join(' ')
 }
@@ -99,7 +101,7 @@ export interface ChatPanelProps {
   onSwap: (draggedId: string, targetId: string) => void
   /** A sidebar card was dropped onto this panel — replace it. */
   onAcceptSidebarDrop: (sidebarId: string, sessionId: string) => void
-  /** Open the resume picker scoped to this panel — the chosen session
+  /** Open the resume picker scope to this panel — the chosen session
    *  replaces this panel's slot. Triggered by the `/resume` local command. */
   onRequestResumeForPanel: (panelSessionId: string) => void
   /** Open this panel's settings overlay on a specific tab. Triggered by the
@@ -108,9 +110,10 @@ export interface ChatPanelProps {
   /** Open the in-app help dialog with the given slash commands. Triggered by
    *  the `/help` local command. */
   onShowHelp: (commands: SlashCommand[]) => void
-  /** Nonce-stamped request to switch the settings tab (forwarded to <Chat> →
+  /** Nonce-stamped request to switch the settings tab (forwarded to <Chat> —
    *  SettingsPanel). Null when no request targets this panel. */
   settingsTabRequest?: { tab: SettingsTabName; nonce: number } | null
+  messageJumpTarget?: MessageJumpTarget | null
   /** When true, render the Settings overlay on top of this panel. */
   settingsOpen?: boolean
   onOpenSettings: (sessionId: string) => void
@@ -156,6 +159,7 @@ export const ChatPanel = memo(function ChatPanel({
   onOpenSettingsTab,
   onShowHelp,
   settingsTabRequest,
+  messageJumpTarget,
   settingsOpen,
   onOpenSettings,
   onCloseSettings,
@@ -187,6 +191,9 @@ export const ChatPanel = memo(function ChatPanel({
   const [permMenu, setPermMenu] = useState<{ x: number; y: number } | null>(null)
   /** Anchor for the effort-level menu. Non-null = menu visible. */
   const [effortMenu, setEffortMenu] = useState<{ x: number; y: number } | null>(null)
+  const permMenuPresence = usePresenceValue(permMenu, 120)
+  const effortMenuPresence = usePresenceValue(effortMenu, 120)
+  const modelMenuPresence = usePresenceValue(modelMenu, 120)
   /** Global toast hub. Model/permission failures used to render an
    *  inline panel banner; they now surface as right-bottom toasts. */
   const toast = useToast()
@@ -273,9 +280,9 @@ export const ChatPanel = memo(function ChatPanel({
   }
   const effortLevel = session.effortLevel ?? DEFAULT_EFFORT_LEVEL
   // Effort chip gating from the model's reported capability (three-state):
-  //   undefined → capability unknown → offer all 5 (fallback, chip visible)
-  //   []        → model doesn't support effort → hide chip
-  //   [subset]  → offer only the supported levels
+  //   undefined — capability unknown — offer all 5 (fallback, chip visible)
+  //   []        — model doesn't support effort — hide chip
+  //   [subset]  — offer only the supported levels
   const effortCaps = session.effortLevels
   const effortVisible = effortCaps === undefined || effortCaps.length > 0
   const effortChoices = effortCaps && effortCaps.length > 0 ? effortCaps : EFFORT_LEVELS
@@ -430,8 +437,8 @@ export const ChatPanel = memo(function ChatPanel({
           </span>
         </Tooltip>
         {/* Fast-mode control. Only shown when the SDK reports a fast-mode
-            runtime state for the current model (undefined → model doesn't
-            support it → chip hidden). 'cooldown' means the speedup is
+            runtime state for the current model (undefined — model doesn't
+            support it — chip hidden). 'cooldown' means the speedup is
             rate-limited and temporarily inactive, so we disable the toggle
             and explain why. Clicking flips the persisted intent. */}
         {fastVisible && (
@@ -461,7 +468,7 @@ export const ChatPanel = memo(function ChatPanel({
           </Tooltip>
         )}
         {/* Effort-level control. Shown when the current model supports
-            effort (or its capability is unknown → fallback to offering all
+            effort (or its capability is unknown — fallback to offering all
             5). Hidden only when the SDK explicitly reports no effort support
             (effortLevels === []). The menu lists the supported subset, or all
             5 when capability is unknown. Chip shows the active level,
@@ -534,16 +541,17 @@ export const ChatPanel = memo(function ChatPanel({
                   onOpenGitPanel(session.id)
                 }}
               >
-                <span className="chat-panel-git-badge-icon" aria-hidden>⎇</span>
+                <span className="chat-panel-git-badge-icon" aria-hidden>Git</span>
                 <span className="chat-panel-git-badge-value">{gitChipText(gitStatus.data)}</span>
               </button>
             </Tooltip>
           )}
         </div>
-        {permMenu && (
+        {permMenuPresence.value && (
           <ContextMenu
-            x={permMenu.x}
-            y={permMenu.y}
+            x={permMenuPresence.value.x}
+            y={permMenuPresence.value.y}
+            isExiting={permMenuPresence.isExiting}
             onClose={() => setPermMenu(null)}
             items={PERMISSION_MODES.map((m) => ({
               label: m,
@@ -552,22 +560,24 @@ export const ChatPanel = memo(function ChatPanel({
             }))}
           />
         )}
-        {effortMenu && (
+        {effortMenuPresence.value && (
           <EffortSlider
-            anchor={effortMenu}
+            anchor={effortMenuPresence.value}
             levels={effortChoices}
             current={effortLevel}
             disabled={chipsDisabled}
+            isExiting={effortMenuPresence.isExiting}
             onSelect={(l) => commitEffortLevel(l)}
             onClose={() => setEffortMenu(null)}
           />
         )}
-        {modelMenu && (
+        {modelMenuPresence.value && (
           <ModelPicker
-            anchor={modelMenu}
+            anchor={modelMenuPresence.value}
             current={session.model}
             options={modelOptions}
             disabled={chipsDisabled}
+            isExiting={modelMenuPresence.isExiting}
             onSelect={(model) => commitModel(model)}
             onClose={() => setModelMenu(null)}
           />
@@ -602,7 +612,7 @@ export const ChatPanel = memo(function ChatPanel({
               <Tooltip label="Assistant is working on a turn" placement="bottom">
                 <span className="chat-panel-working-indicator">
                   <span className="chat-panel-working-dot" aria-hidden />
-                  working…
+                  working...
                 </span>
               </Tooltip>
             )}
@@ -620,6 +630,7 @@ export const ChatPanel = memo(function ChatPanel({
             onOpenSettingsTab={onOpenSettingsTab}
             onShowHelp={onShowHelp}
             settingsTabRequest={settingsTabRequest}
+            messageJumpTarget={messageJumpTarget}
             settingsOpen={settingsOpen}
             onCloseSettings={onCloseSettings}
             gitPanelOpen={gitPanelOpen}
@@ -643,7 +654,7 @@ export const ChatPanel = memo(function ChatPanel({
             {isResuming ? (
               <>
                 <div className="app-loading-spinner" />
-                <p>Resuming session…</p>
+                <p>Resuming session...</p>
               </>
             ) : (
               <>
