@@ -186,6 +186,8 @@
 .git-file-row {
   display: flex;
   flex-direction: column;
+  animation: git-file-row-in var(--motion-duration-base) var(--motion-ease-enter) both;
+  transition: opacity var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .git-file-row.untracked {
   flex-direction: row;
@@ -213,6 +215,18 @@
 .git-file-row-toggle:hover {
   background: var(--btn-hover-bg);
 }
+@keyframes git-file-row-in {
+  from { opacity: 0; transform: translateY(var(--motion-distance-sm)); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .git-file-row {
+    animation: none;
+    transition: none;
+  }
+}
+
+
 .git-file-status {
   width: 14px;
   font-weight: 700;

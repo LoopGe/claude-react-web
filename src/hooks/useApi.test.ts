@@ -62,6 +62,14 @@ describe('apiRequest', () => {
     } satisfies Partial<ApiError>)
   })
 
+  it('formats validation errors when no error field is present', async () => {
+    mockFetch({ ok: false, status: 400, body: { errors: [{ path: 'hooks.Stop', message: 'must be valid' }] } })
+    await expect(apiRequest('/fail')).rejects.toMatchObject({
+      message: 'hooks.Stop must be valid',
+      status: 400,
+    } satisfies Partial<ApiError>)
+  })
+
   it('handles non-JSON response body', async () => {
     mockFetch({ ok: true, contentType: 'text/plain', body: 'hello' })
     const result = await apiRequest<string>('/text')

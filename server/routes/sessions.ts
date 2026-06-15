@@ -6,6 +6,7 @@ import { SessionManager } from '../session-manager.js'
 import { safeJson } from './index.js'
 import type { MpStore } from '../mp-store.js'
 import { isUserSelectablePermissionMode, permissionModeList } from '../permission-modes.js'
+import { formatHooksValidationErrors, toSdkHooksSettings, validateSessionHooksConfig } from '../../shared/hooks.js'
 
 const VALID_IMG_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
 
@@ -60,6 +61,12 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     if (envErr) return c.json({ error: envErr }, 400)
     if (rest.permissionMode != null && !isUserSelectablePermissionMode(rest.permissionMode)) {
       return c.json({ error: `permissionMode must be one of ${permissionModeList()}` }, 400)
+    }
+    if (rest.settings && typeof rest.settings === 'object' && !Array.isArray(rest.settings) && 'hooks' in rest.settings) {
+      const settings = rest.settings as Record<string, unknown>
+      const parsedHooks = validateSessionHooksConfig(settings.hooks ?? {})
+      if (!parsedHooks.ok) return c.json({ error: formatHooksValidationErrors(parsedHooks.errors), errors: parsedHooks.errors }, 400)
+      rest.settings = { ...settings, hooks: toSdkHooksSettings(parsedHooks.value) }
     }
     const mergedMcp = await sm.mergeMcpServersAsync(enabledMcpServers, mcpServers)
     if (mergedMcp) rest.mcpServers = mergedMcp

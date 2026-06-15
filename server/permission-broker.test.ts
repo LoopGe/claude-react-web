@@ -53,6 +53,8 @@ function makeFakeSession(overrides: Partial<Session> = {}): Session {
     gitStatusSubscribers: new Set(),
     messageStatusSubscribers: new Set(),
     commandSubscribers: new Set(),
+    hookRuns: [],
+    hookRunSubscribers: new Set(),
     recapSubscribers: new Set(),
     sessionClearedSubscribers: new Set(),
     pumpTask: Promise.resolve(),

@@ -1,4 +1,4 @@
-﻿export type SkillScope = 'user' | 'project'
+export type SkillScope = 'user' | 'project'
 export type SkillLoadMode = 'default' | 'all' | 'allowlist'
 
 export interface SkillRootInfo {
@@ -35,4 +35,19 @@ export interface SkillValidationResponse {
   errors: string[]
   name?: string
   description?: string
+}
+
+export interface SkillImportFile {
+  path: string
+  data: string
+  encoding: 'base64'
+}
+
+export interface SkillImportResponse {
+  skill: SkillRecord
+  importedFiles: number
+  reload?: {
+    reloaded: string[]
+    failed: { id: string; error: string }[]
+  }
 }

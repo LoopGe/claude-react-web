@@ -18,6 +18,7 @@ import { buildGitWriteRouter } from './git-write.js'
 import { buildUpdateRouter } from './update-routes.js'
 import { buildSearchRouter } from './search.js'
 import { buildSkillsRouter } from './skills.js'
+import { buildHooksRouter } from './hooks.js'
 
 /** Parse JSON body, returning 400 on malformed input instead of silently
  *  falling back to an empty object. */
@@ -47,6 +48,7 @@ export function buildApiRouter(
   app.route('/', buildHealthRouter(claudeBinary))
   app.route('/', buildConfigRouter(sm, configDir))
   app.route('/', buildSessionRouter(sm, mpStore))
+  app.route('/', buildHooksRouter(sm))
   app.route('/', buildSkillsRouter(sm))
   app.route('/', buildUploadRouter(sm))
   app.route('/', buildPermissionRouter(sm))

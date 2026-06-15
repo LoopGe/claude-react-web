@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { IconX } from './icons/ToolIcons'
+import { useExitPresence } from '../hooks/useExitPresence'
 
 interface Props {
   open: boolean
@@ -28,6 +29,7 @@ export function MessageSearch({ open, onClose, onNavigate, totalResults, onQuery
   const [currentIdx, setCurrentIdx] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const prevQueryRef = useRef(query)
+  const { shouldRender, isExiting } = useExitPresence(open)
 
   // Sync internal currentIdx when parent controls activeIndex.
   // Controlled-component sync; currentIdx intentionally excluded from deps to avoid loops.
@@ -39,18 +41,18 @@ export function MessageSearch({ open, onClose, onNavigate, totalResults, onQuery
     // eslint-disable-next-line react-hooks/exhaustive-deps -- currentIdx excluded to avoid infinite loop
   }, [activeIndex])
 
-  // Focus input on open. State is already clean because the parent uses a
-  // `key` prop that forces a full remount each time search opens.
+  // Focus input on open. Query state is reset by remounting this component
+  // with a new key per open cycle; keeping the outer search bar present lets
+  // its close animation finish.
   useEffect(() => {
-    if (open) {
-      requestAnimationFrame(() => {
-        const el = inputRef.current
-        if (!el) return
-        el.focus()
-        // Select the seeded text so the user can immediately type over it.
-        el.select()
-      })
-    }
+    if (!open) return
+    requestAnimationFrame(() => {
+      const el = inputRef.current
+      if (!el) return
+      el.focus()
+      // Select the seeded text so the user can immediately type over it.
+      el.select()
+    })
   }, [open])
 
   // Escape closes.
@@ -116,10 +118,10 @@ export function MessageSearch({ open, onClose, onNavigate, totalResults, onQuery
     setCurrentIdx((prev) => (prev + 1) % total)
   }, [])
 
-  if (!open) return null
+  if (!shouldRender) return null
 
   return (
-    <div className="message-search-bar">
+    <div className="message-search-bar" data-state={isExiting ? 'closing' : 'open'}>
       <input
         ref={inputRef}
         className="message-search-input"

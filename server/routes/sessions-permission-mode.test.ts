@@ -36,4 +36,32 @@ describe('session permission mode routes', () => {
     expect(await res.json()).toEqual({ error: 'mode must be one of default, acceptEdits, plan, bypassPermissions, dontAsk' })
     expect(sm.setPermissionMode).not.toHaveBeenCalled()
   })
+
+  it('normalizes hooks inside create-time settings', async () => {
+    const { app, sm } = makeApp()
+    const hooks = { PreToolUse: [{ hooks: [{ type: 'command', command: 'echo ok' }] }] }
+    const res = await app.request('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ settings: { hooks } }),
+    })
+
+    expect(res.status).toBe(201)
+    expect(sm.create).toHaveBeenCalledWith({ settings: { hooks } }, undefined)
+  })
+
+  it('rejects unsupported hooks inside create-time settings', async () => {
+    const { app, sm } = makeApp()
+    const res = await app.request('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ settings: { hooks: { UnknownEvent: [{ hooks: [] }] } } }),
+    })
+
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: string; errors: { path: string }[] }
+    expect(body.error).toContain('UnknownEvent')
+    expect(body.errors[0]?.path).toBe('UnknownEvent')
+    expect(sm.create).not.toHaveBeenCalled()
+  })
 })

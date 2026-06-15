@@ -9,9 +9,26 @@ export interface ApiError extends Error {
 const DEFAULT_TIMEOUT_MS = 30_000
 
 function toApiError(res: Response, body: unknown): ApiError {
+  const validationErrors = body && typeof body === 'object' && 'errors' in body && Array.isArray((body as { errors: unknown }).errors)
+    ? (body as { errors: unknown[] }).errors
+      .map((item) => {
+        if (!item || typeof item !== 'object') return null
+        const path = 'path' in item && typeof (item as { path: unknown }).path === 'string'
+          ? (item as { path: string }).path
+          : ''
+        const message = 'message' in item && typeof (item as { message: unknown }).message === 'string'
+          ? (item as { message: string }).message
+          : ''
+        return `${path} ${message}`.trim()
+      })
+      .filter((item): item is string => typeof item === 'string' && item.length > 0)
+      .join('; ')
+    : ''
   const message =
     (body && typeof body === 'object' && 'error' in body && typeof (body as { error: unknown }).error === 'string'
       ? (body as { error: string }).error
+      : validationErrors
+        ? validationErrors
       : `HTTP ${res.status}`) || `HTTP ${res.status}`
   const err = new Error(message) as ApiError
   err.status = res.status

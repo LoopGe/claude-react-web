@@ -32,6 +32,13 @@ import {
   type WsClientFrame,
   type WsServerFrame,
 } from './ws-protocol.js'
+import type { HookRunRecord, HookRuntimeEvent } from '../shared/hooks.js'
+
+function hookSnapshotEvent(run: HookRunRecord): HookRuntimeEvent {
+  if (run.status === 'started') return { kind: 'started', run }
+  if (run.status === 'progress') return { kind: 'progress', run }
+  return { kind: 'completed', run }
+}
 
 /** Per-session subscription state held inside one WS connection. The
  *  driver promise lets us await its completion during teardown so we
@@ -236,6 +243,8 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
       let clearedIter: AsyncIterator<unknown> | null = null
       let cmdSub: { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null = null
       let cmdIter: AsyncIterator<unknown> | null = null
+      let hookSub: { iterable: AsyncIterable<unknown>; snapshot: unknown[]; unsubscribe: () => void } | null = null
+      let hookIter: AsyncIterator<unknown> | null = null
       try {
         const msg = sm.subscribe(sessionId)
         msgSub = msg
@@ -253,6 +262,8 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
         clearedIter = clearedSub?.iterable[Symbol.asyncIterator]() ?? null
         cmdSub = sm.subscribeCommandChanges(sessionId)
         cmdIter = cmdSub?.iterable[Symbol.asyncIterator]() ?? null
+        hookSub = sm.subscribeHookRuns(sessionId)
+        hookIter = hookSub?.iterable[Symbol.asyncIterator]() ?? null
 
         // 1) Send replay. If the client supplied `sinceUuid`, try to
         //    send only messages after that point (incremental sync).
@@ -329,16 +340,20 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
           queue.enqueue({ kind: 'context-usage', sessionId, usage: ctxSub.snapshot })
         }
 
+        for (const run of hookSub?.snapshot ?? []) {
+          queue.enqueue({ kind: 'hook-run', sessionId, event: hookSnapshotEvent(run as HookRunRecord) as never })
+        }
+
         // 2) Drive the live iterables concurrently. Same Promise.race
         //    pattern as the SSE route deach iterator tagged so the loop
         //    knows which frame to emit.
         let stopped = false
-        const _iterCleanup: AsyncIterator<unknown>[] = [ctxIter, gitIter, msgStatIter, recapIter, clearedIter, cmdIter]
+        const _iterCleanup: AsyncIterator<unknown>[] = [ctxIter, gitIter, msgStatIter, recapIter, clearedIter, cmdIter, hookIter]
           .filter((it): it is AsyncIterator<unknown> => !!it)
         const stop = () => {
           if (stopped) return
           stopped = true
-          for (const sub of [msgSub, permSub, ctxSub, gitSub, msgStatSub, recapSub, clearedSub, cmdSub]) sub?.unsubscribe()
+          for (const sub of [msgSub, permSub, ctxSub, gitSub, msgStatSub, recapSub, clearedSub, cmdSub, hookSub]) sub?.unsubscribe()
           for (const iter of _iterCleanup) void iter.return?.()
         }
 
@@ -355,6 +370,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
             | { kind: 'recap'; result: IteratorResult<unknown> }
             | { kind: 'cleared'; result: IteratorResult<unknown> }
             | { kind: 'cmd'; result: IteratorResult<unknown> }
+            | { kind: 'hook'; result: IteratorResult<unknown> }
 
           const tag = async (kind: Tagged['kind'], it: AsyncIterator<unknown>): Promise<Tagged> =>
             ({ kind, result: await it.next() })
@@ -374,6 +390,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
             ...(recapIter ? [{ kind: 'recap' as const, iter: recapIter, promise: tag('recap', recapIter) }] : []),
             ...(clearedIter ? [{ kind: 'cleared' as const, iter: clearedIter, promise: tag('cleared', clearedIter) }] : []),
             ...(cmdIter ? [{ kind: 'cmd' as const, iter: cmdIter, promise: tag('cmd', cmdIter) }] : []),
+            ...(hookIter ? [{ kind: 'hook' as const, iter: hookIter, promise: tag('hook', hookIter) }] : []),
           ]
 
           try {
@@ -433,6 +450,9 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
                   queue.enqueue({ kind: 'commands-changed', sessionId, commands: Array.isArray(v.commands) ? v.commands : [] })
                   break
                 }
+                case 'hook':
+                  queue.enqueue({ kind: 'hook-run', sessionId, event: winner.result.value as never })
+                  break
               }
               ch.promise = tag(ch.kind, ch.iter)
             }
@@ -461,6 +481,9 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
         gitSub?.unsubscribe()
         msgStatSub?.unsubscribe()
         recapSub?.unsubscribe()
+        clearedSub?.unsubscribe()
+        cmdSub?.unsubscribe()
+        hookSub?.unsubscribe()
         queue.enqueue({ kind: 'error', sessionId, message: (err as Error).message })
       }
     }

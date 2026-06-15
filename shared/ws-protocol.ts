@@ -195,6 +195,12 @@ export interface WsCommandsChanged<Command> {
   commands: Command[]
 }
 
+export interface WsHookRunEvent<HookEvent> {
+  kind: 'hook-run'
+  sessionId: string
+  event: HookEvent
+}
+
 /** Heartbeat reply. */
 export interface WsPong {
   kind: 'pong'
@@ -211,7 +217,7 @@ export interface WsError {
   sessionId?: string
 }
 
-export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never> =
+export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, HookEvent = never> =
   | WsSessionsSnapshot<Session>
   | WsSessionUpdate<Session>
   | WsSessionCreated<Session>
@@ -228,6 +234,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never> 
   | WsSessionRecapUpdate<Recap>
   | WsSessionCleared
   | WsCommandsChanged<Command>
+  | WsHookRunEvent<HookEvent>
   | WsPong
   | WsError
 

@@ -14,6 +14,8 @@ import { ContextBar } from './ContextBar'
 import { IconChevronUp, IconChevronDown } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
 import { useExitPresence } from '../hooks/useExitPresence'
+import { AnimatedCollapse, AnimatedDetails } from './AnimatedCollapse'
+import { HooksPanel } from './HooksPanel'
 
 // MarketplaceTab and McpInstaller are heavy modal-within-modal
 // components opened only on user intent (Browse plugins / Add MCP).
@@ -28,7 +30,7 @@ import { formatTokens, formatJson } from '../utils/format'
 import { pluginTagOf } from '../utils/text'
 import type { ContextUsage } from '../hooks/useChatStream'
 
-type SettingsTab = 'general' | 'context' | 'plugins' | 'mcp'
+type SettingsTab = 'general' | 'context' | 'hooks' | 'plugins' | 'mcp'
 
 interface Props {
   session: SessionInfo
@@ -352,6 +354,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
   const tabs: { key: SettingsTab; label: string }[] = [
     { key: 'general', label: 'General' },
     { key: 'context', label: 'Context' },
+    { key: 'hooks', label: 'Hooks' },
     { key: 'plugins', label: 'Plugins' },
     { key: 'mcp', label: 'MCP Servers' },
   ]
@@ -499,10 +502,10 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
             user actually opens one. */}
         <ContextBar usage={usage} />
         {usage?.skills && (
-          <details className="settings-detail">
-            <summary>
-              Skills: {usage.skills.includedSkills}/{usage.skills.totalSkills} loaded, {formatTokens(usage.skills.tokenCount)}
-            </summary>
+          <AnimatedDetails
+            className="settings-detail"
+            summary={`Skills: ${usage.skills.includedSkills}/${usage.skills.totalSkills} loaded, ${formatTokens(usage.skills.tokenCount)}`}
+          >
             <div className="settings-detail-body">
               {usage.skills.skillFrontmatter?.map((s) => (
                 <div key={s.name} className="settings-kv-row">
@@ -512,13 +515,13 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
                 </div>
               ))}
             </div>
-          </details>
+          </AnimatedDetails>
         )}
         {usage?.agents && (
-          <details className="settings-detail settings-detail-tight">
-            <summary>
-              Agents: {usage.agents.agents?.length ?? 0}, {formatTokens(usage.agents.tokenCount)}
-            </summary>
+          <AnimatedDetails
+            className="settings-detail settings-detail-tight"
+            summary={`Agents: ${usage.agents.agents?.length ?? 0}, ${formatTokens(usage.agents.tokenCount)}`}
+          >
             <div className="settings-detail-body">
               {usage.agents.agents?.map((a, i) => (
                 <div key={i} className="settings-kv-row">
@@ -528,29 +531,35 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
                 </div>
               ))}
             </div>
-          </details>
+          </AnimatedDetails>
         )}
         {/* Always-present disclosure: opening it triggers the lazy fetch of
             the full breakdown. The skills/agents sections above light up
             once it resolves (they read from the same merged `usage`). */}
-        <details
+        <AnimatedDetails
           className="settings-detail"
-          onToggle={(e) => { if ((e.currentTarget as HTMLDetailsElement).open) loadDetailedUsage() }}
+          onOpenChange={(nextOpen) => { if (nextOpen) loadDetailedUsage() }}
+          summary={`Detailed breakdown${!detailedUsage && loadingUsage ? ' (loading...)' : ''}`}
         >
-          <summary>
-            Detailed breakdown{!detailedUsage && loadingUsage ? ' (loading…)' : ''}
-          </summary>
           <pre className="tool-input settings-raw-pre">
             {detailedUsage
               ? formatJson(detailedUsage)
               : loadingUsage
-                ? 'Loading…'
+                ? 'Loading...'
                 : usage
                   ? formatJson(usage)
-                  : '—'}
+                  : '-'}
           </pre>
-        </details>
+        </AnimatedDetails>
       </div>
+      )}
+
+      {tab === 'hooks' && (
+        <HooksPanel
+          session={session}
+          disabled={busy || session.terminated}
+          onSessionUpdate={onSessionUpdate}
+        />
       )}
 
       {tab === 'plugins' && (
@@ -735,7 +744,7 @@ function PluginCard({
       {plugin?.path && (
         <div className="settings-card-path">{plugin.path}</div>
       )}
-      {expanded && (
+      <AnimatedCollapse open={expanded}>
         <div className="settings-card-body">
           {commands.length > 0 && (
             <div className="settings-card-grouplabel">Skills</div>
@@ -756,7 +765,7 @@ function PluginCard({
             </div>
           ))}
         </div>
-      )}
+      </AnimatedCollapse>
     </div>
   )
 }
@@ -831,9 +840,9 @@ function McpServerCard({
       {server.error && (
         <div className="settings-card-error">{server.error}</div>
       )}
-      {expanded && server.tools && (
+      <AnimatedCollapse open={expanded && !!server.tools}>
         <div className="settings-card-body">
-          {server.tools.map((t) => (
+          {server.tools?.map((t) => (
             <div key={t.name} className="settings-card-item">
               <code>{t.name}</code>
               {t.annotations?.readOnly && <span className="settings-tag readonly">read-only</span>}
@@ -843,7 +852,7 @@ function McpServerCard({
             </div>
           ))}
         </div>
-      )}
+      </AnimatedCollapse>
     </div>
   )
 }

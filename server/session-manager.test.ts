@@ -635,6 +635,36 @@ describe('SessionManager', () => {
     expect(store.get(info.id)?.effortLevel).toBe('xhigh')
   })
 
+  it('applyHooks() forwards, records, and persists structured hooks', async () => {
+    const info = sm.create({})
+    const hooks = {
+      PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command' as const, command: 'echo ok' }] }],
+    }
+
+    const result = await sm.applyHooks(info.id, hooks)
+
+    expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ hooks })
+    expect(result.hooks).toEqual(hooks)
+    expect(sm.getHooks(info.id).hooks).toEqual(hooks)
+    await store.flush()
+    expect(store.get(info.id)?.hooks).toEqual(hooks)
+  })
+
+  it('applySettings() validates raw hooks and persists them only after SDK success', async () => {
+    const info = sm.create({})
+    const hooks = {
+      Notification: [{ hooks: [{ type: 'http' as const, url: 'https://example.com/hook' }] }],
+    }
+
+    await sm.applySettings(info.id, { hooks } as never)
+    expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ hooks })
+    expect(store.get(info.id)?.hooks).toEqual(hooks)
+
+    mockHandles[0].applyFlagSettings.mockRejectedValueOnce(new Error('SDK failed'))
+    await expect(sm.applySettings(info.id, { hooks: {} } as never)).rejects.toThrow('SDK failed')
+    expect(store.get(info.id)?.hooks).toEqual(hooks)
+  })
+
   // --- effort capability (effortLevels three-state) ---
   // Capability is now classified by model-id keyword (effortLevelsForModel),
   // NOT the SDK's supportedModels (which on gateways reports unmatched

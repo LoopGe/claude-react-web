@@ -1,4 +1,4 @@
-﻿import { Hono } from 'hono'
+import { Hono } from 'hono'
 import type { SkillLoadMode, SkillScope } from '../../shared/skills.js'
 import { HttpError } from '../errors.js'
 import { SessionManager } from '../session-manager.js'
@@ -8,6 +8,8 @@ import {
   createSkill,
   deleteSkill,
   getSkill,
+  importSkillFiles,
+  importSkillFromPath,
   listSkills,
   updateSkill,
   validateSkillContent,
@@ -58,6 +60,49 @@ export function buildSkillsRouter(sm: SessionManager): Hono {
     return c.json({ skill })
   })
 
+
+  app.post('/skills/import/path', async (c) => {
+    const body = await safeJson<{
+      scope: unknown
+      cwd: unknown
+      path: unknown
+      name: unknown
+      overwrite: unknown
+    }>(c.req)
+    const scope = parseScope(String(body.scope ?? 'project'))
+    if (typeof body.path !== 'string') throw new HttpError(400, 'path is required')
+    const cwd = typeof body.cwd === 'string' ? body.cwd : undefined
+    const result = await importSkillFromPath({
+      scope,
+      cwd,
+      path: body.path,
+      name: typeof body.name === 'string' ? body.name : undefined,
+      overwrite: body.overwrite === true,
+    })
+    const reload = await reloadAffectedSessions(sm, scope, cwd)
+    return c.json({ ...result, reload }, 201)
+  })
+
+  app.post('/skills/import/files', async (c) => {
+    const body = await safeJson<{
+      scope: unknown
+      cwd: unknown
+      name: unknown
+      overwrite: unknown
+      files: unknown
+    }>(c.req)
+    const scope = parseScope(String(body.scope ?? 'project'))
+    const cwd = typeof body.cwd === 'string' ? body.cwd : undefined
+    const result = await importSkillFiles({
+      scope,
+      cwd,
+      name: typeof body.name === 'string' ? body.name : undefined,
+      overwrite: body.overwrite === true,
+      files: Array.isArray(body.files) ? body.files as never : [],
+    })
+    const reload = await reloadAffectedSessions(sm, scope, cwd)
+    return c.json({ ...result, reload }, 201)
+  })
   app.post('/skills', async (c) => {
     const body = await safeJson<{
       scope: unknown

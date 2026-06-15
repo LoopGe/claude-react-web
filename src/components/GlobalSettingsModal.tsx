@@ -5,14 +5,15 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type
 import { api } from '../hooks/useApi'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { formatBytes } from '../utils/format'
-import { IconX, IconCheck, IconArrowUp, IconArrowDown, IconChevronDown } from './icons/ToolIcons'
+import { IconX, IconCheck, IconArrowUp, IconArrowDown, IconChevronDown, IconFolder, IconDownload, IconRefresh, IconTrash, IconFileText } from './icons/ToolIcons'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
 import type { FullServerConfig } from '../types/config'
-import type { SkillLoadMode, SkillRecord, SkillsListResponse } from '../../shared/skills'
+import type { SkillImportFile, SkillImportResponse, SkillLoadMode, SkillRecord, SkillsListResponse } from '../../shared/skills'
 import type { McpConnectionTestResult, McpServerConfigMeta, McpServerTool } from '../types'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
 import { useExitPresence } from '../hooks/useExitPresence'
+import { DirectoryPicker } from './DirectoryPicker'
 import type { UpdateActionResult, UpdateInfo } from '../../shared/update-info'
 import { isVersionNewer } from '../../shared/update-info'
 
@@ -35,6 +36,24 @@ const ShareTab = lazy(() =>
 type Tab = 'api' | 'models' | 'server' | 'skills' | 'mcp' | 'marketplace' | 'share' | 'logs' | 'about'
 
 type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'trace'
+
+interface DragFileEntry extends FileSystemEntry {
+  file(callback: (file: File) => void, errorCallback?: (error: DOMException) => void): void
+}
+
+interface DragDirectoryReader {
+  readEntries(callback: (entries: FileSystemEntry[]) => void, errorCallback?: (error: DOMException) => void): void
+}
+
+interface DragDirectoryEntry extends FileSystemEntry {
+  createReader(): DragDirectoryReader
+}
+
+
+interface DroppedSkillFile {
+  file: File
+  path: string
+}
 
 /** Result of POST /config/test-connection. `ok` true means the token and
  *  baseUrl are valid (we got past authentication); otherwise `status` (when
@@ -757,12 +776,22 @@ function SkillsTab({
   const [skills, setSkills] = useState<SkillRecord[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const [selected, setSelected] = useState<SkillRecord | null>(null)
   const [content, setContent] = useState('')
   const [draftName, setDraftName] = useState('')
   const [draftDescription, setDraftDescription] = useState('')
   const [draftScope, setDraftScope] = useState<'project' | 'user'>('project')
+  const [importScope, setImportScope] = useState<'project' | 'user'>('project')
+  const [importPath, setImportPath] = useState('')
+  const [importName, setImportName] = useState('')
+  const [overwriteImport, setOverwriteImport] = useState(false)
+  const [showImportPicker, setShowImportPicker] = useState(false)
+  const [dragActive, setDragActive] = useState(false)
   const [savingSkill, setSavingSkill] = useState(false)
+  const [importingSkill, setImportingSkill] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const directoryInputProps = { webkitdirectory: '', directory: '' } as Record<string, string>
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -783,10 +812,14 @@ function SkillsTab({
   }, [cwd, selected])
 
   useEffect(() => {
-    void refresh()
+    const timer = window.setTimeout(() => void refresh(), 0)
+    return () => window.clearTimeout(timer)
   }, [refresh])
 
   const skillNames = useMemo(() => Array.from(new Set(skills.map((s) => s.name))).sort((a, b) => a.localeCompare(b)), [skills])
+  const userSkills = skills.filter((skill) => skill.scope === 'user')
+  const projectSkills = skills.filter((skill) => skill.scope === 'project')
+  const invalidCount = skills.filter((skill) => !skill.valid).length
 
   const toggleEnabled = (name: string) => {
     const exists = enabledSkills.includes(name)
@@ -795,6 +828,7 @@ function SkillsTab({
 
   const openSkill = async (skill: SkillRecord) => {
     setError(null)
+    setNotice(null)
     try {
       const query = skill.scope === 'project' && cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''
       const res = await api.get<{ skill: SkillRecord }>(`/skills/${skill.scope}/${encodeURIComponent(skill.name)}${query}`)
@@ -810,6 +844,7 @@ function SkillsTab({
     if (!name) return
     setSavingSkill(true)
     setError(null)
+    setNotice(null)
     try {
       const res = await api.post<{ skill: SkillRecord }>('/skills', {
         scope: draftScope,
@@ -819,6 +854,7 @@ function SkillsTab({
       })
       setDraftName('')
       setDraftDescription('')
+      setNotice(`Created ${res.skill.scope} skill "${res.skill.name}".`)
       await refresh()
       await openSkill(res.skill)
     } catch (e) {
@@ -832,6 +868,7 @@ function SkillsTab({
     if (!selected) return
     setSavingSkill(true)
     setError(null)
+    setNotice(null)
     try {
       const res = await api.put<{ skill: SkillRecord }>(`/skills/${selected.scope}/${encodeURIComponent(selected.name)}`, {
         cwd: selected.scope === 'project' ? cwd : undefined,
@@ -839,6 +876,7 @@ function SkillsTab({
       })
       setSelected(res.skill)
       setContent(res.skill.content ?? content)
+      setNotice(`Saved ${res.skill.scope} skill "${res.skill.name}".`)
       await refresh()
     } catch (e) {
       setError((e as Error).message)
@@ -852,9 +890,11 @@ function SkillsTab({
     if (!window.confirm(`Delete ${selected.scope} skill "${selected.name}"?`)) return
     setSavingSkill(true)
     setError(null)
+    setNotice(null)
     try {
       const query = selected.scope === 'project' && cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''
       await api.delete(`/skills/${selected.scope}/${encodeURIComponent(selected.name)}${query}`)
+      setNotice(`Deleted ${selected.scope} skill "${selected.name}".`)
       setSelected(null)
       setContent('')
       await refresh()
@@ -865,55 +905,240 @@ function SkillsTab({
     }
   }
 
+  const finishImport = async (result: SkillImportResponse) => {
+    setNotice(`Imported ${result.skill.scope} skill "${result.skill.name}" from ${result.importedFiles} file${result.importedFiles !== 1 ? 's' : ''}.`)
+    setImportName('')
+    await refresh()
+    await openSkill(result.skill)
+  }
+
+  const importFromServerPath = async (path: string = importPath) => {
+    const trimmedPath = path.trim()
+    if (!trimmedPath) return
+    setImportingSkill(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const result = await api.post<SkillImportResponse>('/skills/import/path', {
+        scope: importScope,
+        cwd: importScope === 'project' ? cwd : undefined,
+        path: trimmedPath,
+        name: importName.trim() || undefined,
+        overwrite: overwriteImport,
+      }, { timeoutMs: 60_000 })
+      setImportPath(trimmedPath)
+      await finishImport(result)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setImportingSkill(false)
+    }
+  }
+
+  const fileToBase64 = (file: File) => new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const value = typeof reader.result === 'string' ? reader.result : ''
+      resolve(value.includes(',') ? value.slice(value.indexOf(',') + 1) : value)
+    }
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read file'))
+    reader.readAsDataURL(file)
+  })
+
+  const importBrowserFiles = async (files: Array<File | DroppedSkillFile>) => {
+    if (files.length === 0) return
+    setImportingSkill(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const payload: SkillImportFile[] = await Promise.all(files.map(async (item) => {
+        const file = item instanceof File ? item : item.file
+        const path = item instanceof File ? (file.webkitRelativePath || file.name) : item.path
+        return {
+          path: path.replace(/^\/+/, ''),
+          data: await fileToBase64(file),
+          encoding: 'base64' as const,
+        }
+      }))
+      const result = await api.post<SkillImportResponse>('/skills/import/files', {
+        scope: importScope,
+        cwd: importScope === 'project' ? cwd : undefined,
+        name: importName.trim() || undefined,
+        overwrite: overwriteImport,
+        files: payload,
+      }, { timeoutMs: 60_000 })
+      await finishImport(result)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setImportingSkill(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  const readDroppedFile = (entry: DragFileEntry, path: string) => new Promise<DroppedSkillFile>((resolve, reject) => {
+    entry.file((file) => resolve({ file, path }), reject)
+  })
+
+  const readDroppedDirectory = async (entry: DragDirectoryEntry, path: string): Promise<DroppedSkillFile[]> => {
+    const reader = entry.createReader()
+    const entries: FileSystemEntry[] = []
+    for (;;) {
+      const batch = await new Promise<FileSystemEntry[]>((resolve, reject) => reader.readEntries(resolve, reject))
+      if (batch.length === 0) break
+      entries.push(...batch)
+    }
+    const nested = await Promise.all(entries.map((child) => readDroppedEntry(child, `${path}/${child.name}`)))
+    return nested.flat()
+  }
+
+  const readDroppedEntry = async (entry: FileSystemEntry, path: string): Promise<DroppedSkillFile[]> => {
+    if (entry.isFile) return [await readDroppedFile(entry as DragFileEntry, path)]
+    if (entry.isDirectory) return readDroppedDirectory(entry as DragDirectoryEntry, path)
+    return []
+  }
+
+  const filesFromDrop = async (dataTransfer: DataTransfer): Promise<Array<File | DroppedSkillFile>> => {
+    const entries = Array.from(dataTransfer.items)
+      .map((item) => item.webkitGetAsEntry())
+      .filter((entry): entry is FileSystemEntry => !!entry)
+    if (entries.length === 0) return Array.from(dataTransfer.files)
+    const nested = await Promise.all(entries.map((entry) => readDroppedEntry(entry, entry.name)))
+    return nested.flat()
+  }
+
+  const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    setDragActive(false)
+    void filesFromDrop(event.dataTransfer).then((files) => importBrowserFiles(files))
+  }
+
+  const loadModeOptions: Array<{ mode: SkillLoadMode; title: string; desc: string }> = [
+    { mode: 'default', title: 'SDK default', desc: 'Leave skill discovery to the SDK.' },
+    { mode: 'all', title: 'Enable all discovered skills', desc: 'Load every filesystem skill the SDK can discover.' },
+    { mode: 'allowlist', title: 'Enable selected skills only', desc: 'Load only the checked skill names.' },
+  ]
+
   return (
     <div className="settings-skills-tab">
-      <Field label="Session Skill Loading" hint="Applies when a session starts. File edits below hot-reload active sessions when the SDK supports it.">
-        <div className="settings-radio-stack">
-          <label><input type="radio" checked={skillLoadMode === 'default'} onChange={() => onSkillLoadModeChange('default')} /> SDK default</label>
-          <label><input type="radio" checked={skillLoadMode === 'all'} onChange={() => onSkillLoadModeChange('all')} /> Enable all discovered skills</label>
-          <label><input type="radio" checked={skillLoadMode === 'allowlist'} onChange={() => onSkillLoadModeChange('allowlist')} /> Enable selected skills only</label>
+      <div className="settings-skill-hero">
+        <div>
+          <div className="settings-skill-kicker">Skills</div>
+          <h3>Manage reusable instructions</h3>
+          <p>User skills live in your home profile. Project skills live under this workspace and can be shared with the repo.</p>
         </div>
-      </Field>
+        <div className="settings-skill-stats">
+          <span><strong>{skills.length}</strong> total</span>
+          <span><strong>{projectSkills.length}</strong> project</span>
+          <span><strong>{userSkills.length}</strong> user</span>
+          {invalidCount > 0 && <span className="warn"><strong>{invalidCount}</strong> invalid</span>}
+        </div>
+      </div>
 
-      {skillLoadMode === 'allowlist' && (
-        <div className="settings-skill-allowlist">
-          {skillNames.length === 0 && <div className="settings-empty-note">No skills discovered yet.</div>}
-          {skillNames.map((name) => (
-            <label key={name} className="settings-skill-check">
-              <input type="checkbox" checked={enabledSkills.includes(name)} onChange={() => toggleEnabled(name)} />
-              <span>{name}</span>
+      <div className="settings-skill-policy-card">
+        <div className="settings-section-head compact">
+          <div>
+            <h4>Session Skill Loading</h4>
+            <span className="settings-note">Applies when a session starts. File edits hot-reload active sessions when the SDK supports it.</span>
+          </div>
+        </div>
+        <div className="settings-skill-mode-grid">
+          {loadModeOptions.map((option) => (
+            <label key={option.mode} className={`settings-skill-mode-card${skillLoadMode === option.mode ? ' active' : ''}`}>
+              <input type="radio" checked={skillLoadMode === option.mode} onChange={() => onSkillLoadModeChange(option.mode)} />
+              <span>
+                <strong>{option.title}</strong>
+                <small>{option.desc}</small>
+              </span>
             </label>
           ))}
         </div>
-      )}
+        {skillLoadMode === 'allowlist' && (
+          <div className="settings-skill-allowlist">
+            {skillNames.length === 0 && <div className="settings-empty-note">No skills discovered yet.</div>}
+            {skillNames.map((name) => (
+              <label key={name} className={`settings-skill-check${enabledSkills.includes(name) ? ' active' : ''}`}>
+                <input type="checkbox" checked={enabledSkills.includes(name)} onChange={() => toggleEnabled(name)} />
+                <span>{name}</span>
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div
+        className={`settings-skill-import-card${dragActive ? ' dragging' : ''}`}
+        onDragEnter={(event) => { event.preventDefault(); setDragActive(true) }}
+        onDragOver={(event) => event.preventDefault()}
+        onDragLeave={(event) => { if (event.currentTarget === event.target) setDragActive(false) }}
+        onDrop={handleDrop}
+      >
+        <div className="settings-skill-import-main">
+          <span className="settings-skill-import-icon"><IconDownload size={16} /></span>
+          <div>
+            <h4>Install from folder</h4>
+            <p>Choose a server-side directory or drag a local folder containing <code>SKILL.md</code>.</p>
+          </div>
+        </div>
+        <div className="settings-skill-import-controls">
+          <select className="input" value={importScope} onChange={(e) => setImportScope(e.target.value as 'project' | 'user')}>
+            <option value="project">Project</option>
+            <option value="user">User</option>
+          </select>
+          <input className="input" placeholder="Optional import name" value={importName} onChange={(e) => setImportName(e.target.value)} />
+          <label className="settings-skill-overwrite"><input type="checkbox" checked={overwriteImport} onChange={(e) => setOverwriteImport(e.target.checked)} /> Replace existing</label>
+        </div>
+        <div className="settings-skill-path-row">
+          <input className="input" placeholder="Absolute server path to a skill folder" value={importPath} onChange={(e) => setImportPath(e.target.value)} spellCheck={false} />
+          <button className="btn btn-sm" onClick={() => setShowImportPicker(true)} disabled={importingSkill}><IconFolder size={13} /> Browse</button>
+          <button className="btn btn-sm primary" onClick={() => void importFromServerPath()} disabled={importingSkill || !importPath.trim()}>
+            {importingSkill ? 'Installing…' : 'Install'}
+          </button>
+        </div>
+        <div className="settings-actions-row settings-skill-import-actions">
+          <button className="btn btn-sm" onClick={() => fileInputRef.current?.click()} disabled={importingSkill}><IconFileText size={13} /> Select Local Folder</button>
+          <span className="settings-note">Directory upload works in Chromium-based browsers; drag-and-drop uses the same importer.</span>
+          <input
+            ref={fileInputRef}
+            className="settings-skill-file-input"
+            type="file"
+            multiple
+            onChange={(event) => void importBrowserFiles(Array.from(event.currentTarget.files ?? []))}
+            {...directoryInputProps}
+          />
+        </div>
+      </div>
 
       <div className="settings-section-head">
         <span className="settings-note">{skills.length} filesystem skill{skills.length !== 1 ? 's' : ''}</span>
-        <button className="btn btn-sm" onClick={() => void refresh()} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</button>
+        <button className="btn btn-sm" onClick={() => void refresh()} disabled={loading}><IconRefresh size={13} /> {loading ? 'Refreshing…' : 'Refresh'}</button>
       </div>
       {error && <div className="settings-error">{error}</div>}
+      {notice && <div className="settings-success">{notice}</div>}
 
       <div className="settings-skill-grid">
         <div className="settings-skill-list">
-          {skills.length === 0 && <div className="settings-empty-note">Create a project or user skill to get starte?.</div>}
+          {skills.length === 0 && <div className="settings-empty-note">Create or import a project/user skill to get started.</div>}
           {skills.map((skill) => (
             <button
               key={`${skill.scope}:${skill.name}`}
-              className={`settings-skill-row${selected?.scope === skill.scope && selected?.name === skill.name ? ' active' : ''}`}
+              className={`settings-skill-row${selected?.scope === skill.scope && selected?.name === skill.name ? ' active' : ''}${!skill.valid ? ' invalid' : ''}`}
               onClick={() => void openSkill(skill)}
             >
               <span className="settings-skill-name">{skill.name}</span>
               <span className="settings-card-badge">{skill.scope}</span>
-              {!skill.valid && <span className="settings-card-badge">invalid</span>}
+              {!skill.valid && <span className="settings-card-badge warn">invalid</span>}
               <span className="settings-skill-desc">{skill.description || skill.errors[0] || 'No description'}</span>
+              <span className="settings-skill-path-mini">{skill.relativePath || skill.path}</span>
             </button>
           ))}
         </div>
 
         <div className="settings-skill-editor">
-          <div className="settings-card">
+          <div className="settings-card settings-skill-create-card">
             <div className="settings-card-head">
               <span className="settings-card-name">New Skill</span>
+              <span className="settings-card-meta">Scaffold a minimal SKILL.md</span>
             </div>
             <div className="settings-inline-fields">
               <select className="input" value={draftScope} onChange={(e) => setDraftScope(e.target.value as 'project' | 'user')}>
@@ -931,6 +1156,7 @@ function SkillsTab({
               <div className="settings-card-head">
                 <span className="settings-card-name">{selected.name}</span>
                 <span className="settings-card-badge">{selected.scope}</span>
+                {!selected.valid && <span className="settings-card-badge warn">invalid</span>}
               </div>
               <div className="settings-card-path">{selected.path}</div>
               {selected.errors.length > 0 && (
@@ -939,14 +1165,29 @@ function SkillsTab({
               <textarea className="input settings-skill-textarea" value={content} onChange={(e) => setContent(e.target.value)} spellCheck={false} />
               <div className="settings-actions-row">
                 <button className="btn btn-sm primary" onClick={() => void saveSelectedSkill()} disabled={savingSkill}>Save Skill</button>
-                <button className="btn btn-sm" onClick={() => void deleteSelectedSkill()} disabled={savingSkill}>Delete</button>
+                <button className="btn btn-sm" onClick={() => void deleteSelectedSkill()} disabled={savingSkill}><IconTrash size={13} /> Delete</button>
               </div>
             </div>
           ) : (
-            <div className="settings-empty-note">Select a skill to edit its SKILL.m?.</div>
+            <div className="settings-empty-note settings-skill-empty-editor">Select a skill to edit its SKILL.md.</div>
           )}
         </div>
       </div>
+
+      {showImportPicker && (
+        <DirectoryPicker
+          title="Pick a skill folder"
+          selectLabel="Install this folder"
+          footerHint="Select a folder that contains SKILL.md"
+          initialPath={importPath || cwd}
+          onPick={(path) => {
+            setImportPath(path)
+            setShowImportPicker(false)
+            void importFromServerPath(path)
+          }}
+          onClose={() => setShowImportPicker(false)}
+        />
+      )}
     </div>
   )
 }

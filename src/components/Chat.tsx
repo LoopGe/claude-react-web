@@ -429,6 +429,7 @@ export const Chat = memo(function Chat({
   const [searchOpen, setSearchOpen] = useState(false)
   // Seed for the search input, captured from the current selection at open time.
   const [searchSeed, setSearchSeed] = useState('')
+  const [searchInstance, setSearchInstance] = useState(0)
   // Open search, pre-filling the input with the user's current selection
   // (single-line, trimmed) so they can search the highlighted text directly.
   const openSearch = useCallback(() => {
@@ -436,6 +437,7 @@ export const Chat = memo(function Chat({
     // Ignore multi-line / oversized selections ?those aren't useful as a query.
     const seed = sel.trim()
     setSearchSeed(seed && !seed.includes('\n') && seed.length <= 200 ? seed : '')
+    setSearchInstance((prev) => prev + 1)
     setSearchOpen(true)
   }, [])
   // Message-area right-click menu. `selection` is captured at open time —
@@ -484,6 +486,7 @@ export const Chat = memo(function Chat({
     setSearchSeed(messageJumpTarget.query)
     setSearchQuery(messageJumpTarget.query)
     setSearchActiveIdx(0)
+    setSearchInstance((prev) => prev + 1)
     setSearchOpen(true)
     setPendingJump(messageJumpTarget)
   }, [messageJumpTarget, session.id])
@@ -867,7 +870,7 @@ export const Chat = memo(function Chat({
       )}
 
       <MessageSearch
-        key={searchOpen ? `search-open:${searchSeed}` : undefined}
+        key={`search-${searchInstance}`}
         open={searchOpen}
         onClose={() => {
           setSearchOpen(false)

@@ -1,11 +1,13 @@
 import { promises as fs } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, isAbsolute, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 import { HttpError } from './errors.js'
-import type { SkillRecord, SkillRootInfo, SkillScope, SkillValidationResponse } from '../shared/skills.js'
+import type { SkillImportFile, SkillRecord, SkillRootInfo, SkillScope, SkillValidationResponse } from '../shared/skills.js'
 
 const SKILL_FILE = 'SKILL.md'
 const MAX_SKILL_BYTES = 1024 * 1024
+const MAX_SKILL_IMPORT_FILES = 200
+const MAX_SKILL_IMPORT_TOTAL_BYTES = 16 * 1024 * 1024
 const VALID_SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/
 
 interface ParsedSkillFrontmatter {
@@ -29,6 +31,31 @@ export interface SkillUpdateInput {
   content: string
 }
 
+export interface SkillImportPathInput {
+  scope: SkillScope
+  cwd?: string
+  path: string
+  name?: string
+  overwrite?: boolean
+}
+
+export interface SkillImportFilesInput {
+  scope: SkillScope
+  cwd?: string
+  name?: string
+  files: SkillImportFile[]
+  overwrite?: boolean
+}
+
+export interface SkillImportResult {
+  skill: SkillRecord
+  importedFiles: number
+}
+
+interface PreparedImportFile {
+  relativePath: string
+  data: Buffer
+}
 function isSkillScope(value: unknown): value is SkillScope {
   return value === 'user' || value === 'project'
 }
@@ -242,6 +269,171 @@ export async function updateSkill(input: SkillUpdateInput): Promise<SkillRecord>
   return readSkill(input.scope, name, input.cwd, true)
 }
 
+function safeImportRelativePath(rawPath: string): string {
+  const normalized = rawPath.replaceAll('\\', '/').replace(/^\/+/, '')
+  if (!normalized || /^[A-Za-z]:/.test(normalized) || normalized.includes(':') || normalized.includes('\0')) {
+    throw new HttpError(400, 'Invalid import file path')
+  }
+  const parts = normalized.split('/').filter(Boolean)
+  if (parts.length === 0 || parts.some((part) => part === '.' || part === '..')) {
+    throw new HttpError(400, 'Invalid import file path')
+  }
+  return parts.join('/')
+}
+
+function decodeImportFile(file: SkillImportFile): PreparedImportFile {
+  if (!file || typeof file.path !== 'string' || typeof file.data !== 'string' || file.encoding !== 'base64') {
+    throw new HttpError(400, 'files must contain { path, data, encoding: "base64" } entries')
+  }
+  const payload = file.data.includes('base64,') ? file.data.slice(file.data.indexOf('base64,') + 'base64,'.length) : file.data
+  const compact = payload.replace(/\s/g, '')
+  if (compact.length % 4 === 1 || !/^[A-Za-z0-9+/]*={0,2}$/.test(compact)) {
+    throw new HttpError(400, `Invalid base64 data for ${file.path}`)
+  }
+  return { relativePath: safeImportRelativePath(file.path), data: Buffer.from(compact, 'base64') }
+}
+
+function normalizeImportFiles(files: SkillImportFile[]): { files: PreparedImportFile[]; suggestedName?: string } {
+  if (!Array.isArray(files) || files.length === 0) throw new HttpError(400, 'files are required')
+  if (files.length > MAX_SKILL_IMPORT_FILES) throw new HttpError(413, 'Too many files in skill import')
+
+  const decoded = files.map(decodeImportFile)
+  const skillFilePaths = decoded
+    .map((file) => file.relativePath)
+    .filter((filePath) => filePath === SKILL_FILE || filePath.endsWith(`/${SKILL_FILE}`))
+  if (skillFilePaths.length === 0) throw new HttpError(400, 'Imported directory must contain SKILL.md')
+
+  let prefix = ''
+  if (!skillFilePaths.includes(SKILL_FILE)) {
+    const prefixes = [...new Set(skillFilePaths.map((filePath) => filePath.slice(0, -SKILL_FILE.length).replace(/\/$/, '')))]
+    if (prefixes.length !== 1) throw new HttpError(400, 'Import exactly one skill directory at a time')
+    prefix = prefixes[0]
+  }
+
+  let total = 0
+  const seen = new Set<string>()
+  const normalized: PreparedImportFile[] = []
+  for (const file of decoded) {
+    if (prefix && file.relativePath !== prefix && !file.relativePath.startsWith(`${prefix}/`)) {
+      throw new HttpError(400, 'All imported files must belong to the selected skill directory')
+    }
+    const relativePath = prefix ? file.relativePath.slice(prefix.length + 1) : file.relativePath
+    if (!relativePath) continue
+    const safePath = safeImportRelativePath(relativePath)
+    if (seen.has(safePath)) throw new HttpError(400, `Duplicate import file: ${safePath}`)
+    seen.add(safePath)
+    total += file.data.byteLength
+    if (total > MAX_SKILL_IMPORT_TOTAL_BYTES) throw new HttpError(413, 'Skill import is too large')
+    normalized.push({ relativePath: safePath, data: file.data })
+  }
+  if (!normalized.some((file) => file.relativePath === SKILL_FILE)) {
+    throw new HttpError(400, 'Imported directory must contain SKILL.md')
+  }
+  const suggestedName = prefix ? basename(prefix) : undefined
+  return { files: normalized, suggestedName }
+}
+
+function fallbackSkillName(name: string | undefined): string | undefined {
+  if (!name) return undefined
+  try {
+    return assertValidSkillName(name)
+  } catch {
+    return undefined
+  }
+}
+
+function resolveImportedSkillName(content: string, explicitName?: string, fallbackName?: string): string {
+  const parsed = parseSkillFrontmatter(content)
+  const name = explicitName?.trim()
+    ? assertValidSkillName(explicitName)
+    : parsed.name?.trim() || fallbackSkillName(fallbackName)
+  if (!name) throw new HttpError(400, 'Skill name is required when SKILL.md has no frontmatter.name')
+  const validation = validateSkillContent(content, name)
+  if (!validation.ok) throw new HttpError(400, validation.errors.join('; '))
+  return name
+}
+
+async function installPreparedFiles(
+  scope: SkillScope,
+  cwd: string | undefined,
+  name: string,
+  files: PreparedImportFile[],
+  overwrite?: boolean,
+): Promise<SkillImportResult> {
+  const root = skillRoot(scope, cwd)
+  const dir = resolve(root, name)
+  ensureInside(root, dir)
+  if ((await fileExists(dir)) && !overwrite) throw new HttpError(409, 'Skill already exists')
+  const temp = resolve(root, `.${name}.import-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+  ensureInside(root, temp)
+  await fs.rm(temp, { recursive: true, force: true })
+  await fs.mkdir(temp, { recursive: true })
+  try {
+    for (const file of files) {
+      const dest = resolve(temp, file.relativePath)
+      ensureInside(temp, dest)
+      await fs.mkdir(dirname(dest), { recursive: true })
+      await fs.writeFile(dest, file.data)
+    }
+    if (await fileExists(dir)) await fs.rm(dir, { recursive: true, force: true })
+    await fs.rename(temp, dir)
+  } catch (err) {
+    await fs.rm(temp, { recursive: true, force: true }).catch(() => {})
+    throw err
+  }
+  return { skill: await readSkill(scope, name, cwd, true), importedFiles: files.length }
+}
+
+async function collectSourceFiles(sourceDir: string, currentDir = sourceDir, state = { count: 0, total: 0 }): Promise<PreparedImportFile[]> {
+  const entries = await fs.readdir(currentDir, { withFileTypes: true })
+  const files: PreparedImportFile[] = []
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) throw new HttpError(400, 'Skill import cannot include symbolic links')
+    const absolutePath = resolve(currentDir, entry.name)
+    const relativePath = safeImportRelativePath(relative(sourceDir, absolutePath))
+    if (entry.isDirectory()) {
+      files.push(...await collectSourceFiles(sourceDir, absolutePath, state))
+      continue
+    }
+    if (!entry.isFile()) continue
+    const stat = await fs.stat(absolutePath)
+    state.count += 1
+    state.total += stat.size
+    if (state.count > MAX_SKILL_IMPORT_FILES) throw new HttpError(413, 'Too many files in skill import')
+    if (state.total > MAX_SKILL_IMPORT_TOTAL_BYTES) throw new HttpError(413, 'Skill import is too large')
+    files.push({ relativePath, data: await fs.readFile(absolutePath) })
+  }
+  return files
+}
+
+export async function importSkillFromPath(input: SkillImportPathInput): Promise<SkillImportResult> {
+  if (!isSkillScope(input.scope)) throw new HttpError(400, 'scope must be user or project')
+  if (typeof input.path !== 'string' || !input.path.trim()) throw new HttpError(400, 'path is required')
+  if (!isAbsolute(input.path)) throw new HttpError(400, 'path must be absolute')
+  const sourceDir = resolve(input.path)
+  const stat = await fs.stat(sourceDir).catch(() => null)
+  if (!stat || !stat.isDirectory()) throw new HttpError(400, 'path must be a directory')
+  const skillFile = resolve(sourceDir, SKILL_FILE)
+  const skillStat = await fs.stat(skillFile).catch(() => null)
+  if (!skillStat || !skillStat.isFile()) throw new HttpError(400, 'Selected directory must contain SKILL.md')
+  if (skillStat.size > MAX_SKILL_BYTES) throw new HttpError(413, 'Skill file is too large')
+  const skillContent = await fs.readFile(skillFile, 'utf8')
+  const name = resolveImportedSkillName(skillContent, input.name, basename(sourceDir))
+  const files = await collectSourceFiles(sourceDir)
+  if (!files.some((file) => file.relativePath === SKILL_FILE)) throw new HttpError(400, 'Selected directory must contain SKILL.md')
+  return installPreparedFiles(input.scope, input.cwd, name, files, input.overwrite)
+}
+
+export async function importSkillFiles(input: SkillImportFilesInput): Promise<SkillImportResult> {
+  if (!isSkillScope(input.scope)) throw new HttpError(400, 'scope must be user or project')
+  const normalized = normalizeImportFiles(input.files)
+  const skillFile = normalized.files.find((file) => file.relativePath === SKILL_FILE)
+  if (!skillFile) throw new HttpError(400, 'Imported directory must contain SKILL.md')
+  if (skillFile.data.byteLength > MAX_SKILL_BYTES) throw new HttpError(413, 'Skill file is too large')
+  const skillContent = skillFile.data.toString('utf8')
+  const name = resolveImportedSkillName(skillContent, input.name, normalized.suggestedName)
+  return installPreparedFiles(input.scope, input.cwd, name, normalized.files, input.overwrite)
+}
 export async function deleteSkill(scope: SkillScope, name: string, cwd?: string): Promise<void> {
   if (!isSkillScope(scope)) throw new HttpError(400, 'scope must be user or project')
   const safeName = assertValidSkillName(name)

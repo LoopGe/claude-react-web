@@ -33,11 +33,22 @@ interface HomeResult {
 interface Props {
   open?: boolean
   initialPath?: string
+  title?: string
+  selectLabel?: string
+  footerHint?: string
   onPick: (path: string) => void
   onClose: () => void
 }
 
-export function DirectoryPicker({ open = true, initialPath, onPick, onClose }: Props) {
+export function DirectoryPicker({
+  open = true,
+  initialPath,
+  title = 'Pick a working directory',
+  selectLabel = 'Select this folder',
+  footerHint = 'Double-click to enter · Click to select path · Enter confirms',
+  onPick,
+  onClose,
+}: Props) {
   const [path, setPath] = useState<string>(initialPath ?? '')
   const [draft, setDraft] = useState<string>(initialPath ?? '')
   const [home, setHome] = useState<HomeResult | null>(null)
@@ -142,7 +153,7 @@ export function DirectoryPicker({ open = true, initialPath, onPick, onClose }: P
     >
       <div className="modal">
         <div className="modal-header">
-          <h3>Pick a working directory</h3>
+          <h3>{title}</h3>
           <button className="btn" onClick={onClose} style={{ padding: '2px 10px' }} aria-label="Close">
             <IconX size={14} />
           </button>
@@ -238,7 +249,7 @@ export function DirectoryPicker({ open = true, initialPath, onPick, onClose }: P
         </div>
 
         <div className="modal-footer">
-          <span className="hint">Double-click to enter · Click to select path · Enter confirms</span>
+          <span className="hint">{footerHint}</span>
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn" onClick={onClose}>
               Cancel
@@ -248,7 +259,7 @@ export function DirectoryPicker({ open = true, initialPath, onPick, onClose }: P
               onClick={() => onPick((draft.trim() || path))}
               disabled={!draft.trim() && !path}
             >
-              Select this folder
+              {selectLabel}
             </button>
           </div>
         </div>

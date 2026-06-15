@@ -14,6 +14,17 @@ import { debugLog } from './debug.js'
 import { pushBounded, stampReceivedAt, shouldBroadcastMessage } from './history-utils.js'
 import { mutatingToolUseId, scheduleGitBroadcast } from './git-broadcast.js'
 import { createLogger } from './log.js'
+import type { HookRunRecord, HookRuntimeEvent, HookRunStatus } from '../shared/hooks.js'
+
+const MAX_HOOK_OUTPUT_CHARS = 20_000
+
+function trimHookOutput(value: string): string {
+  if (value.length <= MAX_HOOK_OUTPUT_CHARS) return value
+  const head = value.slice(0, 10_000)
+  const tail = value.slice(value.length - 8_000)
+  const omitted = value.length - head.length - tail.length
+  return `${head}\n\n[... ${omitted} chars omitted ...]\n\n${tail}`
+}
 
 /** Extract `parent_tool_use_id` from an SDK message defensively.
  *  Returns the value for user/assistant messages; undefined for types
@@ -134,6 +145,53 @@ export interface PumpDeps {
    *  persisted meta. Optional so test fixtures can omit it. */
   broadcastInfo?: (session: Session) => void
   broadcastCommandsChanged: (sessionId: string, commands: SlashCommand[]) => void
+  recordHookRun?: (sessionId: string, event: HookRuntimeEvent) => void
+}
+
+export function hookLifecycleMessage(msg: SDKMessage): HookRuntimeEvent | null {
+  if (msg.type !== 'system') return null
+  const raw = msg as unknown as {
+    subtype?: unknown
+    hook_id?: unknown
+    hook_name?: unknown
+    hook_event?: unknown
+    stdout?: unknown
+    stderr?: unknown
+    output?: unknown
+    exit_code?: unknown
+    outcome?: unknown
+  }
+  if (raw.subtype !== 'hook_started' && raw.subtype !== 'hook_progress' && raw.subtype !== 'hook_response') return null
+  if (typeof raw.hook_id !== 'string' || typeof raw.hook_name !== 'string' || typeof raw.hook_event !== 'string') return null
+
+  const now = Date.now()
+  let status: HookRunStatus
+  let kind: HookRuntimeEvent['kind']
+  if (raw.subtype === 'hook_started') {
+    status = 'started'
+    kind = 'started'
+  } else if (raw.subtype === 'hook_progress') {
+    status = 'progress'
+    kind = 'progress'
+  } else {
+    status = raw.outcome === 'error' || raw.outcome === 'cancelled' ? raw.outcome : 'success'
+    kind = 'completed'
+  }
+
+  const run: HookRunRecord = {
+    id: raw.hook_id,
+    hookId: raw.hook_id,
+    hookName: raw.hook_name,
+    event: raw.hook_event,
+    status,
+    startedAt: now,
+    updatedAt: now,
+  }
+  if (typeof raw.stdout === 'string') run.stdout = trimHookOutput(raw.stdout)
+  if (typeof raw.stderr === 'string') run.stderr = trimHookOutput(raw.stderr)
+  if (typeof raw.output === 'string') run.output = trimHookOutput(raw.output)
+  if (typeof raw.exit_code === 'number') run.exitCode = raw.exit_code
+  return { kind, run }
 }
 
 /**
@@ -235,6 +293,15 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         const changedCommands = commandsChanged(msg)
         if (changedCommands) {
           deps.broadcastCommandsChanged?.(session.id, changedCommands)
+          continue
+        }
+        const hookEvent = hookLifecycleMessage(msg)
+        if (hookEvent) {
+          const existing = session.hookRuns.find((run) => run.id === hookEvent.run.id)
+          if (existing) hookEvent.run.startedAt = existing.startedAt
+          session.lastActivityAt = Date.now()
+          session.autoInterruptedAt = undefined
+          deps.recordHookRun?.(session.id, hookEvent)
           continue
         }
         // Detect filesystem-mutating tool_use ids so we can fire a debounced

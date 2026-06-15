@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from '../hooks/useApi'
 import type { MpListItem, MpPluginInfo, MpParseWarning } from '../types'
 import { IconX, IconChevronDown, IconChevronRight, IconAlertTriangle } from './icons/ToolIcons'
+import { AnimatedCollapse } from './AnimatedCollapse'
 
 type AddState =
   | { phase: 'idle' }
@@ -280,22 +281,23 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
         </div>
       )}
       {!loading && items.map((item) => (
-        <MarketplaceCard
-          key={item.id}
-          item={item}
-          warnings={warningsById[item.id] ?? []}
-          plugins={plugins[item.id]}
-          expanded={expandedId === item.id}
-          busy={busyId === item.id}
-          confirmRemove={confirmRemoveId === item.id}
-          onToggleExpand={() => void handleToggleExpand(item.id)}
-          onRefresh={() => void handleRefresh(item.id)}
-          onRequestRemove={() => setConfirmRemoveId(item.id)}
-          onCancelRemove={() => setConfirmRemoveId(null)}
-          onConfirmRemove={() => void handleRemove(item.id)}
-          onTogglePlugin={(name, enabled) => void handleTogglePlugin(item.id, name, enabled)}
-          togglingPlugins={togglingKeys}
-        />
+        <div key={item.id} className="marketplace-card-shell">
+          <MarketplaceCard
+            item={item}
+            warnings={warningsById[item.id] ?? []}
+            plugins={plugins[item.id]}
+            expanded={expandedId === item.id}
+            busy={busyId === item.id}
+            confirmRemove={confirmRemoveId === item.id}
+            onToggleExpand={() => void handleToggleExpand(item.id)}
+            onRefresh={() => void handleRefresh(item.id)}
+            onRequestRemove={() => setConfirmRemoveId(item.id)}
+            onCancelRemove={() => setConfirmRemoveId(null)}
+            onConfirmRemove={() => void handleRemove(item.id)}
+            onTogglePlugin={(name, enabled) => void handleTogglePlugin(item.id, name, enabled)}
+            togglingPlugins={togglingKeys}
+          />
+        </div>
       ))}
     </div>
   )
@@ -419,7 +421,7 @@ function MarketplaceCard({
       )}
 
       {/* Expanded plugin list --------------------------------------- */}
-      {expanded && (
+      <AnimatedCollapse open={expanded}>
         <div style={{
           padding: '6px 10px 8px', borderTop: '1px solid var(--border)', background: 'var(--bg-elev)',
         }}>
@@ -500,7 +502,7 @@ function MarketplaceCard({
             </div>
           ))}
         </div>
-      )}
+      </AnimatedCollapse>
     </div>
   )
 }

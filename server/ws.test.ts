@@ -225,6 +225,40 @@ describe('WebSocket multiplexer', () => {
     await client.close()
   })
 
+  it('replays completed hook runs with completed kind and refreshes activity', async () => {
+    const info = sm.create({})
+    const before = sm.get(info.id).lastActivityAt
+    await new Promise((r) => setTimeout(r, 5))
+    mockHandles[0].emit({
+      type: 'system',
+      subtype: 'hook_started',
+      hook_id: 'hook-1',
+      hook_name: 'audit',
+      hook_event: 'Stop',
+    })
+    mockHandles[0].emit({
+      type: 'system',
+      subtype: 'hook_response',
+      hook_id: 'hook-1',
+      hook_name: 'audit',
+      hook_event: 'Stop',
+      outcome: 'success',
+      output: 'ok',
+      stdout: 'ok',
+      stderr: '',
+    })
+    await tick()
+    expect(sm.get(info.id).lastActivityAt).toBeGreaterThan(before)
+
+    const client = await connect()
+    await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
+    client.send({ kind: 'subscribe', sessionId: info.id })
+    const frame = await waitForFrame(client.frames, (f) => f.kind === 'hook-run' && f.sessionId === info.id)
+    if (frame.kind !== 'hook-run') throw new Error('narrowing')
+    expect(frame.event).toMatchObject({ kind: 'completed', run: { id: 'hook-1', status: 'success', output: 'ok' } })
+    await client.close()
+  })
+
   it('unsubscribe stops the per-session stream', async () => {
     const info = sm.create({})
     const client = await connect()

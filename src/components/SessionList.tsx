@@ -19,6 +19,7 @@ import { IconX, IconChevronRight, IconChevronDown, IconSquare, IconPencil, IconT
 import { Skeleton } from './Skeleton'
 import { Virtuoso } from 'react-virtuoso'
 import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
+import { AnimatedCollapse } from './AnimatedCollapse'
 
 interface Props {
   sessions: SessionInfo[]
@@ -688,71 +689,72 @@ export const SessionList = memo(function SessionList({
                     <span className="group-header-name">{sec.group.name}</span>
                     <span className="group-header-count">{sec.sessions.length}</span>
                   </div>
-                  {!collapsed && sec.sessions.length > 0 && (
-                    <div
-                      className={`group-sessions ${groupDropHint === sec.group.id ? 'drop-target' : ''}`}
-                      onDragOver={(e) => {
-                        if (!onDropIntoGroup || !isInAppDrag(e)) return
-                        // Accept drops anywhere in the group body that
-                        // aren't intercepted by a specific card. The
-                        // event bubbles up from cards, so we only
-                        // highlight when the target is the body itself.
-                        if (e.target !== e.currentTarget) return
-                        // Don't accept drops if group is full (unless reordering within same group)
-                        if (sec.group.sessionIds.length >= maxOpen && !sec.group.sessionIds.includes(draggingId ?? '')) return
-                        e.preventDefault()
-                        if (groupDropHint !== sec.group.id) setGroupDropHint(sec.group.id)
-                      }}
-                      onDragLeave={(e) => {
-                        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
-                        if (groupDropHint === sec.group.id) setGroupDropHint(null)
-                      }}
-                      onDrop={(e) => {
-                        if (!onDropIntoGroup) return
-                        // Only act on drops directly on the body, not
-                        // bubbled from a child card (the card has its
-                        // own onDrop and already stopped propagation by
-                        // calling preventDefault). Target check below.
-                        if (e.target !== e.currentTarget) {
+                  <AnimatedCollapse open={!collapsed}>
+                    {sec.sessions.length > 0 ? (
+                      <div
+                        className={`group-sessions ${groupDropHint === sec.group.id ? 'drop-target' : ''}`}
+                        onDragOver={(e) => {
+                          if (!onDropIntoGroup || !isInAppDrag(e)) return
+                          // Accept drops anywhere in the group body that
+                          // aren't intercepted by a specific card. The
+                          // event bubbles up from cards, so we only
+                          // highlight when the target is the body itself.
+                          if (e.target !== e.currentTarget) return
+                          // Don't accept drops if group is full (unless reordering within same group)
+                          if (sec.group.sessionIds.length >= maxOpen && !sec.group.sessionIds.includes(draggingId ?? '')) return
+                          e.preventDefault()
+                          if (groupDropHint !== sec.group.id) setGroupDropHint(sec.group.id)
+                        }}
+                        onDragLeave={(e) => {
+                          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+                          if (groupDropHint === sec.group.id) setGroupDropHint(null)
+                        }}
+                        onDrop={(e) => {
+                          if (!onDropIntoGroup) return
+                          // Only act on drops directly on the body, not
+                          // bubbled from a child card (the card has its
+                          // own onDrop and already stopped propagation by
+                          // calling preventDefault). Target check below.
+                          if (e.target !== e.currentTarget) {
+                            setGroupDropHint(null)
+                            return
+                          }
+                          const payload = readDragPayload(e)
                           setGroupDropHint(null)
-                          return
-                        }
-                        const payload = readDragPayload(e)
-                        setGroupDropHint(null)
-                        setDraggingId(null)
-                        if (!payload || payload.kind !== 'sidebar-card') return
-                        e.preventDefault()
-                        onDropIntoGroup(payload.id, sec.group.id)
-                      }}
-                    >
-                      {sec.sessions.map((s) => renderCard(s, sec.group.id))}
-                    </div>
-                  )}
-                  {!collapsed && sec.sessions.length === 0 && (
-                    <div
-                      className={`group-empty ${groupDropHint === sec.group.id ? 'drop-target' : ''}`}
-                      onDragOver={(e) => {
-                        if (!onDropIntoGroup || !isInAppDrag(e)) return
-                        e.preventDefault()
-                        if (groupDropHint !== sec.group.id) setGroupDropHint(sec.group.id)
-                      }}
-                      onDragLeave={(e) => {
-                        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
-                        if (groupDropHint === sec.group.id) setGroupDropHint(null)
-                      }}
-                      onDrop={(e) => {
-                        if (!onDropIntoGroup) return
-                        const payload = readDragPayload(e)
-                        setGroupDropHint(null)
-                        setDraggingId(null)
-                        if (!payload || payload.kind !== 'sidebar-card') return
-                        e.preventDefault()
-                        onDropIntoGroup(payload.id, sec.group.id)
-                      }}
-                    >
-                      No sessions in this group.
-                    </div>
-                  )}
+                          setDraggingId(null)
+                          if (!payload || payload.kind !== 'sidebar-card') return
+                          e.preventDefault()
+                          onDropIntoGroup(payload.id, sec.group.id)
+                        }}
+                      >
+                        {sec.sessions.map((s) => renderCard(s, sec.group.id))}
+                      </div>
+                    ) : (
+                      <div
+                        className={`group-empty ${groupDropHint === sec.group.id ? 'drop-target' : ''}`}
+                        onDragOver={(e) => {
+                          if (!onDropIntoGroup || !isInAppDrag(e)) return
+                          e.preventDefault()
+                          if (groupDropHint !== sec.group.id) setGroupDropHint(sec.group.id)
+                        }}
+                        onDragLeave={(e) => {
+                          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+                          if (groupDropHint === sec.group.id) setGroupDropHint(null)
+                        }}
+                        onDrop={(e) => {
+                          if (!onDropIntoGroup) return
+                          const payload = readDragPayload(e)
+                          setGroupDropHint(null)
+                          setDraggingId(null)
+                          if (!payload || payload.kind !== 'sidebar-card') return
+                          e.preventDefault()
+                          onDropIntoGroup(payload.id, sec.group.id)
+                        }}
+                      >
+                        No sessions in this group.
+                      </div>
+                    )}
+                  </AnimatedCollapse>
                 </div>
               )
             }

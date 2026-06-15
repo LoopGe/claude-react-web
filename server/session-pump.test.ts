@@ -3,6 +3,7 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
   clearSignalAction,
   fastModeStateOf,
+  hookLifecycleMessage,
   liteContextUsageFromResult,
   toolResultIds,
   userMessageHasToolResult,
@@ -373,5 +374,43 @@ describe('fastModeStateOf', () => {
     expect(fastModeStateOf({ type: 'assistant' } as never)).toBeUndefined()
     expect(fastModeStateOf({ type: 'result', fast_mode_state: 'bogus' } as never)).toBeUndefined()
     expect(fastModeStateOf({ type: 'result' } as never)).toBeUndefined()
+  })
+})
+
+describe('hookLifecycleMessage', () => {
+  it('maps hook responses to completed runtime events', () => {
+    const event = hookLifecycleMessage({
+      type: 'system',
+      subtype: 'hook_response',
+      hook_id: 'h1',
+      hook_name: 'audit',
+      hook_event: 'Stop',
+      outcome: 'error',
+      output: 'failed',
+      stdout: '',
+      stderr: 'failed',
+    } as unknown as SDKMessage)
+
+    expect(event).toMatchObject({
+      kind: 'completed',
+      run: { id: 'h1', hookName: 'audit', event: 'Stop', status: 'error', output: 'failed' },
+    })
+  })
+
+  it('trims very large hook outputs before retaining them', () => {
+    const output = 'a'.repeat(30_000)
+    const event = hookLifecycleMessage({
+      type: 'system',
+      subtype: 'hook_progress',
+      hook_id: 'h1',
+      hook_name: 'audit',
+      hook_event: 'Stop',
+      output,
+      stdout: output,
+      stderr: '',
+    } as unknown as SDKMessage)
+
+    expect(event?.run.output?.length).toBeLessThan(output.length)
+    expect(event?.run.output).toContain('chars omitted')
   })
 })

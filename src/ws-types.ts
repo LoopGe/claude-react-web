@@ -7,6 +7,7 @@
 
 import type { PermissionRequest, SessionInfo, SlashCommand } from './types'
 import type { SessionRecap } from '../shared/session-info.js'
+import type { HookRuntimeEvent } from '../shared/hooks.js'
 import type * as shared from '../shared/ws-protocol.js'
 
 // --- inbound (client — server) -----------------------------------------------
@@ -34,6 +35,7 @@ export type WsMessage = shared.WsMessage<unknown>
 export type WsPermissionRequest = shared.WsPermissionRequest<PermissionRequest>
 export type WsPermissionResolved = shared.WsPermissionResolved<shared.PermissionDecision>
 export type WsSessionRecapUpdate = shared.WsSessionRecapUpdate<SessionRecap>
+export type WsHookRunEvent = shared.WsHookRunEvent<HookRuntimeEvent>
 export type { WsContextUsage, WsGitStatusChanged, WsMessageConsumed, WsSessionCleared, WsCommandsChanged, WsPong, WsError, PermissionDecision } from '../shared/ws-protocol.js'
 
 export type WsServerFrame = shared.WsServerFrame<
@@ -42,7 +44,8 @@ export type WsServerFrame = shared.WsServerFrame<
   PermissionRequest,
   shared.PermissionDecision,
   SessionRecap,
-  SlashCommand
+  SlashCommand,
+  HookRuntimeEvent
 >
 
 export { WS_PATH } from '../shared/ws-protocol.js'

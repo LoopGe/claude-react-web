@@ -17,6 +17,7 @@ import { homedir } from 'node:os'
 import type { EffortLevel, PermissionMode } from '@anthropic-ai/claude-agent-sdk'
 import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import type { JsonFileStoreOptions } from './json-file-store.js'
+import { validateSessionHooksConfig, type SessionHooksConfig } from '../shared/hooks.js'
 
 /** Metadata we need to resurrect a session. Deliberately a subset of
  *  Options — no auth tokens, no full SDK config. Everything here must
@@ -41,6 +42,8 @@ export interface SessionMeta {
   /** User intent: reasoning effort level. Re-applied to the SDK on
    *  re-spawn (resume / restart / fork). */
   effortLevel?: EffortLevel
+  /** Structured hook configuration applied via Query.applyFlagSettings(). */
+  hooks?: SessionHooksConfig
   /** Monotonic counter of user turns seen; used as a rough "is there
    *  anything to resumed" hint for the UI. */
   messageCount: number
@@ -155,6 +158,7 @@ function coerceMeta(raw: unknown): SessionMeta | null {
       r.effortLevel === 'xhigh' || r.effortLevel === 'max'
         ? r.effortLevel
         : undefined,
+    hooks: coerceHooks(r.hooks),
     messageCount: typeof r.messageCount === 'number' ? r.messageCount : 0,
     terminated: typeof r.terminated === 'boolean' ? r.terminated : false,
     terminatedReason: typeof r.terminatedReason === 'string' ? r.terminatedReason : undefined,
@@ -163,4 +167,10 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     clearBoundaryUuid: typeof r.clearBoundaryUuid === 'string' ? r.clearBoundaryUuid : undefined,
     gitStartSha: typeof r.gitStartSha === 'string' ? r.gitStartSha : undefined,
   }
+}
+
+function coerceHooks(raw: unknown): SessionHooksConfig | undefined {
+  if (raw == null) return undefined
+  const result = validateSessionHooksConfig(raw)
+  return result.ok ? result.value : undefined
 }

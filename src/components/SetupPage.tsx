@@ -52,11 +52,6 @@ const stepMeta = (id: Step) => STEPS[id]
 const FIRST_STEP: Step = STEPS[0].id
 const LAST_STEP: Step = STEPS[STEPS.length - 1].id
 
-/** How long to dwell on Step 0 after a successful CLI probe before
- *  auto-advancing to Step 1. Long enough that the user reads the
- *  "all good" badge; short enough that it doesn't feel like a hang. */
-const STEP_0_AUTO_ADVANCE_MS = 3000
-
 interface ClaudeHealth {
   ok: boolean
   binary?: string
@@ -75,12 +70,13 @@ const ADVANCE_ON_ENTER_INPUT_IDS = new Set(['auth-token', 'base-url', 'update-re
 export function SetupPage({ onConfigured }: Props) {
   // ── Wizard step ──
   const [step, setStep] = useState<Step>(FIRST_STEP)
+  const [stepDirection, setStepDirection] = useState<'forward' | 'back'>('forward')
 
   // ── Step 0: CLI environment probe ──
   // `health === undefined` ⇒ probe still in flight (initial mount or after
   // a Recheck click); the UI shows a spinner. After settling, `ok: true`
-  // triggers a 3s auto-advance to Step 1; `ok: false` shows install
-  // instructions plus a non-blocking Continue button.
+  // enables the Continue button; `ok: false` shows install instructions
+  // plus the same non-blocking Continue path.
   const [health, setHealth] = useState<ClaudeHealth | undefined>(undefined)
   const [healthChecking, setHealthChecking] = useState(true)
 
@@ -188,37 +184,12 @@ export function SetupPage({ onConfigured }: Props) {
     void probeClaudeHealth(false)
   }, [probeClaudeHealth])
 
-  // Auto-advance: when Step 0 settles with ok=true, move to Step 1 after
-  // a short dwell. The cleanup cancels the timer if the user navigates
-  // away manually (Continue / clicking a progress dot) — without it,
-  // `setStep(1)` would still fire and bounce them back to Step 1.
-  //
-  // Once we've advanced once, `autoAdvanced` latches true so a user who
-  // clicks the Step-0 progress dot to re-read the panel is NOT bounced
-  // out again. The latch is per-mount; a Recheck click intentionally
-  // does not reset it (the user proved they want to stay on Step 0 to
-  // diagnose, even with ok=true). State (not ref) because the
-  // "Continuing to the next step automatically…" hint reads it during
-  // render — accessing a ref's `.current` during render is a lint
-  // error and would also miss re-renders if it changed.
-  const [autoAdvanced, setAutoAdvanced] = useState(false)
-  useEffect(() => {
-    if (step !== 0) return
-    if (!health?.ok) return
-    if (autoAdvanced) return
-    const t = window.setTimeout(() => {
-      setAutoAdvanced(true)
-      setStep(1)
-    }, STEP_0_AUTO_ADVANCE_MS)
-    return () => window.clearTimeout(t)
-  }, [step, health?.ok, autoAdvanced])
-
   // Single timer slot for the transient duplicateMsg banner. Both
   // addModel and removeModel funnel through `flashDuplicateMsg` so:
   //   1. A second flash cancels the previous timer instead of letting
   //      it race in and clear the newer message early.
   //   2. The mount-cleanup effect (below) cancels any in-flight timer
-  //      when SetupPage unmounts (auto-advance / finalize success), so
+  //      when SetupPage unmounts (finalize success), so
   //      we never call setDuplicateMsg on an unmounted component.
   const duplicateMsgTimerRef = useRef<number | null>(null)
   const flashDuplicateMsg = useCallback((text: string, dwellMs: number) => {
@@ -341,7 +312,10 @@ export function SetupPage({ onConfigured }: Props) {
       return
     }
     setError(null)
-    if (step < LAST_STEP) setStep(((step + 1) as Step))
+    if (step < LAST_STEP) {
+      setStepDirection('forward')
+      setStep(((step + 1) as Step))
+    }
   }, [step, tokenValid])
   const goBack = useCallback(() => {
     // Step 4's finalize() failure messages must persist across
@@ -356,7 +330,10 @@ export function SetupPage({ onConfigured }: Props) {
     // after the /config/setup POST succeeds, so any error visible while
     // it's still false originated pre-finalize.
     if (!setupCompleted) setError(null)
-    if (step > FIRST_STEP) setStep(((step - 1) as Step))
+    if (step > FIRST_STEP) {
+      setStepDirection('back')
+      setStep(((step - 1) as Step))
+    }
   }, [step, setupCompleted])
 
   // Enter on Step 1/2/3 advances; Step 4 has no Enter handler (the user
@@ -432,7 +409,7 @@ export function SetupPage({ onConfigured }: Props) {
         </p>
 
         <form onSubmit={(e) => e.preventDefault()} onKeyDown={handleKeyDown} className="setup-form">
-          <div key={step} className="setup-step-body">
+          <div key={step} className={`setup-step-body setup-step-${stepDirection}`}>
           {step === 0 && (
             <div className="setup-field setup-field-environment">
               <label className="setup-label">Claude CLI Environment</label>
@@ -464,11 +441,6 @@ export function SetupPage({ onConfigured }: Props) {
                       )}
                     </div>
                   </div>
-                {!autoAdvanced && (
-                  <p className="setup-hint">
-                    Continuing to the next step automatically…
-                  </p>
-                )}
                 </>
               )}
 
@@ -894,9 +866,8 @@ export function SetupPage({ onConfigured }: Props) {
                 <button
                   type="button"
                   onClick={goNext}
-                  // Disable while the probe is still in flight — without
-                  // this, a fast click would race the auto-advance and
-                  // bump the user past Step 0 before the result rendered.
+                  // Disable while the probe is still in flight so the
+                  // result is visible before the user continues.
                   disabled={submitting || healthChecking}
                   style={{
                     ...styles.submitBtn,

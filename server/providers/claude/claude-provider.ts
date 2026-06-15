@@ -62,6 +62,7 @@ export class ClaudeProvider implements AgentProvider {
     if (opts.betas !== undefined) sdkOptions.betas = opts.betas as Options['betas']
     if (opts.mcpServers !== undefined) sdkOptions.mcpServers = opts.mcpServers as Options['mcpServers']
     if (opts.includePartialMessages !== undefined) sdkOptions.includePartialMessages = opts.includePartialMessages
+    if (opts.includeHookEvents !== undefined) sdkOptions.includeHookEvents = opts.includeHookEvents
     if (opts.effortLevel !== undefined) sdkOptions.effort = opts.effortLevel as Options['effort']
 
     const requestedMode = (opts.permissionMode ?? sdkOptions.permissionMode) as PermissionMode | undefined

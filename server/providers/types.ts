@@ -17,6 +17,7 @@ export interface CreateSessionOptions {
   mcpServers?: Record<string, unknown>
   enabledMcpServers?: string[]
   includePartialMessages?: boolean
+  includeHookEvents?: boolean
   resume?: string
   forkSession?: boolean
   onUserMessageConsumed?: (message: AgentUserMessage) => void

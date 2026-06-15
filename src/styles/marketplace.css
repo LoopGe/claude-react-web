@@ -231,6 +231,32 @@
   flex-direction: column;
   gap: 6px;
 }
+
+.marketplace-card-shell {
+  animation: marketplace-card-in var(--motion-duration-base) var(--motion-ease-enter) both;
+}
+
+.marketplace-card-shell > * {
+  transition:
+    opacity var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+@keyframes marketplace-card-in {
+  from { opacity: 0; transform: translateY(var(--motion-distance-sm)); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .marketplace-card-shell {
+    animation: none;
+  }
+  .marketplace-card-shell > * {
+    transition: none;
+  }
+}
+
+
 .marketplace-plugin-empty {
   color: var(--fg-muted);
   font-size: 13px;

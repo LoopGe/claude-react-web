@@ -17,7 +17,7 @@ import type { SlashCommand } from './types'
  *  each Chat panel. Grows as new local commands need new actions. */
 /** Tabs of the session SettingsPanel a local command can deep-link to. Keep
  *  in sync with SettingsTab in components/SettingsPanel.tsx. */
-export type SettingsTabName = 'general' | 'context' | 'plugins' | 'mcp'
+export type SettingsTabName = 'general' | 'context' | 'hooks' | 'plugins' | 'mcp'
 
 export interface LocalCommandContext {
   /** Session id of the panel the command was type in. */

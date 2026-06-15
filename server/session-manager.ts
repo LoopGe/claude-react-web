@@ -60,6 +60,15 @@ import { countMatches, findRanges } from '../shared/search/match.js'
 import { extractMessagePlainText } from '../shared/search/extract.js'
 import type { MessageSearchHit } from '../shared/search-results.js'
 import type { ProviderRegistry } from './providers/registry.js'
+import {
+  emptyHooksConfig,
+  formatHooksValidationErrors,
+  toSdkHooksSettings,
+  validateSessionHooksConfig,
+  type HookRunRecord,
+  type HookRuntimeEvent,
+  type SessionHooksConfig,
+} from '../shared/hooks.js'
 
 // Re-export types so existing importers continue to work.
 export {
@@ -339,6 +348,7 @@ export class SessionManager {
       betas: s.betas,
       fastMode: s.fastMode,
       effortLevel: s.effortLevel,
+      hooks: s.hooks,
       messageCount: s.history.length,
       terminated: s.terminated,
       terminatedReason: s.terminatedReason,
@@ -402,7 +412,10 @@ export class SessionManager {
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
-  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; effortLevel?: EffortLevel } {
+  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; effortLevel?: EffortLevel; hooks?: SessionHooksConfig } {
+    const settingsHooks = typeof opts.settings === 'object' && opts.settings && !Array.isArray(opts.settings)
+      ? (opts.settings as { hooks?: SessionHooksConfig }).hooks
+      : undefined
     return {
       provider,
       cwd: opts.cwd,
@@ -416,6 +429,7 @@ export class SessionManager {
       // Effort passed at create time (Options.effort) becomes the session's
       // initial effortLevel so a create-time choice persists like the others.
       effortLevel: opts.effort,
+      hooks: settingsHooks,
     }
   }
 
@@ -514,6 +528,7 @@ export class SessionManager {
       // but we store the user-supplied list as plain `string[]` so a
       // newer flag the SDK type hasn't learned about yet still survives.
       betas: meta.betas as Options['betas'],
+      settings: meta.hooks ? ({ hooks: toSdkHooksSettings(meta.hooks) } as Settings) : undefined,
     }
     // Seed the live history ring with the transcript tail from disk. The SDK
     // loads the transcript as context on resume but does NOT re-emit it
@@ -729,6 +744,7 @@ export class SessionManager {
       // Same as resume: preserve `context-1m-...` etc. so the fork has
       // the same effective window as the source. See resume() for the cast rationale.
       betas: meta.betas as Options['betas'],
+      settings: meta.hooks ? ({ hooks: toSdkHooksSettings(meta.hooks) } as Settings) : undefined,
     }
     return this.spawn(randomUUID(), applyConfiguredSkills(forkOpts))
   }
@@ -772,12 +788,13 @@ export class SessionManager {
 
     const existingMeta = this.store.get(id)
     const createdAt = existingMeta?.createdAt ?? Date.now()
+    const metaSnapshot = this.snapshotMeta(fullOpts, providerName)
 
     const session: Session = {
       id,
       createdAt,
       lastActivityAt: Date.now(),
-      ...this.snapshotMeta(fullOpts, providerName),
+      ...metaSnapshot,
       permissionMode: requestedMode,
       handle: undefined as unknown as ProviderSessionHandle,
       canUseTool: undefined,
@@ -802,6 +819,8 @@ export class SessionManager {
       gitStatusSubscribers: new Set(),
       messageStatusSubscribers: new Set(),
       commandSubscribers: new Set(),
+      hookRuns: [],
+      hookRunSubscribers: new Set(),
       recapSubscribers: new Set(),
       sessionClearedSubscribers: new Set(),
       clearBoundaryUuid: existingMeta?.clearBoundaryUuid,
@@ -814,6 +833,7 @@ export class SessionManager {
       // server restarts. New sessions get a fresh capture below.
       gitStartSha: existingMeta?.gitStartSha,
       fastMode: existingMeta?.fastMode,
+      hooks: existingMeta?.hooks ?? metaSnapshot.hooks,
     }
 
     if (!fullOpts.canUseTool) {
@@ -853,6 +873,7 @@ export class SessionManager {
       env: customEnv,
       mcpServers: fullOpts.mcpServers as Record<string, unknown> | undefined,
       includePartialMessages: fullOpts.includePartialMessages,
+      includeHookEvents: true,
       resume: fullOpts.resume,
       forkSession: fullOpts.forkSession,
       onUserMessageConsumed: (msg) => this.onInputConsumed(id, msg as SDKUserMessage),
@@ -1118,14 +1139,51 @@ export class SessionManager {
 
   async applySettings(id: string, settings: Settings): Promise<SessionInfo> {
     const s = this.requireLive(id)
+    const forwarded = settings && typeof settings === 'object' && !Array.isArray(settings)
+      ? { ...(settings as Record<string, unknown>) }
+      : {}
+    const hooksResult = 'hooks' in forwarded
+      ? validateSessionHooksConfig(forwarded.hooks ?? {})
+      : null
+    let normalizedHooks: SessionHooksConfig | undefined
+    if (hooksResult && !hooksResult.ok) {
+      throw new HttpError(400, `invalid hooks settings: ${formatHooksValidationErrors(hooksResult.errors)}`)
+    }
+    if (hooksResult?.ok) {
+      normalizedHooks = emptyHooksConfig(hooksResult.value) ? {} : hooksResult.value
+      forwarded.hooks = toSdkHooksSettings(normalizedHooks)
+    }
     await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
       s,
       'applyFlagSettings',
       'flag settings',
-    )(settings as Record<string, unknown>)
+    )(forwarded)
+    if (normalizedHooks) s.hooks = normalizedHooks
     s.lastActivityAt = Date.now()
     this.persist(s)
     return this.info(s)
+  }
+
+  getHooks(id: string): { hooks: SessionHooksConfig; runs: HookRunRecord[] } {
+    const s = this.sessions.get(id)
+    if (s) return { hooks: s.hooks ?? {}, runs: s.hookRuns.slice() }
+    const meta = this.store.get(id)
+    if (!meta) throw new HttpError(404, `session ${id} not found`)
+    return { hooks: meta.hooks ?? {}, runs: [] }
+  }
+
+  async applyHooks(id: string, hooks: SessionHooksConfig): Promise<{ session: SessionInfo; hooks: SessionHooksConfig }> {
+    const s = this.requireLive(id)
+    const normalized = emptyHooksConfig(hooks) ? {} : hooks
+    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
+      s,
+      'applyFlagSettings',
+      'hooks',
+    )({ hooks: toSdkHooksSettings(normalized) })
+    s.hooks = normalized
+    s.lastActivityAt = Date.now()
+    this.persist(s)
+    return { session: this.info(s), hooks: normalized }
   }
 
   /** Toggle fast mode for a session. Forwards the intent to the SDK via
@@ -1503,6 +1561,29 @@ export class SessionManager {
     return this.subscribePushableSet(s, s.commandSubscribers, 'cmds', 20)
   }
 
+  subscribeHookRuns(id: string): {
+    iterable: AsyncIterable<HookRuntimeEvent>
+    snapshot: HookRunRecord[]
+    unsubscribe: () => void
+  } | null {
+    const s = this.sessions.get(id)
+    if (!s) return null
+    const sub = this.subscribePushableSet<HookRuntimeEvent>(s, s.hookRunSubscribers, 'hooks', 100)
+    return { iterable: sub.iterable, snapshot: s.hookRuns.slice(), unsubscribe: sub.unsubscribe }
+  }
+
+  recordHookRun(id: string, event: HookRuntimeEvent): void {
+    const s = this.sessions.get(id)
+    if (!s) return
+    const idx = s.hookRuns.findIndex((run) => run.id === event.run.id)
+    if (idx >= 0) s.hookRuns[idx] = event.run
+    else s.hookRuns.push(event.run)
+    while (s.hookRuns.length > 100) s.hookRuns.shift()
+    for (const sub of s.hookRunSubscribers) {
+      try { sub.push(event) } catch { /* subscriber dead - skip */ }
+    }
+  }
+
   broadcastCommandsChanged(id: string, commands: unknown[]): void {
     const s = this.sessions.get(id)
     if (!s || s.commandSubscribers.size === 0) return
@@ -1547,13 +1628,13 @@ export class SessionManager {
   /** Shared implementation for subscribeContextUsage / subscribeGitStatus.
    *  Creates a per-subscriber pushable, registers it in the given set, and
    *  returns the iterable + cleanup function. */
-  private subscribePushableSet(
+  private subscribePushableSet<T = unknown>(
     s: Session,
-    set: Set<Pushable<unknown>>,
+    set: Set<Pushable<T>>,
     label: string,
     maxSize: number,
-  ): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } {
-    const pushable = createPushable<unknown>(`${label}-${s.id.slice(0, 8)}`, maxSize)
+  ): { iterable: AsyncIterable<T>; unsubscribe: () => void } {
+    const pushable = createPushable<T>(`${label}-${s.id.slice(0, 8)}`, maxSize)
     set.add(pushable)
     return {
       iterable: pushable.iterable,
@@ -2117,6 +2198,7 @@ export class SessionManager {
           this.broadcastGlobal({ kind: 'update', session: this.info(s) })
         },
         broadcastCommandsChanged: (id, commands) => this.broadcastCommandsChanged(id, commands),
+        recordHookRun: (id, event) => this.recordHookRun(id, event),
       }
     }
     return this.cachedPumpDeps
@@ -2166,6 +2248,7 @@ export class SessionManager {
       title: session.title,
       effort: session.effortLevel,
       betas: session.betas as Options['betas'],
+      settings: session.hooks ? ({ hooks: toSdkHooksSettings(session.hooks) } as Settings) : undefined,
     }
     if (session.canUseTool) {
       resumeOpts.canUseTool = session.canUseTool
@@ -2181,6 +2264,7 @@ export class SessionManager {
       betas: session.betas,
       effortLevel: session.effortLevel,
       fastMode: session.fastMode,
+      includeHookEvents: true,
       resume: session.id,
       onUserMessageConsumed: (msg) => this.onInputConsumed(session.id, msg as SDKUserMessage),
       canUseTool: session.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,

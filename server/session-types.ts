@@ -17,6 +17,7 @@ import type { MpStore } from './mp-store.js'
 import type { SessionInfoBase } from '../shared/session-info.js'
 import type { ProviderRegistry } from './providers/registry.js'
 import type { ProviderSessionHandle } from './providers/types.js'
+import type { HookRunRecord, HookRuntimeEvent, SessionHooksConfig } from '../shared/hooks.js'
 
 /** Subscriber deach connected client gets one of these. */
 export interface Subscriber {
@@ -134,6 +135,8 @@ export interface Session {
    *  'max'). Controls how many tokens the model spends. Persisted, re-applied
    *  on respawn. Undefined means no explicit level (SDK default 'high'). */
   effortLevel?: EffortLevel
+  /** Structured hooks config for this session. Persisted and re-applied on resume. */
+  hooks?: SessionHooksConfig
   /** Effort levels the CURRENT model supports, fetched from the SDK
    *  (supportedModels) at spawn / model-change. Three-state:
    *   - undefined: capability unknown (not fetched yet, model not matched,
@@ -216,6 +219,10 @@ export interface Session {
    *  can't block another tab's updates. */
   messageStatusSubscribers: Set<Pushable<unknown>>
   commandSubscribers: Set<Pushable<unknown>>
+  /** Recent hook lifecycle events, kept outside chat history so the UI can
+   *  inspect hook activity without rendering it as conversation content. */
+  hookRuns: HookRunRecord[]
+  hookRunSubscribers: Set<Pushable<HookRuntimeEvent>>
   /** Per-subscriber pushables for `session-recap-update` frames.
    *  Mirrors gitStatusSubscribers; carries the SessionRecap payload
    *  (or undefined to mean cleared). Driven by RecapManager.invalidate
@@ -260,6 +267,7 @@ export function endAllSubscribers(s: Session): void {
   endAndClear(s.gitStatusSubscribers)
   endAndClear(s.messageStatusSubscribers)
   endAndClear(s.commandSubscribers)
+  endAndClear(s.hookRunSubscribers)
   endAndClear(s.recapSubscribers)
   endAndClear(s.sessionClearedSubscribers)
 }
@@ -340,6 +348,11 @@ export interface SessionBroadcaster {
    *  Mirrors subscribeGitStatus. */
   subscribeMessageStatus(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null
   subscribeCommandChanges(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null
+  subscribeHookRuns(sessionId: string): {
+    iterable: AsyncIterable<HookRuntimeEvent>
+    snapshot: HookRunRecord[]
+    unsubscribe: () => void
+  } | null
   /** Per-session recap subscription. Returns the current recap snapshot
    *  alongside the live iterable so a freshly-subscribed tab sees the
    *  current state without waiting for the next transition. Null when
