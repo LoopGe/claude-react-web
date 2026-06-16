@@ -525,7 +525,7 @@ export const Chat = memo(function Chat({
       if (!cancelled && loaded === 0) setPendingJump(null)
     })
     return () => { cancelled = true }
-  }, [debouncedQuery, pendingJump, stream.hasOlder, stream.items, stream.loadOlder, stream.loadingOlder])
+  }, [debouncedQuery, pendingJump, stream, stream.hasOlder, stream.items, stream.loadOlder, stream.loadingOlder])
 
   // Ctrl+F opens search on the *focused* panel only. Without the
   // `focused` guard, every mounted Chat would intercept the same

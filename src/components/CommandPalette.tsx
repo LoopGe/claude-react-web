@@ -70,9 +70,6 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
 
   useEffect(() => {
     if (!open || trimmedQuery.length < 2) {
-      setMessageHits([])
-      setMessageSearchLoading(false)
-      setMessageSearchError(false)
       return
     }
 
@@ -129,6 +126,9 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
     ]
   }, [localItems, messageHits, onSelectMessage, trimmedQuery])
 
+  // Clamp selectedIndex to valid range (derived state, not effect)
+  const clampedSelectedIndex = Math.min(selectedIndex, Math.max(0, filtered.length - 1))
+
   /* eslint-disable react-hooks/set-state-in-effect -- intentional UI reset on open */
   useLayoutEffect(() => {
     if (open) {
@@ -146,13 +146,9 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
   }, [open])
 
   useEffect(() => {
-    setSelectedIndex((index) => Math.min(index, Math.max(0, filtered.length - 1)))
-  }, [filtered.length])
-
-  useEffect(() => {
-    const el = listRef.current?.querySelectorAll<HTMLElement>('[data-palette-option]')[selectedIndex]
+    const el = listRef.current?.querySelectorAll<HTMLElement>('[data-palette-option]')[clampedSelectedIndex]
     el?.scrollIntoView({ block: 'nearest' })
-  }, [selectedIndex])
+  }, [clampedSelectedIndex])
 
   useEffect(() => {
     if (!open) return
@@ -169,7 +165,7 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
   if (!presence.shouldRender) return null
 
   const runSelected = () => {
-    filtered[selectedIndex]?.action()
+    filtered[clampedSelectedIndex]?.action()
     onClose()
   }
 
@@ -210,7 +206,7 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
           aria-label="Search"
           aria-autocomplete="list"
           aria-controls="palette-list"
-          aria-activedescendant={filtered[selectedIndex] ? `palette-item-${selectedIndex}` : undefined}
+          aria-activedescendant={filtered[clampedSelectedIndex] ? `palette-item-${clampedSelectedIndex}` : undefined}
         />
         <div className="palette-list" ref={listRef} id="palette-list" role="listbox">
           {filtered.length === 0 && !showSearching && !showSearchError && (
@@ -224,9 +220,9 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
                 {showSection && <div className="palette-section-label">{item.section}</div>}
                 <button
                   id={`palette-item-${index}`}
-                  className={`palette-item${index === selectedIndex ? ' selected' : ''}${item.detail ? ' palette-item-message' : ''}`}
+                  className={`palette-item${index === clampedSelectedIndex ? ' selected' : ''}${item.detail ? ' palette-item-message' : ''}`}
                   role="option"
-                  aria-selected={index === selectedIndex}
+                  aria-selected={index === clampedSelectedIndex}
                   data-palette-option="true"
                   onMouseEnter={() => setSelectedIndex(index)}
                   onClick={() => { item.action(); onClose() }}
