@@ -13,28 +13,37 @@ function makeApp() {
 }
 
 describe('session permission mode routes', () => {
-  it('rejects unsupported permissionMode on session create', async () => {
+  it('accepts auto as a valid permissionMode on session create', async () => {
     const { app, sm } = makeApp()
     const res = await app.request('/sessions', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ permissionMode: 'auto' }),
     })
-    expect(res.status).toBe(400)
-    expect(await res.json()).toEqual({ error: 'permissionMode must be one of default, acceptEdits, plan, bypassPermissions, dontAsk' })
-    expect(sm.create).not.toHaveBeenCalled()
+    expect(res.status).toBe(201)
+    expect(sm.create).toHaveBeenCalled()
   })
 
-  it('rejects unsupported live permission-mode switches', async () => {
+  it('accepts auto as a valid live permission-mode switch', async () => {
     const { app, sm } = makeApp()
     const res = await app.request('/sessions/s1/permission-mode', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ mode: 'auto' }),
     })
+    expect(res.status).toBe(200)
+    expect(sm.setPermissionMode).toHaveBeenCalledWith('s1', 'auto')
+  })
+
+  it('rejects truly unsupported permissionMode on session create', async () => {
+    const { app, sm } = makeApp()
+    const res = await app.request('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ permissionMode: 'nonexistent' }),
+    })
     expect(res.status).toBe(400)
-    expect(await res.json()).toEqual({ error: 'mode must be one of default, acceptEdits, plan, bypassPermissions, dontAsk' })
-    expect(sm.setPermissionMode).not.toHaveBeenCalled()
+    expect(sm.create).not.toHaveBeenCalled()
   })
 
   it('normalizes hooks inside create-time settings', async () => {

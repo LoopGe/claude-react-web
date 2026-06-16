@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Liquid Glass v2 — Edge Refraction</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --accent: #a78bfa;
+  --accent2: #60a5fa;
+  --accent3: #f472b6;
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background: #05060a;
+  color: #e4e6ed;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ============================================================
+   SCENE — rich animated background the glass refracts
+   ============================================================ */
+.scene {
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  padding: 60px 24px;
+  overflow: hidden;
+}
+
+/* Photographic-style backdrop: colorful orbs + grid so refraction is obvious */
+.bg-layer { position: absolute; inset: 0; pointer-events: none; }
+
+.bg-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(70px);
+  opacity: 0.6;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+}
+.bg-orb-1 { width: 420px; height: 420px; background: radial-gradient(circle, #8b5cf6, transparent 70%); top: 5%; left: 8%; animation: float1 13s infinite; }
+.bg-orb-2 { width: 360px; height: 360px; background: radial-gradient(circle, #3b82f6, transparent 70%); bottom: 8%; right: 10%; animation: float2 16s infinite; }
+.bg-orb-3 { width: 340px; height: 340px; background: radial-gradient(circle, #ec4899, transparent 70%); top: 38%; left: 42%; animation: float3 19s infinite; }
+.bg-orb-4 { width: 240px; height: 240px; background: radial-gradient(circle, #06b6d4, transparent 70%); top: 15%; right: 25%; animation: float4 11s infinite; }
+.bg-orb-5 { width: 200px; height: 200px; background: radial-gradient(circle, #f59e0b, transparent 70%); bottom: 25%; left: 20%; animation: float2 14s infinite reverse; }
+
+@keyframes float1 { 0%,100%{transform:translate(0,0) scale(1)} 25%{transform:translate(50px,-40px) scale(1.2)} 50%{transform:translate(-30px,30px) scale(0.85)} 75%{transform:translate(40px,20px) scale(1.1)} }
+@keyframes float2 { 0%,100%{transform:translate(0,0) scale(1)} 33%{transform:translate(-40px,-30px) scale(1.15)} 66%{transform:translate(30px,40px) scale(0.9)} }
+@keyframes float3 { 0%,100%{transform:translate(0,0) scale(1) rotate(0)} 50%{transform:translate(-35px,-25px) scale(1.3) rotate(15deg)} }
+@keyframes float4 { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(35px,35px) scale(1.25)} }
+
+.bg-grid {
+  position: absolute; inset: 0;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
+
+/* ============================================================
+   LIQUID GLASS PANEL
+   ============================================================ */
+.glass {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  max-width: 560px;
+  border-radius: 28px;
+  isolation: isolate;
+}
+
+/* The refraction layer — sits behind content, applies the SVG filter to backdrop */
+.glass__refraction {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  backdrop-filter: url(#liquidLens) brightness(1.05) saturate(1.4);
+  -webkit-backdrop-filter: blur(2px) brightness(1.05) saturate(1.4);
+  z-index: -1;
+}
+
+/* The glass surface — tint, border, shadows, highlights */
+.glass__surface {
+  position: relative;
+  border-radius: inherit;
+  padding: 22px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+
+  /* very subtle tint so the glass has a body */
+  background: linear-gradient(
+    135deg,
+    rgba(255,255,255,0.08) 0%,
+    rgba(255,255,255,0.02) 50%,
+    rgba(255,255,255,0.05) 100%
+  );
+
+  /* The signature glass border: bright top-left, dark bottom-right (edge lighting) */
+  border: 1px solid transparent;
+  background-clip: padding-box;
+
+  box-shadow:
+    /* outer drop shadow for floating feel */
+    0 12px 40px rgba(0,0,0,0.45),
+    0 2px 8px rgba(0,0,0,0.3),
+    /* inner top highlight — light catching the top bezel */
+    inset 0 1px 1px rgba(255,255,255,0.35),
+    /* inner bottom shadow — bezel depth */
+    inset 0 -1px 2px rgba(0,0,0,0.25),
+    /* faint inner glow */
+    inset 0 0 30px rgba(255,255,255,0.03);
+}
+
+/* Iridescent rim — a thin gradient border drawn via pseudo-element */
+.glass__surface::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: linear-gradient(
+    135deg,
+    rgba(255,255,255,0.6) 0%,
+    rgba(167,139,250,0.3) 25%,
+    rgba(96,165,250,0.1) 50%,
+    rgba(244,114,182,0.2) 75%,
+    rgba(255,255,255,0.4) 100%
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+/* Moving specular sheen — a soft light streak that drifts across the surface */
+.glass__surface::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    105deg,
+    transparent 30%,
+    rgba(255,255,255,0.13) 45%,
+    rgba(255,255,255,0.05) 55%,
+    transparent 70%
+  );
+  background-size: 250% 250%;
+  animation: sheen 6s ease-in-out infinite;
+  pointer-events: none;
+  mix-blend-mode: screen;
+}
+@keyframes sheen {
+  0%   { background-position: 150% 50%; }
+  50%  { background-position: -50% 50%; }
+  100% { background-position: 150% 50%; }
+}
+
+/* ============================================================
+   FOOTER UI
+   ============================================================ */
+.fh { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.fh-left { display: flex; align-items: center; gap: 10px; }
+
+.live {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 0.68rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em;
+  color: #e8e2ff;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.4);
+}
+.live::before {
+  content: ''; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent), 0 0 22px rgba(139,92,246,0.4);
+  animation: breathe 2.4s ease-in-out infinite;
+}
+@keyframes breathe { 0%,100%{transform:scale(1);opacity:1} 50%{transform:scale(1.3);opacity:0.65} }
+
+.pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 0.7rem; font-weight: 500;
+  padding: 4px 11px; border-radius: 100px;
+  color: #ddd6ff;
+  background: rgba(255,255,255,0.08);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,0.12);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.15);
+}
+.pill svg { width: 14px; height: 14px; }
+
+.rate {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 0.65rem;
+  font-family: 'SF Mono','JetBrains Mono',monospace;
+  color: rgba(221,214,255,0.6);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+}
+.orbs { display: inline-flex; gap: 3px; }
+.orbs span { width: 4px; height: 4px; border-radius: 50%; animation: hop 1.6s ease-in-out infinite; }
+.orbs span:nth-child(1){ background: var(--accent); animation-delay: 0s; }
+.orbs span:nth-child(2){ background: var(--accent2); animation-delay: 0.2s; }
+.orbs span:nth-child(3){ background: var(--accent3); animation-delay: 0.4s; }
+@keyframes hop { 0%,100%{transform:translateY(0);opacity:0.5} 50%{transform:translateY(-4px);opacity:1} }
+
+.body {
+  font-size: 0.875rem; line-height: 1.65;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 5em; overflow-y: auto;
+  scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.15) transparent;
+  color: #eef0f6;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+  padding: 2px 2px;
+}
+.body::-webkit-scrollbar { width: 5px; }
+.body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+
+.cursor {
+  display: inline-block; width: 2px; height: 1.15em;
+  vertical-align: text-bottom; margin-left: 1px; border-radius: 2px;
+  background: linear-gradient(180deg, var(--accent), var(--accent2), var(--accent3));
+  background-size: 100% 200%;
+  box-shadow: 0 0 10px rgba(167,139,250,0.5);
+  animation: curse 2s ease-in-out infinite;
+}
+@keyframes curse {
+  0%,100%{ background-position:0% 0%; opacity:1 }
+  50%{ background-position:0% 100%; opacity:0.7 }
+}
+
+/* ============================================================
+   CONTROLS
+   ============================================================ */
+.controls {
+  position: relative; z-index: 3;
+  display: flex; flex-wrap: wrap; gap: 18px;
+  align-items: center; justify-content: center;
+  font-size: 0.74rem; color: #8a8f9e;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 14px;
+  padding: 14px 20px;
+  backdrop-filter: blur(10px);
+}
+.controls label { display: flex; align-items: center; gap: 7px; cursor: pointer; user-select: none; }
+.controls input[type=range] { width: 96px; accent-color: var(--accent); }
+.controls .val { font-family: monospace; color: var(--accent); min-width: 28px; }
+
+.note {
+  position: relative; z-index: 3;
+  font-size: 0.68rem; color: #5a5f6c; text-align: center; max-width: 520px;
+}
+.note strong { color: var(--accent); }
+
+.title { position: relative; z-index: 3; text-align: center; }
+.title h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 4px; }
+.title p { font-size: 0.82rem; color: #6b6f7b; }
+</style>
+</head>
+<body>
+
+<!-- ============================================================
+     SVG FILTER — edge-weighted displacement lens
+     ============================================================ -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <filter id="liquidLens" x="-30%" y="-30%" width="160%" height="160%"
+            color-interpolation-filters="sRGB">
+      <feImage id="lensMap" result="map" preserveAspectRatio="none" />
+      <feDisplacementMap id="lensDisp" in="SourceGraphic" in2="map"
+        scale="40" xChannelSelector="R" yChannelSelector="G" />
+    </filter>
+  </defs>
+</svg>
+
+<div class="scene">
+  <div class="bg-layer">
+    <div class="bg-orb bg-orb-1"></div>
+    <div class="bg-orb bg-orb-2"></div>
+    <div class="bg-orb bg-orb-3"></div>
+    <div class="bg-orb bg-orb-4"></div>
+    <div class="bg-orb bg-orb-5"></div>
+    <div class="bg-grid"></div>
+  </div>
+
+  <div class="title">
+    <h1>Liquid Glass</h1>
+    <p>Edge-weighted refraction · specular rim · drifting sheen</p>
+  </div>
+
+  <!-- The glass component -->
+  <div class="glass" id="glass">
+    <div class="glass__refraction" id="refraction"></div>
+    <div class="glass__surface">
+      <div class="fh">
+        <div class="fh-left">
+          <span class="live">Live</span>
+          <span class="pill">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
+            </svg>
+            Thinking…
+          </span>
+        </div>
+        <span class="rate">
+          <span class="orbs"><span></span><span></span><span></span></span>
+          88 t/s
+        </span>
+      </div>
+      <div class="body" id="body">Liquid Glass refracts light most strongly at its curved edges, while the center stays optically clear — exactly how a real glass lens bends the world behind it.<span class="cursor"></span></div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <label>Refraction <input type="range" id="sRefr" min="0" max="120" value="48"><span class="val" id="vRefr">48</span></label>
+    <label>Bezel <input type="range" id="sBezel" min="8" max="60" value="28"><span class="val" id="vBezel">28</span></label>
+    <label>Blur <input type="range" id="sBlur" min="0" max="20" value="3"><span class="val" id="vBlur">3</span></label>
+    <label>Tint <input type="range" id="sTint" min="0" max="20" value="8"><span class="val" id="vTint">8</span></label>
+  </div>
+
+  <p class="note">
+    Uses an <strong>edge-weighted displacement map</strong> in <strong>&lt;feDisplacementMap&gt;</strong> via <strong>backdrop-filter</strong>.
+    Refraction concentrates at the bezel (adjustable). <strong>Chrome / Edge only</strong> — Safari/Firefox fall back to a frosted blur.
+  </p>
+</div>
+
+<script>
+(function () {
+  const glass = document.getElementById('glass');
+  const lensMap = document.getElementById('lensMap');
+  const lensDisp = document.getElementById('lensDisp');
+
+  const sRefr = document.getElementById('sRefr');
+  const sBezel = document.getElementById('sBezel');
+  const sBlur = document.getElementById('sBlur');
+  const sTint = document.getElementById('sTint');
+  const vRefr = document.getElementById('vRefr');
+  const vBezel = document.getElementById('vBezel');
+  const vBlur = document.getElementById('vBlur');
+  const vTint = document.getElementById('vTint');
+
+  const radius = 28; // matches CSS border-radius
+
+  // Smootherstep for nice falloff
+  function smootherstep(edge0, edge1, x) {
+    const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+    return t * t * t * (t * (t * 6 - 15) + 10);
+  }
+
+  // Signed distance to a rounded rectangle (negative inside)
+  function roundedRectSDF(px, py, w, h, r) {
+    const qx = Math.abs(px) - (w / 2 - r);
+    const qy = Math.abs(py) - (h / 2 - r);
+    const ax = Math.max(qx, 0), ay = Math.max(qy, 0);
+    const outside = Math.sqrt(ax * ax + ay * ay);
+    const inside = Math.min(Math.max(qx, qy), 0);
+    return outside + inside - r;
+  }
+
+  function buildMap() {
+    const rect = glass.getBoundingClientRect();
+    const w = Math.max(2, Math.round(rect.width));
+    const h = Math.max(2, Math.round(rect.height));
+
+    // Downsample the map for performance — displacement is smooth so this is fine
+    const dpr = 1;
+    const cw = w * dpr, ch = h * dpr;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = cw;
+    canvas.height = ch;
+    const ctx = canvas.getContext('2d');
+    const img = ctx.createImageData(cw, ch);
+
+    const bezel = parseFloat(sBezel.value); // px width of the refractive bezel
+
+    for (let y = 0; y < ch; y++) {
+      for (let x = 0; x < cw; x++) {
+        // Centered coordinates
+        const cx = x / dpr - w / 2;
+        const cy = y / dpr - h / 2;
+
+        // Distance to the rounded-rect border (0 at edge, negative inside)
+        const sd = roundedRectSDF(cx, cy, w, h, radius);
+
+        // depthFromEdge: 0 at the very edge, growing inward
+        const depthFromEdge = -sd; // positive inside
+
+        // The refractive "lens" lives in the bezel band [0, bezel] from the edge.
+        // Inside that band it ramps; deeper inside (center) it's flat (no displacement).
+        // This produces Apple's signature: clear center, bent edges.
+        let strength = 0;
+        if (depthFromEdge >= 0 && depthFromEdge < bezel) {
+          // 1 at the edge → 0 at inner bezel boundary, smooth
+          strength = 1 - smootherstep(0, bezel, depthFromEdge);
+        }
+
+        // Direction: gradient of the SDF = outward normal. Refraction pushes
+        // the sampled background INWARD (toward center), so displace along -normal.
+        // Approximate the normal numerically.
+        const e = 1;
+        const sdx = roundedRectSDF(cx + e, cy, w, h, radius) - roundedRectSDF(cx - e, cy, w, h, radius);
+        const sdy = roundedRectSDF(cx, cy + e, w, h, radius) - roundedRectSDF(cx, cy - e, w, h, radius);
+        let nx = sdx, ny = sdy;
+        const nlen = Math.hypot(nx, ny) || 1;
+        nx /= nlen; ny /= nlen;
+
+        // Displacement vector: pull background inward at the bezel.
+        // Magnitude shaped by strength².
+        const mag = strength * strength;
+        const dispX = -nx * mag;
+        const dispY = -ny * mag;
+
+        const idx = (y * cw + x) * 4;
+        img.data[idx]     = Math.round(128 + dispX * 127); // R = x
+        img.data[idx + 1] = Math.round(128 + dispY * 127); // G = y
+        img.data[idx + 2] = 128;
+        img.data[idx + 3] = 255;
+      }
+    }
+
+    ctx.putImageData(img, 0, 0);
+    const url = canvas.toDataURL('image/png');
+    lensMap.setAttribute('href', url);
+    lensMap.setAttribute('width', String(w));
+    lensMap.setAttribute('height', String(h));
+  }
+
+  function applyControls() {
+    vRefr.textContent = sRefr.value;
+    vBezel.textContent = sBezel.value;
+    vBlur.textContent = sBlur.value;
+    vTint.textContent = sTint.value;
+
+    lensDisp.setAttribute('scale', sRefr.value);
+
+    const refraction = document.getElementById('refraction');
+    const blur = sBlur.value;
+    refraction.style.backdropFilter = `url(#liquidLens) blur(${blur}px) brightness(1.05) saturate(1.4)`;
+    refraction.style.webkitBackdropFilter = `blur(${Math.max(2, blur)}px) brightness(1.05) saturate(1.4)`;
+
+    // Tint
+    const surface = document.querySelector('.glass__surface');
+    const t = parseFloat(sTint.value) / 100;
+    surface.style.background = `linear-gradient(135deg, rgba(255,255,255,${0.04 + t}) 0%, rgba(255,255,255,${0.01 + t*0.3}) 50%, rgba(255,255,255,${0.03 + t*0.6}) 100%)`;
+  }
+
+  // Wire up
+  [sRefr, sBlur, sTint].forEach(s => s.addEventListener('input', applyControls));
+  sBezel.addEventListener('input', () => { applyControls(); buildMap(); });
+
+  let resizeT;
+  window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(buildMap, 150); });
+
+  // Init after layout settles
+  requestAnimationFrame(() => {
+    applyControls();
+    buildMap();
+  });
+  setTimeout(buildMap, 200);
+
+  // ---- Streaming text simulation ----
+  const body = document.getElementById('body');
+  const cursor = body.querySelector('.cursor');
+  const texts = [
+    "Liquid Glass refracts light most strongly at its curved edges, while the center stays optically clear — exactly how a real glass lens bends the world behind it.",
+    "Liquid Glass refracts light most strongly at its curved edges, while the center stays optically clear — exactly how a real glass lens bends the world behind it.\n\nThe displacement map encodes a 2D offset per pixel: red for horizontal, green for vertical.",
+    "Liquid Glass refracts light most strongly at its curved edges, while the center stays optically clear — exactly how a real glass lens bends the world behind it.\n\nThe displacement map encodes a 2D offset per pixel: red for horizontal, green for vertical.\n\nA specular rim and drifting sheen complete the illusion of a physical pane of glass.",
+  ];
+  let step = 0;
+  setInterval(() => {
+    if (cursor) cursor.remove();
+    body.textContent = texts[step];
+    body.appendChild(cursor);
+    body.scrollTop = body.scrollHeight;
+    step = (step + 1) % texts.length;
+  }, 2800);
+})();
+</script>
+
+</body>
+</html>

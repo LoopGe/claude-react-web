@@ -42,6 +42,9 @@ export interface RecapManagerDeps {
   /** Live message history for the session (snapshot). Returns null
    *  when the session is dormant — recapManager surfaces a 412. */
   getHistory: (sessionId: string) => SDKMessage[] | null
+  /** The session's configured model, if any. Used as fallback when
+   *  config.recapModel is empty. */
+  getModel?: (sessionId: string) => string | undefined
   /** Mutator: write the session's recap field. The caller is expected
    *  to also broadcast (via broadcastRecap). recapManager calls these
    *  in pairs after every transition. */
@@ -236,9 +239,11 @@ FORMAT RULES:
 ${languageRule}`
 }
 
-async function callAnthropic(transcript: string, language: string | null): Promise<string> {
+async function callAnthropic(transcript: string, language: string | null, sessionModel?: string): Promise<string> {
+  const model = serverConfig.recapModel || sessionModel
+  if (!model) throw new Error('No recap model configured and session has no model')
   const text = await callAnthropicMessages({
-    model: serverConfig.recapModel,
+    model,
     system: buildSystemPrompt(language),
     userContent: transcript,
     maxTokens: 300,
@@ -396,7 +401,7 @@ export class RecapManager {
 
     try {
       const transcript = buildTranscript(lines, language)
-      const summary = await callAnthropic(transcript, language)
+      const summary = await callAnthropic(transcript, language, this.deps.getModel?.(sessionId))
       const ready: SessionRecap = {
         status: 'ready',
         summary,

@@ -81,6 +81,7 @@
   font-size: 13.5px;
   text-align: left;
   cursor: pointer;
+  animation: palette-item-in var(--motion-duration-instant) var(--motion-ease-enter) both;
 }
 .palette-item.selected,
 .palette-item:hover {
@@ -210,6 +211,12 @@
 .message-search-bar[data-state="closing"] {
   pointer-events: none;
   animation: message-search-out var(--motion-duration-base) var(--motion-ease-exit) both;
+}
+@keyframes palette-item-in {
+  from { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .palette-item { animation: none; }
 }
 @keyframes message-search-in {
   from { opacity: 0; transform: translateY(calc(-1 * var(--motion-distance-sm))); }

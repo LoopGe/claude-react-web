@@ -49,9 +49,10 @@ interface Props {
    *  panel is already mounted on another tab. */
   tabRequest?: { tab: SettingsTab; nonce: number } | null
   onPluginsReloaded?: () => void
+  onSkillsReloaded?: () => void
 }
 
-export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onSessionUpdate, commands = [], agents = [], contextUsage, tabRequest, onPluginsReloaded }: Props) {
+export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onSessionUpdate, commands = [], agents = [], contextUsage, tabRequest, onPluginsReloaded, onSkillsReloaded }: Props) {
   const [models, setModels] = useState<ModelInfo[]>([])
   const [settingsText, setSettingsText] = useState('{}')
   // Full context-usage breakdown from the (blocking) REST endpoint. Null
@@ -269,6 +270,15 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
     }
   }
 
+  const reloadSkills = async () => {
+    try {
+      await api.post(`/sessions/${session.id}/skills/reload`)
+      onSkillsReloaded?.()
+    } catch (e) {
+      toast.error(`Couldn't reload skills: ${(e as Error).message}`)
+    }
+  }
+
   // Auto-load the plugin list the first time the Plugins tab is opened. The
   // reload response carries the plugin NAMES the grouping logic needs to
   // associate skills/agents with their owning plugin (the description's
@@ -425,7 +435,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
       {/* Scrollable body — header + tab bar stay pinned above it, mirroring
           the global settings modal (where only .global-settings-body scrolls). */}
       <div ref={panelBodyRef} className="settings-panel-body">
-        <div ref={panelContentRef} className="settings-panel-content">
+        <div ref={panelContentRef} className="settings-panel-content" data-animate={tab}>
       {tab === 'general' && (
       <>
       <div className="settings-section">
@@ -502,20 +512,25 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
             user actually opens one. */}
         <ContextBar usage={usage} />
         {usage?.skills && (
-          <AnimatedDetails
-            className="settings-detail"
-            summary={`Skills: ${usage.skills.includedSkills}/${usage.skills.totalSkills} loaded, ${formatTokens(usage.skills.tokenCount)}`}
-          >
-            <div className="settings-detail-body">
-              {usage.skills.skillFrontmatter?.map((s) => (
-                <div key={s.name} className="settings-kv-row">
-                  <code>{s.name}</code>
-                  <span className="settings-kv-source">{s.source}</span>
-                  <span className="settings-kv-tokens">{formatTokens(s.tokens)}</span>
-                </div>
-              ))}
-            </div>
-          </AnimatedDetails>
+          <div className="settings-skill-reload-row">
+            <AnimatedDetails
+              className="settings-detail"
+              summary={`Skills: ${usage.skills.includedSkills}/${usage.skills.totalSkills} loaded, ${formatTokens(usage.skills.tokenCount)}`}
+            >
+              <div className="settings-detail-body">
+                {usage.skills.skillFrontmatter?.map((s) => (
+                  <div key={s.name} className="settings-kv-row">
+                    <code>{s.name}</code>
+                    <span className="settings-kv-source">{s.source}</span>
+                    <span className="settings-kv-tokens">{formatTokens(s.tokens)}</span>
+                  </div>
+                ))}
+              </div>
+            </AnimatedDetails>
+            <button className="btn btn-sm" onClick={reloadSkills} disabled={busy || session.terminated}>
+              Reload skills
+            </button>
+          </div>
         )}
         {usage?.agents && (
           <AnimatedDetails

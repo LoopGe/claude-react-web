@@ -3,16 +3,17 @@
 
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { api } from '../hooks/useApi'
+import { parseSkillContent } from '../utils/skill-frontmatter'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { formatBytes } from '../utils/format'
-import { IconX, IconCheck, IconArrowUp, IconArrowDown, IconChevronDown, IconFolder, IconDownload, IconRefresh, IconTrash, IconFileText } from './icons/ToolIcons'
+import { IconX, IconCheck, IconArrowUp, IconArrowDown, IconChevronDown, IconFolder, IconDownload, IconRefresh, IconFileText } from './icons/ToolIcons'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
 import type { FullServerConfig } from '../types/config'
 import type { SkillImportFile, SkillImportResponse, SkillLoadMode, SkillRecord, SkillsListResponse } from '../../shared/skills'
 import type { McpConnectionTestResult, McpServerConfigMeta, McpServerTool } from '../types'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
-import { useExitPresence } from '../hooks/useExitPresence'
+import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
 import { DirectoryPicker } from './DirectoryPicker'
 import type { UpdateActionResult, UpdateInfo } from '../../shared/update-info'
 import { isVersionNewer } from '../../shared/update-info'
@@ -409,7 +410,7 @@ export function GlobalSettingsModal({
         {err && <div className="modal-error">{err}</div>}
 
         <div ref={settingsBodyRef} className="global-settings-body">
-          <div ref={settingsContentRef} className="global-settings-body-content">
+          <div ref={settingsContentRef} className="global-settings-body-content" data-animate={tab}>
           {loading ? (
             <div style={{ padding: 40, textAlign: 'center', color: 'var(--fg-muted)' }}>Loading...</div>
           ) : (
@@ -777,18 +778,13 @@ function SkillsTab({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [selected, setSelected] = useState<SkillRecord | null>(null)
-  const [content, setContent] = useState('')
-  const [draftName, setDraftName] = useState('')
-  const [draftDescription, setDraftDescription] = useState('')
-  const [draftScope, setDraftScope] = useState<'project' | 'user'>('project')
+  const [previewSkill, setPreviewSkill] = useState<SkillRecord | null>(null)
   const [importScope, setImportScope] = useState<'project' | 'user'>('project')
   const [importPath, setImportPath] = useState('')
   const [importName, setImportName] = useState('')
   const [overwriteImport, setOverwriteImport] = useState(false)
   const [showImportPicker, setShowImportPicker] = useState(false)
   const [dragActive, setDragActive] = useState(false)
-  const [savingSkill, setSavingSkill] = useState(false)
   const [importingSkill, setImportingSkill] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const directoryInputProps = { webkitdirectory: '', directory: '' } as Record<string, string>
@@ -800,26 +796,42 @@ function SkillsTab({
       const query = cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''
       const res = await api.get<SkillsListResponse>(`/skills${query}`)
       setSkills(res.skills ?? [])
-      if (selected) {
-        const next = (res.skills ?? []).find((s) => s.scope === selected.scope && s.name === selected.name) ?? null
-        setSelected(next)
-      }
     } catch (e) {
       setError((e as Error).message)
     } finally {
       setLoading(false)
     }
-  }, [cwd, selected])
+  }, [cwd])
 
   useEffect(() => {
     const timer = window.setTimeout(() => void refresh(), 0)
     return () => window.clearTimeout(timer)
   }, [refresh])
 
+  // Keep the SkillRecord alive during the exit animation so the modal
+  // can render its content while the CSS outro plays.
+  const previewPresence = usePresenceValue(previewSkill)
+  const previewIsOpen = previewSkill !== null
+
+  useEffect(() => {
+    if (!previewIsOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.stopImmediatePropagation(); setPreviewSkill(null) }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [previewIsOpen])
+
   const skillNames = useMemo(() => Array.from(new Set(skills.map((s) => s.name))).sort((a, b) => a.localeCompare(b)), [skills])
   const userSkills = skills.filter((skill) => skill.scope === 'user')
   const projectSkills = skills.filter((skill) => skill.scope === 'project')
   const invalidCount = skills.filter((skill) => !skill.valid).length
+
+  const parsed = useMemo(
+    () => (previewPresence.value?.content ? parseSkillContent(previewPresence.value.content) : null),
+    [previewPresence.value?.content],
+  )
+  const hasFields = parsed ? Object.keys(parsed.frontmatter).length > 0 : false
 
   const toggleEnabled = (name: string) => {
     const exists = enabledSkills.includes(name)
@@ -832,76 +844,9 @@ function SkillsTab({
     try {
       const query = skill.scope === 'project' && cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''
       const res = await api.get<{ skill: SkillRecord }>(`/skills/${skill.scope}/${encodeURIComponent(skill.name)}${query}`)
-      setSelected(res.skill)
-      setContent(res.skill.content ?? '')
+      setPreviewSkill(res.skill)
     } catch (e) {
       setError((e as Error).message)
-    }
-  }
-
-  const createNewSkill = async () => {
-    const name = draftName.trim()
-    if (!name) return
-    setSavingSkill(true)
-    setError(null)
-    setNotice(null)
-    try {
-      const res = await api.post<{ skill: SkillRecord }>('/skills', {
-        scope: draftScope,
-        cwd: draftScope === 'project' ? cwd : undefined,
-        name,
-        description: draftDescription.trim() || undefined,
-      })
-      setDraftName('')
-      setDraftDescription('')
-      setNotice(`Created ${res.skill.scope} skill "${res.skill.name}".`)
-      await refresh()
-      await openSkill(res.skill)
-    } catch (e) {
-      setError((e as Error).message)
-    } finally {
-      setSavingSkill(false)
-    }
-  }
-
-  const saveSelectedSkill = async () => {
-    if (!selected) return
-    setSavingSkill(true)
-    setError(null)
-    setNotice(null)
-    try {
-      const res = await api.put<{ skill: SkillRecord }>(`/skills/${selected.scope}/${encodeURIComponent(selected.name)}`, {
-        cwd: selected.scope === 'project' ? cwd : undefined,
-        content,
-      })
-      setSelected(res.skill)
-      setContent(res.skill.content ?? content)
-      setNotice(`Saved ${res.skill.scope} skill "${res.skill.name}".`)
-      await refresh()
-    } catch (e) {
-      setError((e as Error).message)
-    } finally {
-      setSavingSkill(false)
-    }
-  }
-
-  const deleteSelectedSkill = async () => {
-    if (!selected) return
-    if (!window.confirm(`Delete ${selected.scope} skill "${selected.name}"?`)) return
-    setSavingSkill(true)
-    setError(null)
-    setNotice(null)
-    try {
-      const query = selected.scope === 'project' && cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''
-      await api.delete(`/skills/${selected.scope}/${encodeURIComponent(selected.name)}${query}`)
-      setNotice(`Deleted ${selected.scope} skill "${selected.name}".`)
-      setSelected(null)
-      setContent('')
-      await refresh()
-    } catch (e) {
-      setError((e as Error).message)
-    } finally {
-      setSavingSkill(false)
     }
   }
 
@@ -1081,15 +1026,27 @@ function SkillsTab({
           </div>
         </div>
         <div className="settings-skill-import-controls">
-          <select className="input" value={importScope} onChange={(e) => setImportScope(e.target.value as 'project' | 'user')}>
-            <option value="project">Project</option>
-            <option value="user">User</option>
-          </select>
-          <input className="input" placeholder="Optional import name" value={importName} onChange={(e) => setImportName(e.target.value)} />
+          <div className="settings-scope-toggle">
+            <button
+              type="button"
+              className={`settings-scope-btn${importScope === 'project' ? ' active' : ''}`}
+              onClick={() => setImportScope('project')}
+            >
+              Project
+            </button>
+            <button
+              type="button"
+              className={`settings-scope-btn${importScope === 'user' ? ' active' : ''}`}
+              onClick={() => setImportScope('user')}
+            >
+              User
+            </button>
+          </div>
+          <input className="input" placeholder="Optional import name" aria-label="Import name" value={importName} onChange={(e) => setImportName(e.target.value)} />
           <label className="settings-skill-overwrite"><input type="checkbox" checked={overwriteImport} onChange={(e) => setOverwriteImport(e.target.checked)} /> Replace existing</label>
         </div>
         <div className="settings-skill-path-row">
-          <input className="input" placeholder="Absolute server path to a skill folder" value={importPath} onChange={(e) => setImportPath(e.target.value)} spellCheck={false} />
+          <input className="input" placeholder="Absolute server path to a skill folder" aria-label="Server path to skill folder" value={importPath} onChange={(e) => setImportPath(e.target.value)} spellCheck={false} />
           <button className="btn btn-sm" onClick={() => setShowImportPicker(true)} disabled={importingSkill}><IconFolder size={13} /> Browse</button>
           <button className="btn btn-sm primary" onClick={() => void importFromServerPath()} disabled={importingSkill || !importPath.trim()}>
             {importingSkill ? 'Installing…' : 'Install'}
@@ -1122,7 +1079,7 @@ function SkillsTab({
           {skills.map((skill) => (
             <button
               key={`${skill.scope}:${skill.name}`}
-              className={`settings-skill-row${selected?.scope === skill.scope && selected?.name === skill.name ? ' active' : ''}${!skill.valid ? ' invalid' : ''}`}
+              className={`settings-skill-row${previewPresence.value?.scope === skill.scope && previewPresence.value?.name === skill.name ? ' active' : ''}${!skill.valid ? ' invalid' : ''}`}
               onClick={() => void openSkill(skill)}
             >
               <span className="settings-skill-name">{skill.name}</span>
@@ -1133,46 +1090,49 @@ function SkillsTab({
             </button>
           ))}
         </div>
-
-        <div className="settings-skill-editor">
-          <div className="settings-card settings-skill-create-card">
-            <div className="settings-card-head">
-              <span className="settings-card-name">New Skill</span>
-              <span className="settings-card-meta">Scaffold a minimal SKILL.md</span>
-            </div>
-            <div className="settings-inline-fields">
-              <select className="input" value={draftScope} onChange={(e) => setDraftScope(e.target.value as 'project' | 'user')}>
-                <option value="project">Project</option>
-                <option value="user">User</option>
-              </select>
-              <input className="input" placeholder="skill-name" value={draftName} onChange={(e) => setDraftName(e.target.value)} />
-            </div>
-            <input className="input" placeholder="Description" value={draftDescription} onChange={(e) => setDraftDescription(e.target.value)} />
-            <button className="btn btn-sm" onClick={() => void createNewSkill()} disabled={savingSkill || !draftName.trim()}>Create</button>
-          </div>
-
-          {selected ? (
-            <div className="settings-card settings-skill-edit-card">
-              <div className="settings-card-head">
-                <span className="settings-card-name">{selected.name}</span>
-                <span className="settings-card-badge">{selected.scope}</span>
-                {!selected.valid && <span className="settings-card-badge warn">invalid</span>}
-              </div>
-              <div className="settings-card-path">{selected.path}</div>
-              {selected.errors.length > 0 && (
-                <div className="settings-error">{selected.errors.join('; ')}</div>
-              )}
-              <textarea className="input settings-skill-textarea" value={content} onChange={(e) => setContent(e.target.value)} spellCheck={false} />
-              <div className="settings-actions-row">
-                <button className="btn btn-sm primary" onClick={() => void saveSelectedSkill()} disabled={savingSkill}>Save Skill</button>
-                <button className="btn btn-sm" onClick={() => void deleteSelectedSkill()} disabled={savingSkill}><IconTrash size={13} /> Delete</button>
-              </div>
-            </div>
-          ) : (
-            <div className="settings-empty-note settings-skill-empty-editor">Select a skill to edit its SKILL.md.</div>
-          )}
-        </div>
       </div>
+
+      {previewPresence.value != null && (() => {
+        const ps = previewPresence.value!
+        return (
+          <div
+            className="modal-backdrop"
+            data-state={previewIsOpen ? 'open' : 'closing'}
+            onMouseDown={(e) => { if (e.target === e.currentTarget && previewIsOpen) setPreviewSkill(null) }}
+          >
+            <div className="modal settings-skill-preview-modal">
+              <div className="modal-header">
+                <div className="settings-skill-preview-title">
+                  <span className="settings-card-name">{ps.name}</span>
+                  <span className="settings-card-badge">{ps.scope}</span>
+                  {!ps.valid && <span className="settings-card-badge warn">invalid</span>}
+                </div>
+                <button className="btn-icon" aria-label="Close" onClick={() => setPreviewSkill(null)}><IconX size={14} /></button>
+              </div>
+              <div className="settings-card-path">{ps.path}</div>
+              {ps.errors.length > 0 && (
+                <div className="settings-error">{ps.errors.join('; ')}</div>
+              )}
+              {hasFields && (
+                <div className="settings-skill-frontmatter">
+                  <div className="settings-skill-frontmatter-title">Frontmatter</div>
+                  <table className="settings-skill-frontmatter-table">
+                    <tbody>
+                      {Object.entries(parsed!.frontmatter).map(([key, value]) => (
+                        <tr key={key}>
+                          <td className="settings-skill-fm-key">{key}</td>
+                          <td className="settings-skill-fm-value">{value}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <pre className="settings-skill-preview-content">{parsed ? parsed.body : (ps.content || '')}</pre>
+            </div>
+          </div>
+        )
+      })()}
 
       {showImportPicker && (
         <DirectoryPicker

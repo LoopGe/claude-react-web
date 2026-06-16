@@ -422,6 +422,7 @@
   font-size: 12px;
   font-family: var(--mono);
   max-width: 320px;
+  animation: chip-enter var(--motion-duration-base) var(--motion-ease-enter) both;
 }
 .attachment-chip-name {
   overflow: hidden;
@@ -769,8 +770,11 @@
    All colours are theme variables (--accent / --border), so light and dark
    themes adapt automatically. */
 .streaming-msg {
-  align-self: flex-start;
-  width: auto;
+  align-self: stretch;
+  /* Always render at the full reading width rather than shrink-wrapping the
+     text, so the bubble (and its liquid-glass rim) stays a stable size as
+     content streams in instead of jittering wider with each flush. */
+  width: 100%;
   max-width: min(var(--chat-reading-max-width), 100%);
   border: 2px solid var(--accent);
   border-radius: 8px;
@@ -818,6 +822,12 @@
 .virtuoso-item-wrapper.msg-enter {
   animation: msg-enter-rise var(--motion-duration-moderate) var(--motion-ease-enter) both;
 }
+@keyframes chip-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.92) translateY(var(--motion-distance-sm));
+  }
+}
 @keyframes msg-enter-rise {
   from {
     opacity: 0;
@@ -833,6 +843,10 @@
 /* Respect reduced-motion: appear instantly, no transform/blur. */
 @media (prefers-reduced-motion: reduce) {
   .virtuoso-item-wrapper.msg-enter {
+    animation: none;
+  }
+  .attachment-chip,
+  .image-preview-card {
     animation: none;
   }
 }
@@ -892,6 +906,49 @@
   50% { opacity: 0; }
 }
 
+/* ============================================================
+   Liquid Glass refraction (Chromium only)
+   ============================================================
+   When useLiquidGlass detects SVG-in-backdrop-filter support it adds
+   the `.liquid-glass` class and renders a `.streaming-refraction`
+   layer. That layer carries `backdrop-filter: url(#<filterId>)` (set
+   inline by the component), bending the transcript behind the bubble's
+   bezel. The center stays optically clear — the displacement map ramps
+   to zero away from the edges.
+
+   Off-Chromium (Safari/Firefox) and in tests the class is absent, so
+   the bubble keeps its plain `--glass-blur` frosted styling above. */
+.streaming-msg.liquid-glass {
+  /* The frosted backdrop-filter on the bubble itself would compound with
+     the refraction layer and wash it out; drop it and let the refraction
+     layer own the glass look. A faint tint keeps the bubble legible over
+     busy backgrounds. */
+  background: color-mix(in srgb, var(--bg-elev) 40%, transparent);
+  backdrop-filter: none;
+  /* Establish a stacking/positioning context for the absolute layer.
+     overflow:hidden (from .streaming-msg) clips it to the rounded rect. */
+  position: relative;
+  isolation: isolate;
+}
+.streaming-refraction {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  /* backdrop-filter is set inline by the component as `blur(2px) url(#…)`
+     — the blur (frosted look) and the displacement-map refraction compose
+     into one filter. Setting it here would be overridden by that inline
+     value, so the frosted blur is owned by the component, not this rule. */
+  pointer-events: none;
+}
+/* Keep the text above the refraction layer. */
+.streaming-msg.liquid-glass .streaming-plain {
+  position: relative;
+  z-index: 1;
+}
+/* Reduced-motion already freezes the border pulse above; the refraction
+   itself is static (only rebuilds on resize), so nothing extra needed. */
+
 /* Image preview thumbnails in the composer */
 .image-previews {
   display: flex;
@@ -907,6 +964,7 @@
   overflow: hidden;
   border: 1px solid var(--border);
   flex-shrink: 0;
+  animation: chip-enter var(--motion-duration-base) var(--motion-ease-enter) both;
 }
 .image-preview-card img {
   width: 100%;

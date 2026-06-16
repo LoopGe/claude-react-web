@@ -16,6 +16,8 @@ import { useComposerSnippets } from './hooks/useComposerSnippets'
 import { usePanelColumnResize } from './hooks/usePanelColumnResize'
 import { useSidebarResize } from './hooks/useSidebarResize'
 import { useSessionNotifications } from './hooks/useSessionNotifications'
+import { useSessionUrl } from './hooks/useSessionUrl'
+import { registerSW } from './sw-register'
 import { useTheme } from './hooks/useTheme'
 import { useToast } from './hooks/useToast'
 import { useWsHub, useWsHubStatus } from './hooks/useWsHub'
@@ -318,13 +320,33 @@ export function App() {
     // (setOpenIds / setFocusedId / focusedIdRef are all stable.)
   }, [maxOpen])
 
+  // Service Worker registration — enables action buttons on OS-level
+  // desktop notifications (Allow / Deny for permission requests).
+  const swRegRef = useRef<ServiceWorkerRegistration | null>(null)
+  useEffect(() => {
+    registerSW().then((reg) => { swRegRef.current = reg })
+  }, [])
+
+  // Listen for SW notification action callbacks. When the user clicks
+  // Allow/Deny on an OS notification, the SW calls the decide API
+  // directly and then posts back so the UI can focus the session.
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      if (e.data?.type === 'NOTIFICATION_ACTION' && e.data.sessionId) {
+        handleSelectRef.current?.(e.data.sessionId)
+      }
+    }
+    navigator.serviceWorker?.addEventListener('message', handler)
+    return () => navigator.serviceWorker?.removeEventListener('message', handler)
+  }, [])
+
   // Notification coordinator: working-flag edge detector + permission
   // gate, both gated on `document.hasFocus() && focusedId === sessionId`.
   // The hook owns notifyRef + prevWorkingRef internally; App keeps only
   // the bell-button-facing `notifications` slice and the three
   // session-event callbacks the WS hub effect calls into.
-  const { notifications, maybeNotify, maybePermissionNotify, seedWorkingState, pruneSession } =
-    useSessionNotifications({ focusedIdRef, sessionsRef, handleSelectRef })
+  const { notifications, maybeNotify, maybePermissionNotify, seedWorkingState, pruneSession, dismissPermissionToast } =
+    useSessionNotifications({ focusedIdRef, sessionsRef, handleSelectRef, swRegRef })
 
   // Single push-based subscription to the server's session list. All
   // events now ride on the shared WebSocket hub — one connection per
@@ -397,6 +419,11 @@ export function App() {
           }
           // Falling-edge trigger for desktop notifications — see maybeNotify.
           maybeNotify(frame.session)
+          // Auto-dismiss sticky permission/question toasts once all pending
+          // permissions for this session have been resolved.
+          if (frame.session.pendingPermissionCount === 0) {
+            dismissPermissionToast(frame.session.id)
+          }
           break
         }
         case 'session-created': {
@@ -482,7 +509,8 @@ export function App() {
               : (('displayName' in r && r.displayName) ||
                   ('toolName' in r && r.toolName) ||
                   'a tool')
-          maybePermissionNotify(frame.sessionId, label as string, r.kind)
+          const toolInput = r.kind === 'permission' ? r.input as Record<string, unknown> : undefined
+          maybePermissionNotify(frame.sessionId, label as string, r.kind, r.id, toolInput)
           break
         }
         default:
@@ -493,7 +521,7 @@ export function App() {
       }
     })
     return off
-  }, [hub, maybeNotify, maybePermissionNotify, seedWorkingState, pruneSession, setLastSeenTurn, setSidebarOrder, setGroups])
+  }, [hub, maybeNotify, maybePermissionNotify, seedWorkingState, pruneSession, dismissPermissionToast, setLastSeenTurn, setSidebarOrder, setGroups])
 
   // Hub status — reconnecting banner is derived inline (single ternary
   // above) — no effect needed.
@@ -1037,6 +1065,19 @@ export function App() {
     },
     [setLastSeenTurn],
   )
+
+  // Deep linking: sync URL hash ↔ open panels. Ref-backed callbacks so
+  // the hook's effects never re-run on identity churn.
+  const openSessionFromUrlRef = useRef((id: string) => { handleSelectRef.current(id) })
+  const focusPanelFromUrlRef = useRef((id: string) => { focusPanel(id) })
+  useSessionUrl({
+    sessionsLoaded,
+    openIds,
+    focusedId,
+    maxOpen,
+    onOpenSession: openSessionFromUrlRef.current,
+    onFocusPanel: focusPanelFromUrlRef.current,
+  })
 
   /** Derive unread flags from the session list + lastSeenTurn. A session
    *  is unread when `s.lastTurnAt > lastSeenTurn[id]` — regardless of

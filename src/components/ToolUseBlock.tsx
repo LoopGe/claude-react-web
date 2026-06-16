@@ -256,6 +256,8 @@ const PlanCard = memo(function PlanCard({
     : []
 
   const status = usePlanStatus(toolUseId)
+  const { minimizedPlanToolUseIds, onReopenPlan } = useReopenQuestion()
+  const isMinimized = status === 'pending' && !!toolUseId && minimizedPlanToolUseIds.has(toolUseId)
   const statusLabel =
     status === 'approved' ? 'approved' : status === 'rejected' ? 'rejected' : 'pending'
   const statusTitle =
@@ -273,7 +275,7 @@ const PlanCard = memo(function PlanCard({
   return (
     <AnimatedDetails
       key={status}
-      className={`plan-card-collapsible plan-card-status-${status}`}
+      className={`plan-card-collapsible plan-card-status-${status}${isMinimized ? ' plan-card-minimized' : ''}`}
       defaultOpen={defaultOpen}
       summary={(
         <div className="plan-card-header">
@@ -284,6 +286,19 @@ const PlanCard = memo(function PlanCard({
           <span className={`plan-card-status ${status}`} title={statusTitle}>
             {statusLabel}
           </span>
+          {isMinimized && toolUseId && (
+            <button
+              type="button"
+              className="plan-card-reopen"
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                onReopenPlan(toolUseId)
+              }}
+            >
+              Review plan
+            </button>
+          )}
         </div>
       )}
     >

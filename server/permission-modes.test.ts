@@ -7,15 +7,16 @@ import {
 } from './permission-modes.js'
 
 describe('permission mode allowlists', () => {
-  it('keeps auto out of user-selectable modes on this backend', () => {
+  it('includes auto in user-selectable modes', () => {
     expect(USER_SELECTABLE_PERMISSION_MODES).toEqual([
       'default',
       'acceptEdits',
       'plan',
       'bypassPermissions',
       'dontAsk',
+      'auto',
     ])
-    expect(isUserSelectablePermissionMode('auto')).toBe(false)
+    expect(isUserSelectablePermissionMode('auto')).toBe(true)
     expect(isUserSelectablePermissionMode('default')).toBe(true)
   })
 

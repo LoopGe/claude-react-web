@@ -357,6 +357,12 @@
   display: flex;
   flex-direction: column;
 }
+.settings-panel-content[data-animate] {
+  animation: settings-tab-fade-in var(--motion-duration-fast) var(--motion-ease-enter) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-panel-content[data-animate] { animation: none; }
+}
 .settings-panel-header {
   padding: 14px 16px;
   border-bottom: 1px solid var(--border);
@@ -654,6 +660,15 @@
 .global-settings-body-content {
   display: flex;
   flex-direction: column;
+}
+.global-settings-body-content[data-animate] {
+  animation: settings-tab-fade-in var(--motion-duration-fast) var(--motion-ease-enter) both;
+}
+@keyframes settings-tab-fade-in {
+  from { opacity: 0; transform: translateY(var(--motion-distance-sm)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .global-settings-body-content[data-animate] { animation: none; }
 }
 
 /* Shortcut help overlay */
@@ -1782,6 +1797,25 @@ details.question-inline-card[data-state="open"] > summary {
 details.question-inline-card-minimized {
   border-left-width: 3px;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+/* "Review plan" pill on a minimized pending plan card. Mirrors question-inline-reopen. */
+.plan-card-reopen {
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  cursor: pointer;
+  background: var(--warn);
+  color: var(--bg);
+  border: 1px solid color-mix(in srgb, var(--warn) 60%, transparent);
+  white-space: nowrap;
+}
+.plan-card-reopen:hover {
+  background: color-mix(in srgb, var(--warn) 85%, #000);
+}
+details.plan-card-minimized {
+  border-left-width: 3px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--warn) 35%, transparent);
 }
 .question-inline-body {
   padding: 10px 14px 12px;

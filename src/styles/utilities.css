@@ -792,6 +792,13 @@
   color: var(--fg-muted);
 }
 .settings-detail-body { margin-top: 4px; }
+.settings-skill-reload-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.settings-skill-reload-row .settings-detail { flex: 1; min-width: 0; margin-top: 0; }
 .settings-raw-pre {
   max-height: 200px;
   overflow: auto;
@@ -1707,8 +1714,39 @@
   border-color: var(--accent);
   background: var(--btn-hover-bg);
 }
-.settings-skill-mode-card input {
+.settings-skill-mode-card input[type="radio"] {
+  /* Hide native radio but keep it accessible for screen readers and keyboard */
+  appearance: none;
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  margin: 0;
   margin-top: 2px;
+  border: 2px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg-elev-1);
+  cursor: pointer;
+  transition: all 120ms ease;
+  flex-shrink: 0;
+  position: relative;
+}
+.settings-skill-mode-card input[type="radio"]:hover {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+.settings-skill-mode-card input[type="radio"]:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.settings-skill-mode-card input[type="radio"]:checked::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--bg);
 }
 .settings-skill-mode-card span {
   display: grid;
@@ -1737,11 +1775,87 @@
   padding: 5px 9px;
   font-size: 12px;
   background: var(--code-bg);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.settings-skill-check:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
 }
 .settings-skill-check.active {
   border-color: var(--accent);
   background: var(--btn-hover-bg);
 }
+.settings-skill-check input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 2px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-elev-1);
+  cursor: pointer;
+  transition: all 120ms ease;
+  flex-shrink: 0;
+  position: relative;
+}
+.settings-skill-check input[type="checkbox"]:hover {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+.settings-skill-check input[type="checkbox"]:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.settings-skill-check input[type="checkbox"]:checked::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(45deg);
+  width: 4px;
+  height: 8px;
+  border: solid var(--bg);
+  border-width: 0 2px 2px 0;
+}
+
+/* Global checkbox styling — applies to all checkboxes in the app */
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 2px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-elev-1);
+  cursor: pointer;
+  transition: all 120ms ease;
+  flex-shrink: 0;
+  position: relative;
+}
+input[type="checkbox"]:hover {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+input[type="checkbox"]:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+input[type="checkbox"]:checked::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(45deg);
+  width: 4px;
+  height: 8px;
+  border: solid var(--bg);
+  border-width: 0 2px 2px 0;
+}
+input[type="checkbox"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .settings-skill-import-card {
   display: grid;
   gap: 10px;
@@ -1774,6 +1888,46 @@
   gap: 8px;
   align-items: center;
 }
+.settings-scope-toggle {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg-elev-1);
+}
+.settings-scope-btn {
+  flex: 1;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 120ms ease;
+  position: relative;
+}
+.settings-scope-btn:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 20%;
+  bottom: 20%;
+  width: 1px;
+  background: var(--border);
+}
+.settings-scope-btn:hover {
+  color: var(--fg);
+  background: var(--bg-elev-2);
+}
+.settings-scope-btn.active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  font-weight: 600;
+}
+.settings-scope-btn.active::after {
+  display: none;
+}
 .settings-skill-overwrite {
   display: inline-flex;
   align-items: center;
@@ -1798,7 +1952,6 @@
 }
 .settings-skill-grid {
   display: grid;
-  grid-template-columns: minmax(220px, 0.82fr) minmax(320px, 1.18fr);
   gap: 12px;
   margin-top: 0;
 }
@@ -1851,36 +2004,77 @@
   font-family: var(--mono);
   font-size: 11px;
 }
-.settings-skill-editor {
-  min-width: 0;
-  display: grid;
-  gap: 12px;
-  align-content: start;
-}
-.settings-inline-fields {
-  display: grid;
-  grid-template-columns: 120px minmax(0, 1fr);
-  gap: 8px;
-  padding: 8px 10px 0;
-}
-.settings-skill-create-card > .input {
-  width: calc(100% - 20px);
-  margin: 8px 10px 0;
-}
-.settings-skill-create-card > .btn {
-  margin: 8px 10px 10px;
-}
-.settings-skill-edit-card {
+.settings-skill-preview-modal {
+  width: min(800px, 92vw);
+  max-height: 84vh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
-.settings-skill-textarea {
-  min-height: 320px;
-  margin: 8px 10px 0;
-  width: calc(100% - 20px);
+.settings-skill-preview-modal .modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.settings-skill-preview-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.settings-skill-frontmatter {
+  margin: 8px 12px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.settings-skill-frontmatter-title {
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  background: var(--bg-elev-1);
+  border-bottom: 1px solid var(--border);
+}
+.settings-skill-frontmatter-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.settings-skill-fm-key {
+  padding: 6px 12px;
+  font-family: var(--mono);
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+  vertical-align: top;
+  width: 1%;
+  border-bottom: 1px solid var(--border);
+}
+.settings-skill-fm-value {
+  padding: 6px 12px;
+  font-family: var(--mono);
+  color: var(--fg);
+  word-break: break-word;
+  border-bottom: 1px solid var(--border);
+}
+.settings-skill-frontmatter-table tr:last-child td {
+  border-bottom: none;
+}
+.settings-skill-preview-content {
+  margin: 8px 12px 12px;
+  padding: 12px;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
   font-family: var(--mono);
   font-size: 12px;
-  resize: vertical;
+  line-height: 1.6;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  flex: 1;
+  min-height: 0;
 }
 .settings-actions-row {
   display: flex;
@@ -1905,12 +2099,6 @@
 .settings-card-badge.warn {
   color: var(--danger);
 }
-.settings-skill-empty-editor {
-  min-height: 120px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
 @media (max-width: 900px) {
   .settings-skill-mode-grid,
   .settings-skill-grid,
@@ -1924,4 +2112,25 @@
   .settings-skill-stats {
     justify-content: flex-start;
   }
+}
+
+/* ── Global select styling ─────────────────────────────────────────
+ * Custom dropdown arrow for all <select> elements.
+ * Must be at the end of utilities.css to override any prior rules. */
+select,
+.select,
+select.input {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  -moz-appearance: none !important;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--fg-muted) 50%),
+    linear-gradient(135deg, var(--fg-muted) 50%, transparent 50%) !important;
+  background-repeat: no-repeat !important;
+  background-position:
+    calc(100% - 15px) 50%,
+    calc(100% - 10px) 50% !important;
+  background-size: 5px 5px, 5px 5px !important;
+  padding-right: 32px !important;
+  cursor: pointer !important;
 }

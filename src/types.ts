@@ -6,17 +6,14 @@ import type { SessionInfoBase } from '../shared/session-info'
 
 export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto'
 
-// User-selectable permission modes (dropdowns/chip menus). `auto` is
-// intentionally omitted: it depends on a server-side classifier + specific
-// models + account eligibility that aren't available on this deployment's
-// backend, so it can't function here (it would silently behave like default).
-// `auto` remains in the PermissionMode type since it's a valid SDK value.
+// User-selectable permission modes (dropdowns/chip menus).
 export const PERMISSION_MODES: PermissionMode[] = [
   'default',
   'acceptEdits',
   'plan',
   'bypassPermissions',
   'dontAsk',
+  'auto',
 ]
 
 // Keyboard cycle mirrors the interactive Claude Code flow as closely as this

@@ -343,30 +343,6 @@
   vertical-align: middle;
   margin-right: 4px;
 }
-/* Inline rename input: mimics the title's text styling so the card
-   doesn't visually jump when entering edit mode. */
-.session-item-rename-input {
-  /* Break out of the parent <strong>'s overflow:hidden/ellipsis/nowrap
-     box so the typed characters aren't visually clipped (the parent
-     would otherwise truncate the inline text flow that includes the
-     input's rendered glyphs in some browsers). */
-  display: inline-block;
-  flex: 1;
-  min-width: 0;
-  width: 100%;
-  background: var(--bg);
-  border: 1px solid var(--accent);
-  border-radius: 3px;
-  /* Force the foreground color — inheriting through <strong> in a few
-     theme combos has produced invisible text. */
-  color: var(--fg);
-  -webkit-text-fill-color: var(--fg);
-  caret-color: var(--fg);
-  font: inherit;
-  font-weight: 600;
-  padding: 1px 4px;
-  outline: none;
-}
 
 /* Error summary line — truncated one-liner under the title, full text
    available via the badge + this line's own tooltip. */
@@ -937,6 +913,33 @@
 }
 .session-item-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-width: 0; }
 .session-item-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-item-title.renaming { overflow: visible; text-overflow: unset; }
+/* Rename: dedicated full-width row so the input isn't squeezed next to
+   badges. Hides the normal title row; takes its visual slot. */
+.session-item-rename-row {
+  display: flex;
+  align-items: center;
+}
+.session-item-rename-row .session-item-rename-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  -webkit-text-fill-color: var(--fg);
+  caret-color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  padding: 4px 8px;
+  outline: none;
+  transition: border-color var(--motion-duration-fast) var(--motion-ease-standard),
+              box-shadow var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.session-item-rename-row .session-item-rename-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
+}
 .session-item-id { font-family: var(--mono); font-size: 12px; color: var(--fg-muted); }
 .session-item-meta { font-size: 12px; color: color-mix(in srgb, var(--fg-muted) 80%, transparent); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The model is the most useful at-a-glance datum in the meta row — lift it

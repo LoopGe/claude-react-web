@@ -16,13 +16,19 @@ import { createContext, createElement, useContext, type ReactNode } from 'react'
 export interface ReopenQuestionValue {
   /** tool_use_ids of pending questions whose dialog the user has minimized. */
   minimizedToolUseIds: ReadonlySet<string>
+  /** tool_use_ids of pending plan requests whose dialog the user has minimized. */
+  minimizedPlanToolUseIds: ReadonlySet<string>
   /** Re-open the dialog for a minimized question, keyed by its tool_use_id. */
   onReopen: (toolUseId: string) => void
+  /** Re-open the dialog for a minimized plan, keyed by its tool_use_id. */
+  onReopenPlan: (toolUseId: string) => void
 }
 
 const Ctx = createContext<ReopenQuestionValue>({
   minimizedToolUseIds: new Set(),
+  minimizedPlanToolUseIds: new Set(),
   onReopen: () => {},
+  onReopenPlan: () => {},
 })
 
 export function ReopenQuestionProvider({

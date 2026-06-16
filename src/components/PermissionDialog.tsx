@@ -15,7 +15,7 @@ import type { PlanTargetMode } from '../hooks/usePermissionChannel'
 import { Markdown } from './Markdown'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { PLAN_TOOL_NAMES } from '../constants/toolNames'
-import { IconClipboardList, IconLock } from './icons/ToolIcons'
+import { IconClipboardList, IconLock, IconX } from './icons/ToolIcons'
 
 /** Narrowed to the permission variant of the union. The question variant
  *  is rendered by `<QuestionDialog />` instead. */
@@ -40,9 +40,12 @@ interface Props {
    *  (first, highlighted) button so approving defaults to "keep running the
    *  way I already chose" rather than silently downgrading the mode. */
   currentMode?: PermissionMode
+  /** Minimize the dialog (plan requests only). Hides the overlay so the
+   *  user can read the transcript; the inline PlanCard provides a reopen. */
+  onMinimize?: () => void
 }
 
-export const PermissionDialog = memo(function PermissionDialog({ open = true, request, onDecide, planContentMap, currentMode }: Props) {
+export const PermissionDialog = memo(function PermissionDialog({ open = true, request, onDecide, planContentMap, currentMode, onMinimize }: Props) {
   const [showRaw, setShowRaw] = useState(false)
   const [busy, setBusy] = useState(false)
   // Ref provides a synchronous guard so that rapid double-clicks
@@ -147,6 +150,16 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
             <span aria-hidden style={{ display: 'inline-flex' }}>{isPlanRequest ? <IconClipboardList size={16} /> : <IconLock size={16} />}</span>
             {isPlanRequest ? 'Plan ready for review' : 'Tool permission required'}
           </h3>
+          {isPlanRequest && onMinimize && (
+            <button
+              className="btn-icon"
+              aria-label="Minimize"
+              disabled={busy}
+              onClick={onMinimize}
+            >
+              <IconX size={14} />
+            </button>
+          )}
         </div>
 
         <div className="modal-section">

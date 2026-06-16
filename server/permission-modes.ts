@@ -6,6 +6,7 @@ export const USER_SELECTABLE_PERMISSION_MODES = [
   'plan',
   'bypassPermissions',
   'dontAsk',
+  'auto',
 ] as const satisfies readonly PermissionMode[]
 
 export const PLAN_APPROVAL_TARGET_MODES = [

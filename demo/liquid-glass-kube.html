@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Liquid Glass — SVG Displacement Map (Kube technique)</title>
+<style>
+/* ============================================================
+   RESET & BASE
+   ============================================================ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background: #06070c;
+  color: #e4e6ed;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Rich animated background — the glass refracts THIS */
+.scene {
+  position: relative;
+  width: 100%;
+  max-width: 900px;
+  padding: 80px 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 32px;
+  overflow: hidden;
+}
+
+/* Animated bg elements for the glass to refract */
+.bg-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.55;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+}
+.bg-orb-1 {
+  width: 350px; height: 350px;
+  background: radial-gradient(circle, #8b5cf6 0%, transparent 70%);
+  top: -60px; left: -80px;
+  animation: orb1 10s infinite;
+}
+.bg-orb-2 {
+  width: 280px; height: 280px;
+  background: radial-gradient(circle, #3b82f6 0%, transparent 70%);
+  bottom: -40px; right: -60px;
+  animation: orb2 12s infinite;
+}
+.bg-orb-3 {
+  width: 200px; height: 200px;
+  background: radial-gradient(circle, #ec4899 0%, transparent 70%);
+  top: 40%; left: 50%;
+  animation: orb3 14s infinite;
+}
+.bg-orb-4 {
+  width: 160px; height: 160px;
+  background: radial-gradient(circle, #06b6d4 0%, transparent 70%);
+  top: 10%; right: 15%;
+  animation: orb4 9s infinite;
+}
+@keyframes orb1 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  25% { transform: translate(40px, -30px) scale(1.2); }
+  50% { transform: translate(-20px, 20px) scale(0.85); }
+  75% { transform: translate(30px, 10px) scale(1.1); }
+}
+@keyframes orb2 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(-30px, -20px) scale(1.15); }
+  66% { transform: translate(20px, 30px) scale(0.9); }
+}
+@keyframes orb3 {
+  0%, 100% { transform: translate(0, 0) scale(1) rotate(0deg); }
+  50% { transform: translate(-25px, -15px) scale(1.25) rotate(10deg); }
+}
+@keyframes orb4 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(20px, 25px) scale(1.3); }
+}
+
+/* Grid lines for refraction visibility */
+.bg-grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+}
+
+/* ============================================================
+   GLASS PANEL — the main element
+   ============================================================ */
+.glass-wrapper {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 640px;
+}
+
+.glass-panel {
+  position: relative;
+  padding: 20px 24px;
+  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+
+  /* ★ THE KEY LINE — SVG filter as backdrop-filter */
+  backdrop-filter: url(#liquidGlass) blur(12px);
+  -webkit-backdrop-filter: url(#liquidGlass) blur(12px);
+
+  /* Fallback for non-Chrome: at least blur */
+  background: rgba(255, 255, 255, 0.04);
+
+  /* Subtle inner shadow to enhance depth */
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.06),
+    0 4px 24px rgba(0,0,0,0.5),
+    0 1px 3px rgba(0,0,0,0.3);
+
+  transition: backdrop-filter 0.3s;
+}
+
+/* Specular highlight overlay — also applied via filter chain */
+.glass-panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  /* A second blur pass on the specular layer inside the filter */
+  opacity: 0;
+}
+
+/* ============================================================
+   FOOTER UI ELEMENTS
+   ============================================================ */
+.footer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.footer-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Live dot */
+.live-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #c4b5fd;
+}
+.live-dot::before {
+  content: '';
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: #a78bfa;
+  box-shadow: 0 0 10px #a78bfa, 0 0 22px #8b5cf644;
+  animation: live-breathe 2.5s ease-in-out infinite;
+}
+@keyframes live-breathe {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50%      { transform: scale(1.25); opacity: 0.7; }
+}
+
+/* Phase pill */
+.phase-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: 100px;
+  background: rgba(139, 92, 246, 0.1);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(139, 92, 246, 0.18);
+  color: #c4b5fd;
+}
+.phase-pill svg { width: 14px; height: 14px; }
+
+/* Token rate */
+.token-rate {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.65rem;
+  font-family: 'SF Mono', 'JetBrains Mono', monospace;
+  color: #a78bfa88;
+}
+.token-orbs { display: inline-flex; gap: 3px; }
+.token-orbs span {
+  width: 4px; height: 4px; border-radius: 50%;
+  animation: orb-float 2s ease-in-out infinite;
+}
+.token-orbs span:nth-child(1) { background: #a78bfa; animation-delay: 0s; }
+.token-orbs span:nth-child(2) { background: #60a5fa; animation-delay: 0.3s; }
+.token-orbs span:nth-child(3) { background: #f472b6; animation-delay: 0.6s; }
+@keyframes orb-float {
+  0%, 100% { transform: translateY(0); opacity: 0.5; }
+  50%      { transform: translateY(-4px); opacity: 1; }
+}
+
+/* Streaming text body */
+.stream-body {
+  font-size: 0.875rem;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 4.5em;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.1) transparent;
+  padding: 10px 12px;
+  border-radius: 12px;
+  color: #d5d8e2;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* Cursor */
+.cursor {
+  display: inline-block;
+  width: 2px; height: 1.15em;
+  vertical-align: text-bottom;
+  margin-left: 1px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #a78bfa, #60a5fa, #f472b6);
+  background-size: 100% 200%;
+  box-shadow: 0 0 10px #a78bfa66, 0 0 4px #a78bfa44;
+  animation: cursor-liquid 2s ease-in-out infinite;
+}
+@keyframes cursor-liquid {
+  0%, 100% { background-position: 0% 0%; opacity: 1; }
+  33%      { background-position: 0% 50%; opacity: 0.85; }
+  66%      { background-position: 0% 100%; opacity: 0.75; }
+}
+
+/* ============================================================
+   CONTROLS PANEL
+   ============================================================ */
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  color: #6b6f7b;
+  position: relative;
+  z-index: 2;
+}
+.controls label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.controls input[type="range"] {
+  width: 100px;
+  accent-color: #a78bfa;
+}
+.controls button {
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid #2a2e3e;
+  background: #12141c;
+  color: #a0a5b2;
+  cursor: pointer;
+  font-size: 0.72rem;
+  transition: all 0.2s;
+}
+.controls button:hover { border-color: #a78bfa; color: #c4b5fd; }
+.controls button.active { background: #a78bfa22; border-color: #a78bfa; color: #c4b5fd; }
+
+/* Chrome-only notice */
+.browser-note {
+  position: relative;
+  z-index: 2;
+  font-size: 0.68rem;
+  color: #4a4f5c;
+  text-align: center;
+}
+.browser-note strong { color: #a78bfa; }
+
+/* ============================================================
+   TECHNIQUE EXPLANATION
+   ============================================================ */
+.technique-notes {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  width: 100%;
+  max-width: 640px;
+}
+.note-card {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 0.7rem;
+  color: #7a7f8e;
+  line-height: 1.5;
+}
+.note-card strong {
+  display: block;
+  color: #c4b5fd;
+  margin-bottom: 3px;
+  font-size: 0.72rem;
+}
+
+</style>
+</head>
+<body>
+
+<!-- Hidden SVG filter definition -->
+<svg width="0" height="0" style="position:absolute;pointer-events:none;" aria-hidden="true">
+  <defs>
+    <!--
+      The Liquid Glass filter pipeline:
+      1. feImage loads the displacement map (pre-computed canvas)
+      2. feDisplacementMap bends SourceGraphic (the backdrop) by the map
+      3. feImage loads the specular highlight
+      4. feBlend composites the highlight over the refracted backdrop
+    -->
+    <filter id="liquidGlass" x="-20%" y="-20%" width="140%" height="140%"
+            color-interpolation-filters="sRGB">
+      <!-- Displacement map: R=x shift, G=y shift -->
+      <feImage id="dispMapImg" result="dispMap" />
+      <feDisplacementMap in="SourceGraphic" in2="dispMap"
+        id="displacer"
+        scale="22"
+        xChannelSelector="R" yChannelSelector="G"
+        result="refracted" />
+
+      <!-- Specular highlight overlay -->
+      <feImage id="specMapImg" result="specMap" />
+      <!-- Soften the specular -->
+      <feGaussianBlur in="specMap" stdDeviation="2" result="specBlurred" />
+
+      <!-- Composite specular OVER refracted backdrop -->
+      <feBlend in="refracted" in2="specBlurred" mode="screen" result="withSpec" />
+
+      <!-- Extra: subtle inner shadow via morphology + offset -->
+      <feComponentTransfer in="withSpec">
+        <feFuncA type="linear" slope="1" />
+      </feComponentTransfer>
+    </filter>
+  </defs>
+</svg>
+
+<div class="scene">
+
+  <!-- Animated background that gets refracted -->
+  <div class="bg-orb bg-orb-1"></div>
+  <div class="bg-orb bg-orb-2"></div>
+  <div class="bg-orb bg-orb-3"></div>
+  <div class="bg-orb bg-orb-4"></div>
+  <div class="bg-grid"></div>
+
+  <!-- The glass panel -->
+  <div class="glass-wrapper">
+    <div class="glass-panel" id="glassPanel">
+      <div class="footer-header">
+        <div class="footer-header-left">
+          <span class="live-dot">Live</span>
+          <span class="phase-pill">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
+            </svg>
+            Thinking...
+          </span>
+        </div>
+        <span class="token-rate">
+          <span class="token-orbs"><span></span><span></span><span></span></span>
+          88 t/s
+        </span>
+      </div>
+      <div class="stream-body" aria-live="polite" id="streamBody">
+        The Liquid Glass effect uses SVG displacement maps to physically bend background light through a simulated curved surface, creating real optical refraction<span class="cursor"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Interactive controls -->
+  <div class="controls">
+    <label>Refraction <input type="range" id="refractionSlider" min="0" max="200" value="100" step="1"></label>
+    <label>Specular <input type="range" id="specularSlider" min="0" max="100" value="60" step="1"></label>
+    <label>Blur <input type="range" id="blurSlider" min="0" max="30" value="12" step="1"></label>
+    <button id="profileConvex" class="active">Convex</button>
+    <button id="profileLip">Lip</button>
+    <button id="profileConcave">Concave</button>
+  </div>
+
+  <p class="browser-note">
+    ★ Uses SVG <strong>&lt;feDisplacementMap&gt;</strong> as <strong>backdrop-filter</strong> — currently <strong>Chrome-only</strong>.
+    Falls back to blur-only on other browsers.
+  </p>
+
+  <!-- Technique explanation -->
+  <div class="technique-notes">
+    <div class="note-card">
+      <strong>① Surface Profile</strong>
+      A height function describes the glass curvature (convex dome, lip, or concave dip). The surface normal determines refraction angle.
+    </div>
+    <div class="note-card">
+      <strong>② Displacement Map</strong>
+      Pixel colors encode the 2D offset vector: R = horizontal shift, G = vertical shift. Generated on a canvas from the surface profile.
+    </div>
+    <div class="note-card">
+      <strong>③ SVG Filter</strong>
+      &lt;feDisplacementMap&gt; reads the map and shifts each backdrop pixel. Combined with blur, specular highlight, and screen blending.
+    </div>
+    <div class="note-card">
+      <strong>④ backdrop-filter CSS</strong>
+      The filter applies to everything behind the element — real-time refraction of the animated background orbs.
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     JAVASCRIPT: Displacement Map Generation
+     ============================================================ -->
+<script>
+(function () {
+  const glassPanel = document.getElementById('glassPanel');
+  const dispMapImg = document.getElementById('dispMapImg');
+  const specMapImg = document.getElementById('specMapImg');
+  const displacer = document.getElementById('displacer');
+  const refractionSlider = document.getElementById('refractionSlider');
+  const specularSlider = document.getElementById('specularSlider');
+  const blurSlider = document.getElementById('blurSlider');
+
+  // ---- Surface profile functions ----
+  // All return height in [0, 1] given normalized distance-from-edge in [0, 1]
+  // 0 = center, 1 = edge
+
+  function convexProfile(t) {
+    // Smooth dome: high center, curves down to edges
+    return 1 - Math.pow(t, 2.2);
+  }
+
+  function lipProfile(t) {
+    // Raised rim + shallow dip in center
+    const rim = Math.pow(1 - t, 3) * 0.7;
+    const dip = Math.pow(t, 2) * 0.3;
+    return rim + dip;
+  }
+
+  function concaveProfile(t) {
+    // Inverted: edges are higher (push outward)
+    return Math.pow(t, 1.8);
+  }
+
+  let currentProfile = convexProfile;
+
+  // ---- Build displacement map ----
+  function buildMaps() {
+    const rect = glassPanel.getBoundingClientRect();
+    const w = Math.round(rect.width);
+    const h = Math.round(rect.height);
+
+    if (w === 0 || h === 0) return;
+
+    // Use a resolution multiplier (higher = more detail, but larger canvas)
+    const scale = 1;
+    const cw = w * scale;
+    const ch = h * scale;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = cw;
+    canvas.height = ch;
+    const ctx = canvas.getContext('2d');
+    const imageData = ctx.createImageData(cw, ch);
+
+    // Specular map (separate canvas)
+    const specCanvas = document.createElement('canvas');
+    specCanvas.width = cw;
+    specCanvas.height = ch;
+    const specCtx = specCanvas.getContext('2d');
+    const specData = specCtx.createImageData(cw, ch);
+
+    // Light direction for specular (in degrees, 0 = top, 90 = right)
+    const lightAngleDeg = -60;
+    const lightAngle = (lightAngleDeg * Math.PI) / 180;
+    const lightDir = { x: Math.sin(lightAngle), y: -Math.cos(lightAngle) };
+
+    // Border radius ratio (approximate)
+    const borderRadius = 20; // px, matching CSS
+    const brx = Math.min(borderRadius / (w / 2), 0.4);
+    const bry = Math.min(borderRadius / (h / 2), 0.4);
+
+    // Pre-compute max displacement for normalization
+    let maxDisp = 0;
+    const displacements = [];
+
+    // First pass: compute displacements
+    for (let py = 0; py < ch; py++) {
+      for (let px = 0; px < cw; px++) {
+        // Normalized coordinates [-1, 1]
+        const nx = (px / cw) * 2 - 1;
+        const ny = (py / ch) * 2 - 1;
+
+        // Compute signed distance to rounded-rect edge (simplified squircle SDF)
+        const dx = Math.max(Math.abs(nx) - (1 - brx), 0) / brx;
+        const dy = Math.max(Math.abs(ny) - (1 - bry), 0) / bry;
+        const distInside = 1 - Math.sqrt(dx * dx + dy * dy);
+
+        // Clamp — negative means "outside the shape"
+        const t = Math.max(0, Math.min(1, distInside));
+
+        // Height from surface profile
+        const height = currentProfile(t);
+
+        // Compute surface normal from height gradient
+        const eps = 0.005;
+        const tPlus = Math.max(0, Math.min(1, distInside + eps));
+        const tMinus = Math.max(0, Math.min(1, distInside - eps));
+        const hPlus = currentProfile(tPlus);
+        const hMinus = currentProfile(tMinus);
+        const derivative = (hPlus - hMinus) / (2 * eps);
+
+        // Normal: pointing "up" from surface
+        const normalLen = Math.sqrt(derivative * derivative + 1);
+        const normal = { x: -derivative / normalLen, y: 1 / normalLen };
+
+        // Refraction direction (Snell's law simplified for thin lens)
+        // Incoming ray is assumed vertical (0, 0, 1)
+        // We compute the horizontal displacement after passing through the surface
+        const n1 = 1.0; // air
+        const n2 = 1.5; // glass
+        const cosTheta1 = normal.y; // dot(incoming_vertical, normal)
+        const sinTheta2Sq = (n1 * n1 * (1 - cosTheta1 * cosTheta1)) / (n2 * n2);
+        const cosTheta2 = Math.sqrt(Math.max(0, 1 - sinTheta2Sq));
+
+        // Refracted ray direction in horizontal plane
+        const rx = (n1 / n2) * 0 - (n1 / n2 * cosTheta1 - cosTheta2) * normal.x;
+        const ry = (n1 / n2) * 0 - (n1 / n2 * cosTheta1 - cosTheta2) * normal.y;
+
+        // Displacement is proportional to height (thicker glass = more refraction)
+        // Scale from normalized [-1,1] space to actual pixels
+        const dispX = rx * height * w * 0.08;
+        const dispY = ry * height * h * 0.08;
+
+        const mag = Math.sqrt(dispX * dispX + dispY * dispY);
+        maxDisp = Math.max(maxDisp, mag);
+
+        displacements.push({ px, py, dispX, dispY, height, normal });
+      }
+    }
+
+    // Second pass: encode into images
+    maxDisp = Math.max(maxDisp, 0.001); // avoid div-by-zero
+
+    for (let i = 0; i < displacements.length; i++) {
+      const { px, py, dispX, dispY, height, normal } = displacements[i];
+      const idx = (py * cw + px) * 4;
+
+      // Normalize displacement to [-1, 1] and map to [0, 255]
+      const normX = dispX / maxDisp;
+      const normY = dispY / maxDisp;
+
+      imageData.data[idx]     = Math.round(128 + normX * 127);     // R
+      imageData.data[idx + 1] = Math.round(128 + normY * 127);     // G
+      imageData.data[idx + 2] = 128;                                // B (unused)
+      imageData.data[idx + 3] = 255;                                // A
+
+      // Specular: dot(normal, lightDir) ^ shininess
+      const dot = Math.max(0, normal.x * lightDir.x + normal.y * lightDir.y);
+      const spec = Math.pow(dot, 32) * height; // rim-weighted
+
+      const specVal = Math.round(spec * 255);
+      specData.data[idx]     = specVal;
+      specData.data[idx + 1] = specVal;
+      specData.data[idx + 2] = specVal;
+      specData.data[idx + 3] = Math.round(spec * 200); // alpha for blend
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+    specCtx.putImageData(specData, 0, 0);
+
+    // Inject into SVG filter
+    const dispDataUrl = canvas.toDataURL('image/png');
+    const specDataUrl = specCanvas.toDataURL('image/png');
+
+    dispMapImg.setAttribute('href', dispDataUrl);
+    specMapImg.setAttribute('href', specDataUrl);
+
+    // Set displacement scale = maxDisplacement so encoded [-1,1] maps to actual pixel range
+    const baseScale = maxDisp;
+    displacer.setAttribute('scale', String(baseScale));
+
+    // Store for slider — slider now controls percentage of baseScale
+    glassPanel._baseScale = baseScale;
+    // Sync slider to 100%
+    refractionSlider.value = 100;
+    refractionSlider.max = 200;
+  }
+
+  // ---- Rebuild on resize ----
+  let resizeTimeout;
+  function scheduleRebuild() {
+    clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(buildMaps, 200);
+  }
+
+  window.addEventListener('resize', scheduleRebuild);
+
+  // ---- Controls ----
+  refractionSlider.addEventListener('input', () => {
+    const pct = parseFloat(refractionSlider.value) / 100; // 0 to 2.0
+    const base = glassPanel._baseScale || 22;
+    displacer.setAttribute('scale', String(base * pct));
+  });
+
+  specularSlider.addEventListener('input', () => {
+    const val = parseFloat(specularSlider.value) / 100;
+    // Adjust specular opacity via the filter's feComponentTransfer
+    // Simple approach: set opacity on the specMap image
+    specMapImg.style.opacity = String(val);
+  });
+
+  blurSlider.addEventListener('input', () => {
+    const val = blurSlider.value;
+    // Update the backdrop-filter blur value
+    glassPanel.style.backdropFilter = `url(#liquidGlass) blur(${val}px)`;
+    glassPanel.style.webkitBackdropFilter = `url(#liquidGlass) blur(${val}px)`;
+  });
+
+  // ---- Profile buttons ----
+  function setProfile(profileFn, btn) {
+    currentProfile = profileFn;
+    document.querySelectorAll('.controls button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    buildMaps();
+  }
+
+  document.getElementById('profileConvex').addEventListener('click', function () {
+    setProfile(convexProfile, this);
+  });
+  document.getElementById('profileLip').addEventListener('click', function () {
+    setProfile(lipProfile, this);
+  });
+  document.getElementById('profileConcave').addEventListener('click', function () {
+    setProfile(concaveProfile, this);
+  });
+
+  // ---- Initial build ----
+  // Wait for layout
+  setTimeout(buildMaps, 300);
+
+  // ---- Streaming text simulation ----
+  const streamBody = document.getElementById('streamBody');
+  const cursor = streamBody.querySelector('.cursor');
+  const texts = [
+    "The Liquid Glass effect uses SVG displacement maps to physically bend background light through a simulated curved surface, creating real optical refraction",
+    "The Liquid Glass effect uses SVG displacement maps to physically bend background light through a simulated curved surface, creating real optical refraction.\n\nEach pixel's R and G channels encode a 2D offset vector derived from the glass surface profile and Snell's law.",
+    "The Liquid Glass effect uses SVG displacement maps to physically bend background light through a simulated curved surface, creating real optical refraction.\n\nEach pixel's R and G channels encode a 2D offset vector derived from the glass surface profile and Snell's law.\n\nCombined with a specular rim highlight and backdrop blur, the result is a physically plausible glass material.",
+  ];
+
+  let step = 0;
+  setInterval(() => {
+    if (cursor) cursor.remove();
+    streamBody.textContent = texts[step];
+    streamBody.appendChild(cursor);
+    streamBody.scrollTop = streamBody.scrollHeight;
+    step = (step + 1) % texts.length;
+  }, 2500);
+
+})();
+</script>
+
+</body>
+</html>

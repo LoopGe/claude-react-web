@@ -196,6 +196,28 @@ export const SessionCard = memo(function SessionCard({
       onClick={() => !isResuming && !isDeleting && onSelect(s.id)}
       onKeyDown={(e) => !isResuming && !isDeleting && (e.key === 'Enter' || e.key === ' ') && onSelect(s.id)}
     >
+      {isRenaming ? (
+        <div className="session-item-rename-row">
+          <input
+            ref={renameInputRef}
+            className="session-item-rename-input"
+            value={renameDraft}
+            onChange={(e) => onRenameDraftChange(e.target.value)}
+            onBlur={() => void onCommitRename(s.id, renameDraft)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                void onCommitRename(s.id, renameDraft)
+              } else if (e.key === 'Escape') {
+                e.preventDefault()
+                onCancelRename()
+              }
+            }}
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+          />
+        </div>
+      ) : (
       <div className="session-item-row">
         <strong className="session-item-title">
           {pendingCount > 0 && (
@@ -240,26 +262,6 @@ export const SessionCard = memo(function SessionCard({
               <PermissionModeIcon mode={permissionMode} size={12} />
             </span>
           </Tooltip>
-          {isRenaming ? (
-            <input
-              ref={renameInputRef}
-              className="session-item-rename-input"
-              value={renameDraft}
-              onChange={(e) => onRenameDraftChange(e.target.value)}
-              onBlur={() => void onCommitRename(s.id, renameDraft)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault()
-                  void onCommitRename(s.id, renameDraft)
-                } else if (e.key === 'Escape') {
-                  e.preventDefault()
-                  onCancelRename()
-                }
-              }}
-              onClick={(e) => e.stopPropagation()}
-              onMouseDown={(e) => e.stopPropagation()}
-            />
-          ) : (
             <span
               onDoubleClick={(e) => {
                 e.stopPropagation()
@@ -269,7 +271,6 @@ export const SessionCard = memo(function SessionCard({
             >
               {s.title ?? <span className="session-item-id">{s.id.slice(0, 8)}</span>}
             </span>
-          )}
         </strong>
         <span
           className={`session-item-badge status-${status}`}
@@ -284,6 +285,7 @@ export const SessionCard = memo(function SessionCard({
           <span className="session-status-label">{statusText[status]}</span>
         </span>
       </div>
+      )}
       {s.error && (
         <div className="session-item-error" title={s.error}>
           <IconAlertTriangle size={12} aria-hidden />

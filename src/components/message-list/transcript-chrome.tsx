@@ -1,5 +1,6 @@
 import { memo, useEffect, useLayoutEffect, useRef } from 'react'
 import { IconZap } from '../icons/ToolIcons'
+import { useLiquidGlass } from '../../hooks/useLiquidGlass'
 
 /** Top-of-transcript affordance for reverse infinite scroll. Renders a
  *  spinner while a page is loading, or a thin idle marker when older
@@ -46,6 +47,23 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
 
   // Smooth height animation via CSS max-height transition.
   const msgRef = useRef<HTMLDivElement>(null)
+
+  // Liquid-glass refraction. Bezel/radius are tuned to the streaming
+  // bubble's CSS: border-radius 8px, and a ~16px refractive rim that
+  // keeps the text area optically clear while the edges bend the
+  // transcript behind them. supported is false off-Chromium and in
+  // jsdom, where we render the existing frosted-glass styling instead.
+  const GLASS_STRENGTH = 22
+  const { supported, filterId, feImageRef, feDispRef } = useLiquidGlass(msgRef, {
+    radius: 8,
+    bezel: 16,
+    strength: GLASS_STRENGTH,
+  })
+  // A gentle blur rides along with the geometric refraction so the glass
+  // reads as frosted as well as refractive. Filter functions compose, so
+  // the blur and the displacement url() are applied as one backdrop-filter.
+  const glassFilter = `blur(2px) url(#${filterId})`
+
   const prevMaxRef = useRef(0)
   const animatingRef = useRef(false)
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -87,7 +105,41 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
 
   return (
     <div className="streaming-footer-wrapper">
-      <div ref={msgRef} className="msg msg-assistant streaming-msg">
+      {supported && (
+        <svg className="liquid-glass-defs" width="0" height="0" aria-hidden="true" focusable="false">
+          <defs>
+            <filter
+              id={filterId}
+              x="-30%"
+              y="-30%"
+              width="160%"
+              height="160%"
+              colorInterpolationFilters="sRGB"
+            >
+              <feImage ref={feImageRef} result="map" preserveAspectRatio="none" />
+              <feDisplacementMap
+                ref={feDispRef}
+                in="SourceGraphic"
+                in2="map"
+                scale={GLASS_STRENGTH}
+                xChannelSelector="R"
+                yChannelSelector="G"
+              />
+            </filter>
+          </defs>
+        </svg>
+      )}
+      <div
+        ref={msgRef}
+        className={`msg msg-assistant streaming-msg${supported ? ' liquid-glass' : ''}`}
+      >
+        {supported && (
+          <span
+            className="streaming-refraction"
+            aria-hidden="true"
+            style={{ backdropFilter: glassFilter, WebkitBackdropFilter: glassFilter }}
+          />
+        )}
         <div ref={bodyRef} className="msg-body assistant-body streaming-plain" aria-live="polite" aria-atomic="false">
           {content}
           <span className="streaming-cursor" />

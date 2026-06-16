@@ -200,6 +200,7 @@ export class SessionManager {
         return this.phaseOf(s)
       },
       getHistory: (id) => this.getHistory(id),
+      getModel: (id) => this.sessions.get(id)?.model,
       setRecap: (id, recap) => {
         const s = this.sessions.get(id)
         if (!s) return

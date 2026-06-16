@@ -6,6 +6,7 @@ import {
   hookLifecycleMessage,
   liteContextUsageFromResult,
   toolResultIds,
+  trimLargeToolResults,
   userMessageHasToolResult,
 } from './session-pump.js'
 
@@ -412,5 +413,172 @@ describe('hookLifecycleMessage', () => {
 
     expect(event?.run.output?.length).toBeLessThan(output.length)
     expect(event?.run.output).toContain('chars omitted')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// trimLargeToolResults
+// ---------------------------------------------------------------------------
+
+describe('trimLargeToolResults', () => {
+  it('trims a string tool_result content exceeding 50K chars', () => {
+    const big = 'x'.repeat(80_000)
+    const msg = userMsg([{ type: 'tool_result', tool_use_id: 'tu_1', content: big }])
+    trimLargeToolResults(msg)
+    const block = (msg as { message: { content: Array<{ content: string }> } })
+      .message.content[0]
+    expect(block.content.length).toBeLessThan(big.length)
+    expect(block.content).toContain('chars omitted')
+  })
+
+  it('trims a text block inside an array tool_result content', () => {
+    const big = 'y'.repeat(80_000)
+    const msg = userMsg([{
+      type: 'tool_result',
+      tool_use_id: 'tu_2',
+      content: [{ type: 'text', text: big }],
+    }])
+    trimLargeToolResults(msg)
+    const block = (msg as { message: { content: Array<{ content: Array<{ text: string }> }> } })
+      .message.content[0]
+    expect(block.content[0].text.length).toBeLessThan(big.length)
+    expect(block.content[0].text).toContain('chars omitted')
+  })
+
+  it('leaves small tool_result content untouched', () => {
+    const small = 'hello world'
+    const msg = userMsg([{ type: 'tool_result', tool_use_id: 'tu_3', content: small }])
+    trimLargeToolResults(msg)
+    const block = (msg as { message: { content: Array<{ content: string }> } })
+      .message.content[0]
+    expect(block.content).toBe(small)
+  })
+
+  it('ignores non-user messages entirely', () => {
+    const msg = { type: 'assistant', message: { content: [] } } as unknown as SDKMessage
+    // Should not throw
+    trimLargeToolResults(msg)
+  })
+
+  it('ignores text-only user messages (no tool_result blocks)', () => {
+    const msg = userMsg([{ type: 'text', text: 'a'.repeat(80_000) }])
+    trimLargeToolResults(msg)
+    const block = (msg as { message: { content: Array<{ text: string }> } })
+      .message.content[0]
+    expect(block.text).toBe('a'.repeat(80_000)) // untouched — not a tool_result
+  })
+
+  it('handles mixed content: only tool_result blocks are trimmed', () => {
+    const big = 'z'.repeat(80_000)
+    const msg = userMsg([
+      { type: 'text', text: 'context' },
+      { type: 'tool_result', tool_use_id: 'tu_4', content: big },
+    ])
+    trimLargeToolResults(msg)
+    const content = (msg as { message: { content: Array<unknown> } }).message.content
+    // Text block untouched
+    expect((content[0] as { text: string }).text).toBe('context')
+    // tool_result trimmed
+    expect((content[1] as { content: string }).content.length).toBeLessThan(big.length)
+    expect((content[1] as { content: string }).content).toContain('chars omitted')
+  })
+
+  it('preserves head and tail in trimmed output', () => {
+    const head = 'START_MARKER_' + 'a'.repeat(30_000)
+    const tail = 'b'.repeat(20_000) + '_END_MARKER'
+    const big = head + tail
+    const msg = userMsg([{ type: 'tool_result', tool_use_id: 'tu_5', content: big }])
+    trimLargeToolResults(msg)
+    const result = (msg as { message: { content: Array<{ content: string }> } })
+      .message.content[0].content
+    expect(result).toContain('START_MARKER_')
+    expect(result).toContain('_END_MARKER')
+    expect(result).toContain('chars omitted')
+  })
+
+  // --- Boundary tests ---
+
+  it('does not trim content at exactly the 50K limit', () => {
+    const exact = 'a'.repeat(50_000)
+    const msg = userMsg([{ type: 'tool_result', tool_use_id: 'tu_b1', content: exact }])
+    trimLargeToolResults(msg)
+    const block = (msg as { message: { content: Array<{ content: string }> } })
+      .message.content[0]
+    expect(block.content).toBe(exact) // same reference, untouched
+  })
+
+  it('trims content one char over the limit', () => {
+    const over = 'a'.repeat(50_001)
+    const msg = userMsg([{ type: 'tool_result', tool_use_id: 'tu_b2', content: over }])
+    trimLargeToolResults(msg)
+    const block = (msg as { message: { content: Array<{ content: string }> } })
+      .message.content[0]
+    expect(block.content.length).toBeLessThan(50_001)
+    expect(block.content).toContain('chars omitted')
+  })
+
+  // --- Exact output size ---
+
+  it('produces expected output size: head(30K) + marker + tail(15K)', () => {
+    const big = 'x'.repeat(80_000)
+    const msg = userMsg([{ type: 'tool_result', tool_use_id: 'tu_s1', content: big }])
+    trimLargeToolResults(msg)
+    const result = (msg as { message: { content: Array<{ content: string }> } })
+      .message.content[0].content
+    // 30_000 (head) + "\n\n[... 35000 chars omitted ...]\n\n" (29 chars) + 15_000 (tail)
+    const marker = '\n\n[... 35000 chars omitted ...]\n\n'
+    expect(result.length).toBe(30_000 + marker.length + 15_000)
+  })
+
+  // --- Null / empty content ---
+
+  it('handles tool_result with null content without throwing', () => {
+    const msg = userMsg([{ type: 'tool_result', tool_use_id: 'tu_n1', content: null }])
+    expect(() => trimLargeToolResults(msg)).not.toThrow()
+  })
+
+  it('handles tool_result with undefined content without throwing', () => {
+    const msg = userMsg([{ type: 'tool_result', tool_use_id: 'tu_n2' }])
+    expect(() => trimLargeToolResults(msg)).not.toThrow()
+  })
+
+  it('handles tool_result with empty array content without throwing', () => {
+    const msg = userMsg([{ type: 'tool_result', tool_use_id: 'tu_n3', content: [] }])
+    expect(() => trimLargeToolResults(msg)).not.toThrow()
+  })
+
+  // --- Multiple tool_result blocks ---
+
+  it('trims only the oversized block when multiple tool_results exist', () => {
+    const small = 'small output'
+    const big = 'z'.repeat(80_000)
+    const msg = userMsg([
+      { type: 'tool_result', tool_use_id: 'tu_m1', content: small },
+      { type: 'tool_result', tool_use_id: 'tu_m2', content: big },
+      { type: 'tool_result', tool_use_id: 'tu_m3', content: small },
+    ])
+    trimLargeToolResults(msg)
+    const blocks = (msg as { message: { content: Array<{ content: string }> } })
+      .message.content
+    expect(blocks[0].content).toBe(small) // untouched
+    expect(blocks[1].content.length).toBeLessThan(big.length) // trimmed
+    expect(blocks[1].content).toContain('chars omitted')
+    expect(blocks[2].content).toBe(small) // untouched
+  })
+
+  // --- Negative: assistant messages ---
+
+  it('does not touch tool_result-like blocks inside assistant messages', () => {
+    const big = 'a'.repeat(80_000)
+    const msg = {
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', id: 'tu', input: { data: big } }] },
+    } as unknown as SDKMessage
+    trimLargeToolResults(msg)
+    // The big string inside input.data should be untouched — the function
+    // only processes user messages.
+    const content = (msg as { message: { content: unknown[] } }).message.content
+    const block = content[0] as { input: { data: string } }
+    expect(block.input.data).toBe(big)
   })
 })

@@ -30,6 +30,10 @@ import { createLogger } from './log.js'
 import { isAutoApprovableEditBash, isInScopeEditTool } from './accept-edits-bash.js'
 import { isAutoApprovableEditPowerShell } from './accept-edits-powershell.js'
 import { isReadOnlyBash } from './readonly-bash.js'
+import { classifyToolAction, sanitizeToolInput } from './auto-classifier.js'
+import { ClassifierLimiter } from './auto-classifier-limiter.js'
+import { getMessagesForClassifier } from './session-utils.js'
+import { config as serverConfig } from './config.js'
 
 const log = createLogger('broker')
 
@@ -44,6 +48,24 @@ const READONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   'NotebookRead',
 ])
 
+/** Tools that are always safe in auto-mode — they either only read,
+ *  manage internal task state, or are interactive signals that are
+ *  already intercepted above (AskUserQuestion, ExitPlanMode). */
+const SAFE_AUTO_TOOLS: ReadonlySet<string> = new Set([
+  // Read-only
+  'Read', 'Grep', 'Glob', 'NotebookRead',
+  // Task management
+  'TaskCreate', 'TaskGet', 'TaskUpdate', 'TaskList', 'TaskStop', 'TaskOutput',
+  // Plan mode entry (ExitPlanMode is intercepted above)
+  'EnterPlanMode',
+  // Inter-agent messaging
+  'SendMessage', 'TeamCreate', 'TeamDelete',
+  // User interaction (intercepted above but guard just in case)
+  'AskUserQuestion',
+  // Non-destructive
+  'Sleep', 'WebSearch',
+])
+
 export interface PermissionBrokerOptions {
   /** Timeout (ms) for ordinary tool-permission prompts.
    *  AskUserQuestion is excluded and waits until answer/skip/abort.
@@ -53,6 +75,9 @@ export interface PermissionBrokerOptions {
 
 export class PermissionBroker {
   private permissionTimeoutMs: number
+  /** Per-broker concurrency limiter for auto-mode classifier calls.
+   *  Shared across all sessions managed by this broker instance. */
+  private classifierLimiter = new ClassifierLimiter(5)
 
   constructor(opts: PermissionBrokerOptions) {
     this.permissionTimeoutMs = opts.permissionTimeoutMs
@@ -325,6 +350,56 @@ export class PermissionBroker {
           interrupt: false,
           toolUseID: ctx.toolUseID,
         } satisfies PermissionResult
+      }
+      // `auto` mode: AI classifier decides whether the tool call is safe.
+      // Safe tools (read-only, task management) bypass the classifier.
+      // Classifier approval → allow.  Classifier block / error / timeout /
+      // concurrency limit → fall back to the human prompt (NOT auto-deny).
+      // Placed AFTER ExitPlanMode/AskUserQuestion so interactive and
+      // plan-review flows are never silently handled by the classifier.
+      if (session.permissionMode === 'auto') {
+        // Master switch: when disabled, auto mode behaves like default
+        // (every non-safe tool falls through to the human prompt).
+        if (!serverConfig.autoClassifierEnabled) {
+          // Fall through to pending request below.
+        } else if (SAFE_AUTO_TOOLS.has(toolName)) {
+          // Fast path: safe tools skip the classifier entirely.
+          return {
+            behavior: 'allow',
+            updatedInput: toolInput,
+            toolUseID: ctx.toolUseID,
+          } satisfies PermissionResult
+        } else if (this.classifierLimiter.tryAcquire()) {
+          // Concurrency gate — prevents cost runaway from rapid tool bursts.
+          try {
+            const cleaned = sanitizeToolInput(toolName, toolInput)
+            const result = await classifyToolAction({
+              toolName,
+              toolInput: cleaned,
+              messages: getMessagesForClassifier(session, 5),
+              cwd: session.cwd ?? '',
+              signal: ctx.signal,
+              sessionModel: session.model,
+            })
+            if (result.allow) {
+              return {
+                behavior: 'allow',
+                updatedInput: toolInput,
+                toolUseID: ctx.toolUseID,
+              } satisfies PermissionResult
+            }
+            log.info(`auto classifier blocked ${toolName}: ${result.reason}`)
+          } catch (err: unknown) {
+            // Fail-closed: unexpected errors fall through to human prompt.
+            log.warn(`auto classifier error for ${toolName}: ${err}`)
+          } finally {
+            this.classifierLimiter.release()
+          }
+        } else {
+          log.warn(`auto classifier concurrency limit reached for ${toolName}`)
+        }
+        // Fall through to the pending-request path below — the user sees
+        // the normal permission dialog and can approve or deny.
       }
       return this.createPendingRequest(session, ctx, broadcastReq, broadcastRes, onPendingChanged, permissionTimeoutMs, (pid, wrappedResolve, abortHandler, timeoutTimer) => ({
         kind: 'permission' as const,

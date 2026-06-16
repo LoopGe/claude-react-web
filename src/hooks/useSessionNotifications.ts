@@ -63,6 +63,9 @@ export interface UseSessionNotificationsArgs {
    *  sidebar-card navigation logic (group switching, dormant resume,
    *  unread-dot clearing) lives there. */
   handleSelectRef: RefObject<(id: string) => void>
+  /** Live ref to the ServiceWorkerRegistration. Set by App.tsx after
+   *  registerSW() resolves. Null when SW is unavailable. */
+  swRegRef?: RefObject<ServiceWorkerRegistration | null>
 }
 
 export interface UseSessionNotificationsResult {
@@ -82,6 +85,12 @@ export interface UseSessionNotificationsResult {
     sessionId: string,
     toolLabel: string,
     kind?: 'permission' | 'question',
+    /** Permission request id — passed through to the SW so it can call
+     *  the decide API directly from a notification action button. */
+    permissionId?: string,
+    /** Original tool input — echoed back as `updatedInput` when the SW
+     *  calls the decide API.  The SDK requires it on allow paths. */
+    toolInput?: Record<string, unknown>,
   ) => void
   /** Seed the edge-detector when a `session-created` frame lands.
    *  Without this, a session that spawns already working would fire a
@@ -93,22 +102,28 @@ export interface UseSessionNotificationsResult {
    *  Map without bound — and a same-id reuse after deletion would carry
    *  stale "was working" state across the gap. */
   pruneSession: (sessionId: string) => void
+  /** Dismiss the sticky permission/question toast for a session (if any).
+   *  Called when `pendingPermissionCount` drops to 0 on a session-update. */
+  dismissPermissionToast: (sessionId: string) => void
 }
 
 export function useSessionNotifications({
   focusedIdRef,
   sessionsRef,
   handleSelectRef,
+  swRegRef,
 }: UseSessionNotificationsArgs): UseSessionNotificationsResult {
-  const notifications = useNotifications()
+  const notifications = useNotifications({ swRegRef })
   // Mirror notifications.notify into a ref so the maybe* callbacks
   // stay referentially stable. If they depended on `notifications.notify`
   // directly they'd rebuild every time the hook's internal state
   // (enabled / permission) flipped, which would tear down and rebuild
   // the WS-hub listener effect that lists them as deps.
   const notifyRef = useRef(notifications.notify)
+  const notifyWithActionsRef = useRef(notifications.notifyWithActions)
   useEffect(() => {
     notifyRef.current = notifications.notify
+    notifyWithActionsRef.current = notifications.notifyWithActions
   })
 
   // Same ref-mirror trick for the toast hub. `useToast()` is already
@@ -124,8 +139,12 @@ export function useSessionNotifications({
    *  true to false (= a turn just completed). */
   const prevWorkingRef = useRef<Map<string, boolean>>(new Map())
 
+  /** Sticky toast IDs keyed by session. Used to auto-dismiss permission/
+   *  question toasts once the pending count drops to 0. */
+  const permToastIdsRef = useRef<Map<string, string>>(new Map())
+
   const maybePermissionNotify = useCallback(
-    (sessionId: string, toolLabel: string, kind: 'permission' | 'question' = 'permission') => {
+    (sessionId: string, toolLabel: string, kind: 'permission' | 'question' = 'permission', permissionId?: string, toolInput?: Record<string, unknown>) => {
       // Use hasFocus() rather than visibilityState: the tab can be "visible"
       // (foreground tab) while the browser window itself is minimized, behind
       // another app (Alt-Tab), or the screen is locked. In all those cases
@@ -156,28 +175,47 @@ export function useSessionNotifications({
         // (durationMs:0) stays until they act — both permission requests
         // and questions block the turn until answered. Independent of the
         // desktop-notification master switch / browser permission.
-        toastRef.current.info(headline, {
+        // Dismiss any existing sticky toast for this session before creating
+        // a new one. Without this, the old toast ID is silently overwritten
+        // in permToastIdsRef and can never be dismissed.
+        const existingId = permToastIdsRef.current.get(sessionId)
+        if (existingId) toastRef.current.dismiss(existingId)
+
+        const toastId = toastRef.current.info(headline, {
           durationMs: 0,
           actionLabel: isQuestion ? 'Answer' : 'Open',
           onClick: () => handleSelectRef.current?.(sessionId),
         })
+        permToastIdsRef.current.set(sessionId, toastId)
         return
       }
 
       // mode === 'desktop' — window not focused, fall back to the OS toast.
-      notifyRef.current({
-        title: headline,
-        body: isQuestion ? 'Open to answer' : `Approve or deny: ${toolLabel}`,
-        tag: `${sessionId}:perm`,
-        // These notifications are actionable — the user must respond for the
-        // turn to continue. Keep the toast visible until they dismiss it, and
-        // DON'T mark it silent (Windows Action Center suppresses silent toasts
-        // from this kind of "background" page).
-        requireInteraction: true,
-        onClick: () => {
-          handleSelectRef.current?.(sessionId)
-        },
-      })
+      // Permission requests with an id get Allow/Deny action buttons via
+      // the Service Worker; questions and legacy requests without an id
+      // fall back to a plain notification that opens the page on click.
+      if (!isQuestion && permissionId) {
+        notifyWithActionsRef.current({
+          title: headline,
+          body: `Approve or deny: ${toolLabel}`,
+          tag: `${sessionId}:perm`,
+          requireInteraction: true,
+          actions: [
+            { action: 'allow', title: '✓ Allow' },
+            { action: 'deny', title: '✗ Deny' },
+          ],
+          data: { sessionId, permissionId, kind: 'permission', updatedInput: toolInput },
+          onClick: () => { handleSelectRef.current?.(sessionId) },
+        })
+      } else {
+        notifyRef.current({
+          title: headline,
+          body: isQuestion ? 'Open to answer' : `Approve or deny: ${toolLabel}`,
+          tag: `${sessionId}:perm`,
+          requireInteraction: true,
+          onClick: () => { handleSelectRef.current?.(sessionId) },
+        })
+      }
     },
     [focusedIdRef, sessionsRef, handleSelectRef],
   )
@@ -235,7 +273,16 @@ export function useSessionNotifications({
 
   const pruneSession = useCallback((sessionId: string) => {
     prevWorkingRef.current.delete(sessionId)
+    permToastIdsRef.current.delete(sessionId)
   }, [])
 
-  return { notifications, maybeNotify, maybePermissionNotify, seedWorkingState, pruneSession }
+  const dismissPermissionToast = useCallback((sessionId: string) => {
+    const toastId = permToastIdsRef.current.get(sessionId)
+    if (toastId) {
+      permToastIdsRef.current.delete(sessionId)
+      toastRef.current.dismiss(toastId)
+    }
+  }, [])
+
+  return { notifications, maybeNotify, maybePermissionNotify, seedWorkingState, pruneSession, dismissPermissionToast }
 }

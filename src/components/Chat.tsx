@@ -40,6 +40,7 @@ import { countMatches } from '../search'
 import { ContextMenu } from './ContextMenu'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
 import { IconSearch, IconFileText, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown } from './icons/ToolIcons'
+import { PLAN_TOOL_NAMES } from '../constants/toolNames'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
 import { useWsHub } from '../hooks/useWsHub'
@@ -396,14 +397,54 @@ export const Chat = memo(function Chat({
     }
     return out
   }, [permissions.pending, minimizedQ])
+
+  // Plan minimize/re-open — same pattern as questions.
+  const [minimizedPlan, setMinimizedPlan] = useState<Set<string>>(() => new Set())
+  const minimizePlan = useCallback((id: string) => {
+    setMinimizedPlan((prev) => { const next = new Set(prev); next.add(id); return next })
+  }, [])
+  const reopenPlan = useCallback(
+    (toolUseId: string) => {
+      const req = permissions.pending.find((p) => p.kind === 'permission' && p.toolUseID === toolUseId)
+      if (!req) return
+      setMinimizedPlan((prev) => {
+        if (!prev.has(req.id)) return prev
+        const next = new Set(prev); next.delete(req.id); return next
+      })
+    },
+    [permissions.pending],
+  )
+  const minimizedPlanToolUseIds = useMemo(() => {
+    const out = new Set<string>()
+    for (const p of permissions.pending) {
+      if (p.kind === 'permission' && PLAN_TOOL_NAMES.has(p.toolName) && minimizedPlan.has(p.id)) out.add(p.toolUseID)
+    }
+    return out
+  }, [permissions.pending, minimizedPlan])
+  // Clean up stale plan minimize state when permissions resolve.
+  useEffect(() => {
+    const livePlan = new Set(
+      permissions.pending.filter((p) => p.kind === 'permission' && PLAN_TOOL_NAMES.has(p.toolName)).map((p) => p.id),
+    )
+    setMinimizedPlan((prev) => {
+      let changed = false
+      const next = new Set<string>()
+      for (const id of prev) {
+        if (livePlan.has(id)) next.add(id)
+        else changed = true
+      }
+      return changed ? next : prev
+    })
+  }, [permissions.pending])
+
   const reopenCtxValue = useMemo(
-    () => ({ minimizedToolUseIds, onReopen: reopenQuestion }),
-    [minimizedToolUseIds, reopenQuestion],
+    () => ({ minimizedToolUseIds, minimizedPlanToolUseIds, onReopen: reopenQuestion, onReopenPlan: reopenPlan }),
+    [minimizedToolUseIds, minimizedPlanToolUseIds, reopenQuestion, reopenPlan],
   )
   const activePendingRequest = permissions.pending[0]
-  const activeVisiblePendingRequest = activePendingRequest?.kind === 'question' && minimizedQ.has(activePendingRequest.id)
-    ? null
-    : activePendingRequest
+  const isMinimizedQuestion = activePendingRequest?.kind === 'question' && minimizedQ.has(activePendingRequest.id)
+  const isMinimizedPlan = activePendingRequest?.kind === 'permission' && PLAN_TOOL_NAMES.has(activePendingRequest.toolName) && minimizedPlan.has(activePendingRequest.id)
+  const activeVisiblePendingRequest = (isMinimizedQuestion || isMinimizedPlan) ? null : activePendingRequest
   const pendingDialogPresence = usePresenceValue(activeVisiblePendingRequest)
   // Drop minimize/draft state once a question resolves (no longer pending) so
   // the set and ref don't accumulate stale ids over a long session.
@@ -425,7 +466,7 @@ export const Chat = memo(function Chat({
     }
   }, [permissions.pending])
 
-  // 鈹€鈹€ In-chat search 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+  // ── In-chat search ──────────────────────────────────────────────────
   const [searchOpen, setSearchOpen] = useState(false)
   // Seed for the search input, captured from the current selection at open time.
   const [searchSeed, setSearchSeed] = useState('')
@@ -1015,6 +1056,7 @@ export const Chat = memo(function Chat({
               onDecide={(d) => void permissions.decide(pendingHead.id, d)}
               planContentMap={stream.planContent}
               currentMode={session.permissionMode}
+              onMinimize={PLAN_TOOL_NAMES.has(pendingHead.toolName) ? () => minimizePlan(pendingHead.id) : undefined}
             />
           )
         }
@@ -1046,6 +1088,7 @@ export const Chat = memo(function Chat({
               contextUsage={stream.contextUsage}
               tabRequest={settingsTabRequest}
               onPluginsReloaded={() => { refreshCommands(); refreshAgents() }}
+              onSkillsReloaded={() => { refreshCommands() }}
             />
           </Suspense>
         )}

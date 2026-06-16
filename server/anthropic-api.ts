@@ -11,11 +11,15 @@ import { config as serverConfig, requireAuthToken } from './config.js'
 interface CallOptions {
   model: string
   system: string
-  userContent: string
+  /** Single-turn user message. Required unless `messages` is provided. */
+  userContent?: string
   maxTokens: number
   temperature: number
   /** Optional caller signal. If omitted, a 30s timeout signal is used. */
   signal?: AbortSignal
+  /** Multi-turn messages. When provided, takes precedence over userContent.
+   *  Used by the auto-mode classifier which needs conversation context. */
+  messages?: Array<{ role: string; content: string }>
 }
 
 /** POST /v1/messages with a single-turn user message. Returns the raw
@@ -36,7 +40,7 @@ export async function callAnthropicMessages(opts: CallOptions): Promise<string> 
       max_tokens: opts.maxTokens,
       temperature: opts.temperature,
       system: opts.system,
-      messages: [{ role: 'user', content: opts.userContent }],
+      messages: opts.messages ?? [{ role: 'user', content: opts.userContent }],
     }),
     signal: opts.signal ?? AbortSignal.timeout(30_000),
   })

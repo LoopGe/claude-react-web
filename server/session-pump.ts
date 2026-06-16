@@ -26,6 +26,58 @@ function trimHookOutput(value: string): string {
   return `${head}\n\n[... ${omitted} chars omitted ...]\n\n${tail}`
 }
 
+/** Maximum characters kept in a single `tool_result` content block.
+ *  ~50K chars ≈ 12K tokens — comfortably under the SDK's own 25K-token
+ *  MCP output cap while leaving room for other context.  The head+tail
+ *  strategy preserves the beginning (usually the most useful part) and
+ *  the end (often contains summary / error info). */
+const MAX_TOOL_RESULT_CHARS = 50_000
+
+function trimLargeToolResultBlock(block: {
+  type: unknown; content?: unknown
+}): boolean {
+  if (block.type !== 'tool_result') return false
+  const c = (block as { content?: unknown }).content
+  if (typeof c === 'string') {
+    if (c.length <= MAX_TOOL_RESULT_CHARS) return false
+    const head = c.slice(0, 30_000)
+    const tail = c.slice(c.length - 15_000)
+    const omitted = c.length - head.length - tail.length
+    ;(block as { content: string }).content =
+      `${head}\n\n[... ${omitted} chars omitted ...]\n\n${tail}`
+    return true
+  }
+  if (Array.isArray(c)) {
+    let trimmed = false
+    for (const item of c) {
+      if (!item || typeof item !== 'object') continue
+      const it = item as { type?: unknown; text?: unknown }
+      if (it.type === 'text' && typeof it.text === 'string' && it.text.length > MAX_TOOL_RESULT_CHARS) {
+        const head = it.text.slice(0, 30_000)
+        const tail = it.text.slice(it.text.length - 15_000)
+        const omitted = it.text.length - head.length - tail.length
+        it.text = `${head}\n\n[... ${omitted} chars omitted ...]\n\n${tail}`
+        trimmed = true
+      }
+    }
+    return trimmed
+  }
+  return false
+}
+
+/** Mutate `msg` in-place: trim any oversized `tool_result` content blocks
+ *  inside user messages.  Called once, before the message enters the history
+ *  ring and subscriber broadcast — so every downstream consumer (replay,
+ *  WS push, localStorage, render) sees the trimmed version. */
+export function trimLargeToolResults(msg: SDKMessage): void {
+  if (msg.type !== 'user') return
+  const content = (msg as { message?: { content?: unknown } }).message?.content
+  if (!Array.isArray(content)) return
+  for (const block of content) {
+    if (block && typeof block === 'object') trimLargeToolResultBlock(block)
+  }
+}
+
 /** Extract `parent_tool_use_id` from an SDK message defensively.
  *  Returns the value for user/assistant messages; undefined for types
  *  that don't carry the fiel?. Server-side SDKMessage is a discriminated
@@ -377,6 +429,13 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // so the value travels unchanged through both the history ring and
         // live subscriber broadcast dreplay and live paths share this object.
         stampReceivedAt(msg)
+        // Trim oversized tool_result content before it enters the history
+        // ring and subscriber broadcast.  The SDK may forward the full MCP
+        // server output (potentially MBs) — keeping it unbounded wastes
+        // server memory, inflates WS frames, and bloats client state /
+        // localStorage.  In-place mutation ensures replay and live paths
+        // see the same (trimmed) object.
+        trimLargeToolResults(msg)
         pushBounded(session.history, msg, deps.historyCap)
 
         // Only broadcast system messages that the frontend actually needs.

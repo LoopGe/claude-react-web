@@ -59,6 +59,9 @@ interface ConfigFile {
   updateCheckRegistry: string
   skillLoadMode: string
   enabledSkills: string[]
+  autoClassifierModel: string
+  autoClassifierEnabled: boolean
+  autoClassifierTimeout: number
 }
 
 export interface ServerConfig {
@@ -88,6 +91,14 @@ export interface ServerConfig {
   readonly updateCheckRegistry: string
   readonly skillLoadMode: SkillLoadMode
   readonly enabledSkills: readonly string[]
+  /** Model used by the auto-mode security classifier. Should be a fast,
+   *  cheap model — haiku is the default. */
+  readonly autoClassifierModel: string
+  /** Master switch for auto-mode. When false, 'auto' mode falls back to
+   *  prompting for every tool call (behaves like 'default'). */
+  readonly autoClassifierEnabled: boolean
+  /** Timeout (ms) for classifier API calls. */
+  readonly autoClassifierTimeout: number
 }
 
 /** Hardcoded defaults. Captured as its own constant so applyParsedConfig
@@ -116,6 +127,9 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   updateCheckRegistry: 'https://registry.npmjs.org',
   skillLoadMode: 'default',
   enabledSkills: Object.freeze([]),
+  autoClassifierModel: 'claude-haiku-4-5-20251001',
+  autoClassifierEnabled: false,
+  autoClassifierTimeout: 5000,
 })
 
 /** Current server config. Frozen after loadConfig() dreads are safe,
@@ -290,6 +304,19 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): v
     }
   }
 
+  if (typeof file_.autoClassifierModel === 'string' && file_.autoClassifierModel.trim()) {
+    ;(merged as { autoClassifierModel: string }).autoClassifierModel = file_.autoClassifierModel.trim()
+  }
+
+  if (typeof file_.autoClassifierEnabled === 'boolean') {
+    ;(merged as { autoClassifierEnabled: boolean }).autoClassifierEnabled = file_.autoClassifierEnabled
+    console.log(`[config] autoClassifierEnabled: ${file_.autoClassifierEnabled}`)
+  }
+
+  if (typeof file_.autoClassifierTimeout === 'number' && file_.autoClassifierTimeout > 0) {
+    ;(merged as { autoClassifierTimeout: number }).autoClassifierTimeout = Math.round(file_.autoClassifierTimeout)
+  }
+
   config = Object.freeze(merged)
 
   // Enable or disable file logging based on the loaded config.
@@ -336,6 +363,9 @@ export const WRITABLE_CONFIG_KEYS = [
   'updateCheckRegistry',
   'skillLoadMode',
   'enabledSkills',
+  'autoClassifierModel',
+  'autoClassifierEnabled',
+  'autoClassifierTimeout',
 ] as const
 
 /**

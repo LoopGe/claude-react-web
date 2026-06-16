@@ -142,8 +142,8 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useLayoutEffect(() => {
-    if (open) inputRef.current?.focus()
-  }, [open])
+    if (presence.shouldRender) inputRef.current?.focus()
+  }, [presence.shouldRender])
 
   useEffect(() => {
     const el = listRef.current?.querySelectorAll<HTMLElement>('[data-palette-option]')[clampedSelectedIndex]
