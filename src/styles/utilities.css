@@ -219,16 +219,35 @@
 }
 .tool-status-running svg {
   animation: tool-status-spin 0.9s linear infinite;
+  /* Pin rotation to the arc's geometric center. The Icon base component
+     applies verticalAlign:-0.125em which shifts the bounding box; the
+     default transform-origin (50% 50% of the bounding box) ends up
+     off-center and the arc orbits instead of spinning in place. Using
+     the SVG viewport center (50% 50% of the 24×24 viewBox, i.e. the
+     point (12,12) where the arc is drawn) keeps it stable. */
+  transform-box: fill-box;
+  transform-origin: center;
 }
 .tool-status-success {
   color: var(--ok);
   background: color-mix(in srgb, var(--ok) 12%, transparent);
   border-color: color-mix(in srgb, var(--ok) 30%, transparent);
+  animation: tool-status-pop var(--motion-duration-moderate) var(--motion-ease-emphasized);
 }
 .tool-status-error {
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 12%, transparent);
   border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+  animation: tool-status-pop var(--motion-duration-moderate) var(--motion-ease-emphasized);
+}
+@keyframes tool-status-pop {
+  0%   { transform: scale(0.7); opacity: 0.5; }
+  60%  { transform: scale(1.08); }
+  100% { transform: scale(1); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tool-status-success,
+  .tool-status-error { animation: none; }
 }
 .tool-status-compact {
   padding: 2px;
@@ -735,9 +754,16 @@
 .skeleton-group.git-section-skeleton .skeleton-row { height: 12px; }
 
 
-/* Shared measured-height collapse used by details/accordion UI. */
+/* Shared measured-height collapse used by details/accordion UI.
+   overflow-y: hidden clips content during the height animation.
+   overflow-x is intentionally left at the default (visible) so that
+   long <pre> content inside thinking-body / tool-result blocks can
+   propagate horizontally to .msg-body's overflow-x: auto instead of
+   being silently clipped. (When one axis is hidden and the other is
+   visible, CSS coerces the visible axis to auto — which is exactly
+   the scrollable behaviour we want.) */
 .animated-collapse {
-  overflow: hidden;
+  overflow-y: hidden;
   min-height: 0;
 }
 .animated-collapse.animating {
@@ -905,6 +931,23 @@
   padding: 24px 0;
   text-align: center;
 }
+.settings-mcp-available {
+  margin-top: 12px;
+}
+.settings-mcp-available-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 4px;
+}
+.settings-mcp-available-name {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
 .settings-mcp-card {
   margin-bottom: 6px;
 }
@@ -978,7 +1021,7 @@
 .hooks-categories { display: flex; flex-direction: column; gap: 2px; }
 .hooks-category { margin-top: 2px; }
 .hooks-category > summary {
-  font-size: 12px; font-weight: 500; color: var(--fg); cursor: pointer;
+  font-size: var(--fs-sm); font-weight: 500; color: var(--fg); cursor: pointer;
   padding: 4px 0; list-style: none; display: flex; align-items: center; gap: 8px;
 }
 .hooks-category > summary::-webkit-details-marker { display: none; }
@@ -989,7 +1032,7 @@
 }
 .hooks-category[data-state="open"] > summary::before { transform: rotate(90deg); }
 .hooks-category-count {
-  font-size: 10px; color: var(--fg-muted); font-weight: 400;
+  font-size: var(--fs-2xs); color: var(--fg-muted); font-weight: 400;
   padding: 0 5px; border: 1px solid var(--border); border-radius: 999px;
 }
 .hooks-category-count.has-hooks { color: var(--accent); border-color: var(--accent); }
@@ -997,7 +1040,7 @@
   display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 0 6px 12px;
 }
 .hooks-event-badge {
-  font-size: 11px; font-family: var(--mono); padding: 2px 8px;
+  font-size: var(--fs-xs); font-family: var(--mono); padding: 2px 8px;
   border: 1px solid var(--border); border-radius: 4px;
   background: var(--bg); color: var(--fg-muted); cursor: pointer;
   transition: border-color var(--motion-duration-fast) var(--motion-ease-standard),
@@ -1017,29 +1060,29 @@
 }
 .hooks-config-head {
   display: flex; align-items: center; gap: 6px; padding: 6px 10px;
-  background: var(--bg); font-size: 12px;
+  background: var(--bg); font-size: var(--fs-sm);
 }
 .hooks-event-tag {
-  font-size: 10px; font-family: var(--mono); color: var(--accent);
+  font-size: var(--fs-2xs); font-family: var(--mono); color: var(--accent);
   padding: 1px 5px; border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
   border-radius: 3px; flex-shrink: 0;
 }
 .hooks-matcher {
-  font-size: 11px; font-family: var(--mono); color: var(--fg-muted);
+  font-size: var(--fs-xs); font-family: var(--mono); color: var(--fg-muted);
   max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .hooks-type-badge {
-  font-size: 10px; padding: 1px 5px; border: 1px solid var(--border);
+  font-size: var(--fs-2xs); padding: 1px 5px; border: 1px solid var(--border);
   border-radius: 3px; color: var(--fg-muted); text-transform: uppercase;
   letter-spacing: 0.03em; flex-shrink: 0;
 }
 .hooks-config-actions { margin-left: auto; display: flex; gap: 4px; }
 .hooks-config-detail {
   padding: 6px 10px; background: var(--bg); border-top: 1px solid var(--border);
-  font-size: 12px; display: flex; flex-direction: column; gap: 3px;
+  font-size: var(--fs-sm); display: flex; flex-direction: column; gap: 3px;
 }
 .hooks-detail-row {
-  display: flex; align-items: baseline; gap: 8px; font-size: 12px;
+  display: flex; align-items: baseline; gap: 8px; font-size: var(--fs-sm);
 }
 .hooks-detail-label { color: var(--fg-muted); flex-shrink: 0; min-width: 64px; }
 .hooks-detail-value { font-family: var(--mono); color: var(--fg); word-break: break-all; }
@@ -1051,23 +1094,23 @@
 }
 .hooks-activity-head {
   display: flex; align-items: center; gap: 6px; padding: 6px 10px;
-  background: var(--bg); font-size: 12px;
+  background: var(--bg); font-size: var(--fs-sm);
 }
 .hooks-activity-dot {
   width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
   background: var(--dot, var(--fg-muted));
 }
-.hooks-activity-name { font-weight: 500; font-size: 12px; flex: 1; }
+.hooks-activity-name { font-weight: 500; font-size: var(--fs-sm); flex: 1; }
 .hooks-activity-status {
-  font-size: 10px; text-transform: capitalize;
+  font-size: var(--fs-2xs); text-transform: capitalize;
 }
 .hooks-activity-status.success { color: var(--ok); }
 .hooks-activity-status.error { color: var(--danger); }
 .hooks-activity-status.running { color: var(--accent); }
 .hooks-activity-status.cancelled { color: var(--fg-muted); }
-.hooks-activity-time { font-size: 10px; color: var(--fg-muted); }
+.hooks-activity-time { font-size: var(--fs-2xs); color: var(--fg-muted); }
 .hooks-activity-output {
-  font-family: var(--mono); font-size: 12px; color: var(--fg-muted);
+  font-family: var(--mono); font-size: var(--fs-sm); color: var(--fg-muted);
   padding: 8px 10px; background: var(--bg); overflow-x: auto;
   border-top: 1px solid var(--border); margin: 0; white-space: pre-wrap; word-break: break-all;
 }
@@ -1075,7 +1118,7 @@
 /* JSON editor toggle */
 .hooks-json-toggle { margin-top: 8px; }
 .hooks-json-toggle > summary {
-  font-size: 11px; color: var(--fg-muted); cursor: pointer; list-style: none;
+  font-size: var(--fs-xs); color: var(--fg-muted); cursor: pointer; list-style: none;
   display: flex; align-items: center; gap: 4px;
 }
 .hooks-json-toggle > summary::-webkit-details-marker { display: none; }
@@ -1707,7 +1750,7 @@
   padding: 10px;
   background: var(--code-bg);
   cursor: pointer;
-  transition: border-color 120ms ease, background 120ms ease;
+  transition: border-color var(--motion-duration-fast) var(--motion-ease-standard), background var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .settings-skill-mode-card:hover,
 .settings-skill-mode-card.active {
@@ -1726,7 +1769,7 @@
   border-radius: 50%;
   background: var(--bg-elev-1);
   cursor: pointer;
-  transition: all 120ms ease;
+  transition: all var(--motion-duration-fast) var(--motion-ease-standard);
   flex-shrink: 0;
   position: relative;
 }
@@ -1776,7 +1819,7 @@
   font-size: 12px;
   background: var(--code-bg);
   cursor: pointer;
-  transition: border-color 120ms ease, background 120ms ease;
+  transition: border-color var(--motion-duration-fast) var(--motion-ease-standard), background var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .settings-skill-check:hover {
   border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
@@ -1795,7 +1838,7 @@
   border-radius: 4px;
   background: var(--bg-elev-1);
   cursor: pointer;
-  transition: all 120ms ease;
+  transition: all var(--motion-duration-fast) var(--motion-ease-standard);
   flex-shrink: 0;
   position: relative;
 }
@@ -1829,7 +1872,7 @@ input[type="checkbox"] {
   border-radius: 4px;
   background: var(--bg-elev-1);
   cursor: pointer;
-  transition: all 120ms ease;
+  transition: all var(--motion-duration-fast) var(--motion-ease-standard);
   flex-shrink: 0;
   position: relative;
 }
@@ -1904,7 +1947,7 @@ input[type="checkbox"]:disabled {
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 120ms ease;
+  transition: all var(--motion-duration-fast) var(--motion-ease-standard);
   position: relative;
 }
 .settings-scope-btn:not(:last-child)::after {
@@ -1973,7 +2016,7 @@ input[type="checkbox"]:disabled {
   color: var(--fg);
   padding: 10px;
   cursor: pointer;
-  transition: border-color 120ms ease, background 120ms ease;
+  transition: border-color var(--motion-duration-fast) var(--motion-ease-standard), background var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .settings-skill-row:hover,
 .settings-skill-row.active {

@@ -398,7 +398,7 @@ export function HooksPanel({ session, disabled, onSessionUpdate }: Props) {
             </button>
           </div>
         </div>
-        {dirty && <span className="hint" style={{ fontSize: 11 }}>Unsaved changes</span>}
+        {dirty && <span className="hint" style={{ fontSize: 'var(--fs-xs)' }}>Unsaved changes</span>}
         <AnimatedDetails className="hooks-json-toggle" summary="Raw JSON editor">
           <textarea
             className="textarea"

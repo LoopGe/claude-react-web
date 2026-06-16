@@ -64,8 +64,12 @@ self.addEventListener('notificationclick', (event) => {
 
   // Notify the main thread so it can focus the window and sync UI state.
   event.waitUntil(
-    self.clients.matchAll({ type: 'window' }).then((clients) => {
-      const client = clients[0]
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
+      // Prefer a visible + focused client, then any visible, then any client.
+      const client =
+        clients.find(c => c.visibilityState === 'visible' && c.focused) ??
+        clients.find(c => c.visibilityState === 'visible') ??
+        clients[0]
       if (client) {
         client.postMessage({
           type: 'NOTIFICATION_ACTION',
