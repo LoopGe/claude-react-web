@@ -451,6 +451,32 @@ describe('SessionManager', () => {
     expect(sm.get(info.id).phase).toBe('idle')
   })
 
+  it('clear confirmation drops hook run records', async () => {
+    const info = sm.create({})
+    // Seed two hook runs before the clear.
+    sm.recordHookRun(info.id, {
+      kind: 'completed',
+      run: {
+        id: 'h1', hookId: 'h1', hookName: 'audit', event: 'Stop', status: 'success',
+        startedAt: Date.now(), updatedAt: Date.now(),
+      },
+    })
+    sm.recordHookRun(info.id, {
+      kind: 'completed',
+      run: {
+        id: 'h2', hookId: 'h2', hookName: 'lint', event: 'PostToolUse', status: 'error',
+        startedAt: Date.now(), updatedAt: Date.now(),
+      },
+    })
+    expect(sm.subscribeHookRuns(info.id)!.snapshot).toHaveLength(2)
+
+    await sm.clear(info.id)
+    mockHandles[0].emit({ type: 'system', subtype: 'init', uuid: 'clear-init', session_id: info.id })
+    await tick()
+
+    expect(sm.subscribeHookRuns(info.id)!.snapshot).toHaveLength(0)
+  })
+
   it('subscribeContextUsage() hands a fresh subscriber the last cached snapshot', async () => {
     // A tab that attaches BETWEEN turns (reconnect / new panel / refresh)
     // should see the Context bar value immediately rather than waiting for

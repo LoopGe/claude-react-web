@@ -162,7 +162,10 @@ export function hookLifecycleMessage(msg: SDKMessage): HookRuntimeEvent | null {
     outcome?: unknown
   }
   if (raw.subtype !== 'hook_started' && raw.subtype !== 'hook_progress' && raw.subtype !== 'hook_response') return null
-  if (typeof raw.hook_id !== 'string' || typeof raw.hook_name !== 'string' || typeof raw.hook_event !== 'string') return null
+  if (typeof raw.hook_id !== 'string' || typeof raw.hook_name !== 'string' || typeof raw.hook_event !== 'string') {
+    log.warn(`dropped malformed ${raw.subtype} message: missing hook_id/hook_name/hook_event`)
+    return null
+  }
 
   const now = Date.now()
   let status: HookRunStatus
@@ -174,7 +177,14 @@ export function hookLifecycleMessage(msg: SDKMessage): HookRuntimeEvent | null {
     status = 'progress'
     kind = 'progress'
   } else {
-    status = raw.outcome === 'error' || raw.outcome === 'cancelled' ? raw.outcome : 'success'
+    if (raw.outcome === 'error' || raw.outcome === 'cancelled') {
+      status = raw.outcome
+    } else if (raw.outcome === 'success' || raw.outcome == null) {
+      status = 'success'
+    } else {
+      log.warn(`unexpected hook outcome "${raw.outcome}", treating as error`)
+      status = 'error'
+    }
     kind = 'completed'
   }
 

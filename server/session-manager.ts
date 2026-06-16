@@ -1623,6 +1623,7 @@ export class SessionManager {
     s.pendingTurns = 0
     s.workingSince = undefined
     s.autoInterruptedAt = undefined
+    s.hookRuns.length = 0
   }
 
   /** Shared implementation for subscribeContextUsage / subscribeGitStatus.
