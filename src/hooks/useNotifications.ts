@@ -191,6 +191,8 @@ export function useNotifications(options?: UseNotificationsOptions): UseNotifica
     [enabled],
   )
 
+  const swRegRef = options?.swRegRef
+  /* eslint-disable react-hooks/preserve-manual-memoization -- swRegRef is a ref object; .current is read inside the callback at call time, not capture time */
   const notifyWithActions = useCallback(
     (payload: NotifyWithActionsPayload) => {
       if (!enabled) return
@@ -198,7 +200,9 @@ export function useNotifications(options?: UseNotificationsOptions): UseNotifica
       if (Notification.permission !== 'granted') return
 
       // Prefer Service Worker (supports action buttons).
-      const sw = options?.swRegRef?.current
+      // Read .current inside the callback (not in deps) so the ref
+      // is always fresh without triggering a useCallback rebuild.
+      const sw = swRegRef?.current
       if (sw?.active) {
         sw.active.postMessage({
           type: 'SHOW_NOTIFICATION',
@@ -216,8 +220,9 @@ export function useNotifications(options?: UseNotificationsOptions): UseNotifica
       // Fallback: SW unavailable — use plain Notification (no buttons).
       notify(payload)
     },
-    [enabled, notify, options?.swRegRef],
+    [enabled, notify, swRegRef],
   )
+  /* eslint-enable react-hooks/preserve-manual-memoization */
 
   return { enabled, permission, toggle, notify, notifyWithActions }
 }

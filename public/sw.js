@@ -1,3 +1,4 @@
+/* global self, fetch, console */
 // Service Worker for claude-react-web desktop notifications.
 //
 // Responsibilities:

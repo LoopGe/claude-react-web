@@ -1070,6 +1070,7 @@ export function App() {
   // the hook's effects never re-run on identity churn.
   const openSessionFromUrlRef = useRef((id: string) => { handleSelectRef.current(id) })
   const focusPanelFromUrlRef = useRef((id: string) => { focusPanel(id) })
+  /* eslint-disable react-hooks/refs -- intentional render-time ref read; useSessionUrl stores the value in its own ref on mount */
   useSessionUrl({
     sessionsLoaded,
     openIds,
@@ -1078,6 +1079,7 @@ export function App() {
     onOpenSession: openSessionFromUrlRef.current,
     onFocusPanel: focusPanelFromUrlRef.current,
   })
+  /* eslint-enable react-hooks/refs */
 
   /** Derive unread flags from the session list + lastSeenTurn. A session
    *  is unread when `s.lastTurnAt > lastSeenTurn[id]` — regardless of

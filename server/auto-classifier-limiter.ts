@@ -1,3 +1,4 @@
+/* eslint-disable no-irregular-whitespace -- zero-width spaces in code samples prevent nested comment closer */
 /**
  * Per-session concurrency limiter for the auto-mode classifier.
  *
