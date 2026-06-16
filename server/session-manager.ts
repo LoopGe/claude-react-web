@@ -149,7 +149,6 @@ function buildSnippet(text: string, query: string, maxLength = 180): string {
 export class SessionManager {
   private sessions = new Map<string, Session>()
   private historyCap: number
-  private permissionTimeoutMs: number
   private autoResumeEnabled: boolean
   private healthMonitor: SessionHealthMonitor
   private store: SessionStore
@@ -170,8 +169,7 @@ export class SessionManager {
   private cachedPumpDeps?: PumpDeps
   constructor(opts: SessionManagerOptions = {}) {
     this.historyCap = opts.historyCap ?? defaultConfig.historyCap
-    this.permissionTimeoutMs = opts.permissionTimeoutMs ?? defaultConfig.permissionTimeoutMs
-    this.permBroker = new PermissionBroker({ permissionTimeoutMs: this.permissionTimeoutMs })
+    this.permBroker = new PermissionBroker()
     this.autoResumeEnabled = opts.autoResume ?? false
     this.store = opts.store ?? new SessionStore()
     this.mcpStore = opts.mcpConfigStore ?? new McpConfigStore()
@@ -210,7 +208,7 @@ export class SessionManager {
     })
 
     console.log(
-      `[session-manager] initialized dpermissionTimeoutMs=${this.permissionTimeoutMs}`,
+      `[session-manager] initialized`,
     )
   }
 
@@ -531,6 +529,15 @@ export class SessionManager {
       betas: meta.betas as Options['betas'],
       settings: meta.hooks ? ({ hooks: toSdkHooksSettings(meta.hooks) } as Settings) : undefined,
     }
+    // Re-apply globally configured MCP servers so a resumed session picks up
+    // the same tools it had before the restart.  Refresh OAuth tokens for
+    // any remote servers BEFORE snapshotting the config so the SDK receives
+    // fresh access tokens.
+    const allGlobalMcpNames = Object.keys(this.mcpStore.toSdkConfig() ?? {})
+    if (allGlobalMcpNames.length > 0) {
+      await this.mcpStore.refreshOAuthTokens(allGlobalMcpNames)
+      resumeOpts.mcpServers = this.mcpStore.toSdkConfig()
+    }
     // Seed the live history ring with the transcript tail from disk. The SDK
     // loads the transcript as context on resume but does NOT re-emit it
     // through the Query stream, so without this the ring stays empty until a
@@ -746,6 +753,12 @@ export class SessionManager {
       // the same effective window as the source. See resume() for the cast rationale.
       betas: meta.betas as Options['betas'],
       settings: meta.hooks ? ({ hooks: toSdkHooksSettings(meta.hooks) } as Settings) : undefined,
+    }
+    // Re-apply globally configured MCP servers (same as resume).
+    const allGlobalMcpNames = Object.keys(this.mcpStore.toSdkConfig() ?? {})
+    if (allGlobalMcpNames.length > 0) {
+      await this.mcpStore.refreshOAuthTokens(allGlobalMcpNames)
+      forkOpts.mcpServers = this.mcpStore.toSdkConfig()
     }
     return this.spawn(randomUUID(), applyConfiguredSkills(forkOpts))
   }
@@ -1816,6 +1829,7 @@ export class SessionManager {
     // legacy in-flight slot. Recap is in-memory only, so dropping the
     // session here is the end of the line for it.
     this.recapManager.invalidate(id)
+    this.permBroker.removeDenialTracker(id)
     this.writeStore(s)
   }
 
@@ -2251,6 +2265,12 @@ export class SessionManager {
       effort: session.effortLevel,
       betas: session.betas as Options['betas'],
       settings: session.hooks ? ({ hooks: toSdkHooksSettings(session.hooks) } as Settings) : undefined,
+    }
+    // Re-apply globally configured MCP servers (same as resume/fork).
+    const allGlobalMcpNames = Object.keys(this.mcpStore.toSdkConfig() ?? {})
+    if (allGlobalMcpNames.length > 0) {
+      await this.mcpStore.refreshOAuthTokens(allGlobalMcpNames)
+      resumeOpts.mcpServers = this.mcpStore.toSdkConfig()
     }
     if (session.canUseTool) {
       resumeOpts.canUseTool = session.canUseTool

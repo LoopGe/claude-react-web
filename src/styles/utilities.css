@@ -945,7 +945,7 @@
 }
 .settings-mcp-available-name {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 .settings-mcp-card {

@@ -60,7 +60,6 @@ interface ConfigFile {
   skillLoadMode: string
   enabledSkills: string[]
   autoClassifierModel: string
-  autoClassifierEnabled: boolean
   autoClassifierTimeout: number
 }
 
@@ -71,9 +70,6 @@ export interface ServerConfig {
   readonly commitMessageModel: string
   readonly maxUploadBytes: number
   readonly historyCap: number
-  /** Timeout for ordinary tool-permission prompts. AskUserQuestion
-   *  prompts intentionally do not expire. */
-  readonly permissionTimeoutMs: number
   readonly workingStuckMs: number
   readonly maxOpenPanels: number
   /** Undefined until config.json is loaded and `authToken` is populated.
@@ -94,9 +90,6 @@ export interface ServerConfig {
   /** Model used by the auto-mode security classifier. Should be a fast,
    *  cheap model — haiku is the default. */
   readonly autoClassifierModel: string
-  /** Master switch for auto-mode. When false, 'auto' mode falls back to
-   *  prompting for every tool call (behaves like 'default'). */
-  readonly autoClassifierEnabled: boolean
   /** Timeout (ms) for classifier API calls. */
   readonly autoClassifierTimeout: number
 }
@@ -117,7 +110,6 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   commitMessageModel: 'claude-haiku-4-5-20251001',
   maxUploadBytes: 25 * 1024 * 1024,
   historyCap: 500,
-  permissionTimeoutMs: 5 * 60 * 1000,
   workingStuckMs: 60 * 60 * 1000,
   maxOpenPanels: 3,
   authToken: undefined,
@@ -128,7 +120,6 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   skillLoadMode: 'default',
   enabledSkills: Object.freeze([]),
   autoClassifierModel: 'claude-haiku-4-5-20251001',
-  autoClassifierEnabled: false,
   autoClassifierTimeout: 5000,
 })
 
@@ -308,11 +299,6 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): v
     ;(merged as { autoClassifierModel: string }).autoClassifierModel = file_.autoClassifierModel.trim()
   }
 
-  if (typeof file_.autoClassifierEnabled === 'boolean') {
-    ;(merged as { autoClassifierEnabled: boolean }).autoClassifierEnabled = file_.autoClassifierEnabled
-    console.log(`[config] autoClassifierEnabled: ${file_.autoClassifierEnabled}`)
-  }
-
   if (typeof file_.autoClassifierTimeout === 'number' && file_.autoClassifierTimeout > 0) {
     ;(merged as { autoClassifierTimeout: number }).autoClassifierTimeout = Math.round(file_.autoClassifierTimeout)
   }
@@ -364,7 +350,6 @@ export const WRITABLE_CONFIG_KEYS = [
   'skillLoadMode',
   'enabledSkills',
   'autoClassifierModel',
-  'autoClassifierEnabled',
   'autoClassifierTimeout',
 ] as const
 

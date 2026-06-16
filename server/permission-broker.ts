@@ -33,7 +33,7 @@ import { isReadOnlyBash } from './readonly-bash.js'
 import { classifyToolAction, sanitizeToolInput } from './auto-classifier.js'
 import { ClassifierLimiter } from './auto-classifier-limiter.js'
 import { getMessagesForClassifier } from './session-utils.js'
-import { config as serverConfig } from './config.js'
+import { AutoDenialTracker } from './auto-denial-tracker.js'
 
 const log = createLogger('broker')
 
@@ -50,37 +50,45 @@ const READONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
 
 /** Tools that are always safe in auto-mode — they either only read,
  *  manage internal task state, or are interactive signals that are
- *  already intercepted above (AskUserQuestion, ExitPlanMode). */
+ *  already intercepted above (AskUserQuestion, ExitPlanMode).
+ *  Aligned with SDK's SAFE_YOLO_ALLOWLISTED_TOOLS. */
 const SAFE_AUTO_TOOLS: ReadonlySet<string> = new Set([
   // Read-only
   'Read', 'Grep', 'Glob', 'NotebookRead',
+  // Code intelligence (read-only)
+  'LSP', 'ToolSearch', 'ListMcpResources', 'ReadMcpResource',
   // Task management
   'TaskCreate', 'TaskGet', 'TaskUpdate', 'TaskList', 'TaskStop', 'TaskOutput',
-  // Plan mode entry (ExitPlanMode is intercepted above)
-  'EnterPlanMode',
+  // Plan mode (ExitPlanMode is intercepted above, listed here for defense-in-depth)
+  'EnterPlanMode', 'ExitPlanMode',
   // Inter-agent messaging
   'SendMessage', 'TeamCreate', 'TeamDelete',
   // User interaction (intercepted above but guard just in case)
   'AskUserQuestion',
-  // Non-destructive
-  'Sleep', 'WebSearch',
+  // Non-destructive (WebSearch intentionally excluded — network op per SDK)
+  'Sleep',
 ])
 
-export interface PermissionBrokerOptions {
-  /** Timeout (ms) for ordinary tool-permission prompts.
-   *  AskUserQuestion is excluded and waits until answer/skip/abort.
-   *  0 = no timeout. */
-  permissionTimeoutMs: number
-}
-
 export class PermissionBroker {
-  private permissionTimeoutMs: number
   /** Per-broker concurrency limiter for auto-mode classifier calls.
    *  Shared across all sessions managed by this broker instance. */
   private classifierLimiter = new ClassifierLimiter(5)
 
-  constructor(opts: PermissionBrokerOptions) {
-    this.permissionTimeoutMs = opts.permissionTimeoutMs
+  /** Per-session denial tracker for auto mode. When consecutive denials
+   *  reach 3 or total denials reach 20, the classifier is skipped and
+   *  the tool call falls through to the human prompt. */
+  private denialTrackers = new Map<string, AutoDenialTracker>()
+
+  private getDenialTracker(sessionId: string): AutoDenialTracker {
+    let t = this.denialTrackers.get(sessionId)
+    if (!t) { t = new AutoDenialTracker(); this.denialTrackers.set(sessionId, t) }
+    return t
+  }
+
+  /** Remove the denial tracker for a session that is being unloaded.
+   *  Prevents unbounded growth of the tracker map. */
+  removeDenialTracker(sessionId: string): void {
+    this.denialTrackers.delete(sessionId)
   }
 
   // ─── canUseTool construction ──────────────────────────────────────
@@ -101,42 +109,21 @@ export class PermissionBroker {
     broadcastReq: (s: Session, p: PendingPermission) => void,
     broadcastRes: (s: Session, pid: string, d: PermissionDecisionSummary) => void,
     notifyPendingChanged: (s: Session) => void,
-    timeoutMs: number,
     buildPending: (
       pid: string,
       resolve: (result: PermissionResult) => void,
       abortHandler: () => void,
-      timeoutTimer: ReturnType<typeof setTimeout> | null,
     ) => P,
     label: string,
   ): Promise<PermissionResult> {
     return new Promise<PermissionResult>((resolve) => {
       const pid = randomUUID()
       if (label) log.info(`[session ${session.id}] ${label} ${pid}`)
-      const timeoutTimer = timeoutMs > 0
-        ? setTimeout(() => {
-            if (!session.pending.has(pid)) return
-            session.pending.delete(pid)
-            try { ctx.signal.removeEventListener('abort', abortHandler) } catch { /* */ }
-            log.warn(`[session ${session.id}] permission ${pid} timed out after ${timeoutMs}ms ?auto-denying`)
-            resolve({ behavior: 'deny', message: 'Permission request timed out ?no user response.', interrupt: false, toolUseID: ctx.toolUseID })
-            broadcastRes(session, pid, {
-              behavior: 'deny',
-              persisted: false,
-              message: 'Permission request timed out.',
-            })
-            notifyPendingChanged(session)
-          }, timeoutMs)
-        : null
-      const wrappedResolve = (result: PermissionResult) => {
-        if (timeoutTimer) clearTimeout(timeoutTimer)
-        resolve(result)
-      }
       const abortHandler = () => {
         if (!session.pending.has(pid)) return
         session.pending.delete(pid)
         log.info(`[session ${session.id}] permission ${pid} aborted (interrupt)`)
-        wrappedResolve({ behavior: 'deny', message: 'aborted', interrupt: false, toolUseID: ctx.toolUseID })
+        resolve({ behavior: 'deny', message: 'aborted', interrupt: false, toolUseID: ctx.toolUseID })
         broadcastRes(session, pid, {
           behavior: 'deny',
           persisted: false,
@@ -144,7 +131,7 @@ export class PermissionBroker {
         })
         notifyPendingChanged(session)
       }
-      const pending = buildPending(pid, wrappedResolve, abortHandler, timeoutTimer)
+      const pending = buildPending(pid, resolve, abortHandler)
       session.pending.set(pid, pending)
       ctx.signal.addEventListener('abort', abortHandler, { once: true })
       broadcastReq(session, pending)
@@ -182,8 +169,6 @@ export class PermissionBroker {
       this.broadcastPermissionResolved(s, pid, d)
     }
 
-    const permissionTimeoutMs = this.permissionTimeoutMs
-
     const canUseTool: CanUseTool = async (toolName, toolInput, ctx) => {
       // Per-call trace ?gated through the scope logger. To enable just
       // this scope without flooding the rest:
@@ -220,20 +205,18 @@ export class PermissionBroker {
             toolUseID: ctx.toolUseID,
           }
         }
-        // Interactive questions intentionally do not use permissionTimeoutMs.
-        // Matching Claude Code CLI, choices stay available until the user
-        // answers/skips or the underlying tool call is aborte?.
-        return this.createPendingRequest(session, ctx, broadcastReq, broadcastRes, onPendingChanged, 0, (pid, wrappedResolve, abortHandler, timeoutTimer) => ({
+        // All permission requests wait indefinitely for user input,
+        // matching Claude Code CLI behaviour. No auto-deny timer.
+        return this.createPendingRequest(session, ctx, broadcastReq, broadcastRes, onPendingChanged, (pid, resolve, abortHandler) => ({
           kind: 'question' as const,
           id: pid,
           toolName: 'AskUserQuestion',
           questions,
           toolUseID: ctx.toolUseID,
           createdAt: Date.now(),
-          resolve: wrappedResolve,
+          resolve,
           signal: ctx.signal,
           abortHandler,
-          timeoutTimer,
         }), `AskUserQuestion permission request ?${questions.length} question(s)`)
       }
       // EnterPlanMode is the plan-mode ENTRY signal — the model announces it
@@ -254,7 +237,7 @@ export class PermissionBroker {
       // bypassPermissions early-return so that even in bypass mode the user
       // sees the plan card and can approve or reject it.
       if (toolName === 'ExitPlanMode') {
-        return this.createPendingRequest(session, ctx, broadcastReq, broadcastRes, onPendingChanged, permissionTimeoutMs, (pid, wrappedResolve, abortHandler, timeoutTimer) => ({
+        return this.createPendingRequest(session, ctx, broadcastReq, broadcastRes, onPendingChanged, (pid, resolve, abortHandler) => ({
           kind: 'permission' as const,
           id: pid,
           toolName,
@@ -265,10 +248,9 @@ export class PermissionBroker {
           suggestions: ctx.suggestions,
           toolUseID: ctx.toolUseID,
           createdAt: Date.now(),
-          resolve: wrappedResolve,
+          resolve,
           signal: ctx.signal,
           abortHandler,
-          timeoutTimer,
         }), `plan review request - ${toolName}`)
       }
       // `acceptEdits` auto-approves pure file-editing tools so the user isn't
@@ -352,25 +334,50 @@ export class PermissionBroker {
         } satisfies PermissionResult
       }
       // `auto` mode: AI classifier decides whether the tool call is safe.
-      // Safe tools (read-only, task management) bypass the classifier.
-      // Classifier approval → allow.  Classifier block / error / timeout /
-      // concurrency limit → fall back to the human prompt (NOT auto-deny).
+      // Pipeline: safe-tool allowlist → acceptEdits fast path → denial
+      // circuit-breaker → AI classifier → fall back to human prompt.
       // Placed AFTER ExitPlanMode/AskUserQuestion so interactive and
       // plan-review flows are never silently handled by the classifier.
       if (session.permissionMode === 'auto') {
-        // Master switch: when disabled, auto mode behaves like default
-        // (every non-safe tool falls through to the human prompt).
-        if (!serverConfig.autoClassifierEnabled) {
-          // Fall through to pending request below.
-        } else if (SAFE_AUTO_TOOLS.has(toolName)) {
-          // Fast path: safe tools skip the classifier entirely.
+        const tracker = this.getDenialTracker(session.id)
+
+        // 1. Safe tools — always allow, no classifier needed.
+        if (SAFE_AUTO_TOOLS.has(toolName)) {
+          tracker.recordAllow()
           return {
             behavior: 'allow',
             updatedInput: toolInput,
             toolUseID: ctx.toolUseID,
           } satisfies PermissionResult
+        }
+
+        // 2. acceptEdits fast path — mirrors SDK behaviour: in-cwd file
+        //    edits and safe Bash/PowerShell commands auto-approve without
+        //    calling the classifier.  Avoids an API round-trip for every
+        //    routine Edit/Write, which was the main source of "auto mode
+        //    still shows dialogs" complaints.
+        const isInScopeEdit = isInScopeEditTool(toolName, toolInput, session.cwd)
+        const command = (toolInput as { command?: unknown })?.command
+        const commandText = typeof command === 'string' ? command : undefined
+        const isSafeBash = toolName === 'Bash' && isAutoApprovableEditBash(commandText, session.cwd)
+        const isSafePowerShell = toolName === 'PowerShell' && isAutoApprovableEditPowerShell(commandText, session.cwd)
+        if (isInScopeEdit || isSafeBash || isSafePowerShell) {
+          tracker.recordAllow()
+          return {
+            behavior: 'allow',
+            updatedInput: toolInput,
+            toolUseID: ctx.toolUseID,
+          } satisfies PermissionResult
+        }
+
+        // 3. Denial circuit-breaker — after 3 consecutive or 20 total
+        //    classifier denials, stop calling the classifier and fall
+        //    through to the human prompt for the rest of the session.
+        if (!tracker.shouldUseClassifier) {
+          log.warn(`auto denial limit reached for session ${session.id}, falling back to prompt`)
+          // fall through
         } else if (this.classifierLimiter.tryAcquire()) {
-          // Concurrency gate — prevents cost runaway from rapid tool bursts.
+          // 4. AI classifier — the final decision layer.
           try {
             const cleaned = sanitizeToolInput(toolName, toolInput)
             const result = await classifyToolAction({
@@ -382,15 +389,18 @@ export class PermissionBroker {
               sessionModel: session.model,
             })
             if (result.allow) {
+              tracker.recordAllow()
               return {
                 behavior: 'allow',
                 updatedInput: toolInput,
                 toolUseID: ctx.toolUseID,
               } satisfies PermissionResult
             }
+            tracker.recordDenial()
             log.info(`auto classifier blocked ${toolName}: ${result.reason}`)
           } catch (err: unknown) {
-            // Fail-closed: unexpected errors fall through to human prompt.
+            // Errors don't count as denials — the classifier didn't
+            // actively block; something went wrong.
             log.warn(`auto classifier error for ${toolName}: ${err}`)
           } finally {
             this.classifierLimiter.release()
@@ -401,7 +411,7 @@ export class PermissionBroker {
         // Fall through to the pending-request path below — the user sees
         // the normal permission dialog and can approve or deny.
       }
-      return this.createPendingRequest(session, ctx, broadcastReq, broadcastRes, onPendingChanged, permissionTimeoutMs, (pid, wrappedResolve, abortHandler, timeoutTimer) => ({
+      return this.createPendingRequest(session, ctx, broadcastReq, broadcastRes, onPendingChanged, (pid, resolve, abortHandler) => ({
         kind: 'permission' as const,
         id: pid,
         toolName,
@@ -412,10 +422,9 @@ export class PermissionBroker {
         suggestions: ctx.suggestions,
         toolUseID: ctx.toolUseID,
         createdAt: Date.now(),
-        resolve: wrappedResolve,
+        resolve,
         signal: ctx.signal,
         abortHandler,
-        timeoutTimer,
       }), `tool permission request - ${toolName}`)
     }
 
@@ -432,7 +441,6 @@ export class PermissionBroker {
     } catch {
       /* ignore */
     }
-    if (p.timeoutTimer) clearTimeout(p.timeoutTimer)
   }
 
   /** List pending tool-permission/question requests. */

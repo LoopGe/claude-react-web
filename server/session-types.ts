@@ -65,10 +65,6 @@ export type PendingPermission = PermissionRequestSnapshot & {
   resolve: (r: PermissionResult) => void
   signal: AbortSignal
   abortHandler: () => void
-  /** Auto-deny timer handle. Stored so decide() / answerQuestion() can
-   *  clear it when the user responds before the timeout fires, avoiding
-   *  a leaked timer closure that holds the Session reference alive. */
-  timeoutTimer: ReturnType<typeof setTimeout> | null
 }
 
 /** Metadata returned by list() / get(). Field shape lives in
@@ -290,10 +286,6 @@ export interface SessionManagerOptions {
    *  internal platform-native-package resolution, which can pick a
    *  wrong libc variant on some systems. */
   claudeBinary?: string
-  /** Timeout (ms) for pending ordinary tool-permission requests.
-   *  Auto-denies if the user does not respond in time. AskUserQuestion
-   *  prompts are excluded and wait until answer/skip/abort. 0 = no timeout. */
-  permissionTimeoutMs?: number
   /** Maximum time (ms) a session can stay "working" before the GC
    *  auto-interrupts it. 0 = disable?. */
   workingStuckMs?: number

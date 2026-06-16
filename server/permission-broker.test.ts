@@ -81,7 +81,6 @@ function makeToolPermission(overrides: Partial<PendingPermission> = {}): Pending
     resolve: vi.fn() as PendingPermission['resolve'],
     signal: ac.signal,
     abortHandler: vi.fn(),
-    timeoutTimer: null,
   }
   return { ...base, ...overrides } as PendingPermission
 }
@@ -106,7 +105,6 @@ function makeQuestionPermission(overrides: Record<string, unknown> = {}): Pendin
     resolve: vi.fn(),
     signal: ac.signal,
     abortHandler: vi.fn(),
-    timeoutTimer: null,
   }
   return { ...base, ...overrides } as unknown as PendingPermission
 }
@@ -118,7 +116,7 @@ describe('PermissionBroker', () => {
 
   beforeEach(() => {
     vi.useFakeTimers()
-    broker = new PermissionBroker({ permissionTimeoutMs: 5000 })
+    broker = new PermissionBroker()
   })
 
   afterEach(() => {
@@ -407,7 +405,7 @@ describe('PermissionBroker', () => {
       expect(pending.kind).toBe('question')
     })
 
-    it('keeps AskUserQuestion pending past permissionTimeoutMs', async () => {
+    it('keeps AskUserQuestion pending indefinitely', async () => {
       const session = makeFakeSession()
       const canUseTool = broker.buildCanUseTool(session, vi.fn())
       const ac = new AbortController()
@@ -426,7 +424,6 @@ describe('PermissionBroker', () => {
       expect(session.pending.size).toBe(1)
       const pending = Array.from(session.pending.values())[0]
       expect(pending.kind).toBe('question')
-      expect(pending.timeoutTimer).toBeNull()
 
       vi.advanceTimersByTime(5001)
 
@@ -461,7 +458,7 @@ describe('PermissionBroker', () => {
       expect(session.pending.size).toBe(0)
     })
 
-    it('times out and auto-denies when permissionTimeoutMs > 0', async () => {
+    it('permission request stays pending indefinitely (no auto-deny timeout)', async () => {
       const session = makeFakeSession()
       const canUseTool = broker.buildCanUseTool(session, vi.fn())
       const ac = new AbortController()
@@ -478,14 +475,16 @@ describe('PermissionBroker', () => {
       // Pending is created
       expect(session.pending.size).toBe(1)
 
-      // Advance past timeout
-      vi.advanceTimersByTime(5001)
+      // Advance well past any former default timeout — should still be pending
+      vi.advanceTimersByTime(10 * 60 * 1000)
 
+      expect(session.pending.size).toBe(1)
+
+      // Resolve manually via decide
+      const pendingId = Array.from(session.pending.keys())[0]
+      broker.decide(session, pendingId, { behavior: 'allow' })
       const result = await promise
-      expect(result.behavior).toBe('deny')
-      if (result.behavior === 'deny') {
-        expect(result.interrupt).toBe(false)
-      }
+      expect(result.behavior).toBe('allow')
       expect(session.pending.size).toBe(0)
     })
 
@@ -573,10 +572,9 @@ describe('PermissionBroker', () => {
       expect(() => broker.decide(session, pending.id, { behavior: 'allow' })).toThrow('interactive question')
     })
 
-    it('clears timeout timer on decide', () => {
+    it('resolves pending on decide', () => {
       const session = makeFakeSession()
-      const timer = setTimeout(() => {}, 99999)
-      const pending = makeToolPermission({ timeoutTimer: timer })
+      const pending = makeToolPermission()
       session.pending.set(pending.id, pending)
 
       broker.decide(session, pending.id, { behavior: 'allow' })
@@ -647,10 +645,9 @@ describe('PermissionBroker', () => {
       expect(session.pending.size).toBe(0)
     })
 
-    it('clears timeout timers', () => {
+    it('resolves all pending on denyAll', () => {
       const session = makeFakeSession()
-      const timer = setTimeout(() => {}, 99999)
-      const p = makeToolPermission({ timeoutTimer: timer })
+      const p = makeToolPermission()
       session.pending.set('p1', p)
 
       broker.denyAll(session)

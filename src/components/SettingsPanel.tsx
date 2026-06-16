@@ -279,6 +279,39 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
     }
   }
 
+  // Global MCP servers not yet connected to this session.
+  const availableMcpNames = useMemo(() => {
+    const currentNames = new Set(mcp.map((s) => s.name))
+    return [...globalMcpNames].filter((n) => !currentNames.has(n)).sort()
+  }, [mcp, globalMcpNames])
+
+  const addMcpServer = async (name: string) => {
+    try {
+      setBusy(true)
+      // setMcpServers has REPLACE semantics over the dynamic set.  Pass
+      // ALL global server names (not just the new one) so previously
+      // connected global servers are preserved.  Also forward any
+      // inline (non-global) servers already connected to this session
+      // so they aren't silently dropped by the replace.
+      const enabledMcpServers = [...globalMcpNames].sort()
+      const servers: Record<string, unknown> = {}
+      for (const srv of mcp) {
+        if (!globalMcpNames.has(srv.name) && srv.config) {
+          servers[srv.name] = srv.config
+        }
+      }
+      const body: { enabledMcpServers: string[]; servers?: Record<string, unknown> } = { enabledMcpServers }
+      if (Object.keys(servers).length > 0) body.servers = servers
+      await api.post(`/sessions/${session.id}/mcp/servers`, body)
+      await refreshMcp()
+      toast.success(`Added MCP server "${name}"`)
+    } catch (e) {
+      toast.error(`Couldn't add MCP: ${(e as Error).message}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   // Auto-load the plugin list the first time the Plugins tab is opened. The
   // reload response carries the plugin NAMES the grouping logic needs to
   // associate skills/agents with their owning plugin (the description's
@@ -641,6 +674,25 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
             disabled={busy || session.terminated}
           />
         ))}
+        {availableMcpNames.length > 0 && (
+          <div className="settings-mcp-available">
+            <div className="settings-section-head compact">
+              <span className="settings-note">Available from global config</span>
+            </div>
+            {availableMcpNames.map((name) => (
+              <div key={name} className="settings-mcp-available-row">
+                <span className="settings-mcp-available-name">{name}</span>
+                <button
+                  className="btn btn-sm"
+                  onClick={() => void addMcpServer(name)}
+                  disabled={busy || session.terminated}
+                >
+                  Add
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       )}
         </div>
