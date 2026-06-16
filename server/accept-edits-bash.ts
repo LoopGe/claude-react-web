@@ -147,6 +147,10 @@ export function isInScopePath(p: string, cwd?: string): boolean {
   // happens on Windows when target is on a different drive).
   if (rel === '') return true // p resolves to cwd itself
   if (rel.startsWith('..') || isAbsolute(rel)) return false
+  // On Unix, path.resolve() treats Windows drive-letter paths (C:/...) as
+  // relative segments — the resulting `rel` would contain a drive-letter
+  // prefix that can never be a valid relative path. Reject it.
+  if (/^[A-Za-z]:/.test(rel)) return false
   return true
 }
 
