@@ -835,7 +835,6 @@ export const SessionList = memo(function SessionList({
           defaults={defaults}
           serverModels={serverModels}
           initialCwd={prefilledCwd}
-          activeGroupId={activeGroupId}
           groups={groups}
           maxOpen={maxOpen}
           onCancel={() => {

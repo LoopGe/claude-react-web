@@ -27,9 +27,6 @@ export interface NewSessionDialogProps {
   initialCwd?: string
   onSubmit: (form: NewSessionForm) => void
   onCancel: () => void
-  /** The id of the group currently active in the main grid, if any.
-   *  Pre-selects the group dropdown so new sessions inherit the view. */
-  activeGroupId?: string | null
   /** Available groups for the group selector. May be empty. */
   groups: SessionGroup[]
   /** Server-configured model list (from /api/config). Shown as chips
@@ -39,7 +36,7 @@ export interface NewSessionDialogProps {
   maxOpen: number
 }
 
-export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, onCancel, activeGroupId, groups, serverModels, maxOpen }: NewSessionDialogProps) {
+export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, onCancel, groups, serverModels, maxOpen }: NewSessionDialogProps) {
   const [cwd, setCwd] = useState<string>(initialCwd ?? defaults.cwd ?? '')
   const [model, setModel] = useState<string>(defaults.model ?? '')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
@@ -49,7 +46,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
    *  global accent" — we don't write an entry to sessionColors unless
    *  the user explicitly picks one. */
   const [accent, setAccent] = useState<string | undefined>(undefined)
-  const [groupId, setGroupId] = useState<string>(activeGroupId ?? '')
+  const [groupId, setGroupId] = useState<string>('')
   const [showPicker, setShowPicker] = useState(false)
   const pickerPresence = useExitPresence(showPicker)
   // Guards against double-submit: the parent unmounts this dialog on
@@ -411,8 +408,8 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                 {groups.map((g) => {
                   const full = g.sessionIds.length >= maxOpen
                   return (
-                    <option key={g.id} value={g.id} disabled={full}>
-                      {g.name} ({g.sessionIds.length}/{maxOpen}){full ? ' — full' : ''}
+                    <option key={g.id} value={g.id}>
+                      {g.name} ({g.sessionIds.length}/{maxOpen}){full ? ' — will replace oldest' : ''}
                     </option>
                   )
                 })}
