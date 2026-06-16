@@ -27,7 +27,7 @@ import { toSnapshot, sanitizeQuestions, formatQuestionAnswers, promoteToSession 
 import { HttpError } from './errors.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import { createLogger } from './log.js'
-import { isAutoApprovableEditBash, isInScopeEditTool } from './accept-edits-bash.js'
+import { isAutoApprovableEditBash, isInScopeEditTool, isSensitiveAutoEditPath, EDIT_TOOL_PATH_FIELD } from './accept-edits-bash.js'
 import { isAutoApprovableEditPowerShell } from './accept-edits-powershell.js'
 import { isReadOnlyBash } from './readonly-bash.js'
 import { classifyToolAction, sanitizeToolInput } from './auto-classifier.js'
@@ -68,6 +68,17 @@ const SAFE_AUTO_TOOLS: ReadonlySet<string> = new Set([
   // Non-destructive (WebSearch intentionally excluded — network op per SDK)
   'Sleep',
 ])
+
+/** Bypass-immune sensitive path patterns for Bash/PowerShell commands.
+ *  Matches directory names (.git, .claude, .vscode, .idea) and shell
+ *  config basenames anywhere in the command string.  Uses lookahead
+ *  (?=[/\\]|$) for directory names so `.gitignore` (safe to edit) does
+ *  NOT match while `.git/config` (dangerous) does.  The leading
+ *  `(?<=^|[\s;/\\\\])` ensures the directory name starts at a token
+ *  boundary (after space, semicolon, path separator, or start of
+ *  string) so `legit` doesn't false-match. */
+const BASH_SENSITIVE_PATH_RE =
+  /(?<=^|[\s;/\\])(?:\.git|\.claude|\.vscode|\.idea)(?=[/\\]|$|\s)|\.gitconfig|\.gitmodules|\.bashrc|\.bash_profile|\.zshrc|\.zprofile|\.profile\b/
 
 export class PermissionBroker {
   /** Per-broker concurrency limiter for auto-mode classifier calls.
@@ -298,11 +309,37 @@ export class PermissionBroker {
       // (`permissionMode`) is the single source of truth, no CLI-side
       // --dangerously-skip-permissions plumbing required.
       if (session.permissionMode === 'bypassPermissions') {
-        return {
-          behavior: 'allow',
-          updatedInput: toolInput,
-          toolUseID: ctx.toolUseID,
-        } satisfies PermissionResult
+        // Bypass-immune safety checks — aligned with SDK's
+        // checkPathSafetyForAutoEdit. Edits to .git/, .claude/, .vscode/,
+        // .idea/, shell configs, and git config files still prompt even in
+        // bypass mode.  All other tools are auto-approved.
+        const editField = EDIT_TOOL_PATH_FIELD[toolName]
+        if (editField) {
+          const filePath = (toolInput as Record<string, unknown> | null)?.[editField]
+          if (typeof filePath === 'string' && filePath && isSensitiveAutoEditPath(filePath, session.cwd)) {
+            // Fall through to prompt — sensitive path.
+          } else {
+            return {
+              behavior: 'allow',
+              updatedInput: toolInput,
+              toolUseID: ctx.toolUseID,
+            } satisfies PermissionResult
+          }
+        } else {
+          // Non-edit tools (Bash, etc.): check if the command string
+          // references sensitive paths.  Conservative substring match
+          // against known dangerous directory names and config files.
+          const command = (toolInput as { command?: unknown })?.command
+          if (typeof command === 'string' && BASH_SENSITIVE_PATH_RE.test(command)) {
+            // Fall through to prompt — command references sensitive path.
+          } else {
+            return {
+              behavior: 'allow',
+              updatedInput: toolInput,
+              toolUseID: ctx.toolUseID,
+            } satisfies PermissionResult
+          }
+        }
       }
       // `dontAsk` is the CI lockdown mode: auto-DENY everything that would
       // otherwise prompt, allowing ONLY read-only built-in tools and read-only

@@ -245,23 +245,33 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
       let cmdIter: AsyncIterator<unknown> | null = null
       let hookSub: { iterable: AsyncIterable<unknown>; snapshot: unknown[]; unsubscribe: () => void } | null = null
       let hookIter: AsyncIterator<unknown> | null = null
+      let step = ''
       try {
+        step = 'subscribe'
         const msg = sm.subscribe(sessionId)
         msgSub = msg
+        step = 'subscribePermissions'
         const perms = sm.subscribePermissions(sessionId)
         permSub = perms
+        step = 'subscribeContextUsage'
         ctxSub = sm.subscribeContextUsage(sessionId)
         ctxIter = ctxSub?.iterable[Symbol.asyncIterator]() ?? null
+        step = 'subscribeGitStatus'
         gitSub = sm.subscribeGitStatus(sessionId)
         gitIter = gitSub?.iterable[Symbol.asyncIterator]() ?? null
+        step = 'subscribeMessageStatus'
         msgStatSub = sm.subscribeMessageStatus(sessionId)
         msgStatIter = msgStatSub?.iterable[Symbol.asyncIterator]() ?? null
+        step = 'subscribeSessionRecap'
         recapSub = sm.subscribeSessionRecap(sessionId)
         recapIter = recapSub?.iterable[Symbol.asyncIterator]() ?? null
+        step = 'subscribeSessionCleared'
         clearedSub = sm.subscribeSessionCleared(sessionId)
         clearedIter = clearedSub?.iterable[Symbol.asyncIterator]() ?? null
+        step = 'subscribeCommandChanges'
         cmdSub = sm.subscribeCommandChanges(sessionId)
         cmdIter = cmdSub?.iterable[Symbol.asyncIterator]() ?? null
+        step = 'subscribeHookRuns'
         hookSub = sm.subscribeHookRuns(sessionId)
         hookIter = hookSub?.iterable[Symbol.asyncIterator]() ?? null
 
@@ -475,6 +485,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
         // Relay that to the client rather than killing the connection;
         // the user might just have stale state after a session was
         // removed on another tab.
+        console.error(`[ws] startSession(${sessionId}) failed at step "${step}":`, err)
         msgSub?.unsubscribe()
         permSub?.unsubscribe()
         ctxSub?.unsubscribe()
@@ -485,6 +496,10 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
         cmdSub?.unsubscribe()
         hookSub?.unsubscribe()
         queue.enqueue({ kind: 'error', sessionId, message: (err as Error).message })
+        // Always send replay-done so the client's replay state machine
+        // terminates — without this, replayReady stays false forever and
+        // the UI shows "Loading messages..." indefinitely.
+        queue.enqueue({ kind: 'replay-done', sessionId, permissions: [] })
       }
     }
 

@@ -158,6 +158,7 @@ const SENSITIVE_DIR_NAMES: ReadonlySet<string> = new Set([
   '.git',
   '.claude',
   '.vscode',
+  '.idea',
 ])
 
 const SENSITIVE_BASENAMES: ReadonlySet<string> = new Set([
@@ -177,6 +178,8 @@ const SENSITIVE_BASENAMES: ReadonlySet<string> = new Set([
   'fish_variables',
   'profile.ps1',
   'microsoft.powershell_profile.ps1',
+  '.gitconfig',
+  '.gitmodules',
 ])
 
 /** Sensitive project/user config paths that Claude Code's safety checks keep
@@ -228,7 +231,7 @@ export function isInScopeRelativePath(p: string): boolean {
 }
 
 /** The input field that carries the target path for each file-editing tool. */
-const EDIT_TOOL_PATH_FIELD: Record<string, string> = {
+export const EDIT_TOOL_PATH_FIELD: Record<string, string> = {
   Edit: 'file_path',
   Write: 'file_path',
   MultiEdit: 'file_path',
