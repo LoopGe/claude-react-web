@@ -24,6 +24,7 @@ export const PERMISSION_MODE_CYCLE: PermissionMode[] = [
   'acceptEdits',
   'plan',
   'bypassPermissions',
+  'auto',
 ]
 
 /** Reasoning effort level — controls how many tokens the model spends.
