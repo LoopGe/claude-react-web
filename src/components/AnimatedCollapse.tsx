@@ -171,7 +171,7 @@ export function AnimatedCollapse({
     if (!body || !content) return
 
     const observer = new ResizeObserver(() => {
-      if (!previousOpenRef.current || animatingRef.current) return
+      if (!previousOpenRef.current) return
       const nextHeight = content.scrollHeight
       const previousHeight = lastHeightRef.current
       if (Math.abs(nextHeight - previousHeight) < 2) {
