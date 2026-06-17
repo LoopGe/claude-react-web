@@ -755,15 +755,13 @@
 
 
 /* Shared measured-height collapse used by details/accordion UI.
-   overflow-y: hidden clips content during the height animation.
-   overflow-x is intentionally left at the default (visible) so that
-   long <pre> content inside thinking-body / tool-result blocks can
-   propagate horizontally to .msg-body's overflow-x: auto instead of
-   being silently clipped. (When one axis is hidden and the other is
-   visible, CSS coerces the visible axis to auto — which is exactly
-   the scrollable behaviour we want.) */
+   overflow-y: clip clips content during the height animation without
+   creating a scroll container (unlike hidden, which coerces
+   overflow-x: visible to auto per CSS spec). This keeps horizontal
+   scrollbars on the inner <pre> elements (thinking-body, tool-input)
+   instead of being clipped by the collapse's animated height. */
 .animated-collapse {
-  overflow-y: hidden;
+  overflow-y: clip;
   min-height: 0;
 }
 .animated-collapse.animating {
