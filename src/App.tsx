@@ -2,7 +2,7 @@
 // Chat panels side-by-side. Session Settings now renders as a per-panel
 // overlay (inside ChatPanel) rather than a right drawer — see below.
 
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { SessionList } from './components/SessionList'
 import { ChatPanel } from './components/ChatPanel'
 import { api } from './hooks/useApi'
@@ -24,7 +24,7 @@ import { useWsHub, useWsHubStatus } from './hooks/useWsHub'
 import type { WsServerFrame } from './ws-types'
 import type { MessageSearchHit } from '../shared/search-results'
 import type { MessageJumpTarget } from '../shared/message-jump'
-import type { NewSessionForm, PermissionMode, SessionGroup, SessionInfo, SidebarSection } from './types'
+import type { NewSessionForm, PermissionMode, SessionInfo, SidebarSection } from './types'
 import { PERMISSION_MODE_CYCLE } from './types'
 import { ACCENT_COLORS } from './theme'
 import { AppearancePanel } from './components/AppearancePanel'
@@ -32,6 +32,7 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import { IconSettings, IconBellToggle, IconMenu } from './components/icons/ToolIcons'
 import { UpdateBanner } from './components/UpdateBanner'
 import { useUpdateInfo } from './hooks/useUpdateInfo'
+import { useUiState } from './hooks/useUiState'
 import { sessionStoreRegistry } from './session-store/registry'
 import { useAppOverlays } from './app/useAppOverlays'
 import { useExitPresence, usePresenceValue } from './hooks/useExitPresence'
@@ -52,15 +53,12 @@ const SnippetsManagerDialog = lazy(() => import('./components/SnippetsManagerDia
 const PromptDialog = lazy(() => import('./components/PromptDialog').then((m) => ({ default: m.PromptDialog })))
 
 import {
-  SIDEBAR_ORDER_KEY,
   SIDEBAR_MIN_KEY,
   SIDEBAR_MAX_KEY,
   SIDEBAR_MIN_DEFAULT,
   SIDEBAR_MAX_DEFAULT,
   PANEL_MIN_RATIO_KEY,
   PANEL_MIN_RATIO_DEFAULT,
-  GROUPS_KEY,
-  COLLAPSED_GROUPS_KEY,
   LAST_SEEN_TURN_KEY,
   clampMaxOpen,
 } from './constants/storageKeys'
@@ -118,8 +116,15 @@ export function App() {
   /** Side Chat drawer state. Only one Side Chat can be open at a time.
    *  Stores the full SessionInfo from the POST response so the drawer
    *  can mount immediately without waiting for the WS session-created
-   *  frame to update the sessions array. */
-  const [sideChat, setSideChat] = useState<{ parentId: string; session: SessionInfo } | null>(null)
+   *  frame to update the sessions array. `collapsed` tracks whether
+   *  the drawer is hidden (session stays alive). `initialMessageCount`
+   *  snapshots messageCount at collapse time for unread badge tracking. */
+  const [sideChat, setSideChat] = useState<{
+    parentId: string
+    session: SessionInfo
+    collapsed: boolean
+    initialMessageCount: number
+  } | null>(null)
   const sideChatRef = useRef(sideChat)
   // eslint-disable-next-line react-hooks/refs -- intentional render-time ref sync; async close/create callbacks read this ref so they don't capture a stale `sideChat` (useEffect would lag by one render)
   sideChatRef.current = sideChat
@@ -202,11 +207,14 @@ export function App() {
   /** User-chosen ordering for the sidebar. Items here always sort before
    *  anything not listed; unknown ids (e.g. sessions created after the
    *  order was saved) fall through to the default lastActivityAt sort. */
-  const [sidebarOrder, setSidebarOrder] = useLocalStorage<string[]>(SIDEBAR_ORDER_KEY, [])
-  /** Named session groups for quick layout switching. */
-  const [groups, setGroups] = useLocalStorage<SessionGroup[]>(GROUPS_KEY, [])
-  /** Which group headers are collapsed in the sidebar. */
-  const [collapsedGroups, setCollapsedGroups] = useLocalStorage<Record<string, boolean>>(COLLAPSED_GROUPS_KEY, {})
+  const {
+    groups,
+    setGroups,
+    sidebarOrder,
+    setSidebarOrder,
+    collapsedGroups,
+    setCollapsedGroups,
+  } = useUiState()
 
   // Composer snippets — a SINGLE global instance shared by every panel
   // (previously each Chat panel owned its own copy). Backed by the server
@@ -468,7 +476,10 @@ export function App() {
           setSessionsLoaded(true)
           // Reconcile open/focused against whatever the server reports.
           const ids = new Set(frame.sessions.map((s) => s.id))
-          setOpenIds((prev) => prev.filter((id) => ids.has(id)))
+          setOpenIds((prev) => {
+            const next = prev.filter((id) => ids.has(id))
+            return next.length === prev.length ? prev : next
+          })
           setFocusedId((prev) => (prev && ids.has(prev) ? prev : null))
           // Prune lastSeenTurn entries whose sessions are gone — keeps
           // the persisted map from growing unbounded across restarts.
@@ -532,6 +543,12 @@ export function App() {
           if (frame.session.pendingPermissionCount === 0) {
             dismissPermissionToast(frame.session.id)
           }
+          // Keep the side chat's SessionInfo in sync so the collapsed badge
+          // reflects live working/messageCount changes.
+          setSideChat((prev) => {
+            if (!prev || prev.session.id !== frame.session.id) return prev
+            return { ...prev, session: frame.session }
+          })
           break
         }
         case 'session-created': {
@@ -583,6 +600,18 @@ export function App() {
             })
             return changed ? next : prev
           })
+          // Clean up side chat if its parent was removed, or if the
+          // side chat session itself was removed.
+          if (
+            sideChatRef.current &&
+            (sideChatRef.current.parentId === frame.id ||
+              sideChatRef.current.session.id === frame.id)
+          ) {
+            const sideId = sideChatRef.current.session.id
+            setSideChat(null)
+            void api.delete(`/sessions/${sideId}`).catch(() => {})
+            sessionStoreRegistry.delete(sideId)
+          }
           break
         }
         case 'session-recap-update': {
@@ -820,6 +849,21 @@ export function App() {
     sessionStoreRegistry.delete(id)
   }, [])
 
+  /** Toggle the Side Chat drawer between expanded and collapsed.
+   *  Collapse hides the drawer but keeps the session alive on the server.
+   *  Expand clears the unread badge. */
+  const handleToggleCollapseSideChat = useCallback(() => {
+    setSideChat((prev) => {
+      if (!prev) return null
+      if (prev.collapsed) {
+        // Expanding: clear unread by resetting initialMessageCount
+        return { ...prev, collapsed: false, initialMessageCount: 0 }
+      }
+      // Collapsing: snapshot the current messageCount for unread tracking
+      return { ...prev, collapsed: true, initialMessageCount: prev.session.messageCount }
+    })
+  }, [])
+
   /** Create a Side Chat — ephemeral fork rendered as a drawer overlay. */
   const sideChatCreating = useRef(false)
   const handleSideChat = useCallback(
@@ -838,7 +882,7 @@ export function App() {
           sessionStoreRegistry.delete(oldId)
         }
         const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/side-chat`, {})
-        setSideChat({ parentId: id, session: res.session })
+        setSideChat({ parentId: id, session: res.session, collapsed: false, initialMessageCount: 0 })
       } catch (e) {
         toast.error(`Couldn't create Side Chat: ${(e as Error).message}`)
       } finally {
@@ -1025,27 +1069,70 @@ export function App() {
       const source = sessions.find((s) => s.id === id)
       if (!source) return
       const sourceGroup = groups.find((g) => g.sessionIds.includes(id))
-      const form: NewSessionForm = {
-        cwd: source.cwd,
-        model: source.model,
-        permissionMode: source.permissionMode,
-        // Preserve beta flags (notably `context-1m-...`) so restart
-        // doesn't silently drop the window from 1M back to 200k.
-        betas: source.betas,
-        // Inherit the source's group only. An ungrouped session restarts
-        // as ungrouped — don't drop it into an arbitrary group with room.
-        groupId: sourceGroup?.id,
-        title: source.title,
+      const wasOpen = openIds.includes(id)
+
+      try {
+        // Create the replacement session directly (no groupId) to avoid
+        // handleAddToGroup's overflow eviction kicking a sibling out of
+        // the group while the old session still occupies its slot.
+        const res = await api.post<{ session: SessionInfo }>('/sessions', {
+          cwd: source.cwd,
+          model: source.model,
+          permissionMode: source.permissionMode,
+          // Preserve beta flags (notably `context-1m-...`) so restart
+          // doesn't silently drop the window from 1M back to 200k.
+          betas: source.betas,
+          title: source.title,
+        })
+        const newId = res.session.id
+
+        // Swap the panel slot so the new session takes the old one's
+        // position without triggering openSession's eviction logic.
+        if (wasOpen) {
+          setOpenIds((prev) => {
+            const idx = prev.indexOf(id)
+            if (idx === -1) return prev
+            const next = prev.slice()
+            next[idx] = newId
+            return next
+          })
+          setFocusedId((prev) => (prev === id ? newId : prev))
+        }
+        setLastSeenTurn((prev) => ({ ...prev, [newId]: res.session.lastTurnAt ?? Date.now() }))
+
+        // Delete the old session.  The WS `session-removed` handler
+        // automatically removes the old id from the group's sessionIds.
+        await performDelete(id)
+
+        // Insert the new session into the group at the old session's
+        // position.  Must happen AFTER performDelete, because the WS
+        // handler runs setGroups to remove the old id — doing it before
+        // would be overwritten by the stale-closure-based WS update.
+        if (sourceGroup) {
+          const oldIdx = sourceGroup.sessionIds.indexOf(id)
+          setGroups((prev) =>
+            prev.map((g) => {
+              if (g.id !== sourceGroup.id) return g
+              // If the WS handler already removed `id`, insert at the
+              // recorded position; otherwise replace in-place.
+              const curIdx = g.sessionIds.indexOf(id)
+              if (curIdx !== -1) {
+                const next = g.sessionIds.slice()
+                next[curIdx] = newId
+                return { ...g, sessionIds: next }
+              }
+              // Already removed by WS handler — splice in at old position.
+              const next = g.sessionIds.slice()
+              next.splice(Math.min(oldIdx, next.length), 0, newId)
+              return { ...g, sessionIds: next }
+            }),
+          )
+        }
+      } catch (e) {
+        toast.error(`Couldn't restart session: ${(e as Error).message}`)
       }
-      // Create first — if this fails, the old session stays intact.
-      // handleCreate already surfaces failure via toast (never re-throws).
-      await handleCreate(form)
-      // Only delete the old session after the new one is confirmed created.
-      // Use the immediate path — an Undo toast on a restart would be
-      // confusing (the replacement session already exists).
-      await performDelete(id)
     },
-    [sessions, groups, handleCreate, performDelete],
+    [sessions, groups, openIds, performDelete, toast],
   )
 
   /** Activate a group: replace main-area panels with the group's sessions. */
@@ -1260,31 +1347,31 @@ export function App() {
     setSessions((prev) => prev.map((p) => (p.id === s.id ? s : p)))
   }, [])
 
-  // ── Panel enter/exit animation ──────────────────────────────────────
-  // Diff openIds to detect exits (→ snapshot into closingPanels) and
-  // new mounts (→ mark for one-shot `.entering` class). Single effect
-  // so both see the same prev/next snapshot.
-  useEffect(() => {
-    const prev = prevOpenIdsRef.current
-    const next = openIds
-    prevOpenIdsRef.current = next
-    if (prev.length === 0 && next.length === 0) return
-    const prevSet = new Set(prev)
-    const nextSet = new Set(next)
+  // ── Panel exit animation + entering DOM class ───────────────────────
+  // Entering IDs are already computed during render (enteringSetRef).
+  // This effect applies the `.entering` class to the real DOM and
+  // detects exited panels for the closing-ghost overlay.
+  const prevExitIdsRef = useRef<string[]>([])
+  useLayoutEffect(() => {
+    const bodyEl = bodyRef.current
 
-    // Entering: panels in next but not in prev.
-    for (const id of next) {
-      if (!prevSet.has(id)) panelAnimRef.current[id] = 'entering'
+    // Apply .entering class to newly-entering panels.
+    for (const id of enteringSetRef.current) {
+      const el = bodyEl?.querySelector<HTMLElement>(`[data-panel-id="${id}"]`)
+      if (el) el.classList.add('entering')
     }
 
     // Exiting: panels in prev but not in next. Capture their DOM rects
     // BEFORE React removes them so we can overlay the closing ghost at
-    // the exact same position.
-    const gone = prev
-      .map((id) => (!nextSet.has(id) ? { id } : null))
-      .filter(Boolean) as { id: string }[]
+    // the exact same position. Uses a separate ref from the entering
+    // detection because prevOpenIdsRef is updated during render.
+    const prevIds = prevExitIdsRef.current
+    const nextSet = new Set(openIds)
+    prevExitIdsRef.current = openIds
+    const gone = prevIds
+      .filter((id) => !nextSet.has(id))
+      .map((id) => ({ id }))
     if (gone.length === 0) return
-    const bodyEl = bodyRef.current
     const snapshots = gone
       .map(({ id }) => {
         const session = sessionsRef.current.find((s) => s.id === id)
@@ -1355,12 +1442,27 @@ export function App() {
     }
   }, [closingPanels.length])
 
-  /** Ref-based flag so newly-opened panels get a one-shot `.entering` class
-   *  without re-rendering the parent on every animation end. */
-  const panelAnimRef = useRef<Record<string, 'entering' | 'exiting'>>({})
+  // ── Entering-panel detection (render phase) ──────────────────────────
+  // We diff openIds during render (not in an effect) so the `.entering`
+  // flag is available in the same render that first mounts the panel.
+  // The useLayoutEffect below applies the class to the real DOM for the
+  // first frame (before the browser paints). A state nudge in
+  // handlePanelAnimEnd then forces a re-render so React's virtual DOM
+  // reconciles and removes the class via its normal className commit.
+  const enteringSetRef = useRef<Set<string>>(new Set())
+  if (prevOpenIdsRef.current !== openIds) {
+    const prevSet = new Set(prevOpenIdsRef.current)
+    for (const id of openIds) {
+      if (!prevSet.has(id)) enteringSetRef.current.add(id)
+    }
+    prevOpenIdsRef.current = openIds
+  }
+  // State nudge: incremented by handlePanelAnimEnd to force a re-render
+  // after the animation completes, so React reconciles className.
+  const [, setAnimEpoch] = useState(0)
   const handlePanelAnimEnd = useCallback((id: string) => {
-    // eslint-disable-next-line react-hooks/immutability -- ref mutation inside an event handler (animation-end callback) is permitted; this flag only drives a one-shot CSS class and isn't read during render.
-    delete panelAnimRef.current[id]
+    enteringSetRef.current.delete(id)
+    setAnimEpoch((n) => n + 1)
   }, [])
 
   // Global keyboard shortcuts.
@@ -1572,7 +1674,7 @@ export function App() {
       if (targetIdx < 0) return
       const insertAt = position === 'before' ? targetIdx : targetIdx + 1
       without.splice(insertAt, 0, draggedId)
-      setSidebarOrder(without)
+      setSidebarOrder(() => without)
     },
     [orderedSessions, setSidebarOrder],
   )
@@ -2092,7 +2194,7 @@ export function App() {
             // template we built alternates fr / 4px tracks, so this order has
             // to match or the columns will de-sync.
             openSessions.flatMap((s, i) => {
-              const entering = panelAnimRef.current[s.id] === 'entering'
+              const entering = enteringSetRef.current.has(s.id)
               const node = (
                 // Per-panel ErrorBoundary: if one panel's render throws
                 // (e.g. a malformed assistant message), the other open
@@ -2126,6 +2228,15 @@ export function App() {
                     onOpenSettingsTab={openSettingsTab}
                     onShowHelp={showHelpWithCommands}
                     sideChatSession={sideChat?.parentId === s.id ? sideChat.session : undefined}
+                    sideChatCollapsed={sideChat?.parentId === s.id ? sideChat.collapsed : undefined}
+                    sideChatUnread={
+                      sideChat?.parentId === s.id && sideChat.collapsed
+                        ? Math.max(0, sideChat.session.messageCount - sideChat.initialMessageCount)
+                        : 0
+                    }
+                    onToggleCollapseSideChat={
+                      sideChat?.parentId === s.id ? handleToggleCollapseSideChat : undefined
+                    }
                     onCloseSideChat={sideChat?.parentId === s.id ? handleCloseSideChat : undefined}
                     onSideChat={handleSideChat}
                     settingsTabRequest={

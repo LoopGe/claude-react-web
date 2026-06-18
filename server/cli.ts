@@ -19,6 +19,7 @@ import { disableFileLogging, getLogFilePath } from './log.js'
 import { SessionStore, defaultStateDir } from './persistence.js'
 import { McpConfigStore } from './mcp-config.js'
 import { SnippetStore } from './snippet-store.js'
+import { UiStateStore } from './ui-state-store.js'
 import { MpStore } from './mp-store.js'
 import { attachWebSocket } from './ws.js'
 import { checkForUpdates } from './update-checker.js'
@@ -291,6 +292,9 @@ async function main() {
     console.log(`[cli] loaded ${snippets.length} composer snippet(s) from ${stateDir}`)
   }
 
+  const uiStateStore = new UiStateStore({ stateDir })
+  await uiStateStore.load()
+
   const claudeBinary = resolveClaudeBinary(args.claudeBinary)
   if (claudeBinary) {
     console.log(`[cli] using claude binary: ${claudeBinary}`)
@@ -317,6 +321,7 @@ async function main() {
     sessionStore: store,
     mcpConfigStore: mcpStore,
     snippetStore,
+    uiStateStore,
     mpStore,
     defaults: { cwd: args.cwd, model: args.model, claudeBinary },
     configDir: stateDir,
@@ -422,6 +427,7 @@ async function main() {
       console.error('[cli] ws shutdown error:', err)
     }
     disableFileLogging()
+    await uiStateStore.flush()
     try {
       await sessionManager.shutdown()
     } finally {

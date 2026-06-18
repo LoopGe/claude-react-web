@@ -1,4 +1,3 @@
-export const SIDEBAR_ORDER_KEY = 'claude-react-web:session-order'
 export const SIDEBAR_WIDTH_KEY = 'claude-react-web:sidebar-width'
 export const SIDEBAR_MIN_KEY = 'claude-react-web:sidebar-min-px'
 export const SIDEBAR_MAX_KEY = 'claude-react-web:sidebar-max-px'
@@ -11,8 +10,6 @@ export const PANEL_RATIOS_KEY = 'claude-react-web:panel-col-ratios'
 /** Minimum column ratio — keeps a panel from collapsing to nothing. */
 export const PANEL_MIN_RATIO_KEY = 'claude-react-web:panel-min-ratio'
 export const PANEL_MIN_RATIO_DEFAULT = 0.15
-export const GROUPS_KEY = 'claude-react-web:session-groups'
-export const COLLAPSED_GROUPS_KEY = 'claude-react-web:collapsed-groups'
 /** Per-session "last turn the user has seen" timestamps, used to decide
  *  whether a session shows an unread dot in the sidebar and panel header.
  *  Persisted so a reload doesn't mark every previously-answered session

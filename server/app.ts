@@ -16,11 +16,13 @@ import { buildFsRouter } from './fs-routes.js'
 import { buildGitRouter } from './git-routes.js'
 import { buildMcpConfigRouter } from './mcp-routes.js'
 import { buildSnippetRouter } from './snippet-routes.js'
+import { buildUiStateRouter } from './routes/ui-state-routes.js'
 import { config as serverConfig } from './config.js'
 import { createLogger } from './log.js'
 import type { SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
 import type { SnippetStore } from './snippet-store.js'
+import type { UiStateStore } from './ui-state-store.js'
 import type { MpStore } from './mp-store.js'
 
 /** Check if an Origin header value is a trusted address for CORS.
@@ -60,6 +62,10 @@ export interface AppOptions {
   /** Composer snippet store. Mounted as /api/snippets. Persists the
    *  user's reusable text macros to disk (previously localStorage-only). */
   snippetStore?: SnippetStore
+  /** UI layout state store. Mounted as /api/ui-state. Persists session
+   *  groups, sidebar order, and collapsed groups to disk (previously
+   *  localStorage-only). */
+  uiStateStore?: UiStateStore
   /** Homegrown marketplace store. When provided, the /api/mp/* routes
    *  are mounted and SessionManager spawns inject enabled plugin paths
    *  into Options.plugins. Optional to keep existing tests / standalone
@@ -222,6 +228,9 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
   }
   if (opts.snippetStore) {
     app.route('/api/snippets', buildSnippetRouter(opts.snippetStore))
+  }
+  if (opts.uiStateStore) {
+    app.route('/api/ui-state', buildUiStateRouter(opts.uiStateStore))
   }
 
   const clientDir = resolveClientDir(opts.clientDir)
