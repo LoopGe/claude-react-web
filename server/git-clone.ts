@@ -13,6 +13,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { HttpError } from './errors.js'
+import { MAX_BUFFER_BYTES } from './constants.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -26,8 +27,6 @@ const FULL_CLONE_TIMEOUT_MS = 10 * 60 * 1000
 /** Pull timeout. Fast-forward fetches against an already-cloned repo are
  *  bounded — we don't need the full clone budget. */
 const PULL_TIMEOUT_MS = 60_000
-/** Stdout/stderr cap. Generous enough for a verbose clone progress dump. */
-const MAX_BUFFER_BYTES = 16 * 1024 * 1024
 
 /** Force-disable interactive prompts. Without this, a clone of a private
  *  https URL will hang waiting on stdin (which never gets fed in our

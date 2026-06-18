@@ -19,7 +19,7 @@
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { existsSync } from 'node:fs'
+import { promises as fsPromises } from 'node:fs'
 import { isAbsolute, join, normalize, sep } from 'node:path'
 import { HttpError } from './errors.js'
 import { createLogger } from './log.js'
@@ -39,10 +39,7 @@ const log = createLogger('git')
 const execFileAsync = promisify(execFile)
 
 const DEFAULT_TIMEOUT_MS = 10_000
-/** Hard cap on stdout/stderr buffered from a single git invocation. 16 MiB
- *  is generous for diffs and logs; pathological cases are caught by the
- *  truncation pass that runs before we serialise the response. */
-const MAX_BUFFER_BYTES = 16 * 1024 * 1024
+import { MAX_BUFFER_BYTES } from './constants.js'
 /** Per-file diff line cap. Beyond this we drop the tail and set
  *  `truncated: true` so the UI can show a clipped marker. */
 const MAX_DIFF_LINES = 500
@@ -171,14 +168,21 @@ async function getGitDir(cwd: string): Promise<string | null> {
 async function detectInProgressState(cwd: string): Promise<GitRepoState | null> {
   const gitDir = await getGitDir(cwd)
   if (!gitDir) return null
-  if (existsSync(join(gitDir, 'rebase-apply'))) return 'rebasing'
-  if (existsSync(join(gitDir, 'rebase-merge'))) return 'rebasing'
-  if (existsSync(join(gitDir, 'REBASE_HEAD'))) return 'rebasing'
-  if (existsSync(join(gitDir, 'MERGE_HEAD'))) return 'merging'
-  if (existsSync(join(gitDir, 'CHERRY_PICK_HEAD'))) return 'cherry-picking'
-  if (existsSync(join(gitDir, 'REVERT_HEAD'))) return 'reverting'
-  if (existsSync(join(gitDir, 'BISECT_LOG'))) return 'bisecting'
-  return null
+  // Use async fs.access instead of sync existsSync to avoid blocking the
+  // event loop. Check all markers in parallel for speed.
+  const check = async (file: string, state: GitRepoState): Promise<GitRepoState | null> => {
+    try { await fsPromises.access(join(gitDir, file)); return state } catch { return null }
+  }
+  const results = await Promise.all([
+    check('rebase-apply', 'rebasing'),
+    check('rebase-merge', 'rebasing'),
+    check('REBASE_HEAD', 'rebasing'),
+    check('MERGE_HEAD', 'merging'),
+    check('CHERRY_PICK_HEAD', 'cherry-picking'),
+    check('REVERT_HEAD', 'reverting'),
+    check('BISECT_LOG', 'bisecting'),
+  ])
+  return results.find((r): r is GitRepoState => r !== null) ?? null
 }
 
 // ── Status ──────────────────────────────────────────────────────────

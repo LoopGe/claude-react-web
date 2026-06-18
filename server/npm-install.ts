@@ -22,6 +22,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { HttpError } from './errors.js'
 import { createLogger } from './log.js'
+import { MAX_BUFFER_BYTES } from './constants.js'
 
 const log = createLogger('npm-install')
 const execFileAsync = promisify(execFile)
@@ -29,7 +30,6 @@ const execFileAsync = promisify(execFile)
 /** npm install is slow (resolve + download + extract + global link). Git's
  *  10s ceiling is far too tight; allow two minutes. */
 const INSTALL_TIMEOUT_MS = 120_000
-const MAX_BUFFER_BYTES = 16 * 1024 * 1024
 
 export interface NpmInstallResult {
   stdout: string

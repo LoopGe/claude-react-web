@@ -60,6 +60,31 @@
   outline: none;
 }
 
+/* ── A11y: visually-hidden (screen-reader-only) utility ───────────────
+ *
+ * Reusable clip recipe for content that must be in the accessibility tree
+ * but not painted. Use for off-screen headings (e.g. the <main> region's
+ * <h1>), live-region captions, and table summaries. Pairs with a
+ * `.sr-only-focusable` companion when the element must become visible on
+ * focus (the skip-link uses its own variant because it slides in).
+ *
+ * `position: absolute` removes it from flow so it never affects layout;
+ * the 1×1 + clip-path: inset(50%) combo hides it reliably across browsers
+ * without the older `clip: rect()` IE quirk. `white-space: nowrap` +
+ * overflow:hidden prevent a long string from wrapping into visibility.
+ */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ── ToolCard chrome ──────────────────────────────────────────────────
  *
  * Shared frame for every tool_use card (Edit, Write, Read, Grep, Bash,
@@ -595,7 +620,8 @@
   .model-picker,
   .effort-slider,
   .appearance-panel,
-  .chat-jump-to-bottom {
+  .chat-jump-to-bottom,
+  .chat-panel-header.mode-changing {
     animation-duration: 0.01ms !important;
   }
   .notification-icon .notification-icon-slash,

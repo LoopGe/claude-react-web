@@ -240,6 +240,11 @@ export class SessionStore {
    *  thrash a shared single-slot cache against each other. */
   private cachedSubagentsMap: SessionState['activeSubagents'] | null = null
   private cachedRunningSubagents: SessionSnapshot['activeSubagents'] = []
+  /** Per-instance Workflow filter cache — mirrors cachedSubagentsMap so
+   *  the running-workflow list only reallocates when activeWorkflows
+   *  actually changes (drives any future Workflow chip in WorkingBubble). */
+  private cachedWorkflowsMap: SessionState['activeWorkflows'] | null = null
+  private cachedRunningWorkflows: SessionSnapshot['activeWorkflows'] = []
 
   constructor(sessionId: string) {
     registerStoreForDebug(sessionId, this)
@@ -398,6 +403,18 @@ export class SessionStore {
     return this.cachedRunningSubagents
   }
 
+  /** Workflow analogue of getRunningSubagents. The Map reference is compared
+   *  by identity so the filtered array is only reallocated when activeWorkflows
+   *  actually changes. Drives the WorkingBubble workflow chip row (if/when
+   *  wired); the full index (workflowIndex) is exposed unfiltered so
+   *  WorkflowCard can read completed records too. */
+  private getRunningWorkflows(map: SessionState['activeWorkflows']): SessionSnapshot['activeWorkflows'] {
+    if (map === this.cachedWorkflowsMap) return this.cachedRunningWorkflows
+    this.cachedWorkflowsMap = map
+    this.cachedRunningWorkflows = Array.from(map.values()).filter((w) => w.status === 'running')
+    return this.cachedRunningWorkflows
+  }
+
   private buildSnapshot(state: SessionState): SessionSnapshot {
     return {
       replayReady: state.replayReady,
@@ -416,6 +433,8 @@ export class SessionStore {
       toolResults: state.toolResults,
       activeSubagents: this.getRunningSubagents(state.activeSubagents),
       subagentIndex: state.activeSubagents,
+      activeWorkflows: this.getRunningWorkflows(state.activeWorkflows),
+      workflowIndex: state.activeWorkflows,
       lastMessageUuid: state.lastMessageUuid,
     }
   }
@@ -828,7 +847,6 @@ function dumpToolStatus(): ToolStatusDump[] {
       })
     }
   }
-  console.log('[toolStatus dump]', out)
   return out
 }
 
