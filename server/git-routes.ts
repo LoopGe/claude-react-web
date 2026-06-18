@@ -13,12 +13,13 @@
 
 import { Hono } from 'hono'
 import { isAbsolute } from 'node:path'
-import { HttpError } from './errors.js'
+import { HttpError, createErrorHandler } from './errors.js'
 import { getDiff, getLog, getStatusCached } from './git.js'
 import type { GitLogResponse } from '../shared/git-types.js'
 
 export function buildGitRouter(): Hono {
   const app = new Hono()
+  app.onError(createErrorHandler('[git]'))
 
   // Validation shared by all three routes. Throws HttpError on failure
   // so the caller can early-return with a single line.

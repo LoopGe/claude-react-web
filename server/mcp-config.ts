@@ -10,6 +10,7 @@
 // (env vars, API tokens, auth headers).
 
 import { promises as fs } from 'node:fs'
+import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type {
   McpServerConfig,
@@ -36,6 +37,31 @@ import type {
 import type { OAuthClientProvider, OAuthDiscoveryState } from '@modelcontextprotocol/sdk/client/auth.js'
 import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import type { JsonFileStoreOptions } from './json-file-store.js'
+
+// ---------------------------------------------------------------------------
+// Command allowlist
+// ---------------------------------------------------------------------------
+
+/** Binaries allowed in the `command` field of stdio MCP servers. Any other
+ *  value is rejected to prevent arbitrary code execution. Names are matched
+ *  case-insensitively against the basename of the command (without extension)
+ *  so both `node` and `node.exe` pass. */
+const ALLOWED_MCP_COMMANDS = new Set([
+  'node', 'npx', 'npm', 'bun', 'deno',
+  'python', 'python3', 'uvx', 'uv',
+  'java',
+  'docker',
+  'dotnet',
+  'ruby', 'perl',
+])
+
+function validateCommand(command: string): string | null {
+  const base = path.basename(command).replace(/\.(exe|cmd|bat)$/i, '').toLowerCase()
+  if (!ALLOWED_MCP_COMMANDS.has(base)) {
+    return `command '${command}' is not in the allowlist (allowed: ${[...ALLOWED_MCP_COMMANDS].join(', ')})`
+  }
+  return null
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -257,7 +283,12 @@ export function validateMcpServer(server: Partial<StoredMcpServer>): string[] {
   if (!server.name || !server.name.trim()) errors.push('name is required')
   const type = server.type ?? 'stdio'
   if (type === 'stdio') {
-    if (!server.command || !server.command.trim()) errors.push('command is required for stdio type')
+    if (!server.command || !server.command.trim()) {
+      errors.push('command is required for stdio type')
+    } else {
+      const cmdErr = validateCommand(server.command.trim())
+      if (cmdErr) errors.push(cmdErr)
+    }
   } else {
     if (!server.url || !server.url.trim()) errors.push(`url is required for ${type} type`)
   }
@@ -474,6 +505,9 @@ function createTransport(server: StoredMcpServer, authProvider?: OAuthClientProv
   const type = server.type ?? 'stdio'
   if (type === 'stdio') {
     if (!server.command) throw new Error('command is required for stdio')
+    // Defense-in-depth: validate against allowlist even for pre-existing configs.
+    const cmdErr = validateCommand(server.command)
+    if (cmdErr) throw new Error(cmdErr)
     return new StdioClientTransport({
       command: server.command,
       args: server.args,

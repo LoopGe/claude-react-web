@@ -2,6 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocalStorage } from './useLocalStorage'
 import { PANEL_RATIOS_KEY } from '../constants/storageKeys'
 
+/** Minimum pointer travel (px) before a divider mousedown is treated as a
+ *  drag. Mirrors useDragResize.DRAG_THRESHOLD. See Interact C1 in the audit. */
+const DRAG_THRESHOLD = 3
+
 export interface PanelColumnResizeOptions {
   openIds: string[]
   panelMinRatio: number
@@ -48,23 +52,40 @@ export function usePanelColumnResize({ openIds, panelMinRatio }: PanelColumnResi
       e.preventDefault()
       const body = bodyRef.current
       if (!body) return
-      dividerStart.current = {
-        ratios: { ...effectiveRatios },
-        bodyWidth: body.getBoundingClientRect().width,
+
+      // Threshold-gated drag start (mirrors useDragResize): a mousedown only
+      // arms a pending drag; the resize doesn't begin until the pointer moves
+      // DRAG_THRESHOLD px. A click that never crosses the threshold cleans up
+      // as a no-op, so an accidental jitter on the 4px handle doesn't lock the
+      // UI into col-resize + no-select. See Interact C1.
+      const startX = e.clientX
+      const leftId = openIds[index]
+      const rightId = openIds[index + 1]
+      let promoted = false
+
+      const promote = () => {
+        promoted = true
+        dividerStart.current = {
+          ratios: { ...effectiveRatios },
+          bodyWidth: body.getBoundingClientRect().width,
+        }
+        setDraggingDivider(index)
+        document.body.classList.add('resizing-col')
       }
-      setDraggingDivider(index)
-      document.body.classList.add('resizing-col')
 
       // Drag uses the same window-level listeners pattern as sidebar resize,
       // but we need the divider index + accurate pixel→ratio conversion, so
       // the handlers live inline here instead of in the generic useDragResize.
-      const startX = e.clientX
-      const leftId = openIds[index]
-      const rightId = openIds[index + 1]
       const onMove = (ev: MouseEvent) => {
+        const deltaPx = ev.clientX - startX
+        if (!promoted) {
+          if (Math.abs(deltaPx) < DRAG_THRESHOLD) return
+          promote()
+          // Fall through and apply the threshold-crossing delta immediately so
+          // the resize doesn't lag behind by the threshold distance.
+        }
         const snap = dividerStart.current
         if (!snap) return
-        const deltaPx = ev.clientX - startX
         // Convert pixel delta to fractional change of the TOTAL fr-weight sum.
         // Each column's px width = (ratio / sum) * bodyWidth; moving deltaPx
         // means we want ratio[i] to grow by deltaRatio and ratio[i+1] to
@@ -91,8 +112,10 @@ export function usePanelColumnResize({ openIds, panelMinRatio }: PanelColumnResi
         setDraft(next)
       }
       const onUp = () => {
-        setDraggingDivider(null)
-        document.body.classList.remove('resizing-col')
+        if (promoted) {
+          setDraggingDivider(null)
+          document.body.classList.remove('resizing-col')
+        }
         dividerDragCleanupRef.current = null
         window.removeEventListener('mousemove', onMove)
         window.removeEventListener('mouseup', onUp)
@@ -129,5 +152,8 @@ export function usePanelColumnResize({ openIds, panelMinRatio }: PanelColumnResi
     bodyRef,
     /** Direct setter — used by the double-click reset handler. */
     setPanelRatios,
+    /** Current effective ratios (draft during a drag, persisted otherwise).
+     *  Exposed so keyboard resize can read + adjust adjacent columns. */
+    effectiveRatios,
   }
 }

@@ -9,7 +9,7 @@
 
 import { memo, useMemo, useState, useRef } from 'react'
 import type { ComponentPropsWithoutRef } from 'react'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ErrorBoundary } from './ErrorBoundary'
 import { rehypeHighlightQuery } from '../search'
@@ -81,6 +81,68 @@ function rehypeHighlightLite() {
   }
 }
 
+/** Module-level react-markdown `components` map.
+ *
+ * Hoisted out of MarkdownInner so the object identity is stable across
+ * renders. A fresh inline `{{ a: …, code: …, pre: … }}` literal on every
+ * render handed react-markdown a new `components` prop, which defeated its
+ * internal memoization and re-rendered every element on each render (e.g.
+ * every keystroke during in-message search). The renderers below read
+ * everything from props/children, so they have no per-render closure
+ * dependency and are safe to share. See Perf M3 in the audit.
+ *
+ * Headings are remapped so the largest in-message heading is <h3>. The app
+ * shell reserves <h1> (main region) and <h2> (empty state / panel headers),
+ * so an assistant `# Foo` would otherwise inject an <h1> mid-document and
+ * break the heading outline for screen-reader navigation. See A11y M4. */
+const MD_COMPONENTS: Components = {
+  a: ({ href, children, ...props }) => (
+    <a href={href} target="_blank" rel="noreferrer noopener" {...props}>
+      {children}
+    </a>
+  ),
+  // Distinguish inline code from fenced blocks. react-markdown passes
+  // an `inline` prop in v9 only through the `code` children prop layout,
+  // so we detect block-ness by presence of `\n` or of the `language-*`
+  // className that remark applies to fenced blocks.
+  code: ({ className, children, ...props }) => {
+    const content = String(children ?? '')
+    const isBlock = (className && /language-/.test(className)) || content.includes('\n')
+    if (isBlock) {
+      return (
+        <code className={className} {...props}>
+          {children}
+        </code>
+      )
+    }
+    return (
+      <code className={className} {...props}>
+        {children}
+      </code>
+    )
+  },
+  // Block-level code container: adds a language label (top-right)
+  // and a copy-to-clipboard button (appears on hover).
+  pre: ({ children, ...props }: ComponentPropsWithoutRef<'pre'>) => {
+    // Extract the language from the inner <code> element's className.
+    const codeEl = children as { props?: { className?: string } } | undefined
+    const langMatch = codeEl?.props?.className?.match(/language-(\S+)/)
+    const lang = langMatch?.[1]
+    return (
+      <CodeBlock lang={lang} {...props}>
+        {children}
+      </CodeBlock>
+    )
+  },
+  // Remap headings so model output can't break the page outline.
+  h1: ({ children }) => <h3>{children}</h3>,
+  h2: ({ children }) => <h3>{children}</h3>,
+  h3: ({ children }) => <h4>{children}</h4>,
+  h4: ({ children }) => <h5>{children}</h5>,
+  h5: ({ children }) => <h6>{children}</h6>,
+  h6: ({ children }) => <h6>{children}</h6>,
+}
+
 export const Markdown = memo(function Markdown({ text, searchQuery, activeMatchIdx }: { text: string; searchQuery?: string; activeMatchIdx?: number }) {
   // Fall back to a <pre>-rendered raw text if anything inside react-markdown
   // (or our rehype plugins) throws — prevents one bad message from blanking
@@ -126,47 +188,7 @@ const MarkdownInner = memo(function MarkdownInner({ text, searchQuery, activeMat
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={rehypePlugins}
-        components={{
-          // Open links in a new tab with rel="noreferrer" to keep them harmless
-          a: ({ href, children, ...props }) => (
-            <a href={href} target="_blank" rel="noreferrer noopener" {...props}>
-              {children}
-            </a>
-          ),
-          // Distinguish inline code from fenced blocks. react-markdown passes
-          // an `inline` prop in v9 only through the `code` children prop layout,
-          // so we detect block-ness by presence of `\n` or of the `language-*`
-          // className that remark applies to fenced blocks.
-          code: ({ className, children, ...props }) => {
-            const content = String(children ?? '')
-            const isBlock = (className && /language-/.test(className)) || content.includes('\n')
-            if (isBlock) {
-              return (
-                <code className={className} {...props}>
-                  {children}
-                </code>
-              )
-            }
-            return (
-              <code className={className} {...props}>
-                {children}
-              </code>
-            )
-          },
-          // Block-level code container: adds a language label (top-right)
-          // and a copy-to-clipboard button (appears on hover).
-          pre: ({ children, ...props }: ComponentPropsWithoutRef<'pre'>) => {
-            // Extract the language from the inner <code> element's className.
-            const codeEl = children as { props?: { className?: string } } | undefined
-            const langMatch = codeEl?.props?.className?.match(/language-(\S+)/)
-            const lang = langMatch?.[1]
-            return (
-              <CodeBlock lang={lang} {...props}>
-                {children}
-              </CodeBlock>
-            )
-          },
-        }}
+        components={MD_COMPONENTS}
       >
         {text}
       </ReactMarkdown>

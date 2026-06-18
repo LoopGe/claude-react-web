@@ -132,10 +132,12 @@ export function SetupPage({ onConfigured }: Props) {
   // Pre-fill from ~/.claude/settings.json if available.
   useEffect(() => {
     void api
-      .get<{ authToken?: string; baseUrl?: string; modelList?: string[] }>('/config/claude-defaults')
+      .get<{ hasKey?: boolean; keySuffix?: string; baseUrl?: string; modelList?: string[] }>('/config/claude-defaults')
       .then((r) => {
-        if (r.authToken) {
-          setAuthToken(r.authToken)
+        if (r.hasKey) {
+          // Show a visual indicator but don't expose the full key.
+          // The masked value is never submitted — the server keeps the existing key.
+          setAuthToken('')
           setTokenPrefilled(true)
         }
         if (r.baseUrl) {
@@ -246,9 +248,9 @@ export function SetupPage({ onConfigured }: Props) {
    *  paths land here. `openNewSession` is forwarded to the parent. */
   const finalize = useCallback(
     async (openNewSession: boolean) => {
-      // Defensive — Step 4's buttons enforce !tokenValid disable, but if
-      // anyone wires a different entry point we still want to fail loud.
-      if (!authToken.trim()) {
+      // Allow proceeding if either the user entered a new token or the
+      // server already has one (tokenPrefilled from ~/.claude/settings.json).
+      if (!authToken.trim() && !tokenPrefilled) {
         setError('Auth token is required — clear-and-retry: click step 1.')
         return
       }
@@ -261,7 +263,7 @@ export function SetupPage({ onConfigured }: Props) {
         // file again. setupCompleted gates that.
         if (!setupCompleted) {
           await api.post('/config/setup', {
-            authToken: authToken.trim(),
+            authToken: authToken.trim() || undefined,
             baseUrl: baseUrl.trim() || undefined,
             modelList: modelList.length > 0 ? modelList : undefined,
             recapModel: recapModel.trim() || undefined,
@@ -304,7 +306,7 @@ export function SetupPage({ onConfigured }: Props) {
   )
 
   // ── Navigation helpers ──
-  const tokenValid = authToken.trim().length > 0
+  const tokenValid = authToken.trim().length > 0 || tokenPrefilled
   const goNext = useCallback(() => {
     if (step === 1 && !tokenValid) {
       setError('Auth token is required')
@@ -533,9 +535,10 @@ export function SetupPage({ onConfigured }: Props) {
                 </div>
                 {tokenPrefilled && (
                   <p className="setup-prefilled-hint">
-                    Pre-filled from{' '}
-                    <code style={styles.code}>~/.claude/settings.json</code>. Edit
-                    to override.
+                    {authToken.trim()
+                      ? <>Pre-filled from{' '}<code style={styles.code}>~/.claude/settings.json</code>. Edit to override.</>
+                      : <>Key already configured from{' '}<code style={styles.code}>~/.claude/settings.json</code>. Enter a new one to override.</>
+                    }
                   </p>
                 )}
                 {/* Error rendering lives in the wizard footer so it

@@ -69,6 +69,39 @@ import { notificationTooltip } from './utils/notifications'
 import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
 import { randomId } from './utils/uuid'
 
+/** Shallow-compare two SessionInfo objects across every own property.
+ *
+ * The server broadcasts a `session-update` frame for *every* SDK message in
+ * any session (metadata churn: lastTurnAt, pendingPermissionCount, working,
+ * messageCount, …). Without this guard, each frame produces a brand-new
+ * `sessions` array → `orderedSessions` memo rebuilds → `sidebarSections`
+ * rebuilds → the memo'd `<SessionList>` receives a new `sessions` prop and
+ * re-renders every `<SessionCard>`. With 3 panels streaming that's 3 full
+ * sidebar re-renders per token burst, even when the metadata is byte-for-byte
+ * identical to the previous broadcast (the server re-broadcasts the same
+ * SessionInfo on many frames).
+ *
+ * Bailing here (returning the previous array) keeps `sessions` referentially
+ * stable so the sidebar memo holds. The post-setSessions side-effects below
+ * (lastSeenTurn bump, maybeNotify, dismissPermissionToast) still run on every
+ * frame because they read `frame.session` directly, not the state array — so
+ * notifications and unread flags are unaffected.
+ *
+ * Arrays (betas, effortLevels, recap.toolsUsed) are compared by reference.
+ * The server constructs a fresh array only when the underlying value changes,
+ * so a shared reference means the value is unchanged; when it does change the
+ * new reference correctly triggers an update. */
+function sessionMetaEqual(a: SessionInfo, b: SessionInfo): boolean {
+  if (a === b) return true
+  const aKeys = Object.keys(a)
+  const bKeys = Object.keys(b)
+  if (aKeys.length !== bKeys.length) return false
+  for (const k of aKeys) {
+    if (a[k as keyof SessionInfo] !== b[k as keyof SessionInfo]) return false
+  }
+  return true
+}
+
 export function App() {
   const [isConfigured, setIsConfigured] = useState<boolean | null>(null)
   const [sessions, setSessions] = useState<SessionInfo[]>([])
@@ -235,7 +268,57 @@ export function App() {
 
   const { sidebarWidth: effectiveSidebarWidth, sidebarResize, setSidebarWidth } = useSidebarResize({ minPx: sidebarMinPx, maxPx: sidebarMaxPx })
 
-  const { gridTemplate, onDividerMouseDown, draggingDivider, bodyRef, setPanelRatios } = usePanelColumnResize({ openIds, panelMinRatio })
+  const { gridTemplate, onDividerMouseDown, draggingDivider, bodyRef, setPanelRatios, effectiveRatios } = usePanelColumnResize({ openIds, panelMinRatio })
+
+  // Keyboard resize for the sidebar separator. ArrowLeft shrinks, ArrowRight
+  // grows, by a 24px step clamped to [sidebarMinPx, sidebarMaxPx]. Mirrors the
+  // mouse drag so keyboard-only users can rebalance the workspace (Interact C2).
+  const KEYBOARD_RESIZE_STEP = 24
+  const onSidebarResizerKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      let delta = 0
+      if (e.key === 'ArrowLeft') delta = -KEYBOARD_RESIZE_STEP
+      else if (e.key === 'ArrowRight') delta = KEYBOARD_RESIZE_STEP
+      else return
+      e.preventDefault()
+      const next = Math.max(sidebarMinPx, Math.min(sidebarMaxPx, effectiveSidebarWidth + delta))
+      setSidebarWidth(next)
+    },
+    [effectiveSidebarWidth, setSidebarWidth, sidebarMinPx, sidebarMaxPx],
+  )
+
+  // Keyboard resize for an inter-panel divider. ArrowLeft/Right shift 0.05 of
+  // ratio between the two adjacent panels (clamped to panelMinRatio). `index`
+  // is the divider between columns index and index+1.
+  const onPanelDividerKeyDown = useCallback(
+    (index: number) => (e: React.KeyboardEvent) => {
+      let delta = 0
+      if (e.key === 'ArrowLeft') delta = -0.05
+      else if (e.key === 'ArrowRight') delta = 0.05
+      else return
+      e.preventDefault()
+      const leftId = openIds[index]
+      const rightId = openIds[index + 1]
+      if (!leftId || !rightId) return
+      const leftR = effectiveRatios[leftId] ?? 1
+      const rightR = effectiveRatios[rightId] ?? 1
+      const rawL = leftR + delta
+      const rawR = rightR - delta
+      const next = { ...effectiveRatios }
+      if (rawL < panelMinRatio) {
+        next[rightId] = leftR + rightR - panelMinRatio
+        next[leftId] = panelMinRatio
+      } else if (rawR < panelMinRatio) {
+        next[leftId] = leftR + rightR - panelMinRatio
+        next[rightId] = panelMinRatio
+      } else {
+        next[leftId] = rawL
+        next[rightId] = rawR
+      }
+      setPanelRatios(next)
+    },
+    [openIds, effectiveRatios, setPanelRatios, panelMinRatio],
+  )
 
   // Update checker — gated on isConfigured so we don't probe before
   // the setup wizard finishes (the npm registry shouldn't see traffic
@@ -410,6 +493,18 @@ export function App() {
             // let `created` do the insert — handling it here would create
             // two rows if `created` also arrives (it always does).
             if (i < 0) return prev
+            // The server broadcasts a session-update for EVERY SDK message
+            // in any session (metadata churn: lastTurnAt, working,
+            // pendingPermissionCount, …). Most re-broadcasts carry
+            // identical metadata. Replacing the array here unconditionally
+            // would give `orderedSessions` a new identity → the entire
+            // sidebar re-renders on every message in every open session
+            // (3 panels streaming = 3 sidebar re-renders per token burst).
+            // Bail when nothing the sidebar reads actually changed. The
+            // side-effects below (lastSeenTurn bump, maybeNotify,
+            // dismissPermissionToast) are driven by frame.session directly,
+            // not by the state array, so they still run.
+            if (sessionMetaEqual(prev[i], frame.session)) return prev
             const next = prev.slice()
             next[i] = frame.session
             return next
@@ -1741,6 +1836,13 @@ export function App() {
     updateInfo.refresh()
   }, [refreshConfigResponse, updateInfo])
 
+  // Memoize the settings tab request so ChatPanel's React.memo doesn't
+  // see a new object reference on every render.
+  const stableSettingsTabRequest = useMemo(
+    () => settingsTabRequest ? { tab: settingsTabRequest.tab, nonce: settingsTabRequest.nonce } : null,
+    [settingsTabRequest?.tab, settingsTabRequest?.nonce],
+  )
+
   if (isConfigured === null) {
     return (
       <div className="app-loading">
@@ -1834,9 +1936,11 @@ export function App() {
           aria-orientation="vertical"
           aria-label="Resize sidebar"
           onMouseDown={sidebarResize.startDrag}
+          onKeyDown={onSidebarResizerKeyDown}
           // Double-click resets to default.
           onDoubleClick={() => setSidebarWidth(280)}
           title="Drag to resize · double-click to reset"
+          tabIndex={0}
         />
       </aside>
 
@@ -1856,6 +1960,12 @@ export function App() {
           here. Without it, the browser scrolls into view but focus stays
           at the link, and the next Tab walks back through the sidebar ?           defeating the whole point of the skip-link. */}
       <main className="main" id="main" tabIndex={-1} aria-label="Chat panels">
+        {/* Visually-hidden page heading so the landmark has a top-level
+            <h1> for screen-reader orientation. Without it the first heading
+            a SR user meets inside <main> is a per-panel header or the
+            empty-state <h2> — there's no "you are in the chat area" h1.
+            The aria-label on <main> names the region; this names the page. */}
+        <h1 className="sr-only">Chat</h1>
         <header className="main-header">
           {/* Hamburger toggles the drawer sidebar. Rendered only on mobile;
               CSS pushes it to the left edge (margin-right: auto) so the rest
@@ -1922,7 +2032,7 @@ export function App() {
             transition; collapses to an sr-only 1×1 when not active. */}
         <div
           className={`error-bar${reconnectingBanner ? '' : ' error-bar-empty'}`}
-          role="alert"
+          role="status"
           aria-live="polite"
         >
           {reconnectingBanner ?? ''}
@@ -2017,7 +2127,7 @@ export function App() {
                     onSideChat={handleSideChat}
                     settingsTabRequest={
                       settingsTabRequest?.sessionId === s.id
-                        ? { tab: settingsTabRequest.tab, nonce: settingsTabRequest.nonce }
+                        ? stableSettingsTabRequest
                         : null
                     }
                     isResuming={resuming.has(s.id)}
@@ -2037,8 +2147,10 @@ export function App() {
                   aria-orientation="vertical"
                   aria-label="Resize panel"
                   onMouseDown={onDividerMouseDown(i)}
+                  onKeyDown={onPanelDividerKeyDown(i)}
                   onDoubleClick={() => setPanelRatios(Object.fromEntries(openIds.map((id) => [id, 1])))}
                   title="Drag to resize · double-click to reset"
+                  tabIndex={0}
                 />,
               ]
             }).concat(

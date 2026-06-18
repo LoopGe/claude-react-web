@@ -36,7 +36,9 @@ export function PromptDialog({
   const dialogRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const [value, setValue] = useState(defaultValue)
-  useFocusTrap(dialogRef)
+  // restoreFocus so the keyboard user lands back on the trigger button
+  // (rename / save-snippet) after the dialog closes, not on <body>.
+  useFocusTrap(dialogRef, { restoreFocus: true })
 
   // Window-level Escape handler — same pattern as ConfirmDialog.
   useEffect(() => {

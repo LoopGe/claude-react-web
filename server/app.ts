@@ -23,6 +23,28 @@ import type { McpConfigStore } from './mcp-config.js'
 import type { SnippetStore } from './snippet-store.js'
 import type { MpStore } from './mp-store.js'
 
+/** Check if an Origin header value is a trusted address for CORS.
+ *  Always allows localhost/loopback. When `allowLan` is true (server bound
+ *  to a non-loopback host), also allows private/LAN IP ranges. */
+function isTrustedOrigin(origin: string, allowLan: boolean): boolean {
+  try {
+    const { hostname } = new URL(origin)
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1') return true
+    if (!allowLan) return false
+    // Allow private IPv4 ranges (10.x, 172.16-31.x, 192.168.x) and link-local (169.254.x).
+    const parts = hostname.split('.').map(Number)
+    if (parts.length === 4 && parts.every((n) => !Number.isNaN(n))) {
+      return parts[0] === 10
+        || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
+        || (parts[0] === 192 && parts[1] === 168)
+        || (parts[0] === 169 && parts[1] === 254)
+    }
+    return false
+  } catch {
+    return false
+  }
+}
+
 export interface AppOptions {
   /** Directory containing the built frontend (dist/client). */
   clientDir?: string
@@ -100,7 +122,27 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
     return c.text('Not found', 404)
   })
 
-  app.use('*', cors({ origin: (o) => o ?? '*', credentials: false }))
+  const allowLan = !!opts.bind && !isLoopbackHost(opts.bind.host)
+  app.use('*', cors({
+    origin: (origin) => {
+      // No Origin header (same-origin, curl, non-browser clients) — allow.
+      if (!origin) return '*'
+      // Reflect only trusted origins. Remote pages cannot call this API.
+      return isTrustedOrigin(origin, allowLan) ? origin : ''
+    },
+    credentials: false,
+  }))
+
+  // Security headers — light, non-breaking defaults. CSP is deliberately
+  // omitted because inline scripts and eval are used by the client bundle;
+  // adding it incorrectly would break the app.
+  app.use('*', async (c, next) => {
+    await next()
+    c.res.headers.set('X-Content-Type-Options', 'nosniff')
+    c.res.headers.set('X-Frame-Options', 'DENY')
+    c.res.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin')
+    c.res.headers.set('X-XSS-Protection', '1; mode=block')
+  })
 
   // Reject oversized request bodies early. This covers JSON payloads and
   // multipart uploads — the cap is generous (32 MB) to allow the 28 MB

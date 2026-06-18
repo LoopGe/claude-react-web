@@ -752,9 +752,9 @@ body.resizing-col * {
 .settings-overlay[data-state="open"] > .settings-panel { animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both; }
 .settings-overlay[data-state="closing"] {
   pointer-events: none;
-  animation: overlay-backdrop-out var(--motion-duration-base) var(--motion-ease-exit) both;
+  animation: overlay-backdrop-out var(--motion-duration-fast) var(--motion-ease-exit) both;
 }
-.settings-overlay[data-state="closing"] > .settings-panel { animation: overlay-panel-out var(--motion-duration-base) var(--motion-ease-exit) both; }
+.settings-overlay[data-state="closing"] > .settings-panel { animation: overlay-panel-out var(--motion-duration-fast) var(--motion-ease-exit) both; }
 .settings-overlay > .settings-panel {
   width: min(420px, 100%);
   max-height: 100%;

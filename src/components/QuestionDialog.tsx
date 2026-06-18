@@ -346,8 +346,12 @@ function QuestionBlock({ index, question, value, onSingle, onMulti, onSkip, othe
         {isMulti && <span className="question-mode">multi-select</span>}
       </div>
       <div className="question-text">{question.question}</div>
-      <div className="question-options">
-        {question.options.map((opt) => {
+      <div
+        className="question-options"
+        role={isMulti ? undefined : 'radiogroup'}
+        aria-label={isMulti ? undefined : question.question}
+      >
+        {question.options.map((opt, optIdx) => {
           const selected = selectedSet.has(opt.label)
           return (
             <button
@@ -355,7 +359,39 @@ function QuestionBlock({ index, question, value, onSingle, onMulti, onSkip, othe
               type="button"
               className={`question-option ${selected ? 'selected' : ''}`}
               onClick={() => (isMulti ? onMulti(opt.label) : onSingle(opt.label))}
-              aria-pressed={selected}
+              // Single-select options form a mutually exclusive group → expose
+              // as radio (aria-checked) so screen readers announce "selected"
+              // and convey that picking one un-others. Multi-select keeps
+              // aria-pressed (toggle button) semantics.
+              role={isMulti ? undefined : 'radio'}
+              aria-checked={isMulti ? undefined : selected}
+              aria-pressed={isMulti ? selected : undefined}
+              // Arrow-key navigation for the radio group: focus + select the
+              // next/prev option. (Tab still works as a fallback.)
+              onKeyDown={
+                isMulti
+                  ? undefined
+                  : (e) => {
+                      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+                      e.preventDefault()
+                      const count = question.options.length + 1 // +1 for "Other"
+                      const dir = e.key === 'ArrowDown' ? 1 : -1
+                      const next = (optIdx + dir + count) % count
+                      const root = (e.currentTarget.parentElement as HTMLElement)
+                      const btns = root.querySelectorAll<HTMLButtonElement>('.question-option')
+                      const target = btns[next]
+                      if (target) {
+                        target.focus()
+                        // "Other" is the last button; selecting it just toggles
+                        // the free-text field. Real options call onSingle.
+                        if (next === question.options.length) {
+                          if (!otherActive) onOtherToggle()
+                        } else {
+                          onSingle(question.options[next].label)
+                        }
+                      }
+                    }
+              }
             >
               <span className="question-option-marker" aria-hidden>
                 {isMulti ? (selected ? <IconCheckSquare size={16} /> : <IconSquare size={16} />) : selected ? <IconCircleDot size={16} /> : <IconCircle size={16} />}
@@ -393,7 +429,30 @@ function QuestionBlock({ index, question, value, onSingle, onMulti, onSkip, othe
           type="button"
           className={`question-option ${otherActive ? 'selected' : ''}`}
           onClick={onOtherToggle}
-          aria-pressed={otherActive}
+          role={isMulti ? undefined : 'radio'}
+          aria-checked={isMulti ? undefined : otherActive}
+          aria-pressed={isMulti ? otherActive : undefined}
+          onKeyDown={
+            isMulti
+              ? undefined
+              : (e) => {
+                  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+                  e.preventDefault()
+                  const count = question.options.length + 1
+                  const dir = e.key === 'ArrowDown' ? 1 : -1
+                  // "Other" is index `question.options.length`; wrap to the
+                  // last real option on ArrowUp, first real option on ArrowDown.
+                  const cur = question.options.length
+                  const next = (cur + dir + count) % count
+                  const root = (e.currentTarget.parentElement as HTMLElement)
+                  const btns = root.querySelectorAll<HTMLButtonElement>('.question-option')
+                  const target = btns[next]
+                  if (target) {
+                    target.focus()
+                    onSingle(question.options[next].label)
+                  }
+                }
+          }
         >
           <span className="question-option-marker" aria-hidden>
             {isMulti ? (otherActive ? <IconCheckSquare size={16} /> : <IconSquare size={16} />) : otherActive ? <IconCircleDot size={16} /> : <IconCircle size={16} />}
@@ -407,6 +466,7 @@ function QuestionBlock({ index, question, value, onSingle, onMulti, onSkip, othe
             type="text"
             className="question-other-input"
             placeholder="Type your answer..."
+            aria-label="Other (type your answer)"
             value={otherText}
             onChange={(e) => onOtherTextChange(e.target.value)}
             // Enter would trigger the dialog's outer focus-trap form

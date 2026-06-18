@@ -384,7 +384,7 @@
 .perm-overlay[data-state="open"] { animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both; }
 .perm-overlay[data-state="closing"] {
   pointer-events: none;
-  animation: overlay-backdrop-out var(--motion-duration-base) var(--motion-ease-exit) both;
+  animation: overlay-backdrop-out var(--motion-duration-fast) var(--motion-ease-exit) both;
 }
 /* useFocusTrap moves focus onto the overlay container itself (via an
    injected tabindex=-1) instead of its first action button. Programmatic

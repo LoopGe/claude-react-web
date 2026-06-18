@@ -181,18 +181,18 @@ describe('mcp-config routes', () => {
     })
 
     it('updates mutable fields', async () => {
-      store.upsert(makeServer({ name: 'u', command: 'old', args: ['a'] }))
+      store.upsert(makeServer({ name: 'u', command: 'node', args: ['a'] }))
       await store.flush()
 
       const res = await app().request('/u', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ command: 'new', args: ['b', 'c'] }),
+        body: JSON.stringify({ command: 'python', args: ['b', 'c'] }),
       })
       expect(res.status).toBe(200)
       const body = await json(res)
       const server = body.server as Record<string, unknown>
-      expect(server.command).toBe('new')
+      expect(server.command).toBe('python')
       expect(server.args).toEqual(['b', 'c'])
     })
 

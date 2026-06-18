@@ -12,7 +12,7 @@
 .palette-backdrop[data-state="open"] { animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both; }
 .palette-backdrop[data-state="closing"] {
   pointer-events: none;
-  animation: overlay-backdrop-out var(--motion-duration-base) var(--motion-ease-exit) both;
+  animation: overlay-backdrop-out var(--motion-duration-fast) var(--motion-ease-exit) both;
 }
 
 .palette {

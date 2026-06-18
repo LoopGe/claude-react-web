@@ -49,7 +49,12 @@ export function ConfirmDialog({
   onCancel,
 }: Props) {
   const dialogRef = useRef<HTMLDivElement>(null)
-  useFocusTrap(dialogRef)
+  // restoreFocus: true — ConfirmDialog is opened from a real trigger button
+  // (a destructive git action, a delete, etc). Without restore the keyboard
+  // user's focus lands on <body> after the dialog closes and the next Tab
+  // restarts from the top of the document. (Panel-style overlays that
+  // deliberately don't restore pass restoreFocus: false explicitly.)
+  useFocusTrap(dialogRef, { restoreFocus: true })
 
   // Window-level Escape handler — matches the pattern used by ContextMenu
   // and GlobalSettingsModal. Stops at the document layer so it doesn't

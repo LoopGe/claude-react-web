@@ -53,7 +53,23 @@ export function useFocusTrap(
         ;(e.shiftKey ? last : first).focus()
       }
     }
+    // Re-guard focus that escapes the trap by means other than Tab — a
+    // mouse click on the backdrop, or a programmatic .focus() landing
+    // outside the container. Without this the Tab-boundary handler is the
+    // only mechanism, and a click-away leaves `document.activeElement` on
+    // <body> while the dialog is still open; the next Tab starts from the
+    // top of the document, defeating the trap. We pull stray focus back
+    // to the container (matching the activation behaviour) rather than to
+    // the first focusable, so we don't spuriously highlight an action.
+    const handleFocusIn = (e: FocusEvent) => {
+      const target = e.target as Node | null
+      if (target && el.contains(target)) return
+      // Focus escaped the trap. Bring it back.
+      if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '-1')
+      el.focus()
+    }
     el.addEventListener('keydown', handleKey)
+    document.addEventListener('focusin', handleFocusIn)
     // Only pull focus in if it isn't already inside the container. An
     // `autoFocus` child has its focus applied during commit (before this
     // effect), so `el.contains(activeElement)` is already true and we skip.
@@ -67,6 +83,7 @@ export function useFocusTrap(
     }
     return () => {
       el.removeEventListener('keydown', handleKey)
+      document.removeEventListener('focusin', handleFocusIn)
       previouslyFocused?.focus?.()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

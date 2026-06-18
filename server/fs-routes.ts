@@ -12,6 +12,7 @@
 // own home" tool, not a sandboxed file API.
 
 import { Hono, type Context } from 'hono'
+import { createErrorHandler } from './errors.js'
 import { readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, resolve as resolvePath, sep } from 'node:path'
@@ -40,6 +41,7 @@ function fsError(c: Context, err: unknown, notFoundMsg: string) {
 
 export function buildFsRouter(): Hono {
   const app = new Hono()
+  app.onError(createErrorHandler('[fs]'))
 
   // Default starting points for the picker.
   app.get('/home', (c) => {

@@ -27,7 +27,7 @@ interface Props {
 
 export function SnippetsManagerDialog({ open = true, api, onClose }: Props) {
   const dialogRef = useRef<HTMLDivElement>(null)
-  useFocusTrap(dialogRef)
+  useFocusTrap(dialogRef, { restoreFocus: true })
 
   // Inline-edit state — only one snippet is editable at a time. The draft
   // is a local copy so cancelling cleanly reverts; on save we forward to

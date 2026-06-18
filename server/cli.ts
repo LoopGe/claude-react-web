@@ -398,7 +398,7 @@ async function main() {
           console.log(`[cli] update available: ${upd.current} → ${upd.latest}`)
           console.log(`[cli]   run: npx claude-react-web@latest`)
         }
-      })
+      }).catch(() => {})
     },
   )
 

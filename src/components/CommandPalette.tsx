@@ -5,6 +5,7 @@ import type { MessageSearchHit, MessageSearchResponse } from '../../shared/searc
 import type { Shortcut } from '../hooks/useKeyboardShortcuts'
 import { api } from '../hooks/useApi'
 import { useExitPresence } from '../hooks/useExitPresence'
+import { useFocusTrap } from '../hooks/useFocusTrap'
 import type { SessionInfo } from '../types'
 import { formatCombo } from '../utils/format-combo'
 
@@ -40,6 +41,12 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
   const [messageSearchError, setMessageSearchError] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const paletteRef = useRef<HTMLDivElement>(null)
+  // Focus trap + restore: the palette is opened from the toolbar / Mod+K and
+  // closed by Esc / pick / backdrop. Without restore, focus fell to <body>
+  // on close, stranding keyboard users. `active: open` releases the trap
+  // during the exit animation so the input can unmount cleanly.
+  useFocusTrap(paletteRef, { restoreFocus: true, active: open })
   const presence = useExitPresence(open)
   const trimmedQuery = query.trim()
 
@@ -195,7 +202,7 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
       data-state={open ? 'open' : 'closing'}
       onMouseDown={(e) => { if (open && e.target === e.currentTarget) onClose() }}
     >
-      <div className="palette" role="dialog" aria-modal={open ? 'true' : 'false'} aria-label="Command palette" onKeyDown={handleKeyDown}>
+      <div ref={paletteRef} className="palette" role="dialog" aria-modal={open ? 'true' : 'false'} aria-label="Command palette" onKeyDown={handleKeyDown}>
         <input
           ref={inputRef}
           className="palette-input"

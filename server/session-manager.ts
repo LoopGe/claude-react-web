@@ -879,7 +879,7 @@ export class SessionManager {
         session.gitStartSha = sha
         this.writeStore(session)
         this.broadcastGlobal({ kind: 'update', session: this.info(session) })
-      })
+      }).catch(() => {})
     }
   }
 
@@ -1938,6 +1938,7 @@ export class SessionManager {
     // legacy in-flight slot. Recap is in-memory only, so dropping the
     // session here is the end of the line for it.
     this.recapManager.invalidate(id)
+    this.recapManager.cleanup(id)
     this.permBroker.removeDenialTracker(id)
     this.writeStore(s)
   }

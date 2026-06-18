@@ -28,7 +28,6 @@
   color: var(--fg-muted);
   font-family: var(--mono);
   font-size: 12px;
-  animation: result-fade-in var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .msg.result::before,
 .msg.result::after {
@@ -56,13 +55,6 @@
 .msg.result.interrupted::before,
 .msg.result.interrupted::after { background: color-mix(in srgb, var(--warn, var(--danger)) 45%, var(--border)); }
 .msg.result.interrupted .result-mark { color: var(--warn, var(--danger)); }
-@keyframes result-fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .msg.result { animation: none; }
-}
 
 .msg-body { word-wrap: break-word; }
 .msg-body code {
@@ -230,6 +222,8 @@
   padding: 8px 10px;
   border-radius: 4px;
   overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 /* Collapsed-by-default wrapper for individual tool_result blocks. */
 .tool-result-details {
@@ -475,7 +469,7 @@
 .modal-backdrop[data-state="open"] { animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both; }
 .modal-backdrop[data-state="closing"] {
   pointer-events: none;
-  animation: overlay-backdrop-out var(--motion-duration-base) var(--motion-ease-exit) both;
+  animation: overlay-backdrop-out var(--motion-duration-fast) var(--motion-ease-exit) both;
 }
 .modal {
   background: var(--bg-elev);

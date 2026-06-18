@@ -552,7 +552,7 @@ interface FileRowProps {
   askConfirm: (state: Omit<ConfirmState, 'onConfirm'>, fn: () => Promise<unknown>, errLabel: string) => void
 }
 
-function FileRow({ file, cwd, staged, writeOps, onError, askConfirm }: FileRowProps) {
+const FileRow = memo(function FileRow({ file, cwd, staged, writeOps, onError, askConfirm }: FileRowProps) {
   const [open, setOpen] = useState(false)
   const [renderDiff, setRenderDiff] = useState(false)
   const { data: diff, loading, error } = useGitDiff(cwd, file.path, staged, renderDiff)
@@ -667,7 +667,15 @@ function FileRow({ file, cwd, staged, writeOps, onError, askConfirm }: FileRowPr
       </AnimatedCollapse>
     </div>
   )
-}
+}, (prev, next) => {
+  // Custom comparator: skip re-render when only writeOps reference changed
+  // but the file's busy state is the same.
+  if (prev.file !== next.file || prev.cwd !== next.cwd || prev.staged !== next.staged) return false
+  const path = prev.file.path
+  const prevBusy = prev.writeOps.busyOps.has(`stage:${path}`) || prev.writeOps.busyOps.has(`unstage:${path}`) || prev.writeOps.busyOps.has(`discard:${path}`)
+  const nextBusy = next.writeOps.busyOps.has(`stage:${path}`) || next.writeOps.busyOps.has(`unstage:${path}`) || next.writeOps.busyOps.has(`discard:${path}`)
+  return prevBusy === nextBusy
+})
 
 interface UntrackedRowProps {
   file: GitFileEntry
