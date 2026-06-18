@@ -68,6 +68,10 @@ export interface SessionMeta {
   /** When present, this session is a Side Chat forked from the
    *  indicated parent session. Undefined for normal sessions. */
   parentId?: string
+  /** Names of MCP servers the session was spawned with. Survives
+   *  restarts so the client can compute "available" without relying
+   *  on the flaky mcp-status SDK control request. */
+  mcpServerNames?: string[]
 }
 
 const FILE_NAME = 'sessions.json'
@@ -170,6 +174,9 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     clearBoundaryUuid: typeof r.clearBoundaryUuid === 'string' ? r.clearBoundaryUuid : undefined,
     gitStartSha: typeof r.gitStartSha === 'string' ? r.gitStartSha : undefined,
     parentId: typeof r.parentId === 'string' ? r.parentId : undefined,
+    mcpServerNames: Array.isArray(r.mcpServerNames) && r.mcpServerNames.every((n: unknown) => typeof n === 'string')
+      ? (r.mcpServerNames as string[])
+      : undefined,
   }
 }
 

@@ -112,4 +112,12 @@ export interface SessionInfoBase<PM = string> {
    *  ephemeral fork of the parent session. The value is the parent's
    *  session ID. Undefined for normal sessions. */
   parentId?: string
+  /** Names of MCP servers the session was spawned with. Derived from
+   *  the resolved mcpServers config passed to the SDK at create / resume
+   *  / fork time. Used by the client as a reliable baseline for the
+   *  "connected" set — unlike the flaky mcp-status SDK control request,
+   *  this travels via the session snapshot (WS) and survives restarts
+   *  via persistence. Undefined only for sessions created before this
+   *  field was added (legacy). */
+  mcpServerNames?: string[]
 }

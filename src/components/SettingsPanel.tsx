@@ -137,7 +137,12 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
       setModels(serverModelIds.map((id): ModelInfo => ({ id })))
 
       if (gcResult.status === 'fulfilled') {
-        setGlobalMcpNames(new Set(gcResult.value.servers.map((s) => s.name)))
+        // Only include enabled servers — disabled ones can never be
+        // connected (toSdkConfig filters them), so showing them as
+        // "Available" with an Add button is always misleading.
+        setGlobalMcpNames(new Set(
+          gcResult.value.servers.filter((s) => s.enabled !== false).map((s) => s.name),
+        ))
       }
     })()
 
@@ -280,20 +285,34 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
   }
 
   // Global MCP servers not yet connected to this session.
+  // Prefer the snapshot-derived mcpServerNames (reliable, arrives via WS)
+  // over the mcp-status result (flaky SDK control request that may fail).
+  // Fallback to mcp for sessions created before mcpServerNames was added.
   const availableMcpNames = useMemo(() => {
-    const currentNames = new Set(mcp.map((s) => s.name))
+    const currentNames = new Set(
+      session.mcpServerNames ?? mcp.map((s) => s.name),
+    )
     return [...globalMcpNames].filter((n) => !currentNames.has(n)).sort()
-  }, [mcp, globalMcpNames])
+  }, [session.mcpServerNames, mcp, globalMcpNames])
 
   const addMcpServer = async (name: string) => {
     try {
       setBusy(true)
-      // setMcpServers has REPLACE semantics over the dynamic set.  Pass
-      // ALL global server names (not just the new one) so previously
-      // connected global servers are preserved.  Also forward any
-      // inline (non-global) servers already connected to this session
-      // so they aren't silently dropped by the replace.
-      const enabledMcpServers = [...globalMcpNames].sort()
+      // setMcpServers has REPLACE semantics over the dynamic set. Build
+      // the new set from the snapshot baseline (reliable) + the new name,
+      // then send only the global subset as enabledMcpServers. Inline
+      // (non-global) servers already in the session are forwarded via the
+      // `servers` map so they aren't dropped by the replace.
+      const baseline = new Set(
+        session.mcpServerNames ?? mcp.map((s) => s.name),
+      )
+      baseline.add(name)
+      // enabledMcpServers: only names that exist in the global config.
+      const enabledMcpServers = [...baseline]
+        .filter((n) => globalMcpNames.has(n))
+        .sort()
+      // Inline (non-global) session servers — preserve them so replace
+      // doesn't silently drop them.
       const servers: Record<string, unknown> = {}
       for (const srv of mcp) {
         if (!globalMcpNames.has(srv.name) && srv.config) {
