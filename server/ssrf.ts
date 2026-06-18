@@ -91,6 +91,7 @@ export interface SsrfCheckResult {
  */
 export async function validateOutboundUrl(rawUrl: string): Promise<SsrfCheckResult> {
   // Reject control characters that could inject headers.
+  // eslint-disable-next-line no-control-regex -- matching CR/LF/NUL is the explicit purpose of this SSRF guard.
   if (/[\r\n\x00]/.test(rawUrl)) {
     return { ok: false, error: 'URL contains invalid characters' }
   }

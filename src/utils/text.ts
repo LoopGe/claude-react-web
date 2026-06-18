@@ -1,4 +1,5 @@
 /** Matches ANSI CSI escape sequences (SGR color/style codes). */
+// eslint-disable-next-line no-control-regex -- \x1b is the ESC byte by definition; this regex exists to match it.
 const ANSI_RE = /\x1b\[[0-9;]*m/g
 
 /** Strip all ANSI escape codes from a string. Used for length measurement
@@ -18,6 +19,7 @@ export function truncate(s: string, n: number): string {
   let visible = 0
   let i = 0
   while (visible < n && i < s.length) {
+    // eslint-disable-next-line no-control-regex -- \x1b is the ESC byte; matching it is the point.
     const esc = s.slice(i).match(/^\x1b\[[0-9;]*m/)
     if (esc) { i += esc[0].length; continue }
     visible++

@@ -202,6 +202,12 @@ const STREAMING_EXIT_MS = 180
  *  and reuses the previous reference when equal, so the context value only
  *  changes when the predicate would actually answer differently. */
 function useStableSet(candidate: Set<string>): Set<string> {
+  // Referential-stability memo: cache the previous Set and reuse it when the
+  // candidate is content-equal, so context consumers don't re-render on every
+  // parent render. Refs are read/written during render by design here — the
+  // value is only used to short-circuit this function and self-corrects on the
+  // next render — so the react-hooks/refs rule is disabled for the body.
+  /* eslint-disable react-hooks/refs -- intentional render-time ref use for referential memoization */
   const prevRef = useRef<Set<string>>(candidate)
   const prev = prevRef.current
   if (prev === candidate) return candidate
@@ -214,6 +220,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   }
   prevRef.current = candidate
   return candidate
+  /* eslint-enable react-hooks/refs */
 }
 
 export const MessageList = memo(function MessageList({ items, recap, working, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate }: Props) {

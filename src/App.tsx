@@ -121,6 +121,7 @@ export function App() {
    *  frame to update the sessions array. */
   const [sideChat, setSideChat] = useState<{ parentId: string; session: SessionInfo } | null>(null)
   const sideChatRef = useRef(sideChat)
+  // eslint-disable-next-line react-hooks/refs -- intentional render-time ref sync; async close/create callbacks read this ref so they don't capture a stale `sideChat` (useEffect would lag by one render)
   sideChatRef.current = sideChat
   /** Panels currently playing their exit animation. Each entry holds a
    *  snapshot of the SessionInfo at the moment the panel was removed so
@@ -1349,6 +1350,7 @@ export function App() {
     if (closingPanels.length === 0) return
     const mql = window.matchMedia('(prefers-reduced-motion: reduce)')
     if (mql.matches) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- when the user prefers reduced motion, onAnimationEnd never fires (CSS sets animation:none), so closing-panel ghosts would leak forever; clearing them here is the documented escape hatch for that media-query case, not a cascading-render anti-pattern.
       setClosingPanels([])
     }
   }, [closingPanels.length])
@@ -1357,6 +1359,7 @@ export function App() {
    *  without re-rendering the parent on every animation end. */
   const panelAnimRef = useRef<Record<string, 'entering' | 'exiting'>>({})
   const handlePanelAnimEnd = useCallback((id: string) => {
+    // eslint-disable-next-line react-hooks/immutability -- ref mutation inside an event handler (animation-end callback) is permitted; this flag only drives a one-shot CSS class and isn't read during render.
     delete panelAnimRef.current[id]
   }, [])
 
