@@ -183,7 +183,7 @@ export const ChatPanel = memo(function ChatPanel({
   onShowHelp,
   sideChatSession,
   sideChatCollapsed,
-  sideChatUnread,
+  sideChatUnread: _sideChatUnread,
   onToggleCollapseSideChat,
   onCloseSideChat,
   onSideChat,
@@ -592,33 +592,8 @@ export const ChatPanel = memo(function ChatPanel({
               </button>
             </Tooltip>
           )}
-          {/* Side Chat collapsed badge — shows when a side chat session
-              exists but the drawer is hidden. Click to expand. */}
-          {sideChatSession && sideChatCollapsed && onToggleCollapseSideChat && (
-            <Tooltip label="Expand Side Chat" placement="bottom">
-              <button
-                type="button"
-                className={[
-                  'chat-panel-side-chat-badge',
-                  sideChatSession.working ? 'working' : '',
-                  (sideChatUnread ?? 0) > 0 ? 'has-unread' : '',
-                ].filter(Boolean).join(' ')}
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onToggleCollapseSideChat()
-                }}
-              >
-                <span className="chat-panel-side-chat-badge-icon" aria-hidden>{'\u{1F4AC}'}</span>
-                {(sideChatUnread ?? 0) > 0 && (
-                  <span className="chat-panel-side-chat-badge-unread">
-                    {sideChatUnread! > 99 ? '99+' : sideChatUnread}
-                  </span>
-                )}
-                {sideChatSession.working && <span className="chat-panel-side-chat-working" />}
-              </button>
-            </Tooltip>
-          )}
+          {/* Side Chat collapsed badge — removed from header;
+              now rendered as a tab on the panel's right edge below. */}
         </div>
         {permMenuPresence.value && (
           <ContextMenu
@@ -722,6 +697,8 @@ export const ChatPanel = memo(function ChatPanel({
             onSaveCurrentAsSnippet={onSaveCurrentAsSnippet}
             onClosePanel={onClose}
             onSideChat={onSideChat}
+            sideChatCollapsed={sideChatCollapsed}
+            onToggleCollapseSideChat={onToggleCollapseSideChat}
           />
         ) : (
           <div className="empty-state">
@@ -747,7 +724,6 @@ export const ChatPanel = memo(function ChatPanel({
           permissions={sideChatPermissions}
           onClose={onCloseSideChat}
           onCollapse={onToggleCollapseSideChat}
-          onSelectParent={onFocus}
         />
       )}
     </section>

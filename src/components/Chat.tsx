@@ -41,7 +41,7 @@ import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
 import { ContextMenu } from './ContextMenu'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
-import { IconSearch, IconFileText, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconMessageCircle } from './icons/ToolIcons'
+import { IconSearch, IconFileText, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconMessageCircle, IconArrowLeft } from './icons/ToolIcons'
 import { PLAN_TOOL_NAMES } from '../constants/toolNames'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
@@ -139,6 +139,10 @@ interface Props {
   onOpenSettingsPanel?: (sessionId: string) => void
   /** Create a Side Chat from this session. */
   onSideChat?: (sessionId: string) => void
+  /** Side Chat collapsed state — for rendering the expand tab. */
+  sideChatCollapsed?: boolean
+  /** Toggle Side Chat expanded/collapsed. */
+  onToggleCollapseSideChat?: () => void
 }
 
 interface SendMessageResponse {
@@ -155,6 +159,7 @@ export const Chat = memo(function Chat({
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
   onSessionUpdate, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, settingsTabRequest, messageJumpTarget, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, onRegisterInjectInput,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onOpenSettingsPanel, onSideChat,
+  sideChatCollapsed, onToggleCollapseSideChat,
 }: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
   // The parent remounts Chat on session switch (<Chat key={session.id}>), so
@@ -807,8 +812,8 @@ export const Chat = memo(function Chat({
   // arms/disarms the trap and restores focus to the trigger on close.
   const settingsOverlayRef = useRef<HTMLDivElement>(null)
   const gitOverlayRef = useRef<HTMLDivElement>(null)
-  useFocusTrap(settingsOverlayRef, { restoreFocus: true, active: !!settingsOpen })
-  useFocusTrap(gitOverlayRef, { restoreFocus: false, active: !!gitPanelOpen })
+  useFocusTrap(settingsOverlayRef, { restoreFocus: true, active: !!settingsOpen, escapeSelector: '.chat-panel' })
+  useFocusTrap(gitOverlayRef, { restoreFocus: false, active: !!gitPanelOpen, escapeSelector: '.chat-panel' })
 
   const interrupt = useCallback(async () => {
     try {
@@ -1202,6 +1207,19 @@ export const Chat = memo(function Chat({
             />
           </WorkflowProvider>
         </SubagentProvider>
+      )}
+      {/* Side Chat collapsed tab — vertical strip on the right edge,
+          vertically centred. Click to re-expand the drawer. */}
+      {sideChatCollapsed && onToggleCollapseSideChat && (
+        <button
+          type="button"
+          className="side-chat-expand-tab"
+          aria-label="Expand Side Chat"
+          title="Expand Side Chat"
+          onClick={onToggleCollapseSideChat}
+        >
+          <IconArrowLeft size={14} />
+        </button>
       )}
     </div>
   )

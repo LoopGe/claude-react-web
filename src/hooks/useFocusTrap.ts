@@ -26,10 +26,14 @@ const DISABLED_EXCLUDING_SELECTOR =
  * @param ref   Ref to the container element (e.g. a dialog).
  * @param opts.restoreFocus  Save and restore `document.activeElement` on unmount.
  * @param opts.excludeDisabled  Exclude `[disabled]` elements from the focus trap.
+ * @param opts.escapeSelector  CSS selector. When focus lands on an element
+ *   matching this selector — or any descendant of such an element — the trap
+ *   releases it instead of pulling it back. Use for per-panel overlays that
+ *   should allow the user to interact with sibling panels.
  */
 export function useFocusTrap(
   ref: RefObject<HTMLElement | null>,
-  opts?: { restoreFocus?: boolean; excludeDisabled?: boolean; active?: boolean },
+  opts?: { restoreFocus?: boolean; excludeDisabled?: boolean; active?: boolean; escapeSelector?: string },
 ): void {
   const active = opts?.active ?? true
   useEffect(() => {
@@ -74,6 +78,16 @@ export function useFocusTrap(
       // at a higher z-index than the trap container and represent a
       // deliberate user interaction with a child dialog.
       if (target instanceof HTMLElement && target.closest('.modal-backdrop')) return
+      // Allow focus to escape to a *different* element matching
+      // `escapeSelector`. Typical use: a per-panel overlay (permission dialog,
+      // question dialog) that should let the user click into a sibling panel
+      // without the trap pulling focus back. The caller passes e.g.
+      // '.chat-panel'; focus is released only when the target belongs to a
+      // different panel than the one hosting the trap.
+      if (opts?.escapeSelector && target instanceof HTMLElement) {
+        const escapee = target.closest(opts.escapeSelector)
+        if (escapee && escapee !== el.closest(opts.escapeSelector)) return
+      }
       // Focus escaped the trap. Bring it back.
       if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '-1')
       el.focus()

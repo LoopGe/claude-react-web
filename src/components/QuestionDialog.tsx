@@ -82,7 +82,7 @@ export function QuestionDialog({ open = true, request, onSubmit, onSkipAll, onMi
     busyRef.current = busy
   })
 
-  useFocusTrap(dialogRef)
+  useFocusTrap(dialogRef, { escapeSelector: '.chat-panel' })
 
   // Persist the in-progress draft upward (keyed by request id in Chat) so
   // minimizing then re-opening restores the user's selections. Keep the

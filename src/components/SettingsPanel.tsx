@@ -295,6 +295,27 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
     return [...globalMcpNames].filter((n) => !currentNames.has(n)).sort()
   }, [session.mcpServerNames, mcp, globalMcpNames])
 
+  // Merge the SDK-reported mcp list with session.mcpServerNames so that
+  // servers known to be connected (from the snapshot) always show up —
+  // even when the mcp-status SDK control request fails or times out.
+  // Servers present in mcpServerNames but missing from mcp are rendered
+  // as "pending" cards (the existing McpServerCard already styles that
+  // status and shows a Reconnect button).
+  const effectiveMcp = useMemo(() => {
+    const names = session.mcpServerNames
+    if (!names || names.length === 0) return mcp
+    const byName = new Map(mcp.map((s) => [s.name, s]))
+    const result: McpServerStatus[] = []
+    for (const name of names) {
+      result.push(byName.get(name) ?? { name, status: 'pending' })
+    }
+    // Append SDK-reported servers NOT in mcpServerNames (inline / session-only).
+    for (const s of mcp) {
+      if (!names.includes(s.name)) result.push(s)
+    }
+    return result
+  }, [session.mcpServerNames, mcp])
+
   const addMcpServer = async (name: string) => {
     try {
       setBusy(true)
@@ -356,7 +377,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
     setMcpInstallerEdit(undefined)
     // Refresh both global names and MCP status
     api.get<{ servers: McpServerConfigMeta[] }>('/mcp-config')
-      .then((r) => setGlobalMcpNames(new Set(r.servers.map((s) => s.name))))
+      .then((r) => setGlobalMcpNames(new Set(r.servers.filter((s) => s.enabled !== false).map((s) => s.name))))
       .catch(() => { /* ignore */ })
     void refreshMcp()
   }
@@ -681,9 +702,9 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
             </button>
           </div>
         </div>
-        {loadingMeta && mcp.length === 0 && <Skeleton rows={2} />}
-        {!loadingMeta && mcp.length === 0 && <div className="settings-empty-note">No MCP servers</div>}
-        {mcp.map((srv) => (
+        {loadingMeta && effectiveMcp.length === 0 && <Skeleton rows={2} />}
+        {!loadingMeta && effectiveMcp.length === 0 && <div className="settings-empty-note">No MCP servers</div>}
+        {effectiveMcp.map((srv) => (
           <McpServerCard
             key={srv.name}
             server={srv}

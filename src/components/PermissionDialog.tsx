@@ -53,7 +53,7 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
   const busyRef = useRef(false)
   const dialogRef = useRef<HTMLDivElement>(null)
 
-  useFocusTrap(dialogRef)
+  useFocusTrap(dialogRef, { escapeSelector: '.chat-panel' })
 
   const hasSuggestions = Array.isArray(request.suggestions) && request.suggestions.length > 0
 

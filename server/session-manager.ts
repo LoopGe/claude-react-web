@@ -2365,8 +2365,15 @@ export class SessionManager {
   }
 
   /** Max consecutive auto-resumes before giving up. Prevents infinite
-   *  loops if the CLI subprocess keeps exiting immediately. */
-  private static MAX_AUTO_RESUME = 3
+   *  loops if the CLI subprocess keeps exiting immediately.
+   *
+   *  The counter resets to 0 on every user message (pushToSession), so
+   *  this limit only caps *idle* exits between turns. A value of 3 was
+   *  too aggressive — on slow conversations the CLI's idle timeout would
+   *  fire 3+ times between messages, prematurely terminating the session.
+   *  20 gives ~10 minutes of idle tolerance (assuming ~30s per exit+resume
+   *  cycle) without sacrificing the infinite-loop guard. */
+  private static MAX_AUTO_RESUME = 20
   /** Tracks consecutive auto-resume attempts per session. */
   private autoResumeCounts = new WeakMap<Session, number>()
 
@@ -2388,8 +2395,11 @@ export class SessionManager {
     // Track consecutive resumes to avoid infinite loops
     const resumeCount = this.autoResumeCounts.get(session) ?? 0
     if (resumeCount >= SessionManager.MAX_AUTO_RESUME) {
-      console.warn(`[session ${session.id}] auto-resume limit reached (${resumeCount}), giving up`)
+      console.warn(`[session ${session.id}] auto-resume limit reached (${resumeCount}/${SessionManager.MAX_AUTO_RESUME}), giving up`)
       return false
+    }
+    if (resumeCount >= SessionManager.MAX_AUTO_RESUME * 0.75) {
+      console.warn(`[session ${session.id}] auto-resume count approaching limit (${resumeCount}/${SessionManager.MAX_AUTO_RESUME})`)
     }
 
     console.log(`[session ${session.id}] auto-resuming (attempt ${resumeCount + 1}/${SessionManager.MAX_AUTO_RESUME})`)

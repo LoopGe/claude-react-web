@@ -1789,22 +1789,7 @@
   flex-shrink: 0;
 }
 .side-chat-drawer-back {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: transparent;
-  color: var(--fg-muted);
-  font-size: var(--fs-xs);
   font-family: var(--mono);
-  cursor: pointer;
-  transition: border-color var(--motion-duration-fast) var(--motion-ease-standard);
-}
-.side-chat-drawer-back:hover {
-  border-color: var(--accent);
-  color: var(--fg);
 }
 .side-chat-drawer-parent-title {
   max-width: 120px;
@@ -1818,33 +1803,11 @@
   font-weight: 500;
   color: var(--fg-muted);
 }
-.side-chat-drawer-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-  transition: background var(--motion-duration-fast) var(--motion-ease-standard);
-}
-.side-chat-drawer-close:hover {
-  background: var(--bg-elev-2);
-  color: var(--fg);
-}
 .side-chat-drawer-body {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
   min-height: 0;
-  /* Flex column so .chat-messages-wrap's flex: 1 resolves to a
-     definite height — the same pattern .chat-messages-area uses in
-     the main panel. Without this, the empty-state "Type a message
-     below…" and other full-height children collapse to content
-     height and pin to the top. */
   display: flex;
   flex-direction: column;
 }
@@ -1865,51 +1828,18 @@
   resize: none;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--bg-elev-1);
+  background: var(--bg-elev);
   color: var(--fg);
   font: inherit;
   font-size: var(--fs-sm);
   padding: 8px 10px;
   outline: none;
-  min-height: 36px;
-  max-height: 120px;
+  min-height: 40px;
+  max-height: 180px;
   transition: border-color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .side-chat-drawer-input:focus {
   border-color: var(--accent);
-}
-.side-chat-drawer-send {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border: none;
-  border-radius: 6px;
-  background: var(--accent);
-  color: var(--on-accent);
-  font-size: 16px;
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: opacity var(--motion-duration-fast) var(--motion-ease-standard);
-}
-.side-chat-drawer-send:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.side-chat-drawer-error {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  background: color-mix(in srgb, var(--danger) 12%, var(--bg));
-  color: var(--danger);
-  font-size: var(--fs-xs);
-  border-top: 1px solid var(--border);
-  flex-shrink: 0;
-}
-.side-chat-drawer-error svg {
-  flex-shrink: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   .side-chat-drawer,

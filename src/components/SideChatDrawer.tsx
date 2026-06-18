@@ -12,7 +12,7 @@ import type { ChatStream } from '../hooks/useChatStream'
 import type { UsePermissionChannel } from '../hooks/usePermissionChannel'
 import { MessageList, WorkingBubble } from './MessageList'
 import { PermissionDialog } from './PermissionDialog'
-import { IconX, IconArrowLeft, IconAlertTriangle } from './icons/ToolIcons'
+import { IconX, IconArrowLeft, IconSendInterruptToggle, IconLoader } from './icons/ToolIcons'
 import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
 
@@ -126,7 +126,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
         <Tooltip label={`Back to ${parentSession.title ?? parentSession.id.slice(0, 8)}`} placement="bottom">
           <button
             type="button"
-            className="side-chat-drawer-back"
+            className="btn btn-sm side-chat-drawer-back"
             onClick={() => setIsCollapsing(true)}
           >
             <IconArrowLeft size={14} />
@@ -139,7 +139,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
         <Tooltip label="Close (delete session)" placement="bottom">
           <button
             type="button"
-            className="side-chat-drawer-close"
+            className="btn btn-icon"
             disabled={isExiting || isCollapsing}
             onClick={() => setIsExiting(true)}
             aria-label="Close Side Chat"
@@ -175,9 +175,8 @@ export const SideChatDrawer = memo(function SideChatDrawer({
       </div>
 
       {stream.error && (
-        <div className="side-chat-drawer-error">
-          <IconAlertTriangle size={14} />
-          <span>{stream.error}</span>
+        <div className="error-bar" style={{ flexShrink: 0 }}>
+          {stream.error}
         </div>
       )}
 
@@ -211,11 +210,20 @@ export const SideChatDrawer = memo(function SideChatDrawer({
         />
         <button
           type="button"
-          className="side-chat-drawer-send"
+          className={`btn btn-icon ${session.working ? 'btn-danger' : 'btn-primary'}`}
           onClick={session.working ? handleInterrupt : handleSend}
           disabled={(!input.trim() && !session.working) || sending}
+          title={session.working ? 'Interrupt' : 'Send message (Enter)'}
+          aria-label={session.working ? 'Interrupt' : 'Send message'}
         >
-          {session.working ? '■' : '↑'}
+          {sending && !session.working ? (
+            <IconLoader size={16} className="composer-send-spinner" />
+          ) : (
+            <IconSendInterruptToggle
+              size={session.working ? 14 : 16}
+              className={`composer-action-toggle ${session.working ? 'interrupt' : 'send'}`}
+            />
+          )}
         </button>
       </div>
     </div>
