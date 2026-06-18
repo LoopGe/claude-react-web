@@ -1,7 +1,20 @@
-import { describe, it, expect, vi } from 'vitest'
-import { render, fireEvent, within } from '@testing-library/react'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { render, fireEvent, within, cleanup } from '@testing-library/react'
 import { PermissionDialog } from './PermissionDialog'
 import type { PermissionRequest, PermissionMode } from '../types'
+
+// vitest runs with `globals: false`, so @testing-library/react's auto-cleanup
+// (which keys off a global `afterEach`) never registers. Without this explicit
+// cleanup, each test's <PermissionDialog> — and its `useFocusTrap`
+// `document`-level `focusin` listener — stays mounted and accumulates across
+// tests. By the second test the leaked DOM + listeners produce an error with a
+// deep stack that overflows vite-node's recursive `prepareStackTrace`
+// source-map rewrite (the `/file:\/\/\/(\w:)?/` regex blows the stack), which
+// cascades into unbounded unhandled rejections and an OOM that hangs the whole
+// `vitest run`. Tearing down between tests keeps the stack shallow.
+afterEach(() => {
+  cleanup()
+})
 
 function planRequest(): Extract<PermissionRequest, { kind: 'permission' }> {
   return {
