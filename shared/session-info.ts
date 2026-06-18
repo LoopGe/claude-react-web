@@ -108,4 +108,8 @@ export interface SessionInfoBase<PM = string> {
    *  not yet regenerated). Updated by the recapManager and pushed
    *  via WS frames. */
   recap?: SessionRecap
+  /** When present, this session is a Side Chat — a lightweight,
+   *  ephemeral fork of the parent session. The value is the parent's
+   *  session ID. Undefined for normal sessions. */
+  parentId?: string
 }

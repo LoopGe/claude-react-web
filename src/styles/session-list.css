@@ -305,8 +305,11 @@
 .session-item.deleting { pointer-events: none; }
 @media (prefers-reduced-motion: reduce) {
   .session-item,
+  .session-item.dragging,
   .session-item-shell { transition: none; }
   .session-item-shell.deleting { transform: none; }
+  .session-item.drop-before::before,
+  .session-item.drop-after::after { animation: none; transform: scaleX(1); }
 }
 
 /* Idle tint for cards that have a per-session accent chosen. We paint a
@@ -819,13 +822,53 @@
    during hover. */
 .session-item { cursor: grab; }
 .session-item:active { cursor: grabbing; }
-.session-item.dragging { opacity: 0.35; }
-/* An insertion line painted either above or below the hovered card. We
-   use an outline on a pseudo-element so it doesn't steal pointer events. */
-.session-item.drop-before { box-shadow: 0 -2px 0 var(--accent) inset; }
-.session-item.drop-after { box-shadow: 0 2px 0 var(--accent) inset; }
+
+/* Dragging card: lift + fade + smooth entry. */
+.session-item.dragging {
+  opacity: 0.3;
+  transform: scale(0.97);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--fg) 12%, transparent);
+  transition: opacity var(--motion-duration-fast) var(--motion-ease-standard),
+              transform var(--motion-duration-fast) var(--motion-ease-standard),
+              box-shadow var(--motion-duration-fast) var(--motion-ease-standard);
+  cursor: grabbing;
+  z-index: 1;
+}
+/* Suppress hover flicker on the dragged card itself — it's at 0.3
+   opacity and shouldn't flash a background on cursor jitter. */
+.session-item.dragging:hover { background: transparent; }
+
+/* Drop insertion indicator — animated accent line that slides into view
+   instead of snapping. Uses a ::before pseudo so the indicator is painted
+   independently of the card's own box-shadow layers (focused/open/tinted). */
+.session-item.drop-before,
+.session-item.drop-after { position: relative; }
+.session-item.drop-before::before,
+.session-item.drop-after::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 50%, transparent);
+  transform: scaleX(0);
+  animation: drop-line-in var(--motion-duration-fast) var(--motion-ease-standard) forwards;
+}
+.session-item.drop-before::before { top: -1px; transform-origin: left center; }
+.session-item.drop-after::after { bottom: -1px; transform-origin: right center; }
+
+@keyframes drop-line-in {
+  to { transform: scaleX(1); }
+}
+
+/* Replace the old inset box-shadows for focused+drop states — keep the
+   accent rail but let the ::before/::after handle the insertion line. */
+.session-item.open.drop-before,
+.session-item.open.drop-after { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 45%, transparent); }
 .session-item.focused.drop-before,
-.session-item.focused.drop-after { box-shadow: inset 2px 0 0 var(--accent), 0 -2px 0 var(--accent) inset; }
+.session-item.focused.drop-after { box-shadow: inset 3px 0 0 var(--accent); }
 /* A session whose panel is currently open (but not the one focused) —
    dashed accent border on the left + slightly raised background, so all
    open sessions are obviously distinct from unopened ones even when none

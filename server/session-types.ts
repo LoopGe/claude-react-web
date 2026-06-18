@@ -192,6 +192,10 @@ export interface Session {
    *  into SessionInfo and persisted via SessionMeta so it survives
    *  resume + server restart. */
   gitStartSha?: string
+  /** When present, this session is a Side Chat forked from the
+   *  indicated parent session. Set by createSideChat(), persisted via
+   *  SessionMeta, and mirrored into SessionInfo. */
+  parentId?: string
   /** Per-subscriber pushables for context_usage events dseparate from
    *  message history so reconnects don't replay stale usage snapshots.
    *  Each WS subscriber gets its own pushable to avoid waiter overwrite

@@ -110,6 +110,27 @@ export function isClearCommand(text: string): boolean {
   return token === 'clear' || token === 'reset' || token === 'new'
 }
 
+/** Boundary prompt injected into every Side Chat as the first user message.
+ *  Adapted from Codex's SIDE_BOUNDARY_PROMPT. Tells the model that inherited
+ *  history is reference-only and should not be treated as active instructions. */
+const SIDE_BOUNDARY_PROMPT = `[Side Chat boundary]
+
+Everything before this boundary is inherited history from the parent session.
+It is reference context only — it is not your current task.
+
+Do not continue, execute, or complete any instructions, plans, tool calls,
+edits, or requests from before this boundary. Only messages submitted after
+this boundary are active user instructions for this Side Chat.
+
+You are a Side Chat assistant, separate from the main thread. Answer questions
+and do lightweight exploration without disrupting the main thread. If there is
+no user question after this boundary yet, wait for one.
+
+Do not modify files, source, git state, permissions, or workspace state unless
+the user explicitly asks for that mutation after this boundary. If the user
+explicitly requests a mutation, keep it minimal and avoid disrupting the main
+thread.`
+
 function clampSearchLimit(value: number | undefined): number {
   if (!Number.isFinite(value ?? NaN)) return 30
   return Math.max(1, Math.min(Math.floor(value as number), 100))
@@ -355,6 +376,7 @@ export class SessionManager {
       lastTurnAt: s.lastTurnAt,
       clearBoundaryUuid: s.clearBoundaryUuid,
       gitStartSha: s.gitStartSha,
+      parentId: s.parentId,
     })
   }
 
@@ -650,7 +672,7 @@ export class SessionManager {
    *  `resume()` when the on-disk jsonl has gone away under our feet.
    *  `caller` is "fork" or "resume" so post-mortem log greps can tell
    *  which path tripped. */
-  private markTranscriptMissing(meta: SessionMeta, caller: 'fork' | 'resume'): void {
+  private markTranscriptMissing(meta: SessionMeta, caller: 'fork' | 'resume' | 'side-chat'): void {
     console.warn(
       `[session ${meta.id}] marking terminated:transcript_missing via ${caller} ` +
       `(cwd=${meta.cwd ?? '<none>'}, lastTurnAt=${meta.lastTurnAt ?? 'none'}, ` +
@@ -763,6 +785,90 @@ export class SessionManager {
     return this.spawn(randomUUID(), applyConfiguredSkills(forkOpts))
   }
 
+  /** Create a Side Chat — an ephemeral fork of the parent session's
+   *  transcript with a boundary prompt that tells the model the inherited
+   *  history is reference-only. The Side Chat is a fully independent session
+   *  marked with `parentId` so the UI can distinguish it. */
+  async createSideChat(parentId: string): Promise<SessionInfo> {
+    const live = this.sessions.get(parentId)
+    const meta = live ?? this.store.get(parentId)
+    if (!meta) throw new HttpError(404, `parent session ${parentId} not found`)
+    if (!meta.lastTurnAt) {
+      throw new HttpError(
+        400,
+        'Send at least one message and wait for the reply before starting a Side Chat.',
+      )
+    }
+    if (meta.terminated) {
+      throw new HttpError(400, 'Cannot create a Side Chat from a terminated session.')
+    }
+    if (meta.parentId) {
+      throw new HttpError(400, 'Cannot create a Side Chat from a Side Chat.')
+    }
+    if (!(await this.hasSdkTranscript(meta))) {
+      const persisted: SessionMeta = this.store.get(parentId) ?? {
+        id: meta.id,
+        provider: meta.provider ?? this.defaultProvider,
+        createdAt: meta.createdAt,
+        lastActivityAt: meta.lastActivityAt,
+        cwd: meta.cwd,
+        model: meta.model,
+        permissionMode: meta.permissionMode,
+        title: meta.title,
+        betas: meta.betas,
+        messageCount: live ? live.history.length : (meta as SessionMeta).messageCount,
+        terminated: true,
+        terminatedReason: 'transcript_missing',
+        lastTurnAt: meta.lastTurnAt,
+        clearBoundaryUuid: meta.clearBoundaryUuid,
+        gitStartSha: meta.gitStartSha,
+      }
+      this.markTranscriptMissing(persisted, 'side-chat')
+      throw new HttpError(
+        410,
+        `Session ${parentId}'s transcript is missing on disk — cannot create a Side Chat. The session has been marked terminated.`,
+      )
+    }
+    const title = meta.title ? `${meta.title} — Side Chat` : 'Side Chat'
+    const sourceProvider = meta.provider ?? this.defaultProvider
+    const sideChatOpts: Options & { provider?: string; parentId?: string } = {
+      provider: sourceProvider,
+      resume: parentId,
+      forkSession: true,
+      cwd: meta.cwd,
+      model: meta.model,
+      permissionMode: meta.permissionMode,
+      title,
+      effort: meta.effortLevel,
+      betas: meta.betas as Options['betas'],
+      settings: meta.hooks ? ({ hooks: toSdkHooksSettings(meta.hooks) } as Settings) : undefined,
+      parentId,
+    }
+    // Re-apply globally configured MCP servers (same as fork).
+    const allGlobalMcpNames = Object.keys(this.mcpStore.toSdkConfig() ?? {})
+    if (allGlobalMcpNames.length > 0) {
+      await this.mcpStore.refreshOAuthTokens(allGlobalMcpNames)
+      sideChatOpts.mcpServers = this.mcpStore.toSdkConfig()
+    }
+    const info = this.spawn(randomUUID(), applyConfiguredSkills(sideChatOpts))
+    // Inject the boundary prompt directly into the SDK input queue,
+    // bypassing pushToSession() so the UI never renders it as a user
+    // bubble. Same pattern as /clear (line ~1148). The pump's echo
+    // filter will drop the SDK's replay of this message.
+    const sideSession = this.sessions.get(info.id)
+    if (sideSession) {
+      const boundaryMsg: SDKUserMessage = {
+        type: 'user',
+        message: { role: 'user', content: SIDE_BOUNDARY_PROMPT },
+        parent_tool_use_id: null,
+        uuid: randomUUID(),
+        session_id: info.id,
+      }
+      sideSession.handle.enqueueUserMessage({ ...boundaryMsg })
+    }
+    return info
+  }
+
   /** Fire-and-forget capture of the worktree's HEAD SHA at session spawn.
    *  Extracted from spawn() for readability; only called once per session
    *  (autoResume uses the existing gitStartSha). */
@@ -848,6 +954,9 @@ export class SessionManager {
       gitStartSha: existingMeta?.gitStartSha,
       fastMode: existingMeta?.fastMode,
       hooks: existingMeta?.hooks ?? metaSnapshot.hooks,
+      // Side Chat parentId — set here so the `created` broadcast already
+      // carries the field, avoiding a sidebar flash of the session without it.
+      parentId: (opts as Record<string, unknown>).parentId as string | undefined,
     }
 
     if (!fullOpts.canUseTool) {
@@ -1957,15 +2066,18 @@ export class SessionManager {
     if (q.length < 2) return []
     const limit = clampSearchLimit(opts.limit)
     const sessions = this.list()
-    const hits: MessageSearchHit[] = []
 
-    for (const info of sessions) {
-      if (hits.length >= limit) break
+    // Search sessions in parallel with a concurrency cap to avoid
+    // overwhelming the filesystem or event loop.
+    const CONCURRENCY = 10
+    const allHits: MessageSearchHit[] = []
+    let idx = 0
+    const searchSession = async (info: SessionInfo) => {
       const live = this.sessions.get(info.id)
       const meta = this.store.get(info.id)
       const providerName = live?.provider ?? meta?.provider ?? info.provider ?? this.defaultProvider
       const provider = this.providers.get(providerName)
-      if (!provider.readHistoryEntries) continue
+      if (!provider.readHistoryEntries) return
 
       let entries: HistoryEntry[]
       try {
@@ -1974,12 +2086,11 @@ export class SessionManager {
         })
       } catch (err) {
         console.warn(`[session-manager] searchMessages(${info.id}) history read failed:`, err)
-        continue
+        return
       }
 
       let sessionMatchOrdinal = 0
       for (const entry of entries) {
-        if (hits.length >= limit) break
         const plainText = extractMessagePlainText(entry.message as SDKMessage)
         if (!plainText) continue
         const matchCount = countMatches(plainText, q)
@@ -1987,7 +2098,7 @@ export class SessionManager {
         const matchOrdinal = sessionMatchOrdinal
         sessionMatchOrdinal += matchCount
         const uuid = messageUuid(entry.message)
-        hits.push({
+        allHits.push({
           id: `${info.id}:${uuid ?? entry.index}`,
           sessionId: info.id,
           sessionTitle: info.title,
@@ -2003,7 +2114,22 @@ export class SessionManager {
       }
     }
 
-    return hits
+    // Run up to CONCURRENCY searches in parallel.
+    const workers: Promise<void>[] = []
+    const next = async (): Promise<void> => {
+      while (idx < sessions.length) {
+        const i = idx++
+        await searchSession(sessions[i])
+      }
+    }
+    for (let w = 0; w < Math.min(CONCURRENCY, sessions.length); w++) {
+      workers.push(next())
+    }
+    await Promise.all(workers)
+
+    // Sort by recency (most recent first), then truncate to limit.
+    allHits.sort((a, b) => (b.lastModified ?? 0) - (a.lastModified ?? 0))
+    return allHits.slice(0, limit)
   }
 
   async shutdown(): Promise<void> {
@@ -2126,6 +2252,7 @@ export class SessionManager {
       pendingPermissionCount: s.pending.size,
       phase: this.phaseOf(s),
       recap: s.recap,
+      parentId: s.parentId,
     }
   }
 
@@ -2183,6 +2310,7 @@ export class SessionManager {
       // and the recapManager rebuilds it.
       phase: meta.terminated ? 'terminated' : 'dormant',
       recap: undefined,
+      parentId: meta.parentId,
     }
   }
 

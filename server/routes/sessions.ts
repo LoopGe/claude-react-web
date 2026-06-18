@@ -23,6 +23,22 @@ function validateEnabledMcpServers(value: unknown): string | null {
   return null
 }
 
+/** Environment variable names that can alter process execution, inject code,
+ *  or redirect I/O. Blocked from user-supplied `env` overrides to prevent
+ *  privilege escalation in spawned child processes. */
+const BLOCKED_ENV_VARS = new Set([
+  'PATH', 'Path',                          // executable search path
+  'LD_PRELOAD',                            // inject shared libraries (Linux)
+  'LD_LIBRARY_PATH',                       // library search path (Linux)
+  'DYLD_INSERT_LIBRARIES',                 // inject shared libraries (macOS)
+  'DYLD_LIBRARY_PATH',                     // library search path (macOS)
+  'NODE_OPTIONS',                          // inject arbitrary Node.js flags
+  'NODE_PATH',                             // module resolution override
+  'PYTHONPATH',                            // Python module search path
+  'HOME', 'USERPROFILE',                   // redirect home dir / credential reads
+  'COMSPEC', 'SystemRoot', 'windir',       // Windows system paths
+])
+
 /** Validate the optional `env` field accepted by session creation. The SDK
  *  expects a string-to-string map for subprocess environment overrides; reject
  *  malformed input instead of letting object spread coerce arrays/strings into
@@ -35,6 +51,9 @@ function validateEnv(value: unknown): string | null {
   for (const [key, envValue] of Object.entries(value)) {
     if (typeof envValue !== 'string') {
       return `env.${key} must be a string`
+    }
+    if (BLOCKED_ENV_VARS.has(key)) {
+      return `env.${key} is not allowed — overriding this variable is blocked for security`
     }
   }
   return null
@@ -114,6 +133,12 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   // Fork a session.
   app.post('/sessions/:id/fork', async (c) => {
     const info = await sm.fork(c.req.param('id'))
+    return c.json({ session: info }, 201)
+  })
+
+  // Create a Side Chat — ephemeral fork with boundary prompt.
+  app.post('/sessions/:id/side-chat', async (c) => {
+    const info = await sm.createSideChat(c.req.param('id'))
     return c.json({ session: info }, 201)
   })
 

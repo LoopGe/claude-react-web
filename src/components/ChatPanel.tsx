@@ -5,6 +5,7 @@
 import { memo, useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { Chat } from './Chat'
+import { SideChatDrawer } from './SideChatDrawer'
 import { ContextMenu } from './ContextMenu'
 import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
@@ -87,6 +88,10 @@ export interface ChatPanelProps {
    *  a reply landed on a sibling they aren't currently watching. Ignored
    *  when `focused` is true (the user is already looking). */
   hasUnread?: boolean
+  /** True when this panel just mounted and should play its enter animation. */
+  entering?: boolean
+  /** Called when the enter animation ends so the parent can clear the flag. */
+  onAnimEnd?: (id: string) => void
   /** Slot number (1-indexed) in the main grid. Shown as a pill in the
    *  header so the user can tell this panel apart from the sidebar card
    *  and map it to the Ctrl+<n> shortcut. */
@@ -110,6 +115,13 @@ export interface ChatPanelProps {
   /** Open the in-app help dialog with the given slash commands. Triggered by
    *  the `/help` local command. */
   onShowHelp: (commands: SlashCommand[]) => void
+  /** Side Chat session to render in a drawer overlay. Undefined when no
+   *  Side Chat is active for this panel. */
+  sideChatSession?: SessionInfo
+  /** Close the Side Chat drawer and delete the ephemeral session. */
+  onCloseSideChat?: () => void
+  /** Create a Side Chat from this session. */
+  onSideChat?: (sessionId: string) => void
   /** Nonce-stamped request to switch the settings tab (forwarded to <Chat> —
    *  SettingsPanel). Null when no request targets this panel. */
   settingsTabRequest?: { tab: SettingsTabName; nonce: number } | null
@@ -148,6 +160,8 @@ export const ChatPanel = memo(function ChatPanel({
   session,
   focused,
   hasUnread,
+  entering,
+  onAnimEnd,
   slot,
   accentStyle,
   onFocus,
@@ -158,6 +172,9 @@ export const ChatPanel = memo(function ChatPanel({
   onRequestResumeForPanel,
   onOpenSettingsTab,
   onShowHelp,
+  sideChatSession,
+  onCloseSideChat,
+  onSideChat,
   settingsTabRequest,
   messageJumpTarget,
   settingsOpen,
@@ -320,14 +337,19 @@ export const ChatPanel = memo(function ChatPanel({
 
   return (
     <section
+      data-panel-id={session.id}
       className={[
         'chat-panel',
         focused ? 'focused' : '',
         dropActive ? 'drop-target' : '',
         isNonDefaultMode ? 'mode-active' : '',
+        entering ? 'entering' : '',
         `mode-${permMode}`,
       ].filter(Boolean).join(' ')}
       style={accentStyle}
+      onAnimationEnd={(e) => {
+        if (entering && e.target === e.currentTarget) onAnimEnd?.(session.id)
+      }}
       onMouseDownCapture={(e) => {
         // Focus on any mousedown inside the panel (capture phase so we win
         // against children). Clicking the close button still works because
@@ -648,6 +670,7 @@ export const ChatPanel = memo(function ChatPanel({
             onOpenSnippetsManager={onOpenSnippetsManager}
             onSaveCurrentAsSnippet={onSaveCurrentAsSnippet}
             onClosePanel={onClose}
+            onSideChat={onSideChat}
           />
         ) : (
           <div className="empty-state">
@@ -665,6 +688,14 @@ export const ChatPanel = memo(function ChatPanel({
           </div>
         )}
       </div>
+      {sideChatSession && onCloseSideChat && (
+        <SideChatDrawer
+          session={sideChatSession}
+          parentSession={session}
+          onClose={onCloseSideChat}
+          onSelectParent={onFocus}
+        />
+      )}
     </section>
   )
 })

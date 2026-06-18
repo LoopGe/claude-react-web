@@ -65,6 +65,9 @@ export interface SessionMeta {
    *  Survives across process restarts so the GitPanel "This session"
    *  view stays anchored even if the server is bounced mid-conversation. */
   gitStartSha?: string
+  /** When present, this session is a Side Chat forked from the
+   *  indicated parent session. Undefined for normal sessions. */
+  parentId?: string
 }
 
 const FILE_NAME = 'sessions.json'
@@ -166,6 +169,7 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     lastTurnAt: typeof r.lastTurnAt === 'number' ? r.lastTurnAt : undefined,
     clearBoundaryUuid: typeof r.clearBoundaryUuid === 'string' ? r.clearBoundaryUuid : undefined,
     gitStartSha: typeof r.gitStartSha === 'string' ? r.gitStartSha : undefined,
+    parentId: typeof r.parentId === 'string' ? r.parentId : undefined,
   }
 }
 

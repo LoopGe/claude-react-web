@@ -417,6 +417,27 @@ export const SessionList = memo(function SessionList({
     })
   }, [])
 
+  /** Wrapped reorder callbacks that apply FLIP animation so dropped cards
+   *  slide smoothly into their new positions (same technique as keyboard
+   *  Move up/down). */
+  const animatedReorder = useCallback(
+    (draggedId: string, targetId: string, position: 'before' | 'after') => {
+      const animateMove = prepareMoveAnimation()
+      onReorder?.(draggedId, targetId, position)
+      animateMove()
+    },
+    [onReorder, prepareMoveAnimation],
+  )
+
+  const animatedReorderInGroup = useCallback(
+    (draggedId: string, targetId: string, position: 'before' | 'after', groupId: string) => {
+      const animateMove = prepareMoveAnimation()
+      onReorderInGroup?.(draggedId, targetId, position, groupId)
+      animateMove()
+    },
+    [onReorderInGroup, prepareMoveAnimation],
+  )
+
   /** Render a SessionCard with all shared props pre-bound. Extracted from
    *  the 3 render sites (grouped, ungrouped-section, flat) to avoid
    *  duplicating 17+ props. */
@@ -444,8 +465,8 @@ export const SessionList = memo(function SessionList({
           onDragEnd={handleCardDragEnd}
           onSetDropHint={handleSetDropHint}
           onClearDropHint={handleClearDropHint}
-          onReorder={onReorder}
-          onReorderInGroup={onReorderInGroup}
+          onReorder={animatedReorder}
+          onReorderInGroup={animatedReorderInGroup}
           renameDraft={renameDraft}
           onRenameDraftChange={handleRenameDraftChange}
           onCommitRename={commitRename}
@@ -455,7 +476,7 @@ export const SessionList = memo(function SessionList({
         />
       </div>
     )
-  }, [openIdSlotMap, openIdSet, focusedId, resumingIds, unread, deletingIds, draggingId, dropHint, renamingId, accentStyleMap, onSelect, onDelete, handleCardContextMenu, handleCardDragStart, handleCardDragEnd, handleSetDropHint, handleClearDropHint, onReorder, onReorderInGroup, renameDraft, handleRenameDraftChange, commitRename, cancelRename, startRename, handleAskConfirm])
+  }, [openIdSlotMap, openIdSet, focusedId, resumingIds, unread, deletingIds, draggingId, dropHint, renamingId, accentStyleMap, onSelect, onDelete, handleCardContextMenu, handleCardDragStart, handleCardDragEnd, handleSetDropHint, handleClearDropHint, animatedReorder, animatedReorderInGroup, renameDraft, handleRenameDraftChange, commitRename, cancelRename, startRename, handleAskConfirm])
 
   /** Resolve which ordered list a session belongs to and, when it lives in
    *  a group, that group's id. The flat view orders `visibleSessions`; the

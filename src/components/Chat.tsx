@@ -39,7 +39,7 @@ import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
 import { ContextMenu } from './ContextMenu'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
-import { IconSearch, IconFileText, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown } from './icons/ToolIcons'
+import { IconSearch, IconFileText, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconMessageCircle } from './icons/ToolIcons'
 import { PLAN_TOOL_NAMES } from '../constants/toolNames'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
@@ -135,6 +135,8 @@ interface Props {
    *  message-area context menu can offer a "Settings" item now that the
    *  header gear button is gone. */
   onOpenSettingsPanel?: (sessionId: string) => void
+  /** Create a Side Chat from this session. */
+  onSideChat?: (sessionId: string) => void
 }
 
 interface SendMessageResponse {
@@ -150,7 +152,7 @@ export const Chat = memo(function Chat({
   settingsOpen, onCloseSettings,
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
   onSessionUpdate, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, settingsTabRequest, messageJumpTarget, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, onRegisterInjectInput,
-  snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onOpenSettingsPanel,
+  snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onOpenSettingsPanel, onSideChat,
 }: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
   // The parent remounts Chat on session switch (<Chat key={session.id}>), so
@@ -888,6 +890,15 @@ export const Chat = memo(function Chat({
               },
             },
             { label: '' },
+            ...(onSideChat && session.messageCount > 0 && !session.parentId
+              ? [
+                  {
+                    label: 'Side Chat',
+                    icon: <IconMessageCircle size={14} />,
+                    onClick: () => onSideChat(session.id),
+                  },
+                ]
+              : []),
             ...(onOpenSettingsPanel
               ? [
                   {

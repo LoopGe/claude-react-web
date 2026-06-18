@@ -82,6 +82,18 @@ export function App() {
   const [deletingSessionIds, setDeletingSessionIds] = useState<Set<string>>(new Set())
   /** Ordered list of open session ids (oldest first). Length <= maxOpen. */
   const [openIds, setOpenIds] = useState<string[]>([])
+  /** Side Chat drawer state. Only one Side Chat can be open at a time.
+   *  Stores the full SessionInfo from the POST response so the drawer
+   *  can mount immediately without waiting for the WS session-created
+   *  frame to update the sessions array. */
+  const [sideChat, setSideChat] = useState<{ parentId: string; session: SessionInfo } | null>(null)
+  const sideChatRef = useRef(sideChat)
+  sideChatRef.current = sideChat
+  /** Panels currently playing their exit animation. Each entry holds a
+   *  snapshot of the SessionInfo at the moment the panel was removed so
+   *  the closing ChatPanel can finish rendering + fading out. */
+  const [closingPanels, setClosingPanels] = useState<{ id: string; session: SessionInfo; rect: DOMRect }[]>([])
+  const prevOpenIdsRef = useRef<string[]>([])
   /** Which of the open panels is currently focused (controls settings
    *  panel target + clears unread when selected). */
   const [focusedId, setFocusedId] = useState<string | null>(null)
@@ -570,6 +582,15 @@ export function App() {
 
   const closeSession = useCallback(
     (id: string) => {
+      // If the closed panel hosts a Side Chat, clean up the ephemeral session.
+      // The SideChatDrawer's unmount effect also calls onClose, but that races
+      // with the DELETE — fire-and-forget here to guarantee cleanup.
+      if (sideChatRef.current?.parentId === id) {
+        const sideId = sideChatRef.current.session.id
+        setSideChat(null)
+        void api.delete(`/sessions/${sideId}`).catch(() => {})
+        sessionStoreRegistry.delete(sideId)
+      }
       // Both state updates are derived from the fresh openIds snapshot
       // inside a single updater, avoiding the fragile cross-updater
       // side-effect pattern. The setFocusedId call is issued from
@@ -689,6 +710,46 @@ export function App() {
       }
     },
     [openSession, groups, handleAddToGroup, toast],
+  )
+
+  /** Close the Side Chat drawer and delete the ephemeral session.
+   *  Accepts an optional sessionId to target a specific session (used by
+   *  the drawer's unmount cleanup). Falls back to the current sideChat ref. */
+  const handleCloseSideChat = useCallback(async (sessionId?: string) => {
+    const id = sessionId ?? sideChatRef.current?.session.id
+    if (!id) return
+    // Only clear sideChat state if it still points to this session.
+    if (sideChatRef.current?.session.id === id) setSideChat(null)
+    try { await api.delete(`/sessions/${id}`) } catch { /* */ }
+    sessionStoreRegistry.delete(id)
+  }, [])
+
+  /** Create a Side Chat — ephemeral fork rendered as a drawer overlay. */
+  const sideChatCreating = useRef(false)
+  const handleSideChat = useCallback(
+    async (id: string) => {
+      if (sideChatCreating.current) return
+      sideChatCreating.current = true
+      try {
+        // Close any existing Side Chat before creating a new one.
+        // Set sideChat(null) FIRST so the old drawer's unmount cleanup
+        // sees sideChatRef.current === null and skips the delete (we
+        // handle it ourselves below).
+        if (sideChatRef.current) {
+          const oldId = sideChatRef.current.session.id
+          setSideChat(null)
+          try { await api.delete(`/sessions/${oldId}`) } catch { /* */ }
+          sessionStoreRegistry.delete(oldId)
+        }
+        const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/side-chat`, {})
+        setSideChat({ parentId: id, session: res.session })
+      } catch (e) {
+        toast.error(`Couldn't create Side Chat: ${(e as Error).message}`)
+      } finally {
+        sideChatCreating.current = false
+      }
+    },
+    [toast],
   )
 
   /** Create a brand-new empty session that reuses the source session's
@@ -878,6 +939,7 @@ export function App() {
         // Inherit the source's group only. An ungrouped session restarts
         // as ungrouped — don't drop it into an arbitrary group with room.
         groupId: sourceGroup?.id,
+        title: source.title,
       }
       // Create first — if this fails, the old session stays intact.
       // handleCreate already surfaces failure via toast (never re-throws).
@@ -974,20 +1036,11 @@ export function App() {
       if (!sessionGroup) {
         setLastSeenTurn((prev) => ({ ...prev, [id]: s.lastTurnAt ?? Date.now() }))
         if (!s.running && !s.terminated && !resumingRef.current.has(id)) {
-          // Resume FIRST, then open the panel — this ensures Chat mounts
-          // with the session already running on the server, so the hub
-          // subscribe — replay flow is fully ready. Without this, the
-          // panel shows a dormant placeholder that flashes to "loading"
-          // when resume completes, and the replay may arrive before the
-          // hub subscribe fires, losing messages.
           await resumeSession(id, () => {
-            // React batches these with the setSessions above so Chat
-            // mounts with the fresh (running=true) session immediately.
             setOpenIds([id])
             setFocusedId(id)
           })
         } else {
-          // Already running or terminated — open immediately.
           setOpenIds([id])
           setFocusedId(id)
         }
@@ -1109,6 +1162,107 @@ export function App() {
 
   const updateSession = useCallback((s: SessionInfo) => {
     setSessions((prev) => prev.map((p) => (p.id === s.id ? s : p)))
+  }, [])
+
+  // ── Panel enter/exit animation ──────────────────────────────────────
+  // Diff openIds to detect exits (→ snapshot into closingPanels) and
+  // new mounts (→ mark for one-shot `.entering` class). Single effect
+  // so both see the same prev/next snapshot.
+  useEffect(() => {
+    const prev = prevOpenIdsRef.current
+    const next = openIds
+    prevOpenIdsRef.current = next
+    if (prev.length === 0 && next.length === 0) return
+    const prevSet = new Set(prev)
+    const nextSet = new Set(next)
+
+    // Entering: panels in next but not in prev.
+    for (const id of next) {
+      if (!prevSet.has(id)) panelAnimRef.current[id] = 'entering'
+    }
+
+    // Exiting: panels in prev but not in next. Capture their DOM rects
+    // BEFORE React removes them so we can overlay the closing ghost at
+    // the exact same position.
+    const gone = prev
+      .map((id) => (!nextSet.has(id) ? { id } : null))
+      .filter(Boolean) as { id: string }[]
+    if (gone.length === 0) return
+    const bodyEl = bodyRef.current
+    const snapshots = gone
+      .map(({ id }) => {
+        const session = sessionsRef.current.find((s) => s.id === id)
+        if (!session || !bodyEl) return null
+        const panelEl = bodyEl.querySelector<HTMLElement>(`[data-panel-id="${id}"]`)
+        if (!panelEl) return null
+        const panelR = panelEl.getBoundingClientRect()
+        const bodyR = bodyEl.getBoundingClientRect()
+        return {
+          id,
+          session,
+          rect: new DOMRect(panelR.left - bodyR.left, panelR.top - bodyR.top, panelR.width, panelR.height),
+        }
+      })
+      .filter(Boolean) as { id: string; session: SessionInfo; rect: DOMRect }[]
+    if (snapshots.length === 0) return
+    setClosingPanels((prev) => [...prev, ...snapshots])
+  }, [openIds])
+
+  // ── Panel swap animation ─────────────────────────────────────────────
+  // animatePanels is called AFTER a state update (swapPanels / handleReorderInGroup).
+  // It captures old positions of the given panel IDs, waits for the
+  // browser to paint the new grid layout, then FLIP-animates them all
+  // simultaneously — A slides to B's spot and vice versa.
+  const animatePanels = useCallback((...ids: string[]) => {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    const bodyEl = bodyRef.current
+    if (!bodyEl) return
+    const bodyR = bodyEl.getBoundingClientRect()
+    const snapshots: { el: HTMLElement; x: number; y: number }[] = []
+    for (const id of ids) {
+      const el = bodyEl.querySelector<HTMLElement>(`[data-panel-id="${id}"]`)
+      if (!el) continue
+      const r = el.getBoundingClientRect()
+      snapshots.push({ el, x: r.left - bodyR.left, y: r.top - bodyR.top })
+    }
+    if (snapshots.length === 0) return
+    // Wait for the grid to repaint with the new order, then animate.
+    requestAnimationFrame(() => {
+      const opts: KeyframeAnimationOptions = { duration: 180, easing: 'cubic-bezier(.2,.8,.2,1)' }
+      const bodyR2 = bodyEl.getBoundingClientRect()
+      for (const { el, x, y } of snapshots) {
+        const r = el.getBoundingClientRect()
+        const dx = x - (r.left - bodyR2.left)
+        const dy = y - (r.top - bodyR2.top)
+        if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue
+        el.animate(
+          [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'translate(0,0)' }],
+          opts,
+        )
+      }
+    })
+  }, [])
+
+  const endPanelExit = useCallback((id: string) => {
+    setClosingPanels((prev) => prev.filter((p) => p.id !== id))
+  }, [])
+
+  // Fallback for reduced-motion: onAnimationEnd never fires when CSS
+  // sets animation:none, so closing-panel ghosts would leak forever.
+  // Detect the preference and immediately clear any closing panels.
+  useEffect(() => {
+    if (closingPanels.length === 0) return
+    const mql = window.matchMedia('(prefers-reduced-motion: reduce)')
+    if (mql.matches) {
+      setClosingPanels([])
+    }
+  }, [closingPanels.length])
+
+  /** Ref-based flag so newly-opened panels get a one-shot `.entering` class
+   *  without re-rendering the parent on every animation end. */
+  const panelAnimRef = useRef<Record<string, 'entering' | 'exiting'>>({})
+  const handlePanelAnimEnd = useCallback((id: string) => {
+    delete panelAnimRef.current[id]
   }, [])
 
   // Global keyboard shortcuts.
@@ -1256,11 +1410,12 @@ export function App() {
    *  not listed falls back to the server's lastActivityAt sort. Ids in the
    *  saved order but no longer present on the server are droppe?. */
   const orderedSessions = useMemo(() => {
-    // Sessions in the Undo grace window are hidden from the sidebar but
-    // still live on the server until the timer commits the delete.
-    const visible = pendingDeleteIds.size
-      ? sessions.filter((s) => !pendingDeleteIds.has(s.id))
-      : sessions
+    // Side Chat sessions are ephemeral — they only exist in panels, never
+    // in the sidebar.  Sessions in the Undo grace window are also hidden.
+    let visible = sessions.filter((s) => !s.parentId)
+    if (pendingDeleteIds.size) {
+      visible = visible.filter((s) => !pendingDeleteIds.has(s.id))
+    }
     const byId = new Map(visible.map((s) => [s.id, s]))
     const ordered: SessionInfo[] = []
     const seen = new Set<string>()
@@ -1360,28 +1515,42 @@ export function App() {
   /** Drag-drop handler for a card landing on a card inside a group.
    *  The dragged session's position within `sessionIds` is set relative
    *  to the target. With exclusive membership, the session is only in
-   *  one group, so this only reorders within that group. */
+   *  one group, so this only reorders within that group. Panel order
+   *  (`openIds`) is synced to match when overlapping sessions exist. */
   const handleReorderInGroup = useCallback(
     (draggedId: string, targetId: string, position: 'before' | 'after', groupId: string) => {
       if (draggedId === targetId) return
-      setGroups((prev) =>
-        prev.map((g) => {
-          if (g.id !== groupId) return g
-          // Splice-insert into a copy of the current sessionIds,
-          // making the operation a single atomic update so a
-          // concurrent render doesn't see an intermediate state.
-          const without = g.sessionIds.filter((id) => id !== draggedId)
-          const targetIdx = without.indexOf(targetId)
-          // If the target isn't in this group (shouldn't happen — the
-          // UI only renders target cards inside their container group),
-          // append to the end rather than losing the drop entirely.
-          const insertAt = targetIdx < 0 ? without.length : position === 'before' ? targetIdx : targetIdx + 1
-          without.splice(insertAt, 0, draggedId)
-          return { ...g, sessionIds: without }
-        }),
-      )
+      // Compute the new order inside the functional updater so we read
+      // the freshest state without closing over `groups`.
+      let newIds: string[] = []
+      setGroups((prev) => {
+        const group = prev.find((g) => g.id === groupId)
+        if (!group) return prev
+        const without = group.sessionIds.filter((id) => id !== draggedId)
+        const targetIdx = without.indexOf(targetId)
+        const insertAt = targetIdx < 0 ? without.length : position === 'before' ? targetIdx : targetIdx + 1
+        without.splice(insertAt, 0, draggedId)
+        newIds = without
+        return prev.map((g) => (g.id === groupId ? { ...g, sessionIds: without } : g))
+      })
+      if (newIds.length === 0) return
+
+      // Sync open panel order: re-order the group sessions that are
+      // currently open while preserving non-group sessions in place.
+      setOpenIds((prev) => {
+        const groupSet = new Set(newIds)
+        const openGroup = prev.filter((id) => groupSet.has(id))
+        if (openGroup.length < 2) return prev
+        const reordered = newIds.filter((id) => groupSet.has(id) && prev.includes(id))
+        if (openGroup.join() === reordered.join()) return prev
+        let ri = 0
+        return prev.map((id) => (groupSet.has(id) ? reordered[ri++] : id))
+      })
+      // Animate all open group panels to their new grid positions.
+      const openGroup = openIdsRef.current.filter((id) => newIds.includes(id))
+      if (openGroup.length >= 2) animatePanels(...openGroup)
     },
-    [setGroups],
+    [setGroups, setOpenIds, animatePanels],
   )
 
   const toggleGroupCollapse = useCallback(
@@ -1391,35 +1560,54 @@ export function App() {
     [setCollapsedGroups],
   )
 
-  /** Swap two open panels' positions. Focus follows the dragged panel so
-   *  the user's attention lands where their cursor is. */
+  /** Move a panel to the target panel's position (splice-move, same
+   *  semantics as sidebar reordering). If both panels belong to the same
+   *  group, the group's `sessionIds` order is synced to match. */
   const swapPanels = useCallback((draggedId: string, targetId: string) => {
     if (draggedId === targetId) return
+    // Splice-move: remove draggedId, insert at targetId's index.
     setOpenIds((prev) => {
-      const i = prev.indexOf(draggedId)
-      const j = prev.indexOf(targetId)
-      if (i < 0 || j < 0) return prev
-      const next = prev.slice()
-      ;[next[i], next[j]] = [next[j], next[i]]
-      return next
+      const without = prev.filter((id) => id !== draggedId)
+      const idx = without.indexOf(targetId)
+      if (idx < 0) return prev
+      without.splice(idx, 0, draggedId)
+      return without
+    })
+    // Sync group order (same splice-move semantics).
+    setGroups((prev) => {
+      const groupId = prev.find(
+        (g) => g.sessionIds.includes(draggedId) && g.sessionIds.includes(targetId),
+      )?.id
+      if (!groupId) return prev
+      return prev.map((g) => {
+        if (g.id !== groupId) return g
+        const ids = g.sessionIds.filter((id) => id !== draggedId)
+        const idx = ids.indexOf(targetId)
+        if (idx < 0) return g
+        ids.splice(idx, 0, draggedId)
+        return { ...g, sessionIds: ids }
+      })
     })
     setFocusedId(draggedId)
-  }, [])
+    animatePanels(draggedId, targetId)
+  }, [setGroups, animatePanels])
 
   /** Drop a sidebar card onto a specific slot in the main grid. If the
    *  slot is occupied by another session, that session is evicted (panel
-   *  closes, session stays alive) and the new one takes its place. */
+   *  closes, session stays alive) and the new one takes its place.
+   *  When both sessions are already open, uses splice-move (consistent
+   *  with swapPanels) and syncs the shared group's order. */
   const openAtSlot = useCallback(
     (id: string, targetId: string, lastTurnAt: number | undefined) => {
       setOpenIds((prev) => {
-        // Already openx Just swap into the target slot.
+        // Already open — splice-move to the target slot (same semantics
+        // as swapPanels). Also sync group order below.
         if (prev.includes(id)) {
-          const i = prev.indexOf(id)
-          const j = prev.indexOf(targetId)
-          if (i < 0 || j < 0) return prev
-          const next = prev.slice()
-          ;[next[i], next[j]] = [next[j], next[i]]
-          return next
+          const without = prev.filter((x) => x !== id)
+          const idx = without.indexOf(targetId)
+          if (idx < 0) return prev
+          without.splice(idx, 0, id)
+          return without
         }
         // Not open yet: replace whatever's in the target slot.
         const j = prev.indexOf(targetId)
@@ -1428,10 +1616,26 @@ export function App() {
         next[j] = id
         return next
       })
+      // Sync group order when both sessions share a group (same pattern
+      // as swapPanels).
+      setGroups((prev) => {
+        const groupId = prev.find(
+          (g) => g.sessionIds.includes(id) && g.sessionIds.includes(targetId),
+        )?.id
+        if (!groupId) return prev
+        return prev.map((g) => {
+          if (g.id !== groupId) return g
+          const ids = g.sessionIds.filter((sid) => sid !== id)
+          const idx = ids.indexOf(targetId)
+          if (idx < 0) return g
+          ids.splice(idx, 0, id)
+          return { ...g, sessionIds: ids }
+        })
+      })
       setFocusedId(id)
       setLastSeenTurn((prev) => ({ ...prev, [id]: lastTurnAt ?? Date.now() }))
     },
-    [setLastSeenTurn],
+    [setLastSeenTurn, setGroups],
   )
 
   const handleAcceptSidebarDrop = useCallback(async (sidebarId: string, targetSlotId: string) => {
@@ -1775,6 +1979,7 @@ export function App() {
             // template we built alternates fr / 4px tracks, so this order has
             // to match or the columns will de-sync.
             openSessions.flatMap((s, i) => {
+              const entering = panelAnimRef.current[s.id] === 'entering'
               const node = (
                 // Per-panel ErrorBoundary: if one panel's render throws
                 // (e.g. a malformed assistant message), the other open
@@ -1786,6 +1991,8 @@ export function App() {
                     focused={s.id === focusedId}
                     hasUnread={!!unread[s.id]}
                     slot={i + 1}
+                    entering={entering}
+                    onAnimEnd={entering ? handlePanelAnimEnd : undefined}
                     accentStyle={sessionAccentMap.get(s.id)}
                     onFocus={focusPanel}
                     onClose={closeSession}
@@ -1805,6 +2012,9 @@ export function App() {
                     onRequestResumeForPanel={requestResumeForPanel}
                     onOpenSettingsTab={openSettingsTab}
                     onShowHelp={showHelpWithCommands}
+                    sideChatSession={sideChat?.parentId === s.id ? sideChat.session : undefined}
+                    onCloseSideChat={sideChat?.parentId === s.id ? handleCloseSideChat : undefined}
+                    onSideChat={handleSideChat}
                     settingsTabRequest={
                       settingsTabRequest?.sessionId === s.id
                         ? { tab: settingsTabRequest.tab, nonce: settingsTabRequest.nonce }
@@ -1831,7 +2041,29 @@ export function App() {
                   title="Drag to resize · double-click to reset"
                 />,
               ]
-            })
+            }).concat(
+              // Closing panels: lightweight ghost that fades out at the
+              // panel's last known position. onAnimationEnd removes it.
+              closingPanels.map((cp) => (
+                <div
+                  key={`closing-${cp.id}`}
+                  className="chat-panel-slot exiting"
+                  style={{ top: cp.rect.y, left: cp.rect.x, width: cp.rect.width, height: cp.rect.height }}
+                  onAnimationEnd={() => endPanelExit(cp.id)}
+                >
+                  <section
+                    className="chat-panel"
+                    style={sessionAccentMap.get(cp.id)}
+                  >
+                    <div className="chat-panel-header">
+                      <span className="chat-panel-title">
+                        {cp.session.title ?? cp.session.id.slice(0, 8)}
+                      </span>
+                    </div>
+                  </section>
+                </div>
+              ))
+            )
           )}
         </div>
       </main>

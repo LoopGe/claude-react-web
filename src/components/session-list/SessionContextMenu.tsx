@@ -86,6 +86,7 @@ export function SessionContextMenu({
       label: 'Rename',
       icon: <IconPencil size={14} />,
       onClick: () => onRename(session),
+      disabled: !!session.parentId,
     },
     {
       label: 'Fork from this point',

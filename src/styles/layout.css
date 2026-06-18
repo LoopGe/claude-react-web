@@ -101,6 +101,7 @@ body.resizing-col * {
   grid-template-columns: 1fr;
   background: var(--border);
   overflow: hidden;
+  position: relative;
 }
 
 /* 4px vertical divider between two open panels — sits exactly on the
@@ -114,6 +115,22 @@ body.resizing-col * {
 .panel-divider:hover,
 .panel-divider.dragging {
   background: var(--accent);
+}
+
+/* Panel slot — transparent wrapper that holds one .chat-panel and
+   carries the exit animation class. Uses display:contents in its
+   resting state so it doesn't add an extra box to the grid. */
+.chat-panel-slot {
+  display: contents;
+}
+/* On exit the wrapper is positioned over the panel's last known
+   grid cell (position set inline by App.tsx) so the fade-out plays
+   in-place while the active panels take over the grid. */
+.chat-panel-slot.exiting {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  overflow: hidden;
 }
 
 /* One chat column. The gap between columns is faked via grid-gap + bg, so
@@ -270,6 +287,32 @@ body.resizing-col * {
    changes, the interpolation Just Works in supporting browsers. */
 .chat-panel {
   transition: --mode-color var(--motion-duration-moderate) var(--motion-ease-standard);
+}
+
+/* Panel enter/exit animations — fade + subtle scale on mount, fade-out
+   on unmount. The exiting class is applied by App.tsx before the panel
+   is removed from the DOM; onAnimationEnd commits the removal. */
+@keyframes panel-enter {
+  from {
+    opacity: 0;
+    transform: scale(var(--motion-scale-enter));
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes panel-exit {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+/* Entering animation is applied directly on .chat-panel (no wrapper
+   needed — the panel is always a real grid cell). */
+.chat-panel.entering {
+  animation: panel-enter var(--motion-duration-base) var(--motion-ease-standard) both;
+}
+.chat-panel-slot.exiting {
+  animation: panel-exit var(--motion-duration-fast) var(--motion-ease-exit) forwards;
 }
 .chat-panel.mode-active .chat-panel-header {
   transition: background var(--motion-duration-moderate) var(--motion-ease-standard), border-bottom-color var(--motion-duration-moderate) var(--motion-ease-standard), box-shadow var(--motion-duration-moderate) var(--motion-ease-standard);
@@ -888,7 +931,9 @@ body.resizing-col * {
 }
 @media (prefers-reduced-motion: reduce) {
   .app-loading-card,
-  .app-empty-state {
+  .app-empty-state,
+  .chat-panel.entering,
+  .chat-panel-slot.exiting {
     animation: none;
   }
 }
