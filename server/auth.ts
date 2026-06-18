@@ -119,41 +119,194 @@ export function extractTokenFromReq(req: IncomingMessage): string | undefined {
   return cookieFromHeader(cookieHeader, ACCESS_COOKIE)
 }
 
-// --- 401 hint page ------------------------------------------------------
+// --- 401 login page -----------------------------------------------------
 
-const LOGIN_HINT_HTML = `<!doctype html>
+const LOGIN_PAGE_HTML = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Access token required</title>
+<meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)" />
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔐</text></svg>" />
+<title>Sign in — claude-react-web</title>
 <style>
-  body { font-family: system-ui, -apple-system, sans-serif; background: #0f1115; color: #e6e6e6;
-    display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 1.5rem; }
-  .card { max-width: 32rem; background: #181b21; border: 1px solid #2a2f3a; border-radius: 12px; padding: 1.75rem 2rem; }
-  h1 { font-size: 1.25rem; margin: 0 0 0.75rem; }
-  p { line-height: 1.55; color: #b8c0cc; margin: 0.5rem 0; }
-  code { background: #11141a; padding: 0.15rem 0.4rem; border-radius: 5px; color: #8fd3ff; }
+  /* Colors sourced from tokens.css — keep in sync. */
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: #0f1115; color: #e6e8eb;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh; margin: 0; padding: 1.5rem;
+  }
+  .card {
+    max-width: 26rem; width: 100%;
+    background: #15181f; border: 1px solid #262b36;
+    border-radius: 12px; padding: 2rem;
+  }
+  h1 { font-size: 1.25rem; margin: 0 0 0.25rem; font-weight: 600; }
+  .subtitle { color: #8c94a3; font-size: 0.85rem; margin: 0 0 1.5rem; line-height: 1.5; }
+  label { display: block; font-size: 0.8rem; font-weight: 500; color: #8c94a3; margin-bottom: 0.4rem; }
+  input[type="text"] {
+    width: 100%; padding: 0.65rem 0.8rem;
+    background: #0f1115; border: 1px solid #262b36;
+    border-radius: 8px; color: #e6e8eb; font-size: 0.95rem; font-family: inherit;
+    outline: none; transition: border-color 0.15s;
+  }
+  input[type="text"]:focus { border-color: #7b8cde; }
+  input[type="text"]::placeholder { color: #5e6774; }
+  .error-wrap { min-height: 1.6rem; margin-top: 0.5rem; }
+  .error {
+    color: #f87171; font-size: 0.8rem; line-height: 1.4;
+    animation: shake 0.3s ease-in-out;
+  }
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    20%, 60% { transform: translateX(-4px); }
+    40%, 80% { transform: translateX(4px); }
+  }
+  @media (prefers-reduced-motion: reduce) { .error { animation: none; } }
+  button {
+    width: 100%; margin-top: 1rem; padding: 0.7rem;
+    background: #7b8cde; color: #ffffff;
+    border: none; border-radius: 8px; font-size: 0.95rem; font-weight: 600;
+    cursor: pointer; transition: background 0.15s, opacity 0.15s; font-family: inherit;
+  }
+  button:hover { background: #5b6fc7; }
+  button:active { opacity: 0.85; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .hint { margin-top: 1.25rem; font-size: 0.78rem; color: #5e6774; line-height: 1.5; }
+  .hint code { background: #0f1115; padding: 0.1rem 0.35rem; border-radius: 4px; color: #7b8cde; font-size: 0.75rem; }
+
+  @media (prefers-color-scheme: light) {
+    body { background: #ffffff; color: #1a1d24; }
+    .card { background: #f5f6f8; border-color: #d0d4db; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+    h1 { color: #1a1d24; }
+    .subtitle { color: #5e6774; }
+    label { color: #5e6774; }
+    input[type="text"] { background: #ffffff; border-color: #d0d4db; color: #1a1d24; }
+    input[type="text"]:focus { border-color: #4f62c8; }
+    input[type="text"]::placeholder { color: #8c94a3; }
+    .error { color: #dc2626; }
+    button { background: #4f62c8; }
+    button:hover { background: #3b4ea8; }
+    .hint { color: #8c94a3; }
+    .hint code { background: #f5f6f8; color: #4f62c8; }
+  }
 </style>
 </head>
 <body>
   <div class="card">
-    <h1>🔒 Access token required</h1>
-    <p>This server is protected. Open the link printed in the server console — it looks like
-       <code>http://&lt;ip&gt;:&lt;port&gt;/?token=…</code> — to sign in.</p>
-    <p>The token is shown where you started <code>claude-react-web</code>.</p>
+    <h1>🔒 Sign in</h1>
+    <p class="subtitle">Enter the access token to continue.</p>
+    <form id="f" autocomplete="off">
+      <label for="tok">Access token</label>
+      <input id="tok" type="text" name="token" placeholder="Paste your token here" autofocus autocomplete="off" spellcheck="false" />
+      <div class="error-wrap"><p id="err" class="error" role="alert" aria-live="assertive"></p></div>
+      <button type="submit" id="btn">Sign in</button>
+    </form>
+    <p class="hint">The token is printed where you started <code>claude-react-web</code>, or set in <code>config.json</code>.</p>
   </div>
+<script>
+(function() {
+  var f = document.getElementById('f');
+  var err = document.getElementById('err');
+  var btn = document.getElementById('btn');
+  var inp = document.getElementById('tok');
+  f.addEventListener('submit', function(e) {
+    e.preventDefault();
+    var token = inp.value.trim();
+    if (!token) { err.textContent = 'Please enter a token.'; return; }
+    err.textContent = '';
+    btn.disabled = true;
+    btn.textContent = 'Signing in…';
+    fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: token })
+    })
+    .then(function(r) { return r.json().then(function(b) { return { ok: r.ok, body: b }; }); })
+    .then(function(res) {
+      if (res.ok && res.body.ok) {
+        window.location.href = '/';
+      } else {
+        err.textContent = res.body.error || 'Invalid token.';
+        btn.disabled = false;
+        btn.textContent = 'Sign in';
+        inp.select();
+        inp.focus();
+      }
+    })
+    .catch(function() {
+      err.textContent = 'Network error. Check the server address.';
+      btn.disabled = false;
+      btn.textContent = 'Sign in';
+    });
+  });
+})();
+</script>
 </body>
 </html>`
+
+// --- Rate limiting (login endpoint) ------------------------------------
+
+const LOGIN_RATE_LIMIT = 5          // max attempts per window
+const LOGIN_RATE_WINDOW = 60_000    // 1 minute
+
+/** Per-IP login attempt tracker. Entries are lazily pruned on access. */
+const loginAttempts = new Map<string, { count: number; resetAt: number }>()
+
+function checkLoginRate(c: Context): boolean {
+  const ip =
+    c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ||
+    c.req.header('x-real-ip') ||
+    ''
+  if (!ip) return false // no IP → allow (local / Unix socket)
+  const now = Date.now()
+  const entry = loginAttempts.get(ip)
+  if (!entry || now > entry.resetAt) {
+    loginAttempts.set(ip, { count: 1, resetAt: now + LOGIN_RATE_WINDOW })
+    return false
+  }
+  entry.count++
+  return entry.count > LOGIN_RATE_LIMIT
+}
+
+// Prune stale entries every 5 min so the map doesn't grow unbounded.
+setInterval(() => {
+  const now = Date.now()
+  for (const [ip, entry] of loginAttempts) {
+    if (now > entry.resetAt) loginAttempts.delete(ip)
+  }
+}, 300_000).unref()
 
 // --- HTTP middleware ----------------------------------------------------
 
 /** Hono middleware enforcing the shared-token gate. No-op when auth is
- *  disabled (loopback host with no configured token). */
+ *  disabled (loopback host with no configured token).
+ *
+ *  `POST /api/auth/login` is whitelisted so the login page can verify a
+ *  token without already carrying one. */
 export function buildAuthMiddleware(): MiddlewareHandler {
   return async (c, next) => {
     const { accessToken, authEnabled } = webAuth
     if (!authEnabled) return next()
+
+    // --- Login endpoint (no token required) ---
+    if (c.req.method === 'POST' && c.req.path === '/api/auth/login') {
+      if (checkLoginRate(c)) {
+        return c.json({ ok: false, error: 'Too many attempts. Try again in a minute.' }, 429)
+      }
+      let body: { token?: string } | null = null
+      try { body = await c.req.json() } catch { /* ignore */ }
+      const provided = body?.token?.trim()
+      if (!provided) return c.json({ ok: false, error: 'Missing token.' }, 400)
+      if (!tokensMatch(provided, accessToken)) {
+        return c.json({ ok: false, error: 'Invalid token.' }, 401)
+      }
+      setCookie(c, ACCESS_COOKIE, accessToken, COOKIE_OPTS)
+      return c.json({ ok: true })
+    }
 
     const token = extractTokenFromHono(c)
     const ok = !!token && tokensMatch(token, accessToken)
@@ -184,7 +337,7 @@ export function buildAuthMiddleware(): MiddlewareHandler {
     if (c.req.path.startsWith('/api/')) {
       return c.json({ error: 'unauthorized' }, 401)
     }
-    return c.html(LOGIN_HINT_HTML, 401)
+    return c.html(LOGIN_PAGE_HTML, 401)
   }
 }
 

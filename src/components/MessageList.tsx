@@ -960,9 +960,20 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
       item.itemIndex === searchActiveMsgIdx
     const activeMatchInItem = isActiveItem ? searchActiveMatchInItem : undefined
     // One-shot entrance animation for genuinely-new arrivals. The flag is
-    // set during render (gate block above) and cleared on animationend, so a
-    // scroll-driven re-mount of the same row renders without the class.
-    const isEntering = enterIdsRef.current.has(item.id)
+    // armed in the gate block above. Consume it HERE — delete from the ref
+    // the moment we read it — so the class is applied to exactly one render
+    // of this row. Relying solely on `animationend` to clear the flag (the
+    // old approach) leaked: if Virtuoso unmounted the item before the
+    // animation finished (user scrolled it out of the viewport), the event
+    // never fired, the id stayed in the ref, and scrolling back remounted
+    // the row with `msg-enter` still set — replaying the blur+rise entrance
+    // every time the row re-entered the viewport. Deleting on first render
+    // guarantees a re-mount renders without the class regardless of whether
+    // `animationend` ever ran. `onAnimationEnd` below is kept only to strip
+    // the DOM class promptly (a no-op on the ref after this point).
+    // eslint-disable-next-line react-hooks/refs -- render-time consumption is the fix: the flag must not survive the first mount that applies it.
+    const isEntering = enterIdsRef.current.delete(item.id) || enterIdsRef.current.has(item.id)
+    if (isEntering) enterIdsRef.current.delete(item.id)
     const className = [
       'virtuoso-item-wrapper',
       item.id === firstItemId ? 'transcript-first-item' : '',

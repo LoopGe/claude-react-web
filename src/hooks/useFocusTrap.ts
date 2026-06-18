@@ -61,9 +61,19 @@ export function useFocusTrap(
     // top of the document, defeating the trap. We pull stray focus back
     // to the container (matching the activation behaviour) rather than to
     // the first focusable, so we don't spuriously highlight an action.
+    //
+    // Exception: if focus moves to a portaled child modal (e.g. McpInstaller
+    // inside SettingsPanel), we allow it. These modals render via
+    // createPortal to document.body and manage their own focus. Without
+    // this exemption the trap would immediately steal focus back, making
+    // the child modal's inputs unusable.
     const handleFocusIn = (e: FocusEvent) => {
       const target = e.target as Node | null
       if (target && el.contains(target)) return
+      // Allow focus to remain inside a portaled modal overlay. These sit
+      // at a higher z-index than the trap container and represent a
+      // deliberate user interaction with a child dialog.
+      if (target instanceof HTMLElement && target.closest('.modal-backdrop')) return
       // Focus escaped the trap. Bring it back.
       if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '-1')
       el.focus()
