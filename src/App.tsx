@@ -1450,6 +1450,7 @@ export function App() {
   // handlePanelAnimEnd then forces a re-render so React's virtual DOM
   // reconciles and removes the class via its normal className commit.
   const enteringSetRef = useRef<Set<string>>(new Set())
+  /* eslint-disable react-hooks/refs -- intentional: render-phase diff for entering-panel detection */
   if (prevOpenIdsRef.current !== openIds) {
     const prevSet = new Set(prevOpenIdsRef.current)
     for (const id of openIds) {
@@ -1457,6 +1458,7 @@ export function App() {
     }
     prevOpenIdsRef.current = openIds
   }
+  /* eslint-enable react-hooks/refs */
   // State nudge: incremented by handlePanelAnimEnd to force a re-render
   // after the animation completes, so React reconciles className.
   const [, setAnimEpoch] = useState(0)
@@ -2193,6 +2195,7 @@ export function App() {
             // Flatten panels + dividers into a single children list. The grid
             // template we built alternates fr / 4px tracks, so this order has
             // to match or the columns will de-sync.
+            // eslint-disable-next-line react-hooks/refs -- intentional: entering flag read during render
             openSessions.flatMap((s, i) => {
               const entering = enteringSetRef.current.has(s.id)
               const node = (

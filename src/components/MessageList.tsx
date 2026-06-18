@@ -971,7 +971,6 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
     // guarantees a re-mount renders without the class regardless of whether
     // `animationend` ever ran. `onAnimationEnd` below is kept only to strip
     // the DOM class promptly (a no-op on the ref after this point).
-    // eslint-disable-next-line react-hooks/refs -- render-time consumption is the fix: the flag must not survive the first mount that applies it.
     const isEntering = enterIdsRef.current.delete(item.id) || enterIdsRef.current.has(item.id)
     if (isEntering) enterIdsRef.current.delete(item.id)
     const className = [

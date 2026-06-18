@@ -85,6 +85,7 @@ export function useUiState(): {
   const [state, setState] = useState<UiState>(EMPTY)
   const [loading, setLoading] = useState(true)
   const stateRef = useRef(state)
+  // eslint-disable-next-line react-hooks/refs -- intentional: keep ref in sync for debounced flush
   stateRef.current = state
 
   // Debounced flush to server
