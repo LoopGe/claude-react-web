@@ -51,6 +51,11 @@ export const ContextMenu = memo(function ContextMenu({ x, y, items, onClose, isE
 
   useEffect(() => {
     const onDocMouseDown = (e: MouseEvent) => {
+      // Only dismiss on left-click. Right-click (button 2) should NOT
+      // close the menu — the browser fires `contextmenu` next, which
+      // the owning component uses to open a replacement menu. Closing
+      // on mousedown would cause a visible close→reopen flash.
+      if (e.button !== 0) return
       if (ref.current && !ref.current.contains(e.target as Node)) onClose()
     }
     const onKey = (e: KeyboardEvent) => {
