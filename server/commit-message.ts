@@ -8,6 +8,9 @@
 
 import { config as serverConfig } from './config.js'
 import { callAnthropicMessages } from './anthropic-api.js'
+import { createLogger } from './log.js'
+
+const log = createLogger('commit-message')
 
 export interface CommitMessageResult {
   /** Full commit message — first line is the subject, optional body
@@ -97,10 +100,12 @@ export async function generateCommitMessage(
     if (!message.trim()) {
       // Empty model output → fall through to the fallback below rather
       // than returning an empty string the UI would reject.
+      log.warn('empty model output, using fallback')
       return { message: buildFallbackCommitMessage(diff), fallback: true }
     }
     return { message }
-  } catch {
+  } catch (err) {
+    log.warn(`API call failed, using fallback: ${(err as Error).message ?? err}`)
     return { message: buildFallbackCommitMessage(diff), fallback: true }
   }
 }

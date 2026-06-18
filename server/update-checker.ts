@@ -33,6 +33,9 @@ import { isVersionNewer } from '../shared/update-info.js'
 import { config } from './config.js'
 import { detectInstallMethod } from './install-method.js'
 import { readInstalledVersion } from './installed-version.js'
+import { createLogger } from './log.js'
+
+const log = createLogger('update-checker')
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000  // 6h between successful probes
 const FAILED_RETRY_MS = 5 * 60 * 1000    // 5 min between retries after failure
@@ -188,6 +191,7 @@ export async function checkForUpdates(force = false): Promise<UpdateInfo> {
         source: 'npm',
       }
     } catch (err) {
+      log.warn(`registry probe failed: ${(err as Error).message ?? err}`)
       cached = {
         current: CURRENT_VERSION,
         packageName: PACKAGE_NAME,
@@ -250,6 +254,7 @@ export async function probeRegistry(registry: string): Promise<UpdateInfo> {
       source: 'npm',
     }
   } catch (err) {
+    log.warn(`probeRegistry failed: ${(err as Error).message ?? err}`)
     return {
       current: CURRENT_VERSION,
       packageName: PACKAGE_NAME,

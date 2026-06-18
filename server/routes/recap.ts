@@ -18,18 +18,23 @@
 
 import { Hono } from 'hono'
 import { SessionManager } from '../session-manager.js'
+import { createLogger } from '../log.js'
+
+const log = createLogger('recap')
 
 export function buildRecapRouter(sm: SessionManager): Hono {
   const app = new Hono()
 
   app.post('/sessions/:id/recap', async (c) => {
     const id = c.req.param('id')
+    log.info(`recap request session=${id}`)
     // requestGenerate throws HttpError(404/409/410/412) for the
     // unrecoverable phases — the global onError hook in buildApiRouter
     // translates those into the matching HTTP responses. The client gates
     // on phase before firing, so a 409 here means a race (the user
     // started a turn between the client's gate and the server's check).
     const recap = await sm.recapManager.requestGenerate(id)
+    log.info(`recap done session=${id}`)
     return c.json(recap)
   })
 

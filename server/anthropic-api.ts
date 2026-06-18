@@ -7,6 +7,9 @@
 // quirks are unique enough not to be worth abstracting further.
 
 import { config as serverConfig, requireAuthToken } from './config.js'
+import { createLogger } from './log.js'
+
+const log = createLogger('anthropic-api')
 
 interface CallOptions {
   model: string
@@ -28,6 +31,8 @@ interface CallOptions {
  *  a graceful fallback path. */
 export async function callAnthropicMessages(opts: CallOptions): Promise<string> {
   const token = requireAuthToken()
+  const start = Date.now()
+  log.debug(`request model=${opts.model} maxTokens=${opts.maxTokens}`)
   const res = await fetch(`${serverConfig.baseUrl}/v1/messages`, {
     method: 'POST',
     headers: {
@@ -44,12 +49,18 @@ export async function callAnthropicMessages(opts: CallOptions): Promise<string> 
     }),
     signal: opts.signal ?? AbortSignal.timeout(30_000),
   })
+  const elapsed = Date.now() - start
   if (!res.ok) {
     const body = await res.text().catch(() => '')
+    log.error(`api error status=${res.status} elapsed=${elapsed}ms model=${opts.model} body=${body.slice(0, 200)}`)
     throw new Error(`Anthropic API ${res.status}: ${body.slice(0, 200)}`)
   }
   const data = (await res.json()) as { content?: Array<{ type?: string; text?: string }> }
   const text = data.content?.[0]?.text
-  if (!text) throw new Error('Empty response from Anthropic API')
+  if (!text) {
+    log.error(`empty response elapsed=${elapsed}ms model=${opts.model}`)
+    throw new Error('Empty response from Anthropic API')
+  }
+  log.info(`success model=${opts.model} elapsed=${elapsed}ms textLen=${text.length}`)
   return text
 }

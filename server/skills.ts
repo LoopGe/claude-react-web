@@ -2,6 +2,9 @@ import { promises as fs } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 import { HttpError } from './errors.js'
+import { createLogger } from './log.js'
+
+const log = createLogger('skills-core')
 import type { SkillImportFile, SkillRecord, SkillRootInfo, SkillScope, SkillValidationResponse } from '../shared/skills.js'
 
 const SKILL_FILE = 'SKILL.md'
@@ -173,7 +176,8 @@ async function listScope(scope: SkillScope, cwd?: string): Promise<SkillRecord[]
   let entries
   try {
     entries = await fs.readdir(root, { withFileTypes: true })
-  } catch {
+  } catch (err) {
+    log.warn(`listScope readdir failed scope=${scope} root=${root}: ${(err as Error).message ?? err}`)
     return []
   }
   const skills: SkillRecord[] = []

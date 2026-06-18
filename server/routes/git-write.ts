@@ -15,7 +15,10 @@
 import { Hono } from 'hono'
 import { SessionManager } from '../session-manager.js'
 import { HttpError } from '../errors.js'
+import { createLogger } from '../log.js'
 import { safeJson } from './index.js'
+
+const log = createLogger('git-write')
 import {
   getStatusInRepo,
   stageFiles,
@@ -65,6 +68,7 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     const cwd = getSessionCwd(id)
     const body = await safeJson<{ paths?: unknown }>(c.req)
     const paths = parsePathsArray(body.paths)
+    log.info(`stage session=${id} paths=${paths.length}`)
     await stageFiles(cwd, paths)
     sm.broadcastGitStatusChanged(id)
     return c.json({ status: await freshStatus(cwd) })
@@ -75,6 +79,7 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     const cwd = getSessionCwd(id)
     const body = await safeJson<{ paths?: unknown }>(c.req)
     const paths = parsePathsArray(body.paths)
+    log.info(`unstage session=${id} paths=${paths.length}`)
     await unstageFiles(cwd, paths)
     sm.broadcastGitStatusChanged(id)
     return c.json({ status: await freshStatus(cwd) })
@@ -86,6 +91,8 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     const body = await safeJson<{ paths?: unknown; untracked?: unknown; confirm?: unknown }>(c.req)
     if (body.confirm !== true) throw new HttpError(400, 'discard requires confirm:true')
     const paths = parsePathsArray(body.paths)
+    const mode = body.untracked === true ? 'untracked' : 'tracked'
+    log.warn(`discard session=${id} mode=${mode} paths=${paths.length}`)
     if (body.untracked === true) {
       await discardUntracked(cwd, paths)
     } else {
@@ -112,6 +119,7 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     if (amend && body.confirm !== true) {
       throw new HttpError(400, 'amend requires confirm:true')
     }
+    log.info(`commit session=${id} amend=${amend} msgLen=${body.message.length}`)
     await commitChanges(cwd, body.message, amend)
     sm.broadcastGitStatusChanged(id)
     return c.json({ status: await freshStatus(cwd) })
@@ -124,6 +132,7 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     const cwd = getSessionCwd(id)
     const body = await safeJson<{ confirm?: unknown }>(c.req)
     if (body.confirm !== true) throw new HttpError(400, 'abort-merge requires confirm:true')
+    log.warn(`abort-merge session=${id}`)
     await abortMerge(cwd)
     sm.broadcastGitStatusChanged(id)
     return c.json({ status: await freshStatus(cwd) })
@@ -134,6 +143,7 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     const cwd = getSessionCwd(id)
     const body = await safeJson<{ confirm?: unknown }>(c.req)
     if (body.confirm !== true) throw new HttpError(400, 'abort-rebase requires confirm:true')
+    log.warn(`abort-rebase session=${id}`)
     await abortRebase(cwd)
     sm.broadcastGitStatusChanged(id)
     return c.json({ status: await freshStatus(cwd) })
@@ -153,6 +163,7 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     const body = await safeJson<{ message?: unknown; includeUntracked?: unknown }>(c.req)
     const message = typeof body.message === 'string' ? body.message : undefined
     const includeUntracked = body.includeUntracked === true
+    log.info(`stash session=${id} includeUntracked=${includeUntracked}`)
     await stashCreate(cwd, message, includeUntracked)
     sm.broadcastGitStatusChanged(id)
     const [status, stashes] = await Promise.all([freshStatus(cwd), listStashes(cwd)])
@@ -166,6 +177,7 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     if (typeof body.index !== 'number' || !Number.isInteger(body.index) || body.index < 0) {
       throw new HttpError(400, 'index must be a non-negative integer')
     }
+    log.info(`stash-pop session=${id} index=${body.index}`)
     await stashPop(cwd, body.index)
     sm.broadcastGitStatusChanged(id)
     const [status, stashes] = await Promise.all([freshStatus(cwd), listStashes(cwd)])
@@ -180,6 +192,7 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     if (typeof body.index !== 'number' || !Number.isInteger(body.index) || body.index < 0) {
       throw new HttpError(400, 'index must be a non-negative integer')
     }
+    log.warn(`stash-drop session=${id} index=${body.index}`)
     await stashDrop(cwd, body.index)
     sm.broadcastGitStatusChanged(id)
     return c.json({ stashes: await listStashes(cwd) })
@@ -200,6 +213,7 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     if (typeof body.name !== 'string') throw new HttpError(400, 'name must be a string')
     const checkout = body.checkout === true
     const autoStash = body.autoStash === true
+    log.info(`branch session=${id} name=${body.name} checkout=${checkout}`)
     const result = await createBranch(cwd, body.name, checkout, autoStash)
     sm.broadcastGitStatusChanged(id)
     const [status, branches] = await Promise.all([freshStatus(cwd), listBranches(cwd)])
@@ -212,6 +226,7 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     const body = await safeJson<{ branch?: unknown; autoStash?: unknown }>(c.req)
     if (typeof body.branch !== 'string') throw new HttpError(400, 'branch must be a string')
     const autoStash = body.autoStash === true
+    log.info(`checkout session=${id} branch=${body.branch}`)
     const result = await checkoutBranch(cwd, body.branch, autoStash)
     sm.broadcastGitStatusChanged(id)
     const [status, branches] = await Promise.all([freshStatus(cwd), listBranches(cwd)])
@@ -231,12 +246,18 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     // unconfigured authToken or unreachable API doesn't surface as a
     // 500 — the caller always gets a usable message.
     const result = await generateCommitMessage(text)
+    if (result.fallback) {
+      log.warn(`commit-message session=${id} usedFallback=true`)
+    } else {
+      log.info(`commit-message session=${id} len=${result.message.length}`)
+    }
     return c.json(result)
   })
 
   app.post('/sessions/:id/git/pull', async (c) => {
     const id = c.req.param('id')
     const cwd = getSessionCwd(id)
+    log.info(`pull session=${id}`)
     const result = await pullFromRemote(cwd)
     sm.broadcastGitStatusChanged(id)
     const [status, branches] = await Promise.all([freshStatus(cwd), listBranches(cwd)])
@@ -251,6 +272,7 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     if (force && body.confirm !== true) {
       throw new HttpError(400, 'force push requires confirm:true')
     }
+    log.info(`push session=${id} force=${force}`)
     await pushToRemote(cwd, force)
     sm.broadcastGitStatusChanged(id)
     const [status, branches] = await Promise.all([freshStatus(cwd), listBranches(cwd)])

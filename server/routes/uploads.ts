@@ -5,6 +5,9 @@ import { mkdir, writeFile, unlink } from 'node:fs/promises'
 import { resolve as resolvePath } from 'node:path'
 import { SessionManager } from '../session-manager.js'
 import { config as serverConfig } from '../config.js'
+import { createLogger } from '../log.js'
+
+const log = createLogger('uploads')
 
 /** Where per-session uploads land inside the session's cwd. Kept visible
  *  (not dot-prefixed) so users can see what the UI dropped in. */
@@ -26,7 +29,10 @@ export function buildUploadRouter(sm: SessionManager): Hono {
     }
 
     const body = await c.req.parseBody({ all: true }).catch(() => null)
-    if (!body) return c.json({ error: 'invalid multipart payload' }, 400)
+    if (!body) {
+      log.warn(`upload session=${id} parseBody failed`)
+      return c.json({ error: 'invalid multipart payload' }, 400)
+    }
 
     const files: File[] = []
     for (const v of Object.values(body)) {
@@ -57,6 +63,7 @@ export function buildUploadRouter(sm: SessionManager): Hono {
       saved.push({ path: dest, name: safeName, size: f.size })
     }
 
+    log.info(`upload session=${id} files=${saved.length} totalBytes=${saved.reduce((s, f) => s + f.size, 0)}`)
     return c.json({ uploads: saved })
   })
 
@@ -77,11 +84,13 @@ export function buildUploadRouter(sm: SessionManager): Hono {
     }
     try {
       await unlink(target)
+      log.info(`delete session=${id} filename=${filename}`)
       return c.json({ ok: true })
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
         return c.json({ error: 'file not found' }, 404)
       }
+      log.error(`delete session=${id} filename=${filename} error=${(e as Error).message}`)
       return c.json({ error: (e as Error).message }, 500)
     }
   })

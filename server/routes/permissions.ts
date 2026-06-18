@@ -3,7 +3,10 @@
 import { Hono } from 'hono'
 import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
 import { SessionManager } from '../session-manager.js'
+import { createLogger } from '../log.js'
 import { safeJson } from './index.js'
+
+const log = createLogger('permissions')
 import { isPlanApprovalTargetMode, permissionModeList, PLAN_APPROVAL_TARGET_MODES } from '../permission-modes.js'
 
 export function buildPermissionRouter(sm: SessionManager): Hono {
@@ -22,6 +25,7 @@ export function buildPermissionRouter(sm: SessionManager): Hono {
     const pid = c.req.param('pid')
     const raw = await safeJson<{ behavior: unknown; persistForSession: unknown; message: unknown; planTargetMode: unknown }>(c.req)
     if (raw.behavior === 'allow') {
+      log.info(`decide session=${id} pid=${pid} behavior=allow persistForSession=${!!raw.persistForSession}`)
       // planTargetMode: when approving an ExitPlanMode (plan proposal), the
       // execution mode the session should switch to. Ignored for non-plan
       // approvals. Explicit unsupported values are rejected so `auto` cannot
@@ -40,6 +44,7 @@ export function buildPermissionRouter(sm: SessionManager): Hono {
       return c.json({ ok: true })
     }
     if (raw.behavior === 'deny') {
+      log.info(`decide session=${id} pid=${pid} behavior=deny`)
       await sm.decide(id, pid, {
         behavior: 'deny',
         message: typeof raw.message === 'string' ? raw.message : undefined,
@@ -53,6 +58,7 @@ export function buildPermissionRouter(sm: SessionManager): Hono {
   app.post('/sessions/:id/permissions/:pid/answer-question', async (c) => {
     const id = c.req.param('id')
     const pid = c.req.param('pid')
+    log.info(`answer-question session=${id} pid=${pid}`)
     const raw = await safeJson<{ answers: unknown }>(c.req)
     if (!Array.isArray(raw.answers)) {
       return c.json({ error: 'answers must be an array' }, 400)

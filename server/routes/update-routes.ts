@@ -30,7 +30,10 @@ import { detectInstallMethod } from '../install-method.js'
 import { readInstalledVersion } from '../installed-version.js'
 import { runNpmInstall } from '../npm-install.js'
 import { HttpError } from '../errors.js'
+import { createLogger } from '../log.js'
 import type { UpdateActionResult } from '../../shared/update-info.js'
+
+const log = createLogger('update')
 
 export function buildUpdateRouter(): Hono {
   const app = new Hono()
@@ -68,9 +71,8 @@ export function buildUpdateRouter(): Hono {
     // was rejected with an error and the snapshot was reset). Kick off
     // a background fetch but don't block this request — we want the UI
     // to feel snappy on first load. The next GET will see the result.
-    void checkForUpdates().catch(() => {
-      /* errors land in the cached snapshot via update-checker's
-       * try/catch — nothing to do here. */
+    void checkForUpdates().catch((err) => {
+      log.warn(`background update check failed: ${(err as Error).message ?? err}`)
     })
     return c.json({ ...cached, checking: true })
   })
@@ -98,6 +100,7 @@ export function buildUpdateRouter(): Hono {
       throw new HttpError(400, 'update checks are not configured')
     }
 
+    log.info(`running npm install: ${info.packageName}@latest from ${info.registry}`)
     await runNpmInstall(info.packageName, info.registry)
 
     // Confirm the install actually rewrote the package on disk. The running

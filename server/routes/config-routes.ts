@@ -6,7 +6,10 @@ import { join as joinPath } from 'node:path'
 import { homedir } from 'node:os'
 import { SessionManager } from '../session-manager.js'
 import { HttpError } from '../errors.js'
+import { createLogger } from '../log.js'
 import { safeJson } from './index.js'
+
+const log = createLogger('config')
 import { config as serverConfig, loadConfig, readConfigFile, updateConfigFile } from '../config.js'
 import {
   LOG_LEVELS, getLogConfig, setLogConfig, type LogLevel,
@@ -60,6 +63,7 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
     }
     await writeAtomic(configDir, configPath, existing)
     await loadConfig(configDir)
+    log.info('config/setup saved and reloaded')
     return c.json({ ok: true, configured: !!serverConfig.authToken })
   })
 
@@ -100,6 +104,7 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
       return c.json({ ok: false, error: ssrfCheck.error }, 400)
     }
 
+    log.info(`test-connection baseUrl=${baseUrl}`)
     try {
       const res = await fetch(`${baseUrl}/v1/messages`, {
         method: 'POST',
@@ -157,6 +162,7 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
       const msg = err.name === 'TimeoutError' || err.name === 'AbortError'
         ? 'Request timed out after 15s'
         : `Could not reach ${baseUrl} (${err.message || 'network error'})`
+      log.warn(`test-connection failed: ${msg}`)
       return c.json({ ok: false, error: msg, baseUrl })
     }
   })
@@ -196,6 +202,7 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
         modelList: modelList.length > 0 ? modelList : undefined,
       })
     } catch {
+      log.debug('claude-defaults: settings.json not found or unreadable')
       return c.json({})
     }
   })
@@ -309,6 +316,7 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
       throw new HttpError(400, 'Body must be a JSON object')
     }
     await updateConfigFile(configDir, body)
+    log.info(`config updated keys=${Object.keys(body).join(',')}`)
     return c.json({ ok: true, configured: !!serverConfig.authToken })
   })
 

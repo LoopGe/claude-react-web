@@ -36,6 +36,9 @@ import { homedir } from 'node:os'
 import path from 'node:path'
 import { glob } from 'node:fs/promises'
 import { BROADCAST_SYSTEM_SUBTYPES } from './history-utils.js'
+import { createLogger } from './log.js'
+
+const log = createLogger('history')
 
 export interface HistoryPage {
   /** Renderable messages in chronological order, normalized to the live
@@ -108,8 +111,8 @@ async function findTranscriptFile(sessionId: string): Promise<string | null> {
     for await (const match of glob(pattern)) {
       return match // first hit ?ids are unique
     }
-  } catch {
-    // glob unavailable / IO error ?fall through to null
+  } catch (err) {
+    log.warn(`findTranscriptFile glob error session=${sessionId}: ${(err as Error).message ?? err}`)
   }
   return null
 }
@@ -190,7 +193,8 @@ export async function readHistoryPage(
   let raw: string
   try {
     raw = await readFile(file, 'utf8')
-  } catch {
+  } catch (err) {
+    log.warn(`readHistoryPage readFile error session=${sessionId}: ${(err as Error).message ?? err}`)
     return { messages: [], totalCount: 0, startIndex: 0, hasMore: false }
   }
 
@@ -209,7 +213,8 @@ export async function readHistoryEntries(
   let raw: string
   try {
     raw = await readFile(file, 'utf8')
-  } catch {
+  } catch (err) {
+    log.warn(`readHistoryEntries readFile error session=${sessionId}: ${(err as Error).message ?? err}`)
     return []
   }
 

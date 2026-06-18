@@ -13,7 +13,10 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { HttpError } from './errors.js'
+import { createLogger } from './log.js'
 import { MAX_BUFFER_BYTES } from './constants.js'
+
+const log = createLogger('git-clone')
 
 const execFileAsync = promisify(execFile)
 
@@ -61,6 +64,7 @@ export function assertHttpsUrl(url: string): void {
  *  non-zero exit becomes HttpError(500) with stderr surfaced; ENOENT (no
  *  git binary) becomes 503. */
 async function runGitOutside(args: readonly string[], cwd?: string, timeoutMs = PULL_TIMEOUT_MS): Promise<string> {
+  const start = Date.now()
   try {
     const { stdout } = await execFileAsync('git', [...args], {
       cwd,
@@ -70,8 +74,10 @@ async function runGitOutside(args: readonly string[], cwd?: string, timeoutMs = 
       windowsHide: true,
       env: { ...process.env, ...NON_INTERACTIVE_ENV },
     })
+    log.debug(`git ${args[0]} ok in ${Date.now() - start}ms`)
     return stdout
   } catch (err) {
+    const elapsed = Date.now() - start
     const e = err as NodeJS.ErrnoException & {
       code?: string | number
       stdout?: string
@@ -79,17 +85,21 @@ async function runGitOutside(args: readonly string[], cwd?: string, timeoutMs = 
       killed?: boolean
     }
     if (e.code === 'ENOENT') {
+      log.error('git executable not found in PATH')
       throw new HttpError(503, 'git executable not found in PATH')
     }
     if (e.killed) {
+      log.error(`git ${args[0]} timed out after ${elapsed}ms`)
       throw new HttpError(504, 'git command timed out')
     }
     if (typeof e.code === 'number') {
       // Surface stderr — git's diagnostics are far more useful than the
       // wrapping Node error message, which is just "Command failed: ...".
       const detail = (e.stderr || e.message || '').trim().slice(0, 800)
+      log.error(`git ${args[0]} exit=${e.code} elapsed=${elapsed}ms: ${detail.slice(0, 200)}`)
       throw new HttpError(500, `git failed (exit ${e.code}): ${detail}`)
     }
+    log.error(`git ${args[0]} failed elapsed=${elapsed}ms: ${(e as Error).message}`)
     throw new HttpError(500, `git failed: ${(e as Error).message}`)
   }
 }
@@ -117,6 +127,7 @@ export async function gitClone(
   // `--` separates option args from positional URL/path so a URL that
   // happens to start with `-` can't be reinterpreted as an option.
   args.push('--', url, dest)
+  log.info(`clone url=${url} ref=${opts.ref ?? '(default)'} dest=${dest}`)
   await runGitOutside(args, undefined, CLONE_TIMEOUT_MS)
 }
 
@@ -137,6 +148,7 @@ export async function gitCloneAtSha(
   }
   // Clone without materialising a working tree, then check out the pinned
   // commit. `--` guards a URL that happens to start with `-`.
+  log.info(`cloneAtSha url=${url} sha=${opts.sha} ref=${opts.ref ?? '(none)'}`)
   await runGitOutside(['clone', '--no-checkout', '--', url, dest], undefined, FULL_CLONE_TIMEOUT_MS)
   try {
     await runGitOutside(['-C', dest, 'checkout', opts.sha], undefined, CLONE_TIMEOUT_MS)
@@ -144,6 +156,7 @@ export async function gitCloneAtSha(
     // The default clone may not contain a sha that lives only on an
     // unmerged ref. If the manifest name a ref, fetch it and retry once.
     if (opts.ref && typeof opts.ref === 'string' && !opts.ref.includes('\0') && opts.ref.length <= 256) {
+      log.warn(`cloneAtSha checkout failed, retrying with ref=${opts.ref}`)
       await runGitOutside(['-C', dest, 'fetch', 'origin', opts.ref], undefined, FULL_CLONE_TIMEOUT_MS)
       await runGitOutside(['-C', dest, 'checkout', opts.sha], undefined, CLONE_TIMEOUT_MS)
     } else {

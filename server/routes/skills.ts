@@ -3,7 +3,10 @@ import type { SkillLoadMode, SkillScope } from '../../shared/skills.js'
 import { HttpError } from '../errors.js'
 import { SessionManager } from '../session-manager.js'
 import { config as serverConfig } from '../config.js'
+import { createLogger } from '../log.js'
 import { safeJson } from './index.js'
+
+const log = createLogger('skills')
 import {
   createSkill,
   deleteSkill,
@@ -29,7 +32,14 @@ function normalizeLoadMode(value: unknown): SkillLoadMode {
 }
 
 async function reloadAffectedSessions(sm: SessionManager, scope: SkillScope, cwd?: string) {
-  return sm.reloadSkillsForCwd(scope === 'project' ? cwd : undefined)
+  try {
+    const result = await sm.reloadSkillsForCwd(scope === 'project' ? cwd : undefined)
+    log.debug(`reloadAffectedSessions scope=${scope} reloaded=${result}`)
+    return result
+  } catch (err) {
+    log.error(`reloadAffectedSessions failed scope=${scope}: ${(err as Error).message ?? err}`)
+    return 0
+  }
 }
 
 export function buildSkillsRouter(sm: SessionManager): Hono {
@@ -114,6 +124,7 @@ export function buildSkillsRouter(sm: SessionManager): Hono {
     const scope = parseScope(String(body.scope ?? 'project'))
     if (typeof body.name !== 'string') throw new HttpError(400, 'name is required')
     const cwd = typeof body.cwd === 'string' ? body.cwd : undefined
+    log.info(`createSkill scope=${scope} name=${body.name}`)
     const skill = await createSkill({
       scope,
       cwd,
@@ -137,8 +148,10 @@ export function buildSkillsRouter(sm: SessionManager): Hono {
 
   app.delete('/skills/:scope/:name', async (c) => {
     const scope = parseScope(c.req.param('scope'))
+    const name = c.req.param('name')
     const cwd = cwdFromQuery(c)
-    await deleteSkill(scope, c.req.param('name'), cwd)
+    log.info(`deleteSkill scope=${scope} name=${name}`)
+    await deleteSkill(scope, name, cwd)
     const reload = await reloadAffectedSessions(sm, scope, cwd)
     return c.json({ ok: true, reload })
   })
