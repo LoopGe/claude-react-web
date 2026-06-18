@@ -30,6 +30,9 @@
 /* Square icon button for header toggles (bell, etc.). Same height as
    regular .btn but fixed-width and bigger glyph. */
 .btn-icon {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  color: var(--fg);
   padding: 4px 8px;
   min-width: 34px;
   height: 30px;
@@ -38,6 +41,15 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  border-radius: 6px;
+  cursor: pointer;
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.btn-icon:hover:not(:disabled) {
+  background: var(--btn-hover-bg);
+  border-color: var(--btn-hover-border);
 }
 .btn-icon.active {
   color: var(--accent);
