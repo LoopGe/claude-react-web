@@ -295,6 +295,19 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
           break
         }
         case 'error': {
+          // If the replay never completed (e.g. subscribe failed because
+          // the session was already torn down), replayReady is still false
+          // and the MessageList shows an infinite loading skeleton. Force
+          // replayReady=true so the skeleton clears and the error becomes
+          // visible. Clear all replay buffers so a stale replay-done that
+          // arrives later can't overwrite the error with error:null.
+          if (!store.getSnapshot().replayReady) {
+            replayMessages = []
+            replayPermissions = []
+            pendingLive.length = 0
+            replaying = false
+            store.dispatch({ type: 'REPLAY_REPLACE', messages: [], permissions: [] })
+          }
           if (replaying) {
             pendingLive.push({ type: 'ERROR', message: frame.message })
           } else {

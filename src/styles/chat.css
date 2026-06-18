@@ -1777,12 +1777,8 @@
   to   { opacity: 0; transform: translateX(24px); }
 }
 .side-chat-drawer.collapsing {
-  animation: side-chat-drawer-collapse var(--motion-duration-base) var(--motion-ease-exit) both;
+  animation: side-chat-drawer-out var(--motion-duration-base) var(--motion-ease-exit) both;
   pointer-events: none;
-}
-@keyframes side-chat-drawer-collapse {
-  from { opacity: 1; transform: scale(1) translateY(0); }
-  to   { opacity: 0; transform: scale(0.92) translateY(8px); }
 }
 .side-chat-drawer-header {
   display: flex;
@@ -1822,24 +1818,6 @@
   font-weight: 500;
   color: var(--fg-muted);
 }
-.side-chat-drawer-minimize {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-  transition: background var(--motion-duration-fast) var(--motion-ease-standard),
-              color var(--motion-duration-fast) var(--motion-ease-standard);
-}
-.side-chat-drawer-minimize:hover {
-  background: var(--bg-elev-2);
-  color: var(--fg);
-}
 .side-chat-drawer-close {
   display: inline-flex;
   align-items: center;
@@ -1862,6 +1840,13 @@
   overflow-y: auto;
   overflow-x: hidden;
   min-height: 0;
+  /* Flex column so .chat-messages-wrap's flex: 1 resolves to a
+     definite height — the same pattern .chat-messages-area uses in
+     the main panel. Without this, the empty-state "Type a message
+     below…" and other full-height children collapse to content
+     height and pin to the top. */
+  display: flex;
+  flex-direction: column;
 }
 .side-chat-drawer-permission {
   flex-shrink: 0;
@@ -1911,6 +1896,20 @@
 .side-chat-drawer-send:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+.side-chat-drawer-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg));
+  color: var(--danger);
+  font-size: var(--fs-xs);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.side-chat-drawer-error svg {
+  flex-shrink: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   .side-chat-drawer,

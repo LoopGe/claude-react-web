@@ -484,6 +484,17 @@ export function App() {
           // Prune lastSeenTurn entries whose sessions are gone — keeps
           // the persisted map from growing unbounded across restarts.
           setLastSeenTurn((prev) => pruneLastSeen(prev, ids))
+          // Clean up orphaned Side Chat sessions: if the snapshot contains
+          // sessions with a parentId whose parent is not in the snapshot,
+          // they were left behind by a previous tab that crashed or a page
+          // refresh while a Side Chat was active. Delete them server-side
+          // so they don't accumulate.
+          for (const s of frame.sessions) {
+            if (s.parentId && !ids.has(s.parentId)) {
+              void api.delete(`/sessions/${s.id}`).catch(() => {})
+              sessionStoreRegistry.delete(s.id)
+            }
+          }
           // NOTE: sidebarOrder and group.sessionIds are deliberately NOT
           // pruned here. A single snapshot is not an authoritative "these
           // are the only sessions that exist" list — a transient/incomplete

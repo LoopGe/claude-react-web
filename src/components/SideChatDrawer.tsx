@@ -12,9 +12,14 @@ import type { ChatStream } from '../hooks/useChatStream'
 import type { UsePermissionChannel } from '../hooks/usePermissionChannel'
 import { MessageList, WorkingBubble } from './MessageList'
 import { PermissionDialog } from './PermissionDialog'
-import { IconX, IconArrowLeft, IconChevronDown } from './icons/ToolIcons'
+import { IconX, IconArrowLeft, IconAlertTriangle } from './icons/ToolIcons'
 import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
+
+interface SendMessageResponse {
+  ok: boolean
+  message?: { uuid?: string; receivedAt?: number }
+}
 
 interface Props {
   session: SessionInfo
@@ -27,7 +32,6 @@ interface Props {
   onClose: () => void
   /** Collapse — hides the drawer but keeps the session alive. */
   onCollapse: () => void
-  onSelectParent: (id: string) => void
 }
 
 export const SideChatDrawer = memo(function SideChatDrawer({
@@ -37,7 +41,6 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   permissions,
   onClose,
   onCollapse,
-  onSelectParent,
 }: Props) {
   const [isExiting, setIsExiting] = useState(false)
   const [isCollapsing, setIsCollapsing] = useState(false)
@@ -50,15 +53,19 @@ export const SideChatDrawer = memo(function SideChatDrawer({
     const text = input.trim()
     if (!text || sending) return
     setSending(true)
+    // Optimistic insert — message appears immediately in the transcript.
+    const pendingId = stream.insertUserMessage(text)
     try {
-      await api.post(`/sessions/${session.id}/messages`, { text })
+      const res = await api.post<SendMessageResponse>(`/sessions/${session.id}/messages`, { text })
+      stream.ackUserMessage(pendingId, res.message?.uuid ?? '', res.message?.receivedAt)
       setInput('')
     } catch (e) {
       console.warn('Side Chat send failed:', (e as Error).message)
+      stream.rollbackUserMessage(pendingId)
     } finally {
       setSending(false)
     }
-  }, [input, sending, session.id])
+  }, [input, sending, session.id, stream])
 
   const handleInterrupt = useCallback(async () => {
     try { await api.post(`/sessions/${session.id}/interrupt`, {}) } catch { /* */ }
@@ -78,11 +85,11 @@ export const SideChatDrawer = memo(function SideChatDrawer({
     return () => window.removeEventListener('keydown', onKey, true)
   }, [isExiting, isCollapsing])
 
-  // Auto-scroll on new messages.
+  // Auto-scroll on new messages and streaming content.
   useEffect(() => {
     const el = bodyRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [stream.items.length])
+  }, [stream.items.length, stream.streamingContent])
 
   // Auto-focus the textarea on mount.
   useEffect(() => { textareaRef.current?.focus() }, [])
@@ -120,7 +127,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           <button
             type="button"
             className="side-chat-drawer-back"
-            onClick={() => onSelectParent(parentSession.id)}
+            onClick={() => setIsCollapsing(true)}
           >
             <IconArrowLeft size={14} />
             <span className="side-chat-drawer-parent-title">
@@ -129,16 +136,6 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           </button>
         </Tooltip>
         <span className="side-chat-drawer-title">Side Chat</span>
-        <Tooltip label="Collapse (keep session)" placement="bottom">
-          <button
-            type="button"
-            className="side-chat-drawer-minimize"
-            onClick={() => setIsCollapsing(true)}
-            aria-label="Collapse Side Chat"
-          >
-            <IconChevronDown size={14} />
-          </button>
-        </Tooltip>
         <Tooltip label="Close (delete session)" placement="bottom">
           <button
             type="button"
@@ -156,6 +153,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
         <MessageList
           items={stream.items}
           working={session.working}
+          replayReady={stream.replayReady}
           streamingContent={stream.streamingContent}
           planStatus={stream.planStatus}
           planContent={stream.planContent}
@@ -175,6 +173,13 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           />
         )}
       </div>
+
+      {stream.error && (
+        <div className="side-chat-drawer-error">
+          <IconAlertTriangle size={14} />
+          <span>{stream.error}</span>
+        </div>
+      )}
 
       {pendingHead?.kind === 'permission' && (
         <div className="side-chat-drawer-permission">
