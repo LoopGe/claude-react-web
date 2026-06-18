@@ -1079,7 +1079,7 @@ export const Chat = memo(function Chat({
               onSkipAll={() => {
                 void permissions.answerQuestion(
                   pendingHead.id,
-                  pendingHead.questions.map(() => null),
+                  (pendingHead.questions ?? []).map(() => null),
                 )
               }}
             />

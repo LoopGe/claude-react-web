@@ -476,7 +476,7 @@ function QuestionItemView({
       : Array.isArray(value)
         ? new Set(value)
         : new Set([value])
-  const presetLabels = new Set(question.options.map((o) => o.label))
+  const presetLabels = new Set((question.options ?? []).map((o) => o.label))
   // Custom "Other" answers don't appear in options[]; surface them as a
   // virtual extra row so the answer is never lost.
   const customAnswers = Array.isArray(value)
@@ -497,7 +497,7 @@ function QuestionItemView({
       </div>
       <div className="question-text">{question.question}</div>
       <ul className="question-inline-options">
-        {question.options.map((opt) => {
+        {(question.options ?? []).map((opt) => {
           const selected = selectedSet.has(opt.label)
           return (
             <li

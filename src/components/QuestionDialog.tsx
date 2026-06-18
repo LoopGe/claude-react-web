@@ -58,14 +58,14 @@ export function QuestionDialog({ open = true, request, onSubmit, onSkipAll, onMi
   // `null` means the user hasn't chosen anything for this question yet —
   // treated as "skip" on submit.
   const [choices, setChoices] = useState<Array<string | string[] | null>>(() =>
-    initialDraft?.choices ?? request.questions.map(() => null),
+    initialDraft?.choices ?? (request.questions ?? []).map(() => null),
   )
   // Track which questions have "Other" mode active and the custom text.
   const [otherActive, setOtherActive] = useState<boolean[]>(() =>
-    initialDraft?.otherActive ?? request.questions.map(() => false),
+    initialDraft?.otherActive ?? (request.questions ?? []).map(() => false),
   )
   const [otherTexts, setOtherTexts] = useState<string[]>(() =>
-    initialDraft?.otherTexts ?? request.questions.map(() => ''),
+    initialDraft?.otherTexts ?? (request.questions ?? []).map(() => ''),
   )
   // `busy` guards against a double-submit in the one-frame window between
   // the click and the parent unmounting this dialog (it optimistically
@@ -159,7 +159,7 @@ export function QuestionDialog({ open = true, request, onSubmit, onSkipAll, onMi
           } else if (Array.isArray(cur)) {
             // Remove any entries that aren't preset labels.
             const presetLabels = new Set(
-              request.questions[qIdx].options.map((o) => o.label),
+              (request.questions[qIdx].options ?? []).map((o) => o.label),
             )
             const filtered = cur.filter((v) => presetLabels.has(v))
             nc[qIdx] = filtered.length > 0 ? filtered : null
@@ -195,7 +195,7 @@ export function QuestionDialog({ open = true, request, onSubmit, onSkipAll, onMi
       } else {
         // For multi-select, replace previous custom text in the array.
         const presetLabels = new Set(
-          request.questions[qIdx].options.map((o) => o.label),
+          (request.questions[qIdx].options ?? []).map((o) => o.label),
         )
         const existing = Array.isArray(nc[qIdx]) ? (nc[qIdx] as string[]) : []
         const presetPicks = existing.filter((v) => presetLabels.has(v))
@@ -274,7 +274,7 @@ export function QuestionDialog({ open = true, request, onSubmit, onSkipAll, onMi
         </div>
 
         <div className="modal-section question-body">
-          {request.questions.map((q, qIdx) => (
+          {(request.questions ?? []).map((q, qIdx) => (
             <QuestionBlock
               key={qIdx}
               index={qIdx}
@@ -351,7 +351,7 @@ function QuestionBlock({ index, question, value, onSingle, onMulti, onSkip, othe
         role={isMulti ? undefined : 'radiogroup'}
         aria-label={isMulti ? undefined : question.question}
       >
-        {question.options.map((opt, optIdx) => {
+        {(question.options ?? []).map((opt, optIdx) => {
           const selected = selectedSet.has(opt.label)
           return (
             <button
