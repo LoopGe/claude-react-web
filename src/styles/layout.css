@@ -144,6 +144,12 @@ body.resizing-col * {
   background: var(--bg);
   border-top: 2px solid transparent;
   overflow: hidden;
+  /* Establish the containing block for this panel's SideChatDrawer
+     (position:absolute; right:0). Without this, the drawer's containing
+     block is .main-body (the only positioned ancestor), so `right:0`
+     anchored to the whole panel area and every Side Chat slid in from
+     the far-right edge regardless of which panel opened it. */
+  position: relative;
   /* Re-declare the user-bubble vars here so their color-mix() formulas
      re-evaluate against this panel's --accent. When a session sets a
      per-session accent via inline style on .chat-panel, the global
