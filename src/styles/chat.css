@@ -1776,6 +1776,14 @@
   from { opacity: 1; transform: translateX(0); }
   to   { opacity: 0; transform: translateX(24px); }
 }
+.side-chat-drawer.collapsing {
+  animation: side-chat-drawer-collapse var(--motion-duration-base) var(--motion-ease-exit) both;
+  pointer-events: none;
+}
+@keyframes side-chat-drawer-collapse {
+  from { opacity: 1; transform: scale(1) translateY(0); }
+  to   { opacity: 0; transform: scale(0.92) translateY(8px); }
+}
 .side-chat-drawer-header {
   display: flex;
   align-items: center;
@@ -1813,6 +1821,24 @@
   font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--fg-muted);
+}
+.side-chat-drawer-minimize {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard),
+              color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.side-chat-drawer-minimize:hover {
+  background: var(--bg-elev-2);
+  color: var(--fg);
 }
 .side-chat-drawer-close {
   display: inline-flex;
@@ -1888,7 +1914,8 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .side-chat-drawer,
-  .side-chat-drawer.exiting { animation: none; }
+  .side-chat-drawer.exiting,
+  .side-chat-drawer.collapsing { animation: none; }
 }
 @media (max-width: 640px) {
   .side-chat-drawer {

@@ -12,6 +12,8 @@ import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
 import { isInAppDrag, readDragPayload, setDragPayload } from '../hooks/useDragPayload'
 import { useGitStatus } from '../hooks/useGitStatus'
+import { useChatStream } from '../hooks/useChatStream'
+import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { statusClass, statusLabel, shortenModel } from '../utils/session-status'
 import { useModelOptions } from '../hooks/useModelOptions'
@@ -115,10 +117,17 @@ export interface ChatPanelProps {
   /** Open the in-app help dialog with the given slash commands. Triggered by
    *  the `/help` local command. */
   onShowHelp: (commands: SlashCommand[]) => void
-  /** Side Chat session to render in a drawer overlay. Undefined when no
-   *  Side Chat is active for this panel. */
+  /** Side Chat session. Undefined when no Side Chat is active for this
+   *  panel. Passed regardless of collapsed state so the stream hook
+   *  stays alive. */
   sideChatSession?: SessionInfo
-  /** Close the Side Chat drawer and delete the ephemeral session. */
+  /** True when the Side Chat drawer is hidden but the session is alive. */
+  sideChatCollapsed?: boolean
+  /** Number of new messages since collapse (for the collapsed badge). */
+  sideChatUnread?: number
+  /** Toggle between expanded drawer and collapsed badge. */
+  onToggleCollapseSideChat?: () => void
+  /** Close the Side Chat and delete the ephemeral session. */
   onCloseSideChat?: () => void
   /** Create a Side Chat from this session. */
   onSideChat?: (sessionId: string) => void
@@ -173,6 +182,9 @@ export const ChatPanel = memo(function ChatPanel({
   onOpenSettingsTab,
   onShowHelp,
   sideChatSession,
+  sideChatCollapsed,
+  sideChatUnread,
+  onToggleCollapseSideChat,
   onCloseSideChat,
   onSideChat,
   settingsTabRequest,
@@ -234,6 +246,18 @@ export const ChatPanel = memo(function ChatPanel({
   // vanish (and never return) the moment a session went idle, because the
   // hook resets data to null when disabled. Only the cwd matters here.
   const gitStatus = useGitStatus(session.cwd, session.id, { enabled: !!session.cwd })
+
+  // Side Chat stream — always subscribed so the drawer can mount without
+  // replay cost and the collapsed badge gets live permission data.
+  // useChatStream gates on a valid sessionId internally (empty string
+  // is a safe no-op), so this is free when no side chat exists.
+  const effectiveSideChatId = sideChatSession?.id ?? ''
+  const sideChatPermissions = usePermissionChannel(effectiveSideChatId)
+  const sideChatStream = useChatStream(effectiveSideChatId, {
+    onRequest: sideChatPermissions.onRequest,
+    onResolved: sideChatPermissions.onResolved,
+    onCleared: sideChatPermissions.clearError,
+  })
 
   const commitModel = (next: string) => {
     const value = next.trim()
@@ -568,6 +592,33 @@ export const ChatPanel = memo(function ChatPanel({
               </button>
             </Tooltip>
           )}
+          {/* Side Chat collapsed badge — shows when a side chat session
+              exists but the drawer is hidden. Click to expand. */}
+          {sideChatSession && sideChatCollapsed && onToggleCollapseSideChat && (
+            <Tooltip label="Expand Side Chat" placement="bottom">
+              <button
+                type="button"
+                className={[
+                  'chat-panel-side-chat-badge',
+                  sideChatSession.working ? 'working' : '',
+                  (sideChatUnread ?? 0) > 0 ? 'has-unread' : '',
+                ].filter(Boolean).join(' ')}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onToggleCollapseSideChat()
+                }}
+              >
+                <span className="chat-panel-side-chat-badge-icon" aria-hidden>{'\u{1F4AC}'}</span>
+                {(sideChatUnread ?? 0) > 0 && (
+                  <span className="chat-panel-side-chat-badge-unread">
+                    {sideChatUnread! > 99 ? '99+' : sideChatUnread}
+                  </span>
+                )}
+                {sideChatSession.working && <span className="chat-panel-side-chat-working" />}
+              </button>
+            </Tooltip>
+          )}
         </div>
         {permMenuPresence.value && (
           <ContextMenu
@@ -688,11 +739,14 @@ export const ChatPanel = memo(function ChatPanel({
           </div>
         )}
       </div>
-      {sideChatSession && onCloseSideChat && (
+      {sideChatSession && !sideChatCollapsed && onCloseSideChat && onToggleCollapseSideChat && (
         <SideChatDrawer
           session={sideChatSession}
           parentSession={session}
+          stream={sideChatStream}
+          permissions={sideChatPermissions}
           onClose={onCloseSideChat}
+          onCollapse={onToggleCollapseSideChat}
           onSelectParent={onFocus}
         />
       )}

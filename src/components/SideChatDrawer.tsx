@@ -1,42 +1,50 @@
 // Side Chat drawer — slides in from the right edge of the parent session's
 // ChatPanel. Renders a lightweight message list + input for the ephemeral
 // Side Chat session. Uses the same overlay pattern as SubagentOverlay.
+//
+// The stream and permission hooks run at the ChatPanel level so the WS
+// subscription stays alive during collapse. This component receives them
+// as props and focuses purely on rendering + input.
 
 import { memo, useEffect, useRef, useState, useCallback } from 'react'
 import type { SessionInfo } from '../types'
-import { useChatStream } from '../hooks/useChatStream'
-import { usePermissionChannel } from '../hooks/usePermissionChannel'
+import type { ChatStream } from '../hooks/useChatStream'
+import type { UsePermissionChannel } from '../hooks/usePermissionChannel'
 import { MessageList, WorkingBubble } from './MessageList'
 import { PermissionDialog } from './PermissionDialog'
-import { IconX, IconArrowLeft } from './icons/ToolIcons'
+import { IconX, IconArrowLeft, IconChevronDown } from './icons/ToolIcons'
 import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
 
 interface Props {
   session: SessionInfo
   parentSession: SessionInfo
-  onClose: (sessionId?: string) => void
+  /** Live stream data from the ChatPanel-level useChatStream hook. */
+  stream: ChatStream
+  /** Permission state from the ChatPanel-level usePermissionChannel hook. */
+  permissions: UsePermissionChannel
+  /** True close — deletes the ephemeral session. */
+  onClose: () => void
+  /** Collapse — hides the drawer but keeps the session alive. */
+  onCollapse: () => void
   onSelectParent: (id: string) => void
 }
 
 export const SideChatDrawer = memo(function SideChatDrawer({
   session,
   parentSession,
+  stream,
+  permissions,
   onClose,
+  onCollapse,
   onSelectParent,
 }: Props) {
   const [isExiting, setIsExiting] = useState(false)
+  const [isCollapsing, setIsCollapsing] = useState(false)
   const bodyRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
-
-  const permissions = usePermissionChannel(session.id)
-  const stream = useChatStream(session.id, {
-    onRequest: permissions.onRequest,
-    onResolved: permissions.onResolved,
-    onCleared: permissions.clearError,
-  })
 
   const handleSend = useCallback(async () => {
     const text = input.trim()
@@ -56,30 +64,19 @@ export const SideChatDrawer = memo(function SideChatDrawer({
     try { await api.post(`/sessions/${session.id}/interrupt`, {}) } catch { /* */ }
   }, [session.id])
 
-  // ESC to close (capture phase to beat parent handlers).
+  // ESC → collapse (non-destructive). Capture phase to beat parent handlers.
+  // Triggers the collapse animation; onCollapse fires after it completes.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !isExiting) {
+      if (e.key === 'Escape' && !isExiting && !isCollapsing) {
         e.preventDefault()
         e.stopPropagation()
-        setIsExiting(true)
+        setIsCollapsing(true)
       }
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [isExiting])
-
-  // Defensive unmount cleanup — if the parent panel is removed without
-  // triggering the exit animation (e.g. closeSession), onAnimationEnd
-  // never fires and onClose would be skipped. This effect catches that.
-  // Capture the session ID at mount so the cleanup always targets the
-  // correct session, even if a new side-chat was created later.
-  const onCloseRef = useRef(onClose)
-  onCloseRef.current = onClose
-  const sessionIdRef = useRef(session.id)
-  useEffect(() => {
-    return () => { onCloseRef.current(sessionIdRef.current) }
-  }, [])
+  }, [isExiting, isCollapsing])
 
   // Auto-scroll on new messages.
   useEffect(() => {
@@ -90,14 +87,33 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   // Auto-focus the textarea on mount.
   useEffect(() => { textareaRef.current?.focus() }, [])
 
+  // When the user prefers reduced motion, CSS animations are disabled
+  // (animation: none) so onAnimationEnd never fires. Skip straight to
+  // the final callback so the drawer doesn't get stuck.
+  const prefersReducedMotion =
+    typeof window !== 'undefined' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+  useEffect(() => {
+    if (isCollapsing && prefersReducedMotion) onCollapse()
+  }, [isCollapsing, prefersReducedMotion, onCollapse])
+
+  useEffect(() => {
+    if (isExiting && prefersReducedMotion) onClose()
+  }, [isExiting, prefersReducedMotion, onClose])
+
   const handleExited = useCallback(() => { onClose() }, [onClose])
+  const handleCollapsed = useCallback(() => { onCollapse() }, [onCollapse])
   const pendingHead = permissions.pending[0] ?? null
 
   return (
     <div
-      className={`side-chat-drawer${isExiting ? ' exiting' : ''}`}
-      data-state={isExiting ? 'closing' : 'open'}
-      onAnimationEnd={() => { if (isExiting) handleExited() }}
+      className={`side-chat-drawer${isExiting ? ' exiting' : ''}${isCollapsing ? ' collapsing' : ''}`}
+      data-state={isExiting ? 'closing' : isCollapsing ? 'collapsing' : 'open'}
+      onAnimationEnd={() => {
+        if (isExiting) handleExited()
+        else if (isCollapsing) handleCollapsed()
+      }}
     >
       <div className="side-chat-drawer-header">
         <Tooltip label={`Back to ${parentSession.title ?? parentSession.id.slice(0, 8)}`} placement="bottom">
@@ -113,14 +129,27 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           </button>
         </Tooltip>
         <span className="side-chat-drawer-title">Side Chat</span>
-        <button
-          type="button"
-          className="side-chat-drawer-close"
-          onClick={() => setIsExiting(true)}
-          aria-label="Close Side Chat"
-        >
-          <IconX size={14} />
-        </button>
+        <Tooltip label="Collapse (keep session)" placement="bottom">
+          <button
+            type="button"
+            className="side-chat-drawer-minimize"
+            onClick={() => setIsCollapsing(true)}
+            aria-label="Collapse Side Chat"
+          >
+            <IconChevronDown size={14} />
+          </button>
+        </Tooltip>
+        <Tooltip label="Close (delete session)" placement="bottom">
+          <button
+            type="button"
+            className="side-chat-drawer-close"
+            disabled={isExiting || isCollapsing}
+            onClick={() => setIsExiting(true)}
+            aria-label="Close Side Chat"
+          >
+            <IconX size={14} />
+          </button>
+        </Tooltip>
       </div>
 
       <div className="side-chat-drawer-body" ref={bodyRef}>

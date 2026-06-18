@@ -673,6 +673,81 @@ body.resizing-col * {
   color: var(--danger);
 }
 
+/* Side Chat collapsed badge — appears in the header meta group when a
+   Side Chat session exists but the drawer is collapsed. Clicking it
+   expands the drawer. Shows a working pulse and unread count. */
+.chat-panel-side-chat-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  flex-shrink: 0;
+  min-width: 0;
+  user-select: none;
+  line-height: 1.35;
+  cursor: pointer;
+  position: relative;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard),
+              color var(--motion-duration-fast) var(--motion-ease-standard),
+              transform var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.chat-panel-side-chat-badge:hover {
+  background: var(--bg-elev-2);
+  color: var(--fg);
+  transform: translateY(calc(-1 * var(--motion-distance-2xs)));
+}
+.chat-panel-side-chat-badge:active {
+  transform: translateY(0) scale(var(--motion-scale-press));
+}
+.chat-panel-side-chat-badge:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.chat-panel-side-chat-badge.working {
+  color: var(--accent);
+}
+.chat-panel-side-chat-badge.has-unread {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+.chat-panel-side-chat-badge-icon {
+  flex-shrink: 0;
+  line-height: 1;
+}
+.chat-panel-side-chat-badge-unread {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 9999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+.chat-panel-side-chat-working {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  animation: side-chat-working-pulse 1.5s ease-in-out infinite;
+}
+@keyframes side-chat-working-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
 /* Row 2 pieces: cwd (folder icon + shortened path), message count, and an
    inline working… chip echoing the status dot for a stronger hint. */
 .chat-panel-cwd {
