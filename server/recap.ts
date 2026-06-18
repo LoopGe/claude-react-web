@@ -294,6 +294,13 @@ export class RecapManager {
     this.generation.set(sessionId, (this.generation.get(sessionId) ?? 0) + 1)
   }
 
+  /** Remove all in-memory state for a session. Called from SessionManager
+   *  unload() after invalidate() to prevent the generation map from growing
+   *  unboundedly across many session lifecycles. */
+  cleanup(sessionId: string): void {
+    this.generation.delete(sessionId)
+  }
+
   /**
    * Request a recap for a session. Returns the resulting `SessionRecap`.
    * Throws `HttpError` for unrecoverable cases the route layer should

@@ -60,6 +60,84 @@ export interface ActiveSubagent {
   result?: ToolResultEntry
 }
 
+/** Lifecycle status for a Workflow orchestration. Mirrors SubagentStatus —
+ *  'running' while its child agents are still spawning, 'done' when its
+ *  tool_result lands without error, 'interrupted' on an errored result
+ *  (a failed/aborted workflow shouldn't get a green check). 'rejected' is
+ *  kept for type-parallelism but unused today (Workflows don't go through
+ *  the plan-approval gate). */
+export type WorkflowStatus = SubagentStatus
+
+/** A declared phase from a Workflow script (`meta.phases[]`). `title` is the
+ *  label shown in the tree; `detail` is the optional supplementary text the
+ *  script author attached. Order is preserved from the script so the tree
+ *  matches the author's intent. */
+export interface WorkflowPhaseMeta {
+  title: string
+  detail?: string
+}
+
+/** A child agent spawned by a Workflow. Mirrors a sliver of ActiveSubagent
+ *  (label / status / toolCount) so the phase tree can render each branch the
+ *  same way SubagentCard renders a top-level subagent, plus the `phase`
+ *  grouping tag (read from the child tool_use's `input.phase` or
+ *  `input.opts.phase`) and `toolName` so a chip can distinguish Agent /
+ *  Task / Explore / Verify etc. */
+export interface WorkflowChildAgent {
+  toolUseId: string
+  label: string
+  toolName: string
+  /** Phase this child belongs to. null when the child's agent() call did not
+   *  pass an explicit phase — grouped under the synthetic "(ungrouped)"
+   *  bucket in the tree. */
+  phase: string | null
+  status: WorkflowStatus
+  startedAt?: number
+  endedAt?: number
+  toolCount: number
+  result?: ToolResultEntry
+}
+
+/** Index record for an active Workflow tool call — the Workflow analogue of
+ *  ActiveSubagent. Keyed by the Workflow's tool_use_id (which is also the
+ *  parent_tool_use_id of every child agent frame it spawns, so the overlay
+ *  can filter its inner conversation with the SAME parentToolUseIdFilter
+ *  mechanism SubagentOverlay uses).
+ *
+ *  The phase tree is derived two ways:
+ *   - `phases`      : the DECLARED phases from input.meta.phases (title +
+ *                     detail only — known up front, before any child runs).
+ *                     Drives the tree skeleton.
+ *   - `childAgents` : the child Agent/Task/Explore tool_use frames the
+ *                     Workflow spawned, each tagged with the phase it was
+ *                     assigned. Grouped under their phase to show live
+ *                     progress per branch.
+ *
+ *  Like ActiveSubagent the record is KEPT after completion (so the overlay is
+ *  reopenable from the card) and carries `result` so WorkflowCard can merge
+ *  the synthesized tool_result inline. */
+export interface WorkflowRecord {
+  toolUseId: string
+  /** Human label — the Workflow's `meta.name`, falling back to the input
+   *  `description`/`prompt` snippet, then 'Workflow'. Shown in the card title
+   *  and overlay header. */
+  label: string
+  startedAt?: number
+  endedAt?: number
+  status: WorkflowStatus
+  /** Declared phases (input.meta.phases), in declaration order. May be empty
+   *  if the script didn't declare any — the tree then collapses to a flat
+   *  child list under a synthetic "(ungrouped)" bucket. */
+  phases: WorkflowPhaseMeta[]
+  /** Child agents spawned by this Workflow, in arrival order. Updated
+   *  incrementally as child tool_use frames stream in. */
+  childAgents: WorkflowChildAgent[]
+  /** The Workflow's own tool_result payload (the synthesized output that
+   *  lands on the MAIN thread). Set when the matching tool_result arrives, so
+   *  WorkflowCard renders it inline and the orphan bubble is suppressed. */
+  result?: ToolResultEntry
+}
+
 export type PlanStatus = 'pending' | 'approved' | 'rejected'
 
 /** Tool execution lifecycle.
@@ -157,6 +235,14 @@ export interface SessionState {
    *  rendering). Drives the inline result section on each ToolCard. */
   toolResults: Map<string, ToolResultEntry>
   activeSubagents: Map<string, ActiveSubagent>
+  /** Workflow tool_use index, keyed by the Workflow's tool_use_id. The
+   *  Workflow analogue of `activeSubagents`: records are kept after
+   *  completion (so WorkflowCard + WorkflowOverlay stay reopenable) and
+   *  each carries its declared phases + spawned child agents so the
+   *  two-column overlay never re-scans the transcript. Like
+   *  `activeSubagents`, the Map reference is identity-compared in the store
+   *  so snapshots only reallocate when a Workflow record actually changes. */
+  activeWorkflows: Map<string, WorkflowRecord>
 }
 
 export type SessionAction =
@@ -217,6 +303,15 @@ export interface SessionSnapshot {
    *  SubagentCard placeholder and the SubagentOverlay so completed
    *  subagents are still inspectable after their tool_result lands. */
   subagentIndex: ReadonlyMap<string, ActiveSubagent>
+  /** Currently-running Workflows only — drives the WorkflowCard status +
+   *  any live chip. Mirrors activeSubagents (running-only filter of the
+   *  full workflowIndex). */
+  activeWorkflows: WorkflowRecord[]
+  /** Full Workflow index (running + completed) keyed by the Workflow's
+   *  tool_use_id. Used by WorkflowCard and WorkflowOverlay so a completed
+   *  Workflow stays inspectable after its tool_result lands. Mirrors
+   *  subagentIndex. */
+  workflowIndex: ReadonlyMap<string, WorkflowRecord>
   lastMessageUuid: string | null
 }
 
@@ -242,5 +337,6 @@ export function createInitialSessionState(sessionId: string): SessionState {
     toolStatus: new Map(),
     toolResults: new Map(),
     activeSubagents: new Map(),
+    activeWorkflows: new Map(),
   }
 }

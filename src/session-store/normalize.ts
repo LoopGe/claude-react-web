@@ -1,6 +1,13 @@
 import type { Block, PermissionRequest, SdkMessage } from '../types'
-import type { ActiveSubagent, PlanStatus, TranscriptItem } from './types'
-import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME } from '../constants/toolNames'
+import type {
+  ActiveSubagent,
+  PlanStatus,
+  TranscriptItem,
+  WorkflowChildAgent,
+  WorkflowPhaseMeta,
+  WorkflowRecord,
+} from './types'
+import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME, WORKFLOW_TOOL_NAME } from '../constants/toolNames'
 import { extractMessagePlainText } from '../search'
 /** Strings the SDK / canUseTool deny path uses to mean "user said no".
  *  Matched against tool_result.content text — case-insensitive substring
@@ -201,6 +208,61 @@ export function getSubagentStarts(msg: SdkMessage): ActiveSubagent[] {
   return out
 }
 
+/** Extract the Workflow tool_use starts from an assistant message — the
+ *  Workflow analogue of `getSubagentStarts`. Returns one entry per
+ *  Workflow tool_use block, carrying the parsed declared phases (from
+ *  `input.meta.phases`) and a human label.
+ *
+ *  The Workflow tool's `input` is loosely typed (the SDK schema drifts), so
+ *  every field access is defensive. `meta.phases` may be absent (older /
+ *  minimal scripts) — an empty `phases` array is returned in that case and
+ *  the overlay falls back to a flat "(ungrouped)" bucket. */
+export function getWorkflowStarts(msg: SdkMessage): WorkflowRecord[] {
+  if (msg.type !== 'assistant') return []
+  const out: WorkflowRecord[] = []
+  for (const block of getBlocks(msg)) {
+    if (block.type !== 'tool_use' || block.name !== WORKFLOW_TOOL_NAME) continue
+    const id = extractToolUseId(block)
+    if (!id) continue
+    const input = block.input as Record<string, unknown> | undefined
+    const meta = input?.meta as Record<string, unknown> | undefined
+    // Parse declared phases defensively. Each phase entry is `{ title, detail? }`.
+    // A non-array or malformed phases value yields an empty list rather than
+    // throwing — the tree collapses to an ungrouped child list in that case.
+    const phases: WorkflowPhaseMeta[] = []
+    if (Array.isArray(meta?.phases)) {
+      for (const p of meta!.phases as Array<unknown>) {
+        if (!p || typeof p !== 'object') continue
+        const o = p as Record<string, unknown>
+        if (typeof o.title !== 'string' || !o.title) continue
+        phases.push({
+          title: o.title,
+          detail: typeof o.detail === 'string' ? o.detail : undefined,
+        })
+      }
+    }
+    // Label: meta.name (the script's declared name) is the most stable /
+    // informative; fall back to description, a prompt snippet, then the
+    // bare tool name — mirrors the SubagentCard label fallback ladder.
+    const label =
+      (typeof meta?.name === 'string' && meta.name) ||
+      (typeof input?.description === 'string' && input.description) ||
+      (typeof input?.prompt === 'string' && truncate(input.prompt, 80)) ||
+      'Workflow'
+    out.push({
+      toolUseId: id,
+      label,
+      startedAt: undefined,
+      endedAt: undefined,
+      status: 'running',
+      phases,
+      childAgents: [],
+      result: undefined,
+    })
+  }
+  return out
+}
+
 export function getToolResultIds(msg: SdkMessage): string[] {
   if (msg.type !== 'user') return []
   const ids: string[] = []
@@ -210,6 +272,65 @@ export function getToolResultIds(msg: SdkMessage): string[] {
     }
   }
   return ids
+}
+
+/** Detect child-agent tool_use blocks spawned by a Workflow.
+ *
+ *  A Workflow's children arrive as ordinary Agent/Task/Explore tool_use blocks
+ *  in an assistant frame whose `parent_tool_use_id` equals the Workflow's own
+ *  tool_use id (the SDK threads the sidechain that way). `getSubagentStarts`
+ *  ALSO matches these on the main thread, but here we are inside the Workflow's
+ *  sidechain frame (the message itself carries the parent id), so we return
+ *  every subagent-shaped child regardless of whether it would also be indexed
+ *  elsewhere — the reducer keys them per-Workflow via the message's
+ *  `parent_tool_use_id`.
+ *
+ *  Each child carries the `phase` tag the script assigned via the agent()
+ *  call's `phase` opt. The Workflow tool's `agent()` signature passes phase as
+ *  `opts.phase`, which surfaces in the child tool_use input as `phase`. We read
+ *  `input.phase` (string) and fall back to `input.opts.phase` for robustness;
+ *  absent/untagged children get `phase: null` and group under "(ungrouped)".
+ *
+ *  Returns `{ parentId, children }` so the reducer can route children to the
+ *  right Workflow record without re-deriving the parent. `parentId` is the
+ *  message's own `parent_tool_use_id` (the Workflow id). */
+export function getWorkflowChildStarts(
+  msg: SdkMessage,
+): { parentId: string; children: WorkflowChildAgent[] } {
+  if (msg.type !== 'assistant') return { parentId: '', children: [] }
+  const parentId = typeof msg.parent_tool_use_id === 'string' ? msg.parent_tool_use_id : ''
+  if (!parentId) return { parentId: '', children: [] }
+  const children: WorkflowChildAgent[] = []
+  for (const block of getBlocks(msg)) {
+    if (block.type !== 'tool_use') continue
+    const name = block.name
+    if (!name || !SUBAGENT_TOOL_NAMES.has(name)) continue
+    const id = extractToolUseId(block)
+    if (!id) continue
+    const input = block.input as Record<string, unknown> | undefined
+    const opts = input?.opts as Record<string, unknown> | undefined
+    const phase =
+      (typeof input?.phase === 'string' && input.phase) ||
+      (typeof opts?.phase === 'string' && opts.phase) ||
+      null
+    const label =
+      (typeof input?.description === 'string' && input.description) ||
+      (typeof input?.prompt === 'string' && truncate(input.prompt, 80)) ||
+      (typeof opts?.label === 'string' && opts.label) ||
+      name
+    children.push({
+      toolUseId: id,
+      label,
+      toolName: name,
+      phase,
+      status: 'running',
+      startedAt: undefined,
+      endedAt: undefined,
+      toolCount: 0,
+      result: undefined,
+    })
+  }
+  return { parentId, children }
 }
 
 /** All tool_use ids in an assistant message, regardless of tool name.
@@ -228,6 +349,10 @@ const TOOL_STATUS_EXCLUDE = new Set<string>([
   // includes it, so exclude it explicitly here.
   ENTER_PLAN_MODE_TOOL_NAME,
   'AskUserQuestion',
+  // Workflow renders its own WorkflowCard (bespoke lifecycle) — excluding it
+  // here keeps it out of the generic toolStatus badge map, same rationale as
+  // the Subagent/Plan/Question exclusions above.
+  WORKFLOW_TOOL_NAME,
 ])
 
 export function getToolUseStarts(msg: SdkMessage): string[] {

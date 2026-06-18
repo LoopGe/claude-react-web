@@ -21,6 +21,7 @@ import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, Transcrip
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { getBlocks, getEnterPlanToolUseIds } from '../session-store/normalize'
 import { useSubagentContext } from '../hooks/useSubagentContext'
+import { useWorkflowContext } from '../hooks/useWorkflowContext'
 import { IconArrowDown, IconZap, IconSparkles, IconAlertTriangle, IconMessageCircle, IconDollar, IconClock, IconWrench, IconUser, IconExternalLink } from './icons/ToolIcons'
 import { countMatches, extractPlainText } from '../search'
 import { BlockView, ToolResultBlock } from './message-list/blocks'
@@ -184,6 +185,36 @@ const MAX_ENTER_BATCH = 4
 const ENTER_MAX_AGE_MS = 10_000
 const KNOWN_IDS_CAP = 4000
 const STREAMING_EXIT_MS = 180
+
+/** Return a `Set` whose *identity* is stable as long as its *contents* are
+ *  unchanged.
+ *
+ *  Plain `useMemo(() => new Set(...), [dep])` rebuilds a brand-new Set on
+ *  every dep change even when the derived contents are identical (e.g.
+ *  `items` got a new array reference from a streaming token flush that
+ *  didn't add any EnterPlanMode). That new identity then flows into
+ *  `makeResultConsumed` → `ResultConsumedCtx.Provider value` → defeats
+ *  every `MessageView`'s `memo`, re-rendering the whole visible transcript
+ *  on each new completed message.
+ *
+ *  This guard compares the candidate to the previously-returned Set (same
+ *  size + every element of the candidate already present in the previous)
+ *  and reuses the previous reference when equal, so the context value only
+ *  changes when the predicate would actually answer differently. */
+function useStableSet(candidate: Set<string>): Set<string> {
+  const prevRef = useRef<Set<string>>(candidate)
+  const prev = prevRef.current
+  if (prev === candidate) return candidate
+  if (prev.size === candidate.size) {
+    let same = true
+    for (const id of candidate) {
+      if (!prev.has(id)) { same = false; break }
+    }
+    if (same) return prev
+  }
+  prevRef.current = candidate
+  return candidate
+}
 
 export const MessageList = memo(function MessageList({ items, recap, working, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
@@ -353,13 +384,13 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
   // nothing consumes its result), so its result ids aren't in any of the maps
   // above. Scan items for them directly and fold them into the predicate so
   // their stray tool_result doesn't fall through to an orphan bubble.
-  const enterPlanIds = useMemo(() => {
+  const enterPlanIds = useStableSet(useMemo(() => {
     const set = new Set<string>()
     for (const it of items) {
       for (const id of getEnterPlanToolUseIds(it.msg)) set.add(id)
     }
     return set
-  }, [items])
+  }, [items]))
 
   // Subagent (Agent/Task/Explore) results are merged inline into SubagentCard
   // once captured (record.result set). Fold those ids into the predicate so
@@ -367,7 +398,7 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
   // generic tool card. Only ids whose result has actually landed count; a
   // still-running subagent has no result bubble to suppress yet.
   const subagentCtx = useSubagentContext()
-  const subagentResultIds = useMemo(() => {
+  const subagentResultIds = useStableSet(useMemo(() => {
     const set = new Set<string>()
     if (subagentCtx) {
       for (const [id, record] of subagentCtx.index) {
@@ -375,14 +406,35 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
       }
     }
     return set
-  }, [subagentCtx])
+  }, [subagentCtx]))
+
+  // Workflow results are merged inline into WorkflowCard once captured
+  // (record.result set), exactly like subagent results into SubagentCard.
+  // Fold those ids into the predicate so the Workflow's synthesized tool_result
+  // doesn't also render a standalone orphan bubble. Also fold in every child
+  // agent's result id: a child's tool_result would otherwise surface as an
+  // orphan on the Workflow's sidechain view, but it's already represented by
+  // the child row's status + (in the drill-in) the child's own merged card.
+  const workflowCtx = useWorkflowContext()
+  const workflowResultIds = useStableSet(useMemo(() => {
+    const set = new Set<string>()
+    if (workflowCtx) {
+      for (const [, record] of workflowCtx.index) {
+        if (record.result) set.add(record.toolUseId)
+        for (const child of record.childAgents) {
+          if (child.result) set.add(child.toolUseId)
+        }
+      }
+    }
+    return set
+  }, [workflowCtx]))
 
   const isResultConsumed = useMemo(
-    () => makeResultConsumed(toolResults, planStatus, questionAnswers, enterPlanIds, subagentResultIds),
-    [toolResults, planStatus, questionAnswers, enterPlanIds, subagentResultIds],
+    () => makeResultConsumed(toolResults, planStatus, questionAnswers, enterPlanIds, subagentResultIds, workflowResultIds),
+    [toolResults, planStatus, questionAnswers, enterPlanIds, subagentResultIds, workflowResultIds],
   )
 
-  const renderableItems: RenderableItem[] = useMemo(() => {
+  const { renderableItems, firstItemId, lastItemId, nextItemTypeMap } = useMemo(() => {
     const out: RenderableItem[] = []
     for (let i = 0; i < items.length; i++) {
       const item = items[i]
@@ -421,7 +473,19 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
         })
       }
     }
-    return out
+    // Pre-compute stable lookups so itemContent doesn't depend on the
+    // renderableItems array reference (which changes on every message append
+    // and would defeat Virtuoso's row-level memo).
+    const nextMap = new Map<string, string>()
+    for (let i = 0; i < out.length - 1; i++) {
+      nextMap.set(out[i].id, out[i + 1].msg.type)
+    }
+    return {
+      renderableItems: out,
+      firstItemId: out[0]?.id,
+      lastItemId: out[out.length - 1]?.id,
+      nextItemTypeMap: nextMap,
+    }
   }, [items, parentToolUseIdFilter, isResultConsumed])
 
   // --- Reverse infinite scroll: keep the viewport anchored on prepend ----
@@ -546,14 +610,29 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
       }
       prevLastIdRef.current = curLastId
     }
-    // Always record every current id so a later in-place swap / re-mount of
-    // the same message is recognised as already-seen and never re-animates.
-    for (const it of renderableItems) knownIdsRef.current.add(it.id)
-    // Bound the set so a multi-thousand-message session doesn't leak ids.
-    if (knownIdsRef.current.size > KNOWN_IDS_CAP) {
-      const live = new Set(renderableItems.map((it) => it.id))
-      for (const id of enterIdsRef.current) live.add(id)
-      knownIdsRef.current = live
+    // Record every current id so a later in-place swap / re-mount of the
+    // same message is recognised as already-seen and never re-animates.
+    //
+    // Gated on `delta !== 0` (the list actually grew or shrank) so the O(n)
+    // loop doesn't run on every streaming-token render — during streaming
+    // `renderableItems` keeps the same length (LIVE_TURN_FLUSH only mutates
+    // liveTurn, not items), so the set is already fully populated and every
+    // add here would be a no-op. For a 1000-message transcript at ~12fps
+    // streaming that's ~12k wasted Set.add calls/sec otherwise.
+    //
+    // A length-preserving in-place swap (optimistic echo → server uuid at the
+    // same index, delta === 0) skips this — the swapped-in id is recorded on
+    // the next genuine append. That's safe: re-mounts never re-animate anyway
+    // (the `armed` gate above requires delta > 0), and the echo-replacement
+    // transfer block above already moves the entering flag to the new id.
+    if (delta !== 0) {
+      for (const it of renderableItems) knownIdsRef.current.add(it.id)
+      // Bound the set so a multi-thousand-message session doesn't leak ids.
+      if (knownIdsRef.current.size > KNOWN_IDS_CAP) {
+        const live = new Set(renderableItems.map((it) => it.id))
+        for (const id of enterIdsRef.current) live.add(id)
+        knownIdsRef.current = live
+      }
     }
     prevLenRef.current = curLen
   }
@@ -879,8 +958,8 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
     const isEntering = enterIdsRef.current.has(item.id)
     const className = [
       'virtuoso-item-wrapper',
-      item === renderableItems[0] ? 'transcript-first-item' : '',
-      item === renderableItems[renderableItems.length - 1] ? 'transcript-last-item' : '',
+      item.id === firstItemId ? 'transcript-first-item' : '',
+      item.id === lastItemId ? 'transcript-last-item' : '',
       isEntering ? 'msg-enter' : '',
     ].filter(Boolean).join(' ')
     return (
@@ -897,11 +976,11 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
           sending={item.sending}
           deliveryStatus={item.deliveryStatus}
           working={working}
-          nextItemType={renderableItems[item.renderableIndex + 1]?.msg?.type}
+          nextItemType={nextItemTypeMap.get(item.id)}
         />
       </div>
     )
-  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, handleEnterAnimationEnd, working, renderableItems])
+  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, handleEnterAnimationEnd, working, firstItemId, lastItemId, nextItemTypeMap])
 
   /* eslint-disable react-hooks/refs -- the pending reveal flag must commit in
      the same render as the ready transcript so the first visible frame can be

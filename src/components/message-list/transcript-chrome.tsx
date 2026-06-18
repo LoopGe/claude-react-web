@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useRef } from 'react'
+import { memo, useEffect, useRef } from 'react'
 import { IconZap } from '../icons/ToolIcons'
 import { useLiquidGlass } from '../../hooks/useLiquidGlass'
 
@@ -45,7 +45,13 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
     if (followRef.current) el.scrollTop = el.scrollHeight
   }, [content])
 
-  // Smooth height animation via CSS max-height transition.
+  // The streaming bubble sizes to its content directly — no JS height
+  // animation. The previous implementation animated `max-height` on every
+  // content flush (many times per second while streaming), which forced a
+  // layout/reflow of the bubble on the hottest render path in the app. The
+  // text itself streams in token-by-token, so the perceived "growth" is
+  // already gradual; a separate container-height transition was redundant
+  // motion that cost a reflow per flush. See Anim C1 in the audit.
   const msgRef = useRef<HTMLDivElement>(null)
 
   // Liquid-glass refraction. Bezel/radius are tuned to the streaming
@@ -63,45 +69,6 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
   // reads as frosted as well as refractive. Filter functions compose, so
   // the blur and the displacement url() are applied as one backdrop-filter.
   const glassFilter = `blur(2px) url(#${filterId})`
-
-  const prevMaxRef = useRef(0)
-  const animatingRef = useRef(false)
-  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
-
-  useLayoutEffect(() => {
-    const el = msgRef.current
-    if (!el) return
-    const height = el.scrollHeight
-    if (height === prevMaxRef.current) return
-    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    const previousHeight = prevMaxRef.current
-    const delta = Math.abs(height - previousHeight)
-    prevMaxRef.current = height
-    if (reducedMotion || delta < 2) {
-      el.style.maxHeight = height + 'px'
-      return
-    }
-    const duration = Math.min(Math.max(delta * 2, 60), 250)
-    el.style.transition = `max-height ${duration}ms ease-out`
-    el.style.maxHeight = height + 'px'
-    if (!animatingRef.current) {
-      animatingRef.current = true
-      const done = () => {
-        animatingRef.current = false
-        el.style.transition = ''
-        el.style.maxHeight = 'none'
-        prevMaxRef.current = el.scrollHeight
-      }
-      el.addEventListener('transitionend', function onEnd(event) {
-        if (event.propertyName !== 'max-height') return
-        el.removeEventListener('transitionend', onEnd)
-        clearTimeout(timerRef.current)
-        done()
-      })
-      timerRef.current = setTimeout(done, duration + 80)
-    }
-    return () => { clearTimeout(timerRef.current) }
-  })
 
   return (
     <div className="streaming-footer-wrapper">

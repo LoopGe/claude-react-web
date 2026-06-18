@@ -31,6 +31,7 @@ import { usePlanStatus, usePlanContent } from '../hooks/usePlanStatus'
 import { useQuestionAnswers } from '../hooks/useQuestionAnswers'
 import { useReopenQuestion } from '../hooks/useReopenQuestion'
 import { SubagentCard } from './SubagentCard'
+import { WorkflowCard } from './WorkflowCard'
 import { ToolCard } from './ToolCard'
 import { AnimatedDetails } from './AnimatedCollapse'
 import {
@@ -55,7 +56,7 @@ import {
   IconWebSearch,
 } from './icons/ToolIcons'
 import { formatJson } from '../utils/format'
-import { SUBAGENT_TOOL_NAMES, PLAN_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME } from '../constants/toolNames'
+import { SUBAGENT_TOOL_NAMES, PLAN_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME, WORKFLOW_TOOL_NAME } from '../constants/toolNames'
 import { QUESTION_TOOL_NAME, type QuestionAnswerEntry } from '../utils/question-answers'
 import { truncate } from '../utils/text'
 import { splitFilePath, shortenDir, detectLanguage } from '../utils/file-display'
@@ -132,6 +133,20 @@ export const ToolUseBlock = memo(function ToolUseBlock({ block }: { block: Block
         undefined
       return <SubagentCard toolUseId={id} fallbackLabel={fallback} />
     }
+  }
+
+  // Workflow → WorkflowCard (drill-in to the two-column phase-tree overlay).
+  // Like SubagentCard it spawns nested tool_use/tool_result frames (its child
+  // agents carry parent_tool_use_id = its own tool_use id), but it gets its
+  // own card/overlay pair because it additionally carries a declarative phase
+  // tree (input.meta.phases) that has no analogue in a plain Agent/Task/Explore
+  // call. Falls through to the raw-JSON branch only when we somehow lack an id.
+  if (name === WORKFLOW_TOOL_NAME && id) {
+    const fallback =
+      (typeof input?.description === 'string' && input.description) ||
+      (typeof input?.prompt === 'string' && truncate(input.prompt as string, 80)) ||
+      undefined
+    return <WorkflowCard toolUseId={id} fallbackLabel={fallback} />
   }
 
   const View = name ? TOOL_VIEWS[name] : undefined

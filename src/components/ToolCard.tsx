@@ -22,7 +22,8 @@ import { useToolResult, useToolStatus } from '../hooks/usePlanStatus'
 import type { ToolResultEntry, ToolStatus } from '../session-store/types'
 import type { Block } from '../types'
 import { formatJson } from '../utils/format'
-import { truncate } from '../utils/text'
+import { truncate, stripAnsi } from '../utils/text'
+import { AnsiText } from './AnsiText'
 
 // ---------------------------------------------------------------------------
 // CopyButton
@@ -178,26 +179,28 @@ export const ToolResultDetails = memo(function ToolResultDetails({
   className?: string
 }) {
   const preview = toolResultPreview(content)
-  const body =
-    typeof content === 'string'
-      ? truncate(content, 4000)
-      : (() => {
-          const blocks = Array.isArray(content) ? (content as Block[]) : []
-          const texts = blocks
-            .map((b) => {
-              if (b.type === 'text' && typeof b.text === 'string') return b.text
-              return formatJson(b)
-            })
-            .join('\n\n')
-          return truncate(texts || formatJson(content), 4000)
-        })()
+  const isString = typeof content === 'string'
+  const body = isString
+    ? truncate(content, 4000)
+    : (() => {
+        const blocks = Array.isArray(content) ? (content as Block[]) : []
+        const texts = blocks
+          .map((b) => {
+            if (b.type === 'text' && typeof b.text === 'string') return b.text
+            return formatJson(b)
+          })
+          .join('\n\n')
+        return truncate(texts || formatJson(content), 4000)
+      })()
   return (
     <AnimatedDetails
       className={`tool-result-details ${className}`.trim()}
       summaryClassName="tool-result-summary"
       summary={preview}
     >
-      <div className="tool-input">{body}</div>
+      <div className="tool-input">
+        {isString ? <AnsiText text={body} /> : body}
+      </div>
     </AnimatedDetails>
   )
 })
@@ -206,14 +209,14 @@ export const ToolResultDetails = memo(function ToolResultDetails({
  *  Keeps the transcript scannable when many tool results are present. */
 function toolResultPreview(content: unknown): string {
   if (typeof content === 'string') {
-    const line = content.split('\n')[0] ?? content
+    const line = stripAnsi(content).split('\n')[0] ?? content
     return line ? truncate(line, 120) : '(empty)'
   }
   const blocks = Array.isArray(content) ? (content as Block[]) : []
   if (blocks.length === 0) return '(empty)'
   const first = blocks[0]
   if (first.type === 'text' && typeof first.text === 'string') {
-    const line = first.text.split('\n')[0] ?? first.text
+    const line = stripAnsi(first.text).split('\n')[0] ?? first.text
     return line ? truncate(line, 120) : '(empty result)'
   }
   return `[${first.type}]`

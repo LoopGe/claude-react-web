@@ -1,5 +1,5 @@
 import type { PermissionRequest, SdkMessage } from '../types'
-import { createInitialSessionState, type SessionAction, type SessionState } from './types'
+import { createInitialSessionState, type SessionAction, type SessionState, type WorkflowStatus } from './types'
 import {
   extractPlanContent,
   getPlanResultDecisions,
@@ -9,6 +9,8 @@ import {
   getToolResultIds,
   getToolResultOutcomes,
   getToolUseStarts,
+  getWorkflowChildStarts,
+  getWorkflowStarts,
   isTrimBoundary,
   toTranscriptItem,
   topLevelUserPromptSignature,
@@ -780,6 +782,33 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
       if (prunedSubagents === next.activeSubagents) prunedSubagents = new Map(next.activeSubagents)
       prunedSubagents.set(id, { ...sub, status: 'interrupted', endedAt: sub.endedAt ?? sub.startedAt })
     }
+
+    // Mirror the subagent sweep for Workflows: a still-running Workflow at
+    // turn end is orphaned (its tool_result never arrived — interrupt /
+    // abort), so flip it to 'interrupted' rather than drop it. KEEP
+    // completed records (WorkflowCard reads them to render the merged
+    // result + the reopenable overlay). Also flip any still-running child
+    // agents of a completed/running Workflow so the phase tree doesn't
+    // leave a spinner on a branch whose result is gone. Identity-stable
+    // when nothing is running.
+    let prunedWorkflows = next.activeWorkflows
+    for (const [id, wf] of next.activeWorkflows) {
+      const runningChildren = wf.childAgents.some((c) => c.status === 'running')
+      if (wf.status === 'running' || runningChildren) {
+        if (prunedWorkflows === next.activeWorkflows) prunedWorkflows = new Map(next.activeWorkflows)
+        prunedWorkflows.set(id, {
+          ...wf,
+          status: wf.status === 'running' ? 'interrupted' : wf.status,
+          endedAt: wf.endedAt ?? wf.startedAt,
+          childAgents: wf.childAgents.map((c) =>
+            c.status === 'running'
+              ? { ...c, status: 'interrupted' as const, endedAt: c.endedAt ?? c.startedAt }
+              : c,
+          ),
+        })
+      }
+    }
+
     next = clearSendingUserItems({
       ...next,
       toolStatus: sweptToolStatus,
@@ -792,6 +821,7 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
       // KEEPING completed records so their merged card + orphan-bubble
       // suppression survive across turns and replay.
       activeSubagents: prunedSubagents,
+      activeWorkflows: prunedWorkflows,
     })
   }
 
@@ -881,6 +911,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
   let toolStatus = state.toolStatus
   let toolResults = state.toolResults
   let activeSubagents = state.activeSubagents
+  let activeWorkflows = state.activeWorkflows
 
   // Generic tool status — seed 'running' for every tool_use the assistant
   // emits (excluding ones with their own status map: Plan/Subagent/Question).
@@ -1099,8 +1130,163 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
     }
   }
 
+  // 鈹€ Workflow index 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+  // Mirrors the subagent indexing above, but for the Workflow orchestration tool.
+  // A Workflow's own tool_use seeds a record (label/phases); its child agents
+  // arrive as subagent-shaped tool_use blocks in sidechain frames whose
+  // parent_tool_use_id is the Workflow id. We index those children (with their
+  // phase tag) so the overlay can render the phase tree without re-scanning.
+
+  // Seed / refresh Workflow records from the Workflow tool_use blocks.
+  const wfStarts = getWorkflowStarts(message)
+  if (wfStarts.length > 0) {
+    if (activeWorkflows === state.activeWorkflows) activeWorkflows = new Map(activeWorkflows)
+    const now = Date.now()
+    for (const wf of wfStarts) {
+      const existing = activeWorkflows.get(wf.toolUseId)
+      activeWorkflows.set(wf.toolUseId, {
+        ...wf,
+        // Preserve startedAt/endedAt/status/childAgents/result across replay
+        // re-encounters — only fill in what's missing. `phases` is re-parsed
+        // from input each time (it's static), which is harmless and keeps the
+        // record correct if the input shape ever changes.
+        startedAt: existing?.startedAt ?? now,
+        endedAt: existing?.endedAt,
+        status: existing?.status ?? 'running',
+        childAgents: existing?.childAgents ?? [],
+        result: existing?.result,
+      })
+    }
+    changed = true
+  }
+
+  // Capture the Workflow's OWN tool_result (the synthesized summary that lands
+  // on the MAIN thread, i.e. a user frame with no parent_tool_use_id). Flip
+  // the record to done/interrupted and stash the result for inline rendering.
+  // Reuses the same getToolResultEntries scan — we just match against the
+  // Workflow ids instead of generic tool ids.
+  if (message.type === 'user' && activeWorkflows.size > 0) {
+    const wfResults = getToolResultEntries(message)
+    if (wfResults.length > 0) {
+      let touched = false
+      const now = Date.now()
+      for (const { toolUseId, content, isError } of wfResults) {
+        const existing = activeWorkflows.get(toolUseId)
+        if (!existing || existing.status !== 'running') continue
+        if (!touched) {
+          if (activeWorkflows === state.activeWorkflows) activeWorkflows = new Map(activeWorkflows)
+          touched = true
+        }
+        activeWorkflows.set(toolUseId, {
+          ...existing,
+          status: isError ? 'interrupted' : 'done',
+          endedAt: now,
+          result: { content, isError },
+        })
+      }
+      changed = changed || touched
+    }
+  }
+
+  // Index the Workflow's child agents. An assistant frame inside a Workflow's
+  // sidechain carries parent_tool_use_id = the Workflow id; any subagent-shaped
+  // tool_use blocks in it are this Workflow's children. getWorkflowChildStarts
+  // returns them with their phase tag + the parentId they belong to.
+  if (message.type === 'assistant' && activeWorkflows.size > 0) {
+    const { parentId, children } = getWorkflowChildStarts(message)
+    if (parentId && children.length > 0) {
+      const wf = activeWorkflows.get(parentId)
+      if (wf) {
+        if (activeWorkflows === state.activeWorkflows) activeWorkflows = new Map(activeWorkflows)
+        const byId = new Map(wf.childAgents.map((c) => [c.toolUseId, c]))
+        const now = Date.now()
+        for (const child of children) {
+          const existing = byId.get(child.toolUseId)
+          byId.set(child.toolUseId, {
+            ...child,
+            startedAt: existing?.startedAt ?? now,
+            endedAt: existing?.endedAt,
+            status: existing?.status ?? 'running',
+            toolCount: existing?.toolCount ?? 0,
+            result: existing?.result,
+          })
+        }
+        activeWorkflows.set(parentId, { ...wf, childAgents: Array.from(byId.values()) })
+        changed = true
+      }
+    }
+
+    // Also tally tool_use blocks inside a child's own sidechain (a child agent
+    // spawned by the Workflow runs its own tools — count them per child so a
+    // chip can show "4 tools"). A child's sidechain frame has
+    // parent_tool_use_id = the CHILD's tool_use id, not the Workflow's, so we
+    // look up which child (across all active workflows) owns that id.
+    const childParentId = message.parent_tool_use_id
+    if (typeof childParentId === 'string') {
+      const content = message.message?.content
+      if (Array.isArray(content)) {
+        let newTools = 0
+        for (const b of content as Array<{ type?: string }>) {
+          if (b.type === 'tool_use') newTools++
+        }
+        if (newTools > 0) {
+          // Find the workflow + child whose toolUseId === childParentId.
+          for (const [wfId, wf] of activeWorkflows) {
+            const child = wf.childAgents.find((c) => c.toolUseId === childParentId)
+            if (!child || child.status !== 'running') continue
+            if (activeWorkflows === state.activeWorkflows) activeWorkflows = new Map(activeWorkflows)
+            const updatedChild = { ...child, toolCount: child.toolCount + newTools }
+            activeWorkflows.set(wfId, {
+              ...wf,
+              childAgents: wf.childAgents.map((c) =>
+                c.toolUseId === childParentId ? updatedChild : c,
+              ),
+            })
+            changed = true
+            break
+          }
+        }
+      }
+    }
+  }
+
+  // Flip a Workflow child's status when its tool_result lands. A child's
+  // result is a tool_result block whose tool_use_id is the CHILD's id; it
+  // arrives in a user frame inside the Workflow's sidechain (parent_tool_use_id
+  // = the Workflow id). Match against every active workflow's child index.
+  if (message.type === 'user' && activeWorkflows.size > 0) {
+    const childResults = getToolResultEntries(message)
+    if (childResults.length > 0) {
+      let touched = false
+      const now = Date.now()
+      for (const [wfId, wf] of activeWorkflows) {
+        let childChanged = false
+        const updatedChildren = wf.childAgents.map((c) => {
+          if (c.status !== 'running') return c
+          const match = childResults.find((r) => r.toolUseId === c.toolUseId)
+          if (!match) return c
+          childChanged = true
+          return {
+            ...c,
+            status: (match.isError ? 'interrupted' : 'done') as WorkflowStatus,
+            endedAt: now,
+            result: { content: match.content, isError: match.isError },
+          }
+        })
+        if (childChanged) {
+          if (!touched) {
+            if (activeWorkflows === state.activeWorkflows) activeWorkflows = new Map(activeWorkflows)
+            touched = true
+          }
+          activeWorkflows.set(wfId, { ...wf, childAgents: updatedChildren })
+        }
+      }
+      changed = changed || touched
+    }
+  }
+
   return changed
-    ? { ...state, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents }
+    ? { ...state, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, activeWorkflows }
     : state
 }
 

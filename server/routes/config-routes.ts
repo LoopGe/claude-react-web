@@ -13,6 +13,7 @@ import {
   enableFileLogging, disableFileLogging, isFileLoggingEnabled, getLogFilePath,
 } from '../log.js'
 import { writeAtomic } from '../json-file-store.js'
+import { validateOutboundUrl } from '../ssrf.js'
 
 export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono {
   const app = new Hono()
@@ -30,13 +31,16 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
       commitMessageModel?: string
       updateCheckRegistry?: string
     }>(c.req)
-    if (!body.authToken?.trim()) throw new HttpError(400, 'authToken is required')
     const configPath = joinPath(configDir, 'config.json')
     let existing: Record<string, unknown> = {}
     try {
       existing = JSON.parse(await readFile(configPath, 'utf8'))
     } catch { /* file may not exist */ }
-    existing.authToken = body.authToken.trim()
+    if (body.authToken?.trim()) {
+      existing.authToken = body.authToken.trim()
+    } else if (!existing.authToken) {
+      throw new HttpError(400, 'authToken is required')
+    }
     if (body.baseUrl?.trim()) {
       existing.baseUrl = body.baseUrl.trim().replace(/\/+$/, '')
     }
@@ -88,6 +92,13 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
     const token = body.authToken?.trim() || serverConfig.authToken
     if (!token) throw new HttpError(400, 'No auth token to test denter one or save your config first')
     const baseUrl = (body.baseUrl?.trim() || serverConfig.baseUrl).replace(/\/+$/, '')
+
+    // SSRF protection: reject private IPs, metadata endpoints, and
+    // non-standard ports before making the outbound request.
+    const ssrfCheck = await validateOutboundUrl(baseUrl)
+    if (!ssrfCheck.ok) {
+      return c.json({ ok: false, error: ssrfCheck.error }, 400)
+    }
 
     try {
       const res = await fetch(`${baseUrl}/v1/messages`, {
@@ -179,7 +190,8 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
         .map((m) => m.trim())
 
       return c.json({
-        authToken: key,
+        hasKey: !!key,
+        keySuffix: key ? key.slice(-4) : undefined,
         baseUrl: typeof env.ANTHROPIC_BASE_URL === 'string' ? env.ANTHROPIC_BASE_URL : undefined,
         modelList: modelList.length > 0 ? modelList : undefined,
       })

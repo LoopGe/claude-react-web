@@ -19,20 +19,22 @@ export function extractUserText(msg: SdkMessage): string | null {
 /** Predicate: has this tool_use_id's result already been consumed by a card
  *  or a stateless marker, so its standalone orphan bubble must be suppressed?
  *  Sources include generic tool cards, plan/question cards, EnterPlanMode
- *  markers, and completed subagent cards. */
+ *  markers, completed subagent cards, and completed workflow cards. */
 export function makeResultConsumed(
   toolResults: ReadonlyMap<string, ToolResultEntry>,
   planStatus: ReadonlyMap<string, PlanStatus>,
   questionAnswers: ReadonlyMap<string, QuestionAnswerEntry[]>,
   enterPlanIds: ReadonlySet<string>,
   subagentResultIds: ReadonlySet<string>,
+  workflowResultIds: ReadonlySet<string>,
 ): (id: string) => boolean {
   return (id) =>
     toolResults.has(id) ||
     planStatus.has(id) ||
     questionAnswers.has(id) ||
     enterPlanIds.has(id) ||
-    subagentResultIds.has(id)
+    subagentResultIds.has(id) ||
+    workflowResultIds.has(id)
 }
 
 /** Would MessageView render nothing for this message? Mirrors the merged

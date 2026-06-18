@@ -389,6 +389,22 @@ export function IconClipboard(props: IconProps) {
   )
 }
 
+/** Workflow / multi-agent orchestration icon — three connected nodes
+ *  (a share-graph glyph). Reads as "fan-out across agents" at a glance,
+ *  distinct from the single-bot IconBot used by plain subagents. */
+export function IconWorkflow(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="6" cy="6" r="2.4" />
+      <circle cx="18" cy="6" r="2.4" />
+      <circle cx="12" cy="18" r="2.4" />
+      <path d="M7.6 7.6 10.6 16" />
+      <path d="M16.4 7.6 13.4 16" />
+      <path d="M8.4 6h7.2" />
+    </Icon>
+  )
+}
+
 export function IconBell(props: IconProps) {
   return (
     <Icon {...props}>

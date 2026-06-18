@@ -5,6 +5,20 @@
 /** Tools that spawn nested subagent sessions. */
 export const SUBAGENT_TOOL_NAMES = new Set(['Agent', 'Task', 'Explore'])
 
+/** The multi-agent orchestration tool. Like SUBAGENT_TOOL_NAMES it spawns
+ *  nested tool_use/tool_result frames (its child agents carry
+ *  parent_tool_use_id = the Workflow's tool_use id), but it is handled by
+ *  its OWN card/overlay pair (WorkflowCard / WorkflowOverlay) rather than
+ *  SubagentCard/SubagentOverlay, because it additionally carries a
+ *  declarative phase tree (input.meta.phases) that has no analogue in a
+ *  plain Agent/Task/Explore call.
+ *
+ *  Kept a separate constant (not folded into SUBAGENT_TOOL_NAMES) so the
+ *  SubagentOverlay / WorkingBubble chip paths stay unchanged — a Workflow
+ *  gets a bespoke two-column overlay (phase tree + child messages), not the
+ *  single-conversation subagent drawer. */
+export const WORKFLOW_TOOL_NAME = 'Workflow'
+
 /** Plan-mode PROPOSAL tool — the model submits a finished plan and asks to
  *  exit plan mode and start executing. Carries the plan body / allowedPrompts.
  *  This is the only name that should drive PlanCard / plan-review rendering.

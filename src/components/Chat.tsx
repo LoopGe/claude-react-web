@@ -30,6 +30,8 @@ import { PermissionDialog } from './PermissionDialog'
 import { QuestionDialog, type QuestionDraft } from './QuestionDialog'
 import { SubagentOverlay } from './SubagentOverlay'
 import { SubagentProvider } from '../hooks/useSubagentContext'
+import { WorkflowOverlay } from './WorkflowOverlay'
+import { WorkflowProvider } from '../hooks/useWorkflowContext'
 import { ReopenQuestionProvider } from '../hooks/useReopenQuestion'
 import { TodoChecklist } from './TodoChecklist'
 import { MonitorBar } from './MonitorBar'
@@ -354,6 +356,30 @@ export const Chat = memo(function Chat({
   const subagentCtxValue = useMemo(
     () => ({ index: stream.subagentIndex, messages: stream.messages, open: openSubagent }),
     [stream.subagentIndex, stream.messages, openSubagent],
+  )
+
+  // 鈹€鈹€ Workflow overlay state 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+  // Simpler than the subagent stack: WorkflowOverlay owns its own focus state
+  // (Workflow → child drill-in) internally, so Chat only needs to know WHICH
+  // workflow is open (its tool_use_id) + the close/exit animation flags.
+  // `workflowOpenId` is null when closed. openWorkflow is what WorkflowCard's
+  // ctx.open() calls.
+  const [workflowOpenId, setWorkflowOpenId] = useState<string | null>(null)
+  const [workflowClosing, setWorkflowClosing] = useState(false)
+  const openWorkflow = useCallback((toolUseId: string) => {
+    setWorkflowClosing(false)
+    setWorkflowOpenId(toolUseId)
+  }, [])
+  const closeWorkflow = useCallback(() => {
+    setWorkflowClosing(true)
+  }, [])
+  const handleWorkflowExited = useCallback(() => {
+    setWorkflowClosing(false)
+    setWorkflowOpenId(null)
+  }, [])
+  const workflowCtxValue = useMemo(
+    () => ({ index: stream.workflowIndex, open: openWorkflow }),
+    [stream.workflowIndex, openWorkflow],
   )
 
   // 鈹€鈹€ AskUserQuestion minimize / re-open 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -936,6 +962,7 @@ export const Chat = memo(function Chat({
       />
 
       <SubagentProvider value={subagentCtxValue}>
+        <WorkflowProvider value={workflowCtxValue}>
         <ReopenQuestionProvider value={reopenCtxValue}>
         <div
           className="chat-messages-area"
@@ -967,6 +994,7 @@ export const Chat = memo(function Chat({
         />
         </div>
         </ReopenQuestionProvider>
+        </WorkflowProvider>
       </SubagentProvider>
 
       <TodoChecklist messages={stream.messages} working={session.working} />
@@ -1150,6 +1178,29 @@ export const Chat = memo(function Chat({
             planContent={stream.planContent}
             questionAnswers={stream.questionAnswers}
           />
+        </SubagentProvider>
+      )}
+
+      {/* Workflow overlay — two-column phase tree + messages. Rendered when a
+          Workflow card's open() fired. The record is read from the workflow
+          index; if it has vanished (session reset / fork) we close the overlay
+          rather than render a null panel (mirrors SubagentOverlay's guard). */}
+      {workflowOpenId && workflowCtxValue.index.get(workflowOpenId) && (
+        <SubagentProvider value={subagentCtxValue}>
+          <WorkflowProvider value={workflowCtxValue}>
+            <WorkflowOverlay
+              record={workflowCtxValue.index.get(workflowOpenId)!}
+              items={stream.items}
+              onClose={closeWorkflow}
+              isExiting={workflowClosing}
+              onExited={handleWorkflowExited}
+              toolStatus={stream.toolStatus}
+              toolResults={stream.toolResults}
+              planStatus={stream.planStatus}
+              planContent={stream.planContent}
+              questionAnswers={stream.questionAnswers}
+            />
+          </WorkflowProvider>
         </SubagentProvider>
       )}
     </div>

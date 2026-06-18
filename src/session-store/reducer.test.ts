@@ -259,6 +259,172 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
   })
 })
 
+describe('reducer: Workflow indexing', () => {
+  // A Workflow tool_use on the MAIN thread. Its input carries meta.phases
+  // (the declared phase tree) and meta.name (the script's name).
+  const workflowToolUse: SdkMessage = {
+    type: 'assistant',
+    uuid: 'a-wf',
+    message: {
+      role: 'assistant',
+      content: [
+        {
+          type: 'tool_use',
+          id: 'tu_workflow',
+          name: 'Workflow',
+          input: {
+            meta: {
+              name: 'find-flaky-tests',
+              phases: [
+                { title: 'Scan', detail: 'grep CI logs' },
+                { title: 'Fix', detail: 'one agent per flaky test' },
+              ],
+            },
+          },
+        },
+      ],
+    },
+  } as unknown as SdkMessage
+
+  // A child agent spawned by the Workflow — an assistant frame INSIDE the
+  // Workflow's sidechain, so parent_tool_use_id = the Workflow's tool_use id.
+  // Its input carries the `phase` tag the script assigned.
+  const childAgentStart: SdkMessage = {
+    type: 'assistant',
+    uuid: 'a-child',
+    parent_tool_use_id: 'tu_workflow',
+    message: {
+      role: 'assistant',
+      content: [
+        { type: 'tool_use', id: 'tu_child1', name: 'Agent', input: { description: 'scan logs', phase: 'Scan' } },
+        { type: 'tool_use', id: 'tu_child2', name: 'Task', input: { description: 'fix test', phase: 'Fix' } },
+      ],
+    },
+  } as unknown as SdkMessage
+
+  // A child's tool_result — lands in the Workflow's sidechain (parent =
+  // Workflow id), tool_use_id = the child's id. Should flip that child to done.
+  const childResult: SdkMessage = {
+    type: 'user',
+    uuid: 'u-child',
+    parent_tool_use_id: 'tu_workflow',
+    message: {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 'tu_child1', content: 'found 2 flaky' }],
+    },
+  } as unknown as SdkMessage
+
+  // The Workflow's OWN tool_result — synthesized summary on the MAIN thread
+  // (no parent_tool_use_id). Flips the Workflow record to done.
+  const workflowResult: SdkMessage = {
+    type: 'user',
+    uuid: 'u-wf',
+    parent_tool_use_id: null,
+    message: {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 'tu_workflow', content: 'workflow done' }],
+    },
+  } as unknown as SdkMessage
+
+  const resultFrame: SdkMessage = {
+    type: 'result',
+    subtype: 'success',
+    uuid: 'r-wf',
+  } as unknown as SdkMessage
+
+  it('seeds a Workflow record with parsed phases + label from meta', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: workflowToolUse })
+
+    const wf = state.activeWorkflows.get('tu_workflow')
+    expect(wf).toBeDefined()
+    expect(wf?.status).toBe('running')
+    expect(wf?.label).toBe('find-flaky-tests')
+    expect(wf?.phases.map((p) => p.title)).toEqual(['Scan', 'Fix'])
+    expect(wf?.phases[0].detail).toBe('grep CI logs')
+    expect(wf?.childAgents).toEqual([])
+  })
+
+  it('indexes child agents with their phase tag (grouped under the Workflow)', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: workflowToolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: childAgentStart })
+
+    const wf = state.activeWorkflows.get('tu_workflow')
+    expect(wf?.childAgents.length).toBe(2)
+    const scan = wf?.childAgents.find((c) => c.toolUseId === 'tu_child1')
+    const fix = wf?.childAgents.find((c) => c.toolUseId === 'tu_child2')
+    expect(scan?.phase).toBe('Scan')
+    expect(scan?.toolName).toBe('Agent')
+    expect(scan?.status).toBe('running')
+    expect(fix?.phase).toBe('Fix')
+    expect(fix?.toolName).toBe('Task')
+  })
+
+  it('flips a child to done when its tool_result lands, and captures the result', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: workflowToolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: childAgentStart })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: childResult })
+
+    const wf = state.activeWorkflows.get('tu_workflow')
+    const child1 = wf?.childAgents.find((c) => c.toolUseId === 'tu_child1')
+    const child2 = wf?.childAgents.find((c) => c.toolUseId === 'tu_child2')
+    expect(child1?.status).toBe('done')
+    expect(child1?.result?.content).toBe('found 2 flaky')
+    expect(child2?.status).toBe('running') // other child untouched
+  })
+
+  it('flips the Workflow itself to done when its own tool_result lands (main thread)', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: workflowToolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: workflowResult })
+
+    const wf = state.activeWorkflows.get('tu_workflow')
+    expect(wf?.status).toBe('done')
+    expect(wf?.result?.content).toBe('workflow done')
+  })
+
+  it('keeps the completed Workflow record (with result + children) after the result frame', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: workflowToolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: childAgentStart })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: childResult })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: workflowResult })
+
+    state = reduceSessionState(state, { type: 'MESSAGE', message: resultFrame })
+
+    // The record MUST survive so WorkflowCard renders the merged result and
+    // the overlay stays reopenable — mirrors the subagent keep-on-complete rule.
+    const wf = state.activeWorkflows.get('tu_workflow')
+    expect(wf?.status).toBe('done')
+    expect(wf?.result?.content).toBe('workflow done')
+    expect(wf?.childAgents.length).toBe(2)
+    expect(wf?.childAgents.find((c) => c.toolUseId === 'tu_child1')?.status).toBe('done')
+  })
+
+  it('flips a still-running Workflow + its running children to interrupted at the result frame', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: workflowToolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: childAgentStart })
+    // No tool_results arrive — both the Workflow and child2 are still running.
+    state = reduceSessionState(state, { type: 'MESSAGE', message: resultFrame })
+
+    const wf = state.activeWorkflows.get('tu_workflow')
+    expect(wf?.status).toBe('interrupted')
+    // child1 had no result either -> interrupted; child2 likewise.
+    expect(wf?.childAgents.every((c) => c.status === 'interrupted')).toBe(true)
+  })
+
+  it('does NOT seed a generic toolStatus badge for the Workflow tool (it owns its card)', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: workflowToolUse })
+    // The Workflow tool_use id must be excluded from the generic toolStatus
+    // map — same exclusion as Plan/Subagent/Question (they own their status).
+    expect(state.toolStatus.has('tu_workflow')).toBe(false)
+  })
+})
+
 // Note: the prior `reducer: recap dedup` block was deleted along with the
 // synthetic-recap-message path. session.recap is now a top-level field on
 // SessionInfo (broadcast via session-recap-update / session-update), not

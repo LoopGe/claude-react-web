@@ -67,6 +67,11 @@ export interface ChatStream {
   toolResults: ReadonlyMap<string, ToolResultEntry>
   activeSubagents: ActiveSubagent[]
   subagentIndex: ReadonlyMap<string, ActiveSubagent>
+  /** Full Workflow index (running + completed) keyed by toolUseId. Used by
+   *  WorkflowCard + WorkflowOverlay so completed Workflows stay inspectable
+   *  after their tool_result lands — same keep-on-complete discipline as
+   *  subagentIndex. */
+  workflowIndex: ReadonlyMap<string, import('../session-store/types').WorkflowRecord>
   replayReady: boolean
   /** Optimistically insert the user's message into the transcript so it
    *  appears immediately, before the server echoes it back. Returns the
@@ -133,6 +138,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   const toolResults = useSessionField(sessionId, 'toolResults')
   const activeSubagents = useSessionField(sessionId, 'activeSubagents')
   const subagentIndex = useSessionField(sessionId, 'subagentIndex')
+  const workflowIndex = useSessionField(sessionId, 'workflowIndex')
   const replayReady = useSessionField(sessionId, 'replayReady')
   const permsRef = useRef(permissions)
   // Set true when a `session-cleared` frame lands for this session. Blocks
@@ -452,6 +458,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       toolResults,
       activeSubagents,
       subagentIndex,
+      workflowIndex,
       replayReady,
       insertUserMessage,
       ackUserMessage,
