@@ -138,6 +138,7 @@ export function usePermissionChannel(sessionId: string): UsePermissionChannel {
  *  - New entries are appended at the end.
  *  - Ordering of existing entries is preserved. */
 function mergePending(prev: PermissionRequest[], incoming: PermissionRequest[]): PermissionRequest[] {
+  if (!incoming?.length) return prev
   const incomingById = new Map(incoming.map((p) => [p.id, p]))
   // Walk prev: swap to incoming version if present, else keep original.
   const merged = prev.map((p) => incomingById.get(p.id) ?? p)
