@@ -765,10 +765,13 @@
 
    It carries a "breathing glow" border so the in-progress turn is easy to
    spot among settled messages: the accent border brightens and an outer
-   glow pulses in/out. Only border-color and box-shadow animate (both
-   cheap / GPU-composited), so the 80ms content flushes are unaffected.
-   All colours are theme variables (--accent / --border), so light and dark
-   themes adapt automatically. */
+   glow pulses in/out. NOTE: border-color and box-shadow are paint-phase
+   properties (NOT compositor-friendly despite the earlier comment claiming
+   so), so this does add a per-frame repaint on the bubble — accepted here
+   because only ONE bubble streams at a time and the glow is the clearest
+   in-progress affordance; reduced-motion disables it (below). All colours
+   are theme variables (--accent / --border), so light and dark themes
+   adapt automatically. */
 .streaming-msg {
   align-self: stretch;
   /* Always render at the full reading width rather than shrink-wrapping the

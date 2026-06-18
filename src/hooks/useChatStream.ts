@@ -469,6 +469,6 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       hasOlder,
       loadingOlder,
     }),
-    [items, messages, displayedError, contextUsage, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, replayReady, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, loadOlder, hasOlder, loadingOlder],
+    [items, messages, displayedError, contextUsage, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, replayReady, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, loadOlder, hasOlder, loadingOlder],
   )
 }
