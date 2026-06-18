@@ -865,6 +865,17 @@ export class SessionManager {
         session_id: info.id,
       }
       sideSession.handle.enqueueUserMessage({ ...boundaryMsg })
+      // The boundary prompt IS a real user turn — the SDK consumes it and
+      // generates an (usually brief) assistant reply. enqueueUserMessage
+      // bypasses send()/pushToSession() (so no user bubble renders), but
+      // that also skips the pendingTurns/workingSince bookkeeping those
+      // paths do. Without it, the boundary turn runs with working=false,
+      // so the UI never shows "working" while the model is actually
+      // responding to the boundary. Mirror send()'s bookkeeping here.
+      if (sideSession.pendingTurns === 0) {
+        sideSession.workingSince = Date.now()
+      }
+      if (sideSession.pendingTurns < 1) sideSession.pendingTurns = 1
     }
     return info
   }

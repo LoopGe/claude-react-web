@@ -137,12 +137,14 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           hasOlder={stream.hasOlder}
           loadingOlder={stream.loadingOlder}
         />
-        <WorkingBubble
-          startedAt={session.workingSince}
-          activeSubagents={stream.activeSubagents}
-          tokenRate={stream.tokenRate}
-          activePhase={stream.activePhase}
-        />
+        {session.working && (
+          <WorkingBubble
+            startedAt={session.workingSince}
+            activeSubagents={stream.activeSubagents}
+            tokenRate={stream.tokenRate}
+            activePhase={stream.activePhase}
+          />
+        )}
       </div>
 
       {pendingHead?.kind === 'permission' && (
