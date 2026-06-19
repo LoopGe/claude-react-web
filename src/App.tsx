@@ -484,16 +484,30 @@ export function App() {
           // Prune lastSeenTurn entries whose sessions are gone — keeps
           // the persisted map from growing unbounded across restarts.
           setLastSeenTurn((prev) => pruneLastSeen(prev, ids))
-          // Clean up orphaned Side Chat sessions: if the snapshot contains
-          // sessions with a parentId whose parent is not in the snapshot,
-          // they were left behind by a previous tab that crashed or a page
-          // refresh while a Side Chat was active. Delete them server-side
-          // so they don't accumulate.
+          // Clean up orphaned Side Chat sessions. A Side Chat is abandoned when
+          //   (a) its parent is gone from the snapshot — left behind by a
+          //       crashed tab or a closed parent;     OR
+          //   (b) the parent is present but the side chat has zero live
+          //       subscribers AND is not the one this tab currently owns.
+          //       This catches: page refresh while a drawer was open
+          //       (sideChat state is in-memory only), and tabs that had a
+          //       side chat open and then closed cleanly without the DELETE
+          //       firing (e.g. tab close before animation completed).
+          // The `subscribers === 0` gate prevents a second tab from killing
+          // another tab's *active* side chat — when tab A still has the
+          // drawer (or a collapsed-but-mounted ChatPanel) subscribed, the
+          // server reports subscribers >= 1 in the snapshot and tab B
+          // leaves it alone. Server-side idle GC eventually reaps anything
+          // still abandoned beyond idleMs.
+          const ownSideId = sideChatRef.current?.session.id ?? null
           for (const s of frame.sessions) {
-            if (s.parentId && !ids.has(s.parentId)) {
-              void api.delete(`/sessions/${s.id}`).catch(() => {})
-              sessionStoreRegistry.delete(s.id)
-            }
+            if (!s.parentId) continue
+            if (s.id === ownSideId) continue
+            const parentMissing = !ids.has(s.parentId)
+            const abandoned = parentMissing || s.subscribers === 0
+            if (!abandoned) continue
+            void api.delete(`/sessions/${s.id}`).catch(() => {})
+            sessionStoreRegistry.delete(s.id)
           }
           // NOTE: sidebarOrder and group.sessionIds are deliberately NOT
           // pruned here. A single snapshot is not an authoritative "these
@@ -719,8 +733,9 @@ export function App() {
   const closeSession = useCallback(
     (id: string) => {
       // If the closed panel hosts a Side Chat, clean up the ephemeral session.
-      // The SideChatDrawer's unmount effect also calls onClose, but that races
-      // with the DELETE — fire-and-forget here to guarantee cleanup.
+      // The drawer's animation-driven close path also DELETEs, but we may
+      // never reach it here (the drawer unmounts as soon as its parent panel
+      // closes, skipping the animation). Fire-and-forget guarantees cleanup.
       if (sideChatRef.current?.parentId === id) {
         const sideId = sideChatRef.current.session.id
         setSideChat(null)

@@ -759,6 +759,14 @@ export class SessionManager {
         `session ${id} has no completed turns yet dsend at least one message and wait for the reply before forking`,
       )
     }
+    // Side Chats are ephemeral, scoped to their parent's conversation, and
+    // carry a non-mutating boundary prompt. Forking one would manufacture a
+    // sibling-of-Side-Chat session whose `parentId` is dropped (forkOpts does
+    // not propagate it), masking it as a normal workspace-mutating session.
+    // Refuse at the entry point.
+    if (meta.parentId) {
+      throw new HttpError(400, `session ${id} is a Side Chat and cannot be forked.`)
+    }
     // The lastTurnAt guard above only proves we once saw a `result` in
     // memory; it doesn't prove the SDK's transcript file is still on
     // disk. Without this probe a missing jsonl spawns a doomed Query
@@ -2556,6 +2564,19 @@ export class SessionManager {
       effort: session.effortLevel,
       betas: session.betas as Options['betas'],
       settings: session.hooks ? ({ hooks: toSdkHooksSettings(session.hooks) } as Settings) : undefined,
+    }
+    // Side Chat sessions carry a systemPrompt boundary (SIDE_DEVELOPER_INSTRUCTIONS)
+    // that establishes the "non-mutating inspection" contract at turn-zero. The
+    // SDK does not persist systemPrompt across resume, so a Side Chat that
+    // idle-exits and is auto-resumed would silently drop the boundary and the
+    // model would behave like a normal workspace-mutating session. Re-inject
+    // the same systemPrompt on resume so the boundary survives.
+    if (session.parentId) {
+      resumeOpts.systemPrompt = {
+        type: 'preset',
+        preset: 'claude_code',
+        append: SIDE_DEVELOPER_INSTRUCTIONS,
+      }
     }
     // Re-apply globally configured MCP servers (same as resume/fork).
     const allGlobalMcpNames = Object.keys(this.mcpStore.toSdkConfig() ?? {})
