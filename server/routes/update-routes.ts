@@ -21,6 +21,7 @@
 import { Hono } from 'hono'
 import {
   checkForUpdates,
+  getAgentSdkVersion,
   getCachedUpdateInfo,
   getCurrentVersion,
   isVersionNewer,
@@ -31,11 +32,38 @@ import { readInstalledVersion } from '../installed-version.js'
 import { runNpmInstall } from '../npm-install.js'
 import { HttpError } from '../errors.js'
 import { createLogger } from '../log.js'
-import type { UpdateActionResult } from '../../shared/update-info.js'
+import { getClaudeHealth } from './health-routes.js'
+import type { UpdateActionResult, UpdateInfo } from '../../shared/update-info.js'
 
 const log = createLogger('update')
 
-export function buildUpdateRouter(): Hono {
+/** Decorate an UpdateInfo with the Claude CLI + agent-SDK version overlays.
+ *  Both are best-effort — failure to probe either one leaves the field
+ *  undefined rather than poisoning the whole response (the About tab
+ *  branches on presence). The CLI probe shares a module-level cache with
+ *  GET /health/claude, so calling this on every /update-info request is
+ *  cheap (one execFile per process lifetime on the happy path). */
+async function withVersionOverlays(
+  info: UpdateInfo,
+  claudeBinary: string | undefined,
+  force: boolean,
+): Promise<UpdateInfo> {
+  const cli = await getClaudeHealth(claudeBinary, force)
+  const sdkVersion = getAgentSdkVersion()
+  const out: UpdateInfo = {
+    ...info,
+    claudeCli: {
+      ok: cli.ok,
+      ...(cli.binary !== undefined ? { binary: cli.binary } : {}),
+      ...(cli.version !== undefined ? { version: cli.version } : {}),
+      ...(cli.error !== undefined ? { error: cli.error } : {}),
+    },
+  }
+  if (sdkVersion) out.agentSdk = { version: sdkVersion }
+  return out
+}
+
+export function buildUpdateRouter(claudeBinary?: string): Hono {
   const app = new Hono()
 
   app.get('/update-info', async (c) => {
@@ -49,7 +77,10 @@ export function buildUpdateRouter(): Hono {
     if (registryOverride !== undefined) {
       const info = await probeRegistry(registryOverride)
       const installed = readInstalledVersion(info.packageName)
-      return c.json(installed ? { ...info, installed } : info)
+      const withInstalled = installed ? { ...info, installed } : info
+      // A user-typed registry override is an explicit "Check now" gesture —
+      // pair it with a forced CLI re-probe so failures show up immediately.
+      return c.json(await withVersionOverlays(withInstalled, claudeBinary, true))
     }
     const force = c.req.query('force') === '1'
     if (force) {
@@ -58,14 +89,15 @@ export function buildUpdateRouter(): Hono {
       // snapshot from the build-time `current`, but the route contract is to
       // always report the live on-disk `installed` too.
       const installed = readInstalledVersion(info.packageName)
-      return c.json(installed ? { ...info, installed } : info)
+      const withInstalled = installed ? { ...info, installed } : info
+      return c.json(await withVersionOverlays(withInstalled, claudeBinary, true))
     }
     const cached = getCachedUpdateInfo()
     if (cached.checkedAt) {
       // We already have a snapshot — return it without blocking on the
       // network. The cache layer in update-checker.ts decides when the
       // next refresh happens.
-      return c.json(cached)
+      return c.json(await withVersionOverlays(cached, claudeBinary, false))
     }
     // No probe has completed yet (CLI just started, or the first probe
     // was rejected with an error and the snapshot was reset). Kick off
@@ -74,7 +106,7 @@ export function buildUpdateRouter(): Hono {
     void checkForUpdates().catch((err) => {
       log.warn(`background update check failed: ${(err as Error).message ?? err}`)
     })
-    return c.json({ ...cached, checking: true })
+    return c.json(await withVersionOverlays({ ...cached, checking: true }, claudeBinary, false))
   })
 
   app.post('/update', async (c) => {

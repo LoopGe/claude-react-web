@@ -100,6 +100,22 @@ async function probeClaude(binary: string | undefined): Promise<ClaudeHealth> {
   }
 }
 
+/** Probe `claude --version` with the same module-level cache used by
+ *  GET /health/claude. Exported so other routes (notably the About tab's
+ *  `/update-info`) can surface the CLI version without round-tripping
+ *  through the dedicated health endpoint and without spawning a fresh
+ *  execFile per request. Cache semantics match the route: only OK
+ *  results stick; failures always re-probe on the next call. */
+export async function getClaudeHealth(
+  claudeBinary: string | undefined,
+  force = false,
+): Promise<ClaudeHealth> {
+  if (!force && cached) return cached
+  const result = await probeClaude(claudeBinary)
+  if (result.ok) cached = result
+  return result
+}
+
 export function buildHealthRouter(claudeBinary: string | undefined): Hono {
   const app = new Hono()
 
@@ -114,10 +130,7 @@ export function buildHealthRouter(claudeBinary: string | undefined): Hono {
   // failure path.
   app.get('/health/claude', async (c) => {
     const force = c.req.query('force') === '1'
-    if (!force && cached) return c.json(cached)
-    const result = await probeClaude(claudeBinary)
-    if (result.ok) cached = result
-    return c.json(result)
+    return c.json(await getClaudeHealth(claudeBinary, force))
   })
 
   return app

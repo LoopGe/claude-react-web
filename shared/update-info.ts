@@ -62,6 +62,28 @@ export interface UpdateInfo {
    *  Distinct from `error` because "no registry configured" isn't a
    *  failure to surface — it's an explicit opt-out. */
   disabled?: boolean
+  /** Claude Code CLI binary detected on this server. Populated by the
+   *  About tab so the user can confirm which CLI the SDK will spawn and
+   *  diagnose ENOENT/EACCES issues without a separate /health/claude
+   *  round-trip. Reuses the same probe + module-level cache as
+   *  GET /health/claude — only successful results stick, so a transient
+   *  failure re-probes on the next request. Undefined when the route
+   *  was built without a claudeBinary (older callers). */
+  claudeCli?: {
+    ok: boolean
+    binary?: string
+    version?: string
+    error?: string
+  }
+  /** Version of `@anthropic-ai/claude-agent-sdk` resolved at runtime by
+   *  reading the package's package.json from node_modules. The SDK doesn't
+   *  export a version constant, and we don't bundle it (build.mjs marks it
+   *  external) — so this is read on first call and cached for the process
+   *  lifetime. Undefined when the SDK can't be resolved (unusual install
+   *  layout). */
+  agentSdk?: {
+    version: string
+  }
 }
 
 /** Result of POST /api/update — the in-app "Update now" action. */

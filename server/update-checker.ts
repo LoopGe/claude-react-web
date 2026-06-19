@@ -28,6 +28,7 @@
 // notice in the About view.
 
 import pkg from '../package.json' with { type: 'json' }
+import { createRequire } from 'node:module'
 import type { UpdateInfo } from '../shared/update-info.js'
 import { isVersionNewer } from '../shared/update-info.js'
 import { config } from './config.js'
@@ -64,6 +65,40 @@ let inFlightForce = false
 /** Return the current package version baked into this build. */
 export function getCurrentVersion(): string {
   return CURRENT_VERSION
+}
+
+// ── @anthropic-ai/claude-agent-sdk version (process-lifetime cache) ──
+//
+// The SDK doesn't export a `version` constant, and build.mjs marks it as
+// `external` so it's not bundled — at runtime it lives in node_modules
+// next to either dist/cli.mjs or the source tree. We resolve its
+// package.json on first call via createRequire and cache the result for
+// the rest of the process: the on-disk SDK version cannot change without
+// a server restart, so a one-shot read is enough.
+//
+// Failures (unusual install layout, package missing) are logged once and
+// cached as `null` so we don't retry on every /update-info request.
+
+let agentSdkVersionCache: string | null | undefined = undefined
+
+/** Read the @anthropic-ai/claude-agent-sdk package version from
+ *  node_modules. Returns null if it can't be resolved (logged once). */
+export function getAgentSdkVersion(): string | null {
+  if (agentSdkVersionCache !== undefined) return agentSdkVersionCache
+  try {
+    const requireFn = createRequire(import.meta.url)
+    const sdkPkg = requireFn('@anthropic-ai/claude-agent-sdk/package.json') as {
+      version?: unknown
+    }
+    agentSdkVersionCache =
+      typeof sdkPkg.version === 'string' && sdkPkg.version ? sdkPkg.version : null
+  } catch (err) {
+    log.warn(
+      `could not resolve @anthropic-ai/claude-agent-sdk version: ${(err as Error).message ?? err}`,
+    )
+    agentSdkVersionCache = null
+  }
+  return agentSdkVersionCache
 }
 
 /** Return the latest cached UpdateInfo without triggering a network probe.

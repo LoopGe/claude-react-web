@@ -1689,6 +1689,46 @@ function AboutTab({
           </div>
         </Field>
       )}
+      {/* Claude Code CLI version — read from `<binary> --version` on the
+          server. Reuses the same probe + cache as GET /health/claude, so
+          this adds zero extra spawns on the happy path. We surface the
+          binary path too so a "wrong CLI" footgun (multiple installs) is
+          easy to diagnose without leaving this tab. */}
+      {info?.claudeCli && (
+        <Field
+          label="Claude Code CLI"
+          hint={
+            info.claudeCli.binary
+              ? `Detected at ${info.claudeCli.binary}`
+              : 'CLI binary not detected on this server.'
+          }
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13, fontFamily: 'var(--mono)' }}>
+              {info.claudeCli.ok ? info.claudeCli.version ?? 'unknown' : 'not detected'}
+            </span>
+            {!info.claudeCli.ok && info.claudeCli.error && (
+              <span style={{ fontSize: 12, color: 'var(--danger)' }}>
+                {info.claudeCli.error}
+              </span>
+            )}
+          </div>
+        </Field>
+      )}
+      {/* @anthropic-ai/claude-agent-sdk version — read once from
+          node_modules at process start and cached. Hidden when the SDK
+          can't be resolved (unusual install layout); the rest of the
+          panel still works. */}
+      {info?.agentSdk && (
+        <Field
+          label="Agent SDK"
+          hint="Version of @anthropic-ai/claude-agent-sdk resolved from this server's node_modules."
+        >
+          <div style={{ fontSize: 13, fontFamily: 'var(--mono)' }}>
+            {info.agentSdk.version}
+          </div>
+        </Field>
+      )}
       <Field
         label="Update registry"
         hint="npm registry probed for the `latest` dist-tag. Leave empty to disable update checks. Changes take effect after Save."

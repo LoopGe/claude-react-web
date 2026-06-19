@@ -63,7 +63,9 @@ export function buildApiRouter(
   app.route('/', buildGitWriteRouter(sm))
   // Update checker ? exposes GET /update-info for the in-app upgrade
   // prompt. Stateless, so no SessionManager or store dependency.
-  app.route('/', buildUpdateRouter())
+  // claudeBinary is threaded through so the About tab can surface the
+  // CLI version alongside the npm-update info (single round-trip).
+  app.route('/', buildUpdateRouter(claudeBinary))
 
   return app
 }
