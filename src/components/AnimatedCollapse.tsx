@@ -170,21 +170,36 @@ export function AnimatedCollapse({
     const content = contentRef.current
     if (!body || !content) return
 
+    // Snap-only: AnimatedCollapse animates the OPEN/CLOSE transition; intrinsic
+    // content size changes after open are NOT animated. Animating content
+    // growth (e.g. an async fetch landing inside an opened collapse) would
+    // either fight an in-flight open animation (visible "two-step" jitter as
+    // the new animateHeight cancels and restarts) or stack a second 240 ms
+    // transition immediately after the first — both are jarring. The
+    // open/close moment is the only useful animated beat; everything else is
+    // layout, which the browser handles for free.
+    //
+    // If the content grows while an open animation is still in flight, we
+    // tear down that animation FIRST (clear the transition + cancel its
+    // transitionend handler so it can't reset height to the original `to`)
+    // then snap to the new height in a single frame.
     const observer = new ResizeObserver(() => {
       if (!previousOpenRef.current) return
       const nextHeight = content.scrollHeight
-      const previousHeight = lastHeightRef.current
-      if (Math.abs(nextHeight - previousHeight) < 2) {
-        lastHeightRef.current = nextHeight
-        body.style.height = `${nextHeight}px`
-        return
+      if (Math.abs(nextHeight - lastHeightRef.current) < 1) return
+      lastHeightRef.current = nextHeight
+      if (animatingRef.current) {
+        cleanupAnimation()
+        body.classList.remove('animating')
+        body.style.transition = ''
+        animatingRef.current = false
       }
-      animateHeight(previousHeight, nextHeight, true, false)
+      body.style.height = `${nextHeight}px`
     })
 
     observer.observe(content)
     return () => observer.disconnect()
-  }, [animateHeight, open, rendered])
+  }, [cleanupAnimation, open, rendered])
 
   useEffect(() => () => cleanupAnimation(), [cleanupAnimation])
 

@@ -19,7 +19,7 @@
 // All destructive operations (discard, drop, abort, amend, force
 // checkout) are gated by <ConfirmDialog>.
 
-import { memo, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { useGitDiff, useGitLog, useGitBranches, useGitStashes } from '../hooks/useGitStatus'
 import { useGitWrite } from '../hooks/useGitWrite'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -555,12 +555,71 @@ interface FileRowProps {
 const FileRow = memo(function FileRow({ file, cwd, staged, writeOps, onError, askConfirm }: FileRowProps) {
   const [open, setOpen] = useState(false)
   const [renderDiff, setRenderDiff] = useState(false)
+  // Pending-open: the user clicked to open but the diff fetch is still in
+  // flight. We defer flipping `open` until the fetch resolves so the
+  // AnimatedCollapse runs ONE animation from 0 → final-diff-height instead
+  // of two (0 → loading-placeholder, then snap → diff). The chevron flips
+  // immediately and the toggle gets `aria-busy` so the click still feels
+  // responsive while we wait.
+  const [pendingOpen, setPendingOpen] = useState(false)
   const { data: diff, loading, error } = useGitDiff(cwd, file.path, staged, renderDiff)
+
+  // Resolve pending → open as soon as the fetch produces a verdict.
+  // Triggers on either: (a) success, (b) error, (c) renderDiff was already
+  // true and a refresh re-fetched. We require either `diff` or `error` to
+  // have landed so we don't open during the brief window where renderDiff
+  // is true but the fetching effect hasn't yet flipped `loading` to true.
+  useEffect(() => {
+    if (!pendingOpen) return
+    if (loading) return
+    if (diff == null && error == null) return
+    // Synchronizing UI to an external async source (the diff fetch) — this
+    // is the legitimate setState-in-effect case the rule's docs call out
+    // ("subscribe for updates from some external system"). The alternative
+    // (kick off the fetch and flip `open` immediately) is exactly the
+    // two-stage animation we're trying to avoid.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setOpen(true)
+    setPendingOpen(false)
+  }, [pendingOpen, loading, diff, error])
+
+  // Safety net: if the fetch is unusually slow (large diff, slow disk, slow
+  // network in dev), don't leave the user staring at an unresponsive row.
+  // After 600 ms, open with the loading placeholder visible — the snap to
+  // final height once the diff lands is still less jarring than the old
+  // two-stage animation, because AnimatedCollapse no longer re-animates on
+  // content growth.
+  useEffect(() => {
+    if (!pendingOpen) return
+    const t = window.setTimeout(() => {
+      setOpen(true)
+      setPendingOpen(false)
+    }, 600)
+    return () => window.clearTimeout(t)
+  }, [pendingOpen])
 
   const stageBusy = writeOps.busyOps.has(`stage:${file.path}`)
   const unstageBusy = writeOps.busyOps.has(`unstage:${file.path}`)
   const discardBusy = writeOps.busyOps.has(`discard:${file.path}`)
   const anyBusy = stageBusy || unstageBusy || discardBusy
+
+  const handleToggle = () => {
+    if (open) {
+      // Closing — immediate.
+      setOpen(false)
+      setPendingOpen(false)
+      return
+    }
+    if (pendingOpen) {
+      // User clicked again before the deferred open resolved — cancel.
+      setPendingOpen(false)
+      return
+    }
+    // Opening — kick off the fetch and wait for it (or the safety timer)
+    // before flipping `open`. Chevron + aria-busy give immediate feedback.
+    setRenderDiff(true)
+    setPendingOpen(true)
+  }
 
   return (
     <div className={`git-file-row ${open ? 'open' : ''}`}>
@@ -568,12 +627,9 @@ const FileRow = memo(function FileRow({ file, cwd, staged, writeOps, onError, as
         <button
           type="button"
           className="git-file-row-toggle"
-          onClick={() => {
-            setOpen((v) => {
-              if (!v) setRenderDiff(true)
-              return !v
-            })
-          }}
+          aria-busy={pendingOpen || undefined}
+          aria-expanded={open}
+          onClick={handleToggle}
           title={file.renamedFrom ? `${file.renamedFrom} → ${file.path}` : file.path}
         >
           <span className={`git-file-status status-${file.status}`}>{file.status}</span>
@@ -593,7 +649,7 @@ const FileRow = memo(function FileRow({ file, cwd, staged, writeOps, onError, as
               )}
             </span>
           )}
-          <span className="git-file-arrow">{open ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}</span>
+          <span className="git-file-arrow">{(open || pendingOpen) ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}</span>
         </button>
         <div className="git-file-actions">
           {staged ? (
