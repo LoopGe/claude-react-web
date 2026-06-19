@@ -7,6 +7,8 @@
 // both ends fail to typecheck until they update, which is the whole
 // point: prevents the two `SessionInfo` declarations from drifting.
 
+import type { SessionSkillOverride } from './skills.js'
+
 /** Coarse-grained session lifecycle. The server is the single source of
  *  truth for this — derived from `(running, working, queueDepth,
  *  pendingPermission, terminated, dormant)`. The frontend uses it to
@@ -120,4 +122,10 @@ export interface SessionInfoBase<PM = string> {
    *  via persistence. Undefined only for sessions created before this
    *  field was added (legacy). */
   mcpServerNames?: string[]
+  /** Per-session skill policy override. Undefined or `{kind:'inherit'}`
+   *  means "follow the global config". Overrides are RAM-only — they
+   *  reset to inherit on resume so multi-panel users can pin different
+   *  skill policies per chat without losing them on the same Query, but
+   *  also without surprising state surviving a server restart. */
+  skillOverride?: SessionSkillOverride
 }

@@ -7,8 +7,9 @@ import { createPortal } from 'react-dom'
 import { api } from '../hooks/useApi'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { useToast } from '../hooks/useToast'
-import type { AgentInfo, McpServerConfigMeta, McpServerStatus, ModelInfo, PermissionMode, Plugin, SessionInfo, SlashCommand } from '../types'
+import type { AgentInfo, McpServerConfigMeta, McpServerStatus, ModelInfo, PermissionMode, Plugin, SessionInfo, SessionSkillOverride, SkillLoadMode, SlashCommand } from '../types'
 import { PERMISSION_MODES } from '../types'
+import type { SkillRecord } from '../../shared/skills'
 import { FlagSettingsEditor } from './FlagSettingsEditor'
 import { ContextBar } from './ContextBar'
 import { IconChevronUp, IconChevronDown } from './icons/ToolIcons'
@@ -225,6 +226,9 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
 
   const changePermissionMode = (mode: PermissionMode) =>
     runAndRefresh(() => api.post<{ session: SessionInfo }>(`/sessions/${session.id}/permission-mode`, { mode }))
+
+  const setSkillOverride = (override: SessionSkillOverride) =>
+    runAndRefresh(() => api.post<{ session: SessionInfo }>(`/sessions/${session.id}/skill-override`, { override }))
 
   const applySettings = async () => {
     let parsed: unknown
@@ -578,6 +582,11 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
 
       {tab === 'context' && (
       <div className="settings-section">
+        <SessionSkillPolicyCard
+          session={session}
+          disabled={busy || session.terminated}
+          onApply={setSkillOverride}
+        />
         <h4>Context usage</h4>
         {/* ContextBar runs off the WS-pushed lite usage — paints instantly,
             no blocking request. The detail disclosures below lazy-load the
@@ -782,6 +791,199 @@ function ReadOnlyField({ label, value, mono }: { label: string; value: string; m
       >
         {value}
       </div>
+    </div>
+  )
+}
+
+// ── Session skill policy card ─────────────────────────────────────
+//
+// Per-session override of the global skill loading policy. Mirrors the
+// global Settings → Skills card visually so both pages feel like one
+// system, but adds two extra options that only make sense at the session
+// scope:
+//   - Inherit  : follow the server-wide config (the implicit default).
+//   - Disabled : force every skill 'off' for this session, regardless of
+//                the global mode.
+// Plus the same default / all / allowlist trio as the global card.
+//
+// RAM-only by design (see shared/skills.ts SessionSkillOverride): pinning
+// a session-level override is a "for the current run" gesture; it resets
+// when the live Query is unloaded so multi-panel users can run two
+// sessions side-by-side with different skill policies without having to
+// remember to clear them.
+
+type SessionSkillKind = 'inherit' | 'default' | 'all' | 'allowlist' | 'disabled'
+
+const SESSION_SKILL_OPTIONS: { kind: SessionSkillKind; title: string; desc: string }[] = [
+  { kind: 'inherit', title: 'Inherit (use global)', desc: 'Follow the server-wide policy from Settings → Skills.' },
+  { kind: 'default', title: 'SDK default', desc: 'Leave skill discovery to the SDK (name-only surfacing).' },
+  { kind: 'all', title: 'Enable all discovered skills', desc: 'Load every filesystem skill the SDK can discover.' },
+  { kind: 'allowlist', title: 'Enable selected skills only', desc: 'Load only the checked skill names.' },
+  { kind: 'disabled', title: 'Disable all skills', desc: 'Force every skill off for this session.' },
+]
+
+function overrideToKind(override: SessionSkillOverride | undefined): SessionSkillKind {
+  if (!override || override.kind === 'inherit') return 'inherit'
+  if (override.kind === 'disabled') return 'disabled'
+  return override.mode
+}
+
+function kindToOverride(kind: SessionSkillKind, allowlist: string[]): SessionSkillOverride {
+  if (kind === 'inherit') return { kind: 'inherit' }
+  if (kind === 'disabled') return { kind: 'disabled' }
+  if (kind === 'allowlist') return { kind: 'mode', mode: 'allowlist', allowlist }
+  return { kind: 'mode', mode: kind }
+}
+
+function SessionSkillPolicyCard({
+  session,
+  disabled,
+  onApply,
+}: {
+  session: SessionInfo
+  disabled: boolean
+  onApply: (override: SessionSkillOverride) => Promise<void>
+}) {
+  const [skills, setSkills] = useState<SkillRecord[]>([])
+  const [globalPolicy, setGlobalPolicy] = useState<{ mode: SkillLoadMode; enabledSkills: string[] } | null>(null)
+  const [loaded, setLoaded] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Fetch the available skill set + the current global policy. Scoped to
+  // session.cwd so project-only skills surface in the allowlist for the
+  // right workspace. Re-runs when cwd changes (rare — usually never on
+  // a live session, but the hook is dirt cheap and bug-correct this way).
+  useEffect(() => {
+    const ac = new AbortController()
+    const cwdParam = session.cwd ? `?cwd=${encodeURIComponent(session.cwd)}` : ''
+    api
+      .get<{ skills: SkillRecord[]; policy: { mode: SkillLoadMode; enabledSkills: string[] } }>(
+        `/skills${cwdParam}`,
+        { signal: ac.signal },
+      )
+      .then((r) => {
+        setSkills(r.skills.filter((s) => s.valid))
+        setGlobalPolicy(r.policy)
+        setLoaded(true)
+      })
+      .catch((e: unknown) => {
+        if (ac.signal.aborted) return
+        setError((e as Error).message || 'Failed to load skills')
+        setLoaded(true)
+      })
+    return () => { ac.abort() }
+  }, [session.cwd])
+
+  const override = session.skillOverride
+  const kind = overrideToKind(override)
+  const currentAllowlist = useMemo(() => {
+    if (override?.kind === 'mode' && override.mode === 'allowlist') {
+      return override.allowlist ?? []
+    }
+    return []
+  }, [override])
+  const allowlistSet = useMemo(() => new Set(currentAllowlist), [currentAllowlist])
+
+  // Skill names ordered scope (project first — the more local / opinionated
+  // surface) then alpha, mirroring the global Skills tab.
+  const skillNames = useMemo(() => {
+    const names = skills
+      .slice()
+      .sort((a, b) => {
+        if (a.scope !== b.scope) return a.scope === 'project' ? -1 : 1
+        return a.name.localeCompare(b.name)
+      })
+      .map((s) => s.name)
+    // De-duplicate (a project skill can shadow a user skill of the same
+    // name; the SDK uses one of them but the user only needs one checkbox).
+    return [...new Set(names)]
+  }, [skills])
+
+  const onPickKind = (next: SessionSkillKind) => {
+    if (next === kind) return
+    void onApply(kindToOverride(next, currentAllowlist))
+  }
+
+  const toggleAllow = (name: string) => {
+    const set = new Set(currentAllowlist)
+    if (set.has(name)) set.delete(name); else set.add(name)
+    void onApply(kindToOverride('allowlist', [...set]))
+  }
+
+  // Effective hint — what the SDK is actually loading right now. Mirrors
+  // the resolveEffectiveSkillPolicy logic used on the server (inherit ⇒
+  // follow global; everything else ⇒ this session's pin).
+  const effectiveHint = useMemo(() => {
+    if (kind === 'disabled') return 'Effective: all skills disabled for this session.'
+    if (kind === 'inherit') {
+      if (!globalPolicy) return 'Effective: inherit (loading global policy…)'
+      const m = globalPolicy.mode
+      if (m === 'allowlist') return `Effective: inherit → allowlist (${globalPolicy.enabledSkills.length} pinned globally).`
+      if (m === 'all') return 'Effective: inherit → all skills enabled globally.'
+      return 'Effective: inherit → SDK default (name-only).'
+    }
+    if (kind === 'allowlist') {
+      return `Effective: allowlist (${currentAllowlist.length} of ${skillNames.length}).`
+    }
+    if (kind === 'all') return 'Effective: all skills enabled for this session.'
+    return 'Effective: SDK default (name-only) for this session.'
+  }, [kind, globalPolicy, currentAllowlist, skillNames])
+
+  return (
+    <div className="settings-skill-policy-card">
+      <div className="settings-section-head compact">
+        <div>
+          <h4>Session skill policy</h4>
+          <span className="settings-note">
+            Override the global skill loading policy for just this session.
+            RAM-only — resets to inherit when the session is resumed or the server restarts.
+          </span>
+        </div>
+      </div>
+      <div className="settings-skill-mode-grid">
+        {SESSION_SKILL_OPTIONS.map((option) => (
+          <label
+            key={option.kind}
+            className={`settings-skill-mode-card${kind === option.kind ? ' active' : ''}`}
+          >
+            <input
+              type="radio"
+              name={`session-skill-${session.id}`}
+              checked={kind === option.kind}
+              disabled={disabled}
+              onChange={() => onPickKind(option.kind)}
+            />
+            <span>
+              <strong>{option.title}</strong>
+              <small>{option.desc}</small>
+            </span>
+          </label>
+        ))}
+      </div>
+      <span className="hint" style={{ display: 'block', marginTop: 8 }}>{effectiveHint}</span>
+      {kind === 'allowlist' && (
+        <div className="settings-skill-allowlist">
+          {!loaded && <div className="settings-empty-note">Loading skills…</div>}
+          {loaded && error && <div className="settings-empty-note">Couldn't load skills: {error}</div>}
+          {loaded && !error && skillNames.length === 0 && (
+            <div className="settings-empty-note">No skills discovered for this workspace.</div>
+          )}
+          {skillNames.map((name) => (
+            <label
+              key={name}
+              className={`settings-skill-check${allowlistSet.has(name) ? ' active' : ''}`}
+            >
+              <input
+                type="checkbox"
+                checked={allowlistSet.has(name)}
+                disabled={disabled}
+                onChange={() => toggleAllow(name)}
+              />
+              <span>{name}</span>
+            </label>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

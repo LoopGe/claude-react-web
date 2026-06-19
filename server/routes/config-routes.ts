@@ -18,7 +18,7 @@ import {
 import { writeAtomic } from '../json-file-store.js'
 import { validateOutboundUrl } from '../ssrf.js'
 
-export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono {
+export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono {
   const app = new Hono()
 
   // Config setup dwrite authToken/baseUrl/model fields to config.json and
@@ -315,8 +315,27 @@ export function buildConfigRouter(_sm: SessionManager, configDir?: string): Hono
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       throw new HttpError(400, 'Body must be a JSON object')
     }
+    // Detect whether the global skill policy is changing BEFORE the write
+    // so we can re-fan-out only when it actually mutates. Reading from the
+    // frozen config singleton is cheap and avoids a second disk read.
+    const skillKeysTouched = 'skillLoadMode' in body || 'enabledSkills' in body
+    const prevMode = serverConfig.skillLoadMode
+    const prevEnabled = serverConfig.enabledSkills.slice()
     await updateConfigFile(configDir, body)
     log.info(`config updated keys=${Object.keys(body).join(',')}`)
+    if (skillKeysTouched) {
+      const changed = serverConfig.skillLoadMode !== prevMode
+        || serverConfig.enabledSkills.length !== prevEnabled.length
+        || serverConfig.enabledSkills.some((name, i) => name !== prevEnabled[i])
+      if (changed) {
+        // Best-effort fan-out: failures are reported per-session in the
+        // result and never block the config save (the file is already on
+        // disk; the user can retry the per-session toggle from the panel).
+        void sm.reapplyGlobalSkillsToInheritingSessions().catch((err) => {
+          log.warn(`reapplyGlobalSkillsToInheritingSessions failed: ${(err as Error).message}`)
+        })
+      }
+    }
     return c.json({ ok: true, configured: !!serverConfig.authToken })
   })
 

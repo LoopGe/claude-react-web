@@ -18,6 +18,7 @@ import type { SessionInfoBase } from '../shared/session-info.js'
 import type { ProviderRegistry } from './providers/registry.js'
 import type { ProviderSessionHandle } from './providers/types.js'
 import type { HookRunRecord, HookRuntimeEvent, SessionHooksConfig } from '../shared/hooks.js'
+import type { SessionSkillOverride } from '../shared/skills.js'
 
 /** Subscriber deach connected client gets one of these. */
 export interface Subscriber {
@@ -249,6 +250,15 @@ export interface Session {
    *  as a synthetic SDK message. Reset to undefined on `invalidate`
    *  (any user-initiated change to the conversation). Not persisted —   *  unloading the session drops it; resume regenerates on demand. */
   recap?: import('../shared/session-info.js').SessionRecap
+  /** Per-session skill policy override. RAM-only by design:
+   *   - Initial spawn applies the GLOBAL config via Options.skills.
+   *   - When this becomes anything other than `{kind:'inherit'}`, we
+   *     forward applyFlagSettings({skillOverrides:<map>}) to switch the
+   *     active skill set mid-Query.
+   *   - When the session unloads / resumes, this resets to undefined
+   *     and the global policy is re-applied. Pin-and-forget is not the
+   *     intended UX — overrides are scoped to "the current run". */
+  skillOverride?: SessionSkillOverride
 }
 
 /** End every subscriber in a collection and clear it. Works on both

@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import type { SkillLoadMode, SkillScope } from '../../shared/skills.js'
+import type { SessionSkillOverride, SkillLoadMode, SkillScope } from '../../shared/skills.js'
 import { HttpError } from '../errors.js'
 import { SessionManager } from '../session-manager.js'
 import { config as serverConfig } from '../config.js'
@@ -29,6 +29,31 @@ function cwdFromQuery(c: { req: { query(name: string): string | undefined } }): 
 
 function normalizeLoadMode(value: unknown): SkillLoadMode {
   return value === 'all' || value === 'allowlist' ? value : 'default'
+}
+
+/** Parse the JSON body of POST /sessions/:id/skill-override into the
+ *  canonical SessionSkillOverride union (or undefined / inherit). The body
+ *  is shaped as `{ override: SessionSkillOverride | { kind: 'inherit' } | null }`
+ *  for symmetry with the client; callers may also send the bare union. */
+function parseSkillOverride(value: unknown): SessionSkillOverride | undefined {
+  if (value === null || value === undefined) return undefined
+  if (typeof value !== 'object') {
+    throw new HttpError(400, 'override must be an object, null, or omitted')
+  }
+  const obj = value as { kind?: unknown; mode?: unknown; allowlist?: unknown }
+  if (obj.kind === 'inherit') return { kind: 'inherit' }
+  if (obj.kind === 'disabled') return { kind: 'disabled' }
+  if (obj.kind === 'mode') {
+    const mode = normalizeLoadMode(obj.mode)
+    if (mode === 'allowlist') {
+      const list = Array.isArray(obj.allowlist)
+        ? obj.allowlist.filter((s): s is string => typeof s === 'string' && !!s.trim()).map((s) => s.trim())
+        : []
+      return { kind: 'mode', mode: 'allowlist', allowlist: [...new Set(list)] }
+    }
+    return { kind: 'mode', mode }
+  }
+  throw new HttpError(400, 'override.kind must be one of: inherit | mode | disabled')
 }
 
 async function reloadAffectedSessions(sm: SessionManager, scope: SkillScope, cwd?: string) {
@@ -164,6 +189,22 @@ export function buildSkillsRouter(sm: SessionManager): Hono {
   app.post('/sessions/:id/skills/reload', async (c) => {
     const result = await sm.reloadSkills(c.req.param('id'))
     return c.json({ result })
+  })
+
+  // Pin / clear a session-level skill policy override. RAM-only; resume
+  // falls back to the global policy. See SessionSkillOverride for the
+  // override union and SessionManager.setSkillOverride for the dynamic
+  // applyFlagSettings forwarding.
+  app.post('/sessions/:id/skill-override', async (c) => {
+    const body = await safeJson<{ override?: unknown }>(c.req)
+    // Accept both `{ override: ... }` (preferred) and a bare union — the
+    // bare form keeps curl/tests terse without making the client guess.
+    const raw = body && Object.prototype.hasOwnProperty.call(body, 'override')
+      ? body.override
+      : body
+    const override = parseSkillOverride(raw)
+    const session = await sm.setSkillOverride(c.req.param('id'), override)
+    return c.json({ session })
   })
 
   app.get('/skills-policy', (c) => c.json({

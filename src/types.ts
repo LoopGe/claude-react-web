@@ -45,6 +45,11 @@ export const DEFAULT_EFFORT_LEVEL: EffortLevel = 'high'
  *  PermissionMode; both project to the same JSON. */
 export type SessionInfo = SessionInfoBase<PermissionMode>
 
+// Re-export the per-session skill override union from shared so the UI
+// can construct override values without importing into the same module
+// where SessionInfo lives. The shape is identical on both ends.
+export type { SessionSkillOverride, SkillLoadMode } from '../shared/skills'
+
 /** A session discoverable on disk via the /resume picker. Mirrors the
  *  server's ResumableSession (server/session-types.ts) — manual mirror,
  *  no automated drift check (same convention as ws-types). Spans both

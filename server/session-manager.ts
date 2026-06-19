@@ -69,6 +69,14 @@ import {
   type HookRuntimeEvent,
   type SessionHooksConfig,
 } from '../shared/hooks.js'
+import {
+  policyToDynamicSkillOverrides,
+  policyToInitialSkillsOption,
+  resolveEffectiveSkillPolicy,
+  type EffectiveSkillPolicy,
+  type SessionSkillOverride,
+} from '../shared/skills.js'
+import { listSkills } from './skills.js'
 
 // Re-export types so existing importers continue to work.
 export {
@@ -83,16 +91,36 @@ export {
   type ResumableSession,
 } from './session-types.js'
 export { HttpError } from './errors.js'
-function configuredSkillsOption(): Options['skills'] | undefined {
-  if (defaultConfig.skillLoadMode === 'all') return 'all'
-  if (defaultConfig.skillLoadMode === 'allowlist') return defaultConfig.enabledSkills.slice()
-  return undefined
+
+/** Resolve the effective policy for a session by combining (optional)
+ *  session-level override with the current global config. The result is the
+ *  single authoritative source for both spawn-time and dynamic skill wiring,
+ *  which keeps the two paths in lockstep — they cannot disagree about what
+ *  "policy" means for a given session. */
+function effectiveSkillPolicyFor(
+  override: SessionSkillOverride | undefined,
+): EffectiveSkillPolicy {
+  return resolveEffectiveSkillPolicy(
+    override,
+    defaultConfig.skillLoadMode,
+    defaultConfig.enabledSkills,
+  )
 }
 
-function applyConfiguredSkills<T extends Options>(opts: T): T {
+/** Apply a session's effective skill policy to its initial spawn Options.
+ *  Honors any caller-supplied `opts.skills` (e.g. /api/sessions allowing the
+ *  client to pin per-session skills at create time) — that's the highest
+ *  precedence. Otherwise we project the resolved policy onto Options.skills.
+ *
+ *  Important: this is the SPAWN-time projection only. Mid-session changes go
+ *  through applyDynamicSkillOverrides() which uses applyFlagSettings(). */
+function applySkillPolicyToOptions<T extends Options>(
+  opts: T,
+  override: SessionSkillOverride | undefined,
+): T {
   if (opts.skills !== undefined) return opts
-  const skills = configuredSkillsOption()
-  if (skills !== undefined) opts.skills = skills
+  const projected = policyToInitialSkillsOption(effectiveSkillPolicyFor(override))
+  if (projected !== undefined) opts.skills = projected
   return opts
 }
 
@@ -481,7 +509,7 @@ export class SessionManager {
       provider: opts.provider ?? this.defaultProvider,
       model: opts.model ?? defaultConfig.defaultModel,
     }
-    return this.spawn(randomUUID(), applyConfiguredSkills(withDefault), customEnv)
+    return this.spawn(randomUUID(), withDefault, customEnv)
   }
 
   /** Resume a previously-persisted session. The SDK loads conversation
@@ -589,7 +617,7 @@ export class SessionManager {
     } catch {
       /* disk read failed dfall back to an empty ring (pre-fix behaviour) */
     }
-    return this.spawn(id, applyConfiguredSkills(resumeOpts), undefined, historySeed)
+    return this.spawn(id, resumeOpts, undefined, historySeed)
   }
 
   /** Adopt a session that exists on disk but isn't in our store di.e. one
@@ -791,7 +819,29 @@ export class SessionManager {
       await this.mcpStore.refreshOAuthTokens(allGlobalMcpNames)
       forkOpts.mcpServers = this.mcpStore.toSdkConfig()
     }
-    return this.spawn(randomUUID(), applyConfiguredSkills(forkOpts))
+    // Inherit the parent's session-level skill override when the source is
+    // currently live (override is RAM-only — dormant sources have nothing to
+    // copy and the fork falls back to the global policy, same as resume).
+    // Pass it through spawn() so the new Query starts with the correct
+    // initial skills (Options.skills) and so applyDynamicSkillOverrides
+    // below can re-pin the same map at the flag layer if the parent had
+    // moved away from `inherit`.
+    const parentOverride = live?.skillOverride
+    const forkInfo = this.spawn(randomUUID(), forkOpts, undefined, undefined, parentOverride)
+    if (parentOverride && parentOverride.kind !== 'inherit') {
+      // Best-effort — the dynamic flag-layer pin matters mostly when the
+      // override switches between sets the SDK loads at boot vs. at flag
+      // time. Failures are logged but never block the fork (the user still
+      // has a working forked session; we'd rather complete the fork and
+      // tell them the override didn't replay than fail the whole call).
+      const forked = this.sessions.get(forkInfo.id)
+      if (forked) {
+        void this.applyDynamicSkillOverrides(forked).catch((err) => {
+          console.warn(`[session ${forkInfo.id}] fork: re-applying parent skillOverride failed:`, err)
+        })
+      }
+    }
+    return forkInfo
   }
 
   /** Create a Side Chat — an ephemeral fork of the parent session's
@@ -869,7 +919,7 @@ export class SessionManager {
       await this.mcpStore.refreshOAuthTokens(allGlobalMcpNames)
       sideChatOpts.mcpServers = this.mcpStore.toSdkConfig()
     }
-    return this.spawn(randomUUID(), applyConfiguredSkills(sideChatOpts))
+    return this.spawn(randomUUID(), sideChatOpts)
   }
 
   /** Fire-and-forget capture of the worktree's HEAD SHA at session spawn.
@@ -892,6 +942,7 @@ export class SessionManager {
     opts: Options & { provider?: string },
     customEnv?: Record<string, string>,
     historySeed?: SDKMessage[],
+    skillOverride?: SessionSkillOverride,
   ): SessionInfo {
     const providerName = opts.provider ?? this.defaultProvider
     const provider = this.providers.get(providerName)
@@ -960,6 +1011,12 @@ export class SessionManager {
       // Side Chat parentId — set here so the `created` broadcast already
       // carries the field, avoiding a sidebar flash of the session without it.
       parentId: (opts as Record<string, unknown>).parentId as string | undefined,
+      // Seed the session-level skill override. RAM-only — fork() passes
+      // the parent's value through; create()/resume() pass undefined and
+      // fall back to the global config via the spawn-time projection
+      // below. Stored on the Session so info()/persist() can broadcast it
+      // and so applyDynamicSkillOverrides can re-apply on later switches.
+      skillOverride,
     }
 
     if (!fullOpts.canUseTool) {
@@ -984,7 +1041,7 @@ export class SessionManager {
       session.canUseTool = fullOpts.canUseTool as Session['canUseTool']
     }
 
-    const sdkOptions = { ...applyConfiguredSkills(fullOpts) } as Options & { provider?: string }
+    const sdkOptions = { ...applySkillPolicyToOptions(fullOpts, skillOverride) } as Options & { provider?: string }
     delete sdkOptions.provider
     const handle = provider.createSession({
       id,
@@ -1539,6 +1596,89 @@ export class SessionManager {
     }
     return { reloaded, failed }
   }
+
+  /** Pin a session's skill policy override. Forwards the effective policy to
+   *  the SDK as a per-skill `applyFlagSettings({skillOverrides})` map so the
+   *  switch takes effect on the next assistant turn — no spawn/respawn.
+   *
+   *  override semantics (see shared/skills.ts):
+   *    - undefined / {kind:'inherit'} : follow the global config; flag layer
+   *      is cleared (sent as `{}`) so user/project-level settings can win.
+   *    - {kind:'mode', mode, allowlist}: pin a specific load mode at the
+   *      session scope.
+   *    - {kind:'disabled'}            : every skill forced 'off'.
+   *
+   *  RAM-only by design — see Session.skillOverride for the full reasoning. */
+  async setSkillOverride(id: string, override: SessionSkillOverride | undefined): Promise<SessionInfo> {
+    const s = this.requireLive(id)
+    const next: SessionSkillOverride | undefined =
+      !override || override.kind === 'inherit' ? undefined : override
+    s.skillOverride = next
+    await this.applyDynamicSkillOverrides(s)
+    s.lastActivityAt = Date.now()
+    this.persist(s)
+    return this.info(s)
+  }
+
+  /** Send the session's currently-effective skill policy to the SDK via
+   *  applyFlagSettings({ skillOverrides: <map> }). The map is built from the
+   *  set of skills actually available to this cwd (user + project), so the
+   *  flag layer covers every skill explicitly — no ambiguity about which
+   *  layer wins for a given skill.
+   *
+   *  For 'default' mode we deliberately send an empty `{}` rather than
+   *  omitting the field: that *replaces* any prior flag-layer overrides
+   *  with an empty map (clearing them) so the lower priority layers
+   *  (user / project / policy) take effect again. Sending undefined would
+   *  leave a previous flag-layer pin in place. */
+  async applyDynamicSkillOverrides(s: Session): Promise<void> {
+    const policy = effectiveSkillPolicyFor(s.skillOverride)
+    let availableSkills: string[]
+    try {
+      const list = await listSkills(s.cwd)
+      availableSkills = list.skills.map((skill) => skill.name)
+    } catch (err) {
+      console.warn(`[session ${s.id}] applyDynamicSkillOverrides: listSkills failed:`, err)
+      availableSkills = []
+    }
+    const map = policyToDynamicSkillOverrides(policy, availableSkills)
+    const skillOverrides = map ?? {}
+    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
+      s,
+      'applyFlagSettings',
+      'skill overrides',
+    )({ skillOverrides })
+  }
+
+  /** Re-broadcast the global skill policy to every live session that's
+   *  currently inheriting it. Called from the /api/config save path so a
+   *  user toggling the global mode in Settings sees it land in every open
+   *  session immediately, without requiring a restart. Sessions that opted
+   *  into a session-level override are deliberately unaffected — their
+   *  override is "stickier" than the global toggle, that's the whole point.
+   *
+   *  Errors are collected per-session so one wedged subprocess can't block
+   *  the others; the caller (route layer) returns a summary. */
+  async reapplyGlobalSkillsToInheritingSessions(): Promise<{
+    applied: string[]
+    failed: { id: string; error: string }[]
+  }> {
+    const applied: string[] = []
+    const failed: { id: string; error: string }[] = []
+    for (const s of this.sessions.values()) {
+      if (!s.running || s.terminated) continue
+      if (s.skillOverride && s.skillOverride.kind !== 'inherit') continue
+      if (typeof s.handle.applyFlagSettings !== 'function') continue
+      try {
+        await this.applyDynamicSkillOverrides(s)
+        applied.push(s.id)
+      } catch (err) {
+        failed.push({ id: s.id, error: err instanceof Error ? err.message : String(err) })
+      }
+    }
+    return { applied, failed }
+  }
+
   async reloadPlugins(id: string) {
     const s = this.requireLive(id)
     return this.requireHandleMethod<() => Promise<unknown>>(
@@ -2264,6 +2404,7 @@ export class SessionManager {
       recap: s.recap,
       parentId: s.parentId,
       mcpServerNames: s.mcpServerNames,
+      skillOverride: s.skillOverride,
     }
   }
 
@@ -2440,7 +2581,7 @@ export class SessionManager {
       resume: session.id,
       onUserMessageConsumed: (msg) => this.onInputConsumed(session.id, msg as SDKUserMessage),
       canUseTool: session.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
-      providerExtras: { sdkOptions: applyConfiguredSkills(resumeOpts) },
+      providerExtras: { sdkOptions: applySkillPolicyToOptions(resumeOpts, session.skillOverride) },
     })
     session.running = true
     session.exiting = false
