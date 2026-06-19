@@ -189,17 +189,30 @@ export function AnimatedCollapse({
       if (Math.abs(nextHeight - lastHeightRef.current) < 1) return
       lastHeightRef.current = nextHeight
       if (animatingRef.current) {
+        // Tear down the in-flight open animation and snap to the fully-open
+        // state. We must mirror finishOpen's full cleanup — clearing only the
+        // transition is not enough:
+        //   - opacity was mid-fade (0 → 1) and would freeze at e.g. 0.5
+        //     forever once the transition is gone. Clear it so the element
+        //     snaps to the CSS default (1).
+        //   - in unmountOnExit mode with initial open=false, setMounted(true)
+        //     normally fires inside finishOpen. Skipping it here would leave
+        //     `mounted` stuck at false, so a later open=false would compute
+        //     rendered=false and unmount with no close animation and no
+        //     onExitComplete callback.
         cleanupAnimation()
         body.classList.remove('animating')
         body.style.transition = ''
+        body.style.opacity = ''
         animatingRef.current = false
+        if (unmountOnExit) setMounted(true)
       }
       body.style.height = `${nextHeight}px`
     })
 
     observer.observe(content)
     return () => observer.disconnect()
-  }, [cleanupAnimation, open, rendered])
+  }, [cleanupAnimation, open, rendered, unmountOnExit])
 
   useEffect(() => () => cleanupAnimation(), [cleanupAnimation])
 
