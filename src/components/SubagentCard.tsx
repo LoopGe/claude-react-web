@@ -71,7 +71,7 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
         <span className="subagent-card-title">Subagent</span>
         <span className="subagent-card-label">{label}</span>
         <span className="subagent-card-meta">
-          <span className="subagent-card-status" aria-label={status} style={{ display: 'inline-flex', alignItems: 'center' }}>
+          <span className="subagent-card-status" aria-label={status}>
             {statusIcon}
           </span>
           {elapsedMs != null && (
@@ -82,7 +82,7 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
               {toolCount} {toolCount === 1 ? 'tool' : 'tools'}
             </span>
           )}
-          <span className="subagent-card-open" aria-hidden style={{ display: 'inline-flex', alignItems: 'center' }}><IconExternalLink size={12} /></span>
+          <span className="subagent-card-open" aria-hidden><IconExternalLink size={12} /></span>
         </span>
       </button>
       {result && <SubagentCardResult result={result} />}

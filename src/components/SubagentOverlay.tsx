@@ -109,7 +109,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
       }}
       data-state={isExiting ? 'closing' : 'open'}
       onAnimationEnd={(e) => {
-        if (e.target === e.currentTarget && isExiting && e.animationName === 'subagent-backdrop-out') {
+        if (e.target === e.currentTarget && isExiting && e.animationName === 'overlay-backdrop-out') {
           onExited?.()
         }
       }}

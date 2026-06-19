@@ -140,7 +140,7 @@ export const WorkflowOverlay = memo(function WorkflowOverlay({
       }}
       data-state={isExiting ? 'closing' : 'open'}
       onAnimationEnd={(e) => {
-        if (e.target === e.currentTarget && isExiting && e.animationName === 'workflow-backdrop-out') {
+        if (e.target === e.currentTarget && isExiting && e.animationName === 'overlay-backdrop-out') {
           onExited?.()
         }
       }}

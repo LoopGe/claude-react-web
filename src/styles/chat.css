@@ -1243,12 +1243,22 @@
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
-.subagent-card-status { font-family: inherit; font-size: 12px; }
+.subagent-card-status {
+  font-family: inherit;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+}
 .subagent-card-running .subagent-card-status { color: var(--accent); }
-.subagent-card-done    .subagent-card-status { color: var(--ok, var(--accent)); }
+.subagent-card-done    .subagent-card-status { color: var(--ok); }
 .subagent-card-rejected .subagent-card-status,
-.subagent-card-interrupted .subagent-card-status { color: var(--warn, var(--danger)); }
-.subagent-card-open { color: var(--fg-muted); font-size: 12px; }
+.subagent-card-interrupted .subagent-card-status { color: var(--warn); }
+.subagent-card-open {
+  color: var(--fg-muted);
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+}
 
 /* Subagent overlay — same per-panel pattern as .settings-overlay but
    pinned to the right half of the column instead of centred. Backdrop
@@ -1257,6 +1267,12 @@
 .subagent-overlay {
   position: absolute;
   inset: 0;
+  /* z-index 6 is shared with .workflow-overlay and .settings-overlay; when more
+     than one is open simultaneously (e.g. opening a SubagentOverlay from inside
+     a WorkflowOverlay's right column), DOM render order in Chat.tsx decides
+     stacking — the later sibling wins. Keep that contract in mind before adding
+     a new sibling overlay; either pick a different z-index or co-locate with
+     the existing block so the order is intentional. */
   z-index: 6;
   background: color-mix(in srgb, var(--bg) 55%, transparent);
   backdrop-filter: var(--glass-blur);
@@ -1267,7 +1283,7 @@
   animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both;
 }
 .subagent-overlay[data-state="closing"] {
-  animation: subagent-backdrop-out var(--motion-duration-base) var(--motion-ease-exit) both;
+  animation: overlay-backdrop-out var(--motion-duration-base) var(--motion-ease-exit) both;
 }
 .subagent-overlay-panel {
   width: min(50%, 640px);
@@ -1290,10 +1306,6 @@
 @keyframes subagent-drawer-out {
   from { opacity: 1; transform: translateX(0); }
   to   { opacity: 0; transform: translateX(24px); }
-}
-@keyframes subagent-backdrop-out {
-  from { opacity: 1; }
-  to   { opacity: 0; }
 }
 @keyframes subagent-sheet-in {
   from { opacity: 0; transform: translateY(var(--motion-distance-lg)); }
@@ -1364,9 +1376,9 @@
   color: var(--fg-muted);
 }
 .subagent-overlay-status.status-running { color: var(--accent); }
-.subagent-overlay-status.status-done { color: var(--ok, var(--accent)); }
+.subagent-overlay-status.status-done { color: var(--ok); }
 .subagent-overlay-status.status-rejected,
-.subagent-overlay-status.status-interrupted { color: var(--warn, var(--danger)); }
+.subagent-overlay-status.status-interrupted { color: var(--warn); }
 .subagent-overlay-body {
   flex: 1;
   min-height: 0;
@@ -1465,12 +1477,22 @@
   background: var(--bg-elev-2);
   color: var(--fg-muted);
 }
-.workflow-card-status { font-family: inherit; font-size: 12px; }
+.workflow-card-status {
+  font-family: inherit;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+}
 .workflow-card-running .workflow-card-status { color: var(--accent); }
-.workflow-card-done    .workflow-card-status { color: var(--ok, var(--accent)); }
+.workflow-card-done    .workflow-card-status { color: var(--ok); }
 .workflow-card-rejected .workflow-card-status,
-.workflow-card-interrupted .workflow-card-status { color: var(--warn, var(--danger)); }
-.workflow-card-open { color: var(--fg-muted); font-size: 12px; }
+.workflow-card-interrupted .workflow-card-status { color: var(--warn); }
+.workflow-card-open {
+  color: var(--fg-muted);
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+}
 
 /* ─── Workflow overlay ──────────────────────────────────────────── */
 /* Two-column layout: phase-tree sidebar (left) + message stream (right).
@@ -1487,7 +1509,7 @@
   animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both;
 }
 .workflow-overlay[data-state="closing"] {
-  animation: workflow-backdrop-out var(--motion-duration-base) var(--motion-ease-exit) both;
+  animation: overlay-backdrop-out var(--motion-duration-base) var(--motion-ease-exit) both;
 }
 .workflow-overlay-panel {
   width: min(75%, 900px);
@@ -1510,10 +1532,6 @@
 @keyframes workflow-drawer-out {
   from { opacity: 1; transform: translateX(0); }
   to   { opacity: 0; transform: translateX(24px); }
-}
-@keyframes workflow-backdrop-out {
-  from { opacity: 1; }
-  to   { opacity: 0; }
 }
 .workflow-overlay-header {
   display: flex;
@@ -1545,9 +1563,9 @@
   color: var(--fg-muted);
 }
 .workflow-overlay-status.status-running { color: var(--accent); }
-.workflow-overlay-status.status-done { color: var(--ok, var(--accent)); }
+.workflow-overlay-status.status-done { color: var(--ok); }
 .workflow-overlay-status.status-rejected,
-.workflow-overlay-status.status-interrupted { color: var(--warn, var(--danger)); }
+.workflow-overlay-status.status-interrupted { color: var(--warn); }
 .workflow-overlay-close {
   background: transparent;
   border: 1px solid transparent;
@@ -1701,9 +1719,9 @@
   background: var(--fg-muted);
 }
 .workflow-child-status-running { background: var(--accent); animation: workflow-pulse 1.4s var(--motion-ease-standard) infinite; }
-.workflow-child-status-done { background: var(--ok, var(--accent)); }
+.workflow-child-status-done { background: var(--ok); }
 .workflow-child-status-interrupted,
-.workflow-child-status-rejected { background: var(--warn, var(--danger)); }
+.workflow-child-status-rejected { background: var(--warn); }
 @keyframes workflow-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }

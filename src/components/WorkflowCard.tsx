@@ -91,13 +91,13 @@ export const WorkflowCard = memo(function WorkflowCard({ toolUseId, fallbackLabe
               {childCount} agent{childCount === 1 ? '' : 's'}
             </span>
           )}
-          <span className="workflow-card-status" aria-label={status} style={{ display: 'inline-flex', alignItems: 'center' }}>
+          <span className="workflow-card-status" aria-label={status}>
             {statusIcon}
           </span>
           {elapsedMs != null && (
             <span className="workflow-card-elapsed">{formatElapsed(elapsedMs)}</span>
           )}
-          <span className="workflow-card-open" aria-hidden style={{ display: 'inline-flex', alignItems: 'center' }}><IconExternalLink size={12} /></span>
+          <span className="workflow-card-open" aria-hidden><IconExternalLink size={12} /></span>
         </span>
       </button>
       {result && <WorkflowCardResult result={result} />}
