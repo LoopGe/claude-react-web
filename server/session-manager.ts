@@ -1090,6 +1090,15 @@ export class SessionManager {
     this.writeStore(session)
     this.broadcastGlobal({ kind: 'created', session: this.info(session) })
     this.captureGitHead(session)
+
+    // [DEBUG MCP] Log the MCP servers passed to the SDK at spawn time, then
+    // probe context-usage (with retries) to report isLoaded for each tool.
+    const spawnMcpNames = fullOpts.mcpServers ? Object.keys(fullOpts.mcpServers as Record<string, unknown>) : []
+    if (spawnMcpNames.length > 0) {
+      log.info(`[session ${id}] [DEBUG MCP] spawn mcpServers=[${spawnMcpNames.join(', ')}]`)
+      void this.debugLogMcpToolLoadState(id, spawnMcpNames, 3000).catch(() => {})
+    }
+
     return this.info(session)
   }
 
@@ -1554,32 +1563,40 @@ export class SessionManager {
   /** [DEBUG MCP] Log per-tool isLoaded state from context-usage. isLoaded=false
    *  means the tool is deferred behind tool search (defer_loading=true) and
    *  won't appear in the model's tools list until discovered via ToolSearch. */
-  private async debugLogMcpToolLoadState(id: string, expectedServers: string[]) {
-    // Give the subprocess a moment to settle the connection / fetch tools.
-    await new Promise((r) => setTimeout(r, 1500))
-    let usage: unknown
-    try {
-      const fn = this.requireHandleMethod<() => Promise<unknown>>(
-        this.requireLive(id),
-        'getContextUsage',
-        'context usage (debug)',
-        'supportsContextUsage',
-      )
-      usage = await this.timeSdkControl(id, 'getContextUsage (debug)', fn)
-    } catch (e) {
-      log.info(`[session ${id}] [DEBUG MCP] context-usage probe failed:`, (e as Error).message)
-      return
-    }
-    const mcpTools = (usage as { mcpTools?: Array<{ name: string; serverName: string; isLoaded?: boolean }> })?.mcpTools ?? []
+  private async debugLogMcpToolLoadState(id: string, expectedServers: string[], delayMs = 1500) {
     const expected = new Set(expectedServers)
-    const relevant = mcpTools.filter((t) => expected.has(t.serverName))
-    if (relevant.length === 0) {
-      log.info(`[session ${id}] [DEBUG MCP] no mcpTools reported for servers [${[...expected].join(', ')}] — tools may not have been fetched yet`)
+    if (expected.size === 0) return
+    // Retry the context-usage probe: right after spawn / setMcpServers the
+    // subprocess may still be mid-init-handshake, so the first probe can
+    // fail or return an empty mcpTools list. Back off and try again.
+    const attempts = 3
+    for (let i = 0; i < attempts; i++) {
+      await new Promise((r) => setTimeout(r, i === 0 ? delayMs : 2500))
+      let usage: unknown
+      try {
+        const fn = this.requireHandleMethod<() => Promise<unknown>>(
+          this.requireLive(id),
+          'getContextUsage',
+          'context usage (debug)',
+          'supportsContextUsage',
+        )
+        usage = await this.timeSdkControl(id, 'getContextUsage (debug)', fn)
+      } catch (e) {
+        log.info(`[session ${id}] [DEBUG MCP] context-usage probe ${i + 1}/${attempts} failed:`, (e as Error).message)
+        continue
+      }
+      const mcpTools = (usage as { mcpTools?: Array<{ name: string; serverName: string; isLoaded?: boolean }> })?.mcpTools ?? []
+      const relevant = mcpTools.filter((t) => expected.has(t.serverName))
+      if (relevant.length === 0) {
+        log.info(`[session ${id}] [DEBUG MCP] probe ${i + 1}/${attempts}: no mcpTools yet for [${[...expected].join(', ')}]`)
+        continue
+      }
+      const lines = relevant.map((t) => `  ${t.serverName}__${t.name}: isLoaded=${t.isLoaded}`)
+      log.info(`[session ${id}] [DEBUG MCP] tool load state for [${[...expected].join(', ')}] (probe ${i + 1}/${attempts}):`)
+      log.info(lines.join('\n'))
       return
     }
-    const lines = relevant.map((t) => `  ${t.serverName}__${t.name}: isLoaded=${t.isLoaded}`)
-    log.info(`[session ${id}] [DEBUG MCP] tool load state for newly-added servers:`)
-    log.info(lines.join('\n'))
+    log.info(`[session ${id}] [DEBUG MCP] gave up after ${attempts} probes — tools never appeared for [${[...expected].join(', ')}]`)
   }
 
   /** Merge global MCP configs with session-specific overrides.
