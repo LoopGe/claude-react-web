@@ -6,7 +6,7 @@
 // subscription stays alive during collapse. This component receives them
 // as props and focuses purely on rendering + input.
 
-import { memo, useEffect, useRef, useState, useCallback } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import type { SessionInfo } from '../types'
 import type { ChatStream } from '../hooks/useChatStream'
 import type { UsePermissionChannel } from '../hooks/usePermissionChannel'
@@ -93,6 +93,16 @@ export const SideChatDrawer = memo(function SideChatDrawer({
 
   // Auto-focus the textarea on mount.
   useEffect(() => { textareaRef.current?.focus() }, [])
+
+  // Auto-grow the textarea up to the CSS max-height (180px), then become
+  // scrollable. Reset to 'auto' first so it can also shrink when the
+  // user deletes lines — otherwise it would only ever grow.
+  useLayoutEffect(() => {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 180)}px`
+  }, [input])
 
   // When the user prefers reduced motion, CSS animations are disabled
   // (animation: none) so onAnimationEnd never fires. Skip straight to
