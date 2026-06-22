@@ -1888,10 +1888,17 @@
   outline: none;
   min-height: 40px;
   max-height: 180px;
-  transition: border-color var(--motion-duration-fast) var(--motion-ease-standard);
+  transition:
+    border-color var(--motion-duration-fast) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .side-chat-drawer-input:focus {
+  /* 3px outer ring instead of just a 1px border colour shift — the
+     border change alone is easy to miss for low-vision / colourblind
+     users (WCAG 2.4.7 focus-visible). box-shadow draws outside the
+     element box so no layout impact. */
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 @media (prefers-reduced-motion: reduce) {
   .side-chat-drawer,
