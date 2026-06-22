@@ -27,12 +27,15 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import { isUpgradeAuthorized } from './auth.js'
 import type { SessionBroadcaster } from './session-types.js'
 import { shouldBroadcastMessage } from './history-utils.js'
+import { createLogger } from './log.js'
 import {
   WS_PATH,
   type WsClientFrame,
   type WsServerFrame,
 } from './ws-protocol.js'
 import type { HookRunRecord, HookRuntimeEvent } from '../shared/hooks.js'
+
+const log = createLogger('ws')
 
 function hookSnapshotEvent(run: HookRunRecord): HookRuntimeEvent {
   if (run.status === 'started') return { kind: 'started', run }
@@ -286,12 +289,12 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
           )
           if (idx >= 0) {
             replayHistory = msg.history.slice(idx + 1)
-            console.log(
+            log.info(
               `[ws] incremental sync for ${sessionId}: ` +
               `skipped ${idx + 1} msgs, sending ${replayHistory.length} new`,
             )
           } else {
-            console.log(
+            log.info(
               `[ws] sinceUuid ${sinceUuid} not found in ${sessionId} history ` +
               `(${msg.history.length} msgs) dfull replay`,
             )
@@ -485,7 +488,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
         // Relay that to the client rather than killing the connection;
         // the user might just have stale state after a session was
         // removed on another tab.
-        console.error(`[ws] startSession(${sessionId}) failed at step "${step}":`, err)
+        log.error(`startSession(${sessionId}) failed at step "${step}":`, err)
         msgSub?.unsubscribe()
         permSub?.unsubscribe()
         ctxSub?.unsubscribe()
@@ -554,7 +557,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
       // unsubscribe, global listener detach). Without this, an error on
       // a half-open socket can leave sessions dangling until the next
       // GC cycle.
-      console.error('[ws] socket error:', err.message)
+      log.error('socket error:', err.message)
       try { ws.close() } catch { /* already closing */ }
     })
 

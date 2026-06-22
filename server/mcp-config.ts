@@ -37,6 +37,9 @@ import type {
 import type { OAuthClientProvider, OAuthDiscoveryState } from '@modelcontextprotocol/sdk/client/auth.js'
 import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import type { JsonFileStoreOptions } from './json-file-store.js'
+import { createLogger } from './log.js'
+
+const log = createLogger('mcp-config')
 
 // ---------------------------------------------------------------------------
 // Command allowlist
@@ -164,7 +167,7 @@ export class McpConfigStore extends JsonFileStore<StoredMcpServer> {
   protected parseItems(raw: string): StoredMcpServer[] {
     const parsed = JSON.parse(raw) as unknown
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      console.warn(`[mcp-config] ${this.onDiskFile} is not an object; ignoring`)
+      log.warn(`${this.onDiskFile} is not an object; ignoring`)
       return []
     }
     const entries: StoredMcpServer[] = []
@@ -194,7 +197,7 @@ export class McpConfigStore extends JsonFileStore<StoredMcpServer> {
     } catch (err) {
       const e = err as NodeJS.ErrnoException
       if (e.code === 'ENOENT') return []
-      console.warn(`[mcp-config] failed to read ${this.file}: ${e.message}`)
+      log.warn(`failed to read ${this.file}: ${e.message}`)
       return []
     }
   }
@@ -222,7 +225,7 @@ export class McpConfigStore extends JsonFileStore<StoredMcpServer> {
       try {
         await refreshMcpOAuth(server)
       } catch (err) {
-        console.warn(`[mcp-config] OAuth refresh failed for ${name}: ${err instanceof Error ? err.message : String(err)}`)
+        log.warn(`OAuth refresh failed for ${name}: ${err instanceof Error ? err.message : String(err)}`)
       }
       if (JSON.stringify(server.oauth ?? null) !== before) {
         server.updatedAt = Date.now()

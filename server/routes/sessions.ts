@@ -7,6 +7,9 @@ import { safeJson } from './index.js'
 import type { MpStore } from '../mp-store.js'
 import { isUserSelectablePermissionMode, permissionModeList } from '../permission-modes.js'
 import { formatHooksValidationErrors, toSdkHooksSettings, validateSessionHooksConfig } from '../../shared/hooks.js'
+import { createLogger } from '../log.js'
+
+const log = createLogger('http')
 
 const VALID_IMG_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
 
@@ -168,12 +171,12 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
       if (totalBase64 > 28_000_000) {
         return c.json({ error: 'total image payload too large' }, 413)
       }
-      console.log(`[http] POST /sessions/${id}/messages — content array with ${body.content.length} blocks`)
+      log.info(`POST /sessions/${id}/messages — content array with ${body.content.length} blocks`)
       accepted = sm.sendContent(id, body.content as Array<{ type: string; [k: string]: unknown }>) as unknown as { uuid: string; receivedAt: number }
     } else {
       const text = typeof body.text === 'string' ? body.text : ''
       if (!text.trim()) return c.json({ error: 'text is required' }, 400)
-      console.log(`[http] POST /sessions/${id}/messages — ${text.length} chars`)
+      log.info(`POST /sessions/${id}/messages — ${text.length} chars`)
       accepted = sm.send(id, text) as unknown as { uuid: string; receivedAt: number }
     }
     return c.json({ ok: true, message: { uuid: accepted.uuid, receivedAt: accepted.receivedAt } })

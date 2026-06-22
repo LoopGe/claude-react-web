@@ -25,6 +25,8 @@ import type { SnippetStore } from './snippet-store.js'
 import type { UiStateStore } from './ui-state-store.js'
 import type { MpStore } from './mp-store.js'
 
+const appLog = createLogger('app')
+
 /** Check if an Origin header value is a trusted address for CORS.
  *  Always allows localhost/loopback. When `allowLan` is true (server bound
  *  to a non-loopback host), also allows private/LAN IP ranges. */
@@ -235,7 +237,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
 
   const clientDir = resolveClientDir(opts.clientDir)
   if (clientDir) {
-    console.log(`[app] serving client from ${clientDir}`)
+    appLog.info(`serving client from ${clientDir}`)
     // Read index.html once at startup and cache it. The previous approach
     // called readFileSync on every non-API request, blocking the event loop.
     const indexPath = resolvePath(clientDir, 'index.html')

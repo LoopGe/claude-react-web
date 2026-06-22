@@ -13,6 +13,9 @@
 
 import { spawn } from 'node:child_process'
 import type { SpawnOptions, SpawnedProcess } from '@anthropic-ai/claude-agent-sdk'
+import { createLogger } from './log.js'
+
+const log = createLogger('process-monitor')
 
 export interface ProcessExitInfo {
   sessionId: string
@@ -84,7 +87,7 @@ export class ProcessMonitor {
       if (!entry) {
         // Signal not recognized — shouldn't happen, but fall through to
         // default spawn so we don't break the SDK.
-        console.warn('[process-monitor] spawn called with unregistered signal — using default spawn')
+        log.warn('spawn called with unregistered signal — using default spawn')
         return defaultSpawnFn(opts)
       }
 
@@ -104,7 +107,7 @@ export class ProcessMonitor {
         // Only fire if the session is still registered (not intentionally unloaded)
         if (!this.sessions.has(opts.signal)) return
         const sessionId = entry.id
-        console.warn(
+        log.warn(
           `[process-monitor] CLI process exited for session ${sessionId}: ` +
           `code=${code}, signal=${signal}, killed=${process.killed}`,
         )
@@ -122,7 +125,7 @@ export class ProcessMonitor {
         if (!this.sessions.has(opts.signal)) return
         const code = (err as NodeJS.ErrnoException).code
         const phase = hasSpawned ? 'runtime' : 'spawn'
-        console.error(
+        log.error(
           `[process-monitor] CLI ${phase} error for session ${entry.id}: ` +
           `${code ?? 'unknown'} — ${err.message}`,
         )

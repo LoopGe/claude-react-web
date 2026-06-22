@@ -13,7 +13,10 @@ import type { SkillLoadMode } from '../shared/skills.js'
 import {
   enableFileLogging, disableFileLogging, setLogConfig,
   LOG_LEVELS, LOG_LEVEL_FROM_ENV, LOG_SCOPES_FROM_ENV, type LogLevel,
+  createLogger,
 } from './log.js'
+
+const log = createLogger('config')
 
 /** Schema for config.json */
 interface ConfigFile {
@@ -177,9 +180,9 @@ export async function loadConfig(stateDir: string): Promise<void> {
         2,
       )
       await fs.writeFile(file, scaffold, 'utf8')
-      console.log(`[config] created ${file} - fill in authToken to get started`)
+      log.info(`created ${file} - fill in authToken to get started`)
     } catch (err) {
-      console.warn(`[config] could not scaffold ${file}:`, (err as Error).message)
+      log.warn(`could not scaffold ${file}:`, (err as Error).message)
     }
     return
   }
@@ -188,12 +191,12 @@ export async function loadConfig(stateDir: string): Promise<void> {
   try {
     parsed = JSON.parse(raw)
   } catch (err) {
-    console.warn(`[config] ${file} is not valid JSON, using defaults:`, (err as Error).message)
+    log.warn(`${file} is not valid JSON, using defaults:`, (err as Error).message)
     return
   }
 
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    console.warn(`[config] ${file} must be a JSON object, using defaults`)
+    log.warn(`${file} must be a JSON object, using defaults`)
     return
   }
 
@@ -218,7 +221,7 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): v
     if (models.length > 0) {
       ;(merged as { modelList: readonly string[] }).modelList = Object.freeze(models)
       ;(merged as { defaultModel: string }).defaultModel = models[0]
-      console.log(`[config] loaded ${models.length} model(s) from ${file}, default: ${merged.defaultModel}`)
+      log.info(`loaded ${models.length} model(s) from ${file}, default: ${merged.defaultModel}`)
     }
   }
 
@@ -232,46 +235,46 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): v
 
   if (typeof file_.maxUploadBytes === 'number' && file_.maxUploadBytes > 0) {
     ;(merged as { maxUploadBytes: number }).maxUploadBytes = Math.round(file_.maxUploadBytes)
-    console.log(`[config] maxUploadBytes: ${merged.maxUploadBytes}`)
+    log.info(`maxUploadBytes: ${merged.maxUploadBytes}`)
   }
 
   if (typeof file_.historyCap === 'number' && file_.historyCap > 0) {
     ;(merged as { historyCap: number }).historyCap = Math.round(file_.historyCap)
-    console.log(`[config] historyCap: ${merged.historyCap}`)
+    log.info(`historyCap: ${merged.historyCap}`)
   }
 
   if (typeof file_.maxOpenPanels === 'number' && file_.maxOpenPanels !== 0) {
     ;(merged as { maxOpenPanels: number }).maxOpenPanels = Math.max(2, Math.min(5, Math.round(file_.maxOpenPanels)))
-    console.log(`[config] maxOpenPanels: ${merged.maxOpenPanels}`)
+    log.info(`maxOpenPanels: ${merged.maxOpenPanels}`)
   }
 
   if (typeof file_.workingStuckMs === 'number' && file_.workingStuckMs >= 0) {
     ;(merged as { workingStuckMs: number }).workingStuckMs = Math.round(file_.workingStuckMs)
-    console.log(`[config] workingStuckMs: ${merged.workingStuckMs}`)
+    log.info(`workingStuckMs: ${merged.workingStuckMs}`)
   }
 
   if (typeof file_.authToken === 'string' && file_.authToken.trim()) {
     ;(merged as { authToken: string }).authToken = file_.authToken.trim()
     // Never log the token itself djust confirm it's present.
-    console.log('[config] authToken: configured')
+    log.info('authToken: configured')
   }
 
   if (typeof file_.baseUrl === 'string' && file_.baseUrl.trim()) {
     // Strip trailing slash so callers can always do `${baseUrl}/v1/...`.
     const trimmed = file_.baseUrl.trim().replace(/\/+$/, '')
     ;(merged as { baseUrl: string }).baseUrl = trimmed
-    console.log(`[config] baseUrl: ${trimmed}`)
+    log.info(`baseUrl: ${trimmed}`)
   }
 
   if (typeof file_.accessToken === 'string' && file_.accessToken.trim()) {
     ;(merged as { accessToken: string }).accessToken = file_.accessToken.trim()
     // Never log the token value djust confirm a web access token is set.
-    console.log('[config] accessToken (web access): configured')
+    log.info('accessToken (web access): configured')
   }
 
   if (typeof file_.logToFile === 'boolean') {
     ;(merged as { logToFile: boolean }).logToFile = file_.logToFile
-    console.log(`[config] logToFile: ${file_.logToFile}`)
+    log.info(`logToFile: ${file_.logToFile}`)
   }
 
   if (file_.skillLoadMode === 'default' || file_.skillLoadMode === 'all' || file_.skillLoadMode === 'allowlist') {
@@ -291,7 +294,7 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): v
     const trimmed = file_.updateCheckRegistry.trim()
     ;(merged as { updateCheckRegistry: string }).updateCheckRegistry = trimmed
     if (trimmed) {
-      console.log(`[config] updateCheckRegistry: ${trimmed}`)
+      log.info(`updateCheckRegistry: ${trimmed}`)
     }
   }
 

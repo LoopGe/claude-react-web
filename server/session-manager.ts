@@ -50,8 +50,8 @@ import { HttpError } from './errors.js'
 import { effortLevelsForModel } from './effort-capability.js'
 import { PermissionBroker } from './permission-broker.js'
 import { SessionHealthMonitor } from './session-health.js'
-import { debugLog } from './debug.js'
 import { pushBounded, stampReceivedAt, stampConsumedAt } from './history-utils.js'
+import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
 import { createPushable, type Pushable } from './pushable.js'
 import { createDefaultProviders } from './providers/default-providers.js'
@@ -200,6 +200,8 @@ function buildSnippet(text: string, query: string, maxLength = 180): string {
   return snippet
 }
 
+const log = createLogger('session')
+
 export class SessionManager {
   private sessions = new Map<string, Session>()
   private historyCap: number
@@ -261,7 +263,7 @@ export class SessionManager {
       broadcastRecap: (id, recap) => this.broadcastSessionRecap(id, recap),
     })
 
-    console.log(
+    log.info(
       `[session-manager] initialized`,
     )
   }
@@ -289,7 +291,7 @@ export class SessionManager {
       // Normal exit (e.g. idle timeout). Abort the controller so the
       // pump breaks out of iter.next(), but DON'T set terminated dlet
       // cleanupPump handle auto-resume or termination.
-      console.log(`[session ${sessionId}] CLI exited cleanly (code=0) ddeferring to pump cleanup`)
+      log.info(`[session ${sessionId}] CLI exited cleanly (code=0) ddeferring to pump cleanup`)
       // Mark as exiting so the GC timer's checkStuck() skips this session
       // during the window between abort and cleanupPump finishing.
       s.exiting = true
@@ -337,7 +339,7 @@ export class SessionManager {
       errorMsg = `CLI process exited unexpectedly (code=${code}, signal=${signal})`
     }
 
-    console.error(`[session ${sessionId}] ${errorMsg}`)
+    log.error(`[session ${sessionId}] ${errorMsg}`)
 
     // Abort the pump so it breaks out of iter.next()
     s.handle.abort()
@@ -635,7 +637,7 @@ export class SessionManager {
     try {
       info = await this.providers.get(providerName).getSessionInfo?.(id)
     } catch (err) {
-      console.warn(`[session ${id}] adoptDiskSession(${providerName}): getSessionInfo threw:`, err)
+      log.warn(`[session ${id}] adoptDiskSession(${providerName}): getSessionInfo threw:`, err)
       return undefined
     }
     if (!info) return undefined
@@ -654,7 +656,7 @@ export class SessionManager {
       lastTurnAt: info.lastModified ?? now,
     }
     this.store.upsert(meta)
-    console.log(`[session ${id}] adopted disk session (cwd=${info.cwd ?? '<none>'}) for resume`)
+    log.info(`[session ${id}] adopted disk session (cwd=${info.cwd ?? '<none>'}) for resume`)
     return meta
   }
 
@@ -688,14 +690,14 @@ export class SessionManager {
         // breadcrumb to chase it. Including cwd helps because the SDK
         // encodes the cwd into the on-disk path, so a wrong cwd is the
         // first thing to check next time.
-        console.warn(
+        log.warn(
           `[session ${meta.id}] hasSdkTranscript: getSessionInfo returned undefined ` +
           `(cwd=${meta.cwd ?? '<none>'}) - jsonl is missing on disk`,
         )
       }
       return hasTranscript
     } catch (err) {
-      console.warn(
+      log.warn(
         `[session ${meta.id}] hasSdkTranscript(${providerName}) threw ` +
         `(cwd=${meta.cwd ?? '<none>'}):`,
         err,
@@ -710,7 +712,7 @@ export class SessionManager {
    *  `caller` is "fork" or "resume" so post-mortem log greps can tell
    *  which path tripped. */
   private markTranscriptMissing(meta: SessionMeta, caller: 'fork' | 'resume' | 'side-chat'): void {
-    console.warn(
+    log.warn(
       `[session ${meta.id}] marking terminated:transcript_missing via ${caller} ` +
       `(cwd=${meta.cwd ?? '<none>'}, lastTurnAt=${meta.lastTurnAt ?? 'none'}, ` +
       `messageCount=${meta.messageCount})`,
@@ -845,7 +847,7 @@ export class SessionManager {
       const forked = this.sessions.get(forkInfo.id)
       if (forked) {
         void this.applyDynamicSkillOverrides(forked).catch((err) => {
-          console.warn(`[session ${forkInfo.id}] fork: re-applying parent skillOverride failed:`, err)
+          log.warn(`[session ${forkInfo.id}] fork: re-applying parent skillOverride failed:`, err)
         })
       }
     }
@@ -1075,7 +1077,7 @@ export class SessionManager {
 
     session.pumpTask = this.pump(session)
     this.sessions.set(id, session)
-    console.log(`[session ${id}] spawned model=${fullOpts.model ?? 'default'}, permissionMode=${requestedMode ?? 'default'}, resume=${!!fullOpts.resume}`)
+    log.info(`[session ${id}] spawned model=${fullOpts.model ?? 'default'}, permissionMode=${requestedMode ?? 'default'}, resume=${!!fullOpts.resume}`)
     // Classify the model's effort capability (keyword-based, synchronous) so
     // the very first `created` frame below already carries the correct
     // visible/levels state dno follow-up update needed.
@@ -1107,7 +1109,7 @@ export class SessionManager {
       uuid: randomUUID(),
       session_id: s.id,
     }
-    debugLog(
+    log.debug(
       `[session ${id}] send PRE-PUSH d${text.length} chars, uuid=${userMsg.uuid}, ` +
       `pendingTurns=${s.pendingTurns}, input.closed=${s.handle.closed}, ` +
       `input.queueDepth=${s.handle.queueDepth}, ` +
@@ -1128,7 +1130,7 @@ export class SessionManager {
       session_id: s.id,
     }
     const blockSummary = content.map((b) => b.type).join('+')
-    debugLog(
+    log.debug(
       `[session ${id}] sendContent PRE-PUSH dblocks=[${blockSummary}], uuid=${userMsg.uuid}, ` +
       `pendingTurns=${s.pendingTurns}, input.closed=${s.handle.closed}`,
     )
@@ -1192,7 +1194,7 @@ export class SessionManager {
   async interrupt(id: string): Promise<void> {
     const s = this.requireLive(id)
     const startedAt = Date.now()
-    console.log(
+    log.info(
       `[session ${id}] interrupt requested dpendingTurns=${s.pendingTurns}, ` +
       `pending perms=${s.pending.size}, ` +
       `workingFor=${s.workingSince ? Date.now() - s.workingSince : 0}ms`,
@@ -1204,9 +1206,9 @@ export class SessionManager {
         'interrupt',
         'supportsInterrupt',
       )()
-      console.log(`[session ${id}] interrupt() resolved in ${Date.now() - startedAt}ms`)
+      log.info(`[session ${id}] interrupt() resolved in ${Date.now() - startedAt}ms`)
     } catch (err) {
-      console.error(`[session ${id}] interrupt() threw after ${Date.now() - startedAt}ms:`, err)
+      log.error(`[session ${id}] interrupt() threw after ${Date.now() - startedAt}ms:`, err)
       throw err
     }
     s.lastActivityAt = Date.now()
@@ -1232,7 +1234,7 @@ export class SessionManager {
           'supportsInterrupt',
         )()
       } catch (err) {
-        console.warn(`[session ${id}] interrupt before /clear failed:`, err)
+        log.warn(`[session ${id}] interrupt before /clear failed:`, err)
       }
     }
     s.handle.clearQueuedInput?.()
@@ -1318,7 +1320,7 @@ export class SessionManager {
         'supportsFineGrainedPermissions',
       )(forwarded)
     } catch (err) {
-      console.warn(
+      log.warn(
         `[session ${id}] SDK setPermissionMode(${forwarded ?? 'default'}) failed; ` +
         `mode kept locally and enforced via canUseTool:`,
         err,
@@ -1450,13 +1452,13 @@ export class SessionManager {
       // Only the slow ones are interesting da healthy control round-trip
       // is single-digit ms. Warn above 1s so the noise floor stays low.
       if (ms >= 1000) {
-        console.warn(`[session ${id}] SDK ${label} resolved in ${ms}ms (slow dcheck init handshake / subprocess)`)
+        log.warn(`[session ${id}] SDK ${label} resolved in ${ms}ms (slow dcheck init handshake / subprocess)`)
       } else {
-        debugLog(`[session ${id}] SDK ${label} resolved in ${ms}ms`)
+        log.debug(`[session ${id}] SDK ${label} resolved in ${ms}ms`)
       }
       return result
     } catch (err) {
-      console.error(`[session ${id}] SDK ${label} rejected after ${Date.now() - startedAt}ms:`, err)
+      log.error(`[session ${id}] SDK ${label} rejected after ${Date.now() - startedAt}ms:`, err)
       throw err
     }
   }
@@ -1532,7 +1534,7 @@ export class SessionManager {
 
     // [DEBUG MCP] setMcpServers returned. Log the SDK result so we can see
     // which servers were actually added and whether any errored.
-    console.log(`[session ${id}] setMcpServers result:`, JSON.stringify(result))
+    log.info(`[session ${id}] setMcpServers result:`, JSON.stringify(result))
 
     // Update the tracked MCP server names so the client's "available"
     // computation stays in sync without relying on the flaky mcp-status.
@@ -1565,19 +1567,19 @@ export class SessionManager {
       )
       usage = await this.timeSdkControl(id, 'getContextUsage (debug)', fn)
     } catch (e) {
-      console.log(`[session ${id}] [DEBUG MCP] context-usage probe failed:`, (e as Error).message)
+      log.info(`[session ${id}] [DEBUG MCP] context-usage probe failed:`, (e as Error).message)
       return
     }
     const mcpTools = (usage as { mcpTools?: Array<{ name: string; serverName: string; isLoaded?: boolean }> })?.mcpTools ?? []
     const expected = new Set(expectedServers)
     const relevant = mcpTools.filter((t) => expected.has(t.serverName))
     if (relevant.length === 0) {
-      console.log(`[session ${id}] [DEBUG MCP] no mcpTools reported for servers [${[...expected].join(', ')}] — tools may not have been fetched yet`)
+      log.info(`[session ${id}] [DEBUG MCP] no mcpTools reported for servers [${[...expected].join(', ')}] — tools may not have been fetched yet`)
       return
     }
     const lines = relevant.map((t) => `  ${t.serverName}__${t.name}: isLoaded=${t.isLoaded}`)
-    console.log(`[session ${id}] [DEBUG MCP] tool load state for newly-added servers:`)
-    console.log(lines.join('\n'))
+    log.info(`[session ${id}] [DEBUG MCP] tool load state for newly-added servers:`)
+    log.info(lines.join('\n'))
   }
 
   /** Merge global MCP configs with session-specific overrides.
@@ -1689,7 +1691,7 @@ export class SessionManager {
       const list = await listSkills(s.cwd)
       availableSkills = list.skills.map((skill) => skill.name)
     } catch (err) {
-      console.warn(`[session ${s.id}] applyDynamicSkillOverrides: listSkills failed:`, err)
+      log.warn(`[session ${s.id}] applyDynamicSkillOverrides: listSkills failed:`, err)
       availableSkills = []
     }
     const map = policyToDynamicSkillOverrides(policy, availableSkills)
@@ -2188,7 +2190,7 @@ export class SessionManager {
       try {
         raw = await provider.listResumable(opts)
       } catch (err) {
-        console.warn(`[session-manager] listResumable(${provider.name}) threw:`, err)
+        log.warn(`[session-manager] listResumable(${provider.name}) threw:`, err)
         continue
       }
       for (const s of raw) {
@@ -2286,7 +2288,7 @@ export class SessionManager {
           afterUuid: live?.clearBoundaryUuid ?? meta?.clearBoundaryUuid,
         })
       } catch (err) {
-        console.warn(`[session-manager] searchMessages(${info.id}) history read failed:`, err)
+        log.warn(`[session-manager] searchMessages(${info.id}) history read failed:`, err)
         return
       }
 
@@ -2375,11 +2377,11 @@ export class SessionManager {
   private requireRunnable(id: string): Session {
     const s = this.require(id)
     if (s.terminated) {
-      console.warn(`[session ${id}] send rejected dsession is terminated`)
+      log.warn(`[session ${id}] send rejected dsession is terminated`)
       throw new HttpError(410, `session ${id} is terminated`)
     }
     if (!s.running) {
-      console.warn(`[session ${id}] send rejected dsession is not running`)
+      log.warn(`[session ${id}] send rejected dsession is not running`)
       throw new HttpError(409, `session ${id} is not running; resume it first`)
     }
     return s
@@ -2580,21 +2582,21 @@ export class SessionManager {
     // `result` message. If no turn was completed, resume would fail
     // with "No conversation found with session ID: <uuid>".
     if (!session.lastTurnAt) {
-      console.warn(`[session ${session.id}] auto-resume skipped dno completed turns (no disk data)`)
+      log.warn(`[session ${session.id}] auto-resume skipped dno completed turns (no disk data)`)
       return false
     }
 
     // Track consecutive resumes to avoid infinite loops
     const resumeCount = this.autoResumeCounts.get(session) ?? 0
     if (resumeCount >= SessionManager.MAX_AUTO_RESUME) {
-      console.warn(`[session ${session.id}] auto-resume limit reached (${resumeCount}/${SessionManager.MAX_AUTO_RESUME}), giving up`)
+      log.warn(`[session ${session.id}] auto-resume limit reached (${resumeCount}/${SessionManager.MAX_AUTO_RESUME}), giving up`)
       return false
     }
     if (resumeCount >= SessionManager.MAX_AUTO_RESUME * 0.75) {
-      console.warn(`[session ${session.id}] auto-resume count approaching limit (${resumeCount}/${SessionManager.MAX_AUTO_RESUME})`)
+      log.warn(`[session ${session.id}] auto-resume count approaching limit (${resumeCount}/${SessionManager.MAX_AUTO_RESUME})`)
     }
 
-    console.log(`[session ${session.id}] auto-resuming (attempt ${resumeCount + 1}/${SessionManager.MAX_AUTO_RESUME})`)
+    log.info(`[session ${session.id}] auto-resuming (attempt ${resumeCount + 1}/${SessionManager.MAX_AUTO_RESUME})`)
 
     session.handle.destroy('auto-resume')
 

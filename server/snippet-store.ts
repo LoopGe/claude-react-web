@@ -18,6 +18,9 @@
 import { promises as fs } from 'node:fs'
 import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import type { JsonFileStoreOptions } from './json-file-store.js'
+import { createLogger } from './log.js'
+
+const log = createLogger('composer-snippets')
 
 // ---------------------------------------------------------------------------
 // Types
@@ -71,7 +74,7 @@ export class SnippetStore extends JsonFileStore<StoredSnippet> {
   protected parseItems(raw: string): StoredSnippet[] {
     const parsed = JSON.parse(raw) as unknown
     if (!Array.isArray(parsed)) {
-      console.warn(`[composer-snippets] ${this.file} is not an array; ignoring`)
+      log.warn(`${this.file} is not an array; ignoring`)
       return []
     }
     const entries: StoredSnippet[] = []
@@ -98,7 +101,7 @@ export class SnippetStore extends JsonFileStore<StoredSnippet> {
     } catch (err) {
       const e = err as NodeJS.ErrnoException
       if (e.code === 'ENOENT') return []
-      console.warn(`[composer-snippets] failed to read ${this.file}: ${e.message}`)
+      log.warn(`failed to read ${this.file}: ${e.message}`)
       return []
     }
   }

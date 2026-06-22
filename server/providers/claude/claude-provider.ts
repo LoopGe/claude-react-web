@@ -17,6 +17,9 @@ import type { AgentProvider, CreateSessionOptions, ListResumableOptions, Provide
 import { ClaudeSessionHandle } from './claude-session.js'
 import type { AgentUserMessage } from '../../agent-message.js'
 import type { ResumableSession } from '../../session-types.js'
+import { createLogger } from '../../log.js'
+
+const log = createLogger('claude-provider')
 
 export interface ClaudeProviderOptions {
   claudeBinary?: string
@@ -95,12 +98,12 @@ export class ClaudeProvider implements AgentProvider {
 
     if (opts.fastMode) {
       void q.applyFlagSettings({ fastMode: true }).catch((err) => {
-        console.warn('[session ' + opts.id + '] re-applying fastMode on spawn failed:', err)
+        log.warn(`[${opts.id}] re-applying fastMode on spawn failed:`, err)
       })
     }
     if (opts.effortLevel) {
       void q.applyFlagSettings({ effortLevel: opts.effortLevel as 'low' | 'medium' | 'high' | 'xhigh' }).catch((err) => {
-        console.warn('[session ' + opts.id + '] applying effortLevel on spawn failed:', err)
+        log.warn(`[${opts.id}] applying effortLevel on spawn failed:`, err)
       })
     }
 

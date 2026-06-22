@@ -17,7 +17,10 @@ import { homedir } from 'node:os'
 import type { EffortLevel, PermissionMode } from '@anthropic-ai/claude-agent-sdk'
 import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import type { JsonFileStoreOptions } from './json-file-store.js'
+import { createLogger } from './log.js'
 import { validateSessionHooksConfig, type SessionHooksConfig } from '../shared/hooks.js'
+
+const log = createLogger('persistence')
 
 /** Metadata we need to resurrect a session. Deliberately a subset of
  *  Options — no auth tokens, no full SDK config. Everything here must
@@ -105,7 +108,7 @@ export class SessionStore extends JsonFileStore<SessionMeta> {
   protected parseItems(raw: string): SessionMeta[] {
     const parsed = JSON.parse(raw) as unknown
     if (!Array.isArray(parsed)) {
-      console.warn(`[persistence] ${this.file} is not an array; ignoring`)
+      log.warn(`${this.file} is not an array; ignoring`)
       return []
     }
     const entries: SessionMeta[] = []
@@ -132,7 +135,7 @@ export class SessionStore extends JsonFileStore<SessionMeta> {
     } catch (err) {
       const e = err as NodeJS.ErrnoException
       if (e.code === 'ENOENT') return []
-      console.warn(`[persistence] failed to read ${this.file}: ${e.message}`)
+      log.warn(`failed to read ${this.file}: ${e.message}`)
       return []
     }
   }

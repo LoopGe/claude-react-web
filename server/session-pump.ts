@@ -10,7 +10,6 @@ import { randomUUID } from 'node:crypto'
 import type { FastModeState, SDKMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk'
 import type { Session, SessionBroadcaster } from './session-types.js'
 import { endAllSubscribers } from './session-types.js'
-import { debugLog } from './debug.js'
 import { pushBounded, stampReceivedAt, shouldBroadcastMessage } from './history-utils.js'
 import { mutatingToolUseId, scheduleGitBroadcast } from './git-broadcast.js'
 import { createLogger } from './log.js'
@@ -304,7 +303,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
     try {
       while (true) {
         nextStartedAt = Date.now()
-        debugLog(`[session ${session.id}] pump awaiting iter.next() for msg #${msgCount + 1}`)
+        log.debug(`[session ${session.id}] pump awaiting iter.next() for msg #${msgCount + 1}`)
         const step: IteratorResult<SDKMessage> = await Promise.race([iter.next(), abortPromise])
         if (step.done) {
           // When the loop exits (normally or via abort signal), explicitly
@@ -344,10 +343,10 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           getParentToolUseId(msg) == null &&
           !userMessageHasToolResult(msg)
         ) {
-          debugLog(`[session ${session.id}] dropping echoed top-level user message uuid=${(msg as { uuid: string }).uuid}`)
+          log.debug(`[session ${session.id}] dropping echoed top-level user message uuid=${(msg as { uuid: string }).uuid}`)
           continue
         }
-        debugLog(
+        log.debug(
           `[session ${session.id}] msg #${msgCount + 1} received d` +
           `type=${msg.type}${msgSubtype ? `/${msgSubtype}` : ''} ` +
           `(next() took ${Date.now() - nextStartedAt}ms)`,
@@ -464,7 +463,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             // Diagnostic: confirm which frame we treated as the clear signal.
             // (See plan dthe exact post-/clear frame can't be verified
             // offline since the CLI binary spawns at runtime.)
-            debugLog(
+            log.debug(
               `[session ${session.id}] /clear confirmed by init message ` +
               `uuid=${(msg as { uuid: string }).uuid}; truncating history ring`,
             )
@@ -515,7 +514,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // queued item is still in our Pushable when we observe `result`.
         if (msg.type === 'result') {
           const moreQueued = session.handle.queueDepth > 0
-          debugLog(
+          log.debug(
             `[session ${session.id}] result received dtotal msgs: ${msgCount}, ` +
             `input.queueDepth=${session.handle.queueDepth}, moreQueued=${moreQueued}`,
           )
@@ -668,7 +667,7 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
   // Always log the raw payload so we can diagnose context-usage issues.
   // This fires once per turn (when a result message lands) dthe cost is
   // one JSON.stringify per completed turn which is negligible.
-  debugLog(
+  log.debug(
     `[context-usage] raw payload for model=${model} contextWindow=${contextWindow}: ` +
     `top-level=${JSON.stringify({
       input_tokens: usage.input_tokens,
@@ -706,7 +705,7 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
     // previous fallback to "last iteration of any kind" silently clamped
     // to contextWindow, producing the 1000k/1000k bug.
     if (!pickedMessage) {
-      debugLog(
+      log.debug(
         `[context-usage] no 'message' iteration found ` +
         `(types=${usage.iterations.map((it) => it.type).join(', ')}); ` +
         `skipping update to avoid false 100% reading`,
@@ -724,7 +723,7 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
   // SDK is reporting in a way we don't understand dskip the update
   // rather than showing a false 100% reading.
   if (rawTotal > contextWindow) {
-    debugLog(
+    log.debug(
       `[context-usage] raw total ${rawTotal} > contextWindow ${contextWindow} for model ${model} ` +
       `(source=${sourceLabel}); skipping update`,
     )

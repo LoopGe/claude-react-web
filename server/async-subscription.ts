@@ -9,6 +9,10 @@
  *  (because a slow consumer isn't reading fast enough), the subscriber is
  *  forcibly ended so the client disconnects and replays from the server's
  *  history ring — silent message drops are worse than a brief reconnect. */
+import { createLogger } from './log.js'
+
+const log = createLogger('async-sub')
+
 export const SUBSCRIBER_QUEUE_CAP = 2000
 
 export interface AsyncSubscription<T> {
@@ -53,8 +57,8 @@ export function createAsyncSubscription<T>(
         // dropping messages (which causes "messages disappear" bugs), end
         // the subscriber so the client's WS driver loop exits, triggers
         // a reconnect, and replays from the server's history ring.
-        console.warn(
-          `[async-subscription] Queue overflow (${len}/${SUBSCRIBER_QUEUE_CAP}): ending subscriber to force reconnect + replay`,
+        log.warn(
+          `Queue overflow (${len}/${SUBSCRIBER_QUEUE_CAP}): ending subscriber to force reconnect + replay`,
         )
         queue.length = 0
         head = 0

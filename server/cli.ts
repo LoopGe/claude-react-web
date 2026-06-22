@@ -15,7 +15,7 @@ import { buildApp } from './app.js'
 import { isLoopbackHost, lanIPv4Addresses } from './net.js'
 import { setWebAuth } from './auth.js'
 import { loadConfig, config } from './config.js'
-import { disableFileLogging, getLogFilePath } from './log.js'
+import { disableFileLogging, getLogFilePath, createLogger } from './log.js'
 import { SessionStore, defaultStateDir } from './persistence.js'
 import { McpConfigStore } from './mcp-config.js'
 import { SnippetStore } from './snippet-store.js'
@@ -24,6 +24,8 @@ import { MpStore } from './mp-store.js'
 import { attachWebSocket } from './ws.js'
 import { checkForUpdates } from './update-checker.js'
 import { startEventLoopProbe } from './event-loop-probe.js'
+
+const log = createLogger('cli')
 
 interface CliArgs {
   port: number
@@ -57,7 +59,7 @@ interface CliArgs {
 function resolveClaudeBinary(explicit: string | undefined): string | undefined {
   if (explicit) {
     if (!existsSync(explicit)) {
-      console.warn(`[cli] --claude-binary ${explicit} does not exist; ignoring`)
+      log.warn(`--claude-binary ${explicit} does not exist; ignoring`)
     } else {
       return explicit
     }
@@ -65,7 +67,7 @@ function resolveClaudeBinary(explicit: string | undefined): string | undefined {
   const fromEnv = process.env.CLAUDE_CODE_BINARY
   if (fromEnv) {
     if (!existsSync(fromEnv)) {
-      console.warn(`[cli] CLAUDE_CODE_BINARY=${fromEnv} does not exist; ignoring`)
+      log.warn(`CLAUDE_CODE_BINARY=${fromEnv} does not exist; ignoring`)
     } else {
       return fromEnv
     }
@@ -134,7 +136,7 @@ function resolveCmdShim(cmdPath: string): string | null {
     if (match) {
       const resolved = join(cmdDir, match[1])
       if (existsSync(resolved)) {
-        console.log(`[cli] resolved claude via .cmd shim: ${cmdPath} → ${resolved}`)
+        log.info(`resolved claude via .cmd shim: ${cmdPath} → ${resolved}`)
         return resolved
       }
     }
@@ -271,25 +273,25 @@ async function main() {
   const store = new SessionStore({ stateDir })
   const loaded = await store.load()
   if (loaded.length) {
-    console.log(`[cli] loaded ${loaded.length} session(s) from ${stateDir}`)
+    log.info(`loaded ${loaded.length} session(s) from ${stateDir}`)
   }
 
   const mcpStore = new McpConfigStore({ stateDir })
   const mcpServers = await mcpStore.load()
   if (mcpServers.length) {
-    console.log(`[cli] loaded ${mcpServers.length} MCP server(s) from ${stateDir}`)
+    log.info(`loaded ${mcpServers.length} MCP server(s) from ${stateDir}`)
   }
 
   const mpStore = new MpStore({ stateDir })
   const mpEntries = await mpStore.load()
   if (mpEntries.length) {
-    console.log(`[cli] loaded ${mpEntries.length} marketplace(s) from ${stateDir}`)
+    log.info(`loaded ${mpEntries.length} marketplace(s) from ${stateDir}`)
   }
 
   const snippetStore = new SnippetStore({ stateDir })
   const snippets = await snippetStore.load()
   if (snippets.length) {
-    console.log(`[cli] loaded ${snippets.length} composer snippet(s) from ${stateDir}`)
+    log.info(`loaded ${snippets.length} composer snippet(s) from ${stateDir}`)
   }
 
   const uiStateStore = new UiStateStore({ stateDir })
@@ -297,24 +299,24 @@ async function main() {
 
   const claudeBinary = resolveClaudeBinary(args.claudeBinary)
   if (claudeBinary) {
-    console.log(`[cli] using claude binary: ${claudeBinary}`)
+    log.info(`using claude binary: ${claudeBinary}`)
   } else {
-    console.log(
-      '[cli] no claude binary explicitly set — relying on SDK auto-detection ' +
+    log.info(
+      'no claude binary explicitly set — relying on SDK auto-detection ' +
         '(if sessions fail with "Claude Code native binary not found", pass --claude-binary)',
     )
   }
 
   const { getLogConfig } = await import('./log.js')
   const initial = getLogConfig()
-  console.log(
-    `[cli] log: level=${initial.level}` +
+  log.info(
+    `log: level=${initial.level}` +
       (initial.scopes ? ` scopes=${initial.scopes.join(',')}` : ' scopes=*') +
       ' (override via LOG_LEVEL / LOG_SCOPES, or PUT /api/log at runtime)',
   )
   const logFilePath = getLogFilePath()
   if (logFilePath) {
-    console.log(`[cli] file logging: ${logFilePath}`)
+    log.info(`file logging: ${logFilePath}`)
   }
 
   const { app, sessionManager } = buildApp({
@@ -389,7 +391,7 @@ async function main() {
 
       if (args.open) {
         open(localOpenUrl).catch(() => {
-          console.log(`[cli] could not auto-open browser — visit ${localOpenUrl} manually`)
+          log.info(`could not auto-open browser — visit ${localOpenUrl} manually`)
         })
       }
       // Fire-and-forget update probe. Failures are swallowed — the
@@ -400,8 +402,8 @@ async function main() {
       void checkForUpdates().then((upd) => {
         if (upd.disabled) return
         if (upd.hasUpdate && upd.latest) {
-          console.log(`[cli] update available: ${upd.current} → ${upd.latest}`)
-          console.log(`[cli]   run: npx claude-react-web@latest`)
+          log.info(`update available: ${upd.current} → ${upd.latest}`)
+          log.info(`  run: npx claude-react-web@latest`)
         }
       }).catch(() => {})
     },
@@ -424,7 +426,7 @@ async function main() {
     try {
       await wsShutdown()
     } catch (err) {
-      console.error('[cli] ws shutdown error:', err)
+      log.error('ws shutdown error:', err)
     }
     disableFileLogging()
     await uiStateStore.flush()

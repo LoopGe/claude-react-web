@@ -7,6 +7,7 @@
 import { promises as fs } from 'node:fs'
 import { join, resolve as resolvePath } from 'node:path'
 import { homedir } from 'node:os'
+import { createLogger, type Logger } from './log.js'
 
 export const DEFAULT_DIR_NAME = '.claude-react-web'
 export const DEBOUNCE_MS = 500
@@ -35,11 +36,14 @@ export abstract class JsonFileStore<T> {
   private writing: Promise<void> = Promise.resolve()
   /** Label for log messages — set by subclass for clarity. */
   protected label: string
+  /** Scope logger created from `this.label`. */
+  private readonly storeLog: Logger
 
   constructor(opts: JsonFileStoreOptions, fileName: string, defaultDirName = DEFAULT_DIR_NAME, label?: string) {
     this.dir = resolvePath(opts.stateDir ?? join(homedir(), defaultDirName))
     this.file = join(this.dir, fileName)
     this.label = label ?? fileName
+    this.storeLog = createLogger(this.label)
   }
 
   // ─── Template methods ────────────────────────────────────────────
@@ -155,7 +159,7 @@ export abstract class JsonFileStore<T> {
       // Re-mark dirty so the next schedule retries. Log but don't throw —
       // persistence failures should never crash the server.
       this.dirty = true
-      console.warn(`[${this.label}] write failed: ${err instanceof Error ? err.message : String(err)}`)
+      this.storeLog.warn(`write failed: ${err instanceof Error ? err.message : String(err)}`)
     })
     await this.writing
     // If a concurrent upsert() set dirty=true while we were writing, we

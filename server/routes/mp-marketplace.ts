@@ -18,6 +18,9 @@ import type { SessionManager } from '../session-manager.js'
 import { MpStore, type MpEntry } from '../mp-store.js'
 import { gitClone, gitCloneAtSha, gitPull, gitGetHeadSha, assertHttpsUrl } from '../git-clone.js'
 import { parseMarketplace, type ParsedPlugin, type ParsedPluginSource } from '../marketplace-parser.js'
+import { createLogger } from '../log.js'
+
+const log = createLogger('mp-marketplace')
 
 /** Narrow to just the git-subdir variant of the source union. */
 type GitSubdirSource = Extract<ParsedPluginSource, { kind: 'git-subdir' }>
@@ -193,7 +196,7 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
         try {
           await ensureExternalClone(store, p.source)
         } catch (err) {
-          console.warn(`[mp-marketplace] refresh re-clone failed for ${p.name}@${id}: ${(err as Error).message}`)
+          log.warn(`refresh re-clone failed for ${p.name}@${id}: ${(err as Error).message}`)
         }
       }
     }
@@ -361,7 +364,7 @@ async function applyToggleToLiveSessions(
       // new plugin).
       await sm.reloadPlugins(id)
     } catch (err) {
-      console.warn(`[mp-marketplace] live toggle failed for session ${id}: ${(err as Error).message}`)
+      log.warn(`live toggle failed for session ${id}: ${(err as Error).message}`)
     }
   }
 }

@@ -11,7 +11,9 @@
 //   { value: undefined, done: true }.
 // - Only one consumer is expected per iterable (matches Query's usage).
 
-import { debugLog, debugWarn } from './debug.js'
+import { createLogger } from './log.js'
+
+const log = createLogger('pushable')
 
 let pushableSeq = 0
 
@@ -57,13 +59,13 @@ export function createPushable<T>(
     push(item: T) {
       pushCallCount++
       if (ended) {
-        debugWarn(`[${id}] push #${pushCallCount} DROPPED — ended=true`)
+        log.warn(`[${id}] push #${pushCallCount} DROPPED — ended=true`)
         return
       }
       if (waiter) {
         const w = waiter
         waiter = null
-        debugLog(`[${id}] push #${pushCallCount} → resolved waiter directly (queue was empty, consumer was waiting)`)
+        log.debug(`[${id}] push #${pushCallCount} → resolved waiter directly (queue was empty, consumer was waiting)`)
         w({ value: item, done: false })
         // Direct hand-off path: the consumer was blocked in next() and this
         // item bypassed the queue entirely. It IS being consumed right now,
@@ -75,9 +77,9 @@ export function createPushable<T>(
         // unbounded growth for slow consumers (e.g. background tabs).
         if (maxDepth !== undefined && queue.length > maxDepth) {
           queue.shift()
-          debugLog(`[${id}] push #${pushCallCount} → queued, dropped oldest (queue depth now: ${queue.length})`)
+          log.debug(`[${id}] push #${pushCallCount} → queued, dropped oldest (queue depth now: ${queue.length})`)
         } else {
-          debugLog(`[${id}] push #${pushCallCount} → queued (no waiter, queue depth now: ${queue.length})`)
+          log.debug(`[${id}] push #${pushCallCount} → queued (no waiter, queue depth now: ${queue.length})`)
         }
       }
     },
@@ -85,14 +87,14 @@ export function createPushable<T>(
       const dropped = queue.length
       if (dropped > 0) {
         queue.length = 0
-        debugLog(`[${id}] clearQueue() dropped ${dropped} queued item(s)`)
+        log.debug(`[${id}] clearQueue() dropped ${dropped} queued item(s)`)
       }
       return dropped
     },
     end() {
       if (ended) return
       ended = true
-      debugLog(`[${id}] end() called — queue depth: ${queue.length}, waiter: ${!!waiter}`)
+      log.debug(`[${id}] end() called — queue depth: ${queue.length}, waiter: ${!!waiter}`)
       if (waiter) {
         const w = waiter
         waiter = null
@@ -106,13 +108,13 @@ export function createPushable<T>(
 
   const iterable: AsyncIterable<T> = {
     [Symbol.asyncIterator]() {
-      debugLog(`[${id}] [Symbol.asyncIterator]() called — new iterator created`)
+      log.debug(`[${id}] [Symbol.asyncIterator]() called — new iterator created`)
       return {
         next(): Promise<IteratorResult<T>> {
           nextCallCount++
           if (queue.length) {
             const item = queue.shift()!
-            debugLog(`[${id}] next #${nextCallCount} → resolved from queue (queue depth now: ${queue.length})`)
+            log.debug(`[${id}] next #${nextCallCount} → resolved from queue (queue depth now: ${queue.length})`)
             // Queue-shift path: the item was buffered while the consumer was
             // busy and is only now being read. This is the common "sent
             // mid-turn" case.
@@ -120,10 +122,10 @@ export function createPushable<T>(
             return Promise.resolve({ value: item, done: false })
           }
           if (ended) {
-            debugLog(`[${id}] next #${nextCallCount} → done (ended=true)`)
+            log.debug(`[${id}] next #${nextCallCount} → done (ended=true)`)
             return Promise.resolve({ value: undefined as unknown as T, done: true })
           }
-          debugLog(`[${id}] next #${nextCallCount} → waiting (setting waiter, no items in queue)`)
+          log.debug(`[${id}] next #${nextCallCount} → waiting (setting waiter, no items in queue)`)
           return new Promise<IteratorResult<T>>((resolve) => {
             waiter = resolve
           })
@@ -135,7 +137,7 @@ export function createPushable<T>(
         // a new iterator). `end()` is the proper way to terminate the
         // producer; `return()` only closes the current consumer.
         return(): Promise<IteratorResult<T>> {
-          debugWarn(`[${id}] return() called on iterator — waiter: ${!!waiter}, queue: ${queue.length}, ended: ${ended}`)
+          log.warn(`[${id}] return() called on iterator — waiter: ${!!waiter}, queue: ${queue.length}, ended: ${ended}`)
           if (waiter) {
             const w = waiter
             waiter = null

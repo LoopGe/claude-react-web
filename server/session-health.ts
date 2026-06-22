@@ -7,6 +7,9 @@
 // them within AUTO_INTERRUPT_DEDUP_MS, they're escalated to force-unload.
 
 import type { Session } from './session-types.js'
+import { createLogger } from './log.js'
+
+const log = createLogger('session-health')
 
 /** How long after firing an auto-interrupt we give the SDK subprocess to
  *  respond before either (a) skipping the next GC tick or (b) escalating
@@ -91,7 +94,7 @@ export class SessionHealthMonitor {
     // Init never landed: no point sending interrupt control frames into a
     // half-spawned subprocess. Schedule unload directly.
     if (s.history.length === 0) {
-      console.warn(
+      log.warn(
         `[session ${id}] init never completed — no messages after ${idleSince}ms ` +
         `(pendingTurns=${s.pendingTurns}, subscribers=${s.subscribers.size}). Force-unloading.`,
       )
@@ -110,7 +113,7 @@ export class SessionHealthMonitor {
     // (autoInterruptedAt was set, dedup window has now passed, AND we're
     // still stuck), the SDK subprocess is wedged. Escalate to unload.
     if (s.autoInterruptedAt) {
-      console.error(
+      log.error(
         `[session ${id}] still silent ${now - s.autoInterruptedAt}ms after auto-interrupt — escalating to unload`,
       )
       void this.deps.unload(id, { terminate: true, reason: 'stuck' })
@@ -118,20 +121,20 @@ export class SessionHealthMonitor {
     }
 
     const startedAt = Date.now()
-    console.warn(
+    log.warn(
       `[session ${id}] no SDK message for ${idleSince}ms — auto-interrupting ` +
       `(pendingTurns=${s.pendingTurns}, pending perms=${s.pending.size}, ` +
       `subscribers=${s.subscribers.size}, history=${s.history.length})`,
     )
     s.autoInterruptedAt = now
     if (!s.handle.interrupt) {
-      console.warn(`[session ${id}] provider does not support interrupt; escalating to unload`)
+      log.warn(`[session ${id}] provider does not support interrupt; escalating to unload`)
       void this.deps.unload(id, { terminate: true, reason: 'stuck' })
       return
     }
     s.handle.interrupt().then(
-      () => console.warn(`[session ${id}] auto-interrupt() resolved in ${Date.now() - startedAt}ms`),
-      (err) => console.error(`[session ${id}] auto-interrupt() rejected after ${Date.now() - startedAt}ms:`, err),
+      () => log.warn(`[session ${id}] auto-interrupt() resolved in ${Date.now() - startedAt}ms`),
+      (err) => log.error(`[session ${id}] auto-interrupt() rejected after ${Date.now() - startedAt}ms:`, err),
     )
   }
 }

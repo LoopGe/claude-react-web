@@ -22,12 +22,15 @@ import { homedir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import type { JsonFileStoreOptions } from './json-file-store.js'
+import { createLogger } from './log.js'
 import {
   MANIFEST_REL_PATH,
   isValidParsedSource,
   parseMarketplace,
   type MarketplaceManifest,
 } from './marketplace-parser.js'
+
+const log = createLogger('mp-store')
 
 // ---------------------------------------------------------------------------
 // Types
@@ -106,7 +109,7 @@ export class MpStore extends JsonFileStore<MpEntry> {
   protected parseItems(raw: string): MpEntry[] {
     const parsed = JSON.parse(raw) as unknown
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      console.warn(`[mp-store] ${this.file} is not an object; ignoring`)
+      log.warn(`${this.file} is not an object; ignoring`)
       return []
     }
     const obj = parsed as Partial<MpFileShape>
@@ -151,7 +154,7 @@ export class MpStore extends JsonFileStore<MpEntry> {
     } catch (err) {
       const e = err as NodeJS.ErrnoException
       if (e.code === 'ENOENT') return []
-      console.warn(`[mp-store] failed to read ${this.file}: ${e.message}`)
+      log.warn(`failed to read ${this.file}: ${e.message}`)
       return []
     }
   }
@@ -198,7 +201,7 @@ export class MpStore extends JsonFileStore<MpEntry> {
       try {
         await rm(entry.cloneDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
       } catch (err) {
-        console.warn(`[mp-store] failed to remove clone dir ${entry.cloneDir}: ${(err as Error).message}`)
+        log.warn(`failed to remove clone dir ${entry.cloneDir}: ${(err as Error).message}`)
       }
     }
     // Drop any external git-subdir clones this marketplace's plugins were the
@@ -340,7 +343,7 @@ export class MpStore extends JsonFileStore<MpEntry> {
         }
       }
     } catch (err) {
-      console.warn(`[mp-store] pruneExternalClones failed: ${(err as Error).message}`)
+      log.warn(`pruneExternalClones failed: ${(err as Error).message}`)
     }
   }
 
@@ -369,7 +372,7 @@ export class MpStore extends JsonFileStore<MpEntry> {
         this.upsert({ ...entry, displayName, manifest })
         changed = true
       } catch (err) {
-        console.warn(`[mp-store] failed to reparse cached marketplace ${entry.id}: ${(err as Error).message}`)
+        log.warn(`failed to reparse cached marketplace ${entry.id}: ${(err as Error).message}`)
       }
     }
     if (changed) await this.flush()
