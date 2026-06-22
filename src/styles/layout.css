@@ -144,6 +144,13 @@ body.resizing-col * {
   background: var(--bg);
   border-top: 2px solid transparent;
   overflow: hidden;
+  /* Container-query host. The header below adapts to the panel's actual
+     width (not the viewport's), so 3-up panels at 1440px get the same
+     compact treatment as 1-up at 480px. `inline-size` scopes the
+     container to width only — cheaper than `size` and won't recompute on
+     height changes (which fire constantly as messages stream in). */
+  container-type: inline-size;
+  container-name: chat-panel;
   /* Establish the containing block for this panel's SideChatDrawer
      (position:absolute; right:0). Without this, the drawer's containing
      block is .main-body (the only positioned ancestor), so `right:0`
@@ -651,11 +658,12 @@ body.resizing-col * {
   opacity: 0.45;
 }
 .chat-panel-model-badge-value,
-.chat-panel-git-badge-value {
+.chat-panel-git-badge-branch {
   color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 .chat-panel-model-badge:disabled .chat-panel-model-badge-value {
   color: var(--fg-muted);
@@ -665,12 +673,74 @@ body.resizing-col * {
   color: var(--fg-muted);
   flex-shrink: 0;
 }
-/* Git state colour — mirrors the old git-chip variants. */
-.chat-panel-git-badge.dirty .chat-panel-git-badge-value {
+/* Status counts (ahead/behind/dirty/?N) — high-signal, short, must stay
+   visible. Never shrinks. The branch label to its left is the part that
+   gets ellipsized first under width pressure. */
+.chat-panel-git-badge-counts {
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+/* Git state colour — applies to the branch + counts so the whole chip
+   reads as dirty/conflict at a glance. */
+.chat-panel-git-badge.dirty .chat-panel-git-badge-branch,
+.chat-panel-git-badge.dirty .chat-panel-git-badge-counts {
   color: var(--warn);
 }
-.chat-panel-git-badge.conflict .chat-panel-git-badge-value {
+.chat-panel-git-badge.conflict .chat-panel-git-badge-branch,
+.chat-panel-git-badge.conflict .chat-panel-git-badge-counts {
   color: var(--danger);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   COMPACT-MODE HEADER (container-query driven)
+   ────────────────────────────────────────────────────────────────────
+   When a panel narrows (3-up split, side chat open, etc.) the row1
+   chips compete for space. The original layout let the model badge
+   and git chip shrink in parallel until both were unreadable. The
+   container queries below establish two breakpoints:
+
+     - ≤ 560px (compact): model badge shrinks aggressively so the git
+       chip survives. Branch label and model value get tighter caps.
+     - ≤ 420px (super-compact): model badge collapses to icon-only,
+       git branch label hides entirely — but the status counts
+       (ahead/behind/dirty/?N) remain visible because they're the
+       high-signal part of the chip.
+
+   The git chip is the priority because it's the only repo-state
+   surface in the header; the model name is recoverable from the
+   tooltip/dropdown when the icon is clicked.
+   ════════════════════════════════════════════════════════════════════ */
+@container chat-panel (max-width: 560px) {
+  .chat-panel-title { max-width: 140px; }
+  /* Cap the badges so they release space the title and right-edge
+     controls (close button) can use. */
+  .chat-panel-model-badge { max-width: 110px; }
+  .chat-panel-git-badge { max-width: 160px; }
+  /* Model badge yields first: 3x the shrink factor of the git chip so
+     under flex contention the model name ellipsizes long before the
+     branch name does. */
+  .chat-panel-model-badge { flex-shrink: 3; }
+  .chat-panel-git-badge { flex-shrink: 1; }
+}
+@container chat-panel (max-width: 420px) {
+  /* Model badge collapses to the sparkles icon; the value is hidden
+     but the chip stays clickable and the tooltip still shows the
+     model name on hover. */
+  .chat-panel-model-badge {
+    max-width: none;
+    padding: 2px 6px;
+  }
+  .chat-panel-model-badge-value {
+    display: none;
+  }
+  /* Git chip drops the branch label, keeps "Git" glyph + status
+     counts so dirty/ahead/behind/?N stay readable. */
+  .chat-panel-git-badge-branch {
+    display: none;
+  }
+  .chat-panel-git-badge { max-width: none; }
 }
 
 /* Side Chat collapsed tab — vertical strip on the right edge of the
@@ -702,6 +772,30 @@ body.resizing-col * {
 .side-chat-expand-tab:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+/* Working indicator: small pulsing accent dot at the top-right of the
+   tab. Active only while the collapsed Side Chat is processing a turn,
+   so the user can spot background activity without re-expanding. */
+.side-chat-expand-tab-dot {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg-elev);
+  animation: side-chat-expand-tab-pulse 1.6s var(--motion-ease-standard) infinite;
+}
+.side-chat-expand-tab.working {
+  color: var(--accent);
+}
+@keyframes side-chat-expand-tab-pulse {
+  0%, 100% { opacity: 0.6; transform: scale(1); }
+  50%      { opacity: 1;   transform: scale(1.25); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .side-chat-expand-tab-dot { animation: none; opacity: 1; }
 }
 
 /* Row 2 pieces: cwd (folder icon + shortened path), message count, and an

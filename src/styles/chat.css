@@ -1820,40 +1820,77 @@
   animation: side-chat-drawer-out var(--motion-duration-fast) var(--motion-ease-exit) both;
   pointer-events: none;
 }
+.side-chat-drawer.collapsing {
+  /* Collapse is also an exit (just non-destructive) — use the same fast
+     duration as exit. The drawer is anchored to the right edge, so it
+     fully slides off-screen along its anchor axis (translateX(100%))
+     rather than the previous 24px nudge, which read as a snap rather
+     than a directional exit (Material motion: spatial continuity). */
+  animation: side-chat-drawer-out var(--motion-duration-fast) var(--motion-ease-exit) both;
+  pointer-events: none;
+}
 @keyframes side-chat-drawer-in {
-  from { opacity: 0; transform: translateX(24px); }
+  from { opacity: 0; transform: translateX(100%); }
   to   { opacity: 1; transform: translateX(0); }
 }
 @keyframes side-chat-drawer-out {
   from { opacity: 1; transform: translateX(0); }
-  to   { opacity: 0; transform: translateX(24px); }
+  to   { opacity: 0; transform: translateX(100%); }
 }
-.side-chat-drawer.collapsing {
-  animation: side-chat-drawer-out var(--motion-duration-base) var(--motion-ease-exit) both;
-  pointer-events: none;
-}
+/* 3-column grid header: back button left, title perfectly centred,
+   close right. Centring via grid is robust against asymmetric side
+   widths — the centre column always stays centred even if the back
+   button label is long or the close button is hidden. */
 .side-chat-drawer-header {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
+  /* Match reading-area gutters used by .working-bar / .ctx-bar / message
+     bubbles so all horizontal anchors line up. The reading-inset
+     contract is declared on .side-chat-drawer at the top of this file. */
+  padding: 8px var(--chat-reading-inset);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 .side-chat-drawer-back {
   font-family: var(--mono);
+  justify-self: start;
+  /* Cap so a very long parent title doesn't push the centre column off
+     centre, but allow it to flex with the drawer width — 120px was too
+     aggressive on the 640px-wide layout. */
+  max-width: min(40%, 240px);
+  min-width: 0;
+}
+.side-chat-drawer-back:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .side-chat-drawer-parent-title {
-  max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 .side-chat-drawer-title {
-  flex: 1;
   font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--fg-muted);
+  text-align: center;
+}
+.side-chat-drawer-close {
+  justify-self: end;
+}
+/* Destructive intent: the close button deletes the ephemeral session.
+   Tint on hover/focus so users get a hover-time hint before they commit
+   — the explicit ConfirmDialog still gates the actual deletion. */
+.side-chat-drawer-close:not(:disabled):hover,
+.side-chat-drawer-close:not(:disabled):focus-visible {
+  color: var(--danger);
+}
+.side-chat-drawer-close:focus-visible {
+  outline: 2px solid var(--danger);
+  outline-offset: 2px;
 }
 .side-chat-drawer-body {
   flex: 1;
@@ -1867,11 +1904,26 @@
   flex-shrink: 0;
   border-top: 1px solid var(--border);
 }
+/* Inline banner used for terminal session states (e.g. "session ended").
+   Sits above the composer so the disabled textarea has an explanation. */
+.side-chat-drawer-banner {
+  flex-shrink: 0;
+  padding: 8px var(--chat-reading-inset);
+  border-top: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+  text-align: center;
+}
+.side-chat-drawer-error {
+  flex-shrink: 0;
+}
 .side-chat-drawer-footer {
   display: flex;
   align-items: flex-end;
   gap: 8px;
-  padding: 8px 12px;
+  /* Align composer gutters with the reading column. */
+  padding: 8px var(--chat-reading-inset);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -1888,15 +1940,33 @@
   outline: none;
   min-height: 40px;
   max-height: 180px;
-  transition: border-color var(--motion-duration-fast) var(--motion-ease-standard);
+  transition:
+    border-color var(--motion-duration-fast) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .side-chat-drawer-input:focus {
+  /* 3px outer ring instead of a 1px colour change — meets the WCAG 2.4.7
+     focus-visible expectation that a focus indicator is clearly
+     distinguishable, including for low-vision and colourblind users. */
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.side-chat-drawer-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+/* Primary-disabled emphasis: at the default 0.5 opacity an accent-coloured
+   button stays brightly coloured and reads as "still clickable". Drop it
+   to 0.38 (Material standard for disabled emphasis) so the send button
+   matches its disabled semantics. */
+.side-chat-drawer-footer .btn-primary:disabled {
+  opacity: 0.38;
 }
 @media (prefers-reduced-motion: reduce) {
   .side-chat-drawer,
   .side-chat-drawer.exiting,
   .side-chat-drawer.collapsing { animation: none; }
+  .side-chat-drawer-input { transition: none; }
 }
 @media (max-width: 640px) {
   .side-chat-drawer {
