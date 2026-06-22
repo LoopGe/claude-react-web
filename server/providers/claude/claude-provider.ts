@@ -21,6 +21,21 @@ import { createLogger } from '../../log.js'
 
 const log = createLogger('claude-provider')
 
+/** True when a base URL points at a first-party Anthropic API host
+ *  (api.anthropic.com or a *.anthropic.com subdomain). Non-first-party
+ *  proxies (zhipuai, other OpenAI-compatible gateways) don't support the
+ *  `tool_reference` beta blocks that tool search relies on, so MCP tools
+ *  deferred behind tool search never reach the model. */
+function isFirstPartyAnthropicUrl(url: string | undefined): boolean {
+  if (!url) return false
+  try {
+    const host = new URL(url).hostname.toLowerCase()
+    return host === 'api.anthropic.com' || host.endsWith('.anthropic.com')
+  } catch {
+    return false
+  }
+}
+
 export interface ClaudeProviderOptions {
   claudeBinary?: string
   mpStore?: MpStore
@@ -210,6 +225,22 @@ export class ClaudeProvider implements AgentProvider {
       if (key.startsWith('ANTHROPIC_') && key !== 'ANTHROPIC_API_KEY' && !(key in env)) {
         env[key] = process.env[key]
       }
+    }
+    // Tool search (the CLI's default 'tst' mode) defers MCP tools behind
+    // `tool_reference` beta blocks. Non-first-party API proxies reject /
+    // silently drop those blocks, so the model never receives the tool
+    // schemas and can't call MCP tools — even though mcp-status reports
+    // them connected. claude-code has the same gate inside the CLI, but
+    // older CLI binaries predate it; enforcing it here makes MCP work
+    // regardless of CLI version. Respect an explicit ENABLE_TOOL_SEARCH
+    // from the host env if the user set one.
+    if (
+      !('ENABLE_TOOL_SEARCH' in env) &&
+      defaultConfig.baseUrl &&
+      !isFirstPartyAnthropicUrl(defaultConfig.baseUrl)
+    ) {
+      env.ENABLE_TOOL_SEARCH = 'false'
+      log.info(`non-first-party ANTHROPIC_BASE_URL=${defaultConfig.baseUrl} — forcing ENABLE_TOOL_SEARCH=false so MCP tools aren't deferred behind unsupported tool_reference blocks`)
     }
     this.cachedEnv = env
     return env
