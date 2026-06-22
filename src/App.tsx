@@ -1709,35 +1709,89 @@ export function App() {
 
   // --- Session group management ----------------------------------------------
 
+  /** Validate a group name. Returns a user-facing error message on failure
+   *  or null on success. Empty / whitespace-only is rejected, names are
+   *  capped at 40 chars (sidebar pill layout breaks past that), and
+   *  case-insensitive duplicates are blocked because the only way to tell
+   *  them apart in the pill row is to count them. `ignoreId` skips one
+   *  group when checking duplicates so rename-to-same-name is a no-op,
+   *  not an error. */
+  const validateGroupName = useCallback(
+    (raw: string, ignoreId?: string): { ok: true; name: string } | { ok: false; error: string } => {
+      const name = raw.trim()
+      if (!name) return { ok: false, error: 'Group name cannot be empty.' }
+      if (name.length > 40) return { ok: false, error: 'Group name is too long (max 40 chars).' }
+      const lower = name.toLowerCase()
+      const dup = groups.some((g) => g.id !== ignoreId && g.name.trim().toLowerCase() === lower)
+      if (dup) return { ok: false, error: `A group named "${name}" already exists.` }
+      return { ok: true, name }
+    },
+    [groups],
+  )
+
   const handleCreateGroup = useCallback(
     (name: string) => {
+      const res = validateGroupName(name)
+      if (!res.ok) {
+        toast.error(res.error)
+        return ''
+      }
       const id = randomId()
-      setGroups((prev) => [...prev, { id, name, sessionIds: [] }])
+      setGroups((prev) => [...prev, { id, name: res.name, sessionIds: [] }])
       return id
     },
-    [setGroups],
+    [setGroups, validateGroupName, toast],
   )
 
   /** Delete a group. Orphaned sessions automatically become ungrouped
-   *  (they'll appear in the sidebar's "Ungrouped" section). */
+   *  (they'll appear in the sidebar's "Ungrouped" section). Offers an
+   *  Undo affordance so an accidental click on the destructive menu item
+   *  is recoverable for ~6s. */
   const handleDeleteGroup = useCallback(
     (groupId: string) => {
-      setGroups((prev) => prev.filter((g) => g.id !== groupId))
+      let snapshot: { group: typeof groups[number]; collapsed: boolean } | null = null
+      setGroups((prev) => {
+        const g = prev.find((x) => x.id === groupId)
+        if (!g) return prev
+        snapshot = { group: g, collapsed: !!collapsedGroups[groupId] }
+        return prev.filter((x) => x.id !== groupId)
+      })
       setCollapsedGroups((prev) => {
         if (!(groupId in prev)) return prev
         const next = { ...prev }
         delete next[groupId]
         return next
       })
+      if (snapshot) {
+        const restored = snapshot
+        toast.success(`Deleted group "${restored.group.name}"`, {
+          actionLabel: 'Undo',
+          durationMs: 6000,
+          onClick: () => {
+            setGroups((prev) => {
+              if (prev.some((g) => g.id === restored.group.id)) return prev
+              return [...prev, restored.group]
+            })
+            if (restored.collapsed) {
+              setCollapsedGroups((prev) => ({ ...prev, [restored.group.id]: true }))
+            }
+          },
+        })
+      }
     },
-    [setGroups, setCollapsedGroups],
+    [setGroups, setCollapsedGroups, collapsedGroups, toast],
   )
 
   const handleRenameGroup = useCallback(
     (groupId: string, name: string) => {
-      setGroups((prev) => prev.map((g) => (g.id === groupId ? { ...g, name } : g)))
+      const res = validateGroupName(name, groupId)
+      if (!res.ok) {
+        toast.error(res.error)
+        return
+      }
+      setGroups((prev) => prev.map((g) => (g.id === groupId ? { ...g, name: res.name } : g)))
     },
-    [setGroups],
+    [setGroups, validateGroupName, toast],
   )
 
   /** Drag-drop handler for a card landing on a card inside a group.
