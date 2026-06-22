@@ -1,8 +1,19 @@
 /* Chat */
-.chat {
+/* Reading-area container contract — every element that hosts a chat reading
+   column declares these three variables. Must live at this level (NOT :root)
+   because --chat-reading-inset's formula uses 100%, which resolves to the
+   container's own width. .side-chat-drawer is a sibling of .chat-panel-body
+   (NOT inside .chat — see ChatPanel.tsx), so without its own copy, every
+   `padding: Xpx var(--chat-reading-inset)` shorthand inside the drawer would
+   hit IACVT and collapse to padding:0 — losing vertical padding too, not just
+   the horizontal inset. Add any new reading-area host to this selector list. */
+.chat,
+.side-chat-drawer {
   --chat-reading-max-width: 900px;
   --chat-reading-min-inset: 20px;
   --chat-reading-inset: max(var(--chat-reading-min-inset), calc((100% - var(--chat-reading-max-width)) / 2));
+}
+.chat {
   display: flex;
   flex-direction: column;
   flex: 1;
