@@ -30,25 +30,19 @@ import type { GitStatus } from '../../shared/git-types'
 import type { MessageJumpTarget } from '../../shared/message-jump'
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 
-/** Chip text generator: returns the branch name + a separate `counts`
- *  string ("ahead 1 dirty 1 ?1") split into two pieces so the CSS can
- *  truncate them independently when the panel is narrow. The status
- *  signal stays visible (we hide the branch name first), while a fully
- *  clean repo returns an empty `counts` so the UI can render a state
- *  dot in super-compact mode instead of empty space.
- *
+/** Chip text generator: "main" when clean, "main ahead 1 dirty 1 ?1" when dirty.
  *  Each suffix is suppressed at zero so the chip stays compact when the
  *  repo is in the common steady state. */
-function gitChipParts(s: GitStatus): { branch: string; counts: string } {
-  if (s.detached) return { branch: 'detached', counts: '' }
+function gitChipText(s: GitStatus): string {
+  if (s.detached) return 'detached'
   const branch = s.branch ?? '?'
   const dirty = s.staged.length + s.unstaged.length
-  const segments: string[] = []
+  const segments: string[] = [branch]
   if (s.ahead > 0) segments.push(`ahead ${s.ahead}`)
   if (s.behind > 0) segments.push(`behind ${s.behind}`)
   if (dirty > 0) segments.push(`dirty ${dirty}`)
   if (s.untracked.length > 0) segments.push(`?${s.untracked.length}`)
-  return { branch, counts: segments.join(' ') }
+  return segments.join(' ')
 }
 
 /** Chip tooltip — verbose form for users who hover before clicking.
@@ -578,9 +572,7 @@ export const ChatPanel = memo(function ChatPanel({
               counts at a glance. Hidden when the cwd isn't a git repo
               (so non-git sessions don't get visual noise) or while the
               status fetch is still settling and we have no data yet. */}
-          {gitStatus.data && gitStatus.data.isRepo === true && (() => {
-            const parts = gitChipParts(gitStatus.data)
-            return (
+          {gitStatus.data && gitStatus.data.isRepo === true && (
             <Tooltip label={gitChipTitle(gitStatus.data)} placement="bottom">
               <button
                 type="button"
@@ -596,20 +588,10 @@ export const ChatPanel = memo(function ChatPanel({
                 }}
               >
                 <span className="chat-panel-git-badge-icon" aria-hidden>Git</span>
-                <span className="chat-panel-git-badge-branch">{parts.branch}</span>
-                {parts.counts ? (
-                  <span className="chat-panel-git-badge-counts">{parts.counts}</span>
-                ) : (
-                  /* Super-compact mode hides branch + counts to fit; this
-                     dot keeps the chip semantic (clean = accent/ok) so the
-                     icon-only state still reads as "git, clean". Hidden by
-                     default; revealed via @container rule below. */
-                  <span className="chat-panel-git-badge-dot" aria-hidden />
-                )}
+                <span className="chat-panel-git-badge-value">{gitChipText(gitStatus.data)}</span>
               </button>
             </Tooltip>
-            )
-          })()}
+          )}
           {/* Side Chat collapsed badge — removed from header;
               now rendered as a tab on the panel's right edge below. */}
         </div>
@@ -716,7 +698,6 @@ export const ChatPanel = memo(function ChatPanel({
             onClosePanel={onClose}
             onSideChat={onSideChat}
             sideChatCollapsed={sideChatCollapsed}
-            sideChatWorking={!!sideChatSession?.working}
             onToggleCollapseSideChat={onToggleCollapseSideChat}
           />
         ) : (

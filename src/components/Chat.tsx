@@ -141,10 +141,6 @@ interface Props {
   onSideChat?: (sessionId: string) => void
   /** Side Chat collapsed state — for rendering the expand tab. */
   sideChatCollapsed?: boolean
-  /** Whether the (collapsed) Side Chat session is currently processing a
-   *  turn. Drives a pulsing indicator on the expand tab so users see
-   *  background activity without re-expanding. */
-  sideChatWorking?: boolean
   /** Toggle Side Chat expanded/collapsed. */
   onToggleCollapseSideChat?: () => void
 }
@@ -163,7 +159,7 @@ export const Chat = memo(function Chat({
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
   onSessionUpdate, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, settingsTabRequest, messageJumpTarget, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, onRegisterInjectInput,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onOpenSettingsPanel, onSideChat,
-  sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat,
+  sideChatCollapsed, onToggleCollapseSideChat,
 }: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
   // The parent remounts Chat on session switch (<Chat key={session.id}>), so
@@ -1213,20 +1209,16 @@ export const Chat = memo(function Chat({
         </SubagentProvider>
       )}
       {/* Side Chat collapsed tab — vertical strip on the right edge,
-          vertically centred. Click to re-expand the drawer. Shows a
-          pulsing accent dot while the collapsed side chat is processing
-          a turn so background activity is discoverable without
-          re-expanding. */}
+          vertically centred. Click to re-expand the drawer. */}
       {sideChatCollapsed && onToggleCollapseSideChat && (
         <button
           type="button"
-          className={`side-chat-expand-tab${sideChatWorking ? ' working' : ''}`}
-          aria-label={sideChatWorking ? 'Expand Side Chat (working)' : 'Expand Side Chat'}
-          title={sideChatWorking ? 'Side Chat is working — click to view' : 'Expand Side Chat'}
+          className="side-chat-expand-tab"
+          aria-label="Expand Side Chat"
+          title="Expand Side Chat"
           onClick={onToggleCollapseSideChat}
         >
           <IconArrowLeft size={14} />
-          {sideChatWorking && <span className="side-chat-expand-tab-dot" aria-hidden />}
         </button>
       )}
     </div>
