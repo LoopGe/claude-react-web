@@ -5,6 +5,10 @@
   inset: 0;
   z-index: 1000;
   background: var(--backdrop-color);
+  /* Light scrim blur so the workspace softly recedes behind the palette
+     instead of being slammed to flat black. */
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
   display: flex;
   justify-content: center;
   padding-top: min(20vh, 160px);

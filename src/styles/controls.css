@@ -183,6 +183,10 @@
   border-radius: 8px;
   box-shadow: var(--card-shadow);
   z-index: 1000;
+  /* Pop in from the anchor button (chip header), matching the other
+     dropdowns. Reuses ctx-menu-in keyframes from session-list.css. */
+  transform-origin: top right;
+  animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both;
 }
 .accent-popover .accent-picker {
   display: grid;

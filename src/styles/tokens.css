@@ -140,6 +140,22 @@
   --backdrop-color: rgba(0, 0, 0, 0.55);
   /* Blur applied to overlay scrims (backdrop-filter). */
   --glass-blur: blur(2px);
+  /* ── Liquid-glass surface tokens ──────────────────────────────────
+     Applied to floating surfaces (modals, popovers, overlays, toasts)
+     so content underneath blurs through them instead of being hidden
+     behind an opaque panel. Light theme + skins override these below.
+       --glass-surface-bg    : translucent panel fill
+       --glass-surface-border: slightly brighter rim than --border so the
+                               translucent edge stays readable
+       --glass-blur-strong   : the actual backdrop-filter for the panel
+                               body (the scrim still uses --glass-blur)
+       --glass-edge-highlight: the iOS-style top inset highlight that
+                               sells the "glass" read (subtle on default,
+                               brighter on glow). Plug into box-shadow. */
+  --glass-surface-bg: color-mix(in srgb, var(--bg-elev) 72%, transparent);
+  --glass-surface-border: color-mix(in srgb, var(--border) 80%, transparent);
+  --glass-blur-strong: blur(18px) saturate(160%);
+  --glass-edge-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.06);
   /* Surface treatments — default skin keeps them inert (no gradient,
      no glow) so nothing changes. The glow skin lights them up. */
   --surface-gradient: none;
@@ -211,6 +227,13 @@
   --tooltip-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
   --fab-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
   --backdrop-color: rgba(0, 0, 0, 0.35);
+  /* Liquid-glass overrides for light theme: surface stays brighter and the
+     top-edge highlight is barely visible (a too-strong white inset on a
+     near-white panel reads as a flat band, not a glass meniscus). */
+  --glass-surface-bg: color-mix(in srgb, var(--bg-elev) 78%, transparent);
+  --glass-surface-border: color-mix(in srgb, var(--border) 85%, transparent);
+  --glass-blur-strong: blur(16px) saturate(140%);
+  --glass-edge-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.55);
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -245,6 +268,14 @@
   --fab-shadow: 0 6px 20px color-mix(in srgb, var(--accent) 35%, transparent);
   --backdrop-color: rgba(6, 8, 12, 0.62);
   --glass-blur: blur(8px);
+  /* Glow leans hardest into liquid-glass: more blur, more saturation, and
+     an accent-tinted top edge so the meniscus picks up the session's
+     accent colour like a lensed rim. */
+  --glass-surface-bg: color-mix(in srgb, var(--bg-elev) 62%, transparent);
+  --glass-surface-border: color-mix(in srgb, var(--accent) 22%, var(--border));
+  --glass-blur-strong: blur(24px) saturate(180%);
+  --glass-edge-highlight: inset 0 1px 0 color-mix(in srgb, #fff 14%, transparent),
+                          inset 0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent);
   /* A very faint top-down sheen for elevated surfaces. */
   --surface-gradient: linear-gradient(180deg, color-mix(in srgb, #fff 4%, transparent), transparent 64%);
   /* Glow halos. */
@@ -270,6 +301,13 @@
   --tooltip-shadow: 0 6px 16px rgba(40, 50, 80, 0.14);
   --fab-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 30%, transparent);
   --backdrop-color: rgba(30, 40, 70, 0.32);
+  /* Glow · light: surfaces stay even brighter so they don't read as a
+     gray smudge over the warm-white app bg; edge highlight dialled down. */
+  --glass-surface-bg: color-mix(in srgb, var(--bg-elev) 70%, transparent);
+  --glass-surface-border: color-mix(in srgb, var(--accent) 18%, var(--border));
+  --glass-blur-strong: blur(20px) saturate(160%);
+  --glass-edge-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.6),
+                          inset 0 0 0 1px color-mix(in srgb, var(--accent) 6%, transparent);
   --surface-gradient: linear-gradient(180deg, color-mix(in srgb, #fff 55%, transparent), transparent 64%);
   --dot-glow: 0 0 6px;
   --focus-glow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent),
@@ -451,6 +489,13 @@
   --sans: 'Lora', Georgia, 'PingFang SC', 'Microsoft YaHei', serif;
   --code-bg: #0f0f0e;
   --code-block-border: var(--border);
+  /* Anthropic · dark: warm tinted glass — the surface picks up a hint of
+     the terracotta accent so the brand stays cohesive even on floating
+     surfaces. Edge highlight stays subtle to match the muted brand voice. */
+  --glass-surface-bg: color-mix(in srgb, var(--bg-elev) 70%, transparent);
+  --glass-surface-border: color-mix(in srgb, var(--accent) 14%, var(--border));
+  --glass-blur-strong: blur(18px) saturate(150%);
+  --glass-edge-highlight: inset 0 1px 0 rgba(255, 240, 230, 0.07);
 }
 
 /* ── Anthropic · light (warm paper) ── */
@@ -471,7 +516,21 @@
   --danger: #c0392b;
   --code-bg: #f3f1e9;
   --code-block-border: #e3e0d6;
+  /* Anthropic · light: warm-paper glass — keep the surface lifted enough
+     to read against the warm-cream bg, drop the brown-ink edge highlight
+     since white-on-cream looks washed out. */
+  --glass-surface-bg: color-mix(in srgb, var(--bg-elev) 76%, transparent);
+  --glass-surface-border: color-mix(in srgb, var(--accent) 12%, var(--border));
+  --glass-blur-strong: blur(16px) saturate(135%);
+  --glass-edge-highlight: inset 0 1px 0 rgba(255, 248, 240, 0.5);
 }
+
+/* The actual liquid-glass surface rules (`.modal`, `.palette`, etc.) live in
+   `src/styles/glass.css`, which is `@import`'d LAST from `index.css` so its
+   `background-color` + `backdrop-filter` declarations win over the per-surface
+   `background: var(--bg-elev)` shorthands set elsewhere. The tokens above
+   (--glass-surface-bg / --glass-blur-strong / --glass-surface-border /
+   --glass-edge-highlight) parameterize that rule block per theme + skin. */
 
 /* Headings adopt Poppins under the Anthropic skin. The base themes never
    define --font-head, so the var() fallback to --sans leaves them untouched. */

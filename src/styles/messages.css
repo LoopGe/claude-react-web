@@ -459,6 +459,11 @@
   position: fixed;
   inset: 0;
   background: var(--backdrop-color);
+  /* Light scrim blur so content peeks through softly instead of being
+     wiped to flat black. Matches .perm-overlay and the new palette /
+     settings / git scrims. */
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
   display: flex;
   align-items: center;
   justify-content: center;

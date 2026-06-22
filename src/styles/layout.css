@@ -775,6 +775,7 @@ body.resizing-col * {
   padding: 16px;
   background: color-mix(in srgb, var(--bg) 65%, transparent);
   backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
   z-index: 5;
   overflow-y: auto;
 }

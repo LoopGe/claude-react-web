@@ -1,0 +1,176 @@
+/* ════════════════════════════════════════════════════════════════════
+   LIQUID-GLASS SURFACES
+   ────────────────────────────────────────────────────────────────────
+   Frosted-glass treatment for every floating surface: modal, popover,
+   dropdown, in-panel overlay, toast, tooltip. The look is driven by
+   tokens defined in tokens.css (--glass-surface-bg / --glass-blur-strong
+   / --glass-surface-border / --glass-edge-highlight) so each theme +
+   skin combo gets the appropriate translucency, blur, and tint.
+
+   Why this lives in its own file imported LAST (after every per-surface
+   stylesheet): each surface's own rule sets `background: var(--bg-elev)`
+   as a shorthand declaration. Without later-cascade override these
+   shorthands would beat the glass tokens (same specificity, last-wins).
+   Loading glass.css after every per-surface sheet guarantees the
+   override without resorting to `!important`.
+
+   Two layers compose the effect:
+     1. `background-color` switches from opaque --bg-elev to translucent
+        --glass-surface-bg, and `backdrop-filter` blurs whatever sits
+        behind the surface. We use `background-color` (NOT the shorthand)
+        so the glow skin's --surface-gradient background-image survives
+        on `.model-picker`, `.ctx-menu`, etc. and layers on top of the
+        translucent fill instead of being reset.
+     2. `box-shadow` chains the surface's existing elevation shadow
+        (--modal-shadow / --card-shadow / --overlay-shadow / etc.) with
+        the inset --glass-edge-highlight that paints the iOS-style top
+        meniscus.
+
+   Progressive enhancement: browsers without backdrop-filter support
+   fall back to fully-opaque --bg-elev via @supports below so text
+   contrast stays predictable.
+   ════════════════════════════════════════════════════════════════════ */
+
+/* Surfaces that sit ABOVE app content and want the frosted-glass read.
+   Grouped because they all share the same translucent-bg + blur recipe;
+   per-surface box-shadow rules below override the original elevation
+   shadow with a glass-edge + original-shadow chain. */
+.modal,
+.palette,
+.settings-overlay > .settings-panel,
+.git-overlay > .git-panel,
+.perm-overlay > .perm-card,
+.ctx-menu,
+.model-picker,
+.cmd-picker,
+.accent-popover,
+.appearance-panel,
+.tt-bubble,
+.toast {
+  background-color: var(--glass-surface-bg);
+  border-color: var(--glass-surface-border);
+  backdrop-filter: var(--glass-blur-strong);
+  -webkit-backdrop-filter: var(--glass-blur-strong);
+}
+
+/* Chain the edge-highlight onto each surface's existing elevation
+   shadow. Spelled out per-surface so we never drop the original
+   --xxx-shadow token (modal vs card vs toast vs tooltip vs overlay). */
+.modal             { box-shadow: var(--glass-edge-highlight), var(--modal-shadow); }
+.palette           { box-shadow: var(--glass-edge-highlight), var(--modal-shadow); }
+.settings-overlay > .settings-panel,
+.git-overlay > .git-panel,
+.perm-overlay > .perm-card {
+  box-shadow: var(--glass-edge-highlight), var(--overlay-shadow);
+}
+.ctx-menu          { box-shadow: var(--glass-edge-highlight), var(--card-shadow); }
+.model-picker      { box-shadow: var(--glass-edge-highlight), var(--card-shadow); }
+.cmd-picker        { box-shadow: var(--glass-edge-highlight), var(--card-shadow); }
+.accent-popover    { box-shadow: var(--glass-edge-highlight), var(--card-shadow); }
+.appearance-panel  { box-shadow: var(--glass-edge-highlight), var(--card-shadow); }
+.tt-bubble         { box-shadow: var(--glass-edge-highlight), var(--tooltip-shadow); }
+.toast             { box-shadow: var(--glass-edge-highlight), var(--toast-shadow); }
+
+/* Glow skin already chains its own accent-tinted glow into .toast's
+   box-shadow (see tokens.css `[data-skin="glow"] .toast`). Re-chain it
+   here so the glass meniscus stays on top while preserving the
+   per-toast --kind-tint glow. */
+[data-skin="glow"] .toast {
+  box-shadow:
+    var(--glass-edge-highlight),
+    var(--toast-shadow),
+    0 0 16px color-mix(in srgb, var(--kind-tint, var(--accent)) 18%, transparent);
+}
+
+/* Fallback for browsers without backdrop-filter (older Firefox, etc.):
+   reinstate opaque surface fills so contrast stays predictable. Safari
+   has shipped backdrop-filter since 9 and all evergreen browsers do too,
+   but the safety net is cheap. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .modal,
+  .palette,
+  .settings-overlay > .settings-panel,
+  .git-overlay > .git-panel,
+  .perm-overlay > .perm-card,
+  .ctx-menu,
+  .model-picker,
+  .cmd-picker,
+  .accent-popover,
+  .appearance-panel,
+  .tt-bubble,
+  .toast {
+    background-color: var(--bg-elev);
+    border-color: var(--border);
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   INTERIOR DIVIDERS
+   ────────────────────────────────────────────────────────────────────
+   Section dividers inside glass surfaces (modal-header/footer borders,
+   palette input separator, perm-card chrome) were drawn with the full
+   opaque --border, which reads as a hard line against the translucent
+   fill and breaks the "single sheet of glass" illusion. Swap them to
+   --glass-surface-border which carries the same translucency the
+   surface itself uses.
+   ════════════════════════════════════════════════════════════════════ */
+.modal .modal-header,
+.modal .modal-footer,
+.perm-card .modal-header,
+.perm-card .modal-footer,
+.palette .palette-input,
+.git-overlay > .git-panel .git-panel-header,
+.settings-overlay > .settings-panel .settings-panel-header {
+  border-color: var(--glass-surface-border);
+}
+.ctx-menu .ctx-menu-sep {
+  background: var(--glass-surface-border);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   INTERIOR TOP-LIGHT
+   ────────────────────────────────────────────────────────────────────
+   A faint top-down highlight wash that catches the eye on the upper
+   portion of the glass and falls off within ~80px. Painted as a fixed
+   inset box-shadow blended into the existing chain (the surface keeps
+   its elevation shadow + the iOS-style 1px meniscus from above; this
+   adds a soft 40px feathered halo on top so the surface "swells"
+   slightly in the corner where light would hit).
+
+   Skipped for the glow skin which already paints --surface-gradient
+   onto these surfaces (would compound and over-light).
+   ════════════════════════════════════════════════════════════════════ */
+:where(:not([data-skin="glow"])) .modal,
+:where(:not([data-skin="glow"])) .palette,
+:where(:not([data-skin="glow"])) .settings-overlay > .settings-panel,
+:where(:not([data-skin="glow"])) .git-overlay > .git-panel,
+:where(:not([data-skin="glow"])) .perm-overlay > .perm-card,
+:where(:not([data-skin="glow"])) .ctx-menu,
+:where(:not([data-skin="glow"])) .model-picker,
+:where(:not([data-skin="glow"])) .cmd-picker,
+:where(:not([data-skin="glow"])) .accent-popover,
+:where(:not([data-skin="glow"])) .appearance-panel {
+  background-image: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--fg) 4%, transparent) 0%,
+    transparent 64px
+  );
+}
+/* Light theme: keep the wash but cooler — too much white-over-white
+   crushes the soft tint, so we use a near-transparent slate-ish fill. */
+[data-theme="light"]:where(:not([data-skin="glow"])) .modal,
+[data-theme="light"]:where(:not([data-skin="glow"])) .palette,
+[data-theme="light"]:where(:not([data-skin="glow"])) .settings-overlay > .settings-panel,
+[data-theme="light"]:where(:not([data-skin="glow"])) .git-overlay > .git-panel,
+[data-theme="light"]:where(:not([data-skin="glow"])) .perm-overlay > .perm-card,
+[data-theme="light"]:where(:not([data-skin="glow"])) .ctx-menu,
+[data-theme="light"]:where(:not([data-skin="glow"])) .model-picker,
+[data-theme="light"]:where(:not([data-skin="glow"])) .cmd-picker,
+[data-theme="light"]:where(:not([data-skin="glow"])) .accent-popover,
+[data-theme="light"]:where(:not([data-skin="glow"])) .appearance-panel {
+  background-image: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--fg) 2.5%, transparent) 0%,
+    transparent 80px
+  );
+}

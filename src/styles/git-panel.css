@@ -7,6 +7,7 @@
   padding: 16px;
   background: color-mix(in srgb, var(--bg) 65%, transparent);
   backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
   z-index: 5;
   overflow-y: auto;
   /* (#1) Entrance — mounts conditionally, so the animation fires on mount.

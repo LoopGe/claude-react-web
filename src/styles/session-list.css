@@ -379,6 +379,7 @@
   padding: 16px;
   background: color-mix(in srgb, var(--bg) 65%, transparent);
   backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
   z-index: 4;
 }
 .perm-overlay[data-state="open"] { animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both; }
@@ -746,7 +747,10 @@
   white-space: nowrap;
 }
 
-/* Slash command picker — anchored above the composer textarea */
+/* Slash command picker — anchored above the composer textarea.
+   Anchored from the bottom (it pops UP above the composer), so set the
+   transform-origin to bottom-left to match the visual anchor and reuse
+   ctx-menu-in/out for parity with the other listbox pickers. */
 .cmd-picker {
   position: fixed;
   min-width: 280px;
@@ -761,6 +765,8 @@
   z-index: 1000;
   font-size: 13px;
   user-select: none;
+  transform-origin: bottom left;
+  animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both;
 }
 .cmd-picker-item {
   display: flex;
