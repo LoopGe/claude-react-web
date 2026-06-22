@@ -1529,12 +1529,55 @@ export class SessionManager {
       'dynamic MCP servers',
       'supportsMcp',
     )(servers)
+
+    // [DEBUG MCP] setMcpServers returned. Log the SDK result so we can see
+    // which servers were actually added and whether any errored.
+    console.log(`[session ${id}] setMcpServers result:`, JSON.stringify(result))
+
     // Update the tracked MCP server names so the client's "available"
     // computation stays in sync without relying on the flaky mcp-status.
     s.mcpServerNames = Object.keys(servers)
     this.writeStore(s)
     this.broadcastGlobal({ kind: 'update', session: this.info(s) })
+
+    // [DEBUG MCP] Probe whether the newly-added tools are loaded into the
+    // prompt (isLoaded:true) or deferred behind tool search (isLoaded:false).
+    // context-usage.mcpTools[].isLoaded is the authoritative signal here.
+    // Fire-and-forget; never blocks the response.
+    void this.debugLogMcpToolLoadState(id, Object.keys(servers)).catch(() => {})
+
     return result
+  }
+
+  /** [DEBUG MCP] Log per-tool isLoaded state from context-usage. isLoaded=false
+   *  means the tool is deferred behind tool search (defer_loading=true) and
+   *  won't appear in the model's tools list until discovered via ToolSearch. */
+  private async debugLogMcpToolLoadState(id: string, expectedServers: string[]) {
+    // Give the subprocess a moment to settle the connection / fetch tools.
+    await new Promise((r) => setTimeout(r, 1500))
+    let usage: unknown
+    try {
+      const fn = this.requireHandleMethod<() => Promise<unknown>>(
+        this.requireLive(id),
+        'getContextUsage',
+        'context usage (debug)',
+        'supportsContextUsage',
+      )
+      usage = await this.timeSdkControl(id, 'getContextUsage (debug)', fn)
+    } catch (e) {
+      console.log(`[session ${id}] [DEBUG MCP] context-usage probe failed:`, (e as Error).message)
+      return
+    }
+    const mcpTools = (usage as { mcpTools?: Array<{ name: string; serverName: string; isLoaded?: boolean }> })?.mcpTools ?? []
+    const expected = new Set(expectedServers)
+    const relevant = mcpTools.filter((t) => expected.has(t.serverName))
+    if (relevant.length === 0) {
+      console.log(`[session ${id}] [DEBUG MCP] no mcpTools reported for servers [${[...expected].join(', ')}] — tools may not have been fetched yet`)
+      return
+    }
+    const lines = relevant.map((t) => `  ${t.serverName}__${t.name}: isLoaded=${t.isLoaded}`)
+    console.log(`[session ${id}] [DEBUG MCP] tool load state for newly-added servers:`)
+    console.log(lines.join('\n'))
   }
 
   /** Merge global MCP configs with session-specific overrides.
