@@ -698,6 +698,7 @@ export const ChatPanel = memo(function ChatPanel({
             onClosePanel={onClose}
             onSideChat={onSideChat}
             sideChatCollapsed={sideChatCollapsed}
+            sideChatWorking={!!sideChatSession?.working}
             onToggleCollapseSideChat={onToggleCollapseSideChat}
           />
         ) : (

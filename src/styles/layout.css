@@ -703,6 +703,32 @@ body.resizing-col * {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+/* Working indicator dot — small pulsing accent dot pinned to the
+   tab's top-right corner. Active only while the collapsed Side Chat
+   is processing a turn, so users can spot background activity
+   without re-expanding. The tab is already position:absolute, so this
+   dot has it as its containing block and cannot displace anything. */
+.side-chat-expand-tab-dot {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg-elev);
+  animation: side-chat-expand-tab-pulse 1.6s var(--motion-ease-standard) infinite;
+}
+.side-chat-expand-tab.working {
+  color: var(--accent);
+}
+@keyframes side-chat-expand-tab-pulse {
+  0%, 100% { opacity: 0.6; transform: scale(1); }
+  50%      { opacity: 1;   transform: scale(1.25); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .side-chat-expand-tab-dot { animation: none; opacity: 1; }
+}
 
 /* Row 2 pieces: cwd (folder icon + shortened path), message count, and an
    inline working… chip echoing the status dot for a stronger hint. */
