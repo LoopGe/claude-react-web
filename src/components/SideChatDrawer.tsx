@@ -163,6 +163,19 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           loadOlder={stream.loadOlder}
           hasOlder={stream.hasOlder}
           loadingOlder={stream.loadingOlder}
+          emptyStateContent={(
+            // Side Chat-specific empty state. The drawer is ephemeral —
+            // closing it deletes the conversation — and most users only
+            // discover this when they accidentally lose work. The empty
+            // state is the natural place to teach that property before
+            // they invest in a long thread.
+            <div className="chat-messages-empty-side">
+              <div className="chat-messages-empty-title">Ask a quick question.</div>
+              <div className="chat-messages-empty-hint">
+                This side chat is ephemeral — closing it deletes the conversation.
+              </div>
+            </div>
+          )}
         />
         {session.working && (
           <WorkingBubble

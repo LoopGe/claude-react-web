@@ -218,6 +218,29 @@
   text-align: center;
 }
 
+/* Two-line empty state used by Side Chat (and any caller passing custom
+   emptyStateContent in this shape). Title carries primary weight, hint
+   sits a step smaller and more muted, explaining a property of the
+   surrounding container — e.g. "ephemeral, closing deletes the
+   conversation" for Side Chat. */
+.chat-messages-empty-side {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  max-width: 320px;
+  padding: 0 20px;
+}
+.chat-messages-empty-title {
+  font-size: 13px;
+  color: var(--fg);
+}
+.chat-messages-empty-hint {
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.5;
+}
+
 /* Floating "scroll to bottom" button ?visible only when the user has
    scrolled up. Shows a count badge when new messages arrived meanwhile. */
 .chat-older-history {

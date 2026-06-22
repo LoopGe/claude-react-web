@@ -7,7 +7,7 @@
 // Filters out `stream_event` partials (the final assistant message
 // carries the complete content, so showing both just flickers).
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { Markdown } from './Markdown'
 import { PlanStatusProvider, PlanContentProvider, ToolStatusProvider, ToolResultProvider } from '../hooks/usePlanStatus'
@@ -107,6 +107,11 @@ interface Props {
    *  user message"). The callback identity is stable for the component's
    *  lifetime, so the parent can register it once. */
   onRegisterNavigate?: (fn: (dir: 'prev' | 'next') => void) => void
+  /** Override the empty-state content shown when there are no messages and
+   *  replay is ready. Defaults to a generic "Type a message below to start
+   *  the conversation." prompt. Side Chat overrides this to communicate the
+   *  ephemeral nature of the drawer. */
+  emptyStateContent?: ReactNode
 }
 
 /** An item in the Virtuoso data array. Pre-computing isCompactSummary
@@ -223,7 +228,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, recap, working, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate }: Props) {
+export const MessageList = memo(function MessageList({ items, recap, working, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, emptyStateContent }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -1054,7 +1059,7 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
         {renderableItems.length === 0 ? (
           <div className="chat-messages-empty">
             {replayReady
-              ? 'Type a message below to start the conversation.'
+              ? (emptyStateContent ?? 'Type a message below to start the conversation.')
               : 'Loading messages...'}
           </div>
         ) : (
