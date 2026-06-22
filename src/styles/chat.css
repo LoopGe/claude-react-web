@@ -1856,11 +1856,16 @@
 .side-chat-drawer-back {
   font-family: var(--mono);
   justify-self: start;
-  /* Cap so a very long parent title doesn't push the centre column off
-     centre, but allow it to flex with the drawer width — 120px was too
-     aggressive on the 640px-wide layout. */
+  /* Flex container so the inner title can ellipsize. Without explicit
+     display + min-width:0, the button's intrinsic width matches its
+     text and the title overflows the button bounds instead of
+     truncating. */
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   max-width: min(40%, 240px);
   min-width: 0;
+  overflow: hidden;
 }
 .side-chat-drawer-back:focus-visible {
   outline: 2px solid var(--accent);
@@ -1870,6 +1875,10 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* Cap explicit so a very long title is forced to ellipsize even when
+     the grid column has spare room. min-width:0 alone is not enough —
+     intrinsic text width still drives the flex item's main size. */
+  max-width: 120px;
   min-width: 0;
 }
 .side-chat-drawer-title {
