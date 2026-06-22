@@ -32,11 +32,17 @@ export interface NewSessionDialogProps {
   /** Server-configured model list (from /api/config). Shown as chips
    *  above the recent-models chips so the user always has a baseline. */
   serverModels?: string[]
+  /** Pre-select this group in the "Add to group" picker. The sidebar's
+   *  `activeGroupId` is threaded through so opening the dialog while a
+   *  group is active keeps the user's mental model: "this is the group I
+   *  was just looking at, so the new session goes here." Empty string
+   *  means "no preselected group". */
+  initialGroupId?: string
   /** Max sessions per group. */
   maxOpen: number
 }
 
-export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, onCancel, groups, serverModels, maxOpen }: NewSessionDialogProps) {
+export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, onCancel, groups, serverModels, initialGroupId, maxOpen }: NewSessionDialogProps) {
   const [cwd, setCwd] = useState<string>(initialCwd ?? defaults.cwd ?? '')
   const [model, setModel] = useState<string>(defaults.model ?? '')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
@@ -46,7 +52,16 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
    *  global accent" — we don't write an entry to sessionColors unless
    *  the user explicitly picks one. */
   const [accent, setAccent] = useState<string | undefined>(undefined)
-  const [groupId, setGroupId] = useState<string>('')
+  // Seed the group picker with the active group (if any) BUT only when
+  // it still has capacity — landing the new session into a group that
+  // would immediately silently fail is worse than starting on "(none)".
+  const [groupId, setGroupId] = useState<string>(() => {
+    if (!initialGroupId) return ''
+    const g = groups.find((x) => x.id === initialGroupId)
+    if (!g) return ''
+    if (g.sessionIds.length >= maxOpen) return ''
+    return initialGroupId
+  })
   const [showPicker, setShowPicker] = useState(false)
   const pickerPresence = useExitPresence(showPicker)
   // Guards against double-submit: the parent unmounts this dialog on

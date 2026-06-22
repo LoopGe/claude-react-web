@@ -106,6 +106,11 @@ export function App() {
   // False until the first sessions-snapshot frame arrives over WS. Drives a
   // sidebar skeleton so "No sessions yet" doesn't flash before the list loads.
   const [sessionsLoaded, setSessionsLoaded] = useState(false)
+  /** Becomes true the moment the first sessions-snapshot frame is observed.
+   *  Used inside the WS listener (which closes over state once on mount) to
+   *  branch on "this is the first snapshot" without re-registering the
+   *  listener every time `sessionsLoaded` flips. */
+  const firstSnapshotSeenRef = useRef(false)
   /** Sessions queued for deletion but still within the Undo grace window.
    *  Hidden from the sidebar optimistically; the real delete fires when the
    *  timer lapses (or is cancelled by Undo). */
@@ -472,6 +477,17 @@ export function App() {
     const off = hub.addListener((frame: WsServerFrame) => {
       switch (frame.kind) {
         case 'sessions-snapshot': {
+          // Capture `isFirstSnapshot` BEFORE we flip `sessionsLoaded`. The
+          // first snapshot on tab-mount is the only authoritative "these are
+          // every session that exists on the server" signal we'll get —
+          // subsequent snapshots fire on reconnect mid-stream and may race
+          // a session-created we haven't received yet. We use this single
+          // gate to prune ghost ids from groups (sessions deleted in another
+          // tab while this tab was offline never broadcast session-removed
+          // to us). Pruning on later snapshots would risk dropping a still-
+          // live member during a reconnect race.
+          const isFirstSnapshot = !firstSnapshotSeenRef.current
+          firstSnapshotSeenRef.current = true
           setSessions(frame.sessions)
           setSessionsLoaded(true)
           // Reconcile open/focused against whatever the server reports.
@@ -509,17 +525,36 @@ export function App() {
             void api.delete(`/sessions/${s.id}`).catch(() => {})
             sessionStoreRegistry.delete(s.id)
           }
-          // NOTE: sidebarOrder and group.sessionIds are deliberately NOT
-          // pruned here. A single snapshot is not an authoritative "these
-          // are the only sessions that exist" list — a transient/incomplete
-          // snapshot (server restart mid-persist, reconnect race, a session
-          // still inside the persistence debounce window) would otherwise
-          // permanently strip a still-live session from its group/order and
-          // never re-add it. Pruning now happens on the authoritative
-          // real-time `session-removed` frame instead. Residual ids here are
+          // NOTE: sidebarOrder is deliberately NOT pruned here. A single
+          // snapshot is not an authoritative "these are the only sessions
+          // that exist" list — a transient/incomplete snapshot (server
+          // restart mid-persist, reconnect race, a session still inside the
+          // persistence debounce window) would otherwise permanently strip
+          // a still-live session from order and never re-add it. Pruning
+          // sidebarOrder happens on the authoritative real-time
+          // `session-removed` frame instead. Residual ids here are
           // harmless: sidebarSections / handleActivateGroup / activeGroupId
           // all filter sessionIds against the live `sessions` set, so an id
           // for a session that no longer exists never renders or opens.
+          //
+          // The first snapshot is special: it's the only one we can safely
+          // treat as "complete". Reconnect snapshots may race a not-yet-
+          // received session-created. We prune group.sessionIds on first
+          // snapshot only — this clears ghosts left behind by another tab's
+          // delete while we were offline, without risking eviction during a
+          // mid-stream reconnect.
+          if (isFirstSnapshot) {
+            setGroups((prev) => {
+              let changed = false
+              const next = prev.map((g) => {
+                const filtered = g.sessionIds.filter((id) => ids.has(id))
+                if (filtered.length === g.sessionIds.length) return g
+                changed = true
+                return { ...g, sessionIds: filtered }
+              })
+              return changed ? next : prev
+            })
+          }
           break
         }
         case 'session-update': {
@@ -760,8 +795,12 @@ export function App() {
   )
 
   /** Move a session into a group (or out of all groups when groupId is
-   *  empty). If the target group is full, the oldest (first) session in
-   *  it is evicted — it becomes ungrouped automatically. */
+   *  empty). Capacity is enforced by the callers (the sidebar drag-over
+   *  rejects drops onto a full group, the context menu hides full groups
+   *  from "Move to group"), so we don't expect to land here against a
+   *  full target. Treat that as a no-op + warning rather than silently
+   *  evicting somebody — silent eviction lost work in the previous
+   *  implementation when a stale view triggered the path. */
   const handleAddToGroup = useCallback(
     (sessionId: string, groupId: string) => {
       setGroups((prev) => {
@@ -776,22 +815,25 @@ export function App() {
         if (!target) return prev
         // Already in this group — no-op.
         if (target.sessionIds.includes(sessionId)) return prev
-        // Remove from old group, then add to target.  If the target is
-        // full, evict its first (oldest) session so the new one fits.
+        // Capacity check on the post-removal count: it's safe to drop the
+        // session into the target even if the target is currently `maxGroupSize`
+        // sessions, as long as `sessionId` is one of them (covered by the
+        // includes() check above). Past that, we refuse.
+        if (target.sessionIds.length >= maxGroupSize) {
+          toast.error(
+            `Group "${target.name}" is full (${maxGroupSize} sessions). Remove one first.`,
+          )
+          return prev
+        }
+        // Remove from old group, then add to target.
         return prev.map((g) => {
-          // Remove from old group
           const without = { ...g, sessionIds: g.sessionIds.filter((id) => id !== sessionId) }
           if (g.id !== groupId) return without
-          // Add to target (evict oldest if full)
-          const ids = without.sessionIds
-          if (ids.length >= maxGroupSize) {
-            return { ...without, sessionIds: [...ids.slice(1), sessionId] }
-          }
-          return { ...without, sessionIds: [...ids, sessionId] }
+          return { ...without, sessionIds: [...without.sessionIds, sessionId] }
         })
       })
     },
-    [setGroups, maxGroupSize],
+    [setGroups, maxGroupSize, toast],
   )
 
   /** The group whose sessions are currently open in the main grid.
@@ -1749,11 +1791,15 @@ export function App() {
    *  is recoverable for ~6s. */
   const handleDeleteGroup = useCallback(
     (groupId: string) => {
-      let snapshot: { group: typeof groups[number]; collapsed: boolean } | null = null
+      type DeletedSnapshot = { group: typeof groups[number]; collapsed: boolean }
+      // Capture the to-be-deleted group's state before mutating. We don't
+      // close over `groups` here (it would re-render-bind every dependency
+      // change) — read via functional setter to get the freshest value.
+      const snapshotRef: { current: DeletedSnapshot | null } = { current: null }
       setGroups((prev) => {
         const g = prev.find((x) => x.id === groupId)
         if (!g) return prev
-        snapshot = { group: g, collapsed: !!collapsedGroups[groupId] }
+        snapshotRef.current = { group: g, collapsed: !!collapsedGroups[groupId] }
         return prev.filter((x) => x.id !== groupId)
       })
       setCollapsedGroups((prev) => {
@@ -1762,8 +1808,8 @@ export function App() {
         delete next[groupId]
         return next
       })
-      if (snapshot) {
-        const restored = snapshot
+      const restored = snapshotRef.current
+      if (restored) {
         toast.success(`Deleted group "${restored.group.name}"`, {
           actionLabel: 'Undo',
           durationMs: 6000,

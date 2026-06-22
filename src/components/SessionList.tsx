@@ -230,10 +230,16 @@ export const SessionList = memo(function SessionList({
 
   /** Filtered version of sidebarSections — applies the same text filter
    *  to each section's session list so the grouped view respects the
-   *  filter input. Empty sections are dropped. */
+   *  filter input. Empty group sections are preserved (so a user can still
+   *  see/manage an empty group) UNLESS the filter is active and the
+   *  section has no matches — in that case dropping it keeps the result
+   *  focused on what the user typed. The Ungrouped section is dropped
+   *  when it has no matches in either mode (a header with zero items
+   *  there is noise, not affordance). */
   const filteredSections = useMemo<SidebarSection[]>(() => {
     if (sidebarSections.length === 0) return []
     const q = filter.trim().toLowerCase()
+    const filtering = q.length > 0
     const match = (s: SessionInfo) => {
       if (!q) return true
       if (s.title && s.title.toLowerCase().includes(q)) return true
@@ -244,9 +250,16 @@ export const SessionList = memo(function SessionList({
     const result: SidebarSection[] = []
     for (const sec of sidebarSections) {
       const filtered = sec.sessions.filter(match)
-      if (filtered.length === 0) continue
-      if (sec.kind === 'group') result.push({ kind: 'group', group: sec.group, sessions: filtered })
-      else if (sec.kind === 'ungrouped') result.push({ kind: 'ungrouped', sessions: filtered })
+      if (sec.kind === 'group') {
+        // Keep empty groups when no filter is active — they're a target
+        // for drag-and-drop and an entry point for "Delete group". When
+        // filtering, only keep groups whose members matched.
+        if (filtering && filtered.length === 0) continue
+        result.push({ kind: 'group', group: sec.group, sessions: filtered })
+      } else if (sec.kind === 'ungrouped') {
+        if (filtered.length === 0) continue
+        result.push({ kind: 'ungrouped', sessions: filtered })
+      }
     }
     return result
   }, [sidebarSections, filter])
@@ -671,11 +684,41 @@ export const SessionList = memo(function SessionList({
             if (sec.kind === 'group') {
               const collapsed = !!collapsedGroups[sec.group.id]
               const active = isGroupActive(sec.group)
+              // Aggregate badges for the collapsed header so a user who has
+              // hidden a group still sees something is happening inside it.
+              // Unread is "session has a newer turn than user has seen AND
+              // isn't currently open"; pending counts permission/question
+              // requests waiting for the user. Both are per-session
+              // signals — we sum across the group's sessions only when
+              // collapsed (when expanded each card carries its own).
+              let groupUnread = 0
+              let groupPending = 0
+              if (collapsed) {
+                for (const s of sec.sessions) {
+                  if (unread?.[s.id]) groupUnread += 1
+                  groupPending += s.pendingPermissionCount ?? 0
+                }
+              }
+              const groupBodyId = `group-body-${sec.group.id}`
               return (
                 <div key={sec.group.id} className={`session-section ${active ? 'group-active' : ''}`}>
                   <div
                     className={`session-group-header ${groupDropHint === sec.group.id ? 'drop-target' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Activate group ${sec.group.name}`}
+                    aria-controls={groupBodyId}
                     onClick={() => onActivateGroup(sec.group.id)}
+                    onKeyDown={(e) => {
+                      // Native button semantics: Space + Enter activate.
+                      // We don't intercept Tab/Shift+Tab so focus order
+                      // stays natural (header → collapse arrow → cards).
+                      if (e.target !== e.currentTarget) return
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        onActivateGroup(sec.group.id)
+                      }
+                    }}
                     title={`Activate ${sec.group.name} · ${sec.sessions.length} session${sec.sessions.length === 1 ? '' : 's'}`}
                     onDragOver={(e) => {
                       if (!onDropIntoGroup || !isInAppDrag(e)) return
@@ -701,18 +744,44 @@ export const SessionList = memo(function SessionList({
                     <button
                       className="group-collapse-arrow"
                       onClick={(e) => { e.stopPropagation(); onToggleGroupCollapse(sec.group.id) }}
+                      onKeyDown={(e) => {
+                        // Stop Enter/Space from bubbling to the parent
+                        // header (which would re-activate the group). The
+                        // arrow toggles collapse only.
+                        if (e.key === 'Enter' || e.key === ' ') e.stopPropagation()
+                      }}
                       title={collapsed ? 'Expand group' : 'Collapse group'}
                       aria-expanded={!collapsed}
+                      aria-controls={groupBodyId}
                       aria-label={collapsed ? `Expand group ${sec.group.name}` : `Collapse group ${sec.group.name}`}
                     >
                       {collapsed ? <IconChevronRight size={12} /> : <IconChevronDown size={12} />}
                     </button>
                     <span className="group-header-name">{sec.group.name}</span>
                     <span className="group-header-count">{sec.sessions.length}</span>
+                    {collapsed && groupPending > 0 && (
+                      <span
+                        className="group-header-badge group-header-badge-pending"
+                        title={`${groupPending} pending permission${groupPending === 1 ? '' : 's'} inside ${sec.group.name}`}
+                        aria-label={`${groupPending} pending permission${groupPending === 1 ? '' : 's'}`}
+                      >
+                        {groupPending}
+                      </span>
+                    )}
+                    {collapsed && groupUnread > 0 && (
+                      <span
+                        className="group-header-badge group-header-badge-unread"
+                        title={`${groupUnread} session${groupUnread === 1 ? ' has' : 's have'} unread updates`}
+                        aria-label={`${groupUnread} unread`}
+                      >
+                        {groupUnread}
+                      </span>
+                    )}
                   </div>
                   <AnimatedCollapse open={!collapsed}>
                     {sec.sessions.length > 0 ? (
                       <div
+                        id={groupBodyId}
                         className={`group-sessions ${groupDropHint === sec.group.id ? 'drop-target' : ''}`}
                         onDragOver={(e) => {
                           if (!onDropIntoGroup || !isInAppDrag(e)) return
@@ -752,6 +821,7 @@ export const SessionList = memo(function SessionList({
                       </div>
                     ) : (
                       <div
+                        id={groupBodyId}
                         className={`group-empty ${groupDropHint === sec.group.id ? 'drop-target' : ''}`}
                         onDragOver={(e) => {
                           if (!onDropIntoGroup || !isInAppDrag(e)) return
@@ -856,6 +926,7 @@ export const SessionList = memo(function SessionList({
           defaults={defaults}
           serverModels={serverModels}
           initialCwd={prefilledCwd}
+          initialGroupId={activeGroupId ?? undefined}
           groups={groups}
           maxOpen={maxOpen}
           onCancel={() => {
