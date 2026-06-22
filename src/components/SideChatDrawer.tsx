@@ -212,7 +212,11 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            // Skip Enter while an IME composition is active — Enter in
+            // that context confirms the candidate, not submission. Without
+            // this check Chinese/Japanese/Korean users would send partial
+            // candidate strings.
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault()
               void handleSend()
             }
