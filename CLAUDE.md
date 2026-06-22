@@ -96,6 +96,14 @@ Client-side: `src/components/GitPanel.tsx` is a per-panel overlay (mounted along
 
 `build.mjs` uses esbuild to bundle `server/cli.ts` into `dist/cli.mjs` as ESM for Node 20. `@anthropic-ai/claude-agent-sdk` is marked `external` — it spawns the real `claude` CLI at runtime and bundling it breaks filesystem-relative lookups. A `createRequire` banner is injected because some dependencies use `require()`. A shebang and `chmod 755` are added so the file is directly executable as the `bin` entry.
 
+### Logging
+
+`server/log.ts` exports `createLogger(scope)` — a scoped logger with 5 levels (`error` > `warn` > `info` > `debug` > `trace`, default `info`). **All diagnostic logging goes through it; never use bare `console.*` for diagnostics.** Each module declares one logger at top: `const log = createLogger('scope')`. The `[scope]` tag is auto-prepended — don't hand-write `[scope]` prefixes in messages. Session-id context stays in the message body, e.g. `log.info(`[${id}] spawned…`)`.
+
+Configuration: `LOG_LEVEL` / `LOG_SCOPES` env vars at boot, or `PUT /api/log` / `GET /api/log` at runtime (no restart needed). `LOG_SCOPES=ws,session` mutes everything else; `*` matches all. `DEBUG_SESSION=1` is a back-compat alias for `LOG_LEVEL=debug`. File logging (daily-rotated `<stateDir>/logs/server-YYYY-MM-DD.log`, 14-day retention) is opt-in via `config.json` `logToFile: true`; `enableFileLogging(stateDir)` activates it.
+
+Bare `console.*` is reserved for three cases that must bypass the logger: `log.ts` itself (the implementation), `cli.ts` user-facing output (startup banner, QR codes, listen URL, HELP text, token prompt, shutdown signal, fatal exit), and `errors.ts`'s `onError` fallback (logger may be unavailable). `event-loop-probe.ts` takes a `log` callback so callers inject their own logger. `server/debug.ts` (`debugLog`/`debugWarn`) has been removed — use `createLogger(scope).debug/.warn`.
+
 ## Conventions worth knowing
 
 - `Options.includePartialMessages` defaults to `true` on session create so clients can render streaming deltas. Callers can override.
