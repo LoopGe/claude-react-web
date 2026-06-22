@@ -181,7 +181,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
 const tick = () => new Promise((r) => setImmediate(r))
 
 // Import AFTER vi.mock so the SessionManager picks up the mocked SDK.
-import { SessionManager, isClearCommand } from './session-manager.js'
+import { SessionManager } from './session-manager.js'
 import { SessionStore } from './persistence.js'
 import { config as defaultConfig } from './config.js'
 import { McpConfigStore } from './mcp-config.js'
@@ -190,26 +190,6 @@ import { buildSessionRouter } from './routes/sessions.js'
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), 'claude-rw-sm-'))
 }
-
-describe('isClearCommand', () => {
-  it('matches /clear and its case/whitespace variants', () => {
-    expect(isClearCommand('/clear')).toBe(true)
-    expect(isClearCommand('/Clear')).toBe(true)
-    expect(isClearCommand('  /clear  ')).toBe(true)
-    expect(isClearCommand('/clear extra args')).toBe(true)
-    expect(isClearCommand('/reset')).toBe(true)
-    expect(isClearCommand('/new')).toBe(true)
-  })
-
-  it('does not match look-alikes or embedded uses', () => {
-    expect(isClearCommand('/clearfoo')).toBe(false)
-    expect(isClearCommand('hello /clear')).toBe(false)
-    expect(isClearCommand('clear')).toBe(false)
-    expect(isClearCommand('/clearcache')).toBe(false)
-    expect(isClearCommand('')).toBe(false)
-    expect(isClearCommand('/')).toBe(false)
-  })
-})
 
 describe('SessionManager', () => {
   let dir: string
@@ -388,70 +368,76 @@ describe('SessionManager', () => {
     sub.unsubscribe()
   })
 
-  it('clear() sends a control command without adding a user bubble', async () => {
+  it('clear() tears down the old Query and respawns a fresh one (no /clear control message)', async () => {
+    const info = sm.create({})
+    expect(mockHandles).toHaveLength(1)
+    mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
+    await tick()
+    expect(sm.getHistory(info.id)!).toHaveLength(1)
+
+    await sm.clear(info.id)
+
+    // A brand-new Query was spawned (old handle destroyed, fresh one created).
+    expect(mockHandles).toHaveLength(2)
+    // Fresh conversation: no `resume`, but the SDK session_id is pinned to
+    // our id so the new transcript anchor lands in the existing file.
+    expect(mockHandles[1].options.resume).toBeUndefined()
+    expect(mockHandles[1].options.sessionId).toBe(info.id)
+    // We never push a `/clear` slash command into either Query's input
+    // queue (the headless binary rejects it; the respawn IS the clear).
+    for (const h of mockHandles) {
+      const sawClear = h.consumed.some(
+        (m) => (m as { message?: { content?: unknown } }).message?.content === '/clear',
+      )
+      expect(sawClear).toBe(false)
+    }
+  })
+
+  it('clear() empties the in-memory history synchronously', async () => {
     const info = sm.create({})
     mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
     await tick()
+    expect(sm.getHistory(info.id)!).toHaveLength(1)
 
     await sm.clear(info.id)
-    await tick()
 
-    expect(mockHandles[0].consumed[mockHandles[0].consumed.length - 1]).toMatchObject({
-      type: 'user',
-      message: { role: 'user', content: '/clear' },
-    })
-    const beforeConfirm = sm.getHistory(info.id)!
-    expect(beforeConfirm.some((m) => (m as { message: { content: unknown } }).message.content === '/clear')).toBe(false)
+    // History is wiped as part of the respawn d no waiting for an SDK init.
+    expect(sm.getHistory(info.id)!).toHaveLength(0)
   })
 
-  it('clear() drops queued user turns before enqueueing the control command', async () => {
-    const info = sm.create({})
-    sm.send(info.id, 'first')
-    sm.send(info.id, 'second queued')
-
-    await sm.clear(info.id)
-    mockHandles[0].emit({ type: 'result', session_id: info.id })
-    await tick()
-
-    const consumedTexts = mockHandles[0].consumed.map(
-      (m) => (m as { message: { content: unknown } }).message.content,
-    )
-    expect(consumedTexts).toEqual(['first', '/clear'])
-  })
-
-  it('clear confirmation truncates history and persists the raw boundary uuid', async () => {
+  it('clear() broadcasts session-cleared and captures the boundary uuid from the post-respawn init', async () => {
     const info = sm.create({})
     mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
     await tick()
-    await sm.clear(info.id)
 
     const cleared = sm.subscribeSessionCleared(info.id)!
     const nextCleared = cleared.iterable[Symbol.asyncIterator]().next()
-    mockHandles[0].emit({ type: 'system', subtype: 'init', uuid: 'clear-init', session_id: info.id })
+
+    await sm.clear(info.id)
+    // The session-cleared signal fires during clear() (synchronous respawn).
+    await expect(nextCleared).resolves.toMatchObject({ value: { kind: 'session-cleared', sessionId: info.id } })
+
+    // The fresh Query's first init frame anchors the new conversation.
+    mockHandles[1].emit({ type: 'system', subtype: 'init', uuid: 'clear-init', session_id: info.id })
     await tick()
 
-    await expect(nextCleared).resolves.toMatchObject({ value: { kind: 'session-cleared', sessionId: info.id } })
     expect(sm.getHistory(info.id)!.map((m) => (m as { uuid?: string }).uuid)).toEqual(['clear-init'])
     expect(store.get(info.id)?.clearBoundaryUuid).toBe('clear-init')
     cleared.unsubscribe()
   })
 
-  it('clear confirmation resets stale working state from the interrupted turn', async () => {
+  it('clear() resets stale working state from the interrupted turn', async () => {
     const info = sm.create({})
     sm.send(info.id, 'busy')
     expect(sm.get(info.id).working).toBe(true)
 
     await sm.clear(info.id)
-    mockHandles[0].emit({ type: 'result', session_id: info.id })
-    await tick()
-    mockHandles[0].emit({ type: 'system', subtype: 'init', uuid: 'clear-init', session_id: info.id })
-    await tick()
 
     expect(sm.get(info.id).working).toBe(false)
     expect(sm.get(info.id).phase).toBe('idle')
   })
 
-  it('clear confirmation drops hook run records', async () => {
+  it('clear() drops hook run records', async () => {
     const info = sm.create({})
     // Seed two hook runs before the clear.
     sm.recordHookRun(info.id, {
@@ -471,9 +457,8 @@ describe('SessionManager', () => {
     expect(sm.subscribeHookRuns(info.id)!.snapshot).toHaveLength(2)
 
     await sm.clear(info.id)
-    mockHandles[0].emit({ type: 'system', subtype: 'init', uuid: 'clear-init', session_id: info.id })
-    await tick()
 
+    // Hook history is dropped as part of the respawn d no SDK round-trip.
     expect(sm.subscribeHookRuns(info.id)!.snapshot).toHaveLength(0)
   })
 

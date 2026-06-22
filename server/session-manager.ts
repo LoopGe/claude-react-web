@@ -32,7 +32,7 @@ import { cancelGitBroadcast } from './git-broadcast.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig } from './config.js'
 import { createAsyncSubscription } from './async-subscription.js'
-import { CLEAR_SIGNAL_WINDOW_MS, pump as pumpSession, type PumpDeps } from './session-pump.js'
+import { pump as pumpSession, type PumpDeps } from './session-pump.js'
 import {
   type Subscriber,
   type PermissionEvent,
@@ -122,20 +122,6 @@ function applySkillPolicyToOptions<T extends Options>(
   const projected = policyToInitialSkillsOption(effectiveSkillPolicyFor(override))
   if (projected !== undefined) opts.skills = projected
   return opts
-}
-
-/** True when `text` is the `/clear` slash command (or Claude CLI aliases
- *  `/reset` / `/new`). Mirrors the strict
- *  first-token matching in src/local-commands.ts (matchLocalCommand):
- *  trim drequire a leading '/' dcompare ONLY the first whitespace-
- *  delimited token (case-insensitive). Deliberately NOT a loose
- *  startsWith so `/clearfoo` and `hello /clear` don't match, while
- *  `/clear`, `/Clear`, and `/clear <args>` do. */
-export function isClearCommand(text: string): boolean {
-  const trimmed = text.trim()
-  if (!trimmed.startsWith('/')) return false
-  const token = trimmed.slice(1).split(/\s+/)[0]?.toLowerCase()
-  return token === 'clear' || token === 'reset' || token === 'new'
 }
 
 /** System-prompt instructions appended to every Side Chat session.
@@ -414,28 +400,6 @@ export class SessionManager {
       parentId: s.parentId,
       mcpServerNames: s.mcpServerNames,
     })
-  }
-
-  private clearPendingClearTimer(s: Session): void {
-    if (!s.pendingClearTimer) return
-    clearTimeout(s.pendingClearTimer)
-    s.pendingClearTimer = undefined
-  }
-
-  private markPendingClear(s: Session): void {
-    this.clearPendingClearTimer(s)
-    const marker = Date.now()
-    s.pendingClearSince = marker
-    const timer = setTimeout(() => {
-      const live = this.sessions.get(s.id)
-      if (live !== s) return
-      if (s.pendingClearTimer === timer) s.pendingClearTimer = undefined
-      if (s.pendingClearSince !== marker) return
-      s.pendingClearSince = undefined
-      this.persist(s)
-    }, CLEAR_SIGNAL_WINDOW_MS)
-    ;(timer as { unref?: () => void }).unref?.()
-    s.pendingClearTimer = timer
   }
 
   private broadcastGlobal(ev: GlobalSessionEvent): void {
@@ -1105,12 +1069,10 @@ export class SessionManager {
   /** Send a user turn into an existing session. */
   send(id: string, text: string): SDKUserMessage {
     const s = this.requireRunnable(id)
-    // `/clear` is forwarded to the SDK like any other turn (it's the SDK
-    // that actually resets the context). Mark the session so the pump
-    // recognises the resulting `init` message as a clear-confirmation and
-    // truncates the history ring + broadcasts `session-cleared`. Window-
-    // guarded so a normal spawn/resume init never mis-fires (see pump).
-    if (isClearCommand(text)) this.markPendingClear(s)
+    // Note: the `/clear` slash command is intercepted client-side by
+    // src/local-commands.ts, which POSTs /sessions/:id/clear instead of
+    // routing through this method (the headless `claude` binary refuses
+    // /clear, so we drive the context reset ourselves; see clear()).
     const userMsg: SDKUserMessage = {
       type: 'user',
       message: { role: 'user', content: text },
@@ -1224,45 +1186,155 @@ export class SessionManager {
     this.persist(s)
   }
 
-  /** Clear a session as a control command, not a visible user turn. The
-   *  `/clear` string still goes through the provider input queue because the
-   *  Claude SDK exposes clear as a slash command, but we deliberately bypass
-   *  pushToSession() so the UI/history never render a `/clear` user bubble. */
+  /** Reset the session's conversation context.
+   *
+   *  The headless `claude` binary refuses the `/clear` slash command (it's
+   *  a REPL-only feature in non-interactive mode), so we cannot ask the SDK
+   *  to clear in-band. Instead we drive it ourselves: tear down the live
+   *  Query, wipe the in-memory transcript + transient state, then spawn a
+   *  fresh Query with no `resume:` so the model starts a brand-new
+   *  conversation. `session.id` is preserved as both the app-level handle
+   *  and the SDK sessionId — the new Query writes a fresh anchor into the
+   *  same on-disk transcript file, and `clearBoundaryUuid` (captured by
+   *  the pump from the post-clear `init` frame) keeps lazy paging /
+   *  resume from resurrecting pre-clear rows.
+   *
+   *  Idempotent: a second clear() while one is already in flight returns
+   *  the current SessionInfo without re-driving the lifecycle. */
   async clear(id: string): Promise<SessionInfo> {
     const s = this.requireRunnable(id)
-    if (s.pendingClearSince != null) return this.info(s)
+    if (s.clearing) return this.info(s)
 
-    this.permBroker.denyAll(s)
+    s.clearing = true
+    console.log(`[session ${id}] clear: tearing down current Query for context reset`)
+    try {
+      // Resolve any pending tool-permission requests so SDK awaiters
+      // don't hang once we destroy the handle.
+      this.permBroker.denyAll(s)
 
-    if (s.pendingTurns > 0 || s.handle.queueDepth > 0) {
-      try {
-        await this.requireHandleMethod<() => Promise<void>>(
-          s,
-          'interrupt',
-          'interrupt',
-          'supportsInterrupt',
-        )()
-      } catch (err) {
-        log.warn(`[session ${id}] interrupt before /clear failed:`, err)
+      // Drain any in-flight assistant turn or queued user input. The
+      // interrupt landed against the OLD Query — its result frame won't
+      // matter once we destroy the handle, but interrupting first lets
+      // the SDK exit cleanly instead of mid-API-call.
+      if (s.pendingTurns > 0 || s.handle.queueDepth > 0) {
+        try {
+          await this.requireHandleMethod<() => Promise<void>>(
+            s,
+            'interrupt',
+            'interrupt',
+            'supportsInterrupt',
+          )()
+        } catch (err) {
+          log.warn(`[session ${id}] clear: interrupt before respawn failed:`, err)
+        }
       }
-    }
-    s.handle.clearQueuedInput?.()
+      s.handle.clearQueuedInput?.()
 
-    const controlMsg: SDKUserMessage = {
-      type: 'user',
-      message: { role: 'user', content: '/clear' },
-      parent_tool_use_id: null,
-      uuid: randomUUID(),
-      session_id: s.id,
+      // Destroy the live handle and wait for the old pump to finish so
+      // we don't have two pumps fanning out to the same subscribers.
+      // The pump's cleanupPump observes `s.clearing === true` and bails
+      // before its terminate path — subscribers stay attached across the
+      // gap and the new pump picks them up automatically.
+      s.handle.destroy('clear')
+      try {
+        await Promise.race([
+          s.pumpTask,
+          new Promise<void>((r) => {
+            const t = setTimeout(r, 5000)
+            ;(t as { unref?: () => void }).unref?.()
+          }),
+        ])
+      } catch { /* pump swallows errors internally */ }
+
+      // Wipe in-memory transcript + transient runtime state. Persisted
+      // metadata (model, permissionMode, hooks, parentId, etc.) is kept
+      // — the user wants the same session, just with a clean slate.
+      s.history = []
+      s.lastContextUsage = undefined
+      s.recap = undefined
+      s.pendingTurns = 0
+      s.workingSince = undefined
+      s.autoInterruptedAt = undefined
+      s.fastModeState = undefined
+      s.hookRuns.length = 0
+      s.error = undefined
+      s.terminated = false
+      s.terminatedReason = undefined
+      s.exiting = false
+      s.running = true
+      // The previous boundary anchor is stale once we mint a new
+      // conversation; the pump will stamp the next init's uuid onto
+      // `clearBoundaryUuid`. Setting captureNextInitAsClearBoundary
+      // arms that capture exactly once.
+      s.clearBoundaryUuid = undefined
+      s.captureNextInitAsClearBoundary = true
+      this.recapManager.invalidate(s.id)
+      this.autoResumeCounts.delete(s)
+
+      // Spawn a fresh handle with NO `resume:` so the SDK starts a new
+      // conversation. The provider sets `sessionId = s.id` (see
+      // claude-provider.ts), preserving the app-level identity. Side
+      // Chat sessions re-inject SIDE_DEVELOPER_INSTRUCTIONS so the
+      // boundary survives — same logic as autoResume.
+      const provider = this.providers.get(s.provider)
+      const freshOpts: Options = {
+        cwd: s.cwd,
+        model: s.model,
+        permissionMode: s.permissionMode,
+        title: s.title,
+        effort: s.effortLevel,
+        betas: s.betas as Options['betas'],
+        settings: s.hooks ? ({ hooks: toSdkHooksSettings(s.hooks) } as Settings) : undefined,
+      }
+      if (s.parentId) {
+        freshOpts.systemPrompt = {
+          type: 'preset',
+          preset: 'claude_code',
+          append: SIDE_DEVELOPER_INSTRUCTIONS,
+        }
+      }
+      const allGlobalMcpNames = Object.keys(this.mcpStore.toSdkConfig() ?? {})
+      if (allGlobalMcpNames.length > 0) {
+        await this.mcpStore.refreshOAuthTokens(allGlobalMcpNames)
+        freshOpts.mcpServers = this.mcpStore.toSdkConfig()
+      }
+      if (s.canUseTool) {
+        freshOpts.canUseTool = s.canUseTool
+      }
+      s.handle = provider.createSession({
+        id: s.id,
+        provider: s.provider,
+        cwd: s.cwd,
+        model: s.model,
+        permissionMode: s.permissionMode,
+        title: s.title,
+        betas: s.betas,
+        effortLevel: s.effortLevel,
+        fastMode: s.fastMode,
+        includeHookEvents: true,
+        // No `resume:` — fresh conversation. The provider sets
+        // sdkOptions.sessionId = s.id so the new transcript anchor lands
+        // in the existing on-disk file (clearBoundaryUuid keeps pagination
+        // from resurrecting pre-clear rows).
+        onUserMessageConsumed: (msg) => this.onInputConsumed(s.id, msg as SDKUserMessage),
+        canUseTool: s.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
+        providerExtras: { sdkOptions: applySkillPolicyToOptions(freshOpts, s.skillOverride) },
+      })
+      s.lastActivityAt = Date.now()
+      s.pumpTask = this.pump(s)
+
+      // Tell live subscribers to drop their transcript + cache. Mirrors
+      // the broadcast the old pump used to fire when an SDK-emitted
+      // post-/clear init landed; the client-side handler is unchanged
+      // (see useChatStream's `session-cleared` case).
+      this.broadcastSessionCleared(s.id)
+      this.broadcastGlobal({ kind: 'update', session: this.info(s) })
+      this.persist(s)
+      console.log(`[session ${id}] clear: respawn complete`)
+      return this.info(s)
+    } finally {
+      s.clearing = false
     }
-    this.markPendingClear(s)
-    if (s.handle.sendControlMessage) s.handle.sendControlMessage({ ...controlMsg })
-    else s.handle.enqueueUserMessage({ ...controlMsg })
-    s.lastActivityAt = Date.now()
-    s.lastContextUsage = undefined
-    this.recapManager.invalidate(s.id)
-    this.persist(s)
-    return this.info(s)
   }
 
   async setModel(id: string, model?: string): Promise<SessionInfo> {
@@ -1956,17 +2028,6 @@ export class SessionManager {
     }
   }
 
-  private handleClearConfirmed(s: Session, boundaryUuid: string): void {
-    this.clearPendingClearTimer(s)
-    if (boundaryUuid) s.clearBoundaryUuid = boundaryUuid
-    this.permBroker.denyAll(s)
-    this.recapManager.invalidate(s.id)
-    s.lastContextUsage = undefined
-    s.pendingTurns = 0
-    s.workingSince = undefined
-    s.autoInterruptedAt = undefined
-    s.hookRuns.length = 0
-  }
 
   /** Shared implementation for subscribeContextUsage / subscribeGitStatus.
    *  Creates a per-subscriber pushable, registers it in the given set, and
@@ -2135,7 +2196,6 @@ export class SessionManager {
       } catch { /* pump swallows errors internally */ }
     }
     this.permBroker.denyAll(s)
-    this.clearPendingClearTimer(s)
     // Cancel any pending git-status broadcast dwithout this, a timer
     // scheduled by the last mutating tool_use could still fire after the
     // session is removed (the broadcast itself is a no-op then, but the
@@ -2490,7 +2550,7 @@ export class SessionManager {
     // Any in-flight assistant turn, queued user input, or unanswered
     // tool-permission prompt counts as "working" dnone of those are
     // safe moments to summarise the conversation.
-    if (s.pendingClearSince != null) return 'working'
+    if (s.clearing) return 'working'
     if (s.pendingTurns > 0) return 'working'
     if (s.handle.queueDepth > 0) return 'working'
     if (s.pending.size > 0) return 'working'
@@ -2552,10 +2612,6 @@ export class SessionManager {
         // through the debounce helper. `this` satisfies the SessionBroadcaster
         // interface (subscribeContextUsage, subscribeGitStatus, etc.).
         broadcaster: this,
-        // Pump calls this when a `/clear`-triggered init confirms the
-        // context reset (after it truncates the history ring).
-        onClearConfirmed: (s, boundaryUuid) => this.handleClearConfirmed(s, boundaryUuid),
-        broadcastSessionCleared: (id) => this.broadcastSessionCleared(id),
         // Pump calls this when the SDK-reported fast_mode_state changes.
         // Broadcasts a session-update WITHOUT writing to disk dthe runtime
         // fast-mode state is transient and re-reported after respawn, so it
@@ -2594,6 +2650,11 @@ export class SessionManager {
     // Guard: session must still be live and not explicitly stopped
     if (!this.sessions.has(session.id)) return false
     if (session.terminated) return false
+    // Guard: SessionManager.clear() is mid-flight and drives its own
+    // respawn path. Returning false here lets cleanupPump skip its
+    // terminate tail (the `clearing` branch above) and clear() do the
+    // fresh spawn without racing against an idle resume.
+    if (session.clearing) return false
 
     // Guard: the SDK only writes session data to disk after the first
     // `result` message. If no turn was completed, resume would fail

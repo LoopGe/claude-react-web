@@ -88,33 +88,6 @@ export function getParentToolUseId(msg: SDKMessage): string | null | undefined {
 
 const log = createLogger('pump')
 
-/** Window after a `/clear` send during which we accept the SDK's next
- *  `init` message as the "context reset confirmed" signal. Generous
- *  because the CLI may be mid-turn when /clear is queued; long enough to
- *  cover a slow turn drain, short enough that a much later spawn/resume
- *  init can never be mis-attributed to this clear. Failure mode if the
- *  init somehow arrives after the window: we simply don't clear (safe). */
-export const CLEAR_SIGNAL_WINDOW_MS = 60_000
-
-/** Decide what to do with a `/clear` marker when a message arrives.
- *  Pure so it can be unit-tested without driving the whole pump.
- *   - 'none'   : no pending clear (or marker absent) dignore.
- *   - 'expire' : marker is stale (past the window) ddrop it, no clear.
- *   - 'clear'  : this is the post-/clear `init` within the window — *                truncate history + broadcast session-cleare?.
- *  @param pendingClearSince  Session.pendingClearSince (undefined = none).
- *  @param now                Current epoch ms.
- *  @param msg                The just-received SDK message. */
-export function clearSignalAction(
-  pendingClearSince: number | undefined,
-  now: number,
-  msg: SDKMessage,
-): 'none' | 'expire' | 'clear' {
-  if (pendingClearSince == null) return 'none'
-  if (now - pendingClearSince > CLEAR_SIGNAL_WINDOW_MS) return 'expire'
-  if (msg.type === 'system' && (msg as { subtype: string }).subtype === 'init') return 'clear'
-  return 'none'
-}
-
 /** True when an SDK `user` message carries at least one `tool_result`
  *  content block. Used to distinguish a genuine top-level user-input echo
  *  (text/image blocks only ddrop it, we already broadcast our own copy)
@@ -180,16 +153,6 @@ export interface PumpDeps {
    *  runs Edit/Write/NotebookEdit/Bash. Optional so test fixtures that
    *  don't exercise tool-use behaviour can omit it. */
   broadcaster?: SessionBroadcaster
-  /** Push a `session-cleared` signal to the session's subscribers. Called
-   *  when a `/clear`-triggered `init` message confirms the context reset
-   *  (after the pump truncates the history ring). Optional so test
-   *  fixtures that don't exercise /clear can omit it. */
-  broadcastSessionCleared?: (id: string) => void
-  /** Called after the pump observes the SDK's post-/clear init frame, but
-   *  before broadcasting `session-cleared`. Lets SessionManager clear
-   *  side-channel state (permissions, recap, persisted history boundary)
-   *  in one place. */
-  onClearConfirmed?: (session: Session, boundaryUuid: string) => void
   /** Push a `session-update` frame (e.g. after the SDK-reported fast-mode
    *  state changes). Distinct from `persist` dthis broadcasts WITHOUT
    *  writing to disk, for transient runtime state that doesn't belong in
@@ -447,38 +410,23 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           }
         }
         msgCount++
-        // /clear confirmation: when the user sent `/clear`, the SDK resets
-        // its context and emits a fresh `system`/`init` message. That init —        // arriving within CLEAR_SIGNAL_WINDOW_MS of the send dis our signal
-        // that the backend is actually clear. We then truncate the history
-        // ring to start at this init (dropping the pre-clear transcript so
-        // reconnect/second-panel replay stays empty) and broadcast
-        // `session-cleared` so live clients reset their transcript store.
-        // The window guard ensures a normal spawn/resume init (no pending
-        // clear) never triggers this; an expired marker is simply droppe?.
-        if (session.pendingClearSince != null) {
-          const action = clearSignalAction(session.pendingClearSince, Date.now(), msg)
-          if (action === 'expire') {
-            session.pendingClearSince = undefined
-          } else if (action === 'clear') {
-            // Diagnostic: confirm which frame we treated as the clear signal.
-            // (See plan dthe exact post-/clear frame can't be verified
-            // offline since the CLI binary spawns at runtime.)
-            log.debug(
-              `[session ${session.id}] /clear confirmed by init message ` +
-              `uuid=${(msg as { uuid: string }).uuid}; truncating history ring`,
-            )
-            const idx = session.history.lastIndexOf(msg)
-            session.history = idx >= 0 ? session.history.slice(idx) : []
-            session.pendingClearSince = undefined
-            deps.onClearConfirmed?.(session, (msg as { uuid: string }).uuid)
-            // Drop the cached context-usage so a freshly subscribing tab
-            // doesn't get handed a stale pre-clear value. The bar resets to
-            // `d until the first post-clear `result` repopulates it.
-            session.lastContextUsage = undefined
-            deps.broadcastSessionCleared?.(session.id)
-            try { deps.persist(session) } catch (err) {
-              log.warn(`[session ${session.id}] persist failed after /clear: ${err}`)
-            }
+        // After SessionManager.clear() respawns a fresh Query, the next
+        // `system`/`init` frame is the anchor for the new conversation in the
+        // on-disk transcript file (the SDK reuses the file across the
+        // clear). Capture that uuid as `clearBoundaryUuid` so resume and
+        // lazy history paging never resurrect pre-clear rows from the same
+        // file. Cleared once captured so a later spawn/resume init can't
+        // overwrite the boundary. Persist the boundary so it survives a
+        // server restart.
+        if (
+          session.captureNextInitAsClearBoundary &&
+          msg.type === 'system' &&
+          (msg as { subtype: string }).subtype === 'init'
+        ) {
+          session.clearBoundaryUuid = (msg as { uuid: string }).uuid
+          session.captureNextInitAsClearBoundary = undefined
+          try { deps.persist(session) } catch (err) {
+            log.warn(`[session ${session.id}] persist failed after clear-boundary capture: ${err}`)
           }
         }
         // Derive a context-usage snapshot directly from the result's own
@@ -571,10 +519,13 @@ async function cleanupPump(session: Session, deps: PumpDeps): Promise<void> {
     // prevents the user from resuming the session later. Skip.
     if (!deps.isLive(session.id)) return
 
-    // Drop any unconsumed /clear marker before we possibly auto-resume, so
-    // the resumed pump's own `init` message can't be mistaken for a clear
-    // confirmation.
-    session.pendingClearSince = undefined
+    // SessionManager.clear() drives its own respawn after destroying the
+    // current handle. Skip both the auto-resume probe AND the cleanup
+    // tail (mark-terminated, end-subscribers, persist) so the live
+    // subscribers stay attached across the gap and the next pump can
+    // pick up exactly where this one left off. clear() resets running /
+    // pendingTurns / etc. as part of the respawn.
+    if (session.clearing) return
 
     // When the Query exits cleanly (no error), try auto-resume first.
     // This keeps the session alive transparently dthe CLI subprocess

@@ -163,17 +163,20 @@ export interface Session {
    *  simple counter rather than a set because we don't need to identify
    *  which specific turn is outstanding djust whether ANY is. */
   pendingTurns: number
-  /** Epoch ms set when the user sends `/clear`, marking that we're waiting
-   *  for the SDK to confirm the context reset (it emits a fresh `system`/
-   *  `init` message once done). The pump consumes this when that init lands
-   *  within CLEAR_SIGNAL_WINDOW_MS dtruncating the history ring and
-   *  broadcasting `session-cleared` dor drops it when the window elapses.
-   *  undefined = no pending clear. Failure mode is "don't clear" (safe);
-   *  it never mis-fires against a spawn/resume init outside the window. */
-  pendingClearSince?: number
-  /** Timer that clears a stale pending-clear marker if the SDK never emits
-   *  the expected post-clear init frame. Runtime-only; never persiste?. */
-  pendingClearTimer?: ReturnType<typeof setTimeout>
+  /** Set true while SessionManager.clear() is in flight: from the moment we
+   *  begin tearing down the live Query through the fresh respawn of a brand
+   *  new Query. Read by the pump's cleanupPump branch (skip auto-resume; do
+   *  NOT mark terminated; keep subscribers alive across the gap) and by
+   *  autoResume itself (refuse to fire while a clear is driving its own
+   *  respawn). Cleared in clear()'s finally block once the new pump is up.
+   *  Runtime-only; never persisted. */
+  clearing?: boolean
+  /** Set true after clear() respawns a fresh Query so the pump knows to
+   *  stamp `clearBoundaryUuid` from the FIRST `system`/`init` frame it sees
+   *  (the new transcript anchor) and then clear this flag. Without it, a
+   *  resumed-from-disk pagination could resurrect pre-clear rows from the
+   *  same on-disk transcript file. Runtime-only; never persisted. */
+  captureNextInitAsClearBoundary?: boolean
   /** Raw JSONL uuid of the SDK `system/init` frame that confirmed the most
    *  recent `/clear`. Used as the persisted history boundary so resume and
    *  lazy history paging never resurrect pre-clear transcript rows. */
