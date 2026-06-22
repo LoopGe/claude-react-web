@@ -150,6 +150,13 @@ body.resizing-col * {
      anchored to the whole panel area and every Side Chat slid in from
      the far-right edge regardless of which panel opened it. */
   position: relative;
+  /* Container-query context: the chat-panel header (model badge + git
+     chip + control chips) needs to react to its own width, not the
+     viewport's — in 2-up / 3-up layouts a panel can be much narrower
+     than the window. The `@container chat-panel (...)` rules below
+     match against this element's inline-size. */
+  container-type: inline-size;
+  container-name: chat-panel;
   /* Re-declare the user-bubble vars here so their color-mix() formulas
      re-evaluate against this panel's --accent. When a session sets a
      per-session accent via inline style on .chat-panel, the global
@@ -651,12 +658,25 @@ body.resizing-col * {
   opacity: 0.45;
 }
 .chat-panel-model-badge-value,
-.chat-panel-git-badge-value {
+.chat-panel-git-badge-branch,
+.chat-panel-git-badge-counts {
   color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+}
+/* The counts segment is the more disposable of the two: branch identity
+   matters more than the secondary "ahead 1 dirty 2" detail in a tight
+   header. Let it shrink first via a higher flex-shrink weight, and
+   prepend a single space so it reads as one phrase with the branch
+   when both are visible. */
+.chat-panel-git-badge-counts {
+  flex-shrink: 2;
+  color: var(--fg-muted);
+}
+.chat-panel-git-badge-counts::before {
+  content: ' ';
 }
 .chat-panel-model-badge:disabled .chat-panel-model-badge-value {
   color: var(--fg-muted);
@@ -666,12 +686,77 @@ body.resizing-col * {
   color: var(--fg-muted);
   flex-shrink: 0;
 }
-/* Git state colour — mirrors the old git-chip variants. */
-.chat-panel-git-badge.dirty .chat-panel-git-badge-value {
+/* Git state colour — branch + counts both colour-shift so the signal
+   survives even when one of the two is ellipsis-truncated. */
+.chat-panel-git-badge.dirty .chat-panel-git-badge-branch,
+.chat-panel-git-badge.dirty .chat-panel-git-badge-counts {
   color: var(--warn);
 }
-.chat-panel-git-badge.conflict .chat-panel-git-badge-value {
+.chat-panel-git-badge.conflict .chat-panel-git-badge-branch,
+.chat-panel-git-badge.conflict .chat-panel-git-badge-counts {
   color: var(--danger);
+}
+/* Clean-state dot fallback. Hidden by default — the branch + counts
+   carry the signal at normal widths. Revealed only in super-compact
+   mode (@container rule below) where the branch text is hidden, so the
+   chip still has a coloured glyph next to the "Git" letters instead of
+   collapsing to an icon-only stub for repos that happen to be clean.
+   Coloured by parent class: default = --ok (clean), .dirty = --warn,
+   .conflict = --danger. Sized to match the inline letter cap-height so
+   it doesn't disrupt the chip's vertical rhythm. */
+.chat-panel-git-badge-dot {
+  display: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+  flex-shrink: 0;
+}
+.chat-panel-git-badge.dirty .chat-panel-git-badge-dot {
+  background: var(--warn);
+}
+.chat-panel-git-badge.conflict .chat-panel-git-badge-dot {
+  background: var(--danger);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   CHAT-PANEL HEADER — RESPONSIVE COMPACTION
+   ────────────────────────────────────────────────────────────────────
+   The header lays out: title · model badge · git chip · permission
+   chips. In a 1-up window all four breathe; in 2-up or 3-up a single
+   panel can be 400–600px wide and the row would otherwise let the
+   model name's flex-grow squeeze the git chip out of existence.
+   We use container queries (anchored on .chat-panel which sets
+   container-type: inline-size) so the rules trigger off panel width,
+   not viewport width — a 3-up layout on a 1440px screen needs
+   compaction even though the viewport is wide.
+   ──────────────────────────────────────────────────────────────────── */
+
+/* Mid-compact: cap each badge's max-width so the title can't eat them
+   wholesale. The model badge shrinks 3× faster than the git chip — the
+   model identity is less critical than the git status signal, which
+   carries action-relevant state (dirty/conflict). */
+@container chat-panel (max-width: 560px) {
+  .chat-panel-title { max-width: 140px; }
+  .chat-panel-model-badge { max-width: 110px; flex-shrink: 3; }
+  .chat-panel-git-badge { max-width: 160px; flex-shrink: 1; }
+}
+
+/* Super-compact: panel is so narrow that even a truncated branch+counts
+   pair would crowd out the permission/effort chips. Drop the model
+   value entirely (keep the chip glyph as an affordance), drop the git
+   branch text, and reveal the coloured state dot — so the git chip
+   becomes "Git •" tinted by state, which still telegraphs clean / dirty
+   / conflict at a single coloured-glyph glance. */
+@container chat-panel (max-width: 420px) {
+  .chat-panel-model-badge {
+    max-width: none;
+    padding: 2px 6px;
+  }
+  .chat-panel-model-badge-value { display: none; }
+  .chat-panel-git-badge { max-width: none; }
+  .chat-panel-git-badge-branch { display: none; }
+  .chat-panel-git-badge-dot { display: inline-block; }
 }
 
 /* Side Chat collapsed tab — vertical strip on the right edge of the
