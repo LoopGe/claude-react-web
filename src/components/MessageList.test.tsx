@@ -152,7 +152,8 @@ describe('MessageList', () => {
     const { container } = render(
       <MessageList items={[]} replayReady={false} />,
     )
-    expect(container.textContent).toContain('Loading messages')
+    expect(container.querySelector('.skeleton-group')).toBeTruthy()
+    expect(container.querySelector('[aria-busy="true"]')).toBeTruthy()
   })
 
   it('adds transcript reveal only after keyed messages are ready', async () => {

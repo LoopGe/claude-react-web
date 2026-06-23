@@ -25,6 +25,7 @@ import { IconArrowDown, IconZap, IconUser, IconExternalLink } from './icons/Tool
 import { countMatches, extractPlainText } from '../search'
 import { BlockView, ToolResultBlock } from './message-list/blocks'
 import { OlderHistoryHeader, StreamingFooter } from './message-list/transcript-chrome'
+import { Skeleton } from './Skeleton'
 import { ResultConsumedCtx, useResultConsumed } from './message-list/result-consumed-context'
 import { extractUserText, makeResultConsumed, willRenderEmpty } from './message-list/rendering'
 
@@ -1048,7 +1049,7 @@ export const MessageList = memo(function MessageList({ items, working, replayRea
           <div className="chat-messages-empty">
             {replayReady
               ? (emptyStateContent ?? 'Type a message below to start the conversation.')
-              : 'Loading messages...'}
+              : <Skeleton rows={3} className="chat-messages-skeleton" />}
           </div>
         ) : (
           <Virtuoso

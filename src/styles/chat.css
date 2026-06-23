@@ -241,6 +241,13 @@
   line-height: 1.5;
 }
 
+/* Skeleton loading state shown while messages are replaying. Constrained
+   width so the bars read as message placeholders, not a solid block. */
+.chat-messages-skeleton {
+  width: 60%;
+  max-width: 280px;
+}
+
 /* Floating "scroll to bottom" button ?visible only when the user has
    scrolled up. Shows a count badge when new messages arrived meanwhile. */
 .chat-older-history {
