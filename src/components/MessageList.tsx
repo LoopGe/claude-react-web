@@ -13,7 +13,6 @@ import { Markdown } from './Markdown'
 import { PlanStatusProvider, PlanContentProvider, ToolStatusProvider, ToolResultProvider } from '../hooks/usePlanStatus'
 import { QuestionAnswersProvider } from '../hooks/useQuestionAnswers'
 import type { SdkMessage } from '../types'
-import type { SessionRecap } from '../../shared/session-info'
 import { formatTokens, formatElapsed, formatClockTime, formatFullTimestamp } from '../utils/format'
 import { Tooltip } from './Tooltip'
 import { useLocalStorage } from '../hooks/useLocalStorage'
@@ -22,7 +21,7 @@ import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { getBlocks, getEnterPlanToolUseIds } from '../session-store/normalize'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
-import { IconArrowDown, IconZap, IconSparkles, IconAlertTriangle, IconMessageCircle, IconDollar, IconClock, IconWrench, IconUser, IconExternalLink } from './icons/ToolIcons'
+import { IconArrowDown, IconZap, IconUser, IconExternalLink } from './icons/ToolIcons'
 import { countMatches, extractPlainText } from '../search'
 import { BlockView, ToolResultBlock } from './message-list/blocks'
 import { OlderHistoryHeader, StreamingFooter } from './message-list/transcript-chrome'
@@ -38,13 +37,6 @@ interface Props {
    *  "processing" indicator on consumed user messages so it doesn't
    *  reappear on historical messages after a reconnect. */
   working?: boolean
-  /** Server-pushed AI session recap. Lives on session.recap (NOT in the
-   *  history). When present, rendered as a card pinned to the bottom of
-   *  the transcript (after items, before the streaming footer) so it
-   *  reads as the latest "narrator" entry. Three states drive the chrome:
-   *  pending — loading skeleton, ready — summary + stats, error — retry
-   *  hint. Undefined means "no recap to show". */
-  recap?: SessionRecap
   /** False while the initial replay from the server is still buffering.
    *  When false, shows a loading skeleton instead of the empty-state
    *  message, preventing a flash of "no messages" on session switch. */
@@ -228,7 +220,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, recap, working, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, emptyStateContent }: Props) {
+export const MessageList = memo(function MessageList({ items, working, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, emptyStateContent }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -1027,7 +1019,6 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
   // breathing room. The live streaming bubble is an overlay, so the spacer
   // lets settled messages scroll underneath it instead of being obscured.
   const virtuosoComponents = useMemo(() => {
-    const hasRecap = recap != null
     // The Header slot shows a "loading older history" affordance pinned to
     // the top. Only relevant for the main transcript (loadOlder provided).
     const showOlderHeader = loadOlder != null && (loadingOlder || hasOlder)
@@ -1035,16 +1026,13 @@ export const MessageList = memo(function MessageList({ items, recap, working, re
     if (showOlderHeader) {
       components.Header = () => <OlderHistoryHeader loading={loadingOlder} />
     }
-    if (hasRecap || streamingOverlayHeight > 0) {
+    if (streamingOverlayHeight > 0) {
       components.Footer = () => (
-        <>
-          {hasRecap && <RecapFooter recap={recap} />}
-          {streamingOverlayHeight > 0 && <StreamingOverlaySpacer height={streamingOverlayHeight} />}
-        </>
+        <StreamingOverlaySpacer height={streamingOverlayHeight} />
       )
     }
     return components
-  }, [recap, streamingOverlayHeight, loadOlder, loadingOlder, hasOlder])
+  }, [streamingOverlayHeight, loadOlder, loadingOlder, hasOlder])
 
   return (
     <PlanStatusProvider value={planStatus}>
@@ -1657,97 +1645,9 @@ function CompactSummary({ text }: { text: string }) {
   )
 }
 
-/** Rendering for the session.recap field, driven by its 3-state
- *  status discriminator from the shared SessionRecap type:
- *    pending — loading skeleton (LLM call in flight)
- *    ready   — AI summary + stats
- *    error   —failure message (Alt+R retries)
- *
- *  The card is anchored at the bottom of the transcript via Virtuoso's
- *  Footer slot —see virtuosoComponents above. It is NOT a synthetic
- *  SDK message; the previous design (recap as a `type:'recap'` message
- *  spliced into history) was replaced because:
- *    1. recap is metadata about the session, not part of the
- *       conversation tape.
- *    2. recapManager's lifecycle (in-memory only, invalidated on every
- *       conversation mutation) is incompatible with the persistent
- *       message ring's append-only semantics.
- */
-const RecapFooter = memo(function RecapFooter({ recap }: { recap: SessionRecap }) {
-  if (recap.status === 'pending') {
-    return (
-      <div className="virtuoso-footer-wrapper">
-        <div className="msg recap-msg recap-msg--loading" role="note" aria-label="Generating session recap">
-          <div className="msg-header">
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><IconSparkles size={14} /> Session recap</span>
-          </div>
-          <div className="msg-body recap-msg-loading-body">
-            <span className="recap-msg-loading-bar" aria-hidden />
-            <span>Summarising the last few minutes...</span>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  if (recap.status === 'error') {
-    return (
-      <div className="virtuoso-footer-wrapper">
-        <div className="msg recap-msg recap-msg--error" role="note">
-          <div className="msg-header">
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><IconAlertTriangle size={14} /> Recap unavailable</span>
-          </div>
-          <div className="msg-body">{recap.error ?? 'Unknown error'}</div>
-        </div>
-      </div>
-    )
-  }
-
-  // status === 'ready' — summary and stats may still legitimately be
-  // missing if the server constructed the ready frame defensively;
-  // bail rather than render a half-card.
-  if (!recap.summary || !recap.stats) return null
-  const { summary, stats } = recap
-
-  return (
-    <div className="virtuoso-footer-wrapper">
-      <div className="msg recap-msg" role="note" aria-label="Session recap">
-        <div className="msg-header">
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><IconSparkles size={14} /> Session recap</span>
-        </div>
-        <div className="msg-body">
-          <Markdown text={summary} />
-          <div className="recap-msg-stats">
-            {stats.userTurns > 0 && (
-              <span className="recap-msg-stat">
-                <IconMessageCircle size={12} /> {stats.userTurns} turn{stats.userTurns === 1 ? '' : 's'}
-              </span>
-            )}
-            {stats.totalCostUsd > 0 && (
-              <span className="recap-msg-stat"><IconDollar size={12} /> {formatCost(stats.totalCostUsd)}</span>
-            )}
-            {stats.durationMs > 0 && (
-              <span className="recap-msg-stat"><IconClock size={12} /> {formatElapsed(stats.durationMs)}</span>
-            )}
-            {stats.toolsUsed.length > 0 && (
-              <span className="recap-msg-stat"><IconWrench size={12} /> {stats.toolsUsed.length} tool{stats.toolsUsed.length === 1 ? '' : 's'}</span>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-})
-
 const StreamingOverlaySpacer = memo(function StreamingOverlaySpacer({ height }: { height: number }) {
   return <div className="virtuoso-streaming-spacer" style={{ height }} aria-hidden />
 })
-
-function formatCost(usd: number): string {
-  if (usd === 0) return '$0'
-  if (usd < 0.01) return '<$0.01'
-  return `$${usd.toFixed(2)}`
-}
 
 /** Max subagent chips shown before collapsing into "+N more". */
 const MAX_VISIBLE_SUBAGENTS = 5

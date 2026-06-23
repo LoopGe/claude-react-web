@@ -17,6 +17,7 @@ import { useDebouncedValue } from '../hooks/useDebouncedValue'
 // gate its first mount on `settingsEverOpened` rather than `settingsOpen`.
 const SettingsPanel = lazy(() => import('./SettingsPanel').then((m) => ({ default: m.SettingsPanel })))
 const GitPanel = lazy(() => import('./GitPanel').then((m) => ({ default: m.GitPanel })))
+import { RecapWindow } from './RecapWindow'
 import { api } from '../hooks/useApi'
 import { useAttachments } from '../hooks/useAttachments'
 import { useChatStream } from '../hooks/useChatStream'
@@ -106,6 +107,12 @@ interface Props {
   gitLoading?: boolean
   gitError?: string | null
   onGitRefresh?: () => void
+  /** When true, render the floating Recap window at the top of the chat
+   *  area. Owned by ChatPanel (which also renders the reopen button in the
+   *  header); Chat just renders the window and calls onCloseRecap when the
+   *  user clicks X. */
+  recapOpen?: boolean
+  onCloseRecap?: () => void
   /** Whether this panel is the currently focused (active) one. Used by
    *  useSessionRecap to track last-viewed timestamps. */
   focused?: boolean
@@ -161,6 +168,7 @@ export const Chat = memo(function Chat({
   session,
   settingsOpen, onCloseSettings,
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
+  recapOpen, onCloseRecap,
   onSessionUpdate, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, settingsTabRequest, messageJumpTarget, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, onRegisterInjectInput,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat,
@@ -178,6 +186,7 @@ export const Chat = memo(function Chat({
   if (settingsOpen) settingsEverOpened.current = true
   const settingsPresence = useExitPresence(!!settingsOpen)
   const gitPresence = useExitPresence(!!gitPanelOpen)
+  const recapPresence = useExitPresence(!!recapOpen)
   // Synchronous reentrancy guard. setSending is async ?between two
   // rapid keypresses (e.g. Enter pressed twice within one frame), React
   // hasn't committed the state update yet, so the closure inside send()
@@ -642,8 +651,8 @@ export const Chat = memo(function Chat({
   // by App-level WS frames) and schedules a single POST /recap when the
   // session has been idle for IDLE_THRESHOLD_MS with no fresh recap
   // covering it. The recap object lives on session.recap (broadcast via
-  // session-recap-update / session-update); we render it via
-  // <MessageList recap={session.recap}> below.
+  // session-recap-update / session-update); we render it as a floating
+  // window at the top of the chat area (see <RecapWindow> below).
   const recap = useSessionRecap(session)
 
   // Composer snippets are a single GLOBAL instance owned by App and passed
@@ -983,7 +992,6 @@ export const Chat = memo(function Chat({
         >
         <MessageList
           items={stream.items}
-          recap={session.recap}
           working={session.working}
           replayReady={stream.replayReady}
           transcriptRevealKey={session.id}
@@ -1168,6 +1176,18 @@ export const Chat = memo(function Chat({
             />
           </Suspense>
         </div>
+      )}
+
+      {/* Floating recap window — non-modal, top-anchored, dismissible.
+          `recapPresence` keeps it mounted through the exit animation. Only
+          render when a recap exists; the open/closed state is owned by
+          ChatPanel (recapOpen) so the header reopen button stays in sync. */}
+      {recapPresence.shouldRender && session.recap && (
+        <RecapWindow
+          recap={session.recap}
+          isExiting={recapPresence.isExiting}
+          onClose={() => onCloseRecap?.()}
+        />
       )}
 
       {subagentStack.length > 0 && (

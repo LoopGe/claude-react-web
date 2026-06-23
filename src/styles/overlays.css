@@ -198,6 +198,103 @@
   white-space: nowrap;
 }
 
+/* ── Floating recap window ──────────────────────────────────────────
+   Non-modal card anchored to the top of the chat area. Frosted-glass
+   backdrop (var(--glass-blur)) matches SettingsPanel/GitPanel. Sits
+   above the transcript (z-index 4) but below the full-screen settings/git
+   overlays (z-index 5) so opening settings covers it. Max-height 45%
+   keeps the chat visible and scrollable beneath. */
+.recap-window {
+  position: absolute;
+  top: 8px;
+  left: var(--chat-reading-inset);
+  right: var(--chat-reading-inset);
+  max-height: 45%;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 75%, transparent);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--drawer-shadow);
+  overflow: hidden;
+  animation: recap-window-in var(--motion-duration-base) var(--motion-ease-enter) both;
+}
+.recap-window[data-state="closing"] {
+  animation: recap-window-out var(--motion-duration-fast) var(--motion-ease-exit) both;
+  pointer-events: none;
+}
+@keyframes recap-window-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes recap-window-out {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(-8px); }
+}
+.recap-window-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.recap-window-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.recap-window-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard),
+              color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.recap-window-close:hover {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+}
+.recap-window-body {
+  overflow-y: auto;
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+}
+/* When the recap status changes (pending → ready), the body content
+   re-mounts via key={status}. Fade it in so the height change reads as
+   a smooth reveal rather than a snap. */
+.recap-window-body-inner {
+  animation: recap-body-in var(--motion-duration-base) var(--motion-ease-enter) both;
+}
+@keyframes recap-body-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.recap-window-error {
+  color: var(--danger);
+  font-size: 12.5px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .recap-window,
+  .recap-window-body-inner { animation: none; }
+}
+
 /* ── Message search bar ────────────────────────────────────────── */
 
 .message-search-bar {

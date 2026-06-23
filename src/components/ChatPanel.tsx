@@ -211,6 +211,16 @@ export const ChatPanel = memo(function ChatPanel({
    *  keep the header "X msgs" label up-to-date without waiting for a
    *  server-pushed session-update (which only fires at turn end). */
   const [liveMessageCount, setLiveMessageCount] = useState(0)
+  /** Tracks the `generatedAt` of the recap the user has dismissed. When it
+   *  matches the current session.recap.generatedAt, the floating window
+   *  stays hidden; a NEW recap (different generatedAt) auto-reopens it.
+   *  Null = no dismissal in effect → window shows whenever a recap exists.
+   *  Reset on session switch (see effect below). */
+  const [recapDismissedAt, setRecapDismissedAt] = useState<number | null>(null)
+  useEffect(() => { setRecapDismissedAt(null) }, [session.id])
+  const recapOpen =
+    !!session.recap &&
+    (recapDismissedAt === null || session.recap.generatedAt !== recapDismissedAt)
   /** Anchor for the model picker dropdown. Non-null = picker visible. */
   const [modelMenu, setModelMenu] = useState<{ x: number; y: number } | null>(null)
   /** Anchor for the permission-mode menu. Non-null = menu visible. A
@@ -687,6 +697,8 @@ export const ChatPanel = memo(function ChatPanel({
             gitLoading={gitStatus.loading}
             gitError={gitStatus.error}
             onGitRefresh={gitStatus.refresh}
+            recapOpen={recapOpen}
+            onCloseRecap={() => setRecapDismissedAt(session.recap?.generatedAt ?? null)}
             onLiveMessageCount={setLiveMessageCount}
             onRegisterInterrupt={onRegisterInterrupt}
             onRegisterRecap={onRegisterRecap}
