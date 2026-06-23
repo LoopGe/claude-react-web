@@ -1059,12 +1059,17 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
     // Stamp `startedAt` once per subagent so the chip can show an
     // elapsed time. Preserve any existing value if we re-encounter the
     // same toolUseId (e.g. duplicate dispatch during replay).
-    const now = Date.now()
+    //
+    // Prefer the server-stamped `message.receivedAt` — it travels with the
+    // SDK frame across replays, so a page refresh that rebuilds indexes
+    // from cached messages recovers the original wall-clock start. Without
+    // this fallback, the elapsed timer resets to 0 on every reload.
+    const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
     for (const subagent of starts) {
       const existing = activeSubagents.get(subagent.toolUseId)
       activeSubagents.set(subagent.toolUseId, {
         ...subagent,
-        startedAt: existing?.startedAt ?? subagent.startedAt ?? now,
+        startedAt: existing?.startedAt ?? subagent.startedAt ?? stamp,
         endedAt: existing?.endedAt,
         status: existing?.status ?? 'running',
         toolCount: existing?.toolCount ?? 0,
@@ -1089,7 +1094,11 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
     // the Map clone until we actually have a matching id — otherwise
     // every Bash/Read/Edit hop allocates a fresh Map for nothing.
     let touched = false
-    const now = Date.now()
+    // Prefer the server-stamped wall-clock time so a page refresh that
+    // re-reduces cached messages recovers the original completion time
+    // (otherwise endedAt jumps forward to "now" on reload, blowing up the
+    // displayed elapsed range for completed subagents).
+    const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
     for (const { toolUseId, content, isError } of subagentResultEntries) {
       const existing = activeSubagents.get(toolUseId)
       if (!existing || existing.status !== 'running') continue
@@ -1100,7 +1109,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
       activeSubagents.set(toolUseId, {
         ...existing,
         status: isError ? 'interrupted' : 'done',
-        endedAt: now,
+        endedAt: stamp,
         result: { content, isError },
       })
     }
@@ -1142,7 +1151,9 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
   const wfStarts = getWorkflowStarts(message)
   if (wfStarts.length > 0) {
     if (activeWorkflows === state.activeWorkflows) activeWorkflows = new Map(activeWorkflows)
-    const now = Date.now()
+    // Prefer server-stamped wall-clock so replay/refresh keeps the original
+    // workflow start instead of resetting to now.
+    const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
     for (const wf of wfStarts) {
       const existing = activeWorkflows.get(wf.toolUseId)
       activeWorkflows.set(wf.toolUseId, {
@@ -1151,7 +1162,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
         // re-encounters — only fill in what's missing. `phases` is re-parsed
         // from input each time (it's static), which is harmless and keeps the
         // record correct if the input shape ever changes.
-        startedAt: existing?.startedAt ?? now,
+        startedAt: existing?.startedAt ?? stamp,
         endedAt: existing?.endedAt,
         status: existing?.status ?? 'running',
         childAgents: existing?.childAgents ?? [],
@@ -1170,7 +1181,9 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
     const wfResults = getToolResultEntries(message)
     if (wfResults.length > 0) {
       let touched = false
-      const now = Date.now()
+      // Prefer server-stamped wall-clock; falls back to now for messages
+      // restored from disk that lack receivedAt.
+      const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
       for (const { toolUseId, content, isError } of wfResults) {
         const existing = activeWorkflows.get(toolUseId)
         if (!existing || existing.status !== 'running') continue
@@ -1187,7 +1200,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
         activeWorkflows.set(toolUseId, {
           ...existing,
           status: isError ? 'interrupted' : 'done',
-          endedAt: now,
+          endedAt: stamp,
           result: { content, isError },
           // Authoritative completion metadata (null-safe: parsedOut may be null).
           taskType: parsedOut?.taskType ?? existing.taskType,
@@ -1222,12 +1235,14 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
       if (wf) {
         if (activeWorkflows === state.activeWorkflows) activeWorkflows = new Map(activeWorkflows)
         const byId = new Map(wf.childAgents.map((c) => [c.toolUseId, c]))
-        const now = Date.now()
+        // Server-stamped wall-clock survives replay; falls back to now
+        // for disk-restored frames without receivedAt.
+        const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
         for (const child of children) {
           const existing = byId.get(child.toolUseId)
           byId.set(child.toolUseId, {
             ...child,
-            startedAt: existing?.startedAt ?? now,
+            startedAt: existing?.startedAt ?? stamp,
             endedAt: existing?.endedAt,
             status: existing?.status ?? 'running',
             toolCount: existing?.toolCount ?? 0,
@@ -1281,7 +1296,9 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
     const childResults = getToolResultEntries(message)
     if (childResults.length > 0) {
       let touched = false
-      const now = Date.now()
+      // Prefer server-stamped wall-clock so child completion times survive
+      // replay/refresh instead of jumping forward to now.
+      const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
       for (const [wfId, wf] of activeWorkflows) {
         let childChanged = false
         const updatedChildren = wf.childAgents.map((c) => {
@@ -1292,7 +1309,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
           return {
             ...c,
             status: (match.isError ? 'interrupted' : 'done') as WorkflowStatus,
-            endedAt: now,
+            endedAt: stamp,
             result: { content: match.content, isError: match.isError },
           }
         })
