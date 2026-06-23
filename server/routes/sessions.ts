@@ -227,7 +227,10 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
       return c.json({ error: 'command is required' }, 400)
     }
     if (!body.confirm) return c.json({ error: 'confirm:true is required to run a shell command' }, 400)
-    const result = await sm.execInSession(c.req.param('id'), body.command, { timeoutMs: body.timeoutMs, share: body.share })
+    // Coerce share to a strict boolean — a truthy non-boolean (e.g. the
+    // string "false") must not silently flip to share:true.
+    const share = body.share === true
+    const result = await sm.execInSession(c.req.param('id'), body.command, { timeoutMs: body.timeoutMs, share })
     return c.json(result)
   })
 

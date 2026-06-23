@@ -1255,6 +1255,15 @@ export class SessionManager {
       // subscribers, but NEVER push into the SDK input queue. The model
       // never sees this command; zero spurious turns.
       this.pushToSession(s, userMsg)
+      // pushToSession marks the session mid-turn (pendingTurns=1, workingSince)
+      // expecting an SDK `result` to clear it — but the local path triggers no
+      // SDK turn, so no result ever arrives. Reset immediately: a local `!`
+      // command is done the moment its output is broadcast, and leaving
+      // working=true would stick the UI (WorkingBubble, header dot) forever
+      // and trip the stuck-session health check after the idle timeout.
+      s.pendingTurns = 0
+      s.workingSince = undefined
+      this.broadcastGlobal({ kind: 'update', session: this.info(s) })
     }
     return { ...result, message: userMsg }
   }

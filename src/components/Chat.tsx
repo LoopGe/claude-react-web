@@ -764,7 +764,10 @@ export const Chat = memo(function Chat({
       if (pendingId && typeof res.message?.uuid === 'string') {
         ackUserMessage(pendingId, res.message.uuid, res.message.receivedAt)
       }
-      history.add(`!${command}`)
+      // Preserve the share mode in history: `!cmd` vs `!!cmd` so recalling a
+      // previously-shared command re-runs it shared, not silently downgraded
+      // to local. The bash-history filter matches both (`startsWith('!')`).
+      history.add(`${opts.share ? '!!' : '!'}${command}`)
       setInput('')
       setComposerFocusSignal((n) => n + 1)
     } catch (e) {
@@ -794,7 +797,9 @@ export const Chat = memo(function Chat({
       await runBashCommand(command, { share: true })
       return
     }
-    if (text.startsWith('!') && text.length > 1) {
+    // `!cmd` — local only. Exclude the `!!` prefix (handled above) so a bare
+    // `!!` falls through to a normal message instead of running shell `!`.
+    if (text.startsWith('!') && !text.startsWith('!!') && text.length > 1) {
       const command = text.slice(1)
       setInput('')
       await runBashCommand(command)
