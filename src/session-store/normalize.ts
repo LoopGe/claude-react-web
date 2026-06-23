@@ -9,6 +9,7 @@ import type {
 } from './types'
 import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME, WORKFLOW_TOOL_NAME } from '../constants/toolNames'
 import { extractMessagePlainText } from '../search'
+import { parseWorkflowMeta, scriptPathBasename } from './workflow-meta'
 /** Strings the SDK / canUseTool deny path uses to mean "user said no".
  *  Matched against tool_result.content text — case-insensitive substring
  *  match. Both Anthropic CLI and our own deny path land here.
@@ -210,13 +211,19 @@ export function getSubagentStarts(msg: SdkMessage): ActiveSubagent[] {
 
 /** Extract the Workflow tool_use starts from an assistant message — the
  *  Workflow analogue of `getSubagentStarts`. Returns one entry per
- *  Workflow tool_use block, carrying the parsed declared phases (from
- *  `input.meta.phases`) and a human label.
+ *  Workflow tool_use block, carrying the parsed declared phases (from the
+ *  `meta` literal inside `input.script`) and a human label.
  *
- *  The Workflow tool's `input` is loosely typed (the SDK schema drifts), so
- *  every field access is defensive. `meta.phases` may be absent (older /
- *  minimal scripts) — an empty `phases` array is returned in that case and
- *  the overlay falls back to a flat "(ungrouped)" bucket. */
+ *  The SDK `WorkflowInput` has no `meta` field — `meta` lives inside the
+ *  `script` string as `export const meta = { name, description, phases }`.
+ *  So we parse the script source the model emitted (the tool_use `input` is
+ *  exactly that) to recover `name` + `phases`. Parsing is safe (no eval) and
+ *  non-fatal: a malformed/absent meta yields an empty `phases` array and the
+ *  label falls through to the next source. The overlay then collapses to a
+ *  flat "(ungrouped)" bucket — same as before, but now actually achievable
+ *  for well-formed scripts.
+ *
+ *  Every `input` access is defensive because the SDK schema drifts. */
 export function getWorkflowStarts(msg: SdkMessage): WorkflowRecord[] {
   if (msg.type !== 'assistant') return []
   const out: WorkflowRecord[] = []
@@ -225,29 +232,18 @@ export function getWorkflowStarts(msg: SdkMessage): WorkflowRecord[] {
     const id = extractToolUseId(block)
     if (!id) continue
     const input = block.input as Record<string, unknown> | undefined
-    const meta = input?.meta as Record<string, unknown> | undefined
-    // Parse declared phases defensively. Each phase entry is `{ title, detail? }`.
-    // A non-array or malformed phases value yields an empty list rather than
-    // throwing — the tree collapses to an ungrouped child list in that case.
-    const phases: WorkflowPhaseMeta[] = []
-    if (Array.isArray(meta?.phases)) {
-      for (const p of meta!.phases as Array<unknown>) {
-        if (!p || typeof p !== 'object') continue
-        const o = p as Record<string, unknown>
-        if (typeof o.title !== 'string' || !o.title) continue
-        phases.push({
-          title: o.title,
-          detail: typeof o.detail === 'string' ? o.detail : undefined,
-        })
-      }
-    }
-    // Label: meta.name (the script's declared name) is the most stable /
-    // informative; fall back to description, a prompt snippet, then the
-    // bare tool name — mirrors the SubagentCard label fallback ladder.
+    const script = typeof input?.script === 'string' ? input.script : undefined
+    const parsed = script ? parseWorkflowMeta(script) : undefined
+    const phases: WorkflowPhaseMeta[] = parsed?.phases ?? []
+    // Label ladder, most-informative first:
+    //   parsed meta.name  → input.name (named workflow) → description →
+    //   prompt snippet    → scriptPath basename → 'Workflow'.
     const label =
-      (typeof meta?.name === 'string' && meta.name) ||
+      (parsed?.name) ||
+      (typeof input?.name === 'string' && input.name) ||
       (typeof input?.description === 'string' && input.description) ||
       (typeof input?.prompt === 'string' && truncate(input.prompt, 80)) ||
+      (typeof input?.scriptPath === 'string' && scriptPathBasename(input.scriptPath)) ||
       'Workflow'
     out.push({
       toolUseId: id,

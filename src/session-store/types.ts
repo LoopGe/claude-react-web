@@ -118,16 +118,20 @@ export interface WorkflowChildAgent {
  *  the synthesized tool_result inline. */
 export interface WorkflowRecord {
   toolUseId: string
-  /** Human label — the Workflow's `meta.name`, falling back to the input
-   *  `description`/`prompt` snippet, then 'Workflow'. Shown in the card title
-   *  and overlay header. */
+  /** Human label — parsed from the script's `meta.name`, falling back to the
+   *  input `name` (named workflow), `description`/`prompt` snippet, the
+   *  `scriptPath` basename, then 'Workflow'. Shown in the card title and
+   *  overlay header. May be rescued from 'Workflow' to the authoritative
+   *  `WorkflowOutput.workflowName` once the result lands. */
   label: string
   startedAt?: number
   endedAt?: number
   status: WorkflowStatus
-  /** Declared phases (input.meta.phases), in declaration order. May be empty
-   *  if the script didn't declare any — the tree then collapses to a flat
-   *  child list under a synthetic "(ungrouped)" bucket. */
+  /** Declared phases parsed from the `meta` literal in `input.script`, in
+   *  declaration order. May be empty if the script didn't declare any (or the
+   *  literal failed to parse) — the tree then collapses to a flat child list
+   *  under a synthetic "(ungrouped)" bucket. The SDK `WorkflowInput` has no
+   *  `meta` field; meta lives inside the script string. */
   phases: WorkflowPhaseMeta[]
   /** Child agents spawned by this Workflow, in arrival order. Updated
    *  incrementally as child tool_use frames stream in. */
@@ -136,6 +140,25 @@ export interface WorkflowRecord {
    *  lands on the MAIN thread). Set when the matching tool_result arrives, so
    *  WorkflowCard renders it inline and the orphan bubble is suppressed. */
   result?: ToolResultEntry
+  /** Authoritative task type from `WorkflowOutput` (parsed at completion).
+   *  `'remote_agent'` means the work dispatched to a CCR cloud session; the
+   *  card then offers a `sessionUrl`. Absent until the result lands. */
+  taskType?: 'local_workflow' | 'remote_agent'
+  /** Cloud session URL when the workflow dispatched to CCR
+   *  (`WorkflowOutput.status === 'remote_launched'`). Rendered as an
+   *  "Open remote session" link on the card. */
+  sessionUrl?: string
+  /** Local workflow run id — the `resumeFromRunId` handle for resuming a
+   *  prior Workflow invocation. Captured from `WorkflowOutput.runId`. */
+  runId?: string
+  /** Persisted workflow script path (from `WorkflowOutput.scriptPath`).
+   *  Editable via Write/Edit; pass back as `scriptPath` to re-run without
+   *  resending the script. UI affordance is a follow-up. */
+  scriptPath?: string
+  /** True when this workflow runs in a remote CCR session
+   *  (`remote_launched` / `taskType === 'remote_agent'`) — no local sidechain
+   *  children arrive; the card surfaces the cloud session link instead. */
+  remote?: boolean
 }
 
 export type PlanStatus = 'pending' | 'approved' | 'rejected'

@@ -45,6 +45,8 @@ export const WorkflowCard = memo(function WorkflowCard({ toolUseId, fallbackLabe
   const childCount = record?.childAgents.length ?? 0
   const phaseCount = record?.phases.length ?? 0
   const isRunning = status === 'running'
+  const remote = record?.remote === true
+  const sessionUrl = record?.sessionUrl
 
   // Tick once a second while running so the elapsed display stays fresh.
   // Stops once endedAt is set — completed cards don't need re-renders.
@@ -81,6 +83,11 @@ export const WorkflowCard = memo(function WorkflowCard({ toolUseId, fallbackLabe
         <span className="workflow-card-title">Workflow</span>
         <span className="workflow-card-label">{label}</span>
         <span className="workflow-card-meta">
+          {remote && (
+            <span className="workflow-card-remote" title="Running in a remote cloud session">
+              remote
+            </span>
+          )}
           {phaseCount > 0 && (
             <span className="workflow-card-phase" title="Declared phases">
               {phaseCount} phase{phaseCount === 1 ? '' : 's'}
@@ -100,6 +107,19 @@ export const WorkflowCard = memo(function WorkflowCard({ toolUseId, fallbackLabe
           <span className="workflow-card-open" aria-hidden><IconExternalLink size={12} /></span>
         </span>
       </button>
+      {remote && sessionUrl && (
+        <a
+          className="workflow-card-remote-link"
+          href={sessionUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          title={`Open remote session — ${sessionUrl}`}
+        >
+          <IconExternalLink size={12} />
+          <span>Open remote session</span>
+        </a>
+      )}
       {result && <WorkflowCardResult result={result} />}
     </div>
   )

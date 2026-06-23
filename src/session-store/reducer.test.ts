@@ -260,8 +260,10 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
 })
 
 describe('reducer: Workflow indexing', () => {
-  // A Workflow tool_use on the MAIN thread. Its input carries meta.phases
-  // (the declared phase tree) and meta.name (the script's name).
+  // A Workflow tool_use on the MAIN thread. Realistic input shape: the SDK
+  // WorkflowInput has no `meta` field — meta lives INSIDE the `script`
+  // string as `export const meta = {…}`. The reducer's getWorkflowStarts
+  // parses the script to recover name + declared phases.
   const workflowToolUse: SdkMessage = {
     type: 'assistant',
     uuid: 'a-wf',
@@ -273,13 +275,9 @@ describe('reducer: Workflow indexing', () => {
           id: 'tu_workflow',
           name: 'Workflow',
           input: {
-            meta: {
-              name: 'find-flaky-tests',
-              phases: [
-                { title: 'Scan', detail: 'grep CI logs' },
-                { title: 'Fix', detail: 'one agent per flaky test' },
-              ],
-            },
+            script:
+              "export const meta = { name: 'find-flaky-tests', description: 'Find flaky tests', phases: [{ title: 'Scan', detail: 'grep CI logs' }, { title: 'Fix', detail: 'one agent per flaky test' }] }\n" +
+              'phase("Scan")\nagent("hi")\n',
           },
         },
       ],
@@ -422,6 +420,156 @@ describe('reducer: Workflow indexing', () => {
     // The Workflow tool_use id must be excluded from the generic toolStatus
     // map — same exclusion as Plan/Subagent/Question (they own their status).
     expect(state.toolStatus.has('tu_workflow')).toBe(false)
+  })
+
+  it('parses a remote WorkflowOutput from the tool_result and marks the record remote', () => {
+    // A remote workflow returns sessionUrl immediately; work runs in a CCR
+    // cloud session so no local sidechain children arrive. The card should
+    // surface the sessionUrl + runId + scriptPath + remote flag.
+    const remoteResult: SdkMessage = {
+      type: 'user',
+      uuid: 'u-wf-remote',
+      parent_tool_use_id: null,
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tu_workflow',
+            content: JSON.stringify({
+              status: 'remote_launched',
+              taskType: 'remote_agent',
+              workflowName: 'spec',
+              runId: 'wf_abc',
+              scriptPath: '/tmp/wf/spec.mjs',
+              sessionUrl: 'https://claude.ai/s/xyz',
+            }),
+          },
+        ],
+      },
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: workflowToolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: remoteResult })
+
+    const wf = state.activeWorkflows.get('tu_workflow')
+    expect(wf?.status).toBe('done')
+    expect(wf?.remote).toBe(true)
+    expect(wf?.taskType).toBe('remote_agent')
+    expect(wf?.sessionUrl).toBe('https://claude.ai/s/xyz')
+    expect(wf?.runId).toBe('wf_abc')
+    expect(wf?.scriptPath).toBe('/tmp/wf/spec.mjs')
+  })
+
+  it('rescues a still-generic label with WorkflowOutput.workflowName at completion', () => {
+    // A Workflow invoked by `name` (no inline script) seeds label as 'Workflow'
+    // because there's no script to parse. At completion the WorkflowOutput
+    // carries workflowName — the record should adopt it.
+    const namedWorkflowUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-wf-named',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'tu_named', name: 'Workflow', input: { name: 'spec' } },
+        ],
+      },
+    } as unknown as SdkMessage
+    const namedResult: SdkMessage = {
+      type: 'user',
+      uuid: 'u-wf-named',
+      parent_tool_use_id: null,
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tu_named',
+            content: JSON.stringify({
+              status: 'async_launched',
+              taskType: 'local_workflow',
+              workflowName: 'spec',
+              runId: 'wf_1',
+            }),
+          },
+        ],
+      },
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: namedWorkflowUse })
+    // input.name is used as the fallback, so label is 'spec' BEFORE the result
+    // — but if the model emitted neither script meta nor input.name, the
+    // rescue path is what matters. Here input.name already gives 'spec'.
+    expect(state.activeWorkflows.get('tu_named')?.label).toBe('spec')
+
+    state = reduceSessionState(state, { type: 'MESSAGE', message: namedResult })
+    const wf = state.activeWorkflows.get('tu_named')
+    expect(wf?.status).toBe('done')
+    expect(wf?.remote).toBe(false)
+    expect(wf?.taskType).toBe('local_workflow')
+    expect(wf?.runId).toBe('wf_1')
+    // label stays 'spec' (not overwritten, since it wasn't generic).
+    expect(wf?.label).toBe('spec')
+  })
+
+  it('rescues a generic "Workflow" label to workflowName when no script/name was provided', () => {
+    // No input.script, no input.name, no input.description → label is 'Workflow'.
+    // The result's workflowName should rescue it.
+    const bareUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-wf-bare',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_bare', name: 'Workflow', input: {} }],
+      },
+    } as unknown as SdkMessage
+    const bareResult: SdkMessage = {
+      type: 'user',
+      uuid: 'u-wf-bare',
+      parent_tool_use_id: null,
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tu_bare',
+            content: JSON.stringify({
+              status: 'async_launched',
+              taskType: 'local_workflow',
+              workflowName: 'find-bugs',
+            }),
+          },
+        ],
+      },
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: bareUse })
+    expect(state.activeWorkflows.get('tu_bare')?.label).toBe('Workflow')
+
+    state = reduceSessionState(state, { type: 'MESSAGE', message: bareResult })
+    expect(state.activeWorkflows.get('tu_bare')?.label).toBe('find-bugs')
+  })
+
+  it('leaves the record intact when the tool_result is a plain summary (not WorkflowOutput JSON)', () => {
+    // Many local workflows return a plain text summary, not a WorkflowOutput
+    // payload. The remote/runId/scriptPath fields must stay undefined and the
+    // record must still flip to done.
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: workflowToolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: workflowResult })
+
+    const wf = state.activeWorkflows.get('tu_workflow')
+    expect(wf?.status).toBe('done')
+    // remote is `false` (not undefined): the merge expression coerces to a
+    // boolean false when parsedOut is null and there was no prior remote flag.
+    expect(wf?.remote).toBe(false)
+    expect(wf?.sessionUrl).toBeUndefined()
+    expect(wf?.runId).toBeUndefined()
+    // label stays the parsed script name (not rescued — nothing to rescue).
+    expect(wf?.label).toBe('find-flaky-tests')
   })
 })
 

@@ -1528,6 +1528,30 @@
   display: inline-flex;
   align-items: center;
 }
+.workflow-card-remote {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--bg-elev-2);
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.workflow-card-remote-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--accent);
+  text-decoration: none;
+  background: transparent;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.workflow-card-remote-link:hover { background: var(--bg-elev-2); }
+.workflow-card-remote-link:visited { color: var(--accent); }
 
 /* ─── Workflow overlay ──────────────────────────────────────────── */
 /* Two-column layout: phase-tree sidebar (left) + message stream (right).

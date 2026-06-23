@@ -21,6 +21,7 @@ import {
   parseQuestionAnswersMessage,
 } from '../utils/question-answers'
 import { toolDebug, toolDebugEnabled } from './debug'
+import { parseWorkflowOutput } from './workflow-meta'
 
 export function reduceSessionState(state: SessionState, action: SessionAction): SessionState {
   switch (action.type) {
@@ -1177,11 +1178,33 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
           if (activeWorkflows === state.activeWorkflows) activeWorkflows = new Map(activeWorkflows)
           touched = true
         }
+        // Parse WorkflowOutput (status/taskType/runId/scriptPath/sessionUrl)
+        // from the result content. Null when the content isn't a
+        // WorkflowOutput-shaped JSON payload (e.g. a plain summary string) —
+        // in that case the remote/runId/scriptPath fields stay undefined and
+        // the record keeps working at its previous fidelity.
+        const parsedOut = parseWorkflowOutput(content)
         activeWorkflows.set(toolUseId, {
           ...existing,
           status: isError ? 'interrupted' : 'done',
           endedAt: now,
           result: { content, isError },
+          // Authoritative completion metadata (null-safe: parsedOut may be null).
+          taskType: parsedOut?.taskType ?? existing.taskType,
+          sessionUrl: parsedOut?.sessionUrl ?? existing.sessionUrl,
+          runId: parsedOut?.runId ?? existing.runId,
+          scriptPath: parsedOut?.scriptPath ?? existing.scriptPath,
+          remote:
+            parsedOut?.status === 'remote_launched' ||
+            parsedOut?.taskType === 'remote_agent' ||
+            existing.remote === true,
+          // Rescue a still-generic label with the authoritative workflow name
+          // (the script parse may have failed or the workflow was invoked by
+          // `name`, so label could still be 'Workflow' at this point).
+          label:
+            existing.label === 'Workflow' && parsedOut?.workflowName
+              ? parsedOut.workflowName
+              : existing.label,
         })
       }
       changed = changed || touched
