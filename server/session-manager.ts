@@ -29,6 +29,7 @@ import { RecapManager } from './recap.js'
 import type { SessionPhase, SessionRecap } from './session-types.js'
 import { tryCaptureGitHead, invalidateStatusCache } from './git.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
+import { execCommand, escapeXml } from './exec.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig } from './config.js'
 import { createAsyncSubscription } from './async-subscription.js'
@@ -1184,6 +1185,64 @@ export class SessionManager {
     }
     s.lastActivityAt = Date.now()
     this.persist(s)
+  }
+
+  /** `!` bash mode — run a shell command directly in the session's cwd,
+   *  inject the result as a synthetic <bash-*> user message so the model
+   *  sees it in subsequent turns, and cancel the spurious model turn the
+   *  injection would otherwise trigger (Option C, validated: dispatch +
+   *  immediate interrupt wins the race before the SDK emits any assistant
+   *  content).
+   *
+   *  The command runs UNSANDBOXED in the user's shell (pipes/redirects/globs
+   *  work). The route-level `confirm` gate is the guardrail, not this method. */
+  async execInSession(
+    id: string,
+    command: string,
+    opts: { timeoutMs?: number; onProgress?: (line: string) => void } = {},
+  ): Promise<{
+    stdout: string
+    stderr: string
+    exitCode: number | null
+    timedOut: boolean
+    interrupted: boolean
+    truncated: boolean
+    message: SDKUserMessage
+  }> {
+    const s = this.requireRunnable(id)
+    const cwd = s.cwd
+    if (!cwd) throw new HttpError(400, 'session has no cwd — cannot run a shell command')
+    log.info(`[session ${id}] exec: ${command.slice(0, 120)}`)
+    const result = await execCommand(cwd, command, {
+      timeoutMs: opts.timeoutMs,
+      onProgress: opts.onProgress,
+    })
+    // Build the synthetic user message with <bash-*> tags (mirrors Claude
+    // Code's format). <bash-exit> lets the renderer show a status badge
+    // without a separate WS channel.
+    const exitTag = `<bash-exit code="${result.exitCode ?? -1}"${result.timedOut ? ' timedOut="true"' : ''}${result.interrupted ? ' interrupted="true"' : ''}${result.truncated ? ' truncated="true"' : ''} />`
+    const text =
+      `<bash-input>${escapeXml(command)}</bash-input>\n` +
+      `${exitTag}\n` +
+      `<bash-stdout>${escapeXml(result.stdout)}</bash-stdout>` +
+      (result.stderr ? `\n<bash-stderr>${escapeXml(result.stderr)}</bash-stderr>` : '')
+    const userMsg: SDKUserMessage = {
+      type: 'user',
+      message: { role: 'user', content: text },
+      parent_tool_use_id: null,
+      uuid: randomUUID(),
+      session_id: s.id,
+    }
+    // Inject into the SDK transcript (model sees it next turn) + broadcast
+    // locally. This triggers a model turn, which we cancel immediately.
+    this.dispatchUserMessage(s, userMsg)
+    // Cancel the spurious turn. Don't await — the dispatch already broadcast
+    // the <bash-*> message, so the client sees the output instantly; the
+    // interrupt just suppresses the model's unwanted reply.
+    void this.interrupt(id).catch((e) => {
+      log.warn(`[session ${id}] exec interrupt failed (spurious turn may leak):`, e)
+    })
+    return { ...result, message: userMsg }
   }
 
   /** Reset the session's conversation context.

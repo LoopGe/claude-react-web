@@ -126,6 +126,11 @@ export const Composer = memo(function Composer({
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerQuery, setPickerQuery] = useState('')
   const [pickerIndex, setPickerIndex] = useState(0)
+  /** `!` bash mode is active when the input starts with `!`. Driven from
+   *  input (not a separate setter) so paste/undo/programmatic edits stay in
+   *  sync. While active: a mode indicator shows, slash-command autocomplete
+   *  is suppressed, and the placeholder switches. */
+  const bashMode = input.startsWith('!')
 
   /** Filter commands by prefix match against name + aliases. */
   const filteredCommands = useMemo(() => {
@@ -413,6 +418,12 @@ export const Composer = memo(function Composer({
             ))}
           </div>
         )}
+        {bashMode && (
+          <div className="composer-bash-indicator" aria-label="Bash mode">
+            <span className="composer-bash-badge" aria-hidden>!</span>
+            <span className="composer-bash-label">bash mode — command runs in the session cwd, not sent to the model</span>
+          </div>
+        )}
         <textarea
           ref={textareaRef}
           className="textarea"
@@ -420,7 +431,9 @@ export const Composer = memo(function Composer({
           placeholder={
             dragOver
               ? 'Drop files to attach…'
-              : 'Send a message (Enter = send, Shift/Ctrl+Enter = newline, ↑/↓ history)'
+              : bashMode
+                ? 'Run a shell command in the session cwd (Enter = run)'
+                : 'Send a message (Enter = send, Shift/Ctrl+Enter = newline, ↑/↓ history)'
           }
           value={input}
           onContextMenu={handleTextareaContextMenu}
@@ -444,12 +457,13 @@ export const Composer = memo(function Composer({
             if (history.isBrowsing()) history.reset()
 
             // Slash command trigger: detect if the caret is inside a
-            // word that starts with "/" (at a word boundary).
+            // word that starts with "/" (at a word boundary). Suppressed
+            // in `!` bash mode — there, `/` is shell syntax, not a command.
             const caret = e.target.selectionStart
             const before = val.slice(0, caret)
             const wordStart = before.lastIndexOf(' ') + 1
             const word = before.slice(wordStart)
-            if (word.startsWith('/') && !word.includes(' ') && commands && commands.length > 0) {
+            if (!val.startsWith('!') && word.startsWith('/') && !word.includes(' ') && commands && commands.length > 0) {
               setPickerOpen(true)
               setPickerQuery(word.slice(1))
               setPickerIndex(0)

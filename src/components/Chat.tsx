@@ -736,11 +736,51 @@ export const Chat = memo(function Chat({
       })
   }, [clearAttachments, clearError, pastedImages, permissions])
 
+  /** Run a `!` bash command: optimistic placeholder → POST /exec → ack/rollback.
+   *  The server injects the <bash-*> result as a synthetic user message and
+   *  cancels the spurious model turn, so the client just needs to manage the
+   *  placeholder lifecycle like a normal send. Defined before `send` so the
+   *  latter can reference it in its dependency array. */
+  const runBashCommand = useCallback(async (command: string) => {
+    clearError()
+    const placeholder = `<bash-input>${command}</bash-input>`
+    const pendingId = insertUserMessage(placeholder)
+    sendingRef.current = true
+    setSending(true)
+    try {
+      const res = await api.post<{
+        message: { uuid: string; receivedAt?: number }
+      }>(`/sessions/${session.id}/exec`, { command, confirm: true })
+      if (pendingId && typeof res.message?.uuid === 'string') {
+        ackUserMessage(pendingId, res.message.uuid, res.message.receivedAt)
+      }
+      history.add(`!${command}`)
+      setInput('')
+      setComposerFocusSignal((n) => n + 1)
+    } catch (e) {
+      setLocalError((e as Error).message)
+      if (pendingId) rollbackUserMessage(pendingId)
+    } finally {
+      sendingRef.current = false
+      setSending(false)
+    }
+  }, [session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearError, setInput])
+
   const send = useCallback(async () => {
     // Synchronous guard FIRST ?before any await or React state read,
     // so two rapid Enter presses (within one frame) can't both pass.
     if (sendingRef.current) return
     const text = input.trim()
+    // `!` bash mode — run a shell command directly in the session cwd,
+    // bypassing the model. Detected before slash-command matching so a
+    // command starting with `!` (rare) still routes here. Mirrors Claude
+    // Code's `!` prefix: the command runs unsandboxed in the user's shell.
+    if (text.startsWith('!') && text.length > 1) {
+      const command = text.slice(1)
+      setInput('')
+      await runBashCommand(command)
+      return
+    }
     // Client-side local commands (e.g. /resume) are intercepted here and
     // handled in-app instead of being POSTed to the SDK. Matched strictly
     // (first token only) so real SDK/plugin commands still pass through.
@@ -817,7 +857,7 @@ export const Chat = memo(function Chat({
       sendingRef.current = false
       setSending(false)
     }
-  }, [input, attachmentList, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, pastedImages, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, requestClearSession])
+  }, [input, attachmentList, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, pastedImages, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, requestClearSession, runBashCommand])
 
   // Focus traps for the two in-panel overlays. The settings overlay is
   // always mounted (toggled via CSS .hidden), so the trap is gated on

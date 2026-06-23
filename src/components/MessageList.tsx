@@ -1274,6 +1274,13 @@ const MessageView = memo(function MessageView({
     }
 
     // Real user message
+    // `!` bash mode: a synthetic user message carrying <bash-input> tags.
+    // Render as a BashMessage card (command + output + exit badge) instead
+    // of a normal "you" bubble. The placeholder (optimistic, pre-POST) only
+    // has <bash-input>; the server-injected result adds <bash-stdout> etc.
+    if (userContent && userContent.includes('<bash-input>')) {
+      return <BashMessage text={userContent} sending={sending} />
+    }
     const imageBlocks = blocks.filter((b) => b.type === 'image')
     // Show the "queued" chip only while the turn is genuinely waiting behind
     // an in-flight turn: server-acknowledged (deliveryStatus === 'queued')
@@ -1471,6 +1478,67 @@ function MessageTimestamp({ ms }: { ms: number | undefined }) {
  *  prompt, not in this message, but the metadata here is enough to
  *  give the user a visual cue that the preceding transcript has been
  *  compressed. */
+/** Extract the inner text of the first `<tag>...</tag>` in `s`, or null.
+ *  Used to parse the <bash-*> tags the server injects for `!` mode. */
+function extractTag(s: string, tag: string): string | null {
+  const open = `<${tag}>`
+  const close = `</${tag}>`
+  const start = s.indexOf(open)
+  if (start < 0) return null
+  const end = s.indexOf(close, start + open.length)
+  if (end < 0) return null
+  return s.slice(start + open.length, end)
+}
+
+/** Render a `!` bash-mode synthetic message. Parses <bash-input>,
+ *  <bash-exit code="...">, <bash-stdout>, <bash-stderr> tags and shows the
+ *  command + output as a card resembling a Bash tool result. While the
+ *  optimistic placeholder is in flight (only <bash-input>, no stdout), a
+ *  spinner takes the output's place. */
+function BashMessage({ text, sending }: { text: string; sending?: boolean }) {
+  const command = extractTag(text, 'bash-input') ?? ''
+  const stdout = extractTag(text, 'bash-stdout')
+  const stderr = extractTag(text, 'bash-stderr')
+  // <bash-exit code="0" timedOut="true" interrupted="true" truncated="true" />
+  const exitMatch = text.match(/<bash-exit\s+code="(-?\d+)"([^/]*)\/?>/)
+  const exitCode = exitMatch ? parseInt(exitMatch[1], 10) : null
+  const exitAttrs = exitMatch?.[2] ?? ''
+  const timedOut = exitAttrs.includes('timedOut="true"')
+  const interrupted = exitAttrs.includes('interrupted="true"')
+  const truncated = exitAttrs.includes('truncated="true"')
+  const pending = stdout === null && !sending // server hasn't injected result yet
+  const ok = exitCode === 0
+  return (
+    <div className="msg bash-msg" role="note" aria-label={`Shell command: ${command}`}>
+      <div className="bash-msg-header">
+        <span className="bash-msg-cmd">
+          <span className="bash-msg-prompt" aria-hidden>$</span>
+          <code>{command}</code>
+        </span>
+        {exitCode !== null && !pending && (
+          <span className={`bash-msg-exit ${ok ? 'ok' : 'err'}`}>
+            {timedOut ? 'timeout' : interrupted ? 'interrupted' : `exit ${exitCode}`}
+          </span>
+        )}
+        {pending && <span className="bash-msg-pending" aria-label="running"><span className="msg-sending-spinner" aria-hidden /></span>}
+      </div>
+      {(stdout || stderr || pending) && (
+        <div className="bash-msg-body">
+          {pending ? (
+            <span className="bash-msg-pending-text">Running…</span>
+          ) : (
+            <>
+              {stdout && <pre className="bash-msg-pre">{stdout}</pre>}
+              {stderr && <pre className="bash-msg-pre bash-msg-stderr">{stderr}</pre>}
+              {truncated && <div className="bash-msg-truncated">output truncated</div>}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function CompactBoundary({ msg }: { msg: SdkMessage }) {
   const meta = (msg as { compact_metadata?: {
     trigger?: 'manual' | 'auto'
