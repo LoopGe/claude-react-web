@@ -48,6 +48,11 @@ export const ContextBar = memo(function ContextBar({ usage }: Props) {
         <span className="ctx-bar-nums">
           {formatTokens(used)} / {formatTokens(max)}
           <span className="ctx-bar-pct"> · {bounded.toFixed(1)}%</span>
+          {usage.cacheReadTokens != null && usage.cacheReadTokens > 0 && (
+            <span className="ctx-bar-cache" title={`Cache hit: ${formatTokens(usage.cacheReadTokens)} read · ${formatTokens(usage.cacheCreationTokens ?? 0)} written`}>
+              {' '}· cache {formatTokens(usage.cacheReadTokens)}
+            </span>
+          )}
         </span>
       </div>
       <div className="ctx-bar-track" aria-hidden>

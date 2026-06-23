@@ -151,6 +151,9 @@ describe('liteContextUsageFromResult', () => {
     expect(out!.rawMaxTokens).toBe(200000)
     expect(out!.percentage).toBeCloseTo((6200 / 200000) * 100, 5)
     expect(out!.model).toBe('claude-opus-4-7')
+    // Cache buckets are surfaced from the top-level usage (no iterations).
+    expect(out!.cacheCreationTokens).toBe(200)
+    expect(out!.cacheReadTokens).toBe(5000)
   })
 
   it('treats missing token buckets as zero', () => {
@@ -160,6 +163,10 @@ describe('liteContextUsageFromResult', () => {
     })
     const out = liteContextUsageFromResult(msg)
     expect(out!.totalTokens).toBe(500)
+    // Missing cache buckets → keys omitted (not set to 0), so the UI can
+    // distinguish "no cache reported" from "zero cache hit".
+    expect(out!.cacheCreationTokens).toBeUndefined()
+    expect(out!.cacheReadTokens).toBeUndefined()
   })
 
   it('uses the last iteration when usage.iterations is present', () => {
@@ -185,6 +192,10 @@ describe('liteContextUsageFromResult', () => {
     expect(out!.totalTokens).toBe(450100)
     expect(out!.maxTokens).toBe(1000000)
     expect(out!.percentage).toBeCloseTo((450100 / 1000000) * 100, 5)
+    // Cache buckets come from the PICKED iteration (last 'message'), not
+    // the cumulative top-level usage.
+    expect(out!.cacheCreationTokens).toBe(100)
+    expect(out!.cacheReadTokens).toBe(400000)
   })
 
   it('falls back to top-level usage when iterations is empty or null', () => {

@@ -35,6 +35,12 @@ export interface ContextUsage {
   rawMaxTokens?: number
   percentage?: number
   model?: string
+  /** Tokens written to the cache on this turn. Present when the source
+   *  iteration reports it; absent otherwise. */
+  cacheCreationTokens?: number
+  /** Tokens served from cache on this turn (cache hit). Present when the
+   *  source iteration reports it; absent otherwise. */
+  cacheReadTokens?: number
   skills?: {
     includedSkills: number
     totalSkills: number

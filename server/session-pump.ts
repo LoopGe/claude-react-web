@@ -574,6 +574,12 @@ export interface LiteContextUsage {
   rawMaxTokens: number
   percentage: number
   model: string
+  /** Tokens written to the cache on this turn (cache write). Present when
+   *  the source iteration reports it; absent on turns that lack the field. */
+  cacheCreationTokens?: number
+  /** Tokens served from cache on this turn (cache read / hit). Present when
+   *  the source iteration reports it; absent on turns that lack the field. */
+  cacheReadTokens?: number
 }
 
 /** Build a LiteContextUsage from a `result` SDK message. Returns null when
@@ -682,11 +688,20 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
   }
   const totalTokens = rawTotal
 
-  return {
+  // Surface the cache buckets of the picked iteration so the UI can show
+  // cache hit rate. We only forward non-null values — turns that genuinely
+  // lack the fields (e.g. provider that doesn't report them) keep the
+  // wire shape clean by omitting the keys entirely.
+  const cacheCreationTokens = source.cache_creation_input_tokens
+  const cacheReadTokens = source.cache_read_input_tokens
+  const out: LiteContextUsage = {
     totalTokens,
     maxTokens: contextWindow,
     rawMaxTokens: contextWindow,
     percentage: (totalTokens / contextWindow) * 100,
     model,
   }
+  if (typeof cacheCreationTokens === 'number') out.cacheCreationTokens = cacheCreationTokens
+  if (typeof cacheReadTokens === 'number') out.cacheReadTokens = cacheReadTokens
+  return out
 }
