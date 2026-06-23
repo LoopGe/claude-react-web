@@ -24,7 +24,7 @@ import { useWsHub, useWsHubStatus } from './hooks/useWsHub'
 import type { WsServerFrame } from './ws-types'
 import type { MessageSearchHit } from '../shared/search-results'
 import type { MessageJumpTarget } from '../shared/message-jump'
-import type { NewSessionForm, PermissionMode, SessionInfo, SidebarSection } from './types'
+import type { NewSessionForm, PermissionMode, SessionInfo, SessionGroup, SidebarSection } from './types'
 import { PERMISSION_MODE_CYCLE } from './types'
 import { ACCENT_COLORS } from './theme'
 import { AppearancePanel } from './components/AppearancePanel'
@@ -362,6 +362,7 @@ export function App() {
   const focusedIdRef = useRef(focusedId)
   const sessionsRef = useRef(sessions)
   const maxOpenRef = useRef(maxOpen)
+  const activeGroupIdRef = useRef<string | null>(null)
   const paletteOpenRef = useRef(paletteOpen)
   const helpOpenRef = useRef(helpOpen)
   const historyPanelOpenRef = useRef(historyPanelOpen)
@@ -803,13 +804,15 @@ export function App() {
    *  implementation when a stale view triggered the path. */
   const handleAddToGroup = useCallback(
     (sessionId: string, groupId: string) => {
+      let nextGroups: SessionGroup[] = []
       setGroups((prev) => {
         // Empty groupId — just remove from all groups (ungroup).
         if (!groupId) {
-          return prev.map((g) => ({
+          nextGroups = prev.map((g) => ({
             ...g,
             sessionIds: g.sessionIds.filter((id) => id !== sessionId),
           }))
+          return nextGroups
         }
         const target = prev.find((g) => g.id === groupId)
         if (!target) return prev
@@ -826,14 +829,37 @@ export function App() {
           return prev
         }
         // Remove from old group, then add to target.
-        return prev.map((g) => {
+        nextGroups = prev.map((g) => {
           const without = { ...g, sessionIds: g.sessionIds.filter((id) => id !== sessionId) }
           if (g.id !== groupId) return without
           return { ...without, sessionIds: [...without.sessionIds, sessionId] }
         })
+        return nextGroups
+      })
+      // Sync the open panel set when the active group's membership changes:
+      // if the main view is currently showing exactly this group's sessions,
+      // add the newly-joined session (or drop the one that just left) so the
+      // view follows the group without requiring a manual re-activate.
+      const active = activeGroupIdRef.current
+      if (!active) return
+      const updated = nextGroups.find((g) => g.id === active)
+      if (!updated) return
+      setOpenIds((prev) => {
+        // Only auto-sync when the open set IS the active group's members —
+        // if the user has manually tuned the open panels, leave them alone.
+        const isGroupView = prev.every((id) => updated.sessionIds.includes(id)) && prev.length > 0
+        if (!isGroupView) return prev
+        const desired = updated.sessionIds.slice(0, maxOpenRef.current)
+        // Preserve existing order; append newly-added sessions at the end.
+        const ordered = prev.filter((id) => desired.includes(id))
+        for (const id of desired) if (!ordered.includes(id)) ordered.push(id)
+        // Drop sessions no longer in the group.
+        const final = ordered.filter((id) => desired.includes(id)).slice(0, maxOpenRef.current)
+        if (final.length === prev.length && final.every((id, i) => id === prev[i])) return prev
+        return final
       })
     },
-    [setGroups, maxGroupSize, toast],
+    [setGroups, maxGroupSize, toast, setOpenIds],
   )
 
   /** The group whose sessions are currently open in the main grid.
@@ -842,6 +868,8 @@ export function App() {
     if (openIds.length === 0) return null
     return groups.find((g) => openIds.every((id) => g.sessionIds.includes(id)))?.id ?? null
   }, [openIds, groups])
+  // eslint-disable-next-line react-hooks/refs -- intentional render-time ref sync (same pattern as openIdsRef etc.)
+  activeGroupIdRef.current = activeGroupId
 
   const handleCreate = useCallback(
     async (form: NewSessionForm) => {
@@ -1750,17 +1778,33 @@ export function App() {
       // moves it OUT of its current group. Without this the session stays in
       // the old group's sessionIds and the grouped view keeps rendering it
       // there, so the drop appears to "bounce back" (couldn't drag it out).
+      let nextGroups: SessionGroup[] = []
       setGroups((prev) => {
         const owner = prev.find((g) => g.sessionIds.includes(draggedId))
         if (!owner) return prev
-        return prev.map((g) =>
+        nextGroups = prev.map((g) =>
           g.id === owner.id
             ? { ...g, sessionIds: g.sessionIds.filter((id) => id !== draggedId) }
             : g,
         )
+        return nextGroups
       })
+      // If the dragged session just left the active group, drop it from the
+      // open panel set so the view follows (mirrors handleAddToGroup).
+      const active = activeGroupIdRef.current
+      if (active && nextGroups.length > 0) {
+        const updated = nextGroups.find((g) => g.id === active)
+        if (updated && !updated.sessionIds.includes(draggedId)) {
+          setOpenIds((prev) => {
+            const isGroupView = prev.length > 0 && prev.every((id) => updated.sessionIds.includes(id))
+            if (!isGroupView) return prev
+            const next = prev.filter((id) => id !== draggedId)
+            return next.length === prev.length ? prev : next
+          })
+        }
+      }
     },
-    [orderedSessions, setSidebarOrder, setGroups],
+    [orderedSessions, setSidebarOrder, setGroups, setOpenIds],
   )
 
   // --- Session group management ----------------------------------------------
