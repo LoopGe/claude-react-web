@@ -185,14 +185,14 @@ export function AnimatedCollapse({
     // then snap to the new height in a single frame.
     const observer = new ResizeObserver(() => {
       if (!previousOpenRef.current) return
-      const nextHeight = content.scrollHeight
-      // Compare against the body's ACTUAL rendered height, not lastHeightRef.
-      // lastHeightRef can drift out of sync with the real DOM when other
-      // paths (useLayoutEffect init, an in-flight animation's finishOpen)
-      // update body.style.height without touching lastHeightRef — and a stale
-      // match here would short-circuit the snap, leaving the collapse pinned
-      // to an old height (e.g. a group that doesn't shrink after a session
-      // is dragged out). The body's live height is the source of truth.
+      // Measure the content's RENDERED height, not scrollHeight. Under
+      // `overflow-y: clip` on the body, content.scrollHeight can return the
+      // body's pinned height rather than the true content height (observed:
+      // body=232, group-sessions child=152, yet content.scrollHeight=232),
+      // which pins the collapse to a stale height and leaves whitespace
+      // after a drag-out. getBoundingClientRect reflects the actual layout
+      // box and is immune to the overflow-clip scrollHeight quirk.
+      const nextHeight = content.getBoundingClientRect().height
       const currentHeight = body.getBoundingClientRect().height
       if (Math.abs(nextHeight - currentHeight) < 1) return
       lastHeightRef.current = nextHeight
