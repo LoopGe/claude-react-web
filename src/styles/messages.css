@@ -9,6 +9,11 @@
   padding-left: 8px;
 }
 .msg.assistant.subagent .msg-header > span:first-child::before { content: '↳ '; }
+/* model_not_found error card — the CLI's "Run /model" text doesn't apply to
+   a web UI, so we style the card as an actionable error and surface a
+   "Switch model" button (see MessageList assistant branch). */
+.msg.msg-error-card { border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+.msg-switch-model-btn { margin-top: 8px; }
 .msg.system { background: var(--msg-system-bg); border-color: var(--msg-system-border); font-family: var(--mono); font-size: 12px; }
 .msg.error { background: var(--msg-error-bg); border-color: var(--msg-error-border); color: var(--msg-error-fg); }
 .msg.error.rate-limit { background: var(--msg-rate-limit-bg); border-color: var(--msg-rate-limit-border); color: var(--msg-rate-limit-fg); }

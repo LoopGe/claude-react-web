@@ -1072,6 +1072,7 @@ export const Chat = memo(function Chat({
           hasOlder={stream.hasOlder}
           loadingOlder={stream.loadingOlder}
           onRegisterNavigate={registerNavigate}
+          onSwitchModel={() => onOpenSettingsTab(session.id, 'general')}
         />
         </div>
         </ReopenQuestionProvider>

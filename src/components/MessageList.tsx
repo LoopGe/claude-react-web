@@ -105,6 +105,10 @@ interface Props {
    *  the conversation." prompt. Side Chat overrides this to communicate the
    *  ephemeral nature of the drawer. */
   emptyStateContent?: ReactNode
+  /** Called when the user clicks "Switch model" on a model_not_found error
+   *  message. The parent opens its model picker / settings so the user can
+   *  pick a valid model without leaving the transcript. */
+  onSwitchModel?: () => void
 }
 
 /** An item in the Virtuoso data array. Pre-computing isCompactSummary
@@ -221,7 +225,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, emptyStateContent }: Props) {
+export const MessageList = memo(function MessageList({ items, working, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, emptyStateContent, onSwitchModel }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -992,10 +996,11 @@ export const MessageList = memo(function MessageList({ items, working, replayRea
           deliveryStatus={item.deliveryStatus}
           working={working}
           nextItemType={nextItemTypeMap.get(item.id)}
+          onSwitchModel={onSwitchModel}
         />
       </div>
     )
-  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, handleEnterAnimationEnd, working, firstItemId, lastItemId, nextItemTypeMap])
+  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, handleEnterAnimationEnd, working, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel])
 
   /* eslint-disable react-hooks/refs -- the pending reveal flag must commit in
      the same render as the ready transcript so the first visible frame can be
@@ -1119,6 +1124,7 @@ const MessageView = memo(function MessageView({
   deliveryStatus,
   working,
   nextItemType,
+  onSwitchModel,
 }: {
   msg: SdkMessage
   isCompactSummary?: boolean
@@ -1149,6 +1155,9 @@ const MessageView = memo(function MessageView({
    *  processing indicator once the model has started responding
    *  (assistant/result after a consumed user message). */
   nextItemType?: string
+  /** Called when the user clicks "Switch model" on a model_not_found
+   *  error message. Forwarded from MessageList's onSwitchModel prop. */
+  onSwitchModel?: () => void
 }) {
   const type = msg.type
 
@@ -1361,17 +1370,27 @@ const MessageView = memo(function MessageView({
     // The visibility rule lives in willRenderEmpty so renderableItems can
     // drop these before they become empty Virtuoso items (see that fn).
     if (willRenderEmpty(msg, isCompactSummary, isResultConsumed)) return null
+    // The CLI translates a 404 (model not found / no access) into an
+    // assistant error message with error='model_not_found'. Offer a
+    // one-click "Switch model" affordance instead of leaving the user to
+    // decode the CLI's "Run /model" text (which doesn't apply to a web UI).
+    const modelNotFound = msg.error === 'model_not_found'
     return (
-      <div className={`msg assistant${isSubagent ? ' subagent' : ''}`}>
+      <div className={`msg assistant${isSubagent ? ' subagent' : ''}${modelNotFound ? ' msg-error-card' : ''}`}>
         <div className="msg-header">
           <span>{isSubagent ? 'subagent' : 'assistant'}</span>
           <MessageTimestamp ms={msg.receivedAt} />
-          {msg.error && <span className="msg-header-error">{msg.error as string}</span>}
+          {msg.error && !modelNotFound && <span className="msg-header-error">{msg.error as string}</span>}
         </div>
         <div className="msg-body">
           {blocks.map((b, i) => (
             <BlockView key={i} block={b} searchQuery={searchQuery} activeMatchIdx={blockActiveIdx[i]} />
           ))}
+          {modelNotFound && onSwitchModel && (
+            <button type="button" className="btn btn-sm msg-switch-model-btn" onClick={onSwitchModel}>
+              Switch model
+            </button>
+          )}
         </div>
       </div>
     )
