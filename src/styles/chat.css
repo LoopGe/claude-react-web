@@ -493,9 +493,9 @@
   max-width: var(--chat-reading-max-width);
 }
 
-/* Recap / compact-boundary marker. Not a message bubble ?it's a
+/* Recap / compact-boundary marker. Not a message bubble — it's a
    horizontal divider with a pair of labels explaining what the SDK
-   just did ("Recap (auto) ?50k ?8k tokens ?saved 84% ?320ms"). */
+   just did ("Recap (auto) · 50k · 8k tokens · saved 84% · 320ms"). */
 .msg.recap {
   display: flex;
   align-items: center;

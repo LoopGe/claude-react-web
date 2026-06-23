@@ -1452,7 +1452,7 @@ const MessageView = memo(function MessageView({
       <div className="msg-header">
         <span>
           {type}
-          {msg.subtype ? ` 閻?${msg.subtype}` : ''}
+          {msg.subtype ? ` · ${msg.subtype}` : ''}
         </span>
       </div>
     </div>
@@ -1495,10 +1495,10 @@ function CompactBoundary({ msg }: { msg: SdkMessage }) {
   const trigger = meta.trigger === 'manual' ? 'manual' : 'auto'
   const savings =
     pre !== undefined && post !== undefined && pre > 0
-      ? ` 閻?saved ${Math.round(((pre - post) / pre) * 100)}%`
+      ? ` · saved ${Math.round(((pre - post) / pre) * 100)}%`
       : ''
   const duration =
-    typeof meta.duration_ms === 'number' ? ` 閻?${Math.round(meta.duration_ms)}ms` : ''
+    typeof meta.duration_ms === 'number' ? ` · ${Math.round(meta.duration_ms)}ms` : ''
   return (
     <div className="msg recap" role="separator" aria-label="Conversation recap / compact boundary">
       <span className="recap-label">
@@ -1636,7 +1636,7 @@ function CompactSummary({ text }: { text: string }) {
   return (
     <div className="msg compact-summary" role="note" aria-label="Conversation recap (context injected by SDK)">
       <div className="msg-header">
-        <span>recap context 閻?{charCount.toLocaleString()} chars</span>
+        <span>recap context · {charCount.toLocaleString()} chars</span>
         <button
           type="button"
           className="compact-summary-toggle"
