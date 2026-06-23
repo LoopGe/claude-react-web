@@ -157,4 +157,33 @@ describe('useInputHistory', () => {
     expect(stored).toHaveLength(2)
     expect(stored.map((e) => e.sessionId).sort()).toEqual(['sa', 'sb'])
   })
+
+  it('filter narrows navigation without dropping stored entries', () => {
+    // Seed mixed chat + shell (`!`) history for one session.
+    const seed = renderHook(() => useInputHistory(STORAGE_KEY, 's1'))
+    act(() => seed.result.current.add('hello'))
+    act(() => seed.result.current.add('!ls'))
+    act(() => seed.result.current.add('how are you'))
+    act(() => seed.result.current.add('!pwd'))
+
+    // Bash-mode filter: only `!` entries are navigable.
+    const bash = renderHook(() =>
+      useInputHistory(STORAGE_KEY, 's1', (s) => s.startsWith('!')),
+    )
+    expect(bash.result.current.prev('draft')).toBe('!pwd')
+    expect(bash.result.current.prev('!pwd')).toBe('!ls')
+    expect(bash.result.current.prev('!ls')).toBeNull()
+
+    // Chat-mode filter: `!` entries are skipped.
+    const chat = renderHook(() =>
+      useInputHistory(STORAGE_KEY, 's1', (s) => !s.startsWith('!')),
+    )
+    expect(chat.result.current.prev('draft')).toBe('how are you')
+    expect(chat.result.current.prev('how are you')).toBe('hello')
+    expect(chat.result.current.prev('hello')).toBeNull()
+
+    // The full ring is untouched — both kinds are still stored.
+    const stored = normalizeEntries(JSON.parse(localStorage.getItem(STORAGE_KEY)!))
+    expect(stored.map((e) => e.text)).toEqual(['!pwd', 'how are you', '!ls', 'hello'])
+  })
 })

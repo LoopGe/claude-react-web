@@ -329,7 +329,17 @@ export const Chat = memo(function Chat({
   // by session: composer navigation (Mod+?? Ctrl+P/N) only walks this
   // session's entries, so one panel never surfaces another's prompts. The
   // Mod+Shift+H panel still reads the whole ring across sessions.
-  const history = useInputHistory(INPUT_HISTORY_KEY, session.id)
+  // Bash-mode history filter: in `!` mode, navigation walks only shell
+  // commands (entries starting with `!`); otherwise it skips them so chat
+  // history and shell history stay isolated. The filter is memoized on the
+  // mode flip, so it only changes identity when the user enters/leaves bash
+  // mode — not on every keystroke.
+  const bashMode = input.startsWith('!')
+  const historyFilter = useMemo(
+    () => (bashMode ? (s: string) => s.startsWith('!') : (s: string) => !s.startsWith('!')),
+    [bashMode],
+  )
+  const history = useInputHistory(INPUT_HISTORY_KEY, session.id, historyFilter)
 
   // Permissions first ?its onRequest/onResolved are passed into the
   // stream hook so SDK messages and permission events share one WebSocket.

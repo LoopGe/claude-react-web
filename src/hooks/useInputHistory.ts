@@ -18,7 +18,7 @@
 //
 // Persistence is handled via useLocalStorage (per-browser).
 
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocalStorage } from './useLocalStorage'
 
 // Global cap across all sessions, then a tighter per-session cap so one busy
@@ -76,6 +76,13 @@ export interface InputHistoryApi {
 export function useInputHistory(
   storageKey: string,
   sessionId: string | null = null,
+  /** Optional predicate to narrow the navigable entries. The full ring is
+   *  still stored (add() writes everything); this only filters what prev/next
+   *  walk. Used by `!` bash mode to isolate shell history from chat history:
+   *  pass `(s) => s.startsWith('!')` in bash mode, `(s) => !s.startsWith('!')`
+   *  otherwise. The filter is read fresh on each prev/next call so a mode
+   *  switch mid-browsing picks up the new slice without a stale closure. */
+  filter: ((entry: string) => boolean) | null = null,
 ): InputHistoryApi {
   const [rawHistory, setHistory] = useLocalStorage<unknown[]>(storageKey, [])
   const indexRef = useRef<number | null>(null)
@@ -125,22 +132,38 @@ export function useInputHistory(
     [setHistory, sessionId],
   )
 
+  // The navigable slice: sessionEntries narrowed by the optional filter.
+  // Computed via useMemo so prev/next stay referentially stable, but the
+  // filter itself is captured here — a mode switch re-runs this memo and
+  // the next prev/next call sees the new slice. The cursor (indexRef) is
+  // reset to null on filter change (see effect below) so a stale index
+  // into the old slice can't overrun the new one.
+  const entries = useMemo(
+    () => (filter ? sessionEntries.filter(filter) : sessionEntries),
+    [sessionEntries, filter],
+  )
+
+  // Reset the browse cursor whenever the navigable slice changes identity
+  // (filter flip or new history). Otherwise an index from the old slice
+  // could point past the new slice's bounds.
+  useEffect(() => { indexRef.current = null }, [entries])
+
   const prev = useCallback(
     (currentInput: string): string | null => {
-      if (sessionEntries.length === 0) return null
+      if (entries.length === 0) return null
       if (indexRef.current === null) {
         // Entering history — stash the live draft so next() can put it back.
         draftRef.current = currentInput
         indexRef.current = 0
-      } else if (indexRef.current < sessionEntries.length - 1) {
+      } else if (indexRef.current < entries.length - 1) {
         indexRef.current += 1
       } else {
         return null // already at oldest
       }
       tick((x) => x + 1)
-      return sessionEntries[indexRef.current]
+      return entries[indexRef.current]
     },
-    [sessionEntries],
+    [entries],
   )
 
   const next = useCallback((): string | null => {
@@ -155,8 +178,8 @@ export function useInputHistory(
     }
     indexRef.current -= 1
     tick((x) => x + 1)
-    return sessionEntries[indexRef.current]
-  }, [sessionEntries])
+    return entries[indexRef.current]
+  }, [entries])
 
   const reset = useCallback(() => {
     indexRef.current = null
