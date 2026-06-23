@@ -186,7 +186,15 @@ export function AnimatedCollapse({
     const observer = new ResizeObserver(() => {
       if (!previousOpenRef.current) return
       const nextHeight = content.scrollHeight
-      if (Math.abs(nextHeight - lastHeightRef.current) < 1) return
+      // Compare against the body's ACTUAL rendered height, not lastHeightRef.
+      // lastHeightRef can drift out of sync with the real DOM when other
+      // paths (useLayoutEffect init, an in-flight animation's finishOpen)
+      // update body.style.height without touching lastHeightRef — and a stale
+      // match here would short-circuit the snap, leaving the collapse pinned
+      // to an old height (e.g. a group that doesn't shrink after a session
+      // is dragged out). The body's live height is the source of truth.
+      const currentHeight = body.getBoundingClientRect().height
+      if (Math.abs(nextHeight - currentHeight) < 1) return
       lastHeightRef.current = nextHeight
       if (animatingRef.current) {
         // Tear down the in-flight open animation and snap to the fully-open
