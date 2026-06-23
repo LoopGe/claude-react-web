@@ -249,6 +249,11 @@ export const MessageList = memo(function MessageList({ items, working, replayRea
   // *user-driven* upward scrolls (scrollTop decreasing) and bypass the
   // follow-disable debounce —see the scroll-listener effect for why.
   const lastScrollTopRef = useRef(0)
+  // Latches true the first time the user issues an intentional scroll
+  // (any upward scroll, or any scroll that lands away from bottom).
+  // The post-mount bottom-anchor catch-up effect stops snapping once
+  // this is true so we never fight a legitimate user scroll.
+  const userInitiatedScrollRef = useRef(false)
   const [followDebounceRaw] = useLocalStorage<number>(
     'claude-react-web:follow-debounce-ms',
     150,
@@ -798,6 +803,88 @@ export const MessageList = memo(function MessageList({ items, working, replayRea
     return () => ro.disconnect()
   }, [renderableItems.length, scrollScrollerToBottom, syncBottomGeometry])
 
+  // Post-mount bottom-anchor catch-up. Virtuoso aligns the last item to the
+  // viewport bottom using ESTIMATED row heights (initialTopMostItemIndex +
+  // alignToBottom). When real heights settle and exceed the estimates —
+  // common for tool cards, subagent cards, and code blocks — scrollHeight
+  // grows downward but scrollTop stays put. The gap that opens isn't a user
+  // scroll-away; it's a measurement artifact. But Virtuoso reports it as
+  // atBottomStateChange(false), the debounced disable path flips atBottom
+  // to false 150ms later, and nothing ever re-anchors because no new items
+  // arrive (e.g. a completed subagent's transcript inside SubagentOverlay).
+  //
+  // Fix: for a short window after mount, observe row-size mutations inside
+  // the scroller's content. While the user hasn't scrolled yet (tracked via
+  // userInitiatedScrollRef in the scroll handler), keep snapping scrollTop
+  // to scrollHeight on each measurement step. Once the user scrolls
+  // intentionally, we stop and never interfere again for this MessageList
+  // lifetime.
+  //
+  // The effect re-runs as scrollerRef is assigned by scrollerRefCb because
+  // scrollerRefCb is in the deps of the wrapping effect — we instead poll
+  // briefly on first mount until the scroller exists, then attach the
+  // observer. Simpler than threading a state setter through scrollerRefCb.
+  useEffect(() => {
+    if (typeof MutationObserver === 'undefined') return
+    if (userInitiatedScrollRef.current) return
+
+    let cancelled = false
+    let mo: MutationObserver | null = null
+    let stopTimer: ReturnType<typeof setTimeout> | null = null
+    let attachAttempts = 0
+    let lastScrollHeight = 0
+
+    const snapIfGrew = () => {
+      if (cancelled || userInitiatedScrollRef.current) return
+      const el = scrollerRef.current
+      if (!el) return
+      const sh = el.scrollHeight
+      if (sh > lastScrollHeight) {
+        lastScrollHeight = sh
+        // Direct assignment (not scrollTo) so we don't queue a smooth
+        // animation that the next mutation could interrupt. Virtuoso's
+        // atBottomStateChange will re-fire on this scrollTop change and
+        // the geometry-based atBottom path restores cleanly.
+        el.scrollTop = el.scrollHeight
+      }
+    }
+
+    const attach = () => {
+      if (cancelled) return
+      const el = scrollerRef.current
+      if (!el) {
+        // Virtuoso hasn't called scrollerRefCb yet. Retry next frame, but
+        // give up after a few attempts to avoid leaking on never-mount.
+        if (attachAttempts++ < 30) requestAnimationFrame(attach)
+        return
+      }
+      lastScrollHeight = el.scrollHeight
+      // One immediate snap in case rows mounted between scroller-ready and
+      // this attach (e.g. synchronous initial layout pass).
+      snapIfGrew()
+      mo = new MutationObserver(snapIfGrew)
+      // childList catches items mounting; attributes (style) catches
+      // Virtuoso's row-height updates after measurement.
+      mo.observe(el, { childList: true, subtree: true, attributes: true, attributeFilter: ['style'] })
+      // Safety: stop the catch-up after 2s no matter what. By then either
+      // measurements have settled or the user has interacted; continuing
+      // to snap would risk fighting legitimate user intent.
+      stopTimer = setTimeout(() => {
+        cancelled = true
+        mo?.disconnect()
+        mo = null
+      }, 2000)
+    }
+
+    attach()
+
+    return () => {
+      cancelled = true
+      if (stopTimer != null) clearTimeout(stopTimer)
+      mo?.disconnect()
+    }
+  }, [])
+
   useEffect(() => {
     const el = streamingRegionRef.current
     if (!el) {
@@ -831,6 +918,10 @@ export const MessageList = memo(function MessageList({ items, working, replayRea
       const prevScrollTop = lastScrollTopRef.current
       lastScrollTopRef.current = el.scrollTop
       const isScrollingUp = el.scrollTop < prevScrollTop
+      // Latch the user-intent flag: any upward scroll is unambiguously the
+      // user driving (programmatic snap-to-bottom only ever increases
+      // scrollTop). Once latched, the post-mount catch-up effect stops.
+      if (isScrollingUp) userInitiatedScrollRef.current = true
       syncBottomGeometry(el, isScrollingUp ? 'disable-now' : 'preserve')
     }
     syncBottomGeometry(el, 'confirm-away')

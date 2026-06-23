@@ -408,7 +408,7 @@ export function IconWorkflow(props: IconProps) {
 export function IconBell(props: IconProps) {
   return (
     <Icon {...props}>
-      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9Z" />
       <path d="M13.7 21a2 2 0 0 1-3.4 0" />
     </Icon>
   )
@@ -416,7 +416,7 @@ export function IconBell(props: IconProps) {
 export function IconBellToggle(props: IconProps) {
   return (
     <Icon {...props}>
-      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9Z" />
       <path d="M13.7 21a2 2 0 0 1-3.4 0" />
       <path className="notification-icon-slash" d="m2 2 20 20" pathLength={1} />
     </Icon>
@@ -447,6 +447,30 @@ export function IconRefresh(props: IconProps) {
     <Icon {...props}>
       <path d="M21 12a9 9 0 1 1-2.6-6.4" />
       <path d="M21 4v5h-5" />
+    </Icon>
+  )
+}
+
+// Counter-clockwise "undo" rotate — used for "discard / revert" affordances
+// where IconRefresh's direction (forward refresh) would be semantically wrong.
+export function IconRotateCcw(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M3 12a9 9 0 1 0 2.6-6.4" />
+      <path d="M3 4v5h5" />
+    </Icon>
+  )
+}
+
+// Git branch glyph — two-node fork with a connector. Traced from Lucide
+// `git-branch` so it sits in the same optical family as the rest of the set.
+export function IconGitBranch(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <line x1="6" y1="3" x2="6" y2="15" />
+      <circle cx="18" cy="6" r="3" />
+      <circle cx="6" cy="18" r="3" />
+      <path d="M18 9a9 9 0 0 1-9 9" />
     </Icon>
   )
 }

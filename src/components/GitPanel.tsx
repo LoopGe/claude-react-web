@@ -25,7 +25,7 @@ import { useGitWrite } from '../hooks/useGitWrite'
 import { ConfirmDialog } from './ConfirmDialog'
 import { AnimatedCollapse, AnimatedDetails } from './AnimatedCollapse'
 import { Tooltip } from './Tooltip'
-import { IconX, IconSparkles, IconChevronDown, IconChevronRight, IconCheck, IconAlertTriangle } from './icons/ToolIcons'
+import { IconX, IconSparkles, IconChevronDown, IconChevronRight, IconCheck, IconAlertTriangle, IconRefresh, IconLoader, IconGitBranch, IconArrowUp, IconArrowDown, IconRotateCcw } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
 import { useToast } from '../hooks/useToast'
 import { usePresenceValue } from '../hooks/useExitPresence'
@@ -129,10 +129,10 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
     return (
       <aside className="git-panel" role="region" aria-label="Git">
         <header className="git-panel-header">
-          <span className="git-panel-branch">⎇ git</span>
+          <span className="git-panel-branch"><IconGitBranch size={13} /> git</span>
           <span className="git-panel-spacer" />
           <Tooltip label="Refresh" placement="bottom">
-            <button className="git-panel-icon-btn" onClick={onRefresh} aria-label="Refresh">⟳</button>
+            <button className="git-panel-icon-btn" onClick={onRefresh} aria-label="Refresh"><IconRefresh size={14} /></button>
           </Tooltip>
           <Tooltip label="Close" placement="bottom">
             <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={14} /></button>
@@ -150,7 +150,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
     return (
       <aside className="git-panel" role="region" aria-label="Git">
         <header className="git-panel-header">
-          <span className="git-panel-branch">⎇ git</span>
+          <span className="git-panel-branch"><IconGitBranch size={13} /> git</span>
           <span className="git-panel-spacer" />
           <Tooltip label="Close" placement="bottom">
             <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={14} /></button>
@@ -167,7 +167,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
     return (
       <aside className="git-panel" role="region" aria-label="Git">
         <header className="git-panel-header">
-          <span className="git-panel-branch">⎇ …</span>
+          <span className="git-panel-branch"><IconGitBranch size={13} /> …</span>
           <span className="git-panel-spacer" />
           <Tooltip label="Close" placement="bottom">
             <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={14} /></button>
@@ -223,14 +223,14 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
       <header className="git-panel-header">
         <Tooltip label={status.upstream ? `tracking ${status.upstream}` : 'no upstream'} placement="bottom">
           <span className="git-panel-branch">
-            ⎇ {status.detached ? 'detached' : (status.branch ?? 'unknown')}
+            <IconGitBranch size={13} /> {status.detached ? 'detached' : (status.branch ?? 'unknown')}
           </span>
         </Tooltip>
         {(status.ahead > 0 || status.behind > 0) && (
           <Tooltip label={`${status.ahead} ahead · ${status.behind} behind`} placement="bottom">
             <span className="git-panel-syncs">
-              {status.ahead > 0 && <>↑{status.ahead}</>}
-              {status.behind > 0 && <> ↓{status.behind}</>}
+              {status.ahead > 0 && <><IconArrowUp size={11} />{status.ahead}</>}
+              {status.behind > 0 && <> <IconArrowDown size={11} />{status.behind}</>}
             </span>
           </Tooltip>
         )}
@@ -250,7 +250,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
                   }}
                   aria-label="Pull from remote"
                 >
-                  ↓
+                  <IconArrowDown size={13} />
                 </button>
               </Tooltip>
             )}
@@ -265,7 +265,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
                   }}
                   aria-label="Push to remote"
                 >
-                  ↑
+                  <IconArrowUp size={13} />
                 </button>
               </Tooltip>
             )}
@@ -290,7 +290,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
             disabled={loading}
             aria-label="Refresh"
           >
-            {loading ? '…' : '⟳'}
+            {loading ? <IconLoader size={14} className="git-panel-spin" /> : <IconRefresh size={14} />}
           </button>
         </Tooltip>
         <Tooltip label="Close" placement="bottom">
@@ -697,7 +697,9 @@ const FileRow = memo(function FileRow({ file, cwd, staged, writeOps, onError, as
                       'Discard',
                     )
                   }
-                >↺</button>
+                >
+                  <IconRotateCcw size={12} />
+                </button>
               </Tooltip>
             </>
           )}
