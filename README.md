@@ -3,10 +3,27 @@
 [![npm version](https://img.shields.io/npm/v/claude-react-web.svg)](https://www.npmjs.com/package/claude-react-web)
 [![npm downloads](https://img.shields.io/npm/dm/claude-react-web.svg)](https://www.npmjs.com/package/claude-react-web)
 [![CI](https://github.com/LoopGe/claude-react-web/actions/workflows/ci.yml/badge.svg)](https://github.com/LoopGe/claude-react-web/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Node.js](https://img.shields.io/badge/Node.js-20+-green.svg)](https://nodejs.org/)
 
 A local browser UI for [`@anthropic-ai/claude-agent-sdk`](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk).
 
-Each chat session holds its own stateful `Query` (the SDK's streaming async generator), so multi-turn conversations, mid-run interruption, model switching, and permission-mode changes all drive a live subprocess. Up to three conversations can be open side-by-side in a 3-column grid, and the sidebar tracks live / working / dormant / ended state plus an unread dot when a turn completes in a session you aren't looking at.
+<p align="center">
+  <img src="docs/screenshots/homepage.png" alt="claude-react-web UI" width="100%" />
+</p>
+
+## Features
+
+- **Multi-session chat** — Up to 3 conversations side-by-side in a 3-column grid
+- **Streaming responses** — Real-time SSE streaming with fine-grained status (thinking / writing / tool use)
+- **Permission management** — Visual tool-usage approval with per-session and global persistence
+- **Git integration** — Status, diff, branches, stashes, and AI-generated commit messages
+- **Image paste** — Drag & drop or paste images directly into the chat
+- **Keyboard shortcuts** — `Cmd+K` command palette, `Shift+Tab` permission cycling, global shortcuts
+- **Flexible config** — Model, permission mode, MCP servers, and more via in-app settings or `config.json`
+- **LAN access** — Scan a QR code to use from your phone on the same network
+
+Each chat session holds its own stateful `Query` (the SDK's streaming async generator), so multi-turn conversations, mid-run interruption, model switching, and permission-mode changes all drive a live subprocess.
 
 ## Quick start
 
@@ -116,6 +133,17 @@ Useful scripts:
 | `npm test`          | Vitest (server unit tests + client hook tests)           |
 
 ## Architecture
+
+```mermaid
+graph LR
+    Browser["Browser UI<br/>(React 19)"] <-->|"WebSocket<br/>(multiplexed)"| Server["Hono Server<br/>(port 3456)"]
+    Server <-->|"REST API"| SDK["Claude Agent SDK<br/>(subprocess)"]
+    Server --> Sessions["Session Manager<br/>(Query lifecycle)"]
+    Server --> Permissions["Permission Broker<br/>(canUseTool)"]
+    Server --> Git["Git Layer<br/>(status, diff, commit)"]
+    Sessions --> History["History Ring<br/>(capped, 500 msgs)"]
+    History -->|"fan-out"| Browser
+```
 
 ```
 server/
