@@ -1745,8 +1745,22 @@ export function App() {
       const insertAt = position === 'before' ? targetIdx : targetIdx + 1
       without.splice(insertAt, 0, draggedId)
       setSidebarOrder(() => without)
+      // If the dragged session was in a group, remove it from that group's
+      // membership — dropping onto an ungrouped (or different-group) target
+      // moves it OUT of its current group. Without this the session stays in
+      // the old group's sessionIds and the grouped view keeps rendering it
+      // there, so the drop appears to "bounce back" (couldn't drag it out).
+      setGroups((prev) => {
+        const owner = prev.find((g) => g.sessionIds.includes(draggedId))
+        if (!owner) return prev
+        return prev.map((g) =>
+          g.id === owner.id
+            ? { ...g, sessionIds: g.sessionIds.filter((id) => id !== draggedId) }
+            : g,
+        )
+      })
     },
-    [orderedSessions, setSidebarOrder],
+    [orderedSessions, setSidebarOrder, setGroups],
   )
 
   // --- Session group management ----------------------------------------------
@@ -1859,7 +1873,16 @@ export function App() {
         const insertAt = targetIdx < 0 ? without.length : position === 'before' ? targetIdx : targetIdx + 1
         without.splice(insertAt, 0, draggedId)
         newIds = without
-        return prev.map((g) => (g.id === groupId ? { ...g, sessionIds: without } : g))
+        // If the dragged session belonged to a DIFFERENT group, remove it
+        // from that group — a cross-group drop must transfer membership,
+        // not duplicate it. (Same-group drops are a no-op filter here.)
+        return prev.map((g) => {
+          if (g.id === groupId) return { ...g, sessionIds: without }
+          if (g.sessionIds.includes(draggedId)) {
+            return { ...g, sessionIds: g.sessionIds.filter((id) => id !== draggedId) }
+          }
+          return g
+        })
       })
       if (newIds.length === 0) return
 
