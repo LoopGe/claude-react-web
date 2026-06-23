@@ -1,11 +1,17 @@
-// Marketplace manifest parser.
+// Plugin-source manifest parser.
 //
-// A marketplace is a git repository containing
-// `<repoRoot>/.claude-plugin/marketplace.json`. The manifest lists plugins,
-// each backed by a directory inside the same repo. We're defensive on every
-// field — a malformed manifest can drop entries without rejecting the whole
-// marketplace, and the file is treated as untrusted JSON (it came off the
-// internet).
+// A cloned repo can be either of two forms:
+//   - a marketplace: `<repoRoot>/.claude-plugin/marketplace.json` lists plugins,
+//     each backed by a directory inside the same repo (or an external repo).
+//   - a single plugin: `<repoRoot>/.claude-plugin/plugin.json` names ONE plugin
+//     whose files live at the repo root (e.g. mattpocock/skills). The SDK loads
+//     plugin.json itself to discover skills/commands/agents, so we only extract
+//     the plugin's `name` + display metadata and treat the repo root as the
+//     plugin directory.
+// `parseRepoManifest` dispatches between the two (marketplace.json wins on
+// conflict). We're defensive on every field — a malformed manifest can drop
+// entries without rejecting the whole marketplace, and every file is treated as
+// untrusted JSON (it came off the internet).
 
 import { promises as fs } from 'node:fs'
 import { existsSync } from 'node:fs'
@@ -13,6 +19,11 @@ import { isAbsolute, join, normalize, resolve, sep } from 'node:path'
 
 /** Manifest filename, relative to the repo root. */
 export const MANIFEST_REL_PATH = '.claude-plugin/marketplace.json'
+
+/** A single-plugin repo's manifest, relative to the repo root. When a repo
+ *  has this and no `marketplace.json`, the whole repo root IS the plugin
+ *  directory (the SDK loads `<root>/.claude-plugin/plugin.json` itself). */
+export const PLUGIN_MANIFEST_REL_PATH = '.claude-plugin/plugin.json'
 
 /** Where a plugin physically lives.
  *   - `in-repo`: a directory inside the marketplace's own cloned repo. The
@@ -325,6 +336,110 @@ export async function parseMarketplace(repoRoot: string): Promise<ParseResult> {
     manifest: { name, version, owner, plugins },
     warnings,
   }
+}
+
+/** Parse a single-plugin repo: one whose root IS the plugin directory and
+ *  whose identity lives in `.claude-plugin/plugin.json` (no marketplace.json).
+ *  This is the form popularised by repos like mattpocock/skills — the manifest
+ *  names the plugin and lists its components (skills/commands/agents/...), but
+ *  we DON'T parse those components: the SDK discovers them itself when we hand
+ *  it the repo root as a local plugin path. We only need the plugin's `name`
+ *  (to build the `<plugin>@<marketplace>` key) and display metadata.
+ *
+ *  Synthesises a one-plugin `MarketplaceManifest` whose single entry is an
+ *  in-repo plugin with `dir === repoRoot`. Throws if `plugin.json` is missing,
+ *  malformed, or lacks a valid `name` — without a name we can't build a safe
+ *  key, and a plugin.json without one is malformed per the spec. */
+export async function parseSinglePlugin(repoRoot: string): Promise<ParseResult> {
+  const manifestPath = join(repoRoot, PLUGIN_MANIFEST_REL_PATH)
+  let raw: string
+  try {
+    raw = await fs.readFile(manifestPath, 'utf8')
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException
+    if (e.code === 'ENOENT') {
+      throw new Error(`plugin manifest not found at ${PLUGIN_MANIFEST_REL_PATH}`)
+    }
+    throw new Error(`failed to read plugin manifest: ${e.message}`)
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (err) {
+    throw new Error(`plugin manifest is not valid JSON: ${(err as Error).message}`)
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('plugin manifest must be a JSON object')
+  }
+
+  const root = parsed as Record<string, unknown>
+
+  const pName = typeof root.name === 'string' ? root.name.trim() : ''
+  if (!pName) {
+    throw new Error('plugin manifest must have a non-empty `name` field')
+  }
+  if (!isSafeName(pName)) {
+    throw new Error(
+      `plugin name "${pName}" rejected — must match [a-zA-Z0-9._-] and not start with a dot`,
+    )
+  }
+
+  const description = typeof root.description === 'string' ? root.description : undefined
+  const version = typeof root.version === 'string' ? root.version.trim() || undefined : undefined
+  const author = flattenAuthor(root.author)
+
+  // The repo root is the plugin directory; it always exists (we just cloned
+  // it), so no existsSync check is needed — mirroring how in-repo marketplace
+  // plugins trust their parse-time-verified dir.
+  const plugin: ParsedPlugin = {
+    name: pName,
+    description,
+    version,
+    author,
+    dir: repoRoot,
+    source: { kind: 'in-repo' },
+  }
+
+  // Surface the author as the manifest owner for the marketplace list UI.
+  // `author` may be `{ name, url }` or a bare string.
+  let owner: MarketplaceManifest['owner']
+  if (root.author && typeof root.author === 'object' && !Array.isArray(root.author)) {
+    owner = coerceOwner(root.author as Record<string, unknown>)
+  } else if (author) {
+    owner = { name: author }
+  } else {
+    owner = undefined
+  }
+
+  // Use the plugin name as the marketplace display name; the route falls back
+  // to the URL slug when this is empty, but the plugin name is the more
+  // meaningful label here.
+  return {
+    manifest: { name: pName, version, owner, plugins: [plugin] },
+    warnings: [],
+  }
+}
+
+/** Parse a cloned repo into a marketplace manifest, accepting either of the
+ *  two manifest forms a plugin source repo can take:
+ *    - a marketplace:  `.claude-plugin/marketplace.json` (lists plugins)
+ *    - a single plugin: `.claude-plugin/plugin.json`     (repo root = plugin)
+ *  `marketplace.json` wins when both are present. Throws when neither exists
+ *  (the repo isn't a plugin source we can use) — the route turns that into a
+ *  400 and tears down the clone. This is the entry point callers should use;
+ *  `parseMarketplace` / `parseSinglePlugin` are the form-specific specialists. */
+export async function parseRepoManifest(repoRoot: string): Promise<ParseResult> {
+  if (existsSync(join(repoRoot, MANIFEST_REL_PATH))) {
+    return parseMarketplace(repoRoot)
+  }
+  if (existsSync(join(repoRoot, PLUGIN_MANIFEST_REL_PATH))) {
+    return parseSinglePlugin(repoRoot)
+  }
+  throw new Error(
+    'no plugin manifest found — expected .claude-plugin/marketplace.json or .claude-plugin/plugin.json',
+  )
 }
 
 function coerceOwner(raw: Record<string, unknown>): MarketplaceManifest['owner'] {

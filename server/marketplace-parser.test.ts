@@ -4,7 +4,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { parseMarketplace, MANIFEST_REL_PATH } from './marketplace-parser.js'
+import {
+  parseMarketplace,
+  parseSinglePlugin,
+  parseRepoManifest,
+  MANIFEST_REL_PATH,
+  PLUGIN_MANIFEST_REL_PATH,
+} from './marketplace-parser.js'
 import { tempDir } from './__test-utils__/index.js'
 
 function makeRepo(): string {
@@ -15,6 +21,10 @@ function makeRepo(): string {
 
 function writeManifest(repo: string, content: unknown): void {
   writeFileSync(join(repo, MANIFEST_REL_PATH), JSON.stringify(content, null, 2), 'utf8')
+}
+
+function writePluginManifest(repo: string, content: unknown): void {
+  writeFileSync(join(repo, PLUGIN_MANIFEST_REL_PATH), JSON.stringify(content, null, 2), 'utf8')
 }
 
 function makePluginDir(repo: string, name: string): void {
@@ -328,5 +338,146 @@ describe('parseMarketplace', () => {
     const { manifest, warnings } = await parseMarketplace(repo)
     expect(manifest.plugins).toHaveLength(0)
     expect(warnings.some((w) => w.kind === 'plugin-bad-shape')).toBe(true)
+  })
+})
+
+// ── single-plugin repos (.claude-plugin/plugin.json) ──────────────
+
+describe('parseSinglePlugin', () => {
+  let repo: string
+
+  beforeEach(() => {
+    repo = makeRepo()
+  })
+  afterEach(() => {
+    try {
+      rmSync(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    } catch {
+      /* swallow — tmpdir gets reaped eventually */
+    }
+  })
+
+  it('synthesises one in-repo plugin at the repo root (mattpocock-style)', async () => {
+    // Real-world shape: a name, a skills path list, and an object author.
+    // The skills list is irrelevant to us — the SDK reads it — but we must
+    // tolerate it without choking.
+    writePluginManifest(repo, {
+      name: 'mattpocock-skills',
+      description: 'Skills for real engineers',
+      version: '1.2.0',
+      author: { name: 'Matt Pocock', url: 'https://mattpocock.com' },
+      skills: ['./skills/engineering/tdd', './skills/productivity/handoff'],
+    })
+
+    const { manifest, warnings } = await parseSinglePlugin(repo)
+    expect(warnings).toEqual([])
+    // Display name comes from the plugin name; owner from the author object.
+    expect(manifest.name).toBe('mattpocock-skills')
+    expect(manifest.version).toBe('1.2.0')
+    expect(manifest.owner).toEqual({ name: 'Matt Pocock', url: 'https://mattpocock.com' })
+    expect(manifest.plugins).toHaveLength(1)
+    const p = manifest.plugins[0]
+    expect(p).toMatchObject({
+      name: 'mattpocock-skills',
+      description: 'Skills for real engineers',
+      version: '1.2.0',
+      author: 'Matt Pocock',
+    })
+    // The plugin directory IS the repo root.
+    expect(p.dir).toBe(repo)
+    expect(p.source).toEqual({ kind: 'in-repo' })
+  })
+
+  it('coerces a string author into an owner with just a name', async () => {
+    writePluginManifest(repo, { name: 'plug', author: 'Alice' })
+    const { manifest } = await parseSinglePlugin(repo)
+    expect(manifest.owner).toEqual({ name: 'Alice' })
+    expect(manifest.plugins[0].author).toBe('Alice')
+  })
+
+  it('omits owner when no author is present', async () => {
+    writePluginManifest(repo, { name: 'plug' })
+    const { manifest } = await parseSinglePlugin(repo)
+    expect(manifest.owner).toBeUndefined()
+    expect(manifest.plugins[0].author).toBeUndefined()
+  })
+
+  it('throws when plugin.json is missing', async () => {
+    await expect(parseSinglePlugin(repo)).rejects.toThrow(/not found/)
+  })
+
+  it('throws on malformed JSON', async () => {
+    writeFileSync(join(repo, PLUGIN_MANIFEST_REL_PATH), '{ not json', 'utf8')
+    await expect(parseSinglePlugin(repo)).rejects.toThrow(/not valid JSON/)
+  })
+
+  it('throws when the manifest is not a JSON object', async () => {
+    writePluginManifest(repo, ['not', 'an', 'object'])
+    await expect(parseSinglePlugin(repo)).rejects.toThrow(/must be a JSON object/)
+  })
+
+  it('throws when `name` is missing', async () => {
+    writePluginManifest(repo, { description: 'no name here' })
+    await expect(parseSinglePlugin(repo)).rejects.toThrow(/`name`/)
+  })
+
+  it('throws when `name` is empty', async () => {
+    writePluginManifest(repo, { name: '   ' })
+    await expect(parseSinglePlugin(repo)).rejects.toThrow(/`name`/)
+  })
+
+  it('throws when `name` has unsafe characters', async () => {
+    writePluginManifest(repo, { name: 'has space' })
+    await expect(parseSinglePlugin(repo)).rejects.toThrow(/rejected/)
+  })
+
+  it('throws when `name` starts with a dot', async () => {
+    writePluginManifest(repo, { name: '.hidden' })
+    await expect(parseSinglePlugin(repo)).rejects.toThrow(/rejected/)
+  })
+})
+
+describe('parseRepoManifest', () => {
+  let repo: string
+
+  beforeEach(() => {
+    repo = makeRepo()
+  })
+  afterEach(() => {
+    try {
+      rmSync(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    } catch {
+      /* swallow */
+    }
+  })
+
+  it('parses a marketplace repo via marketplace.json', async () => {
+    makePluginDir(repo, 'foo')
+    writeManifest(repo, { name: 'M', plugins: [{ name: 'foo' }] })
+    const { manifest } = await parseRepoManifest(repo)
+    expect(manifest.name).toBe('M')
+    expect(manifest.plugins.map((p) => p.name)).toEqual(['foo'])
+  })
+
+  it('falls back to plugin.json for a single-plugin repo', async () => {
+    writePluginManifest(repo, { name: 'solo-plugin', description: 'd' })
+    const { manifest, warnings } = await parseRepoManifest(repo)
+    expect(warnings).toEqual([])
+    expect(manifest.name).toBe('solo-plugin')
+    expect(manifest.plugins).toHaveLength(1)
+    expect(manifest.plugins[0].dir).toBe(repo)
+  })
+
+  it('prefers marketplace.json when both manifests exist', async () => {
+    makePluginDir(repo, 'foo')
+    writeManifest(repo, { name: 'MarketplaceWins', plugins: [{ name: 'foo' }] })
+    writePluginManifest(repo, { name: 'plugin-loses' })
+    const { manifest } = await parseRepoManifest(repo)
+    expect(manifest.name).toBe('MarketplaceWins')
+    expect(manifest.plugins.map((p) => p.name)).toEqual(['foo'])
+  })
+
+  it('throws when neither manifest exists', async () => {
+    await expect(parseRepoManifest(repo)).rejects.toThrow(/no plugin manifest found/)
   })
 })

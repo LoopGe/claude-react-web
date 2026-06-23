@@ -25,8 +25,9 @@ import type { JsonFileStoreOptions } from './json-file-store.js'
 import { createLogger } from './log.js'
 import {
   MANIFEST_REL_PATH,
+  PLUGIN_MANIFEST_REL_PATH,
   isValidParsedSource,
-  parseMarketplace,
+  parseRepoManifest,
   type MarketplaceManifest,
 } from './marketplace-parser.js'
 
@@ -357,16 +358,21 @@ export class MpStore extends JsonFileStore<MpEntry> {
     return out
   }
 
-  /** Re-parse already-cloned marketplace manifests with the current parser.
+  /** Re-parse already-cloned repo manifests with the current parser.
    *  The persisted file caches parsed manifests for fast route reads, but older
    *  app versions may have cached a lossy parse. Loading from the local clone
-   *  lets parser fixes take effect without requiring a network refresh. */
+   *  lets parser fixes take effect without requiring a network refresh. Handles
+   *  both manifest forms: a marketplace (marketplace.json) or a single-plugin
+   *  repo (plugin.json) — skipping entries whose clone (and both manifests)
+   *  has disappeared. */
   private async reparseCachedManifests(entries: MpEntry[]): Promise<void> {
     let changed = false
     for (const entry of entries) {
-      if (!existsSync(join(entry.cloneDir, MANIFEST_REL_PATH))) continue
+      const hasMarketplace = existsSync(join(entry.cloneDir, MANIFEST_REL_PATH))
+      const hasPlugin = existsSync(join(entry.cloneDir, PLUGIN_MANIFEST_REL_PATH))
+      if (!hasMarketplace && !hasPlugin) continue
       try {
-        const { manifest } = await parseMarketplace(entry.cloneDir)
+        const { manifest } = await parseRepoManifest(entry.cloneDir)
         const displayName = manifest.name || entry.displayName
         if (displayName === entry.displayName && sameManifest(entry.manifest, manifest)) continue
         this.upsert({ ...entry, displayName, manifest })

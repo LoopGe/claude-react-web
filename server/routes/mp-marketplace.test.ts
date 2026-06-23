@@ -52,6 +52,10 @@ let pullUpdated = false
 // Tracks gitCloneAtSha invocations + lets a test force a clone failure.
 let cloneAtShaCalls: Array<{ url: string; sha: string }> = []
 let cloneAtShaShouldFail = false
+// Selects which on-disk fixture gitClone materialises: a marketplace repo
+// (marketplace.json + plugin subdirs), a single-plugin repo (plugin.json
+// only), or an empty .claude-plugin/ dir (no manifest → parse failure).
+let cloneFixture: 'marketplace' | 'plugin' | 'empty' = 'marketplace'
 
 vi.mock('../git-clone.js', async () => {
   // Pull in the real HttpError so url validation produces the same 400
@@ -63,9 +67,30 @@ vi.mock('../git-clone.js', async () => {
       if (!/^https:\/\//.test(url)) throw new errors.HttpError(400, `bad url: ${url}`)
     },
     gitClone: vi.fn(async (_url: string, dest: string) => {
-    // Build a tiny fixture marketplace at `dest`: two in-repo plugins plus
-    // one git-subdir plugin (external repo, not present in this clone).
     mkdirSync(join(dest, '.claude-plugin'), { recursive: true })
+    if (cloneFixture === 'plugin') {
+      // A single-plugin repo: only plugin.json at the root, no marketplace.json.
+      // Mimics repos like mattpocock/skills — the SDK reads plugin.json itself.
+      mkdirSync(join(dest, 'skills', 'engineering', 'tdd'), { recursive: true })
+      writeFileSync(
+        join(dest, '.claude-plugin', 'plugin.json'),
+        JSON.stringify({
+          name: 'solo-plugin',
+          description: 'a single-plugin repo',
+          version: '0.1.0',
+          author: { name: 'Solo Author' },
+          skills: ['./skills/engineering/tdd'],
+        }),
+        'utf8',
+      )
+      return
+    }
+    if (cloneFixture === 'empty') {
+      // .claude-plugin/ exists but no manifest — parse must fail.
+      return
+    }
+    // Default: a tiny fixture marketplace at `dest`: two in-repo plugins plus
+    // one git-subdir plugin (external repo, not present in this clone).
     mkdirSync(join(dest, 'foo'), { recursive: true })
     mkdirSync(join(dest, 'bar'), { recursive: true })
     writeFileSync(
@@ -131,6 +156,7 @@ describe('mp-marketplace routes', () => {
     pullUpdated = false
     cloneAtShaCalls = []
     cloneAtShaShouldFail = false
+    cloneFixture = 'marketplace'
     stateDir = tempDir('mp-route')
     store = new MpStore({ stateDir })
     await store.load()
@@ -181,6 +207,59 @@ describe('mp-marketplace routes', () => {
     const plugs = await jsonOf<{ plugins: Array<{ name: string; enabled: boolean }> }>(plugRes)
     expect(plugs.plugins.map((p) => p.name).sort()).toEqual(['bar', 'ext', 'foo'])
     expect(plugs.plugins.every((p) => p.enabled === false)).toBe(true)
+  })
+
+  it('supports a single-plugin repo (plugin.json, no marketplace.json)', async () => {
+    cloneFixture = 'plugin'
+    const add = await jsonOf<{ ok: boolean; entry: { id: string; pluginCount: number; enabledCount: number } }>(
+      await app.request('/mp/marketplaces', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'https://example.com/owner/solo.git' }),
+      }),
+    )
+    expect(add.ok).toBe(true)
+    // A single-plugin repo is a marketplace with exactly one plugin.
+    expect(add.entry.pluginCount).toBe(1)
+    expect(add.entry.enabledCount).toBe(0)
+    const id = add.entry.id
+
+    const plugs = await jsonOf<{ plugins: Array<{ name: string; enabled: boolean }> }>(
+      await app.request(`/mp/marketplaces/${id}/plugins`),
+    )
+    expect(plugs.plugins).toHaveLength(1)
+    expect(plugs.plugins[0].name).toBe('solo-plugin')
+    expect(plugs.plugins[0].enabled).toBe(false)
+
+    // Enabling persists the flag; the plugin path resolves to the repo root
+    // (the whole clone IS the plugin directory).
+    const tog = await app.request(`/mp/marketplaces/${id}/plugins/solo-plugin/toggle`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: true }),
+    })
+    expect(tog.status).toBe(200)
+
+    const entry = store.get(id)!
+    expect(store.getEnabledPluginAbsolutePaths()).toEqual([entry.cloneDir])
+
+    // And it survives a store reload (manifest persisted + reparse on load).
+    const reloaded = new MpStore({ stateDir })
+    await reloaded.load()
+    expect(reloaded.isEnabled('solo-plugin', id)).toBe(true)
+    expect(reloaded.getEnabledPluginAbsolutePaths()).toEqual([entry.cloneDir])
+  })
+
+  it('rejects a repo with neither manifest and tears down the clone', async () => {
+    cloneFixture = 'empty'
+    const addRes = await app.request('/mp/marketplaces', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: 'https://example.com/owner/none.git' }),
+    })
+    expect(addRes.status).toBe(400)
+    // Nothing was persisted.
+    expect(store.list()).toEqual([])
   })
 
   it('toggle persists the enabled flag and reflects in subsequent GET', async () => {

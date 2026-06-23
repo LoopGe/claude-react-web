@@ -1,7 +1,8 @@
 // Git-repo marketplace routes. This is the sole plugin-marketplace
 // implementation. It:
 //   1. Clones the user's https git URL into our own state-dir cache.
-//   2. Parses .claude-plugin/marketplace.json ourselves.
+//   2. Parses .claude-plugin/marketplace.json (or plugin.json for a single-
+//      plugin repo) ourselves.
 //   3. Stores marketplace + per-plugin enabled state in MpStore.
 //   4. Pushes enable/disable changes into every live session via the
 //      SessionManager so mid-conversation toggles take effect immediately.
@@ -17,7 +18,7 @@ import { safeJson } from './index.js'
 import type { SessionManager } from '../session-manager.js'
 import { MpStore, type MpEntry } from '../mp-store.js'
 import { gitClone, gitCloneAtSha, gitPull, gitGetHeadSha, assertHttpsUrl } from '../git-clone.js'
-import { parseMarketplace, type ParsedPlugin, type ParsedPluginSource } from '../marketplace-parser.js'
+import { parseRepoManifest, type ParsedPlugin, type ParsedPluginSource } from '../marketplace-parser.js'
 import { createLogger } from '../log.js'
 
 const log = createLogger('mp-marketplace')
@@ -133,16 +134,17 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
 
     let parseResult
     try {
-      parseResult = await parseMarketplace(cloneDir)
+      parseResult = await parseRepoManifest(cloneDir)
     } catch (err) {
-      // Parse failure means we've cloned a repo that isn't actually a
-      // marketplace. Tear down the clone before rethrowing — keeping it
-      // around would orphan disk space and confuse the user.
+      // Parse failure means we've cloned a repo that isn't a plugin source we
+      // recognise (no marketplace.json and no plugin.json, or a malformed
+      // manifest). Tear down the clone before rethrowing — keeping it around
+      // would orphan disk space and confuse the user.
       try {
         const { rm } = await import('node:fs/promises')
         await rm(cloneDir, { recursive: true, force: true })
       } catch { /* best-effort cleanup */ }
-      throw new HttpError(400, `marketplace parse failed: ${(err as Error).message}`)
+      throw new HttpError(400, `plugin source parse failed: ${(err as Error).message}`)
     }
 
     const sha = await gitGetHeadSha(cloneDir)
@@ -175,7 +177,7 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
     const entry = store.get(id)
     if (!entry) throw new HttpError(404, `marketplace ${id} not found`)
     const { newSha, updated } = await gitPull(entry.cloneDir)
-    const parseResult = await parseMarketplace(entry.cloneDir)
+    const parseResult = await parseRepoManifest(entry.cloneDir)
     const next: MpEntry = {
       ...entry,
       lastRefreshedAt: Date.now(),
