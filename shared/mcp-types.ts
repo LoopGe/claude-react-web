@@ -9,4 +9,8 @@ export interface McpServerInput {
   headers?: Record<string, string>
   alwaysLoad?: boolean
   enabled?: boolean
+  /** Per-server tool-call timeout in milliseconds. Overrides the global
+   *  default for this server only. Values below 1000 are ignored by the
+   *  SDK (falls through to the default). */
+  timeout?: number
 }

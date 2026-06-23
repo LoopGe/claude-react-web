@@ -215,6 +215,26 @@ describe('McpConfigStore.toSdkConfig', () => {
     expect(cfg.al).toHaveProperty('alwaysLoad', true)
   })
 
+  it('includes per-server timeout when set', async () => {
+    const store = new McpConfigStore({ stateDir: dir })
+    await store.load()
+    store.upsert(makeServer({ name: 'to', command: 'node', timeout: 30000 }))
+    await store.flush()
+
+    const cfg = store.toSdkConfig()
+    expect(cfg.to).toHaveProperty('timeout', 30000)
+  })
+
+  it('omits timeout when unset', async () => {
+    const store = new McpConfigStore({ stateDir: dir })
+    await store.load()
+    store.upsert(makeServer({ name: 'noto', command: 'node' }))
+    await store.flush()
+
+    const cfg = store.toSdkConfig()
+    expect(cfg.noto).not.toHaveProperty('timeout')
+  })
+
   it('skips disabled servers', async () => {
     const store = new McpConfigStore({ stateDir: dir })
     await store.load()

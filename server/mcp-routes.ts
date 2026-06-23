@@ -86,6 +86,7 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
       headers: body.headers,
       alwaysLoad: body.alwaysLoad,
       enabled: body.enabled ?? true,
+      timeout: body.timeout,
       createdAt: now,
       updatedAt: now,
     }
@@ -113,6 +114,7 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
     if (body.url !== undefined) updated.url = body.url
     if (body.alwaysLoad !== undefined) updated.alwaysLoad = body.alwaysLoad
     if (body.enabled !== undefined) updated.enabled = body.enabled
+    if (body.timeout !== undefined) updated.timeout = body.timeout
 
     // Merge env: new keys added, existing keys kept unless overwritten
     if (body.env) {
