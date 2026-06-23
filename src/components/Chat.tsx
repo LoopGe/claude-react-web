@@ -746,12 +746,12 @@ export const Chat = memo(function Chat({
       })
   }, [clearAttachments, clearError, pastedImages, permissions])
 
-  /** Run a `!` bash command: optimistic placeholder → POST /exec → ack/rollback.
-   *  The server injects the <bash-*> result as a synthetic user message and
-   *  cancels the spurious model turn, so the client just needs to manage the
-   *  placeholder lifecycle like a normal send. Defined before `send` so the
-   *  latter can reference it in its dependency array. */
-  const runBashCommand = useCallback(async (command: string) => {
+  /** Run a `!`/`!!` bash command: optimistic placeholder → POST /exec →
+   *  ack/rollback. `share:true` (`!!`) injects the result into the SDK
+   *  transcript so the model sees it (triggers a model turn); the default
+   *  `share:false` (`!`) is local-only — zero model round-trips. Either way
+   *  the client manages the placeholder lifecycle like a normal send. */
+  const runBashCommand = useCallback(async (command: string, opts: { share?: boolean } = {}) => {
     clearError()
     const placeholder = `<bash-input>${command}</bash-input>`
     const pendingId = insertUserMessage(placeholder)
@@ -760,7 +760,7 @@ export const Chat = memo(function Chat({
     try {
       const res = await api.post<{
         message: { uuid: string; receivedAt?: number }
-      }>(`/sessions/${session.id}/exec`, { command, confirm: true })
+      }>(`/sessions/${session.id}/exec`, { command, confirm: true, share: opts.share })
       if (pendingId && typeof res.message?.uuid === 'string') {
         ackUserMessage(pendingId, res.message.uuid, res.message.receivedAt)
       }
@@ -785,6 +785,15 @@ export const Chat = memo(function Chat({
     // bypassing the model. Detected before slash-command matching so a
     // command starting with `!` (rare) still routes here. Mirrors Claude
     // Code's `!` prefix: the command runs unsandboxed in the user's shell.
+    //   `!cmd`  — local only, zero model round-trips, model never sees output.
+    //   `!!cmd` — share with model: injects output into the transcript so the
+    //             model sees it on the next turn (triggers a real model turn).
+    if (text.startsWith('!!') && text.length > 2) {
+      const command = text.slice(2)
+      setInput('')
+      await runBashCommand(command, { share: true })
+      return
+    }
     if (text.startsWith('!') && text.length > 1) {
       const command = text.slice(1)
       setInput('')

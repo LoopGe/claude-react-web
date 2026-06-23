@@ -131,6 +131,9 @@ export const Composer = memo(function Composer({
    *  sync. While active: a mode indicator shows, slash-command autocomplete
    *  is suppressed, and the placeholder switches. */
   const bashMode = input.startsWith('!')
+  /** `!!` prefix → shared mode: output is injected into the SDK transcript so
+   *  the model sees it (triggers a model turn). Plain `!` is local-only. */
+  const sharedMode = input.startsWith('!!')
 
   /** Filter commands by prefix match against name + aliases. */
   const filteredCommands = useMemo(() => {
@@ -420,8 +423,12 @@ export const Composer = memo(function Composer({
         )}
         {bashMode && (
           <div className="composer-bash-indicator" aria-label="Bash mode">
-            <span className="composer-bash-badge" aria-hidden>!</span>
-            <span className="composer-bash-label">bash mode — command runs in the session cwd, not sent to the model</span>
+            <span className="composer-bash-badge" aria-hidden>{sharedMode ? '!!' : '!'}</span>
+            <span className="composer-bash-label">
+              {sharedMode
+                ? 'bash mode (shared) — command runs locally AND its output is shared with the model'
+                : 'bash mode — command runs in the session cwd, not sent to the model'}
+            </span>
           </div>
         )}
         <textarea

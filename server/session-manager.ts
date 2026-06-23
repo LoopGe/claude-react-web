@@ -1187,19 +1187,31 @@ export class SessionManager {
     this.persist(s)
   }
 
-  /** `!` bash mode — run a shell command directly in the session's cwd,
-   *  inject the result as a synthetic <bash-*> user message so the model
-   *  sees it in subsequent turns, and cancel the spurious model turn the
-   *  injection would otherwise trigger (Option C, validated: dispatch +
-   *  immediate interrupt wins the race before the SDK emits any assistant
-   *  content).
+  /** `!` bash mode — run a shell command directly in the session's cwd.
+   *
+   *  Two sharing modes (Option D):
+   *  - `share: false` (`!cmd`) — LOCAL ONLY. The result is broadcast to the
+   *    client (so the user sees it in the transcript) but is NOT pushed into
+   *    the SDK input queue. Zero model round-trips, zero spurious turns.
+   *    The model never sees this command's output. This is the default and
+   *    matches `!` mode's design intent: run a command without consuming the
+   *    model.
+   *  - `share: true` (`!!cmd`) — SHARE WITH MODEL. The result is injected
+   *    via dispatchUserMessage so the model sees it on the next turn. This
+   *    triggers a real model turn (the model will respond to the command
+   *    output), which is the user's explicit intent with `!!`.
+   *
+   *  Why not inject-then-interrupt (Option C): on slow API backends the
+   *  interrupt resolves before the in-flight API request is actually
+   *  cancelled, so the spurious turn leaks ~TTFW later. Local-only avoids
+   *  the race entirely.
    *
    *  The command runs UNSANDBOXED in the user's shell (pipes/redirects/globs
    *  work). The route-level `confirm` gate is the guardrail, not this method. */
   async execInSession(
     id: string,
     command: string,
-    opts: { timeoutMs?: number; onProgress?: (line: string) => void } = {},
+    opts: { timeoutMs?: number; onProgress?: (line: string) => void; share?: boolean } = {},
   ): Promise<{
     stdout: string
     stderr: string
@@ -1212,7 +1224,8 @@ export class SessionManager {
     const s = this.requireRunnable(id)
     const cwd = s.cwd
     if (!cwd) throw new HttpError(400, 'session has no cwd — cannot run a shell command')
-    log.info(`[session ${id}] exec: ${command.slice(0, 120)}`)
+    const share = opts.share ?? false
+    log.info(`[session ${id}] exec${share ? ' (shared)' : ' (local)'}: ${command.slice(0, 120)}`)
     const result = await execCommand(cwd, command, {
       timeoutMs: opts.timeoutMs,
       onProgress: opts.onProgress,
@@ -1233,15 +1246,16 @@ export class SessionManager {
       uuid: randomUUID(),
       session_id: s.id,
     }
-    // Inject into the SDK transcript (model sees it next turn) + broadcast
-    // locally. This triggers a model turn, which we cancel immediately.
-    this.dispatchUserMessage(s, userMsg)
-    // Cancel the spurious turn. Don't await — the dispatch already broadcast
-    // the <bash-*> message, so the client sees the output instantly; the
-    // interrupt just suppresses the model's unwanted reply.
-    void this.interrupt(id).catch((e) => {
-      log.warn(`[session ${id}] exec interrupt failed (spurious turn may leak):`, e)
-    })
+    if (share) {
+      // `!!` — inject into the SDK transcript so the model sees the output.
+      // This triggers a model turn (intentional — the user asked to share).
+      this.dispatchUserMessage(s, userMsg)
+    } else {
+      // `!` — local only: record in our history ring + broadcast to live
+      // subscribers, but NEVER push into the SDK input queue. The model
+      // never sees this command; zero spurious turns.
+      this.pushToSession(s, userMsg)
+    }
     return { ...result, message: userMsg }
   }
 

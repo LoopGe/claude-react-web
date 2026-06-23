@@ -218,15 +218,16 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   // `!` bash mode — run a shell command directly in the session's cwd.
   // Requires confirm:true (destructive-verb convention from git write
   // routes). The command runs unsandboxed in the user's shell; the confirm
-  // gate is the guardrail. Result is injected as a <bash-*> user message so
-  // the model sees it next turn, with the spurious model turn cancelled.
+  // gate is the guardrail. `share:true` (`!!cmd`) injects the result into
+  // the SDK transcript so the model sees it (triggers a model turn); the
+  // default `share:false` (`!cmd`) is local-only — zero model round-trips.
   app.post('/sessions/:id/exec', async (c) => {
-    const body = await safeJson<{ command: string; confirm?: boolean; timeoutMs?: number }>(c.req)
+    const body = await safeJson<{ command: string; confirm?: boolean; timeoutMs?: number; share?: boolean }>(c.req)
     if (typeof body.command !== 'string' || !body.command.trim()) {
       return c.json({ error: 'command is required' }, 400)
     }
     if (!body.confirm) return c.json({ error: 'confirm:true is required to run a shell command' }, 400)
-    const result = await sm.execInSession(c.req.param('id'), body.command, { timeoutMs: body.timeoutMs })
+    const result = await sm.execInSession(c.req.param('id'), body.command, { timeoutMs: body.timeoutMs, share: body.share })
     return c.json(result)
   })
 
