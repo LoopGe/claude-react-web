@@ -1658,6 +1658,16 @@ function AboutTab({
       <Field label="Project">
         <div style={{ fontSize: 13 }}>claude-react-web</div>
       </Field>
+      <Field label="Source" hint="Source code, issues, and releases.">
+        <a
+          href="https://github.com/LoopGe/claude-react-web"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ fontSize: 13, color: 'var(--accent)', textDecoration: 'none' }}
+        >
+          github.com/LoopGe/claude-react-web
+        </a>
+      </Field>
       <Field
         label="Running version"
         hint={restartPending ? undefined : 'The version of the currently running server process.'}
