@@ -362,6 +362,7 @@ export function App() {
   const focusedIdRef = useRef(focusedId)
   const sessionsRef = useRef(sessions)
   const maxOpenRef = useRef(maxOpen)
+  const groupsRef = useRef(groups)
   const activeGroupIdRef = useRef<string | null>(null)
   const paletteOpenRef = useRef(paletteOpen)
   const helpOpenRef = useRef(helpOpen)
@@ -397,6 +398,7 @@ export function App() {
   openIdsRef.current = openIds
   focusedIdRef.current = focusedId
   sessionsRef.current = sessions
+  groupsRef.current = groups
   resumingRef.current = resuming
   maxOpenRef.current = maxOpen
   paletteOpenRef.current = paletteOpen
@@ -804,38 +806,35 @@ export function App() {
    *  implementation when a stale view triggered the path. */
   const handleAddToGroup = useCallback(
     (sessionId: string, groupId: string) => {
-      let nextGroups: SessionGroup[] = []
-      setGroups((prev) => {
-        // Empty groupId — just remove from all groups (ungroup).
-        if (!groupId) {
-          nextGroups = prev.map((g) => ({
-            ...g,
-            sessionIds: g.sessionIds.filter((id) => id !== sessionId),
-          }))
-          return nextGroups
-        }
-        const target = prev.find((g) => g.id === groupId)
-        if (!target) return prev
-        // Already in this group — no-op.
-        if (target.sessionIds.includes(sessionId)) return prev
-        // Capacity check on the post-removal count: it's safe to drop the
-        // session into the target even if the target is currently `maxGroupSize`
-        // sessions, as long as `sessionId` is one of them (covered by the
-        // includes() check above). Past that, we refuse.
+      // Compute the next groups synchronously from the ref so the openIds
+      // sync below can read the result without waiting for setGroups's
+      // async updater (setGroups wraps a setState whose updater runs on
+      // React's schedule, not inline — a `let nextGroups` assigned inside
+      // that updater would still be empty when we reach the sync code).
+      const prevGroups = groupsRef.current
+      let nextGroups: SessionGroup[]
+      if (!groupId) {
+        nextGroups = prevGroups.map((g) => ({
+          ...g,
+          sessionIds: g.sessionIds.filter((id) => id !== sessionId),
+        }))
+      } else {
+        const target = prevGroups.find((g) => g.id === groupId)
+        if (!target) return
+        if (target.sessionIds.includes(sessionId)) return
         if (target.sessionIds.length >= maxGroupSize) {
           toast.error(
             `Group "${target.name}" is full (${maxGroupSize} sessions). Remove one first.`,
           )
-          return prev
+          return
         }
-        // Remove from old group, then add to target.
-        nextGroups = prev.map((g) => {
+        nextGroups = prevGroups.map((g) => {
           const without = { ...g, sessionIds: g.sessionIds.filter((id) => id !== sessionId) }
           if (g.id !== groupId) return without
           return { ...without, sessionIds: [...without.sessionIds, sessionId] }
         })
-        return nextGroups
-      })
+      }
+      setGroups(() => nextGroups)
       // Sync the open panel set when the active group's membership changes:
       // if the main view is currently showing exactly this group's sessions,
       // add the newly-joined session (or drop the one that just left) so the
@@ -844,20 +843,15 @@ export function App() {
       if (!active) return
       const updated = nextGroups.find((g) => g.id === active)
       if (!updated) return
-      setOpenIds((prev) => {
-        // Only auto-sync when the open set IS the active group's members —
-        // if the user has manually tuned the open panels, leave them alone.
-        const isGroupView = prev.every((id) => updated.sessionIds.includes(id)) && prev.length > 0
-        if (!isGroupView) return prev
-        const desired = updated.sessionIds.slice(0, maxOpenRef.current)
-        // Preserve existing order; append newly-added sessions at the end.
-        const ordered = prev.filter((id) => desired.includes(id))
-        for (const id of desired) if (!ordered.includes(id)) ordered.push(id)
-        // Drop sessions no longer in the group.
-        const final = ordered.filter((id) => desired.includes(id)).slice(0, maxOpenRef.current)
-        if (final.length === prev.length && final.every((id, i) => id === prev[i])) return prev
-        return final
-      })
+      const prevOpen = openIdsRef.current
+      const isGroupView = prevOpen.length > 0 && prevOpen.every((id) => updated.sessionIds.includes(id))
+      if (!isGroupView) return
+      const desired = updated.sessionIds.slice(0, maxOpenRef.current)
+      const ordered = prevOpen.filter((id) => desired.includes(id))
+      for (const id of desired) if (!ordered.includes(id)) ordered.push(id)
+      const final = ordered.filter((id) => desired.includes(id)).slice(0, maxOpenRef.current)
+      if (final.length === prevOpen.length && final.every((id, i) => id === prevOpen[i])) return
+      setOpenIds(final)
     },
     [setGroups, maxGroupSize, toast, setOpenIds],
   )
@@ -1778,29 +1772,31 @@ export function App() {
       // moves it OUT of its current group. Without this the session stays in
       // the old group's sessionIds and the grouped view keeps rendering it
       // there, so the drop appears to "bounce back" (couldn't drag it out).
-      let nextGroups: SessionGroup[] = []
-      setGroups((prev) => {
-        const owner = prev.find((g) => g.sessionIds.includes(draggedId))
-        if (!owner) return prev
-        nextGroups = prev.map((g) =>
+      // Compute next groups synchronously from the ref (setGroups's updater
+      // runs on React's schedule, so a `let nextGroups` assigned inside it
+      // would still be empty here — see handleAddToGroup).
+      const prevGroups = groupsRef.current
+      const owner = prevGroups.find((g) => g.sessionIds.includes(draggedId))
+      if (owner) {
+        const nextGroups = prevGroups.map((g) =>
           g.id === owner.id
             ? { ...g, sessionIds: g.sessionIds.filter((id) => id !== draggedId) }
             : g,
         )
-        return nextGroups
-      })
-      // If the dragged session just left the active group, drop it from the
-      // open panel set so the view follows (mirrors handleAddToGroup).
-      const active = activeGroupIdRef.current
-      if (active && nextGroups.length > 0) {
-        const updated = nextGroups.find((g) => g.id === active)
-        if (updated && !updated.sessionIds.includes(draggedId)) {
-          setOpenIds((prev) => {
-            const isGroupView = prev.length > 0 && prev.every((id) => updated.sessionIds.includes(id))
-            if (!isGroupView) return prev
-            const next = prev.filter((id) => id !== draggedId)
-            return next.length === prev.length ? prev : next
-          })
+        setGroups(() => nextGroups)
+        // If the dragged session just left the active group, drop it from the
+        // open panel set so the view follows (mirrors handleAddToGroup).
+        const active = activeGroupIdRef.current
+        if (active) {
+          const updated = nextGroups.find((g) => g.id === active)
+          if (updated && !updated.sessionIds.includes(draggedId)) {
+            const prevOpen = openIdsRef.current
+            const isGroupView = prevOpen.length > 0 && prevOpen.every((id) => updated.sessionIds.includes(id))
+            if (isGroupView) {
+              const next = prevOpen.filter((id) => id !== draggedId)
+              if (next.length !== prevOpen.length) setOpenIds(next)
+            }
+          }
         }
       }
     },
