@@ -132,4 +132,51 @@ describe('ProcessMonitor', () => {
     await new Promise((r) => setTimeout(r, 20))
     expect(onExit).not.toHaveBeenCalled()
   })
+
+  // Regression: the EXIT_SAFETY_MS backstop timer must NOT be armed at spawn.
+  // An earlier revision armed it in spawnFor, so any healthy session that lived
+  // longer than 15s (its CLI process alive, 'exit' never coming) was torn down
+  // as a false "CLI process exited unexpectedly (code=null, signal=null)" and
+  // the still-alive child was orphaned. The timer now arms only at unregister.
+  it('does not arm a spawn-time safety timer: a healthy long-running session is not torn down', async () => {
+    const onExit = vi.fn()
+    // 50ms safety window so we don't wait 15s. The bug armed this at spawn, so
+    // onExit would fire ~50ms in with code=null — the assertion below catches that.
+    const mon = new ProcessMonitor(onExit, { safetyMs: 50 })
+    const reg = mon.register('s-healthy')
+
+    // Long-lived child (300ms) so NO real 'exit' arrives during the test and no
+    // unregister is called (the session is still "alive" from the monitor's view).
+    mon.spawnFor(reg, spawnOpts(0, 300))
+
+    // Well past the 50ms safety window. Before the fix, onExit had already
+    // fired here with { code: null, signal: null } and resolved `exited`.
+    await new Promise((r) => setTimeout(r, 150))
+    expect(onExit).not.toHaveBeenCalled()
+
+    // The real exit eventually surfaces normally once the child actually exits.
+    const info = await expectExitSoon(reg)
+    expect(info.code).toBe(0)
+    expect(onExit).toHaveBeenCalledTimes(1)
+  })
+
+  it('safety timer armed at unregister resolves exited when the child never emits exit (no onExit)', async () => {
+    const onExit = vi.fn()
+    const mon = new ProcessMonitor(onExit, { safetyMs: 50 })
+    const reg = mon.register('s-wedged')
+
+    // A child that will not exit on its own during the test (long sleeper).
+    const proc = mon.spawnFor(reg, spawnOpts(0, 100_000))
+    mon.unregister(reg) // intentional close — must NOT surface via onExit
+
+    // No real 'exit' arrives, so the unregister-armed timer must resolve
+    // `exited` (so clear()'s respawn gate can't hang) without surfacing.
+    const info = await expectExitSoon(reg, 500)
+    expect(info.code).toBeNull()
+    expect(onExit).not.toHaveBeenCalled()
+
+    // Tear down the still-alive child so the test process can exit cleanly.
+    ;(proc as unknown as { kill: () => boolean }).kill()
+    await new Promise((r) => setTimeout(r, 30))
+  })
 })

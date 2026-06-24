@@ -100,9 +100,13 @@ const EXIT_SAFETY_MS = 15_000
 export class ProcessMonitor {
   private entries = new Map<MonitoredSpawn, Entry>()
   private readonly onExit: (info: ProcessExitInfo) => void
+  /** Safety-window used by the destroy-time timer. Injectable so tests can
+   *  exercise the timer path without waiting 15s. Defaults to EXIT_SAFETY_MS. */
+  private readonly safetyMs: number
 
-  constructor(onExit: (info: ProcessExitInfo) => void) {
+  constructor(onExit: (info: ProcessExitInfo) => void, opts?: { safetyMs?: number }) {
     this.onExit = onExit
+    this.safetyMs = opts?.safetyMs ?? EXIT_SAFETY_MS
   }
 
   /** Register a session before `query()` is called. Returns a handle whose
@@ -186,32 +190,7 @@ export class ProcessMonitor {
     // misleading "claude binary not found" message even though the CLI ran.
     let hasSpawned = false
 
-    const finalize = (info: ProcessExitInfo) => {
-      if (entry.resolved) return
-      entry.resolved = true
-      if (entry.safetyTimer) {
-        clearTimeout(entry.safetyTimer)
-        entry.safetyTimer = null
-      }
-      // Detach listeners so a lingering ChildProcess reference can't re-fire.
-      if (entry.process && entry.exitHandler) entry.process.off('exit', entry.exitHandler)
-      if (entry.process && entry.errorHandler) entry.process.off('error', entry.errorHandler)
-      entry.resolveExit(info)
-      this.entries.delete(reg)
-      // Only surface to SessionManager when the exit was NOT an intentional
-      // close. `unregister()` sets `reg.intentional = true` before the SDK's
-      // graceful-close path kills the child, so a destroy-driven exit (clear,
-      // auto-resume, unload) resolves `exited` for awaiters without firing
-      // handleProcessExit.
-      if (!reg.intentional) {
-        this.onExit(info)
-      } else {
-        log.info(
-          `[process-monitor] intentional exit for session ${sid} ` +
-          `(code=${info.code}, spawnError=${info.spawnError ? 'yes' : 'no'}) — not surfacing`,
-        )
-      }
-    }
+    const finalize = (info: ProcessExitInfo) => this.finalizeEntry(reg, entry, info)
 
     const exitHandler = (code: number | null, signal: NodeJS.Signals | null) => {
       log.warn(
@@ -261,19 +240,40 @@ export class ProcessMonitor {
     process.on('exit', exitHandler)
     process.on('error', errorHandler)
 
-    // Safety net: if the child somehow never emits 'exit' (wedged), force
-    // resolve so awaiters (clear's respawn gate) can't hang indefinitely.
-    entry.safetyTimer = setTimeout(() => {
-      if (entry.resolved) return
-      log.warn(
-        `[process-monitor] exit safety timer fired for session ${sid} ` +
-        `after ${EXIT_SAFETY_MS}ms with no 'exit' event`,
-      )
-      finalize({ sessionId: sid, code: null, signal: null, killed: process.killed })
-    }, EXIT_SAFETY_MS)
-    ;(entry.safetyTimer as { unref?: () => void }).unref?.()
-
     return process
+  }
+
+  /** Resolve a tracked entry's `exited` promise exactly once, detach the
+   *  child's listeners, and surface the exit to the SessionManager unless the
+   *  close was intentional (destroy-driven: clear / auto-resume / unload set
+   *  `reg.intentional` first). Shared by the 'exit'/'error' handlers attached
+   *  in `spawnFor` and the destroy-time safety timer armed in `unregister`,
+   *  so the cleanup path is identical for real exits and timer-driven ones. */
+  private finalizeEntry(reg: MonitoredSpawn, entry: Entry, info: ProcessExitInfo): void {
+    if (entry.resolved) return
+    entry.resolved = true
+    if (entry.safetyTimer) {
+      clearTimeout(entry.safetyTimer)
+      entry.safetyTimer = null
+    }
+    // Detach listeners so a lingering ChildProcess reference can't re-fire.
+    if (entry.process && entry.exitHandler) entry.process.off('exit', entry.exitHandler)
+    if (entry.process && entry.errorHandler) entry.process.off('error', entry.errorHandler)
+    entry.resolveExit(info)
+    this.entries.delete(reg)
+    // Only surface to SessionManager when the exit was NOT an intentional
+    // close. `unregister()` sets `reg.intentional = true` before the SDK's
+    // graceful-close path kills the child, so a destroy-driven exit (clear,
+    // auto-resume, unload) resolves `exited` for awaiters without firing
+    // handleProcessExit (which would otherwise double-broadcast / re-terminate).
+    if (!reg.intentional) {
+      this.onExit(info)
+    } else {
+      log.info(
+        `[process-monitor] intentional exit for session ${entry.sessionId} ` +
+        `(code=${info.code}, spawnError=${info.spawnError ? 'yes' : 'no'}) — not surfacing`,
+      )
+    }
   }
 
   /** Unregister a session (called from the handle's destroy()/cleanup).
@@ -283,7 +283,7 @@ export class ProcessMonitor {
    *  a process that will never exit (mocked SDK in tests, a deferred-spawn
    *  Query, or a Query that errored before `initialize()`). For a real
    *  running process the entry is kept so its 'exit' resolves `exited`; the
-   *  safety timer armed in `spawnFor` bounds the wait. */
+   *  safety timer armed here (in `unregister`) bounds the wait. */
   unregister(reg: MonitoredSpawn): void {
     const entry = this.entries.get(reg)
     reg.intentional = true
@@ -302,8 +302,29 @@ export class ProcessMonitor {
       this.entries.delete(reg)
       return
     }
-    // A real process is (or was) running: keep the entry so its 'exit'
-    // resolves `exited`. The safetyTimer (armed in spawnFor) bounds the wait.
+    // A real process is (or was) running: keep the entry so its real 'exit'
+    // resolves `exited`. Arm the safety timer NOW (at destroy time) — NOT at
+    // spawn. A spawn-time timer would fire 15s into ANY healthy long-running
+    // session (its process is alive, so 'exit' never comes) and tear it down
+    // as a false "exited unexpectedly (code=null, signal=null)" — orphaning
+    // the still-alive child. The timer only matters once we're actually
+    // waiting for the old child to die, so clear()'s respawn gate can't hang
+    // on a wedged process that never emits 'exit'. The SDK's graceful-close
+    // path is ~7s (stdin EOF -> 2s grace -> SIGTERM/SIGKILL); 15s is margin.
+    entry.safetyTimer = setTimeout(() => {
+      if (entry.resolved) return
+      log.warn(
+        `[process-monitor] exit safety timer fired for session ${reg.sessionId} ` +
+        `after ${this.safetyMs}ms with no 'exit' event`,
+      )
+      this.finalizeEntry(reg, entry, {
+        sessionId: reg.sessionId,
+        code: null,
+        signal: null,
+        killed: entry.process?.killed ?? false,
+      })
+    }, this.safetyMs)
+    ;(entry.safetyTimer as { unref?: () => void }).unref?.()
   }
 
   /** Number of currently tracked registrations (for debug/status). Includes
