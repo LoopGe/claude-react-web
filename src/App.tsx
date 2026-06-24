@@ -780,6 +780,20 @@ export function App() {
         void api.delete(`/sessions/${sideId}`).catch(() => {})
         sessionStoreRegistry.delete(sideId)
       }
+      // A group is a synced workspace, so closing a group member's panel
+      // removes it from the group (it drops to the sidebar's "Ungrouped"
+      // section) rather than merely hiding it — keeping open panels in
+      // sync with membership. Ungrouped sessions just close. performDelete
+      // removes from the group separately too, so this is redundant-but-
+      // harmless there.
+      const owner = groupsRef.current.find((g) => g.sessionIds.includes(id))
+      if (owner) {
+        setGroups((prev) =>
+          prev.map((g) =>
+            g.id === owner.id ? { ...g, sessionIds: g.sessionIds.filter((sid) => sid !== id) } : g,
+          ),
+        )
+      }
       // Both state updates are derived from the fresh openIds snapshot
       // inside a single updater, avoiding the fragile cross-updater
       // side-effect pattern. The setFocusedId call is issued from
@@ -794,7 +808,7 @@ export function App() {
         return next
       })
     },
-    [],
+    [setGroups],
   )
 
   /** Move a session into a group (or out of all groups when groupId is
@@ -1300,9 +1314,13 @@ export function App() {
   /** Select a session. Dormant (not running, not terminated) sessions are
    *  resumed first — the server spins up a fresh Query with
    *  `options.resume`, then the SSE replay fills in the transcript.
-   *  If the session belongs to a different group than the one currently
-   *  active, the entire view switches to that group first.  Ungrouped
-   *  sessions open in single-panel mode (replace the current panels). */
+   *
+   *  A group is a synced workspace: clicking any member opens the WHOLE
+   *  group (up to maxOpen panels) and focuses the clicked one, so the open
+   *  panel set always mirrors group membership. Ungrouped sessions open in
+   *  single-panel mode (replace the current panels). On mobile (single
+   *  panel) a group larger than maxOpen degrades to opening just the
+   *  clicked session. */
   const handleSelect = useCallback(
     async (id: string) => {
       const s = sessionsRef.current.find((x) => x.id === id)
@@ -1328,29 +1346,60 @@ export function App() {
         return
       }
 
-      // Group switching: clicking a session in another group activates
-      // that group, replacing all open panels with its sessions.
-      if (sessionGroup.id !== activeGroupId) {
-        handleActivateGroup(sessionGroup.id)
-        setLastSeenTurn((prev) => ({ ...prev, [id]: s.lastTurnAt ?? Date.now() }))
-        // Resume FIRST, then focus — same rationale as ungrouped path.
-        if (!s.running && !s.terminated && !resumingRef.current.has(id)) {
-          await resumeSession(id, () => { setFocusedId(id) })
-        } else {
-          setFocusedId(id)
-        }
-        return
-      }
+      // Grouped session — sync the whole group into the main grid and focus
+      // the clicked member. `groupIds` is the set we want open: every
+      // existing member of the group when they all fit, otherwise just the
+      // clicked one (mobile single-panel). `sameSet` detects the already-
+      // synced case so a plain refocus doesn't churn the panels or clobber
+      // siblings' unread dots.
+      const sessionSet = new Set(sessionsRef.current.map((x) => x.id))
+      const validGroupIds = sessionGroup.sessionIds.filter((gid) => sessionSet.has(gid))
+      const canShowAll = validGroupIds.length <= maxOpenRef.current
+      const groupIds = canShowAll ? validGroupIds : [id]
+      const prevOpen = openIdsRef.current
+      const sameSet =
+        prevOpen.length === groupIds.length && groupIds.every((gid) => prevOpen.includes(gid))
 
-      // Same group — original behaviour.
-      if (s.running || s.terminated) {
-        openSession(id, s.lastTurnAt)
-        return
+      setLastSeenTurn((prev) => {
+        const next = { ...prev }
+        const now = Date.now()
+        next[id] = s.lastTurnAt ?? now
+        // When switching the grid to this group, mark every member seen so
+        // newly-opened panels don't flash unread. When already synced, only
+        // the clicked member is touched — siblings keep their unread state.
+        if (!sameSet) {
+          for (const gid of groupIds) {
+            if (gid === id) continue
+            const sib = sessionsRef.current.find((x) => x.id === gid)
+            next[gid] = sib?.lastTurnAt ?? now
+          }
+        }
+        return next
+      })
+
+      if (!sameSet) {
+        setOpenIds(groupIds)
+        // Resume dormant siblings fire-and-forget so they're live by the
+        // time the user looks at them. The clicked member is resumed
+        // (awaited) below — skipping it here avoids a double resume.
+        for (const gid of groupIds) {
+          if (gid === id) continue
+          const sib = sessionsRef.current.find((x) => x.id === gid)
+          if (sib && !sib.running && !sib.terminated && !resumingRef.current.has(gid)) {
+            void resumeSession(gid, () => {}).catch(() => {})
+          }
+        }
       }
+      setFocusedId(id)
+
+      // Resume the clicked session if dormant (resume FIRST so it's live
+      // before the user interacts). Running/terminated sessions are already
+      // open in the grid via setOpenIds above.
+      if (s.running || s.terminated) return
       if (resumingRef.current.has(id)) return
-      await resumeSession(id, (res) => { openSession(id, res.session.lastTurnAt) })
+      await resumeSession(id, () => {})
     },
-    [resumeSession, openSession, groups, activeGroupId, handleActivateGroup, setLastSeenTurn],
+    [resumeSession, openSession, groups, setLastSeenTurn],
   )
   // Keep a stable ref so notification onClick handlers can call the
   // full handleSelect logic (group switch, dormant resume, unread clear)
@@ -2439,6 +2488,7 @@ export function App() {
                     accentStyle={sessionAccentMap.get(s.id)}
                     onFocus={focusPanel}
                     onClose={closeSession}
+                    groupLabel={groups.find((g) => g.sessionIds.includes(s.id))?.name}
                     onSessionUpdate={updateSession}
                     settingsOpen={settingsOpenFor === s.id}
                     messageJumpTarget={messageJumpTarget?.sessionId === s.id ? messageJumpTarget : null}

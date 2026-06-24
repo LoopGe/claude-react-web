@@ -140,6 +140,10 @@ interface Props {
    *  message-area context menu can offer a "Close panel" item now that the
    *  header X button is gone. */
   onClosePanel?: (sessionId: string) => void
+  /** Owning group name, or undefined when ungrouped. Relabels the close
+   *  menu item to "Remove from <group>" since closing a group member
+   *  removes it from the group (App.closeSession). */
+  groupLabel?: string
   /** Open this panel's settings overlay. Forwarded from ChatPanel so the
    *  message-area context menu can offer a "Settings" item now that the
    *  header gear button is gone. */
@@ -170,7 +174,7 @@ export const Chat = memo(function Chat({
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
   recapOpen, onCloseRecap,
   onSessionUpdate, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, settingsTabRequest, messageJumpTarget, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, onRegisterInjectInput,
-  snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onOpenSettingsPanel, onSideChat,
+  snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, groupLabel, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat,
 }: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
@@ -1019,7 +1023,7 @@ export const Chat = memo(function Chat({
             ...(onClosePanel
               ? [
                   {
-                    label: 'Close panel',
+                    label: groupLabel ? `Remove from "${groupLabel}"` : 'Close panel',
                     icon: <IconX size={14} />,
                     onClick: () => onClosePanel(session.id),
                   },

@@ -198,7 +198,11 @@ export function SessionContextMenu({
       },
     },
     { label: '' }, // separator
-    ...(isOpen
+    // "Close panel" is only offered for ungrouped sessions. A grouped
+    // session already has "Remove from group" above, and under the
+    // synced-group model closing a member == removing it from the group
+    // (App.closeSession), so the two items would be redundant.
+    ...(isOpen && !groups.some((g) => g.sessionIds.includes(anchor.id))
       ? [
           {
             label: 'Close panel',

@@ -103,6 +103,11 @@ export interface ChatPanelProps {
   accentStyle?: CSSProperties
   onFocus: (sessionId: string) => void
   onClose: (sessionId: string) => void
+  /** Name of the session's owning group, or undefined when ungrouped.
+   *  Drives the panel context-menu's close-item label: "Remove from
+   *  <group>" for grouped sessions (closing a group member removes it
+   *  from the group), plain "Close panel" for ungrouped ones. */
+  groupLabel?: string
   onSessionUpdate: (s: SessionInfo) => void
   /** Swap this panel with another open panel (called with the dragged id). */
   onSwap: (draggedId: string, targetId: string) => void
@@ -175,6 +180,7 @@ export const ChatPanel = memo(function ChatPanel({
   accentStyle,
   onFocus,
   onClose,
+  groupLabel,
   onSessionUpdate,
   onSwap,
   onAcceptSidebarDrop,
@@ -708,6 +714,7 @@ export const ChatPanel = memo(function ChatPanel({
             onOpenSnippetsManager={onOpenSnippetsManager}
             onSaveCurrentAsSnippet={onSaveCurrentAsSnippet}
             onClosePanel={onClose}
+            groupLabel={groupLabel}
             onSideChat={onSideChat}
             sideChatCollapsed={sideChatCollapsed}
             sideChatWorking={!!sideChatSession?.working}
