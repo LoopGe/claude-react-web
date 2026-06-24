@@ -1,0 +1,135 @@
+import { describe, expect, it, vi } from 'vitest'
+import type { SpawnOptions, SpawnedProcess } from '@anthropic-ai/claude-agent-sdk'
+import { ProcessMonitor, type MonitoredSpawn, type ProcessExitInfo } from './process-monitor.js'
+
+// The monitor's spawnFor returns the SDK's SpawnedProcess type (only 'exit' /
+// 'error' declared), but the underlying object is a Node ChildProcess. Cast
+// through unknown for the few ChildProcess-only fields tests inspect.
+type Childish = NodeJS.EventEmitter & { killed: boolean; exitCode: number | null }
+function asChild(p: SpawnedProcess): Childish {
+  return p as unknown as Childish
+}
+
+/** Build SpawnOptions for a trivial Node subprocess that exits with `code`
+ *  after an optional delay. Real child processes exercise the same 'spawn' /
+ *  'exit' lifecycle the CLI does, without depending on the claude binary. */
+function spawnOpts(code: number, delayMs = 0): SpawnOptions {
+  const script =
+    delayMs > 0
+      ? `setTimeout(() => process.exit(${code}), ${delayMs})`
+      : `process.exit(${code})`
+  return {
+    command: process.execPath,
+    args: ['-e', script],
+    env: { ...process.env } as SpawnOptions['env'],
+    // SpawnOptions.signal is required by the SDK type; the monitor ignores it
+    // (correlation is closure-based), so an never-aborted signal is fine.
+    signal: new AbortController().signal,
+  }
+}
+
+/** Race `reg.exited` against a timeout so a hung promise fails the test fast
+ *  instead of waiting for vitest's global limit. */
+function expectExitSoon(reg: MonitoredSpawn, ms = 3000): Promise<ProcessExitInfo> {
+  return Promise.race([
+    reg.exited,
+    new Promise<ProcessExitInfo>((_, reject) =>
+      setTimeout(() => reject(new Error(`exited did not resolve within ${ms}ms`)), ms),
+    ),
+  ])
+}
+
+describe('ProcessMonitor', () => {
+  it('exited resolves with the real exit code and fires onExit', async () => {
+    const onExit = vi.fn()
+    const mon = new ProcessMonitor(onExit)
+    const reg = mon.register('s-exit-0')
+
+    const proc = mon.spawnFor(reg, spawnOpts(0))
+    const info = await expectExitSoon(reg)
+
+    expect(info.code).toBe(0)
+    expect(info.sessionId).toBe('s-exit-0')
+    expect(info.killed).toBe(false)
+    expect(asChild(proc).exitCode).toBe(0)
+    // Non-intentional exit surfaces to the SessionManager.
+    expect(onExit).toHaveBeenCalledTimes(1)
+    expect(onExit.mock.calls[0][0]).toMatchObject({ sessionId: 's-exit-0', code: 0 })
+  })
+
+  it('onExit carries a non-zero crash code', async () => {
+    const onExit = vi.fn()
+    const mon = new ProcessMonitor(onExit)
+    const reg = mon.register('s-crash')
+
+    mon.spawnFor(reg, spawnOpts(2))
+    const info = await expectExitSoon(reg)
+
+    expect(info.code).toBe(2)
+    expect(onExit).toHaveBeenCalledTimes(1)
+    expect(onExit.mock.calls[0][0]).toMatchObject({ sessionId: 's-crash', code: 2 })
+  })
+
+  it('spawned flag is false until spawnFor and true after', () => {
+    const mon = new ProcessMonitor(() => {})
+    const reg = mon.register('s-flag')
+    expect(reg.spawned).toBe(false)
+    expect(reg.intentional).toBe(false)
+
+    mon.spawnFor(reg, spawnOpts(0))
+
+    expect(reg.spawned).toBe(true)
+  })
+
+  it('unregister before any spawn resolves exited immediately (no hang, no onExit)', async () => {
+    const onExit = vi.fn()
+    const mon = new ProcessMonitor(onExit)
+    const reg = mon.register('s-no-spawn')
+
+    mon.unregister(reg)
+
+    const info = await expectExitSoon(reg, 1500)
+    expect(info.sessionId).toBe('s-no-spawn')
+    expect(info.code).toBeNull()
+    // No real process ran, so there is nothing to surface.
+    expect(onExit).not.toHaveBeenCalled()
+  })
+
+  it('does not fire onExit for an intentional exit after unregister (spawned)', async () => {
+    const onExit = vi.fn()
+    const mon = new ProcessMonitor(onExit)
+    const reg = mon.register('s-intentional')
+
+    // Long-lived child so we can unregister (simulate destroy()) BEFORE it
+    // exits, then observe the real exit resolves `exited` without surfacing.
+    const proc = mon.spawnFor(reg, spawnOpts(0, 150))
+    mon.unregister(reg)
+    expect(reg.intentional).toBe(true)
+
+    const info = await expectExitSoon(reg)
+    expect(info.code).toBe(0)
+    // Intentional close: the SessionManager tore it down on purpose, so the
+    // exit must NOT be reported (clear/auto-resume/unload drive their own
+    // lifecycle; a second handleProcessExit would double-broadcast).
+    expect(onExit).not.toHaveBeenCalled()
+    void proc
+  })
+
+  it('spawn for an unregistered handle still spawns (no throw) and is not tracked', async () => {
+    const onExit = vi.fn()
+    const mon = new ProcessMonitor(onExit)
+    const reg = mon.register('s-unregistered')
+
+    // Simulate the destroy() path: unregister marks intentional and (since
+    // nothing spawned yet) resolves exited + deletes the entry.
+    mon.unregister(reg)
+    await expectExitSoon(reg, 1000)
+
+    // A stray spawn AFTER unregister must not throw and must not fire onExit.
+    const proc = mon.spawnFor(reg, spawnOpts(0))
+    await new Promise((r) => asChild(proc).on('exit', r))
+    // Give the exit handler a tick to run.
+    await new Promise((r) => setTimeout(r, 20))
+    expect(onExit).not.toHaveBeenCalled()
+  })
+})

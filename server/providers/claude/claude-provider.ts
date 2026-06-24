@@ -60,14 +60,12 @@ export class ClaudeProvider implements AgentProvider {
   }
 
   private readonly processMonitor: ProcessMonitor
-  private readonly spawnWrapper: ReturnType<ProcessMonitor['createSpawnWrapper']>
   private cachedEnv?: NodeJS.ProcessEnv
   private cachedAuthToken?: string
   private cachedBaseUrl?: string
 
   constructor(private readonly opts: ClaudeProviderOptions = {}) {
     this.processMonitor = new ProcessMonitor((info) => this.opts.onProcessExit?.(info))
-    this.spawnWrapper = this.processMonitor.createSpawnWrapper()
   }
 
   createSession(opts: CreateSessionOptions): ClaudeSessionHandle {
@@ -100,15 +98,23 @@ export class ClaudeProvider implements AgentProvider {
     )
     const abortController = new AbortController()
     sdkOptions.abortController = abortController
-    sdkOptions.spawnClaudeCodeProcess = this.spawnWrapper
-    this.processMonitor.register(abortController.signal, opts.id)
+    // Correlate spawns to sessions via closure, NOT the AbortSignal: the SDK
+    // hands spawnClaudeCodeProcess its OWN internal forwardedAbort.signal
+    // (never our abortController.signal), so the signal can't be a Map key.
+    // register() returns a MonitoredSpawn captured by the per-session spawn
+    // closure; its `exited` promise resolves on the real process exit (used
+    // by SessionManager.clear() to gate respawn on the old child dying).
+    const reg = this.processMonitor.register(opts.id)
+    sdkOptions.spawnClaudeCodeProcess = (o) => this.processMonitor.spawnFor(reg, o)
+    log.debug(`[provider] createSession id=${opts.id}`)
 
     const q = query({ prompt: input.iterable, options: sdkOptions })
     const handle = new ClaudeSessionHandle(
       q,
       input,
       abortController,
-      () => this.processMonitor.unregister(abortController.signal),
+      reg.exited,
+      () => this.processMonitor.unregister(reg),
     )
 
     if (opts.fastMode) {

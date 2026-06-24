@@ -54,6 +54,7 @@ import { SessionHealthMonitor } from './session-health.js'
 import { pushBounded, stampReceivedAt, stampConsumedAt } from './history-utils.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
+import { deleteTranscriptFile } from './history-reader.js'
 import { createPushable, type Pushable } from './pushable.js'
 import { createDefaultProviders } from './providers/default-providers.js'
 import type { ProviderCapabilities, ProviderSessionHandle } from './providers/types.js'
@@ -271,6 +272,12 @@ export class SessionManager {
     const s = this.sessions.get(sessionId)
     if (!s) return // Session already cleaned up (e.g. by unload)
     if (s.terminated) return // Already terminated dno action needed
+    // clear() drives its own respawn and has already unregister()-marked the
+    // old process's exit intentional, so this normally doesn't fire during a
+    // clear. Guard anyway for the race where the child's 'exit' beat
+    // destroy()'s unregister — clear() is tearing down + respawning on
+    // purpose, so don't let an old-process exit terminate the session.
+    if (s.clearing) return
 
     const cleanExit = !killed && code === 0 && !spawnError
 
@@ -1276,10 +1283,14 @@ export class SessionManager {
    *  Query, wipe the in-memory transcript + transient state, then spawn a
    *  fresh Query with no `resume:` so the model starts a brand-new
    *  conversation. `session.id` is preserved as both the app-level handle
-   *  and the SDK sessionId — the new Query writes a fresh anchor into the
-   *  same on-disk transcript file, and `clearBoundaryUuid` (captured by
-   *  the pump from the post-clear `init` frame) keeps lazy paging /
-   *  resume from resurrecting pre-clear rows.
+   *  and the SDK sessionId. The OLD on-disk transcript `.jsonl` is deleted
+   *  before the respawn: the CLI's "Session ID already in use" guard is a
+   *  pure file-existence check (`fs.statSync(<projectsDir>/<id>.jsonl)`),
+   *  so a fresh same-id spawn is rejected when that file already exists.
+   *  Deleting it lets the new process write a brand-new transcript under
+   *  the same id; `clearBoundaryUuid` (captured by the pump from the
+   *  post-clear `init` frame) is now moot (no pre-clear rows survive) but
+   *  its capture logic is harmless and kept.
    *
    *  Idempotent: a second clear() while one is already in flight returns
    *  the current SessionInfo without re-driving the lifecycle. */
@@ -1327,6 +1338,47 @@ export class SessionManager {
           }),
         ])
       } catch { /* pump swallows errors internally */ }
+
+      // Wait for the OLD CLI subprocess to actually exit before respawning.
+      // The pump resolves on the abort signal (above), NOT on process exit,
+      // and the SDK's graceful-close path takes up to ~7s (stdin EOF -> 2s
+      // grace -> SIGTERM/SIGKILL) to tear the child down. We need the old
+      // process GONE for two reasons, both downstream of this await:
+      //   1. On Windows it holds the transcript .jsonl open; we can't unlink
+      //      it (next step) until the handle is released.
+      //   2. (defensive) the prior race where a still-dying child could
+      //      interfere with the fresh spawn.
+      // `destroy()` already ran `unregister()` (marking the exit intentional
+      // so it does NOT trigger handleProcessExit); the handle's processExited
+      // resolves on the real 'exit'. For a session that never spawned a real
+      // process (mocked SDK in tests / deferred spawn), unregister resolves
+      // it immediately, so this await is a no-op there. The 10s cap bounds
+      // the worst case so the /clear request can't hang.
+      try {
+        await Promise.race([
+          s.handle.processExited,
+          new Promise<void>((r) => {
+            const t = setTimeout(r, 10_000)
+            ;(t as { unref?: () => void }).unref?.()
+          }),
+        ])
+      } catch { /* processExited never rejects */ }
+
+      // Delete the OLD on-disk transcript BEFORE respawning. The `claude`
+      // CLI's "Session ID already in use" guard (iFt) is a pure file-existence
+      // check: fs.statSync(<projectsDir>/<sessionId>.jsonl). A fresh (no
+      // --resume) spawn reusing this session-id is rejected when that file
+      // already exists — which it does, written by the prior run. Removing it
+      // lets the fresh spawn proceed; the new process writes a brand-new
+      // transcript under the same id. This deviates from the old "append to
+      // the existing file + clearBoundaryUuid" design, which the CLI's
+      // file-existence guard makes impossible. clearBoundaryUuid is now moot
+      // (no pre-clear rows survive in the fresh file) but the capture logic
+      // below is harmless and kept. Must run AFTER the old process exit await
+      // so Windows has released the file handle. Best-effort: a failed unlink
+      // is logged and we still attempt the respawn (which will then surface
+      // "already in use" if the file couldn't be removed).
+      await deleteTranscriptFile(s.id)
 
       // Wipe in-memory transcript + transient runtime state. Persisted
       // metadata (model, permissionMode, hooks, parentId, etc.) is kept
@@ -1395,9 +1447,13 @@ export class SessionManager {
         fastMode: s.fastMode,
         includeHookEvents: true,
         // No `resume:` — fresh conversation. The provider sets
-        // sdkOptions.sessionId = s.id so the new transcript anchor lands
-        // in the existing on-disk file (clearBoundaryUuid keeps pagination
-        // from resurrecting pre-clear rows).
+        // sdkOptions.sessionId = s.id, preserving the app-level identity.
+        // The old transcript file was deleted above (the CLI's iFt guard
+        // rejects a fresh same-id spawn when the .jsonl already exists), so
+        // the new process writes a brand-new transcript under the same id.
+        // clearBoundaryUuid (captured from the new init below) is now moot
+        // — no pre-clear rows survive in the fresh file — but the capture
+        // logic is harmless and kept.
         onUserMessageConsumed: (msg) => this.onInputConsumed(s.id, msg as SDKUserMessage),
         canUseTool: s.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
         providerExtras: { sdkOptions: applySkillPolicyToOptions(freshOpts, s.skillOverride) },

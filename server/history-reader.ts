@@ -31,7 +31,7 @@
 //             receivedAt as "disk-restored" and hides the timestamp header
 //             (see src/session-store/normalize.ts).
 
-import { readFile } from 'node:fs/promises'
+import { readFile, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { glob } from 'node:fs/promises'
@@ -115,6 +115,39 @@ async function findTranscriptFile(sessionId: string): Promise<string | null> {
     log.warn(`findTranscriptFile glob error session=${sessionId}: ${(err as Error).message ?? err}`)
   }
   return null
+}
+
+/** Delete the on-disk transcript `.jsonl` for a session id. No-op (returns
+ *  false) when no transcript file exists.
+ *
+ *  Required by SessionManager.clear(): the `claude` CLI refuses to start a
+ *  FRESH (non-resume) session whose transcript file already exists — its
+ *  `iFt(sessionId)` "in use" check is `fs.statSync(<projectsDir>/<id>.jsonl)`
+ *  succeeding. clear() respawns the same session-id without `--resume`, so
+ *  the prior run's transcript would trip that guard ("Session ID already in
+ *  use"). Deleting the file lets the fresh spawn proceed; the new process
+ *  writes a brand-new transcript under the same id.
+ *
+ *  MUST be called AFTER the old CLI process has exited: on Windows a file
+ *  held open by the dying child can't be unlinked (EPERM/EBUSY). clear()
+ *  awaits the old process's exit (via the handle's processExited promise)
+ *  before calling this. A failed unlink (still locked, permissions, etc.)
+ *  is logged and swallowed so clear() can still attempt the respawn — but
+ *  the respawn will then fail with "already in use", surfacing the problem.
+ *
+ *  Returns true when a file was found and removed. */
+export async function deleteTranscriptFile(sessionId: string): Promise<boolean> {
+  const file = await findTranscriptFile(sessionId)
+  if (!file) return false
+  try {
+    await unlink(file)
+    log.info(`deleteTranscriptFile: removed ${file}`)
+    return true
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    log.warn(`deleteTranscriptFile: unlink failed for ${file} (code=${code ?? 'unknown'}): ${(err as Error).message ?? err}`)
+    return false
+  }
 }
 
 /** Extract the tool_use_id from a user message whose content carries a

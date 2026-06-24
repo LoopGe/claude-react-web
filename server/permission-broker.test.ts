@@ -28,6 +28,7 @@ function makeFakeSession(overrides: Partial<Session> = {}): Session {
       queueDepth: 0,
       closed: false,
       abortSignal: ac.signal,
+      processExited: Promise.resolve(),
       abort: vi.fn(() => ac.abort()),
       destroy: vi.fn(),
       interrupt: vi.fn(async () => {}),

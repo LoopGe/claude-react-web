@@ -39,6 +39,15 @@ export interface ProviderSessionHandle {
   readonly queueDepth: number
   readonly closed: boolean
   readonly abortSignal: AbortSignal
+  /** Resolves when the underlying CLI subprocess actually exits (not merely
+   *  when the pump breaks on the abort signal). Awaited by
+   *  SessionManager.clear() to gate its respawn on the OLD process dying so
+   *  the fresh `--session-id` Query doesn't collide with the
+   *  still-shutting-down child. Typed `unknown` here to avoid a type-cycle
+   *  into process-monitor.ts; the Claude provider narrows it to
+   *  `Promise<ProcessExitInfo>`. Resolves immediately when no real process
+   *  ever spawned. Never rejects. */
+  readonly processExited: Promise<unknown>
   abort(): void
   destroy(reason: string): Promise<void> | void
   interrupt(): Promise<void>

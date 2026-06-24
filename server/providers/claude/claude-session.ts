@@ -2,6 +2,7 @@ import type { Query } from '@anthropic-ai/claude-agent-sdk'
 import type { AgentMessage, AgentUserMessage } from '../../agent-message.js'
 import type { Pushable } from '../../pushable.js'
 import type { ProviderSessionHandle } from '../types.js'
+import type { ProcessExitInfo } from '../../process-monitor.js'
 
 export class ClaudeSessionHandle implements ProviderSessionHandle {
   readonly provider = 'claude'
@@ -11,11 +12,23 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     private readonly query: Query,
     private readonly input: Pushable<AgentUserMessage>,
     private readonly abortController: AbortController,
+    /** Resolves when the underlying CLI subprocess actually exits (not merely
+     *  when the pump breaks on the abort signal). Sourced from the
+     *  ProcessMonitor registration. Awaited by SessionManager.clear() to gate
+     *  its respawn on the OLD process dying, so the fresh `--session-id`
+     *  Query doesn't collide with the still-shutting-down child
+     *  ("Session ID already in use"). Resolves immediately when no real
+     *  process ever spawned (mocked SDK / deferred spawn). Never rejects. */
+    private readonly processExitedPromise: Promise<ProcessExitInfo>,
     private readonly cleanupMonitor: () => void,
   ) {}
 
   get messages(): AsyncIterable<AgentMessage> {
     return this.query as AsyncIterable<AgentMessage>
+  }
+
+  get processExited(): Promise<ProcessExitInfo> {
+    return this.processExitedPromise
   }
 
   get queueDepth(): number {
