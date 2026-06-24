@@ -1,4 +1,4 @@
-import { createInitialSessionState, type SessionAction, type SessionSnapshot, type SessionState, type TranscriptItem } from './types'
+import { createInitialSessionState, type ServerMirror, type SessionAction, type SessionSnapshot, type SessionState, type TranscriptItem } from './types'
 import { rebuildIndexesFromMessages, reduceSessionState } from './reducer'
 import { extractMessagePlainText } from '../search'
 import type { SdkMessage } from '../types'
@@ -118,24 +118,29 @@ function persistToStorage(sessionId: string, state: SessionState): void {
   // plainText is derived from msg via extractMessagePlainText — we never
   // persist it. loadFromStorage re-derives on hydrate so format upgrades
   // to the extractor land automatically.
+  //
+  // Only the server-authored mirror is persisted. ClientIntent (optimistic
+  // placeholders, ephemeral error) is by-design discarded on reload — those
+  // placeholders die with the tab.
+  const mirror = state.mirror
   const payload = JSON.stringify({
     v: 1,
     savedAt: Date.now(),
-    messages: state.messages,
-    items: state.items.map((i) => ({
+    messages: mirror.messages,
+    items: mirror.items.map((i) => ({
       id: i.id,
       isCompactSummary: i.isCompactSummary,
       hiddenByDefault: i.hiddenByDefault,
       // Store msg as raw object — SdkMessage is loosely type
       msg: i.msg,
     })),
-    lastMessageUuid: state.lastMessageUuid,
+    lastMessageUuid: mirror.lastMessageUuid,
   })
   // Trim oversized transcripts to their last STORAGE_TRIM_MESSAGES so a
   // single session can't blow past STORAGE_MAX_BYTES.
   if (payload.length > STORAGE_MAX_BYTES) {
     console.warn(
-      `[persistToStorage] ${sessionId}: payload ${(payload.length / 1024).toFixed(0)}KB > ${(STORAGE_MAX_BYTES / 1024).toFixed(0)}KB limit, trimming from ${state.items.length} to ${STORAGE_TRIM_MESSAGES} messages`,
+      `[persistToStorage] ${sessionId}: payload ${(payload.length / 1024).toFixed(0)}KB > ${(STORAGE_MAX_BYTES / 1024).toFixed(0)}KB limit, trimming from ${mirror.items.length} to ${STORAGE_TRIM_MESSAGES} messages`,
     )
   }
   const toWrite =
@@ -143,14 +148,14 @@ function persistToStorage(sessionId: string, state: SessionState): void {
       ? JSON.stringify({
           v: 1,
           savedAt: Date.now(),
-          messages: state.messages.slice(-STORAGE_TRIM_MESSAGES),
-          items: state.items.slice(-STORAGE_TRIM_MESSAGES).map((i) => ({
+          messages: mirror.messages.slice(-STORAGE_TRIM_MESSAGES),
+          items: mirror.items.slice(-STORAGE_TRIM_MESSAGES).map((i) => ({
             id: i.id,
             msg: i.msg,
             isCompactSummary: i.isCompactSummary,
             hiddenByDefault: i.hiddenByDefault,
           })),
-          lastMessageUuid: state.lastMessageUuid,
+          lastMessageUuid: mirror.lastMessageUuid,
         })
       : payload
 
@@ -238,12 +243,12 @@ export class SessionStore {
   /** Per-instance subagent filter cache — moved off module scope so
    *  multiple SessionStore instances (multi-panel layouts) don't
    *  thrash a shared single-slot cache against each other. */
-  private cachedSubagentsMap: SessionState['activeSubagents'] | null = null
+  private cachedSubagentsMap: ServerMirror['activeSubagents'] | null = null
   private cachedRunningSubagents: SessionSnapshot['activeSubagents'] = []
   /** Per-instance Workflow filter cache — mirrors cachedSubagentsMap so
    *  the running-workflow list only reallocates when activeWorkflows
    *  actually changes (drives any future Workflow chip in WorkingBubble). */
-  private cachedWorkflowsMap: SessionState['activeWorkflows'] | null = null
+  private cachedWorkflowsMap: ServerMirror['activeWorkflows'] | null = null
   private cachedRunningWorkflows: SessionSnapshot['activeWorkflows'] = []
 
   constructor(sessionId: string) {
@@ -262,14 +267,20 @@ export class SessionStore {
       // "older Grep/Read cards stuck spinning after several turns"
       // bug — cards from previous turns lived in the cached items
       // but their toolStatus entries had been thrown away.
-      const seeded: SessionState = {
-        ...createInitialSessionState(sessionId),
+      const fresh = createInitialSessionState(sessionId)
+      const seededMirror: ServerMirror = {
+        ...fresh.mirror,
         items: cached.messages,
-        messages: cached.rawMessages as SessionState['messages'],
+        messages: cached.rawMessages as ServerMirror['messages'],
         lastMessageUuid: cached.lastMessageUuid,
         replayReady: true, // Treat cached data as "replayed"
       }
-      this.state = rebuildIndexesFromMessages(seeded, seeded.messages)
+      const seeded: SessionState = {
+        sessionId,
+        mirror: seededMirror,
+        intent: fresh.intent,
+      }
+      this.state = rebuildIndexesFromMessages(seeded, seededMirror.messages)
       this.snapshot = this.buildSnapshot(this.state)
     } else {
       this.state = createInitialSessionState(sessionId)
@@ -365,7 +376,7 @@ export class SessionStore {
   }
 
   private scheduleFlush(): void {
-    if (!this.state.liveTurn?.dirty || this.flushTimer != null) return
+    if (!this.state.mirror.liveTurn?.dirty || this.flushTimer != null) return
     this.flushTimer = window.setTimeout(() => {
       this.flushTimer = null
       this.dispatch({ type: 'LIVE_TURN_FLUSH' })
@@ -396,7 +407,7 @@ export class SessionStore {
   /** Per-instance equivalent of the old module-global running-subagents
    *  cache. The Map reference is compared by identity so the filtered
    *  array is only reallocated when activeSubagents actually changes. */
-  private getRunningSubagents(map: SessionState['activeSubagents']): SessionSnapshot['activeSubagents'] {
+  private getRunningSubagents(map: ServerMirror['activeSubagents']): SessionSnapshot['activeSubagents'] {
     if (map === this.cachedSubagentsMap) return this.cachedRunningSubagents
     this.cachedSubagentsMap = map
     this.cachedRunningSubagents = Array.from(map.values()).filter((s) => s.status === 'running')
@@ -408,7 +419,7 @@ export class SessionStore {
    *  actually changes. Drives the WorkingBubble workflow chip row (if/when
    *  wired); the full index (workflowIndex) is exposed unfiltered so
    *  WorkflowCard can read completed records too. */
-  private getRunningWorkflows(map: SessionState['activeWorkflows']): SessionSnapshot['activeWorkflows'] {
+  private getRunningWorkflows(map: ServerMirror['activeWorkflows']): SessionSnapshot['activeWorkflows'] {
     if (map === this.cachedWorkflowsMap) return this.cachedRunningWorkflows
     this.cachedWorkflowsMap = map
     this.cachedRunningWorkflows = Array.from(map.values()).filter((w) => w.status === 'running')
@@ -416,26 +427,38 @@ export class SessionStore {
   }
 
   private buildSnapshot(state: SessionState): SessionSnapshot {
+    const mirror = state.mirror
+    const intent = state.intent
+    // Render-time merge: optimistic placeholders live in intent (so server
+    // frame handlers can't wipe them) but components see them at the tail
+    // of items/messages, same as pre-refactor. Identity-stable short-circuit
+    // when no placeholders are pending (the common case).
+    const items = intent.pendingPlaceholders.size === 0
+      ? mirror.items
+      : [...mirror.items, ...intent.pendingPlaceholders.values()]
+    const messages = intent.pendingPlaceholders.size === 0
+      ? mirror.messages
+      : [...mirror.messages, ...Array.from(intent.pendingPlaceholders.values()).map((p) => p.msg)]
     return {
-      replayReady: state.replayReady,
-      items: state.items,
-      messages: state.messages,
-      streamingContent: state.liveTurn?.flushedText ?? null,
-      activePhase: state.liveTurn?.phase ?? null,
-      tokenRate: state.liveTurn?.tokenRate ?? null,
-      contextUsage: state.contextUsage,
-      error: state.error,
-      permissionDecisions: state.permissionDecisions,
-      planStatus: state.planStatus,
-      planContent: state.planContent,
-      questionAnswers: state.questionAnswers,
-      toolStatus: state.toolStatus,
-      toolResults: state.toolResults,
-      activeSubagents: this.getRunningSubagents(state.activeSubagents),
-      subagentIndex: state.activeSubagents,
-      activeWorkflows: this.getRunningWorkflows(state.activeWorkflows),
-      workflowIndex: state.activeWorkflows,
-      lastMessageUuid: state.lastMessageUuid,
+      replayReady: mirror.replayReady,
+      items,
+      messages,
+      streamingContent: mirror.liveTurn?.flushedText ?? null,
+      activePhase: mirror.liveTurn?.phase ?? null,
+      tokenRate: mirror.liveTurn?.tokenRate ?? null,
+      contextUsage: mirror.contextUsage,
+      error: intent.error,
+      permissionDecisions: mirror.permissionDecisions,
+      planStatus: mirror.planStatus,
+      planContent: mirror.planContent,
+      questionAnswers: mirror.questionAnswers,
+      toolStatus: mirror.toolStatus,
+      toolResults: mirror.toolResults,
+      activeSubagents: this.getRunningSubagents(mirror.activeSubagents),
+      subagentIndex: mirror.activeSubagents,
+      activeWorkflows: this.getRunningWorkflows(mirror.activeWorkflows),
+      workflowIndex: mirror.activeWorkflows,
+      lastMessageUuid: mirror.lastMessageUuid,
     }
   }
 }
@@ -640,7 +663,8 @@ function dumpToolStatus(): ToolStatusDump[] {
     for (const store of stores) {
       const thisStoreIndex = storeIndex++
       const state = store.getState()
-      const messages = state.messages
+      const mirror = state.mirror
+      const messages = mirror.messages
       // Build the id→name / id→result indexes once. The previous dump
       // re-scanned the full message log for every problem AND every orphan
       // (O(messages × ids)); on a 500-entry ring with many tools the dump
@@ -653,17 +677,17 @@ function dumpToolStatus(): ToolStatusDump[] {
       // an orphan (and, worse, tags it EXPECTED so the real turn-end-wipe
       // bug reads as "working as designed").
       const subagentResultIds = new Set<string>()
-      for (const [id, sub] of state.activeSubagents) {
+      for (const [id, sub] of mirror.activeSubagents) {
         if (sub.result) subagentResultIds.add(id)
       }
       const counts = { running: 0, success: 0, error: 0 }
-      for (const status of state.toolStatus.values()) {
+      for (const status of mirror.toolStatus.values()) {
         if (status === 'running') counts.running++
         else if (status === 'success') counts.success++
         else if (status === 'error') counts.error++
       }
       const problems: ToolEntryDump[] = []
-      for (const [id, status] of state.toolStatus) {
+      for (const [id, status] of mirror.toolStatus) {
         // 'success' is the healthy terminal state — skip it.
         if (status === 'success') continue
         const toolName = index.nameById.get(id) ?? null
@@ -730,9 +754,9 @@ function dumpToolStatus(): ToolStatusDump[] {
           // healthy merged subagent was reported as an orphan AND tagged
           // EXPECTED, so the turn-end-wipe regression read as "by design".
           if (
-            state.toolResults.has(id) ||
-            state.planStatus.has(id) ||
-            state.questionAnswers.has(id) ||
+            mirror.toolResults.has(id) ||
+            mirror.planStatus.has(id) ||
+            mirror.questionAnswers.has(id) ||
             enterPlanIds.has(id) ||
             subagentResultIds.has(id)
           ) {
@@ -742,12 +766,12 @@ function dumpToolStatus(): ToolStatusDump[] {
           seenOrphanIds.add(id)
           const toolName = index.nameById.get(id) ?? null
           const excluded = isExcludedFromMerge(toolName)
-          const hasSeededStatus = state.toolStatus.has(id)
+          const hasSeededStatus = mirror.toolStatus.has(id)
           // Subagent cross-check: for an Agent/Task/Explore orphan, look at
           // the activeSubagents record. It tells apart the two cases the old
           // dump conflated under one "EXPECTED" blanket.
           const isSubagentTool = toolName != null && SUBAGENT_TOOL_NAMES.has(toolName)
-          const subRecord = isSubagentTool ? state.activeSubagents.get(id) : undefined
+          const subRecord = isSubagentTool ? mirror.activeSubagents.get(id) : undefined
           const subagentRecord = isSubagentTool
             ? {
                 present: subRecord != null,
@@ -821,7 +845,7 @@ function dumpToolStatus(): ToolStatusDump[] {
       // Snapshot the activeSubagents index so subagent merge/fallback bugs
       // are directly visible (the old dump ignored this map entirely).
       const subagents: SubagentDump[] = []
-      for (const [id, sub] of state.activeSubagents) {
+      for (const [id, sub] of mirror.activeSubagents) {
         subagents.push({
           toolUseId: id,
           label: sub.label,
@@ -834,11 +858,11 @@ function dumpToolStatus(): ToolStatusDump[] {
         })
       }
       const all: Record<string, string> = {}
-      for (const [id, status] of state.toolStatus) all[id] = status
+      for (const [id, status] of mirror.toolStatus) all[id] = status
       out.push({
         sessionId,
         storeIndex: thisStoreIndex,
-        total: state.toolStatus.size,
+        total: mirror.toolStatus.size,
         counts,
         problems,
         orphans,

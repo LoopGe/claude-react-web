@@ -1,11 +1,21 @@
 import { describe, it, expect } from 'vitest'
 import { reduceSessionState, splitReplayAgainstCache } from './reducer'
-import { createInitialSessionState } from './types'
+import { createInitialSessionState, type SessionState } from './types'
 import { isTrimBoundary } from './normalize'
 import type { PermissionRequest, SdkMessage } from '../types'
 
-const hasId = (ids: ReadonlySet<string>, id: string) => ids.has(id)
-const isEmpty = (ids: ReadonlySet<string>) => ids.size === 0
+const hasId = (ids: ReadonlyMap<string, unknown>, id: string) => ids.has(id)
+const isEmpty = (ids: ReadonlyMap<string, unknown>) => ids.size === 0
+
+/** Mirror of SessionStore.buildSnapshot's render-time merge: optimistic
+ *  placeholders live in `intent.pendingPlaceholders`, NOT in `mirror.items`,
+ *  so the tests that previously read `state.mirror.items` (which used to contain
+ *  both) now go through this helper to see the merged view. */
+function renderedItems(s: SessionState) {
+  return s.intent.pendingPlaceholders.size === 0
+    ? s.mirror.items
+    : [...s.mirror.items, ...s.intent.pendingPlaceholders.values()]
+}
 
 function applyOptimistic(state: ReturnType<typeof createInitialSessionState>, content: unknown, pendingId = 'optimistic:test'): ReturnType<typeof createInitialSessionState> {
   const message: SdkMessage = {
@@ -53,17 +63,17 @@ describe('reducer: optimistic user message + server echo', () => {
     // every user message ended up rendered twice.
     let state = createInitialSessionState('s1')
     state = applyOptimistic(state, 'hello', 'optimistic:abc')
-    expect(state.items.length).toBe(1)
-    expect(state.items[0].sending).toBe(true) // ← drives the spinner UI
-    expect(hasId(state.pendingUserMessageIds, 'optimistic:abc')).toBe(true)
+    expect(renderedItems(state).length).toBe(1)
+    expect(renderedItems(state)[0].sending).toBe(true) // ← drives the spinner UI
+    expect(hasId(state.intent.pendingPlaceholders, 'optimistic:abc')).toBe(true)
 
     state = applyServerEcho(state, 'hello', 'real-xyz')
-    expect(state.items.length).toBe(1)
-    expect(state.items[0].id).toBe('real-xyz')
+    expect(renderedItems(state).length).toBe(1)
+    expect(renderedItems(state)[0].id).toBe('real-xyz')
     // After the broadcast lands the replaced item has no `sending`
     // — the indicator clears automatically.
-    expect(state.items[0].sending).toBeUndefined()
-    expect(isEmpty(state.pendingUserMessageIds)).toBe(true)
+    expect(renderedItems(state)[0].sending).toBeUndefined()
+    expect(isEmpty(state.intent.pendingPlaceholders)).toBe(true)
   })
 
   it('replaces correctly for multimodal (array) content — match is by id, not content', () => {
@@ -75,30 +85,30 @@ describe('reducer: optimistic user message + server echo', () => {
     ]
     let state = createInitialSessionState('s1')
     state = applyOptimistic(state, arr, 'optimistic:img')
-    expect(state.items.length).toBe(1)
+    expect(renderedItems(state).length).toBe(1)
 
     state = applyServerEcho(state, arr, 'real-img-uuid')
-    expect(state.items.length).toBe(1)
-    expect(state.items[0].id).toBe('real-img-uuid')
+    expect(renderedItems(state).length).toBe(1)
+    expect(renderedItems(state)[0].id).toBe('real-img-uuid')
   })
 
   it('clears sending on REST ack before the WS echo arrives', () => {
     let state = createInitialSessionState('s1')
     state = applyOptimistic(state, 'hello', 'optimistic:abc')
-    expect(state.items[0].sending).toBe(true)
+    expect(renderedItems(state)[0].sending).toBe(true)
 
     state = applyAck(state, 'optimistic:abc', 'real-ack-uuid')
-    expect(state.items).toHaveLength(1)
-    expect(state.items[0].id).toBe('real-ack-uuid')
-    expect(state.items[0].sending).toBeUndefined()
-    expect(state.items[0].deliveryStatus).toBe('queued')
-    expect(hasId(state.pendingUserMessageIds, 'optimistic:abc')).toBe(false)
-    expect(hasId(state.pendingUserMessageIds, 'real-ack-uuid')).toBe(true)
+    expect(renderedItems(state)).toHaveLength(1)
+    expect(renderedItems(state)[0].id).toBe('real-ack-uuid')
+    expect(renderedItems(state)[0].sending).toBeUndefined()
+    expect(renderedItems(state)[0].deliveryStatus).toBe('queued')
+    expect(hasId(state.intent.pendingPlaceholders, 'optimistic:abc')).toBe(false)
+    expect(hasId(state.intent.pendingPlaceholders, 'real-ack-uuid')).toBe(true)
 
     state = applyServerEcho(state, 'hello', 'real-ack-uuid')
-    expect(state.items).toHaveLength(1)
-    expect(state.items[0].id).toBe('real-ack-uuid')
-    expect(isEmpty(state.pendingUserMessageIds)).toBe(true)
+    expect(renderedItems(state)).toHaveLength(1)
+    expect(renderedItems(state)[0].id).toBe('real-ack-uuid')
+    expect(isEmpty(state.intent.pendingPlaceholders)).toBe(true)
   })
 
   it('applies a consumed signal that arrives before the REST ack', () => {
@@ -110,15 +120,17 @@ describe('reducer: optimistic user message + server echo', () => {
       uuid: 'real-ack-uuid',
       consumedAt: 456,
     })
-    expect(state.items[0].sending).toBe(true)
+    expect(renderedItems(state)[0].sending).toBe(true)
 
     state = applyAck(state, 'optimistic:abc', 'real-ack-uuid')
-    expect(state.items).toHaveLength(1)
-    expect(state.items[0].id).toBe('real-ack-uuid')
-    expect(state.items[0].deliveryStatus).toBe('consumed')
-    expect(state.items[0].msg.consumedAt).toBe(456)
-    expect(isEmpty(state.pendingUserMessageIds)).toBe(true)
-    expect(state.pendingConsumedMessages.size).toBe(0)
+    expect(renderedItems(state)).toHaveLength(1)
+    expect(renderedItems(state)[0].id).toBe('real-ack-uuid')
+    expect(renderedItems(state)[0].deliveryStatus).toBe('consumed')
+    expect(renderedItems(state)[0].msg.consumedAt).toBe(456)
+    // Placeholder is re-keyed (not removed) — pending awaits the echo.
+    expect(hasId(state.intent.pendingPlaceholders, 'optimistic:abc')).toBe(false)
+    expect(hasId(state.intent.pendingPlaceholders, 'real-ack-uuid')).toBe(true)
+    expect(state.mirror.pendingConsumedMessages.size).toBe(0)
   })
 
   it('applies a consumed signal that arrives before the user message broadcast', () => {
@@ -129,13 +141,13 @@ describe('reducer: optimistic user message + server echo', () => {
       uuid: 'real-1',
       consumedAt: 789,
     })
-    expect(state.pendingConsumedMessages.get('real-1')).toBe(789)
+    expect(state.mirror.pendingConsumedMessages.get('real-1')).toBe(789)
 
     state = applyServerEcho(state, 'hello', 'real-1')
-    expect(state.items).toHaveLength(1)
-    expect(state.items[0].deliveryStatus).toBe('consumed')
-    expect(state.items[0].msg.consumedAt).toBe(789)
-    expect(state.pendingConsumedMessages.size).toBe(0)
+    expect(renderedItems(state)).toHaveLength(1)
+    expect(renderedItems(state)[0].deliveryStatus).toBe('consumed')
+    expect(renderedItems(state)[0].msg.consumedAt).toBe(789)
+    expect(state.mirror.pendingConsumedMessages.size).toBe(0)
   })
 
   it('does not downgrade an acked consumed row when the user message broadcast arrives later', () => {
@@ -147,22 +159,22 @@ describe('reducer: optimistic user message + server echo', () => {
       uuid: 'real-ack-uuid',
       consumedAt: 456,
     })
-    expect(state.items[0].deliveryStatus).toBe('consumed')
+    expect(renderedItems(state)[0].deliveryStatus).toBe('consumed')
 
     state = applyServerEcho(state, 'hello', 'real-ack-uuid')
-    expect(state.items).toHaveLength(1)
-    expect(state.items[0].id).toBe('real-ack-uuid')
-    expect(state.items[0].deliveryStatus).toBe('consumed')
-    expect(state.items[0].msg.consumedAt).toBe(456)
-    expect(state.pendingConsumedMessages.size).toBe(0)
+    expect(renderedItems(state)).toHaveLength(1)
+    expect(renderedItems(state)[0].id).toBe('real-ack-uuid')
+    expect(renderedItems(state)[0].deliveryStatus).toBe('consumed')
+    expect(renderedItems(state)[0].msg.consumedAt).toBe(456)
+    expect(state.mirror.pendingConsumedMessages.size).toBe(0)
   })
 
   it('appends normally when no optimistic is pending', () => {
     let state = createInitialSessionState('s1')
     state = applyServerEcho(state, 'hello', 'real-1')
-    expect(state.items.length).toBe(1)
-    expect(state.items[0].id).toBe('real-1')
-    expect(isEmpty(state.pendingUserMessageIds)).toBe(true)
+    expect(renderedItems(state).length).toBe(1)
+    expect(renderedItems(state)[0].id).toBe('real-1')
+    expect(isEmpty(state.intent.pendingPlaceholders)).toBe(true)
   })
 
   it('does NOT match a subagent tool_result against a pending optimistic', () => {
@@ -172,21 +184,25 @@ describe('reducer: optimistic user message + server echo', () => {
     // would see their type text replaced by a JSON tool result.
     let state = createInitialSessionState('s1')
     state = applyOptimistic(state, 'real user input', 'optimistic:abc')
-    expect(hasId(state.pendingUserMessageIds, 'optimistic:abc')).toBe(true)
+    expect(hasId(state.intent.pendingPlaceholders, 'optimistic:abc')).toBe(true)
 
     // tool_result-shaped user message arrives BEFORE the actual echo
     state = applyServerEcho(state, [{ type: 'tool_result', tool_use_id: 'tu_1', content: 'ok' }], 'tool-result-uuid', 'subagent-id')
 
-    // Optimistic survives — the tool_result was appended separately
-    expect(state.items.length).toBe(2)
-    expect(state.items[0].id).toBe('optimistic:abc')
-    expect(hasId(state.pendingUserMessageIds, 'optimistic:abc')).toBe(true)
+    // Optimistic survives (still in intent) — the tool_result was appended
+    // separately to mirror.items. Render-merged view: tool_result + placeholder.
+    const rendered = renderedItems(state)
+    expect(rendered.length).toBe(2)
+    // The placeholder is rendered AT THE TAIL post-refactor (intent values
+    // are appended after mirror.items by buildSnapshot).
+    expect(rendered[rendered.length - 1].id).toBe('optimistic:abc')
+    expect(hasId(state.intent.pendingPlaceholders, 'optimistic:abc')).toBe(true)
   })
 
   it('clears pendingUserMessageIds on result frame even if no echo arrived', () => {
     let state = createInitialSessionState('s1')
     state = applyOptimistic(state, 'hello', 'optimistic:abc')
-    expect(hasId(state.pendingUserMessageIds, 'optimistic:abc')).toBe(true)
+    expect(hasId(state.intent.pendingPlaceholders, 'optimistic:abc')).toBe(true)
 
     const resultMsg: SdkMessage = {
       type: 'result',
@@ -194,8 +210,13 @@ describe('reducer: optimistic user message + server echo', () => {
       uuid: 'r-1',
     } as unknown as SdkMessage
     state = reduceSessionState(state, { type: 'MESSAGE', message: resultMsg })
-    expect(isEmpty(state.pendingUserMessageIds)).toBe(true)
-    expect(state.items[0].sending).toBeUndefined()
+    expect(isEmpty(state.intent.pendingPlaceholders)).toBe(true)
+    // Result frame clears the placeholder entirely (clearSendingPlaceholders),
+    // so the render-merged view contains only the result row — no leftover
+    // optimistic placeholder.
+    const rendered = renderedItems(state)
+    expect(rendered.some((it) => it.id === 'optimistic:abc')).toBe(false)
+    expect(rendered.every((it) => it.msg.type !== 'user')).toBe(true)
   })
 })
 
@@ -233,7 +254,7 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     state = reduceSessionState(state, { type: 'MESSAGE', message: agentResult })
 
     // Before turn end: recorded as done, result captured for the merged card.
-    const mid = state.activeSubagents.get('tu_agent')
+    const mid = state.mirror.activeSubagents.get('tu_agent')
     expect(mid?.status).toBe('done')
     expect(mid?.result?.content).toBe('worker output')
 
@@ -241,7 +262,7 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     // SubagentCard falls back to a bare placeholder and the orphan
     // tool_result bubble reappears below it (the bug this guards).
     state = reduceSessionState(state, { type: 'MESSAGE', message: resultFrame })
-    const after = state.activeSubagents.get('tu_agent')
+    const after = state.mirror.activeSubagents.get('tu_agent')
     expect(after?.status).toBe('done')
     expect(after?.result?.content).toBe('worker output')
   })
@@ -249,11 +270,11 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
   it('flips a still-running subagent to interrupted at the result frame (no orphan)', () => {
     let state = createInitialSessionState('s1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse })
-    expect(state.activeSubagents.get('tu_agent')?.status).toBe('running')
+    expect(state.mirror.activeSubagents.get('tu_agent')?.status).toBe('running')
 
     // Result frame arrives before the subagent's tool_result matched.
     state = reduceSessionState(state, { type: 'MESSAGE', message: resultFrame })
-    const after = state.activeSubagents.get('tu_agent')
+    const after = state.mirror.activeSubagents.get('tu_agent')
     expect(after).toBeDefined()
     expect(after?.status).toBe('interrupted')
   })
@@ -334,7 +355,7 @@ describe('reducer: Workflow indexing', () => {
     let state = createInitialSessionState('s1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: workflowToolUse })
 
-    const wf = state.activeWorkflows.get('tu_workflow')
+    const wf = state.mirror.activeWorkflows.get('tu_workflow')
     expect(wf).toBeDefined()
     expect(wf?.status).toBe('running')
     expect(wf?.label).toBe('find-flaky-tests')
@@ -348,7 +369,7 @@ describe('reducer: Workflow indexing', () => {
     state = reduceSessionState(state, { type: 'MESSAGE', message: workflowToolUse })
     state = reduceSessionState(state, { type: 'MESSAGE', message: childAgentStart })
 
-    const wf = state.activeWorkflows.get('tu_workflow')
+    const wf = state.mirror.activeWorkflows.get('tu_workflow')
     expect(wf?.childAgents.length).toBe(2)
     const scan = wf?.childAgents.find((c) => c.toolUseId === 'tu_child1')
     const fix = wf?.childAgents.find((c) => c.toolUseId === 'tu_child2')
@@ -365,7 +386,7 @@ describe('reducer: Workflow indexing', () => {
     state = reduceSessionState(state, { type: 'MESSAGE', message: childAgentStart })
     state = reduceSessionState(state, { type: 'MESSAGE', message: childResult })
 
-    const wf = state.activeWorkflows.get('tu_workflow')
+    const wf = state.mirror.activeWorkflows.get('tu_workflow')
     const child1 = wf?.childAgents.find((c) => c.toolUseId === 'tu_child1')
     const child2 = wf?.childAgents.find((c) => c.toolUseId === 'tu_child2')
     expect(child1?.status).toBe('done')
@@ -378,7 +399,7 @@ describe('reducer: Workflow indexing', () => {
     state = reduceSessionState(state, { type: 'MESSAGE', message: workflowToolUse })
     state = reduceSessionState(state, { type: 'MESSAGE', message: workflowResult })
 
-    const wf = state.activeWorkflows.get('tu_workflow')
+    const wf = state.mirror.activeWorkflows.get('tu_workflow')
     expect(wf?.status).toBe('done')
     expect(wf?.result?.content).toBe('workflow done')
   })
@@ -394,7 +415,7 @@ describe('reducer: Workflow indexing', () => {
 
     // The record MUST survive so WorkflowCard renders the merged result and
     // the overlay stays reopenable — mirrors the subagent keep-on-complete rule.
-    const wf = state.activeWorkflows.get('tu_workflow')
+    const wf = state.mirror.activeWorkflows.get('tu_workflow')
     expect(wf?.status).toBe('done')
     expect(wf?.result?.content).toBe('workflow done')
     expect(wf?.childAgents.length).toBe(2)
@@ -408,7 +429,7 @@ describe('reducer: Workflow indexing', () => {
     // No tool_results arrive — both the Workflow and child2 are still running.
     state = reduceSessionState(state, { type: 'MESSAGE', message: resultFrame })
 
-    const wf = state.activeWorkflows.get('tu_workflow')
+    const wf = state.mirror.activeWorkflows.get('tu_workflow')
     expect(wf?.status).toBe('interrupted')
     // child1 had no result either -> interrupted; child2 likewise.
     expect(wf?.childAgents.every((c) => c.status === 'interrupted')).toBe(true)
@@ -419,7 +440,7 @@ describe('reducer: Workflow indexing', () => {
     state = reduceSessionState(state, { type: 'MESSAGE', message: workflowToolUse })
     // The Workflow tool_use id must be excluded from the generic toolStatus
     // map — same exclusion as Plan/Subagent/Question (they own their status).
-    expect(state.toolStatus.has('tu_workflow')).toBe(false)
+    expect(state.mirror.toolStatus.has('tu_workflow')).toBe(false)
   })
 
   it('parses a remote WorkflowOutput from the tool_result and marks the record remote', () => {
@@ -453,7 +474,7 @@ describe('reducer: Workflow indexing', () => {
     state = reduceSessionState(state, { type: 'MESSAGE', message: workflowToolUse })
     state = reduceSessionState(state, { type: 'MESSAGE', message: remoteResult })
 
-    const wf = state.activeWorkflows.get('tu_workflow')
+    const wf = state.mirror.activeWorkflows.get('tu_workflow')
     expect(wf?.status).toBe('done')
     expect(wf?.remote).toBe(true)
     expect(wf?.taskType).toBe('remote_agent')
@@ -502,10 +523,10 @@ describe('reducer: Workflow indexing', () => {
     // input.name is used as the fallback, so label is 'spec' BEFORE the result
     // — but if the model emitted neither script meta nor input.name, the
     // rescue path is what matters. Here input.name already gives 'spec'.
-    expect(state.activeWorkflows.get('tu_named')?.label).toBe('spec')
+    expect(state.mirror.activeWorkflows.get('tu_named')?.label).toBe('spec')
 
     state = reduceSessionState(state, { type: 'MESSAGE', message: namedResult })
-    const wf = state.activeWorkflows.get('tu_named')
+    const wf = state.mirror.activeWorkflows.get('tu_named')
     expect(wf?.status).toBe('done')
     expect(wf?.remote).toBe(false)
     expect(wf?.taskType).toBe('local_workflow')
@@ -547,10 +568,10 @@ describe('reducer: Workflow indexing', () => {
 
     let state = createInitialSessionState('s1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: bareUse })
-    expect(state.activeWorkflows.get('tu_bare')?.label).toBe('Workflow')
+    expect(state.mirror.activeWorkflows.get('tu_bare')?.label).toBe('Workflow')
 
     state = reduceSessionState(state, { type: 'MESSAGE', message: bareResult })
-    expect(state.activeWorkflows.get('tu_bare')?.label).toBe('find-bugs')
+    expect(state.mirror.activeWorkflows.get('tu_bare')?.label).toBe('find-bugs')
   })
 
   it('leaves the record intact when the tool_result is a plain summary (not WorkflowOutput JSON)', () => {
@@ -561,7 +582,7 @@ describe('reducer: Workflow indexing', () => {
     state = reduceSessionState(state, { type: 'MESSAGE', message: workflowToolUse })
     state = reduceSessionState(state, { type: 'MESSAGE', message: workflowResult })
 
-    const wf = state.activeWorkflows.get('tu_workflow')
+    const wf = state.mirror.activeWorkflows.get('tu_workflow')
     expect(wf?.status).toBe('done')
     // remote is `false` (not undefined): the merge expression coerces to a
     // boolean false when parsedOut is null and there was no prior remote flag.
@@ -582,14 +603,15 @@ describe('reducer: ROLLBACK_OPTIMISTIC_USER_MESSAGE', () => {
   it('removes the optimistic placeholder when POST fails', () => {
     let state = createInitialSessionState('s1')
     state = applyOptimistic(state, 'hello', 'optimistic:abc')
-    expect(state.items.length).toBe(1)
+    expect(renderedItems(state).length).toBe(1)
+    expect(state.intent.pendingPlaceholders.has('optimistic:abc')).toBe(true)
 
     state = reduceSessionState(state, {
       type: 'ROLLBACK_OPTIMISTIC_USER_MESSAGE',
       pendingId: 'optimistic:abc',
     })
-    expect(state.items.length).toBe(0)
-    expect(isEmpty(state.pendingUserMessageIds)).toBe(true)
+    expect(renderedItems(state).length).toBe(0)
+    expect(isEmpty(state.intent.pendingPlaceholders)).toBe(true)
   })
 
   it('is a no-op when the broadcast already cleared pendingUserMessageIds', () => {
@@ -599,8 +621,8 @@ describe('reducer: ROLLBACK_OPTIMISTIC_USER_MESSAGE', () => {
     let state = createInitialSessionState('s1')
     state = applyOptimistic(state, 'hello', 'optimistic:abc')
     state = applyServerEcho(state, 'hello', 'real-xyz')
-    expect(isEmpty(state.pendingUserMessageIds)).toBe(true)
-    expect(state.items[0].id).toBe('real-xyz')
+    expect(isEmpty(state.intent.pendingPlaceholders)).toBe(true)
+    expect(state.mirror.items[0].id).toBe('real-xyz')
 
     const before = state
     state = reduceSessionState(state, {
@@ -608,7 +630,7 @@ describe('reducer: ROLLBACK_OPTIMISTIC_USER_MESSAGE', () => {
       pendingId: 'optimistic:abc',
     })
     expect(state).toBe(before)
-    expect(state.items[0].id).toBe('real-xyz')
+    expect(state.mirror.items[0].id).toBe('real-xyz')
   })
 })
 
@@ -658,7 +680,7 @@ describe('reducer: PERMISSION_RESOLVED → questionAnswers (AskUserQuestion)', (
   it('parses the JSON answers payload from decision.message into questionAnswers', () => {
     let state = createInitialSessionState('s1')
     state = seedQuestion(state, 'tu_q')
-    expect(state.questionAnswers.get('tu_q')).toEqual([])
+    expect(state.mirror.questionAnswers.get('tu_q')).toEqual([])
 
     state = seedPendingPermission(state, 'pid-1', 'tu_q')
 
@@ -674,7 +696,7 @@ describe('reducer: PERMISSION_RESOLVED → questionAnswers (AskUserQuestion)', (
         }),
       },
     })
-    expect(state.questionAnswers.get('tu_q')).toEqual([{ question: 'OK?', answer: 'Yes' }])
+    expect(state.mirror.questionAnswers.get('tu_q')).toEqual([{ question: 'OK?', answer: 'Yes' }])
   })
 
   it('encodes a skipped question as answer: null and renders as skipped', () => {
@@ -693,7 +715,7 @@ describe('reducer: PERMISSION_RESOLVED → questionAnswers (AskUserQuestion)', (
         }),
       },
     })
-    const entries = state.questionAnswers.get('tu_q')
+    const entries = state.mirror.questionAnswers.get('tu_q')
     expect(entries).toEqual([{ question: 'OK?', answer: null }])
   })
 
@@ -703,7 +725,7 @@ describe('reducer: PERMISSION_RESOLVED → questionAnswers (AskUserQuestion)', (
     let state = createInitialSessionState('s1')
     state = seedQuestion(state, 'tu_q')
     state = seedPendingPermission(state, 'pid-1', 'tu_q')
-    const before = state.questionAnswers
+    const before = state.mirror.questionAnswers
 
     state = reduceSessionState(state, {
       type: 'PERMISSION_RESOLVED',
@@ -714,7 +736,7 @@ describe('reducer: PERMISSION_RESOLVED → questionAnswers (AskUserQuestion)', (
         message: 'aborted',
       },
     })
-    expect(state.questionAnswers).toBe(before)
+    expect(state.mirror.questionAnswers).toBe(before)
   })
 
   it('does not touch questionAnswers when the toolUseId was never seeded as a question', () => {
@@ -744,7 +766,7 @@ describe('reducer: PERMISSION_RESOLVED → questionAnswers (AskUserQuestion)', (
         message: JSON.stringify({ answers: [{ question: 'X', answer: 'Y' }] }),
       },
     })
-    expect(state.questionAnswers.has('tu_bash')).toBe(false)
+    expect(state.mirror.questionAnswers.has('tu_bash')).toBe(false)
   })
 })
 
@@ -768,8 +790,8 @@ describe('PREPEND_MESSAGES', () => {
       type: 'PREPEND_MESSAGES',
       messages: [userMsg('old-1', 'a'), assistantMsg('old-2', 'b')],
     })
-    expect(state.items.map((i) => i.id)).toEqual(['old-1', 'old-2', 'live-1'])
-    expect(state.messages.map((m) => m.uuid)).toEqual(['old-1', 'old-2', 'live-1'])
+    expect(state.mirror.items.map((i) => i.id)).toEqual(['old-1', 'old-2', 'live-1'])
+    expect(state.mirror.messages.map((m) => m.uuid)).toEqual(['old-1', 'old-2', 'live-1'])
   })
 
   it('dedupes by uuid against messages already present', () => {
@@ -782,7 +804,7 @@ describe('PREPEND_MESSAGES', () => {
       messages: [userMsg('older', 'z'), assistantMsg('shared', 'x')],
     })
     // 'shared' must not be duplicated; 'older' is inserted at the front.
-    expect(state.items.map((i) => i.id)).toEqual(['older', 'shared', 'live'])
+    expect(state.mirror.items.map((i) => i.id)).toEqual(['older', 'shared', 'live'])
   })
 
   it('is a no-op for an empty batch', () => {
@@ -809,7 +831,7 @@ describe('PREPEND_MESSAGES', () => {
       parent_tool_use_id: 'tool-1',
     } as unknown as SdkMessage
     state = reduceSessionState(state, { type: 'PREPEND_MESSAGES', messages: [toolUse, toolResult] })
-    expect(state.toolStatus.get('tool-1')).toBe('success')
+    expect(state.mirror.toolStatus.get('tool-1')).toBe('success')
   })
 
   // The in-memory prompt carries a server-minted uuid; the on-disk copy of
@@ -828,11 +850,11 @@ describe('PREPEND_MESSAGES', () => {
       messages: [assistantMsg('older-asst', 'earlier'), userMsg('sdk-uuid', 'hello')],
     })
     // 'hello' must appear exactly once (not duplicated under two uuids).
-    const helloCount = state.items.filter(
+    const helloCount = state.mirror.items.filter(
       (i) => i.msg.type === 'user' && i.msg.message?.content === 'hello',
     ).length
     expect(helloCount).toBe(1)
-    expect(state.items.map((i) => i.id)).toEqual(['older-asst', 'server-uuid', 'asst-1'])
+    expect(state.mirror.items.map((i) => i.id)).toEqual(['older-asst', 'server-uuid', 'asst-1'])
   })
 
   it('dedupes multiple consecutive leading prompts at the boundary', () => {
@@ -847,7 +869,7 @@ describe('PREPEND_MESSAGES', () => {
       messages: [userMsg('disk-a', 'first'), userMsg('disk-b', 'second')],
     })
     // Both deduped — order and count unchanged.
-    expect(state.items.map((i) => i.id)).toEqual(['srv-a', 'srv-b', 'asst'])
+    expect(state.mirror.items.map((i) => i.id)).toEqual(['srv-a', 'srv-b', 'asst'])
   })
 
   it('preserves a genuinely-older prompt with identical text further back', () => {
@@ -863,7 +885,7 @@ describe('PREPEND_MESSAGES', () => {
       messages: [userMsg('disk-old', 'repeat'), userMsg('disk-boundary', 'repeat')],
     })
     // disk-old is prepended; disk-boundary is deduped against srv-dup.
-    expect(state.items.map((i) => i.id)).toEqual(['disk-old', 'srv-dup', 'asst'])
+    expect(state.mirror.items.map((i) => i.id)).toEqual(['disk-old', 'srv-dup', 'asst'])
   })
 })
 
@@ -914,16 +936,16 @@ describe('reducer: front-trim memory bound', () => {
     let state = createInitialSessionState('s')
     // 600 turns = 1200 items, under the 1256 threshold.
     state = pushTurns(state, 600)
-    expect(state.items.length).toBe(1200)
+    expect(state.mirror.items.length).toBe(1200)
   })
 
   it('trims down to ~CAP once CAP + SLACK is exceeded', () => {
     let state = createInitialSessionState('s')
     // 700 turns = 1400 items; the append that crosses 1256 triggers a trim.
     state = pushTurns(state, 700)
-    expect(state.items.length).toBeGreaterThanOrEqual(CAP)
-    expect(state.items.length).toBeLessThanOrEqual(CAP + SLACK)
-    expect(state.items.length).toBe(state.messages.length)
+    expect(state.mirror.items.length).toBeGreaterThanOrEqual(CAP)
+    expect(state.mirror.items.length).toBeLessThanOrEqual(CAP + SLACK)
+    expect(state.mirror.items.length).toBe(state.mirror.messages.length)
   })
 
   it('lands the new items[0] on a disk-persisted boundary (empty leading prompt run)', () => {
@@ -932,7 +954,7 @@ describe('reducer: front-trim memory bound', () => {
     // The boundary alignment guarantees items[0] is never a plain top-level
     // prompt — so countPromptOverlap sees a zero-length leading run and can
     // never resurface a trimmed prompt as a duplicate on the next loadOlder.
-    expect(isTrimBoundary(state.items[0].msg)).toBe(true)
+    expect(isTrimBoundary(state.mirror.items[0].msg)).toBe(true)
   })
 
   it('prunes toolUseId-keyed maps to ids still referenced by retained items', () => {
@@ -940,9 +962,9 @@ describe('reducer: front-trim memory bound', () => {
     // An early tool pair that WILL be trimmed away.
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolUseMsg('tu-old', 'tool-old') })
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolResultMsg('tr-old', 'tool-old') })
-    expect(state.toolStatus.get('tool-old')).toBe('success')
+    expect(state.mirror.toolStatus.get('tool-old')).toBe('success')
     // The result payload was captured for inline rendering too.
-    expect(state.toolResults.has('tool-old')).toBe(true)
+    expect(state.mirror.toolResults.has('tool-old')).toBe(true)
     // Bury it under enough turns to force a trim past the early pair.
     state = pushTurns(state, 700)
     // A recent tool pair that must SURVIVE.
@@ -950,33 +972,37 @@ describe('reducer: front-trim memory bound', () => {
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolResultMsg('tr-new', 'tool-new') })
 
     // The old tool's status was orphaned by the trim and pruned.
-    expect(state.toolStatus.has('tool-old')).toBe(false)
+    expect(state.mirror.toolStatus.has('tool-old')).toBe(false)
     // The live tool's status survives.
-    expect(state.toolStatus.get('tool-new')).toBe('success')
+    expect(state.mirror.toolStatus.get('tool-new')).toBe('success')
     // toolResults is pruned/retained in lockstep with toolStatus — the
     // trimmed tool's payload must not leak; the live tool's must survive.
-    expect(state.toolResults.has('tool-old')).toBe(false)
-    expect(state.toolResults.has('tool-new')).toBe(true)
+    expect(state.mirror.toolResults.has('tool-old')).toBe(false)
+    expect(state.mirror.toolResults.has('tool-new')).toBe(true)
   })
 
   it('preserves lastMessageUuid (points at the newest message)', () => {
     let state = createInitialSessionState('s')
     state = pushTurns(state, 700)
-    expect(state.lastMessageUuid).toBe('a-699')
+    expect(state.mirror.lastMessageUuid).toBe('a-699')
   })
 
   it('does not disturb a pending optimistic placeholder at the tail', () => {
     let state = createInitialSessionState('s')
     state = pushTurns(state, 700)
-    // Optimistic insert lands at the END — front-trim must never touch it.
+    // Optimistic insert lands at the END of the render-merged view — front-trim
+    // must never touch it. Placeholders live in intent.pendingPlaceholders
+    // post-refactor; buildSnapshot appends them after mirror.items, so the
+    // rendered tail is the placeholder.
     const optimistic: SdkMessage = {
       type: 'user',
       uuid: 'optimistic:tail',
       message: { role: 'user', content: 'pending' },
     } as unknown as SdkMessage
     state = reduceSessionState(state, { type: 'OPTIMISTIC_USER_MESSAGE', message: optimistic })
-    expect(state.pendingUserMessageIds.has('optimistic:tail')).toBe(true)
-    expect(state.items[state.items.length - 1].id).toBe('optimistic:tail')
+    expect(state.intent.pendingPlaceholders.has('optimistic:tail')).toBe(true)
+    const rendered = renderedItems(state)
+    expect(rendered[rendered.length - 1].id).toBe('optimistic:tail')
   })
 
   // --- Regression: items[0] must be a DISK-PERSISTED frame ----------------
@@ -1004,12 +1030,12 @@ describe('reducer: front-trim memory bound', () => {
     }
     state = pushTurns(state, 500)
 
-    const head = state.items[0].msg
+    const head = state.mirror.items[0].msg
     expect(isTrimBoundary(head)).toBe(true)
     // Specifically: never a non-persisted system frame.
     expect(head.type === 'system' && head.subtype === 'init').toBe(false)
     // And no init frame survives at the very front of the retained window.
-    expect(state.items[0].msg.type).toBe('assistant')
+    expect(state.mirror.items[0].msg.type).toBe('assistant')
   })
 
   it('skips the trim entirely when the cut zone has no safe boundary', () => {
@@ -1025,11 +1051,11 @@ describe('reducer: front-trim memory bound', () => {
     }
     // 1400 items total, > CAP+SLACK, yet no trim happened (no safe boundary
     // at/after the cut index — everything from there on is an init frame).
-    expect(state.items.length).toBe(1400)
+    expect(state.mirror.items.length).toBe(1400)
     // A single real boundary at the tail re-enables trimming on next append.
     state = reduceSessionState(state, { type: 'MESSAGE', message: assistantMsg('a-real', 'reply') })
-    expect(state.items.length).toBeLessThanOrEqual(CAP + SLACK)
-    expect(isTrimBoundary(state.items[0].msg)).toBe(true)
+    expect(state.mirror.items.length).toBeLessThanOrEqual(CAP + SLACK)
+    expect(isTrimBoundary(state.mirror.items[0].msg)).toBe(true)
   })
 })
 
@@ -1084,13 +1110,13 @@ function replay(
   return reduceSessionState(state, { type: 'REPLAY_REPLACE', messages, permissions: [] })
 }
 
-const ids = (state: ReturnType<typeof createInitialSessionState>) => state.items.map((i) => i.id)
+const ids = (state: ReturnType<typeof createInitialSessionState>) => state.mirror.items.map((i) => i.id)
 
 describe('splitReplayAgainstCache (pure)', () => {
   it('treats a non-overlapping payload as entirely newer (clean reconnect)', () => {
     const cache = seedCache([userMsg('u1', 'hi'), asstMsg('a1', 'hello')])
     const incoming = [asstMsg('a2', 'more'), resultMsg('r2')]
-    const { older, newer } = splitReplayAgainstCache(incoming, cache.items)
+    const { older, newer } = splitReplayAgainstCache(incoming, cache.mirror.items)
     expect(older).toEqual([])
     expect(newer).toEqual(incoming)
   })
@@ -1099,7 +1125,7 @@ describe('splitReplayAgainstCache (pure)', () => {
     const cache = seedCache([asstMsg('a1', 'one'), asstMsg('a2', 'two')])
     // Disk seed overlaps a1+a2 then adds a3.
     const incoming = [asstMsg('a1', 'one'), asstMsg('a2', 'two'), asstMsg('a3', 'three')]
-    const { older, newer } = splitReplayAgainstCache(incoming, cache.items)
+    const { older, newer } = splitReplayAgainstCache(incoming, cache.mirror.items)
     expect(older).toEqual([])
     expect(newer.map((m) => m.uuid)).toEqual(['a3'])
   })
@@ -1108,7 +1134,7 @@ describe('splitReplayAgainstCache (pure)', () => {
     const cache = seedCache([asstMsg('a2', 'two'), asstMsg('a3', 'three')])
     // Payload reaches further back (a1) and overlaps a2,a3.
     const incoming = [asstMsg('a1', 'one'), asstMsg('a2', 'two'), asstMsg('a3', 'three')]
-    const { older, newer } = splitReplayAgainstCache(incoming, cache.items)
+    const { older, newer } = splitReplayAgainstCache(incoming, cache.mirror.items)
     expect(older.map((m) => m.uuid)).toEqual(['a1'])
     expect(newer).toEqual([])
   })
@@ -1121,7 +1147,7 @@ describe('splitReplayAgainstCache (pure)', () => {
     // by an append/prepend split. (Documents the bracket semantics.)
     const cache = seedCache([asstMsg('a1', 'one'), asstMsg('a3', 'three')])
     const incoming = [asstMsg('a1', 'one'), asstMsg('a2', 'two'), asstMsg('a3', 'three')]
-    const { older, newer } = splitReplayAgainstCache(incoming, cache.items)
+    const { older, newer } = splitReplayAgainstCache(incoming, cache.mirror.items)
     expect(older).toEqual([])
     expect(newer).toEqual([])
   })
@@ -1132,7 +1158,7 @@ describe('reducer: REPLAY_REPLACE on top of a cache', () => {
     const cache = seedCache([userMsg('u1', 'hi'), asstMsg('a1', 'hello')])
     const after = replay(cache, [])
     expect(ids(after)).toEqual(['u1', 'a1'])
-    expect(after.replayReady).toBe(true)
+    expect(after.mirror.replayReady).toBe(true)
   })
 
   it('does NOT double-append when the seed overlaps the cache (the regression)', () => {
@@ -1143,7 +1169,7 @@ describe('reducer: REPLAY_REPLACE on top of a cache', () => {
     const seed = [userMsg('u1-disk', 'hi'), asstMsg('a1', 'hello')]
     const after = replay(cache, seed)
     // u1 (prompt) dedups by content signature, a1 by uuid → no growth.
-    expect(after.items.length).toBe(3)
+    expect(after.mirror.items.length).toBe(3)
     expect(ids(after)).toEqual(['u1', 'a1', 'r1'])
   })
 
@@ -1170,7 +1196,7 @@ describe('reducer: REPLAY_REPLACE on top of a cache', () => {
     const cache = seedCache([userMsg('u1', 'ok'), asstMsg('a1', 'done')])
     const slice = [userMsg('u2', 'ok'), asstMsg('a2', 'done again')]
     const after = replay(cache, slice)
-    expect(after.items.length).toBe(4)
+    expect(after.mirror.items.length).toBe(4)
     expect(ids(after)).toEqual(['u1', 'a1', 'u2', 'a2'])
   })
 

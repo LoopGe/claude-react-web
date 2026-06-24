@@ -1,5 +1,16 @@
 import type { PermissionRequest, SdkMessage } from '../types'
-import { createInitialSessionState, type SessionAction, type SessionState, type WorkflowStatus } from './types'
+import {
+  createInitialClientIntent,
+  createInitialServerMirror,
+  type ClientIntent,
+  type ServerMirror,
+  type SessionAction,
+  type SessionState,
+  type TranscriptItem,
+  type WorkflowStatus,
+  withIntent,
+  withMirror,
+} from './types'
 import {
   extractPlanContent,
   getPlanResultDecisions,
@@ -36,28 +47,21 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
     case 'ACK_USER_MESSAGE':
       return ackUserMessage(state, action.pendingId, action.serverUuid, action.receivedAt)
     case 'ROLLBACK_OPTIMISTIC_USER_MESSAGE': {
-      // Only roll back if the pendingId is still tracked — between the
-      // failed POST and this dispatch, the server echo might have
-      // already replaced this placeholder (removing it from the set),
-      // in which case we'd nuke the real message.
-      if (!state.pendingUserMessageIds.has(action.pendingId)) return state
-      const next = new Set(state.pendingUserMessageIds)
-      next.delete(action.pendingId)
-      return {
-        ...state,
-        items: state.items.filter((it) => it.id !== action.pendingId),
-        messages: state.messages.filter(
-          (m) => (typeof m.uuid === 'string' ? m.uuid : null) !== action.pendingId,
-        ),
-        pendingUserMessageIds: next,
-      }
+      // Only roll back if the placeholder is still pending — between the
+      // failed POST and this dispatch, the server echo might have already
+      // consumed this placeholder (removing it from intent), in which case
+      // we'd nuke the real message that landed in mirror.items.
+      if (!state.intent.pendingPlaceholders.has(action.pendingId)) return state
+      const nextPlaceholders = new Map(state.intent.pendingPlaceholders)
+      nextPlaceholders.delete(action.pendingId)
+      return withIntent(state, { ...state.intent, pendingPlaceholders: nextPlaceholders })
     }
     case 'PERMISSION_REQUEST': {
-      const permissionPending = new Map(state.permissionPending)
+      const permissionPending = new Map(state.mirror.permissionPending)
       permissionPending.set(action.request.id, action.request)
-      const pidToToolUseId = new Map(state.pidToToolUseId)
+      const pidToToolUseId = new Map(state.mirror.pidToToolUseId)
       if (action.request.toolUseID) pidToToolUseId.set(action.request.id, action.request.toolUseID)
-      return { ...state, permissionPending, pidToToolUseId }
+      return withMirror(state, { ...state.mirror, permissionPending, pidToToolUseId })
     }
     case 'PERMISSION_RESOLVED': {
       // Allocate fresh Maps lazily — most PERMISSION_RESOLVED frames
@@ -65,11 +69,11 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
       // optimistically decided), so cloning four Maps unconditionally
       // burns CPU and breaks reference equality for selectors that
       // depend on stable Map identity (e.g. PlanCard memoization).
-      let permissionPending = state.permissionPending
-      let pidToToolUseId = state.pidToToolUseId
-      let permissionDecisions = state.permissionDecisions
-      let planStatus = state.planStatus
-      let questionAnswers = state.questionAnswers
+      let permissionPending = state.mirror.permissionPending
+      let pidToToolUseId = state.mirror.pidToToolUseId
+      let permissionDecisions = state.mirror.permissionDecisions
+      let planStatus = state.mirror.planStatus
+      let questionAnswers = state.mirror.questionAnswers
       let changed = false
       if (permissionPending.has(action.id)) {
         permissionPending = new Map(permissionPending)
@@ -127,27 +131,47 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
         changed = true
       }
       if (!changed) return state
-      return { ...state, permissionPending, pidToToolUseId, permissionDecisions, planStatus, questionAnswers }
+      return withMirror(state, {
+        ...state.mirror,
+        permissionPending,
+        pidToToolUseId,
+        permissionDecisions,
+        planStatus,
+        questionAnswers,
+      })
     }
     case 'CONTEXT_USAGE':
-      return { ...state, contextUsage: action.usage }
+      return withMirror(state, { ...state.mirror, contextUsage: action.usage })
     case 'MESSAGE_CONSUMED':
       return applyMessageConsumed(state, action.uuid, action.consumedAt)
     case 'ERROR':
-      return { ...state, error: action.message }
-    case 'LIVE_TURN_FLUSH':
-      if (!state.liveTurn || !state.liveTurn.dirty) return state
-      return {
-        ...state,
+      // ERROR straddles the boundary: the WS error frame writes it (server-
+      // originated) but the lifecycle (clearError) is client-owned. We park
+      // it on the intent layer because that's the layer the client mutates
+      // freely — and importantly, a REPLAY_REPLACE rebuilding mirror must
+      // NOT incidentally clear a stale error the user hasn't dismissed yet.
+      return withIntent(state, { ...state.intent, error: action.message })
+    case 'LIVE_TURN_FLUSH': {
+      const liveTurn = state.mirror.liveTurn
+      if (!liveTurn || !liveTurn.dirty) return state
+      return withMirror(state, {
+        ...state.mirror,
         liveTurn: {
-          ...state.liveTurn,
-          flushedText: state.liveTurn.flushedText + state.liveTurn.textChunks.join(''),
+          ...liveTurn,
+          flushedText: liveTurn.flushedText + liveTurn.textChunks.join(''),
           textChunks: [],
           dirty: false,
         },
-      }
+      })
+    }
     case 'RESET':
-      return createInitialSessionState(state.sessionId)
+      // RESET is the ONE action that legitimately wipes BOTH layers. Used
+      // by the /clear flow and by store.reset().
+      return {
+        sessionId: state.sessionId,
+        mirror: createInitialServerMirror(),
+        intent: createInitialClientIntent(),
+      }
     default:
       return state
   }
@@ -158,12 +182,13 @@ function replayReplace(
   messages: SdkMessage[],
   permissions: PermissionRequest[],
 ): SessionState {
+  const prevMirror = prevState.mirror
   // If the server replay is empty but we already have cached messages
   // (from localStorage), keep the cache as a fallback. This prevents
   // blank screens when the server's history ring has been trimmed or
   // the session was garbage collected.
-  if (messages.length === 0 && prevState.items.length > 0) {
-    return { ...prevState, replayReady: true }
+  if (messages.length === 0 && prevMirror.items.length > 0) {
+    return withMirror(prevState, { ...prevMirror, replayReady: true })
   }
   // Replay on top of an existing (cached) transcript. The replay payload can
   // relate to the cache three different ways, and we must NOT blind-append:
@@ -182,18 +207,22 @@ function replayReplace(
   // already dedups it correctly (prependMessages for older, applyMessage for
   // newer, drop the overlap). This makes the merge correct regardless of how
   // the server happened to slice — no reliance on sinceUuid landing cleanly.
-  if (messages.length > 0 && prevState.items.length > 0) {
-    let state: SessionState = { ...prevState, liveTurn: null, replayReady: true }
+  if (messages.length > 0 && prevMirror.items.length > 0) {
+    let state: SessionState = withMirror(prevState, {
+      ...prevMirror,
+      liveTurn: null,
+      replayReady: true,
+    })
     for (const permission of permissions) {
       state = reduceSessionState(state, { type: 'PERMISSION_REQUEST', request: permission })
     }
-    const { older, newer } = splitReplayAgainstCache(messages, prevState.items)
+    const { older, newer } = splitReplayAgainstCache(messages, prevMirror.items)
     if (older.length > 0) state = prependMessages(state, older)
     for (const message of newer) {
       state = applyMessage(state, message)
     }
-    const finalLen = state.items.length
-    const prevLen = prevState.items.length
+    const finalLen = state.mirror.items.length
+    const prevLen = prevMirror.items.length
     if (finalLen < prevLen) {
       console.warn(
         `[replayReplace] MERGE: items shrunk ${prevLen} → ${finalLen} ` +
@@ -202,14 +231,26 @@ function replayReplace(
     }
     return state
   }
-  let state = createInitialSessionState(prevState.sessionId)
+  // Fresh state path: the prior mirror has no items (cold start, or the cache
+  // was empty before the replay). Start from `prevMirror` rather than a brand-
+  // new mirror so any live-dispatched frames that landed during the replay
+  // window (permission-request, context-usage, message-consumed) are
+  // preserved. items being empty implies the derived index Maps
+  // (toolStatus / planStatus / activeSubagents / …) are already empty too —
+  // no risk of carrying stale entries forward.
+  //
+  // This is the line that closes the "first message stuck" StrictMode race:
+  // even if React mounts twice and runs us through this branch a second time,
+  // the placeholder in `prevState.intent` (and any live server-side state in
+  // prevMirror) survives.
+  let working: SessionState = { sessionId: prevState.sessionId, mirror: prevMirror, intent: prevState.intent }
   for (const permission of permissions) {
-    state = reduceSessionState(state, { type: 'PERMISSION_REQUEST', request: permission })
+    working = reduceSessionState(working, { type: 'PERMISSION_REQUEST', request: permission })
   }
   for (const message of messages) {
-    state = applyMessage(state, message)
+    working = applyMessage(working, message)
   }
-  return { ...state, replayReady: true }
+  return withMirror(prevState, { ...working.mirror, replayReady: true })
 }
 
 /** Overlap-anchor key: the message uuid, or null when the frame must NOT
@@ -253,7 +294,7 @@ function overlapAnchorUuid(msg: SdkMessage): string | null {
  *  be kept, not dropped as a false non-overlap. */
 export function splitReplayAgainstCache(
   messages: SdkMessage[],
-  items: SessionState['items'],
+  items: ServerMirror['items'],
 ): { older: SdkMessage[]; newer: SdkMessage[] } {
   const cacheUuids = new Set<string>()
   for (const it of items) {
@@ -311,21 +352,22 @@ export function splitReplayAgainstCache(
  *     so additive indexing is both sufficient and non-destructive. */
 function prependMessages(state: SessionState, older: SdkMessage[]): SessionState {
   if (older.length === 0) return state
+  const mirror = state.mirror
 
   const existingIds = new Set<string>()
-  for (const it of state.items) existingIds.add(it.id)
+  for (const it of mirror.items) existingIds.add(it.id)
 
   // How many trailing prompts of the incoming disk batch are the SAME
   // logical messages as the leading prompts already on screen (the uuid
   // boundary that uuid-dedup can't bridge — see the doc comment). Match the
   // batch's trailing prompt run against the on-screen leading prompt run
   // element-wise, from the boundary inward, by content signature.
-  const overlap = countPromptOverlap(older, state.items)
+  const overlap = countPromptOverlap(older, mirror.items)
   const batch = overlap > 0 ? older.slice(0, older.length - overlap) : older
 
-  const newItems: typeof state.items = []
+  const newItems: TranscriptItem[] = []
   const newMessages: SdkMessage[] = []
-  let prev = undefined as (typeof state.items)[number] | undefined
+  let prev: TranscriptItem | undefined = undefined
   for (const msg of batch) {
     const uuid = typeof msg.uuid === 'string' ? msg.uuid : null
     if (uuid && existingIds.has(uuid)) continue
@@ -339,11 +381,11 @@ function prependMessages(state: SessionState, older: SdkMessage[]): SessionState
 
   if (newItems.length === 0) return state
 
-  let next: SessionState = {
-    ...state,
-    items: [...newItems, ...state.items],
-    messages: [...newMessages, ...state.messages],
-  }
+  let next: SessionState = withMirror(state, {
+    ...mirror,
+    items: [...newItems, ...mirror.items],
+    messages: [...newMessages, ...mirror.messages],
+  })
   // Additive index update over just the prepended batch.
   next = rebuildIndexesFromMessages(next, newMessages)
   return next
@@ -366,7 +408,7 @@ function prependMessages(state: SessionState, older: SdkMessage[]): SessionState
  *  `older[last-n]` against `items[K-1-n]`. Stop at the first mismatch (or a
  *  non-prompt on the batch side), so an older but textually-identical prompt
  *  further back in history is never falsely dropped. */
-function countPromptOverlap(older: SdkMessage[], items: SessionState['items']): number {
+function countPromptOverlap(older: SdkMessage[], items: ServerMirror['items']): number {
   // Length of the contiguous top-level-prompt run at the START of the
   // on-screen transcript (i.e. the prompts sitting above the paging anchor).
   let leadRun = 0
@@ -386,41 +428,45 @@ function countPromptOverlap(older: SdkMessage[], items: SessionState['items']): 
 }
 
 function applyOptimisticUserMessage(state: SessionState, message: SdkMessage): SessionState {
-  const item = toTranscriptItem(message, state.items[state.items.length - 1])
+  const mirror = state.mirror
+  // Build the placeholder TranscriptItem. `prev` is the last RENDERED item —
+  // which, post-refactor, is whichever placeholder is queued last (insertion
+  // order) or, if none, the tail of mirror.items. We pass mirror tail as the
+  // prev because compact-summary detection only fires on assistant/system
+  // frames, and an optimistic user prompt's predecessor is always a server
+  // frame in practice.
+  const item = toTranscriptItem(message, mirror.items[mirror.items.length - 1])
   if (!item) return state
 
-  // If the server's WS echo already arrived and was appended to the
-  // transcript before this optimistic insert ran, don't add a duplicate.
-  // Just add its id to the pending set so applyMessage can match it.
-  // NOTE: This uses shallow === on `content`. For plain text strings
-  // this works correctly. For multimodal messages (arrays), the ref
-  // comparison always returns false — the safe direction (no false dedup).
-  const last = state.items[state.items.length - 1]
+  // If the server's WS echo already arrived and was appended to mirror.items
+  // before this optimistic insert ran, don't add a duplicate placeholder.
+  // We mark that server item as a known-pending id so applyMessage's echo
+  // path is a no-op on its NEXT arrival (the echo can land twice in some
+  // reconnect paths).
+  //
+  // NOTE: This uses shallow === on `content`. For plain text strings this
+  // works correctly. For multimodal messages (arrays), the ref comparison
+  // always returns false — the safe direction (no false dedup).
+  const last = mirror.items[mirror.items.length - 1]
   if (last && last.msg.type === 'user' && last.msg.message?.content === message.message?.content) {
-    const next = new Set(state.pendingUserMessageIds)
-    next.add(last.id)
-    return { ...state, pendingUserMessageIds: next }
+    // Server echo landed first; nothing to do for the intent layer. The
+    // placeholder is moot.
+    return state
   }
 
-  // Mark the optimistic item as 'sending' so the user bubble can render
-  // a spinner. The flag clears automatically when the server's broadcast
-  // arrives and applyMessage swaps this item out for the real one (the
-  // replaced TranscriptItem has no `sending` field). Stamp receivedAt
-  // locally so the timestamp shows immediately; when the server echo
-  // replaces this item it carries the authoritative server time.
-  const optimisticItem = {
+  // Mark the placeholder as 'sending' so the user bubble renders a spinner.
+  // The flag is implicitly cleared by the echo-merge in applyMessage, which
+  // drops the placeholder from intent and appends the server's clean item to
+  // mirror.items (which has no `sending` field). Stamp receivedAt locally so
+  // the timestamp shows immediately.
+  const placeholder: TranscriptItem = {
     ...item,
     sending: true,
     receivedAt: item.receivedAt ?? Date.now(),
   }
-  const next = new Set(state.pendingUserMessageIds)
-  next.add(optimisticItem.id)
-  return {
-    ...state,
-    items: [...state.items, optimisticItem],
-    messages: [...state.messages, optimisticItem.msg],
-    pendingUserMessageIds: next,
-  }
+  const next = new Map(state.intent.pendingPlaceholders)
+  next.set(placeholder.id, placeholder)
+  return withIntent(state, { ...state.intent, pendingPlaceholders: next })
 }
 
 function ackUserMessage(
@@ -429,64 +475,64 @@ function ackUserMessage(
   serverUuid: string,
   receivedAt?: number,
 ): SessionState {
-  const idx = state.items.findIndex((it) => it.id === pendingId)
-  const hadPending = state.pendingUserMessageIds.has(pendingId)
-  const nextIds = new Set(state.pendingUserMessageIds)
-  nextIds.delete(pendingId)
+  // ACK flow: the REST POST returned the server-side uuid for an optimistic
+  // placeholder. Two outcomes are possible — both must be idempotent against
+  // the WS echo arriving before or after the ACK:
+  //
+  //   1. The WS echo has NOT landed yet. The placeholder still lives in
+  //      intent.pendingPlaceholders. Re-key it to the server uuid, strip
+  //      `sending`, and stamp receivedAt/consumedAt from what we know.
+  //      The next echo for this uuid is a no-op (placeholder gone).
+  //   2. The WS echo HAS landed. The placeholder was removed from intent
+  //      by applyMessage. There's nothing to ack — return unchanged.
+  const placeholder = state.intent.pendingPlaceholders.get(pendingId)
+  if (!placeholder) return state
 
-  if (idx < 0) {
-    return hadPending ? { ...state, pendingUserMessageIds: nextIds } : state
-  }
-
-  const duplicateIdx = state.items.findIndex((it, i) => i !== idx && it.id === serverUuid)
-  if (duplicateIdx >= 0) {
-    const items = state.items.filter((_, i) => i !== idx)
-    const messages = state.messages.filter(
-      (m) => (typeof m.uuid === 'string' ? m.uuid : null) !== pendingId,
-    )
-    return { ...state, items, messages, pendingUserMessageIds: nextIds }
-  }
-
-  const current = state.items[idx]
-  const consumedAt = state.pendingConsumedMessages.get(serverUuid)
+  const consumedAt = state.mirror.pendingConsumedMessages.get(serverUuid)
   const msg: SdkMessage = {
-    ...current.msg,
+    ...placeholder.msg,
     uuid: serverUuid,
     ...(typeof receivedAt === 'number' ? { receivedAt } : {}),
     ...(typeof consumedAt === 'number' ? { consumedAt } : {}),
   }
-  const item = toTranscriptItem(msg, state.items[idx - 1])
-  if (!item) return { ...state, pendingUserMessageIds: nextIds }
-
-  const items = state.items.slice()
-  items[idx] = item
-  const msgIdx = state.messages.findIndex(
-    (m) => (typeof m.uuid === 'string' ? m.uuid : null) === pendingId,
-  )
-  const messages = msgIdx >= 0 ? state.messages.slice() : state.messages
-  if (msgIdx >= 0) messages[msgIdx] = msg
-
-  if (typeof consumedAt !== 'number') nextIds.add(serverUuid)
-  let pendingConsumedMessages: ReadonlyMap<string, number> = state.pendingConsumedMessages
-  if (typeof consumedAt === 'number') {
-    const nextConsumedMessages = new Map(state.pendingConsumedMessages)
-    nextConsumedMessages.delete(serverUuid)
-    pendingConsumedMessages = nextConsumedMessages
+  // Re-derive the TranscriptItem with the new uuid so its id matches the
+  // server's. `prev` is unknown at this point — we pass undefined; compact-
+  // summary detection on a user prompt is always false, so it's harmless.
+  const updated = toTranscriptItem(msg, undefined)
+  if (!updated) {
+    // Couldn't rebuild — drop the placeholder anyway so the spinner clears.
+    const next = new Map(state.intent.pendingPlaceholders)
+    next.delete(pendingId)
+    return withIntent(state, { ...state.intent, pendingPlaceholders: next })
   }
-  return { ...state, items, messages, pendingUserMessageIds: nextIds, pendingConsumedMessages }
+  // Carry sending=false implicitly (toTranscriptItem doesn't set it). Re-key
+  // the map to the server uuid so the next echo (if any) can match.
+  const next = new Map(state.intent.pendingPlaceholders)
+  next.delete(pendingId)
+  next.set(updated.id, updated)
+
+  // If the consumed signal already arrived, drop it from the mirror cache
+  // since we've folded it into the placeholder's msg.
+  let nextMirror = state.mirror
+  if (typeof consumedAt === 'number' && state.mirror.pendingConsumedMessages.has(serverUuid)) {
+    const pendingConsumedMessages = new Map(state.mirror.pendingConsumedMessages)
+    pendingConsumedMessages.delete(serverUuid)
+    nextMirror = { ...state.mirror, pendingConsumedMessages }
+  }
+  return {
+    sessionId: state.sessionId,
+    mirror: nextMirror,
+    intent: { ...state.intent, pendingPlaceholders: next },
+  }
 }
 
-function clearSendingUserItems(state: SessionState): SessionState {
-  if (!state.items.some((it) => it.sending)) return state
-  return {
-    ...state,
-    items: state.items.map((it) => {
-      if (!it.sending) return it
-      const rest = { ...it }
-      delete rest.sending
-      return rest
-    }),
-  }
+function clearSendingPlaceholders(intent: ClientIntent): ClientIntent {
+  // After a `result` frame the SDK has finished processing — any lingering
+  // placeholders are abandoned. Drop them entirely (they'd otherwise spin
+  // forever). The matching server messages are already in mirror.items by
+  // this point (the result frame lands AFTER the user echo).
+  if (intent.pendingPlaceholders.size === 0) return intent
+  return { ...intent, pendingPlaceholders: new Map<string, TranscriptItem>() }
 }
 
 /** Flip a queued user message to 'consumed' when the live message-consumed
@@ -498,34 +544,53 @@ function clearSendingUserItems(state: SessionState): SessionState {
  *  where history and the live frame share one reference) and rebuilds just
  *  the affected TranscriptItem so deliveryStatus re-derives. */
 function applyMessageConsumed(state: SessionState, uuid: string, consumedAt: number): SessionState {
-  const idx = state.items.findIndex((it) => it.id === uuid)
-  if (idx < 0) {
-    if (state.pendingConsumedMessages.get(uuid) === consumedAt) return state
-    const pendingConsumedMessages = rememberPendingConsumed(state.pendingConsumedMessages, uuid, consumedAt)
-    return { ...state, pendingConsumedMessages }
+  const mirror = state.mirror
+  // Also stamp a placeholder living in intent: the user message hasn't been
+  // echoed by the server yet, so it isn't in mirror.items, but its bubble is
+  // already rendered (via the buildSnapshot merge) and must flip from queued/
+  // sending to consumed when the signal lands first. Without this branch the
+  // post-refactor intent layer swallows the consumed signal until the echo —
+  // a regression the pre-refactor code didn't have because placeholders lived
+  // in items. We re-derive the placeholder so deliveryStatus is recomputed.
+  const placeholder = state.intent.pendingPlaceholders.get(uuid)
+  if (placeholder) {
+    const nextMsg: SdkMessage = { ...placeholder.msg, consumedAt }
+    const rebuilt = toTranscriptItem(nextMsg, undefined)
+    const updated: TranscriptItem = rebuilt
+      ? { ...rebuilt, sending: placeholder.sending }
+      : { ...placeholder, msg: nextMsg, deliveryStatus: 'consumed' }
+    const nextPlaceholders = new Map(state.intent.pendingPlaceholders)
+    nextPlaceholders.set(uuid, updated)
+    return withIntent(state, { ...state.intent, pendingPlaceholders: nextPlaceholders })
   }
-  const item = state.items[idx]
+  const idx = mirror.items.findIndex((it) => it.id === uuid)
+  if (idx < 0) {
+    if (mirror.pendingConsumedMessages.get(uuid) === consumedAt) return state
+    const pendingConsumedMessages = rememberPendingConsumed(mirror.pendingConsumedMessages, uuid, consumedAt)
+    return withMirror(state, { ...mirror, pendingConsumedMessages })
+  }
+  const item = mirror.items[idx]
   if (item.deliveryStatus === 'consumed') return state
   // Stamp the underlying message so a later re-derivation (and any code
   // reading msg.consumedAt directly) agrees. Build a new msg object rather
   // than mutating the cached one, keeping the store's items immutable.
   const nextMsg: SdkMessage = { ...item.msg, consumedAt }
-  const items = state.items.slice()
+  const items = mirror.items.slice()
   items[idx] = { ...item, msg: nextMsg, deliveryStatus: 'consumed' }
   // Keep the parallel `messages` array's object reference in sync so a
   // later REPLAY/PREPEND that reads msg.consumedAt is consistent.
-  const mIdx = state.messages.findIndex(
+  const mIdx = mirror.messages.findIndex(
     (m) => (typeof m.uuid === 'string' ? m.uuid : null) === uuid,
   )
-  const messages = mIdx >= 0 ? state.messages.slice() : state.messages
+  const messages = mIdx >= 0 ? mirror.messages.slice() : mirror.messages
   if (mIdx >= 0) messages[mIdx] = nextMsg
-  let pendingConsumedMessages: ReadonlyMap<string, number> = state.pendingConsumedMessages
+  let pendingConsumedMessages: ReadonlyMap<string, number> = mirror.pendingConsumedMessages
   if (pendingConsumedMessages.has(uuid)) {
     const nextConsumedMessages = new Map(pendingConsumedMessages)
     nextConsumedMessages.delete(uuid)
     pendingConsumedMessages = nextConsumedMessages
   }
-  return { ...state, items, messages, pendingConsumedMessages }
+  return withMirror(state, { ...mirror, items, messages, pendingConsumedMessages })
 }
 
 // --- Memory bound: front-trim the in-memory transcript -----------------
@@ -559,7 +624,7 @@ function rememberPendingConsumed(
 /** Union of every tool_use_id referenced by `items` — both the tool_use
  *  (assistant) and tool_result (user) sides. Used to prune the toolUseId-keyed
  *  lifecycle maps to live keys after a front-trim. */
-function collectLiveToolUseIds(items: SessionState['items']): Set<string> {
+function collectLiveToolUseIds(items: ServerMirror['items']): Set<string> {
   const live = new Set<string>()
   for (const it of items) {
     const m = it.msg
@@ -611,134 +676,105 @@ function pruneMapToLive<V>(map: Map<string, V>, live: Set<string>): Map<string, 
  *  self-caps at 1024 and activeSubagents clears each result frame, so neither
  *  is touched. */
 function trimFront(state: SessionState): SessionState {
-  if (state.items.length <= MEMORY_ITEM_CAP + MEMORY_TRIM_SLACK) return state
-  const beforeLen = state.items.length
-  let cut = state.items.length - MEMORY_ITEM_CAP
+  const mirror = state.mirror
+  if (mirror.items.length <= MEMORY_ITEM_CAP + MEMORY_TRIM_SLACK) return state
+  const beforeLen = mirror.items.length
+  let cut = mirror.items.length - MEMORY_ITEM_CAP
   // Snap forward to the first disk-persisted boundary at or after `cut`.
-  while (cut < state.items.length && !isTrimBoundary(state.items[cut].msg)) cut++
+  while (cut < mirror.items.length && !isTrimBoundary(mirror.items[cut].msg)) cut++
   // No safe boundary in the trim zone (pathological — e.g. an unbroken run of
   // plain prompts / sidechain frames). Skip this round rather than cut at an
   // unsafe point that would break reverse-paging.
-  if (cut >= state.items.length) return state
+  if (cut >= mirror.items.length) return state
 
-  const items = state.items.slice(cut)
-  const messages = state.messages.slice(cut)
+  const items = mirror.items.slice(cut)
+  const messages = mirror.messages.slice(cut)
   console.warn(`[trimFront] Trimmed ${cut} items (${beforeLen} → ${items.length})`)
   const live = collectLiveToolUseIds(items)
-  return {
-    ...state,
+  return withMirror(state, {
+    ...mirror,
     items,
     messages,
-    toolStatus: pruneMapToLive(state.toolStatus, live),
-    toolResults: pruneMapToLive(state.toolResults, live),
-    planStatus: pruneMapToLive(state.planStatus, live),
-    planContent: pruneMapToLive(state.planContent, live),
-    questionAnswers: pruneMapToLive(state.questionAnswers, live),
-  }
+    toolStatus: pruneMapToLive(mirror.toolStatus, live),
+    toolResults: pruneMapToLive(mirror.toolResults, live),
+    planStatus: pruneMapToLive(mirror.planStatus, live),
+    planContent: pruneMapToLive(mirror.planContent, live),
+    questionAnswers: pruneMapToLive(mirror.questionAnswers, live),
+  })
 }
 
 function applyMessage(state: SessionState, message: SdkMessage): SessionState {
+  const mirror = state.mirror
   const messageUuid = typeof message.uuid === 'string' ? message.uuid : null
   const existingConsumedAt = messageUuid
-    ? state.items.find((it) => it.id === messageUuid)?.msg.consumedAt
+    ? mirror.items.find((it) => it.id === messageUuid)?.msg.consumedAt
     : undefined
-  const pendingConsumedAt = messageUuid ? state.pendingConsumedMessages.get(messageUuid) : undefined
-  const effectiveConsumedAt = typeof pendingConsumedAt === 'number' ? pendingConsumedAt : existingConsumedAt
+  const pendingConsumedAt = messageUuid ? mirror.pendingConsumedMessages.get(messageUuid) : undefined
+  // Echo-merge: when the server's broadcast lands for a user message we sent
+  // optimistically, drop the matching placeholder from intent. The server's
+  // clean item then appends to mirror.items normally via updateTranscript
+  // below — no in-place swap necessary now that placeholders don't live in
+  // mirror.items.
+  //
+  // Guard: only match when the incoming message is a top-level user
+  // message (parent_tool_use_id === null/undefined). Subagent tool_result
+  // frames are also `type: 'user'` but should never consume a placeholder.
+  const incomingParent = message.parent_tool_use_id
+  let workingIntent = state.intent
+  let placeholderConsumedAt: number | undefined
+  if (
+    message.type === 'user' &&
+    workingIntent.pendingPlaceholders.size > 0 &&
+    incomingParent == null
+  ) {
+    // Find the oldest placeholder — Maps preserve insertion order, so the
+    // first key is the oldest send. Echoes arrive in send order, so this is
+    // the correct match. If a multi-content match (e.g. by signature) is
+    // ever needed, this is the place to add it; for now, order-based
+    // matching mirrors the pre-refactor behaviour without the brittleness
+    // of looking up by id in mirror.items.
+    const oldestKey = workingIntent.pendingPlaceholders.keys().next().value
+    if (typeof oldestKey === 'string') {
+      // Forward any consumedAt previously stamped on the placeholder (via a
+      // MESSAGE_CONSUMED frame that landed before this echo). The placeholder
+      // is the only carrier of that state when it's been ack'd before the
+      // server echo — pendingConsumedMessages was already cleared on ack.
+      const placeholder = workingIntent.pendingPlaceholders.get(oldestKey)
+      if (placeholder && typeof placeholder.msg.consumedAt === 'number') {
+        placeholderConsumedAt = placeholder.msg.consumedAt
+      }
+      const nextPlaceholders = new Map(workingIntent.pendingPlaceholders)
+      nextPlaceholders.delete(oldestKey)
+      workingIntent = { ...workingIntent, pendingPlaceholders: nextPlaceholders }
+    }
+  }
+  const effectiveConsumedAt = typeof pendingConsumedAt === 'number'
+    ? pendingConsumedAt
+    : (typeof placeholderConsumedAt === 'number' ? placeholderConsumedAt : existingConsumedAt)
   const incomingMessage: SdkMessage = typeof effectiveConsumedAt === 'number'
     ? { ...message, consumedAt: effectiveConsumedAt }
     : message
 
-  // When the server echoes back the user message we sent, replace the
-  // optimistic placeholder IN PLACE and return early. Falling through
-  // to updateTranscript below would append the real message a second
-  // time — that was the "every message shows twice" regression
-  // introduced when we moved insertUserMessage to run before the POST.
-  //
-  // Guard: only match when the incoming message is a top-level user
-  // message (parent_tool_use_id === null/undefined). Subagent
-  // tool_result frames are also `type: 'user'` but should never clobber
-  // the optimistic — without this guard, a tool_result that lands while
-  // pendingUserMessageIds is still populated would replace the type text
-  // with a JSON tool result and silently drop what the user wrote.
-  const incomingParent = incomingMessage.parent_tool_use_id
-  if (
-    incomingMessage.type === 'user' &&
-    state.pendingUserMessageIds.size > 0 &&
-    incomingParent == null
-  ) {
-    const real = toTranscriptItem(incomingMessage, undefined)
-    if (real) {
-      // Find the first optimistic placeholder that still exists in items.
-      // Echoes arrive in the same order the user sent, so the oldest
-      // pending ID is the correct match.
-      let matchedId: string | null = null
-      for (const pid of state.pendingUserMessageIds) {
-        if (state.items.some((it) => it.id === pid)) {
-          matchedId = pid
-          break
-        }
-      }
-      if (matchedId) {
-        const idx = state.items.findIndex((it) => it.id === matchedId)
-        const items = state.items.slice()
-        items[idx] = real
-        const msgIdx = state.messages.findIndex(
-          (m) => (typeof m.uuid === 'string' ? m.uuid : null) === matchedId,
-        )
-        const messages = msgIdx >= 0 ? state.messages.slice() : state.messages
-        if (msgIdx >= 0) messages[msgIdx] = real.msg
-        const nextIds = new Set(state.pendingUserMessageIds)
-        nextIds.delete(matchedId)
-        let pendingConsumedMessages: ReadonlyMap<string, number> = state.pendingConsumedMessages
-        if (messageUuid && pendingConsumedMessages.has(messageUuid)) {
-          const nextConsumedMessages = new Map(pendingConsumedMessages)
-          nextConsumedMessages.delete(messageUuid)
-          pendingConsumedMessages = nextConsumedMessages
-        }
-        return {
-          ...state,
-          items,
-          messages,
-          eventCount: state.eventCount + 1,
-          lastMessageUuid: messageUuid ?? state.lastMessageUuid,
-          pendingUserMessageIds: nextIds,
-          pendingConsumedMessages,
-        }
-      }
-      // All pending IDs pointed at rows that are no longer in items
-      // (rollback ran, replay rebuilt, etc.). Clear dangling pointers
-      // and let the message flow through updateTranscript normally.
-      state = { ...state, pendingUserMessageIds: new Set<string>() }
-    }
+  const workingMirror: ServerMirror = {
+    ...mirror,
+    eventCount: mirror.eventCount + 1,
+    ...(messageUuid ? { lastMessageUuid: messageUuid } : {}),
   }
 
-  let next: SessionState = {
-    ...state,
-    eventCount: state.eventCount + 1,
+  let working: SessionState = {
+    sessionId: state.sessionId,
+    mirror: workingMirror,
+    intent: workingIntent,
   }
 
-  if (messageUuid) {
-    next.lastMessageUuid = messageUuid
-  }
+  working = withMirror(working, updateLiveTurnMirror(working.mirror, incomingMessage))
+  working = withMirror(working, updateTranscriptMirror(working.mirror, incomingMessage))
+  working = withMirror(working, updateIndexesMirror(working.mirror, incomingMessage))
 
-  // If this is a TOP-LEVEL user message that wasn't matched above
-  // (e.g. arrived but all optimistic placeholders were already gone),
-  // clear pendingUserMessageIds to be safe. Don't clear on
-  // tool_result/subagent user frames (parent_tool_use_id != null) —
-  // those are unrelated to the user's type input and the real echo
-  // may still be on its way.
-  if (incomingMessage.type === 'user' && next.pendingUserMessageIds.size > 0 && incomingParent == null) {
-    next = { ...next, pendingUserMessageIds: new Set<string>() }
-  }
-
-  next = updateLiveTurn(next, incomingMessage)
-  next = updateTranscript(next, incomingMessage)
-  next = updateIndexes(next, incomingMessage)
-
-  if (messageUuid && next.pendingConsumedMessages.has(messageUuid)) {
-    const pendingConsumedMessages = new Map(next.pendingConsumedMessages)
+  if (messageUuid && working.mirror.pendingConsumedMessages.has(messageUuid)) {
+    const pendingConsumedMessages = new Map(working.mirror.pendingConsumedMessages)
     pendingConsumedMessages.delete(messageUuid)
-    next = { ...next, pendingConsumedMessages }
+    working = withMirror(working, { ...working.mirror, pendingConsumedMessages })
   }
 
   if (incomingMessage.type === 'result') {
@@ -752,11 +788,11 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
     // ids to 'running'. Mirror the activeSubagents reset below. Only
     // clone the Map when there's actually a running entry to flip so
     // result frames for tool-free turns stay identity-stable.
-    let sweptToolStatus = next.toolStatus
+    let sweptToolStatus = working.mirror.toolStatus
     const swept = toolDebugEnabled() ? [] as string[] : null
-    for (const [id, status] of next.toolStatus) {
+    for (const [id, status] of working.mirror.toolStatus) {
       if (status !== 'running') continue
-      if (sweptToolStatus === next.toolStatus) sweptToolStatus = new Map(next.toolStatus)
+      if (sweptToolStatus === working.mirror.toolStatus) sweptToolStatus = new Map(working.mirror.toolStatus)
       sweptToolStatus.set(id, 'error')
       if (swept) swept.push(id)
     }
@@ -777,10 +813,10 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
     // entry at result time is genuinely stale (its tool_result never matched),
     // so flip it to 'interrupted' rather than drop it, mirroring the
     // toolStatus sweep above. Identity-stable when nothing is running.
-    let prunedSubagents = next.activeSubagents
-    for (const [id, sub] of next.activeSubagents) {
+    let prunedSubagents = working.mirror.activeSubagents
+    for (const [id, sub] of working.mirror.activeSubagents) {
       if (sub.status !== 'running') continue
-      if (prunedSubagents === next.activeSubagents) prunedSubagents = new Map(next.activeSubagents)
+      if (prunedSubagents === working.mirror.activeSubagents) prunedSubagents = new Map(working.mirror.activeSubagents)
       prunedSubagents.set(id, { ...sub, status: 'interrupted', endedAt: sub.endedAt ?? sub.startedAt })
     }
 
@@ -792,11 +828,11 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
     // agents of a completed/running Workflow so the phase tree doesn't
     // leave a spinner on a branch whose result is gone. Identity-stable
     // when nothing is running.
-    let prunedWorkflows = next.activeWorkflows
-    for (const [id, wf] of next.activeWorkflows) {
+    let prunedWorkflows = working.mirror.activeWorkflows
+    for (const [id, wf] of working.mirror.activeWorkflows) {
       const runningChildren = wf.childAgents.some((c) => c.status === 'running')
       if (wf.status === 'running' || runningChildren) {
-        if (prunedWorkflows === next.activeWorkflows) prunedWorkflows = new Map(next.activeWorkflows)
+        if (prunedWorkflows === working.mirror.activeWorkflows) prunedWorkflows = new Map(working.mirror.activeWorkflows)
         prunedWorkflows.set(id, {
           ...wf,
           status: wf.status === 'running' ? 'interrupted' : wf.status,
@@ -810,33 +846,36 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
       }
     }
 
-    next = clearSendingUserItems({
-      ...next,
-      toolStatus: sweptToolStatus,
-      liveTurn: null,
+    working = {
+      sessionId: working.sessionId,
+      mirror: {
+        ...working.mirror,
+        toolStatus: sweptToolStatus,
+        liveTurn: null,
+        // Prune stale 'running' subagents (see prunedSubagents above) while
+        // KEEPING completed records so their merged card + orphan-bubble
+        // suppression survive across turns and replay.
+        activeSubagents: prunedSubagents,
+        activeWorkflows: prunedWorkflows,
+      },
       // Clear any lingering optimistic placeholders — the result frame
       // means the SDK has finished processing, so no server echo for
       // the user message is expected anymore.
-      pendingUserMessageIds: new Set<string>(),
-      // Prune stale 'running' subagents (see prunedSubagents above) while
-      // KEEPING completed records so their merged card + orphan-bubble
-      // suppression survive across turns and replay.
-      activeSubagents: prunedSubagents,
-      activeWorkflows: prunedWorkflows,
-    })
+      intent: clearSendingPlaceholders(working.intent),
+    }
   }
 
   // Bound in-memory growth. No-op until the transcript exceeds CAP + SLACK,
   // so the common append path stays allocation-free.
-  next = trimFront(next)
+  working = trimFront(working)
 
-  return next
+  return working
 }
 
-function updateTranscript(state: SessionState, message: SdkMessage): SessionState {
-  const prev = state.items[state.items.length - 1]
+function updateTranscriptMirror(mirror: ServerMirror, message: SdkMessage): ServerMirror {
+  const prev = mirror.items[mirror.items.length - 1]
   const item = toTranscriptItem(message, prev)
-  if (!item) return state
+  if (!item) return mirror
 
   // Consecutive api_retry frames: replace the previous one in place
   // (the countdown resets, so the UI only ever shows one card).
@@ -846,9 +885,9 @@ function updateTranscript(state: SessionState, message: SdkMessage): SessionStat
     prev?.msg.type === 'system' &&
     prev.msg.subtype === 'api_retry'
   ) {
-    const items = state.items.slice(0, -1).concat(item)
-    const messages = state.messages.slice(0, -1).concat(item.msg)
-    return { ...state, items, messages }
+    const items = mirror.items.slice(0, -1).concat(item)
+    const messages = mirror.messages.slice(0, -1).concat(item.msg)
+    return { ...mirror, items, messages }
   }
 
   // Retry cycle ended — a non-retry message landed (assistant output,
@@ -861,16 +900,16 @@ function updateTranscript(state: SessionState, message: SdkMessage): SessionStat
     prev.msg.subtype === 'api_retry'
   ) {
     return {
-      ...state,
-      items: [...state.items.slice(0, -1), item],
-      messages: [...state.messages.slice(0, -1), item.msg],
+      ...mirror,
+      items: [...mirror.items.slice(0, -1), item],
+      messages: [...mirror.messages.slice(0, -1), item.msg],
     }
   }
 
   return {
-    ...state,
-    items: [...state.items, item],
-    messages: [...state.messages, item.msg],
+    ...mirror,
+    items: [...mirror.items, item],
+    messages: [...mirror.messages, item.msg],
   }
 }
 
@@ -897,22 +936,22 @@ export function rebuildIndexesFromMessages(
   state: SessionState,
   messages: readonly SdkMessage[],
 ): SessionState {
-  let next = state
+  let mirror = state.mirror
   for (const message of messages) {
-    next = updateIndexes(next, message)
+    mirror = updateIndexesMirror(mirror, message)
   }
-  return next
+  return withMirror(state, mirror)
 }
 
-function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
+function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerMirror {
   let changed = false
-  let planStatus = state.planStatus
-  let planContent = state.planContent
-  let questionAnswers = state.questionAnswers
-  let toolStatus = state.toolStatus
-  let toolResults = state.toolResults
-  let activeSubagents = state.activeSubagents
-  let activeWorkflows = state.activeWorkflows
+  let planStatus = mirror.planStatus
+  let planContent = mirror.planContent
+  let questionAnswers = mirror.questionAnswers
+  let toolStatus = mirror.toolStatus
+  let toolResults = mirror.toolResults
+  let activeSubagents = mirror.activeSubagents
+  let activeWorkflows = mirror.activeWorkflows
 
   // Generic tool status — seed 'running' for every tool_use the assistant
   // emits (excluding ones with their own status map: Plan/Subagent/Question).
@@ -952,7 +991,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
         }
         if (prev === outcome) continue
         if (!touched) {
-          if (toolStatus === state.toolStatus) toolStatus = new Map(toolStatus)
+          if (toolStatus === mirror.toolStatus) toolStatus = new Map(toolStatus)
           touched = true
         }
         toolStatus.set(toolUseId, outcome)
@@ -982,7 +1021,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
         if (!toolStatus.has(toolUseId)) continue
         if (toolResults.has(toolUseId)) continue
         if (!touched) {
-          if (toolResults === state.toolResults) toolResults = new Map(toolResults)
+          if (toolResults === mirror.toolResults) toolResults = new Map(toolResults)
           touched = true
         }
         toolResults.set(toolUseId, { content, isError })
@@ -1000,7 +1039,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
 
   const planResults = getPlanResultDecisions(message, planStatus)
   if (planResults.length > 0) {
-    if (planStatus === state.planStatus) planStatus = new Map(planStatus)
+    if (planStatus === mirror.planStatus) planStatus = new Map(planStatus)
     for (const result of planResults) planStatus.set(result.toolUseId, result.status)
     changed = true
   }
@@ -1014,7 +1053,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
     const knownPlanIds = new Set(planStatus.keys())
     const extracted = extractPlanContent(message, knownPlanIds)
     if (extracted.length > 0) {
-      if (planContent === state.planContent) planContent = new Map(planContent)
+      if (planContent === mirror.planContent) planContent = new Map(planContent)
       for (const { toolUseId, plan } of extracted) planContent.set(toolUseId, plan)
       changed = true
     }
@@ -1047,7 +1086,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
     const knownQuestionIds = new Set(questionAnswers.keys())
     const extracted = extractQuestionAnswers(message, knownQuestionIds)
     if (extracted.length > 0) {
-      if (questionAnswers === state.questionAnswers) questionAnswers = new Map(questionAnswers)
+      if (questionAnswers === mirror.questionAnswers) questionAnswers = new Map(questionAnswers)
       for (const { toolUseId, answers } of extracted) questionAnswers.set(toolUseId, answers)
       changed = true
     }
@@ -1103,7 +1142,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
       const existing = activeSubagents.get(toolUseId)
       if (!existing || existing.status !== 'running') continue
       if (!touched) {
-        if (activeSubagents === state.activeSubagents) activeSubagents = new Map(activeSubagents)
+        if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
         touched = true
       }
       activeSubagents.set(toolUseId, {
@@ -1131,7 +1170,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
             if (b.type === 'tool_use') newTools++
           }
           if (newTools > 0) {
-            if (activeSubagents === state.activeSubagents) activeSubagents = new Map(activeSubagents)
+            if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
             activeSubagents.set(parentId, { ...existing, toolCount: existing.toolCount + newTools })
             changed = true
           }
@@ -1150,7 +1189,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
   // Seed / refresh Workflow records from the Workflow tool_use blocks.
   const wfStarts = getWorkflowStarts(message)
   if (wfStarts.length > 0) {
-    if (activeWorkflows === state.activeWorkflows) activeWorkflows = new Map(activeWorkflows)
+    if (activeWorkflows === mirror.activeWorkflows) activeWorkflows = new Map(activeWorkflows)
     // Prefer server-stamped wall-clock so replay/refresh keeps the original
     // workflow start instead of resetting to now.
     const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
@@ -1188,7 +1227,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
         const existing = activeWorkflows.get(toolUseId)
         if (!existing || existing.status !== 'running') continue
         if (!touched) {
-          if (activeWorkflows === state.activeWorkflows) activeWorkflows = new Map(activeWorkflows)
+          if (activeWorkflows === mirror.activeWorkflows) activeWorkflows = new Map(activeWorkflows)
           touched = true
         }
         // Parse WorkflowOutput (status/taskType/runId/scriptPath/sessionUrl)
@@ -1233,7 +1272,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
     if (parentId && children.length > 0) {
       const wf = activeWorkflows.get(parentId)
       if (wf) {
-        if (activeWorkflows === state.activeWorkflows) activeWorkflows = new Map(activeWorkflows)
+        if (activeWorkflows === mirror.activeWorkflows) activeWorkflows = new Map(activeWorkflows)
         const byId = new Map(wf.childAgents.map((c) => [c.toolUseId, c]))
         // Server-stamped wall-clock survives replay; falls back to now
         // for disk-restored frames without receivedAt.
@@ -1272,7 +1311,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
           for (const [wfId, wf] of activeWorkflows) {
             const child = wf.childAgents.find((c) => c.toolUseId === childParentId)
             if (!child || child.status !== 'running') continue
-            if (activeWorkflows === state.activeWorkflows) activeWorkflows = new Map(activeWorkflows)
+            if (activeWorkflows === mirror.activeWorkflows) activeWorkflows = new Map(activeWorkflows)
             const updatedChild = { ...child, toolCount: child.toolCount + newTools }
             activeWorkflows.set(wfId, {
               ...wf,
@@ -1315,7 +1354,7 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
         })
         if (childChanged) {
           if (!touched) {
-            if (activeWorkflows === state.activeWorkflows) activeWorkflows = new Map(activeWorkflows)
+            if (activeWorkflows === mirror.activeWorkflows) activeWorkflows = new Map(activeWorkflows)
             touched = true
           }
           activeWorkflows.set(wfId, { ...wf, childAgents: updatedChildren })
@@ -1326,19 +1365,19 @@ function updateIndexes(state: SessionState, message: SdkMessage): SessionState {
   }
 
   return changed
-    ? { ...state, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, activeWorkflows }
-    : state
+    ? { ...mirror, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, activeWorkflows }
+    : mirror
 }
 
-function updateLiveTurn(state: SessionState, message: SdkMessage): SessionState {
-  if (message.type !== 'stream_event') return state
+function updateLiveTurnMirror(mirror: ServerMirror, message: SdkMessage): ServerMirror {
+  if (message.type !== 'stream_event') return mirror
   const event = message.event as Record<string, unknown> | undefined
-  if (!event || typeof event.type !== 'string') return state
+  if (!event || typeof event.type !== 'string') return mirror
 
-  let liveTurn = state.liveTurn
+  let liveTurn = mirror.liveTurn
   if (!liveTurn) {
     liveTurn = {
-      turnId: typeof message.uuid === 'string' ? message.uuid : `turn:${state.eventCount + 1}`,
+      turnId: typeof message.uuid === 'string' ? message.uuid : `turn:${mirror.eventCount + 1}`,
       phase: null,
       textChunks: [],
       flushedText: '',
@@ -1396,5 +1435,5 @@ function updateLiveTurn(state: SessionState, message: SdkMessage): SessionState 
     }
   }
 
-  return { ...state, liveTurn }
+  return { ...mirror, liveTurn }
 }

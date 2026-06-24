@@ -222,13 +222,13 @@ describe('reducer: toolResults lifecycle', () => {
       message: assistant([toolUse('Bash', 'tu_bash')]),
     })
     // No result yet.
-    expect(state.toolResults.has('tu_bash')).toBe(false)
+    expect(state.mirror.toolResults.has('tu_bash')).toBe(false)
 
     state = reduceSessionState(state, {
       type: 'MESSAGE',
       message: user([toolResult('tu_bash', { content: 'stdout here' })], 'r-1'),
     })
-    expect(state.toolResults.get('tu_bash')).toEqual({ content: 'stdout here', isError: false })
+    expect(state.mirror.toolResults.get('tu_bash')).toEqual({ content: 'stdout here', isError: false })
   })
 
   it('marks isError true when the result fails', () => {
@@ -241,7 +241,7 @@ describe('reducer: toolResults lifecycle', () => {
       type: 'MESSAGE',
       message: user([toolResult('tu_read', { isError: true, content: 'ENOENT' })], 'r-2'),
     })
-    expect(state.toolResults.get('tu_read')).toEqual({ content: 'ENOENT', isError: true })
+    expect(state.mirror.toolResults.get('tu_read')).toEqual({ content: 'ENOENT', isError: true })
   })
 
   it('does NOT capture results for excluded tools (Plan/Subagent/Question)', () => {
@@ -266,10 +266,10 @@ describe('reducer: toolResults lifecycle', () => {
     })
     // Only the generic Bash tool's result is captured — the bespoke-card
     // tools own their own result rendering.
-    expect(state.toolResults.has('tu_plan')).toBe(false)
-    expect(state.toolResults.has('tu_agent')).toBe(false)
-    expect(state.toolResults.has('tu_q')).toBe(false)
-    expect(state.toolResults.get('tu_bash')).toEqual({ content: 'ok', isError: false })
+    expect(state.mirror.toolResults.has('tu_plan')).toBe(false)
+    expect(state.mirror.toolResults.has('tu_agent')).toBe(false)
+    expect(state.mirror.toolResults.has('tu_q')).toBe(false)
+    expect(state.mirror.toolResults.get('tu_bash')).toEqual({ content: 'ok', isError: false })
   })
 
   it('ignores an orphan result whose tool_use was never seeded', () => {
@@ -283,7 +283,7 @@ describe('reducer: toolResults lifecycle', () => {
       message: user([toolResult('tu_unknown', { content: 'orphan' })], 'r-x'),
     })
     // Not stored — the UI renders it as a standalone orphan bubble instead.
-    expect(state.toolResults.has('tu_unknown')).toBe(false)
+    expect(state.mirror.toolResults.has('tu_unknown')).toBe(false)
   })
 
   it('rebuilds toolResults from cached messages on hydration', () => {
@@ -296,9 +296,9 @@ describe('reducer: toolResults lifecycle', () => {
     ]
     const seeded = createInitialSessionState('s1')
     const state = rebuildIndexesFromMessages(seeded, cachedMessages)
-    expect(state.toolResults.get('tu_bash')).toEqual({ content: 'done', isError: false })
-    expect(state.toolResults.get('tu_read')).toEqual({ content: 'ENOENT', isError: true })
-    expect(state.toolResults.has('tu_grep')).toBe(false)
+    expect(state.mirror.toolResults.get('tu_bash')).toEqual({ content: 'done', isError: false })
+    expect(state.mirror.toolResults.get('tu_read')).toEqual({ content: 'ENOENT', isError: true })
+    expect(state.mirror.toolResults.has('tu_grep')).toBe(false)
   })
 
   it('keeps toolResults identity-stable when nothing matches', () => {
@@ -307,12 +307,12 @@ describe('reducer: toolResults lifecycle', () => {
       type: 'MESSAGE',
       message: assistant([toolUse('Bash', 'tu_bash')]),
     })
-    const before = state.toolResults
+    const before = state.mirror.toolResults
     state = reduceSessionState(state, {
       type: 'MESSAGE',
       message: user([toolResult('tu_unknown', { content: 'orphan' })], 'r-x'),
     })
-    expect(state.toolResults).toBe(before)
+    expect(state.mirror.toolResults).toBe(before)
   })
 })
 
@@ -327,13 +327,13 @@ describe('reducer: toolStatus lifecycle', () => {
       type: 'MESSAGE',
       message: assistant([toolUse('Bash', 'tu_bash')]),
     })
-    expect(state.toolStatus.get('tu_bash')).toBe('running')
+    expect(state.mirror.toolStatus.get('tu_bash')).toBe('running')
 
     state = reduceSessionState(state, {
       type: 'MESSAGE',
       message: user([toolResult('tu_bash')], 'r-1'),
     })
-    expect(state.toolStatus.get('tu_bash')).toBe('success')
+    expect(state.mirror.toolStatus.get('tu_bash')).toBe('success')
   })
 
   it('flips to error when the result carries is_error: true', () => {
@@ -346,7 +346,7 @@ describe('reducer: toolStatus lifecycle', () => {
       type: 'MESSAGE',
       message: user([toolResult('tu_read', { isError: true, content: 'ENOENT' })], 'r-2'),
     })
-    expect(state.toolStatus.get('tu_read')).toBe('error')
+    expect(state.mirror.toolStatus.get('tu_read')).toBe('error')
   })
 
   it('does NOT seed status for excluded tool names (Plan/Subagent/Question)', () => {
@@ -360,10 +360,10 @@ describe('reducer: toolStatus lifecycle', () => {
         toolUse('Bash', 'tu_bash'),
       ]),
     })
-    expect(state.toolStatus.has('tu_plan')).toBe(false)
-    expect(state.toolStatus.has('tu_agent')).toBe(false)
-    expect(state.toolStatus.has('tu_q')).toBe(false)
-    expect(state.toolStatus.get('tu_bash')).toBe('running')
+    expect(state.mirror.toolStatus.has('tu_plan')).toBe(false)
+    expect(state.mirror.toolStatus.has('tu_agent')).toBe(false)
+    expect(state.mirror.toolStatus.has('tu_q')).toBe(false)
+    expect(state.mirror.toolStatus.get('tu_bash')).toBe('running')
   })
 
   it('preserves the existing status when a duplicate tool_use lands during replay', () => {
@@ -376,7 +376,7 @@ describe('reducer: toolStatus lifecycle', () => {
       type: 'MESSAGE',
       message: user([toolResult('tu_bash')], 'r-1'),
     })
-    expect(state.toolStatus.get('tu_bash')).toBe('success')
+    expect(state.mirror.toolStatus.get('tu_bash')).toBe('success')
 
     // A duplicate tool_use (same id) lands — could happen during replay
     // or if upstream re-broadcasts. The terminal status must NOT regress
@@ -385,7 +385,7 @@ describe('reducer: toolStatus lifecycle', () => {
       type: 'MESSAGE',
       message: assistant([toolUse('Bash', 'tu_bash')], 'a-2'),
     })
-    expect(state.toolStatus.get('tu_bash')).toBe('success')
+    expect(state.mirror.toolStatus.get('tu_bash')).toBe('success')
   })
 
   it('rebuilds toolStatus from cached messages on hydration', () => {
@@ -408,9 +408,9 @@ describe('reducer: toolStatus lifecycle', () => {
     ]
     const seeded = createInitialSessionState('s1')
     const state = rebuildIndexesFromMessages(seeded, cachedMessages)
-    expect(state.toolStatus.get('tu_bash')).toBe('success')
-    expect(state.toolStatus.get('tu_read')).toBe('error')
-    expect(state.toolStatus.get('tu_grep')).toBe('running')
+    expect(state.mirror.toolStatus.get('tu_bash')).toBe('success')
+    expect(state.mirror.toolStatus.get('tu_read')).toBe('error')
+    expect(state.mirror.toolStatus.get('tu_grep')).toBe('running')
   })
 
   it('reconciles a lingering running tool to error when the turn ends', () => {
@@ -423,13 +423,13 @@ describe('reducer: toolStatus lifecycle', () => {
       type: 'MESSAGE',
       message: assistant([toolUse('Bash', 'tu_bash')]),
     })
-    expect(state.toolStatus.get('tu_bash')).toBe('running')
+    expect(state.mirror.toolStatus.get('tu_bash')).toBe('running')
 
     state = reduceSessionState(state, {
       type: 'MESSAGE',
       message: { type: 'result', uuid: 'res-1' } as unknown as SdkMessage,
     })
-    expect(state.toolStatus.get('tu_bash')).toBe('error')
+    expect(state.mirror.toolStatus.get('tu_bash')).toBe('error')
   })
 
   it('leaves terminal tool statuses untouched at turn end', () => {
@@ -443,15 +443,15 @@ describe('reducer: toolStatus lifecycle', () => {
       message: user([toolResult('tu_bash')], 'r-1'),
     })
     // tu_read still running; tu_bash already success.
-    const before = state.toolStatus
+    const before = state.mirror.toolStatus
     state = reduceSessionState(state, {
       type: 'MESSAGE',
       message: { type: 'result', uuid: 'res-1' } as unknown as SdkMessage,
     })
-    expect(state.toolStatus.get('tu_bash')).toBe('success')
-    expect(state.toolStatus.get('tu_read')).toBe('error')
+    expect(state.mirror.toolStatus.get('tu_bash')).toBe('success')
+    expect(state.mirror.toolStatus.get('tu_read')).toBe('error')
     // A fresh Map was allocated (a running entry was swept).
-    expect(state.toolStatus).not.toBe(before)
+    expect(state.mirror.toolStatus).not.toBe(before)
   })
 
   it('keeps toolStatus identity-stable on result when nothing is running', () => {
@@ -464,14 +464,14 @@ describe('reducer: toolStatus lifecycle', () => {
       type: 'MESSAGE',
       message: user([toolResult('tu_bash')], 'r-1'),
     })
-    const before = state.toolStatus
+    const before = state.mirror.toolStatus
     state = reduceSessionState(state, {
       type: 'MESSAGE',
       message: { type: 'result', uuid: 'res-1' } as unknown as SdkMessage,
     })
     // No running entry to sweep → Map reference preserved (no spurious
     // re-render cascade off snapshot identity).
-    expect(state.toolStatus).toBe(before)
+    expect(state.mirror.toolStatus).toBe(before)
   })
 
   it('returns the same state when the result toolUseId is unknown', () => {
@@ -488,11 +488,11 @@ describe('reducer: toolStatus lifecycle', () => {
       type: 'MESSAGE',
       message: user([toolResult('tu_unknown')], 'r-x'),
     })
-    expect(state.toolStatus.has('tu_unknown')).toBe(false)
-    expect(state.toolStatus.get('tu_bash')).toBe('running')
+    expect(state.mirror.toolStatus.has('tu_unknown')).toBe(false)
+    expect(state.mirror.toolStatus.get('tu_bash')).toBe('running')
     // Object identity preserved — no spurious clone.  This matters
     // because re-renders cascade off snapshot identity.
-    expect(state.toolStatus).toBe(before.toolStatus)
+    expect(state.mirror.toolStatus).toBe(before.mirror.toolStatus)
   })
 })
 
@@ -507,7 +507,7 @@ describe('reducer: subagent result lifecycle', () => {
       type: 'MESSAGE',
       message: assistant([toolUse('Agent', 'tu_agent', { description: 'scout' })]),
     })
-    const sub = state.activeSubagents.get('tu_agent')
+    const sub = state.mirror.activeSubagents.get('tu_agent')
     expect(sub?.status).toBe('running')
     expect(sub?.result).toBeUndefined()
 
@@ -515,7 +515,7 @@ describe('reducer: subagent result lifecycle', () => {
       type: 'MESSAGE',
       message: user([toolResult('tu_agent', { content: 'agent output' })], 'r-1'),
     })
-    const done = state.activeSubagents.get('tu_agent')
+    const done = state.mirror.activeSubagents.get('tu_agent')
     expect(done?.status).toBe('done')
     expect(done?.result).toEqual({ content: 'agent output', isError: false })
     expect(done?.endedAt).toBeTypeOf('number')
@@ -531,7 +531,7 @@ describe('reducer: subagent result lifecycle', () => {
       type: 'MESSAGE',
       message: user([toolResult('tu_task', { isError: true, content: 'boom' })], 'r-1'),
     })
-    const sub = state.activeSubagents.get('tu_task')
+    const sub = state.mirror.activeSubagents.get('tu_task')
     // A failed subagent must not show a green "done" check.
     expect(sub?.status).toBe('interrupted')
     expect(sub?.result).toEqual({ content: 'boom', isError: true })
@@ -549,8 +549,8 @@ describe('reducer: subagent result lifecycle', () => {
     })
     // The generic toolResults map stays empty — the merge happens on the
     // ActiveSubagent record, not the shared tool-card map.
-    expect(state.toolResults.has('tu_exp')).toBe(false)
-    expect(state.activeSubagents.get('tu_exp')?.result).toEqual({ content: 'found it', isError: false })
+    expect(state.mirror.toolResults.has('tu_exp')).toBe(false)
+    expect(state.mirror.activeSubagents.get('tu_exp')?.result).toEqual({ content: 'found it', isError: false })
   })
 
   it('rebuilds the subagent result from cached messages on hydration', () => {
@@ -560,7 +560,7 @@ describe('reducer: subagent result lifecycle', () => {
     ]
     const seeded = createInitialSessionState('s1')
     const state = rebuildIndexesFromMessages(seeded, cachedMessages)
-    const sub = state.activeSubagents.get('tu_agent')
+    const sub = state.mirror.activeSubagents.get('tu_agent')
     expect(sub?.status).toBe('done')
     expect(sub?.result).toEqual({ content: 'agent output', isError: false })
   })

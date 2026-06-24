@@ -35,7 +35,7 @@ export function useSessionField<K extends keyof SessionSnapshot>(
 }
 
 export function getSessionLastMessageUuid(sessionId: string): string | null {
-  return sessionStoreRegistry.getOrCreate(sessionId).getState().lastMessageUuid
+  return sessionStoreRegistry.getOrCreate(sessionId).getState().mirror.lastMessageUuid
 }
 
 export function getSessionStore(sessionId: string) {

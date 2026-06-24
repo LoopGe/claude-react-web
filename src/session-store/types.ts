@@ -211,21 +211,33 @@ export interface LiveTurnState {
   dirty: boolean
 }
 
-export interface SessionState {
-  sessionId: string
+/** Server-authored fields. Everything here is derived purely from WS frames
+ *  (replay, message, permission-*, context-usage, message-consumed, error).
+ *  The client never originates writes into this layer; the reducer routes
+ *  server frames into it.
+ *
+ *  Architectural invariant: any reducer path that handles a SERVER payload
+ *  (REPLAY_REPLACE, MESSAGE, PERMISSION_*, CONTEXT_USAGE, MESSAGE_CONSUMED,
+ *  ERROR) may only mutate `state.mirror`. Such paths must NEVER reconstruct
+ *  `state.intent` — that's client-only territory and is preserved verbatim
+ *  across every server-driven action. The split is enforced by the field
+ *  partitioning here: there is no way to express "wipe pendingPlaceholders"
+ *  from a `Partial<ServerMirror>`.
+ *
+ *  The bug this guards against: pre-refactor, REPLAY_REPLACE could fall into
+ *  a `createInitialSessionState`-and-rebuild branch that incidentally zeroed
+ *  `pendingUserMessageIds` (which lived alongside mirror data in a flat
+ *  state). That broke the optimistic-merge for the very next user message,
+ *  manifesting as the "first message stuck" symptom under StrictMode's
+ *  double-mount. */
+export interface ServerMirror {
   replayReady: boolean
   items: TranscriptItem[]
   messages: SdkMessage[]
   eventCount: number
   liveTurn: LiveTurnState | null
   contextUsage: ContextUsage | null
-  error: string | null
   lastMessageUuid: string | null
-  /** IDs of optimistic user messages pending server confirmation.
-   *  A Set (not a single pointer) so rapid sequential sends each get
-   *  their own placeholder that is replaced independently when the
-   *  server echo arrives. */
-  pendingUserMessageIds: ReadonlySet<string>
   /** message-consumed frames that arrived before the matching message row.
    *  The WS channels are independent, so an idle session can deliver the
    *  consumed signal before the user-message broadcast. Cache it here and
@@ -266,6 +278,42 @@ export interface SessionState {
    *  `activeSubagents`, the Map reference is identity-compared in the store
    *  so snapshots only reallocate when a Workflow record actually changes. */
   activeWorkflows: Map<string, WorkflowRecord>
+}
+
+/** Client-only intent. The server has no opinion about this layer; only
+ *  user actions originate writes here (with one carve-out: ERROR frames
+ *  from the server set `intent.error`, but the lifecycle — cleared by the
+ *  user via clearError() — is client-owned, so it conceptually belongs
+ *  here too).
+ *
+ *  Critically: any server frame handler that rebuilds `state.mirror` MUST
+ *  preserve `state.intent` verbatim. That's the whole point of the split. */
+export interface ClientIntent {
+  /** Optimistic user-message placeholders awaiting their server echo.
+   *  Keyed by placeholder id (the temp uuid stamped by insertUserMessage),
+   *  value is the full TranscriptItem so snapshot-time render-merge has
+   *  everything it needs without consulting mirror.items.
+   *
+   *  Placeholders live HERE, not in mirror.items, so REPLAY_REPLACE
+   *  (which rebuilds mirror.items from the server payload) cannot wipe
+   *  them. The render path (SessionStore.buildSnapshot) merges them at
+   *  the tail of mirror.items, so components see the same flat list
+   *  they did pre-refactor. On echo, applyMessage removes the matching
+   *  placeholder from intent and appends the real message to mirror.items.
+   *
+   *  A Map (not a Set) so insertion order is preserved — echoes arrive in
+   *  send order, so the oldest pending placeholder matches the next echo. */
+  pendingPlaceholders: ReadonlyMap<string, TranscriptItem>
+  /** Last error string to surface in the chat header. Written by the
+   *  ERROR action (driven by WS error frames) and cleared by the client
+   *  via clearError(). The clear path makes this client-owned. */
+  error: string | null
+}
+
+export interface SessionState {
+  sessionId: string
+  mirror: ServerMirror
+  intent: ClientIntent
 }
 
 export type SessionAction =
@@ -338,18 +386,18 @@ export interface SessionSnapshot {
   lastMessageUuid: string | null
 }
 
-export function createInitialSessionState(sessionId: string): SessionState {
+/** Build a fresh ServerMirror. Used by createInitialSessionState and by any
+ *  reducer path that needs to rebuild the mirror from scratch (e.g.
+ *  REPLAY_REPLACE over an empty cache). NEVER touches `intent`. */
+export function createInitialServerMirror(): ServerMirror {
   return {
-    sessionId,
     replayReady: false,
     items: [],
     messages: [],
     eventCount: 0,
     liveTurn: null,
     contextUsage: null,
-    error: null,
     lastMessageUuid: null,
-    pendingUserMessageIds: new Set<string>(),
     pendingConsumedMessages: new Map<string, number>(),
     permissionPending: new Map(),
     permissionDecisions: new Map(),
@@ -362,4 +410,38 @@ export function createInitialSessionState(sessionId: string): SessionState {
     activeSubagents: new Map(),
     activeWorkflows: new Map(),
   }
+}
+
+/** Build a fresh ClientIntent. Used by createInitialSessionState and by
+ *  RESET (which intentionally wipes both layers). NEVER called from any
+ *  server-frame handler. */
+export function createInitialClientIntent(): ClientIntent {
+  return {
+    pendingPlaceholders: new Map<string, TranscriptItem>(),
+    error: null,
+  }
+}
+
+export function createInitialSessionState(sessionId: string): SessionState {
+  return {
+    sessionId,
+    mirror: createInitialServerMirror(),
+    intent: createInitialClientIntent(),
+  }
+}
+
+/** Helper for the architectural invariant: produce a new SessionState whose
+ *  ONLY change is a new ServerMirror. Use this in every server-frame handler
+ *  in the reducer so the intent layer's preservation is visible at every
+ *  call site. */
+export function withMirror(state: SessionState, mirror: ServerMirror): SessionState {
+  if (mirror === state.mirror) return state
+  return { sessionId: state.sessionId, mirror, intent: state.intent }
+}
+
+/** Helper symmetrical to withMirror, for actions that only change the client
+ *  intent layer (OPTIMISTIC_USER_MESSAGE, ROLLBACK, clearError). */
+export function withIntent(state: SessionState, intent: ClientIntent): SessionState {
+  if (intent === state.intent) return state
+  return { sessionId: state.sessionId, mirror: state.mirror, intent }
 }

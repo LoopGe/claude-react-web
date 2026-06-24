@@ -182,26 +182,19 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     let replayMessages: SdkMessage[] = []
     let replayPermissions: PermissionRequest[] = []
     let replaying = false
-    // All live frames that arrive between `replay` and `replay-done` are
-    // buffered here. We can't dispatch them immediately because
-    // REPLAY_REPLACE (fired at replay-done) takes the third branch in
-    // replayReplace() — `createInitialSessionState` — which wipes the
-    // permissionPending/permissionDecisions/contextUsage/error fields a
-    // direct dispatch would have set. The buffer is a sequence of
-    // already-shaped store actions so we can flush them in arrival order
-    // immediately after REPLAY_REPLACE.
-    type PendingAction =
-      | { type: 'MESSAGE'; message: SdkMessage }
-      | { type: 'PERMISSION_REQUEST'; request: PermissionRequest }
-      | {
-          type: 'PERMISSION_RESOLVED'
-          id: string
-          decision: { behavior: 'allow' | 'deny'; persisted: boolean; message?: string }
-        }
-      | { type: 'CONTEXT_USAGE'; usage: ContextUsage }
-      | { type: 'MESSAGE_CONSUMED'; uuid: string; consumedAt: number }
-      | { type: 'ERROR'; message: string | null }
-    const pendingLive: PendingAction[] = []
+    // Phase 2 of the layered-state refactor removed the `pendingLive` buffer.
+    // Previously, live frames arriving between `replay` and `replay-done` had
+    // to be parked because REPLAY_REPLACE's fresh-state branch rebuilt the
+    // entire state from scratch (createInitialSessionState), wiping anything a
+    // direct dispatch had already written — permissionPending, contextUsage,
+    // error, the optimistic placeholder. After the refactor, REPLAY_REPLACE
+    // only rebuilds `state.mirror` and PRESERVES `state.intent` plus the
+    // current mirror's already-set live fields, so a live frame can dispatch
+    // immediately and its effect survives the replay-done that follows.
+    //
+    // Result: zero buffering, zero ordering guesswork, and the
+    // StrictMode-double-mount race that motivated this whole refactor cannot
+    // wipe the user's first optimistic message anymore.
 
     const off = hub.addSessionListener(sessionId, (frame: WsServerFrame) => {
       switch (frame.kind) {
@@ -210,12 +203,6 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
             replaying = true
             replayMessages = []
             replayPermissions = []
-            // Note: do NOT reset pendingLive here. It's freshly created on
-            // mount and we never re-enter replay-mode from a clean state
-            // without first going through replay-done (which empties it).
-            // Wiping it here would drop live frames that legitimately
-            // accumulated during a chunked replay where the server emits
-            // a follow-up `replay` frame mid-stream.
           }
           replayMessages.push(...(frame.messages as SdkMessage[]))
           if (frame.permissions?.length) {
@@ -229,41 +216,28 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
             replayPermissions.push(...frame.permissions)
             for (const req of frame.permissions) permsRef.current.onRequest(req)
           }
-          const actions = [
-            { type: 'REPLAY_REPLACE', messages: replayMessages, permissions: replayPermissions } as const,
-            ...pendingLive,
-          ]
-          store.dispatchMany(actions)
+          store.dispatch({ type: 'REPLAY_REPLACE', messages: replayMessages, permissions: replayPermissions })
           const lastUuid = getSessionLastMessageUuid(sessionId)
           if (lastUuid) hub.setLastMessageUuid(sessionId, lastUuid)
           replayMessages = []
           replayPermissions = []
-          pendingLive.length = 0
           replaying = false
           break
         }
         case 'message': {
           const message = frame.message as SdkMessage
-          if (replaying) {
-            pendingLive.push({ type: 'MESSAGE', message })
-          } else {
-            store.dispatch({ type: 'MESSAGE', message })
+          store.dispatch({ type: 'MESSAGE', message })
+          if (!replaying) {
             const lastUuid = getSessionLastMessageUuid(sessionId)
             if (lastUuid) hub.setLastMessageUuid(sessionId, lastUuid)
           }
           break
         }
         case 'permission-request': {
-          // The external onRequest handler runs immediately either way —
-          // it drives modal state outside the store and shouldn't be
-          // delayed by the replay window. The store action is buffered
-          // during replay so REPLAY_REPLACE doesn't wipe it.
+          // The external onRequest handler drives modal state outside the
+          // store; the store action records it for derived selectors.
           permsRef.current.onRequest(frame.payload)
-          if (replaying) {
-            pendingLive.push({ type: 'PERMISSION_REQUEST', request: frame.payload })
-          } else {
-            store.dispatch({ type: 'PERMISSION_REQUEST', request: frame.payload })
-          }
+          store.dispatch({ type: 'PERMISSION_REQUEST', request: frame.payload })
           break
         }
         case 'permission-resolved': {
@@ -272,32 +246,21 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
             ...frame.decision,
           }
           permsRef.current.onResolved(resolved)
-          if (replaying) {
-            pendingLive.push({ type: 'PERMISSION_RESOLVED', id: frame.id, decision: frame.decision })
-          } else {
-            store.dispatch({ type: 'PERMISSION_RESOLVED', id: frame.id, decision: frame.decision })
-          }
+          store.dispatch({ type: 'PERMISSION_RESOLVED', id: frame.id, decision: frame.decision })
           break
         }
         case 'context-usage': {
           const usage = frame.usage as ContextUsage
-          if (replaying) {
-            pendingLive.push({ type: 'CONTEXT_USAGE', usage })
-          } else {
-            store.dispatch({ type: 'CONTEXT_USAGE', usage })
-          }
+          store.dispatch({ type: 'CONTEXT_USAGE', usage })
           break
         }
         case 'message-consumed': {
           // Flip the matching user bubble from "queued" to "consumed". If
           // the message itself hasn't arrived yet (frame raced ahead), the
-          // reducer no-ops and the message's own broadcast / next replay
-          // carries consumedAt, so it self-heals.
-          if (replaying) {
-            pendingLive.push({ type: 'MESSAGE_CONSUMED', uuid: frame.uuid, consumedAt: frame.consumedAt })
-          } else {
-            store.dispatch({ type: 'MESSAGE_CONSUMED', uuid: frame.uuid, consumedAt: frame.consumedAt })
-          }
+          // reducer stashes the timestamp in pendingConsumedMessages and the
+          // message's own broadcast / next replay folds it in. Either way
+          // the placeholder lookup in applyMessageConsumed self-heals.
+          store.dispatch({ type: 'MESSAGE_CONSUMED', uuid: frame.uuid, consumedAt: frame.consumedAt })
           break
         }
         case 'error': {
@@ -310,15 +273,10 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
           if (!store.getSnapshot().replayReady) {
             replayMessages = []
             replayPermissions = []
-            pendingLive.length = 0
             replaying = false
             store.dispatch({ type: 'REPLAY_REPLACE', messages: [], permissions: [] })
           }
-          if (replaying) {
-            pendingLive.push({ type: 'ERROR', message: frame.message })
-          } else {
-            store.dispatch({ type: 'ERROR', message: frame.message })
-          }
+          store.dispatch({ type: 'ERROR', message: frame.message })
           break
         }
         case 'session-cleared': {
@@ -331,12 +289,11 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
           // ring wasn't truncated yet when it built that replay). Were we
           // to leave them, the pending replay-done's REPLAY_REPLACE would
           // re-apply them on top of the freshly-reset store and resurrect
-          // the cleared transcript. So drop every buffered replay/live
-          // frame and force replay-mode off — the next subscribe (or the
+          // the cleared transcript. So drop every buffered replay frame
+          // and force replay-mode off — the next subscribe (or the
           // post-clear live stream) repaints from the truncated ring.
           replayMessages = []
           replayPermissions = []
-          pendingLive.length = 0
           replaying = false
           // Reset in-memory state AND erase the cache with no pending write
           // left behind (clearPersisted cancels the debounced save that a
@@ -430,7 +387,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
         // First page: anchor on the oldest disk-stable message on screen.
         // Scan current items front-to-back for the first uuid the disk
         // transcript will recognise (assistant/system/tool_result user).
-        const current = store.getState().items
+        const current = store.getState().mirror.items
         let anchor: string | null = null
         for (const it of current) {
           const u = diskStableUuid(it.msg)
