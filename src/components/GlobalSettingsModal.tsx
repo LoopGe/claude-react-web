@@ -7,7 +7,7 @@ import { parseSkillContent } from '../utils/skill-frontmatter'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { formatBytes } from '../utils/format'
 import { IconX, IconCheck, IconArrowUp, IconArrowDown, IconChevronDown, IconFolder, IconDownload, IconRefresh, IconFileText } from './icons/ToolIcons'
-import { buildUpgradeCommand } from '../utils/upgrade-command'
+import { buildUpgradeCommand, buildInstallCommand } from '../utils/upgrade-command'
 import type { FullServerConfig } from '../types/config'
 import type { SkillImportFile, SkillImportResponse, SkillLoadMode, SkillRecord, SkillsListResponse } from '../../shared/skills'
 import type { McpConnectionTestResult, McpServerConfigMeta, McpServerTool } from '../types'
@@ -15,7 +15,7 @@ import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
 import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
 import { DirectoryPicker } from './DirectoryPicker'
-import type { UpdateActionResult, UpdateInfo } from '../../shared/update-info'
+import type { PublishedVersions, UpdateActionResult, UpdateInfo } from '../../shared/update-info'
 import { isVersionNewer } from '../../shared/update-info'
 
 // MarketplaceTab pulls in catalog-rendering UI; McpInstaller is a heavy
@@ -86,8 +86,17 @@ interface Props {
   onRefreshUpdate?: () => void
   /** True while an in-app update (POST /api/update) is running. */
   updating?: boolean
-  /** Trigger the in-app update; resolves with the action result. */
-  onUpdate?: () => Promise<UpdateActionResult>
+  /** Trigger the in-app update; resolves with the action result. With a
+   *  `version` arg it pins that published release (version switcher). */
+  onUpdate?: (version?: string) => Promise<UpdateActionResult>
+  /** Published-versions list for the About-tab version switcher. */
+  versions?: PublishedVersions | null
+  /** True while the versions list is fetching. */
+  versionsLoading?: boolean
+  /** Error from the most recent versions fetch. */
+  versionsError?: string | null
+  /** Fetch the published-versions list (on demand when the switcher opens). */
+  onFetchVersions?: (force?: boolean) => void
 }
 
 export function GlobalSettingsModal({
@@ -100,6 +109,10 @@ export function GlobalSettingsModal({
   onRefreshUpdate,
   updating,
   onUpdate,
+  versions,
+  versionsLoading,
+  versionsError,
+  onFetchVersions,
 }: Props) {
   const [tab, setTab] = useState<Tab>('api')
   const settingsBodyRef = useRef<HTMLDivElement | null>(null)
@@ -495,6 +508,10 @@ export function GlobalSettingsModal({
                   onRegistryChange={setUpdateCheckRegistry}
                   updating={!!updating}
                   onUpdate={onUpdate}
+                  versions={versions ?? null}
+                  versionsLoading={!!versionsLoading}
+                  versionsError={versionsError ?? null}
+                  onFetchVersions={onFetchVersions}
                 />
               )}
             </>
@@ -1574,6 +1591,10 @@ function AboutTab({
   onRegistryChange,
   updating,
   onUpdate,
+  versions,
+  versionsLoading,
+  versionsError,
+  onFetchVersions,
 }: {
   info: UpdateInfo | null
   refreshing: boolean
@@ -1588,7 +1609,12 @@ function AboutTab({
   registry: string
   onRegistryChange: (v: string) => void
   updating: boolean
-  onUpdate?: () => Promise<UpdateActionResult>
+  onUpdate?: (version?: string) => Promise<UpdateActionResult>
+  /** Published-versions list for the version switcher. */
+  versions: PublishedVersions | null
+  versionsLoading: boolean
+  versionsError: string | null
+  onFetchVersions?: (force?: boolean) => void
 }) {
   const toast = useToast()
   // Error from the most recent in-app update attempt (POST /api/update),
@@ -1653,6 +1679,80 @@ function AboutTab({
     }
   }
 
+  // ── Version switcher ──────────────────────────────────────────────
+  // Lets the user pin/roll back to any published stable version. Collapsible
+  // so it doesn't clutter the normal About view; fetches the versions list
+  // on first expand. For a global install the "Install" button runs the
+  // pinned install in-app (with an explicit confirm — a downgrade replaces
+  // the installed package). For npx/unknown there's no in-place install, so
+  // we show the copy-command instead: that's the recovery command that works
+  // from a terminal even when the app is bricked.
+  const [switcherOpen, setSwitcherOpen] = useState(false)
+  const [pickedVersion, setPickedVersion] = useState('')
+  const [installVersionError, setInstallVersionError] = useState<string | null>(null)
+
+  // The versions list comes from a separate endpoint (heavier packument
+  // fetch), so we only hit it when the switcher is first opened.
+  useEffect(() => {
+    if (switcherOpen && onFetchVersions && !versions && !versionsLoading) {
+      onFetchVersions()
+    }
+  }, [switcherOpen, onFetchVersions, versions, versionsLoading])
+
+  // The selected version, defaulting to the newest published one until the
+  // user picks something. Derived in render (not via a setState-in-effect)
+  // so we don't trip cascading renders — the user's explicit pick, when
+  // present, always wins.
+  const effectivePicked = pickedVersion || versions?.versions[0] || ''
+
+  const versionsDisabled = !!versions?.disabled
+  const canInstallVersion =
+    !!onUpdate &&
+    info?.installMethod === 'global' &&
+    !versionsLoading &&
+    !updating &&
+    !!effectivePicked &&
+    !versionsDisabled
+
+  const runInstallVersion = async () => {
+    if (!onUpdate || !effectivePicked) return
+    // Downgrade replaces the installed package — confirm explicitly, unlike
+    // the no-confirm "Update now" (which only ever moves forward to latest).
+    const isDowngrade = !!info?.current && effectivePicked !== info.current
+    if (
+      isDowngrade &&
+      !window.confirm(
+        `Install claude-react-web@${effectivePicked} over the current ${info?.current}? ` +
+          'This replaces the installed package - restart the server to apply.',
+      )
+    ) {
+      return
+    }
+    setInstallVersionError(null)
+    try {
+      const res = await onUpdate(effectivePicked)
+      if (res.performed) {
+        if (res.versionChanged) {
+          toast.success(
+            `Installed ${res.installedVersion ?? res.targetVersion ?? effectivePicked} on disk - restart the server to apply.`,
+          )
+        } else {
+          toast.info(
+            res.installedVersion
+              ? `Already on ${res.installedVersion}.`
+              : 'Install completed, but the version could not be confirmed on disk.',
+          )
+        }
+        onFetchVersions?.(true)
+        onRefresh?.()
+      } else {
+        toast.info('In-app install is not available for this install - copy the command below.')
+      }
+    } catch (e) {
+      setInstallVersionError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   return (
     <div>
       <Field label="Project">
@@ -1670,10 +1770,33 @@ function AboutTab({
       </Field>
       <Field
         label="Running version"
-        hint={restartPending ? undefined : 'The version of the currently running server process.'}
+        hint={
+          info?.deprecated
+            ? typeof info.deprecated === 'string'
+              ? info.deprecated
+              : 'This version has been deprecated by the maintainer.'
+            : restartPending
+              ? undefined
+              : 'The version of the currently running server process.'
+        }
       >
-        <div style={{ fontSize: 13, fontFamily: 'var(--mono)' }}>
-          {info?.current ?? '?'}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 13, fontFamily: 'var(--mono)' }}>
+            {info?.current ?? '?'}
+          </span>
+          {info?.deprecated && (
+            <span
+              style={{
+                fontSize: 11,
+                padding: '2px 8px',
+                borderRadius: 10,
+                background: 'var(--danger)',
+                color: 'var(--bg)',
+              }}
+            >
+              deprecated
+            </span>
+          )}
         </div>
       </Field>
       {restartPending && (
@@ -1825,6 +1948,130 @@ function AboutTab({
           >
             {updating ? 'Updating...' : 'Update now'}
           </button>
+        )}
+      </div>
+
+      {/* Version switcher — pin/roll back to any published stable version.
+          Collapsible; fetches the list on first expand. For global installs
+          an in-app "Install" button runs the pinned install; for npx/unknown
+          the copy-command is the recovery path that works from a terminal
+          even when the app is bricked. */}
+      <div style={{ marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+        <button
+          className="btn"
+          style={{ width: '100%', justifyContent: 'space-between' }}
+          onClick={() => setSwitcherOpen((v) => !v)}
+          aria-expanded={switcherOpen}
+          title="Install or roll back to a specific published version."
+        >
+          <span>Switch version</span>
+          <IconChevronDown
+            size={14}
+            style={{ transition: 'transform 0.15s', transform: switcherOpen ? 'rotate(180deg)' : 'none' }}
+          />
+        </button>
+        {switcherOpen && (
+          <div style={{ marginTop: 10 }}>
+            {versionsDisabled ? (
+              <div className="hint" style={{ marginTop: 0 }}>
+                Update checks are disabled - set an update registry above and Save to enable version switching.
+              </div>
+            ) : (
+              <>
+                <Field
+                  label="Published versions"
+                  hint={
+                    versions?.checkedAt
+                      ? `Last checked: ${formatRelative(versions.checkedAt)}`
+                      : 'Stable releases, newest first.'
+                  }
+                >
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <select
+                      className="select"
+                      value={effectivePicked}
+                      onChange={(e) => setPickedVersion(e.target.value)}
+                      disabled={versionsLoading || !versions?.versions.length}
+                      style={{ flex: 1 }}
+                    >
+                      {versionsLoading && !versions?.versions.length && (
+                        <option value="">Loading...</option>
+                      )}
+                      {versions?.versions.map((v) => {
+                        const isCurrent = v === info?.current
+                        const isInstalled = v === versions?.installed
+                        const isLatest = v === versions?.latest
+                        const isDeprecated = versions?.deprecatedVersions?.includes(v)
+                        const tag = isCurrent
+                          ? ' (current)'
+                          : isInstalled
+                            ? ' (installed on disk)'
+                            : isLatest
+                              ? ' (latest)'
+                              : ''
+                        const deprecatedTag = isDeprecated ? ' ⚠ deprecated' : ''
+                        return (
+                          <option key={v} value={v}>
+                            {v}
+                            {tag}
+                            {deprecatedTag}
+                          </option>
+                        )
+                      })}
+                    </select>
+                    {onFetchVersions && (
+                      <button
+                        className="btn"
+                        onClick={() => onFetchVersions(true)}
+                        disabled={versionsLoading}
+                        title="Force a fresh fetch of the published-versions list."
+                      >
+                        <IconRefresh size={14} />
+                      </button>
+                    )}
+                  </div>
+                </Field>
+                {info?.installMethod === 'global' ? (
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => void runInstallVersion()}
+                    disabled={!canInstallVersion}
+                    title="Install the selected version in place, then restart to apply."
+                  >
+                    {updating ? 'Installing...' : `Install ${effectivePicked || ''}`.trim()}
+                  </button>
+                ) : (
+                  // npx / unknown: no in-place install. Show the copy-command
+                  // for the picked version — this is the recovery command.
+                  effectivePicked && (
+                    <Field
+                      label="Install command"
+                      hint="Copy this to a terminal to install the selected version. Works even if this app won't start."
+                    >
+                      <div style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>
+                        {buildInstallCommand(
+                          info?.packageName ?? 'claude-react-web',
+                          effectivePicked,
+                          info?.registry,
+                          false,
+                        )}
+                      </div>
+                    </Field>
+                  )
+                )}
+                {versionsError && (
+                  <div className="modal-error" style={{ marginTop: 8 }}>
+                    Could not load versions: {versionsError}
+                  </div>
+                )}
+                {installVersionError && (
+                  <div className="modal-error" style={{ marginTop: 8 }}>
+                    Install failed: {installVersionError}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         )}
       </div>
     </div>

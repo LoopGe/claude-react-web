@@ -11,7 +11,12 @@
 //          guard, which demands shell:true — which we refuse.
 //   2. argv tokens are never string-concatenated. The package name comes
 //      from our own package.json and the registry from server config, so
-//      there's no request-body input on the command line regardless.
+//      there's no request-body input on the command line regardless. The
+//      optional `version` (for the About-tab version switcher) is a separate
+//      argv token ONLY after the route has validated it against the
+//      server-fetched published-versions list — so the argv only ever carries
+//      a semver the registry itself published. `${pkg}@${version}` stays one
+//      token; `execFile` (no shell) means even a bogus token can't inject.
 //
 // A module-level in-flight guard rejects concurrent installs: two parallel
 // `npm i -g` runs can corrupt the global prefix tree.
@@ -135,14 +140,18 @@ function resolveNpm(): NpmInvocation | null {
   return null
 }
 
-async function doInstall(pkg: string, registry?: string): Promise<NpmInstallResult> {
+async function doInstall(pkg: string, registry?: string, version?: string): Promise<NpmInstallResult> {
   const npm = resolveNpm()
   if (!npm) {
     throw new HttpError(503, 'npm executable not found in PATH')
   }
 
-  // Each token is a separate argv element — never concatenated.
-  const args = [...npm.prefix, 'install', '-g', `${pkg}@latest`]
+  // Each token is a separate argv element — never concatenated. `version`
+  // (when present) is one token with the package name: `pkg@0.5.8`. The
+  // route validates `version` against the published-versions list before
+  // this is ever called, so it's always a real registry-published semver.
+  const spec = version ? `${pkg}@${version}` : `${pkg}@latest`
+  const args = [...npm.prefix, 'install', '-g', spec]
   if (registry) args.push('--registry', registry)
 
   log.info(`running: ${npm.cmd} ${args.join(' ')}`)
@@ -177,14 +186,22 @@ async function doInstall(pkg: string, registry?: string): Promise<NpmInstallResu
   }
 }
 
-/** Install `<pkg>@latest` globally from the optional registry. Concurrent
- *  calls are rejected with 409 — two parallel global installs can corrupt
- *  the npm prefix tree. */
-export function runNpmInstall(pkg: string, registry?: string): Promise<NpmInstallResult> {
+/** Install `<pkg>@<version>` globally from the optional registry. Omit
+ *  `version` (or pass `'latest'`) for the dist-tag upgrade path; pass a
+ *  concrete version for the version switcher. Concurrent calls are rejected
+ *  with 409 — two parallel global installs can corrupt the npm prefix tree. */
+export function runNpmInstall(
+  pkg: string,
+  registry?: string,
+  version?: string,
+): Promise<NpmInstallResult> {
   if (installInFlight) {
     throw new HttpError(409, 'an update is already in progress')
   }
-  const probe = doInstall(pkg, registry).finally(() => {
+  // `'latest'` is the dist-tag, not a concrete version — normalize to the
+  // no-version path so the spec becomes `pkg@latest` either way.
+  const ver = version && version !== 'latest' ? version : undefined
+  const probe = doInstall(pkg, registry, ver).finally(() => {
     installInFlight = null
   })
   installInFlight = probe

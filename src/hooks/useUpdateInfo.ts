@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './useApi'
-import type { UpdateActionResult, UpdateInfo } from '../../shared/update-info'
+import type { PublishedVersions, UpdateActionResult, UpdateInfo } from '../../shared/update-info'
 
 /** Server allows up to 120s for `npm i -g`; give the client request room
  *  beyond that so it doesn't time out before npm does. */
@@ -36,9 +36,24 @@ interface UseUpdateInfo {
   refresh: (registryOverride?: string) => void
   /** True while POST /api/update is in flight. */
   updating: boolean
-  /** Trigger the in-app update. Resolves with the action result, or throws
-   *  on failure (caller surfaces the error). */
-  update: () => Promise<UpdateActionResult>
+  /** Trigger the in-app update. With no argument, installs `@latest` (the
+   *  dist-tag upgrade path). Pass a concrete `version` to pin a specific
+   *  published release (the version switcher's downgrade / forward-pin).
+   *  Resolves with the action result, or throws on failure. */
+  update: (version?: string) => Promise<UpdateActionResult>
+  /** Published-versions list for the version switcher, or null before the
+   *  first fetch completes. Fetched on demand via `fetchVersions()` — never
+   *  auto-fetched on mount (it's a heavier packument read the banner/About
+   *  view don't need). */
+  versions: PublishedVersions | null
+  /** True while the versions list is being fetched (first load or refresh). */
+  versionsLoading: boolean
+  /** Error from the most recent versions fetch; surfaced in the switcher. */
+  versionsError: string | null
+  /** Fetch the published-versions list. Idempotent: a concurrent call joins
+   *  the in-flight one rather than stacking requests. Pass `true` to force a
+   *  refresh bypassing the server cache. */
+  fetchVersions: (force?: boolean) => void
 }
 
 export function useUpdateInfo(enabled: boolean): UseUpdateInfo {
@@ -47,6 +62,14 @@ export function useUpdateInfo(enabled: boolean): UseUpdateInfo {
   const [refreshing, setRefreshing] = useState(false)
   const [updating, setUpdating] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Published-versions list for the version switcher. Separate state from
+  // `info` (different endpoint, heavier fetch, on-demand only).
+  const [versions, setVersions] = useState<PublishedVersions | null>(null)
+  const [versionsLoading, setVersionsLoading] = useState(false)
+  const [versionsError, setVersionsError] = useState<string | null>(null)
+  // In-flight guard for the versions fetch, mirroring inFlightRef: rapid
+  // clicks on "Switch version" coalesce into one request.
+  const versionsInFlightRef = useRef<AbortController | null>(null)
   // Track whether a fetch is in flight so concurrent refresh() calls
   // (rapid clicks on Check-now) don't pile up. We also remember whether
   // the in-flight call was forced — a later force=true caller must NOT
@@ -67,6 +90,7 @@ export function useUpdateInfo(enabled: boolean): UseUpdateInfo {
       // against an unmounted component and the closure (response body,
       // captured DOM) can be released.
       inFlightRef.current?.controller.abort()
+      versionsInFlightRef.current?.abort()
     }
   }, [])
 
@@ -155,7 +179,7 @@ export function useUpdateInfo(enabled: boolean): UseUpdateInfo {
   )
 
   const updatingRef = useRef(false)
-  const update = useCallback(async (): Promise<UpdateActionResult> => {
+  const update = useCallback(async (version?: string): Promise<UpdateActionResult> => {
     // Guard against double-clicks driving two POSTs (the server also rejects
     // concurrent installs with 409, but this avoids the round-trip).
     if (updatingRef.current) {
@@ -167,14 +191,60 @@ export function useUpdateInfo(enabled: boolean): UseUpdateInfo {
       setError(null)
     }
     try {
-      return await api.post<UpdateActionResult>('/update', undefined, {
-        timeoutMs: UPDATE_TIMEOUT_MS,
-      })
+      // No version → no body (the original dist-tag upgrade path). A concrete
+      // version → `{ version }` so the server pins the install; the server
+      // validates it against its published-versions list before npm runs.
+      return await api.post<UpdateActionResult>(
+        '/update',
+        version ? { version } : undefined,
+        { timeoutMs: UPDATE_TIMEOUT_MS },
+      )
     } finally {
       updatingRef.current = false
       if (mountedRef.current) setUpdating(false)
     }
   }, [])
 
-  return { info, loading, refreshing, error, refresh, updating, update }
+  const fetchVersions = useCallback((force = false): void => {
+    // Coalesce concurrent calls: a request already in flight satisfies the
+    // next caller without stacking a second fetch.
+    if (versionsInFlightRef.current) return
+    const controller = new AbortController()
+    versionsInFlightRef.current = controller
+    if (mountedRef.current) {
+      setVersionsLoading(true)
+      setVersionsError(null)
+    }
+    api
+      .get<PublishedVersions>(`/update-info/versions${force ? '?force=1' : ''}`, {
+        signal: controller.signal,
+      })
+      .then((next) => {
+        if (mountedRef.current && !controller.signal.aborted) setVersions(next)
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return
+        if (mountedRef.current) {
+          setVersionsError(err instanceof Error ? err.message : String(err))
+        }
+      })
+      .finally(() => {
+        versionsInFlightRef.current = null
+        if (mountedRef.current && !controller.signal.aborted) setVersionsLoading(false)
+      })
+  }, [])
+
+  return {
+    info,
+    loading,
+    refreshing,
+    error,
+    refresh,
+    updating,
+    update,
+    versions,
+    versionsLoading,
+    versionsError,
+    fetchVersions,
+  }
 }

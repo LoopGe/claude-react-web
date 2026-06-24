@@ -2663,6 +2663,10 @@ export function App() {
             onRefreshUpdate={updateInfo.refresh}
             updating={updateInfo.updating}
             onUpdate={updateInfo.update}
+            versions={updateInfo.versions}
+            versionsLoading={updateInfo.versionsLoading}
+            versionsError={updateInfo.versionsError}
+            onFetchVersions={updateInfo.fetchVersions}
           />
         </Suspense>
       )}

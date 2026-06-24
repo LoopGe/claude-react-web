@@ -29,8 +29,8 @@
 
 import pkg from '../package.json' with { type: 'json' }
 import { createRequire } from 'node:module'
-import type { UpdateInfo } from '../shared/update-info.js'
-import { isVersionNewer } from '../shared/update-info.js'
+import type { PublishedVersions, UpdateInfo } from '../shared/update-info.js'
+import { compareSemver, isStableVersion, isVersionNewer } from '../shared/update-info.js'
 import { config } from './config.js'
 import { detectInstallMethod } from './install-method.js'
 import { readInstalledVersion } from './installed-version.js'
@@ -114,10 +114,11 @@ export function getCachedUpdateInfo(): UpdateInfo {
   return installed ? { ...cached, installed } : cached
 }
 
-// `isVersionNewer` now lives in shared/update-info.ts so the client compares
-// versions identically. Re-exported here to keep existing server/test imports
+// `isVersionNewer` (and the sibling semver helpers) now live in
+// shared/update-info.ts so the client compares versions identically.
+// Re-exported here to keep existing server/test imports
 // (`import { isVersionNewer } from './update-checker.js'`) working.
-export { isVersionNewer } from '../shared/update-info.js'
+export { isVersionNewer, isStableVersion, compareSemver } from '../shared/update-info.js'
 
 /** Hit the configured registry's "latest" dist-tag endpoint. Returns the
  *  registry's reported version on success, or throws on any HTTP / network
@@ -164,6 +165,102 @@ async function fetchLatestFromNpm(packageName: string, registry: string): Promis
     throw new Error('registry response missing version field')
   }
   return body.version
+}
+
+/** Check whether the running version has been deprecated by the package
+ *  maintainer (`npm deprecate`). Fetches the abbreviated packument
+ *  (`/<pkg>` with the install-v1 accept header) and inspects the per-version
+ *  manifest for `currentVersion`. Returns the deprecation message (string or
+ *  `true`) when present, or `undefined` if the version is not deprecated.
+ *
+ *  The abbreviated manifest includes `deprecated` per version when set, so
+ *  this is a single lightweight GET — no heavier than the dist-tag probe.
+ *
+ *  Throws on HTTP / network / parse failure; the caller handles gracefully
+ *  (deprecation info is best-effort — a transient failure shouldn't block
+ *  the update banner). */
+async function fetchDeprecatedFromNpm(
+  packageName: string,
+  registry: string,
+  currentVersion: string,
+): Promise<string | true | undefined> {
+  const encoded = packageName
+  const base = registry.endsWith('/') ? registry.slice(0, -1) : registry
+  const url = `${base}/${encoded}`
+
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    headers: {
+      Accept: 'application/vnd.npm.install-v1+json, application/json',
+    },
+  })
+  if (!res.ok) {
+    throw new Error(`registry returned ${res.status} ${res.statusText}`)
+  }
+  const body = (await res.json()) as {
+    versions?: Record<string, { deprecated?: unknown }>
+  }
+  if (!body.versions || typeof body.versions !== 'object') {
+    throw new Error('registry response missing versions field')
+  }
+  const manifest = body.versions[currentVersion]
+  if (!manifest) return undefined
+  const dep = manifest.deprecated
+  if (typeof dep === 'string' && dep) return dep
+  if (dep === true) return true
+  return undefined
+}
+
+/** Fetch the full set of published version strings for `packageName` from the
+ *  registry's packument (`/<pkg>`), filter to stable releases, and sort
+ *  descending. Used by the About-tab version switcher to populate its
+ *  `<select>`.
+ *
+ *  Unlike `fetchLatestFromNpm` (which hits the lightweight `/<pkg>/latest`
+ *  dist-tag endpoint), this reads the whole packument's `versions` map. We
+ *  request the abbreviated install manifest (`Accept:
+ *  application/vnd.npm.install-v1+json`) so npm serves a slimmed body — we
+ *  only need the version keys, not the tarball hashes / deps. Throws on any
+ *  HTTP / network / parse failure; the caller records the error in the
+ *  versions cache rather than poisoning it. */
+async function fetchPublishedVersionsFromNpm(
+  packageName: string,
+  registry: string,
+): Promise<{ versions: string[]; deprecatedVersions: string[] }> {
+  const encoded = packageName
+  const base = registry.endsWith('/') ? registry.slice(0, -1) : registry
+  const url = `${base}/${encoded}`
+
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    headers: {
+      Accept: 'application/vnd.npm.install-v1+json, application/json',
+    },
+  })
+  if (!res.ok) {
+    throw new Error(`registry returned ${res.status} ${res.statusText}`)
+  }
+  const body = (await res.json()) as {
+    versions?: Record<string, { deprecated?: unknown }>
+  }
+  if (!body.versions || typeof body.versions !== 'object') {
+    throw new Error('registry response missing versions field')
+  }
+  // The packument's `versions` is a map keyed by version string; each value
+  // is the per-version manifest (we care about keys and the deprecated field).
+  const deprecatedVersions: string[] = []
+  const keys = Object.keys(body.versions)
+    .filter(isStableVersion)
+    .sort((a, b) => compareSemver(b, a)) // descending: newest first
+
+  for (const v of keys) {
+    const dep = body.versions[v]?.deprecated
+    if (dep === true || (typeof dep === 'string' && dep)) {
+      deprecatedVersions.push(v)
+    }
+  }
+
+  return { versions: keys, deprecatedVersions }
 }
 
 /** Probe the configured registry for the latest version. See module
@@ -214,7 +311,18 @@ export async function checkForUpdates(force = false): Promise<UpdateInfo> {
   inFlightForce = force
   const probe = (async (): Promise<UpdateInfo> => {
     try {
-      const latest = await fetchLatestFromNpm(PACKAGE_NAME, registry)
+      // Fetch latest version and deprecation status in parallel — the
+      // deprecation check is best-effort (a failure there shouldn't block
+      // the "update available" banner).
+      const [latest, deprecated] = await Promise.all([
+        fetchLatestFromNpm(PACKAGE_NAME, registry),
+        fetchDeprecatedFromNpm(PACKAGE_NAME, registry, CURRENT_VERSION).catch(
+          (err) => {
+            log.warn(`deprecation probe failed: ${(err as Error).message ?? err}`)
+            return undefined
+          },
+        ),
+      ])
       cached = {
         current: CURRENT_VERSION,
         packageName: PACKAGE_NAME,
@@ -222,6 +330,7 @@ export async function checkForUpdates(force = false): Promise<UpdateInfo> {
         registry,
         latest,
         hasUpdate: isVersionNewer(CURRENT_VERSION, latest),
+        deprecated,
         checkedAt: Date.now(),
         source: 'npm',
       }
@@ -238,6 +347,8 @@ export async function checkForUpdates(force = false): Promise<UpdateInfo> {
         // marker — that had no real `latest`.
         latest: cached.disabled ? undefined : cached.latest,
         hasUpdate: cached.disabled ? false : cached.hasUpdate,
+        // Preserve previously-known deprecation status on transient failure.
+        deprecated: cached.disabled ? undefined : cached.deprecated,
         checkedAt: Date.now(),
         error: err instanceof Error ? err.message : String(err),
         source: 'npm',
@@ -277,7 +388,15 @@ export async function probeRegistry(registry: string): Promise<UpdateInfo> {
     }
   }
   try {
-    const latest = await fetchLatestFromNpm(PACKAGE_NAME, trimmed)
+    const [latest, deprecated] = await Promise.all([
+      fetchLatestFromNpm(PACKAGE_NAME, trimmed),
+      fetchDeprecatedFromNpm(PACKAGE_NAME, trimmed, CURRENT_VERSION).catch(
+        (err) => {
+          log.warn(`probeRegistry deprecation check failed: ${(err as Error).message ?? err}`)
+          return undefined
+        },
+      ),
+    ])
     return {
       current: CURRENT_VERSION,
       packageName: PACKAGE_NAME,
@@ -285,6 +404,7 @@ export async function probeRegistry(registry: string): Promise<UpdateInfo> {
       registry: trimmed,
       latest,
       hasUpdate: isVersionNewer(CURRENT_VERSION, latest),
+      deprecated,
       checkedAt: Date.now(),
       source: 'npm',
     }
@@ -315,4 +435,114 @@ export function __resetUpdateCheckerForTests(): void {
   }
   inFlight = null
   inFlightForce = false
+  versionsCached = null
+  inFlightVersions = null
+  inFlightVersionsForce = false
+}
+
+// ── Published-versions cache (version switcher) ─────────────────────
+//
+// A SEPARATE cache from the `latest` one above. The versions fetch reads the
+// full packument (heavier than the dist-tag endpoint) and is only needed on
+// demand — when the user opens the switcher — so it must never block or
+// poison the banner's lightweight `latest` probe. Same TTL policy (6h on
+// success, 5min retry on failure) so the two behave consistently.
+
+let versionsCached: PublishedVersions | null = null
+let inFlightVersions: Promise<PublishedVersions> | null = null
+let inFlightVersionsForce = false
+
+/** Return the cached PublishedVersions overlaid with the live on-disk
+ *  `installed` (which changes the moment an in-app install rewrites the
+ *  package) and the `latest` from the (separate) latest probe. Returns null
+ *  when no probe has ever completed — the caller decides whether to kick one
+ *  off. Mirrors `getCachedUpdateInfo`'s installed-overlay rationale. */
+export function getCachedVersions(): PublishedVersions | null {
+  if (!versionsCached) return null
+  const installed = readInstalledVersion(PACKAGE_NAME)
+  const latest = getCachedUpdateInfo().latest
+  return {
+    ...versionsCached,
+    ...(installed ? { installed } : {}),
+    ...(latest ? { latest } : {}),
+  }
+}
+
+/** Probe the configured registry for the full published-versions list. Same
+ *  caching/dedup policy as `checkForUpdates`: successful probes cached 6h,
+ *  failed probes retry after 5min, `force` bypasses both, concurrent callers
+ *  share one fetch via `inFlightVersions`. A `force=true` caller is NOT
+ *  silently joined to an unforced probe (same race fix as the latest path).
+ *  No registry configured → a `disabled` snapshot, no fetch. Never throws. */
+export async function checkForVersions(force = false): Promise<PublishedVersions> {
+  const registry = config.updateCheckRegistry
+
+  if (!registry) {
+    versionsCached = {
+      current: CURRENT_VERSION,
+      packageName: PACKAGE_NAME,
+      installMethod: detectInstallMethod(),
+      versions: [],
+      disabled: true,
+    }
+    return versionsCached
+  }
+
+  const now = Date.now()
+
+  if (!force && versionsCached?.checkedAt && !versionsCached.disabled) {
+    const age = now - versionsCached.checkedAt
+    const ttl = versionsCached.error ? FAILED_RETRY_MS : CACHE_TTL_MS
+    if (age < ttl) return versionsCached
+  }
+
+  if (inFlightVersions) {
+    if (!force || inFlightVersionsForce) return inFlightVersions
+    return inFlightVersions.then(() => checkForVersions(true))
+  }
+
+  inFlightVersionsForce = force
+  const probe = (async (): Promise<PublishedVersions> => {
+    try {
+      const { versions, deprecatedVersions } = await fetchPublishedVersionsFromNpm(PACKAGE_NAME, registry)
+      versionsCached = {
+        current: CURRENT_VERSION,
+        packageName: PACKAGE_NAME,
+        installMethod: detectInstallMethod(),
+        registry,
+        versions,
+        deprecatedVersions,
+        checkedAt: Date.now(),
+      }
+    } catch (err) {
+      log.warn(`versions probe failed: ${(err as Error).message ?? err}`)
+      versionsCached = {
+        current: CURRENT_VERSION,
+        packageName: PACKAGE_NAME,
+        installMethod: detectInstallMethod(),
+        registry,
+        // Preserve the previously-known list so a transient failure doesn't
+        // empty the switcher. Skip if the previous snapshot was `disabled`
+        // (no real list existed).
+        versions: versionsCached?.disabled ? [] : versionsCached?.versions ?? [],
+        checkedAt: Date.now(),
+        error: err instanceof Error ? err.message : String(err),
+      }
+    } finally {
+      inFlightVersions = null
+      inFlightVersionsForce = false
+    }
+    return versionsCached
+  })()
+  inFlightVersions = probe
+  return probe
+}
+
+/** Synchronously check whether `version` is in the cached published-versions
+ *  list (the route uses this to validate a POST /update `{ version }` body
+ *  without awaiting). Returns false when the cache is cold or `disabled` —
+ *  the caller then forces a probe and re-checks. */
+export function isPublishedVersion(version: string): boolean {
+  if (!versionsCached || versionsCached.disabled) return false
+  return versionsCached.versions.includes(version)
 }

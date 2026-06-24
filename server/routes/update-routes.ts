@@ -21,15 +21,19 @@
 import { Hono } from 'hono'
 import {
   checkForUpdates,
+  checkForVersions,
   getAgentSdkVersion,
   getCachedUpdateInfo,
+  getCachedVersions,
   getCurrentVersion,
+  isPublishedVersion,
   isVersionNewer,
   probeRegistry,
 } from '../update-checker.js'
 import { detectInstallMethod } from '../install-method.js'
 import { readInstalledVersion } from '../installed-version.js'
 import { runNpmInstall } from '../npm-install.js'
+import { config } from '../config.js'
 import { HttpError } from '../errors.js'
 import { createLogger } from '../log.js'
 import { getClaudeHealth } from './health-routes.js'
@@ -109,6 +113,39 @@ export function buildUpdateRouter(claudeBinary?: string): Hono {
     return c.json(await withVersionOverlays({ ...cached, checking: true }, claudeBinary, false))
   })
 
+  // Published-versions list for the About-tab version switcher. On-demand
+  // (heavier packument fetch than the dist-tag probe above), so it has its
+  // own cache in update-checker.ts. `?force=1` bypasses the cache and awaits
+  // a fresh probe (capped at the 5s fetch timeout). Never spawns `claude
+  // --version` — the switcher doesn't need the CLI overlay, only the version
+  // list + the live on-disk `installed` + the cached `latest` (overlaid so
+  // the select can label the latest dist-tag).
+  app.get('/update-info/versions', async (c) => {
+    const force = c.req.query('force') === '1'
+    if (force) {
+      await checkForVersions(true)
+      // getCachedVersions overlays the live `installed` + the (separate)
+      // latest probe's `latest` onto the freshly-written versionsCache —
+      // checkForVersions' return value itself lacks both.
+      return c.json(getCachedVersions()!)
+    }
+    const cached = getCachedVersions()
+    if (cached?.checkedAt && !cached.disabled) {
+      return c.json(cached)
+    }
+    // No fresh cached list yet. Await checkForVersions() rather than
+    // fire-and-forget: when no registry is configured it resolves
+    // SYNCHRONOUSLY with a `disabled` snapshot (no fetch), and we must
+    // return that disabled state on the first request — a fire-and-forget
+    // background probe would leave the snapshot without `disabled` and the
+    // switcher would render as if it were still loading forever. The fetch
+    // path is capped at the 5s probe timeout; versions is on-demand (only
+    // fetched when the user expands the switcher), so a one-time block on
+    // first open is acceptable.
+    await checkForVersions()
+    return c.json(getCachedVersions()!)
+  })
+
   app.post('/update', async (c) => {
     const installMethod = detectInstallMethod()
 
@@ -126,31 +163,74 @@ export function buildUpdateRouter(claudeBinary?: string): Hono {
 
     // Use server-trusted values — the package name we were built as and the
     // configured registry — never anything from the request body. Keeps the
-    // npm argv free of any client-supplied input.
+    // npm argv free of any client-supplied input. The registry comes from
+    // config (the authoritative source) rather than `info.registry`, which is
+    // only populated AFTER the latest probe runs — a user who opens the
+    // version switcher before the banner has probed would otherwise get an
+    // install with NO --registry, hitting the public npm and 404-ing on a
+    // private package.
     const info = getCachedUpdateInfo()
-    if (info.disabled || !info.packageName) {
+    const registry = config.updateCheckRegistry
+    if (!registry || !info.packageName) {
       throw new HttpError(400, 'update checks are not configured')
     }
 
-    log.info(`running npm install: ${info.packageName}@latest from ${info.registry}`)
-    await runNpmInstall(info.packageName, info.registry)
+    // Optional `{ version }` body — the version switcher pins a specific
+    // published version (downgrade or forward pin). Validate it against the
+    // server-fetched published-versions list BEFORE it ever reaches the npm
+    // argv: a stray token can't become part of `npm i -g <pkg>@<version>`.
+    // No body / no `version` / `version === 'latest'` → the original
+    // dist-tag upgrade path, unchanged.
+    let targetVersion: string | undefined
+    let body: { version?: unknown } = {}
+    try {
+      body = await c.req.json<{ version?: unknown }>()
+    } catch {
+      // No JSON body (or malformed) → treat as the plain "update to latest".
+      body = {}
+    }
+    const requested = typeof body.version === 'string' ? body.version.trim() : ''
+    if (requested && requested !== 'latest') {
+      // Ensure the published-versions list is warm; if the cache is cold a
+      // first-ever downgrade still works (force a probe).
+      if (!isPublishedVersion(requested)) {
+        await checkForVersions(true)
+      }
+      if (!isPublishedVersion(requested)) {
+        throw new HttpError(400, `version ${requested} is not a published stable version`)
+      }
+      targetVersion = requested
+    }
+
+    log.info(
+      `running npm install: ${info.packageName}@${targetVersion ?? 'latest'} from ${registry}`,
+    )
+    await runNpmInstall(info.packageName, registry, targetVersion)
 
     // Confirm the install actually rewrote the package on disk. The running
     // process still reports the OLD build-time version (getCurrentVersion()),
     // so a strictly-newer on-disk version is proof the upgrade landed and a
     // restart will apply it. npm reporting "up to date" (a no-op install)
     // leaves the on-disk version unchanged → updateApplied stays false.
+    //
+    // `versionChanged` covers the DOWNGRADE case isVersionNewer can't: any
+    // on-disk version that differs from the running build (older OR newer)
+    // means the package was rewritten and a restart will apply it. False
+    // only on a true no-op (installed === current).
     const installedVersion = readInstalledVersion(info.packageName) ?? undefined
     const updateApplied =
       !!installedVersion && isVersionNewer(getCurrentVersion(), installedVersion)
+    const versionChanged = !!installedVersion && installedVersion !== getCurrentVersion()
 
     const result: UpdateActionResult = {
       performed: true,
       installMethod: 'global',
-      restartRequired: updateApplied,
+      restartRequired: versionChanged,
       latest: info.latest,
       installedVersion,
       updateApplied,
+      ...(targetVersion ? { targetVersion } : {}),
+      versionChanged,
     }
     return c.json(result)
   })

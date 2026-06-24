@@ -10,6 +10,7 @@ import { __setConfigForTest } from '../config.js'
 import {
   __resetUpdateCheckerForTests,
   checkForUpdates,
+  checkForVersions,
   getCachedUpdateInfo,
 } from '../update-checker.js'
 
@@ -18,7 +19,7 @@ import {
 const { detectInstallMethod, runNpmInstall, readInstalledVersion } = vi.hoisted(() => ({
   detectInstallMethod: vi.fn<() => 'global' | 'npx' | 'unknown'>(),
   runNpmInstall:
-    vi.fn<(pkg: string, registry?: string) => Promise<{ stdout: string; stderr: string }>>(),
+    vi.fn<(pkg: string, registry?: string, version?: string) => Promise<{ stdout: string; stderr: string }>>(),
   readInstalledVersion: vi.fn<(expectedName: string) => string | null>(),
 }))
 
@@ -37,6 +38,42 @@ function makeApp() {
 }
 
 const TEST_REGISTRY = 'https://registry.example.com'
+
+/** A small fake packument: stable versions 0.5.7 / 0.5.8 / 0.5.9 plus a
+ *  prerelease (which the switcher must filter out) and `0.6.0` as latest. */
+const PACKUMENT = {
+  versions: {
+    '0.5.7': {},
+    '0.5.8': {},
+    '0.5.8-rc.1': {},
+    '0.5.9': {},
+    '0.6.0': {},
+  },
+  'dist-tags': { latest: '0.6.0' },
+}
+
+/** Stub `fetch` so the dist-tag endpoint (`/<pkg>/latest`) returns `version`
+ *  and the packument endpoint (`/<pkg>`, no `/latest`) returns the full
+ *  PACKUMENT. The version-switcher hits the packument; the existing update
+ *  path hits the dist-tag. */
+function stubRegistryFetch(latestVersion = '0.6.0') {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string | URL | Request) => {
+      const s = String(url)
+      if (s.endsWith('/latest')) {
+        return new Response(JSON.stringify({ version: latestVersion }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify(PACKUMENT), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }),
+  )
+}
 
 async function primeUpdateInfo() {
   // Seed the cached UpdateInfo with a real "update available" snapshot so
@@ -107,7 +144,8 @@ describe('POST /api/update', () => {
       installedVersion: '99.99.99',
       updateApplied: true,
     })
-    expect(runNpmInstall).toHaveBeenCalledWith('claude-react-web', TEST_REGISTRY)
+    // No-body POST → the dist-tag upgrade path → version arg is undefined.
+    expect(runNpmInstall).toHaveBeenCalledWith('claude-react-web', TEST_REGISTRY, undefined)
   })
 
   it('reports a no-op install when the on-disk version did not advance', async () => {
@@ -153,6 +191,166 @@ describe('POST /api/update', () => {
     expect(res.status).toBe(500)
     const body = (await res.json()) as { error: string }
     expect(body.error).toMatch(/boom/)
+  })
+
+  it('pins a published version on POST /update { version } and signals versionChanged', async () => {
+    __setConfigForTest({ updateCheckRegistry: TEST_REGISTRY })
+    detectInstallMethod.mockReturnValue('global')
+    stubRegistryFetch('0.6.0')
+    // Warm the versions cache so the route's validation can find 0.5.8.
+    await checkForVersions(true)
+
+    // On-disk version after install is the pinned 0.5.8 — older than the
+    // running build — so updateApplied is false but versionChanged is true
+    // (a restart applies the downgrade).
+    readInstalledVersion.mockReturnValue('0.5.8')
+
+    const res = await makeApp().request('/update', {
+      method: 'POST',
+      body: JSON.stringify({ version: '0.5.8' }),
+      headers: { 'content-type': 'application/json' },
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      performed: boolean
+      targetVersion: string
+      installedVersion: string
+      versionChanged: boolean
+      updateApplied: boolean
+      restartRequired: boolean
+    }
+    expect(body.performed).toBe(true)
+    expect(body.targetVersion).toBe('0.5.8')
+    expect(body.installedVersion).toBe('0.5.8')
+    expect(body.versionChanged).toBe(true)
+    expect(body.updateApplied).toBe(false)
+    expect(body.restartRequired).toBe(true)
+    // The argv must carry the pinned version, server-validated.
+    expect(runNpmInstall).toHaveBeenCalledWith('claude-react-web', TEST_REGISTRY, '0.5.8')
+
+    vi.unstubAllGlobals()
+  })
+
+  it('rejects a non-published version with 400 and does not spawn npm', async () => {
+    __setConfigForTest({ updateCheckRegistry: TEST_REGISTRY })
+    detectInstallMethod.mockReturnValue('global')
+    stubRegistryFetch('0.6.0')
+    await checkForVersions(true)
+
+    const res = await makeApp().request('/update', {
+      method: 'POST',
+      body: JSON.stringify({ version: '9.9.9' }),
+      headers: { 'content-type': 'application/json' },
+    })
+    expect(res.status).toBe(400)
+    expect(runNpmInstall).not.toHaveBeenCalled()
+
+    vi.unstubAllGlobals()
+  })
+
+  it('treats version === "latest" as the no-body upgrade path', async () => {
+    __setConfigForTest({ updateCheckRegistry: TEST_REGISTRY })
+    detectInstallMethod.mockReturnValue('global')
+    stubRegistryFetch('0.6.0')
+    await checkForUpdates(true) // warm the latest cache
+
+    const res = await makeApp().request('/update', {
+      method: 'POST',
+      body: JSON.stringify({ version: 'latest' }),
+      headers: { 'content-type': 'application/json' },
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { targetVersion?: string }
+    // No targetVersion — 'latest' is the dist-tag path, not a pin. The
+    // install gets the version arg as undefined (→ `@latest`), matching the
+    // no-body upgrade path.
+    expect(body.targetVersion).toBeUndefined()
+    expect(runNpmInstall).toHaveBeenCalledWith('claude-react-web', TEST_REGISTRY, undefined)
+
+    vi.unstubAllGlobals()
+  })
+
+  it('no-op when pinning the currently-running version', async () => {
+    __setConfigForTest({ updateCheckRegistry: TEST_REGISTRY })
+    detectInstallMethod.mockReturnValue('global')
+    stubRegistryFetch('0.6.0')
+    await checkForVersions(true)
+    const { getCurrentVersion } = await import('../update-checker.js')
+    const current = getCurrentVersion()
+
+    // The running version must be in the published list for the pin to
+    // validate. Inject it by re-stubbing with a packument that includes it.
+    const packumentWithCurrent = {
+      versions: { ...PACKUMENT.versions, [current]: {} },
+      'dist-tags': { latest: '0.6.0' },
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL | Request) => {
+        const s = String(url)
+        if (s.endsWith('/latest')) {
+          return new Response(JSON.stringify({ version: '0.6.0' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        }
+        return new Response(JSON.stringify(packumentWithCurrent), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }),
+    )
+    await checkForVersions(true)
+
+    readInstalledVersion.mockReturnValue(current)
+    const res = await makeApp().request('/update', {
+      method: 'POST',
+      body: JSON.stringify({ version: current }),
+      headers: { 'content-type': 'application/json' },
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { versionChanged: boolean; restartRequired: boolean }
+    expect(body.versionChanged).toBe(false)
+    expect(body.restartRequired).toBe(false)
+
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('GET /api/update-info/versions', () => {
+  beforeEach(() => {
+    __resetUpdateCheckerForTests()
+    detectInstallMethod.mockReset()
+    detectInstallMethod.mockReturnValue('global')
+    readInstalledVersion.mockReset()
+    readInstalledVersion.mockReturnValue(null)
+  })
+
+  it('returns stable versions, descending, with prereleases filtered out', async () => {
+    __setConfigForTest({ updateCheckRegistry: TEST_REGISTRY })
+    stubRegistryFetch('0.6.0')
+    // Warm the latest cache so the versions endpoint can overlay `latest`
+    // (it reads the dist-tag from the separate latest probe, like the UI's
+    // banner does on mount).
+    await checkForUpdates(true)
+
+    const res = await makeApp().request('/update-info/versions?force=1')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { versions: string[]; latest?: string }
+    expect(body.versions).toEqual(['0.6.0', '0.5.9', '0.5.8', '0.5.7'])
+    expect(body.versions).not.toContain('0.5.8-rc.1')
+    expect(body.latest).toBe('0.6.0')
+
+    vi.unstubAllGlobals()
+  })
+
+  it('returns a disabled snapshot when no registry is configured', async () => {
+    __setConfigForTest({ updateCheckRegistry: '' })
+    const res = await makeApp().request('/update-info/versions')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { disabled?: boolean; versions: string[] }
+    expect(body.disabled).toBe(true)
+    expect(body.versions).toEqual([])
   })
 })
 

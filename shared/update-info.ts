@@ -51,6 +51,12 @@ export interface UpdateInfo {
    *  the registry fetch failed (offline, mirror down, 5xx, timeout); the
    *  UI surfaces this verbatim in the About tab. */
   error?: string
+  /** Message from the npm registry when the running version has been
+   *  deprecated (`npm deprecate`). Present only when the current version
+   *  carries a deprecation notice; undefined otherwise. The value is either
+   *  a string (the maintainer's message) or `true` (deprecated without a
+   *  custom message). */
+  deprecated?: string | true
   /** Where `latest` came from. Reserved for future "github" source. */
   source: 'npm'
   /** True while a probe is in flight and we have no cached result yet.
@@ -113,6 +119,17 @@ export interface UpdateActionResult {
    *  will apply it. False when the on-disk version is unchanged (npm reported
    *  "up to date" / install was a no-op) or couldn't be confirmed. */
   updateApplied?: boolean
+  /** The version the install targeted, when the caller pinned one (the
+   *  version switcher passes `{ version }`). Absent for the no-body "update
+   *  to latest" path — there the target is the cached `latest`. */
+  targetVersion?: string
+  /** True iff the post-install on-disk version differs from the running build
+   *  in EITHER direction. `updateApplied` only fires for upgrades
+   *  (`isVersionNewer`), so a downgrade — the version switcher's primary use
+   *  case — needs its own signal that the on-disk package changed and a
+   *  restart will apply it. Also true for a forward pin past `latest`; false
+   *  only for a true no-op (installed == running). */
+  versionChanged?: boolean
 }
 
 // ── Version comparison ───────────────────────────────────────────────
@@ -129,7 +146,12 @@ interface ParsedSemver {
   prerelease: boolean
 }
 
-function parseSemver(v: string): ParsedSemver | null {
+/** Parse a semver-ish string into its numeric major.minor.patch segments and
+ *  whether it carries a prerelease suffix. Exported so the version-switcher
+ *  (which builds the published-versions list) can reuse the same parser the
+ *  upgrade comparison uses — one notion of "what is a version" across both
+ *  ends. Returns null on malformed input. */
+export function parseSemver(v: string): ParsedSemver | null {
   // Match `<major>.<minor>.<patch>` followed optionally by `-prerelease`
   // and/or `+build`. Per semver, build metadata (`+build…`) MUST be
   // ignored for ordering — only `-pre…` marks a prerelease. We don't
@@ -165,3 +187,79 @@ export function isVersionNewer(current: string, latest: string): boolean {
   if (b.minor !== a.minor) return b.minor > a.minor
   return b.patch > a.patch
 }
+
+/** True iff `v` parses to a real major.minor.patch AND has no prerelease
+ *  suffix. The version switcher only offers stable releases — a prerelease
+ *  (`-rc.1`, `-beta`) is never a rollback target — so this is the filter the
+ *  published-versions list applies. Mirrors the prerelease skip in
+ *  `isVersionNewer` so "stable" means the same thing everywhere. */
+export function isStableVersion(v: string): boolean {
+  const p = parseSemver(v)
+  return !!p && !p.prerelease
+}
+
+/** Numeric major.minor.patch comparison. Returns <0 / 0 / >0 like a normal
+ *  comparator, suitable for `Array.sort` to order a list. Prereleases are
+ *  treated as their patch-equivalent (we filter them out of the switcher
+ *  list anyway, but a stray prerelease still sorts next to its release).
+ *  Unparseable inputs sort as "less than" any parseable one and are kept
+ *  stable relative to each other — malformed data never throws here. */
+export function compareSemver(a: string, b: string): number {
+  const pa = parseSemver(a)
+  const pb = parseSemver(b)
+  if (!pa && !pb) return 0
+  if (!pa) return 1 // push unparseable to the end (descending view)
+  if (!pb) return -1
+  if (pa.major !== pb.major) return pa.major - pb.major
+  if (pa.minor !== pb.minor) return pa.minor - pb.minor
+  return pa.patch - pb.patch
+}
+
+// ── Published-versions list (version switcher) ──────────────────────
+//
+// Returned by GET /api/update-info/versions and consumed by the About tab's
+// "Switch version" section. Separate from UpdateInfo because the list is a
+// heavier, on-demand fetch (the full packument `/<pkg>`) that the banner and
+// the normal About view never need — it's only pulled when the user expands
+// the switcher. The two caches (latest vs versions) are independent in
+// update-checker.ts so a versions-fetch failure can't poison the banner.
+
+export interface PublishedVersions {
+  /** The version baked into the running build (same `current` as UpdateInfo). */
+  current: string
+  /** On-disk version read at request time — lets the switcher mark which
+   *  published version is "installed" (may differ from `current` after an
+   *  in-app install that hasn't been restarted into yet). */
+  installed?: string
+  /** The `latest` dist-tag, overlaid from the (separate, lighter) latest
+   *  probe so the select can label it. Undefined when that probe hasn't run
+   *  or failed. */
+  latest?: string
+  /** Canonical npm package name (mirrors UpdateInfo.packageName). */
+  packageName: string
+  /** How this server process was launched — only `'global'` can install a
+   *  pinned version in place; npx/unknown get the copy-command. */
+  installMethod: 'global' | 'npx' | 'unknown'
+  /** The probed registry, echoed so the copy-command can carry --registry. */
+  registry?: string
+  /** Stable published versions, sorted DESCENDING (newest first). Pre-release
+   *  versions are filtered out by `isStableVersion`. Empty when the probe
+   *  failed or hasn't completed (see `error` / `checking`). */
+  versions: string[]
+  /** Subset of `versions` that the maintainer has deprecated (via
+   *  `npm deprecate`). The UI tags these in the version-switcher dropdown
+   *  so the user knows which releases carry a deprecation notice before
+   *  pinning one. Empty or absent when no published version is deprecated. */
+  deprecatedVersions?: string[]
+  /** ms epoch of the last successful probe. Undefined before the first. */
+  checkedAt?: number
+  /** Human-readable error from the most recent probe; surfaced verbatim in
+   *  the switcher. */
+  error?: string
+  /** True while a probe is in flight with no cached result yet. */
+  checking?: boolean
+  /** True when no `updateCheckRegistry` is configured — the switcher is
+   *  unusable and the UI explains why. */
+  disabled?: boolean
+}
+
