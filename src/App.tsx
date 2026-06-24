@@ -1912,41 +1912,67 @@ export function App() {
   const handleReorderInGroup = useCallback(
     (draggedId: string, targetId: string, position: 'before' | 'after', groupId: string) => {
       if (draggedId === targetId) return
-      // Compute the new order inside the functional updater so we read
-      // the freshest state without closing over `groups`.
-      let newIds: string[] = []
-      setGroups((prev) => {
-        const group = prev.find((g) => g.id === groupId)
-        if (!group) return prev
-        const without = group.sessionIds.filter((id) => id !== draggedId)
-        const targetIdx = without.indexOf(targetId)
-        const insertAt = targetIdx < 0 ? without.length : position === 'before' ? targetIdx : targetIdx + 1
-        without.splice(insertAt, 0, draggedId)
-        newIds = without
-        // If the dragged session belonged to a DIFFERENT group, remove it
-        // from that group — a cross-group drop must transfer membership,
-        // not duplicate it. (Same-group drops are a no-op filter here.)
-        return prev.map((g) => {
-          if (g.id === groupId) return { ...g, sessionIds: without }
-          if (g.sessionIds.includes(draggedId)) {
-            return { ...g, sessionIds: g.sessionIds.filter((id) => id !== draggedId) }
-          }
-          return g
-        })
+      // Compute next groups synchronously from the ref (setGroups's updater
+      // runs on React's schedule — a `let newIds` assigned inside it would
+      // still be empty when we reach the openIds sync below).
+      const prevGroups = groupsRef.current
+      const group = prevGroups.find((g) => g.id === groupId)
+      if (!group) return
+      const without = group.sessionIds.filter((id) => id !== draggedId)
+      const targetIdx = without.indexOf(targetId)
+      const insertAt = targetIdx < 0 ? without.length : position === 'before' ? targetIdx : targetIdx + 1
+      without.splice(insertAt, 0, draggedId)
+      const newIds = without
+      const wasInOtherGroup = !group.sessionIds.includes(draggedId)
+      const nextGroups = prevGroups.map((g) => {
+        if (g.id === groupId) return { ...g, sessionIds: without }
+        if (g.sessionIds.includes(draggedId)) {
+          return { ...g, sessionIds: g.sessionIds.filter((id) => id !== draggedId) }
+        }
+        return g
       })
-      if (newIds.length === 0) return
+      setGroups(() => nextGroups)
 
-      // Sync open panel order: re-order the group sessions that are
-      // currently open while preserving non-group sessions in place.
-      setOpenIds((prev) => {
-        const groupSet = new Set(newIds)
-        const openGroup = prev.filter((id) => groupSet.has(id))
-        if (openGroup.length < 2) return prev
-        const reordered = newIds.filter((id) => groupSet.has(id) && prev.includes(id))
-        if (openGroup.join() === reordered.join()) return prev
-        let ri = 0
-        return prev.map((id) => (groupSet.has(id) ? reordered[ri++] : id))
-      })
+      // Sync open panels. Two cases:
+      // 1. Cross-group drop INTO the active group: the dragged session just
+      //    joined the active group — add it to the open set (if there's room)
+      //    so the view follows, mirroring handleAddToGroup.
+      // 2. Same-group (or non-active-group) reorder: just re-order the open
+      //    group sessions to match the new group order.
+      const active = activeGroupIdRef.current
+      const prevOpen = openIdsRef.current
+      if (wasInOtherGroup && active === groupId) {
+        // Cross-group drop into the active group. Check isGroupView against
+        // the PRE-change group (prevGroups), since prevOpen reflects the
+        // state before the dragged session joined.
+        const prevActiveGroup = prevGroups.find((g) => g.id === active)
+        const isGroupView =
+          prevActiveGroup != null &&
+          prevOpen.length > 0 &&
+          prevOpen.every((id) => prevActiveGroup.sessionIds.includes(id))
+        if (isGroupView) {
+          const desired = newIds.slice(0, maxOpenRef.current)
+          const ordered = prevOpen.filter((id) => desired.includes(id))
+          for (const id of desired) if (!ordered.includes(id)) ordered.push(id)
+          const final = ordered.filter((id) => desired.includes(id)).slice(0, maxOpenRef.current)
+          if (!(final.length === prevOpen.length && final.every((id, i) => id === prevOpen[i]))) {
+            setOpenIds(final)
+          }
+        }
+      } else {
+        // Plain reorder (same group, or a non-active group): re-order the
+        // currently-open group sessions to match the new order, preserving
+        // non-group sessions in place.
+        setOpenIds((prev) => {
+          const groupSet = new Set(newIds)
+          const openGroup = prev.filter((id) => groupSet.has(id))
+          if (openGroup.length < 2) return prev
+          const reordered = newIds.filter((id) => groupSet.has(id) && prev.includes(id))
+          if (openGroup.join() === reordered.join()) return prev
+          let ri = 0
+          return prev.map((id) => (groupSet.has(id) ? reordered[ri++] : id))
+        })
+      }
       // Animate all open group panels to their new grid positions.
       const openGroup = openIdsRef.current.filter((id) => newIds.includes(id))
       if (openGroup.length >= 2) animatePanels(...openGroup)
