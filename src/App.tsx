@@ -844,7 +844,15 @@ export function App() {
       const updated = nextGroups.find((g) => g.id === active)
       if (!updated) return
       const prevOpen = openIdsRef.current
-      const isGroupView = prevOpen.length > 0 && prevOpen.every((id) => updated.sessionIds.includes(id))
+      // isGroupView must be checked against the PRE-change group (prevGroups),
+      // because prevOpen reflects what's open NOW — for a drag-OUT, prevOpen
+      // still contains the session being removed, so checking against the
+      // post-change `updated` would always fail and silently skip the sync.
+      const prevActiveGroup = prevGroups.find((g) => g.id === active)
+      const isGroupView =
+        prevActiveGroup != null &&
+        prevOpen.length > 0 &&
+        prevOpen.every((id) => prevActiveGroup.sessionIds.includes(id))
       if (!isGroupView) return
       const desired = updated.sessionIds.slice(0, maxOpenRef.current)
       const ordered = prevOpen.filter((id) => desired.includes(id))
@@ -1787,15 +1795,17 @@ export function App() {
         // If the dragged session just left the active group, drop it from the
         // open panel set so the view follows (mirrors handleAddToGroup).
         const active = activeGroupIdRef.current
-        if (active) {
-          const updated = nextGroups.find((g) => g.id === active)
-          if (updated && !updated.sessionIds.includes(draggedId)) {
-            const prevOpen = openIdsRef.current
-            const isGroupView = prevOpen.length > 0 && prevOpen.every((id) => updated.sessionIds.includes(id))
-            if (isGroupView) {
-              const next = prevOpen.filter((id) => id !== draggedId)
-              if (next.length !== prevOpen.length) setOpenIds(next)
-            }
+        if (active && active === owner.id) {
+          // isGroupView must be checked against the PRE-removal group
+          // (prevGroups), because prevOpen still contains draggedId —
+          // checking against the post-removal `updated` would always fail
+          // (draggedId ∈ prevOpen but ∉ updated), silently skipping the sync.
+          const prevOpen = openIdsRef.current
+          const prevGroup = owner
+          const isGroupView = prevOpen.length > 0 && prevOpen.every((id) => prevGroup.sessionIds.includes(id))
+          if (isGroupView) {
+            const next = prevOpen.filter((id) => id !== draggedId)
+            if (next.length !== prevOpen.length) setOpenIds(next)
           }
         }
       }
