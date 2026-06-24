@@ -60,7 +60,7 @@ export const RecapWindow = memo(function RecapWindow({ recap, isExiting, onClose
           {recap.status === 'pending' ? (
             <div className="recap-msg-loading-body">
               <span className="recap-msg-loading-bar" aria-hidden />
-              <span>Summarising the last few minutes...</span>
+              <span>Catching you up on this session…</span>
             </div>
           ) : recap.status === 'error' ? (
             <div className="recap-window-error">{recap.error ?? 'Unknown error'}</div>

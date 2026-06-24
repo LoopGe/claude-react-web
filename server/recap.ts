@@ -220,21 +220,27 @@ function buildTranscript(lines: ExtractedLine[], language: string | null): strin
 // ── Anthropic API ──────────────────────────────────────────────────
 
 function buildSystemPrompt(language: string | null): string {
-  const intro = `You are a session recap assistant. Summarize the following conversation between a user and Claude (an AI coding assistant) in 2-4 sentences. Focus on:
-1. What task or problem the user was working on
-2. What files, tools, or code were involved
-3. The current status (completed, in-progress, blocked, errored)
-Be concise and specific. Use plain language. Do not include a greeting or sign-off. Start directly with the summary.
+  // Philosophy borrowed from Claude Code's away-summary: lead with the
+  // high-level task and the next step, not a status-report inventory.
+  // Our twist — the UI already surfaces message count / cost / duration /
+  // tool list as stats, so we tell the model NOT to restate them. That
+  // retires the old "list every file & tool involved" bullet, which
+  // produced inventory-style recaps redundant with the stats row.
+  const intro = `You write a session recap for someone returning to a Claude Code session after stepping away. They already see the message count, cost, duration, and tool list in the UI, so do NOT restate those. Write 2-4 short sentences in plain prose:
+1. The high-level task — what they are building or debugging, not implementation details.
+2. Where things stand — completed, in progress, blocked, or errored.
+3. The concrete next step, if one is apparent.
+Name a file or code element only when it is load-bearing for understanding the task. Skip status-report prose, commit-style recaps, greetings, and sign-offs. Start directly.`
 
-FORMAT RULES:
-- Do NOT use JSX syntax, HTML tags, or code markup (like <>, </>, <Component>) in your response. Write in natural prose only.
-- When referencing code elements, use backtick formatting (e.g. \`Button\` component) instead of angle brackets.`
+  const formatRule = `FORMAT: Write in natural prose only — no JSX or HTML tags (no <>, </>, <Component>). Reference code elements by wrapping them in backticks, not angle brackets.`
 
   const languageRule = language
-    ? `OUTPUT LANGUAGE — CRITICAL: You MUST write the entire summary in ${language}. This requirement overrides every other language signal in the conversation. File paths, error messages, code identifiers, English log output, and English tool names do NOT change the output language — keep technical identifiers verbatim, but write all surrounding prose in ${language}. Even if most of the transcript content appears to be in English, the summary itself must be in ${language}.`
-    : `OUTPUT LANGUAGE — CRITICAL: Write the summary in the same language the USER uses in their "User:" turns above. Do NOT default to English unless the user themselves writes in English. File paths, error messages, code identifiers, English log output, and English tool names do NOT change the output language — keep those technical identifiers verbatim, but write all surrounding prose in the user's language. If the user writes in French, write the summary in French. If they write in Spanish, write in Spanish. Match the user's language exactly.`
+    ? `LANGUAGE: Write the entire summary in ${language}. Keep file paths, error messages, and code identifiers verbatim, but write all surrounding prose in ${language} — even if most of the transcript is English.`
+    : `LANGUAGE: Write in the same language the user uses in their "User:" turns. Do not default to English unless the user writes in English. Keep file paths, error messages, and code identifiers verbatim.`
 
   return `${intro}
+
+${formatRule}
 
 ${languageRule}`
 }
