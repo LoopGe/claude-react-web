@@ -2001,7 +2001,13 @@ function AboutTab({
                         const isCurrent = v === info?.current
                         const isInstalled = v === versions?.installed
                         const isLatest = v === versions?.latest
-                        const isDeprecated = versions?.deprecatedVersions?.includes(v)
+                        // A version is deprecated if it's in the published-versions'
+                        // deprecated list, OR if it's the current version and
+                        // UpdateInfo reports it as deprecated (fallback for stale
+                        // versions-cache that predates the deprecatedVersions field).
+                        const isDeprecated =
+                          versions?.deprecatedVersions?.includes(v) ||
+                          !!(isCurrent && info?.deprecated)
                         const tag = isCurrent
                           ? ' (current)'
                           : isInstalled

@@ -40,11 +40,13 @@ function makeApp() {
 const TEST_REGISTRY = 'https://registry.example.com'
 
 /** A small fake packument: stable versions 0.5.7 / 0.5.8 / 0.5.9 plus a
- *  prerelease (which the switcher must filter out) and `0.6.0` as latest. */
+ *  prerelease (which the switcher must filter out) and `0.6.0` as latest.
+ *  Version 0.5.8 is deprecated (with a message); 0.5.7 is deprecated
+ *  without a message (true). */
 const PACKUMENT = {
   versions: {
-    '0.5.7': {},
-    '0.5.8': {},
+    '0.5.7': { deprecated: true },
+    '0.5.8': { deprecated: 'Critical bug — use 0.5.9 or later.' },
     '0.5.8-rc.1': {},
     '0.5.9': {},
     '0.6.0': {},
@@ -340,6 +342,25 @@ describe('GET /api/update-info/versions', () => {
     expect(body.versions).toEqual(['0.6.0', '0.5.9', '0.5.8', '0.5.7'])
     expect(body.versions).not.toContain('0.5.8-rc.1')
     expect(body.latest).toBe('0.6.0')
+
+    vi.unstubAllGlobals()
+  })
+
+  it('returns deprecatedVersions for versions marked deprecated in the packument', async () => {
+    __setConfigForTest({ updateCheckRegistry: TEST_REGISTRY })
+    stubRegistryFetch('0.6.0')
+    await checkForUpdates(true)
+
+    const res = await makeApp().request('/update-info/versions?force=1')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { deprecatedVersions?: string[] }
+    // 0.5.7 (deprecated: true) and 0.5.8 (deprecated: string) should both
+    // appear. 0.5.8-rc.1 is a prerelease and filtered from the main list,
+    // so it won't appear in deprecatedVersions either.
+    expect(body.deprecatedVersions).toContain('0.5.7')
+    expect(body.deprecatedVersions).toContain('0.5.8')
+    expect(body.deprecatedVersions).not.toContain('0.5.9')
+    expect(body.deprecatedVersions).not.toContain('0.6.0')
 
     vi.unstubAllGlobals()
   })

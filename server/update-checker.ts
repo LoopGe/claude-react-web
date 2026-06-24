@@ -525,6 +525,9 @@ export async function checkForVersions(force = false): Promise<PublishedVersions
         // empty the switcher. Skip if the previous snapshot was `disabled`
         // (no real list existed).
         versions: versionsCached?.disabled ? [] : versionsCached?.versions ?? [],
+        deprecatedVersions: versionsCached?.disabled
+          ? []
+          : versionsCached?.deprecatedVersions ?? [],
         checkedAt: Date.now(),
         error: err instanceof Error ? err.message : String(err),
       }

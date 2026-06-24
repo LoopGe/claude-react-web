@@ -32,21 +32,162 @@ interface Props {
 }
 
 export function UpdateBanner({ info, updating, onUpdate }: Props) {
-  if (!info || !info.hasUpdate || !info.latest) return null
-  // The inner component is keyed on the latest version so a fresh
-  // version remounts it — automatically resetting the local
-  // `dismissed` / `copied` state without needing an effect.
+  if (!info) return null
+
+  const hasDeprecation = !!info.deprecated
+  const hasUpdate = !!(info.hasUpdate && info.latest)
+
+  if (!hasDeprecation && !hasUpdate) return null
+
   return (
-    <UpdateBannerInner
-      key={info.latest}
-      current={info.current}
-      latest={info.latest}
-      packageName={info.packageName}
-      registry={info.registry}
-      installMethod={info.installMethod}
-      updating={!!updating}
-      onUpdate={onUpdate}
-    />
+    <>
+      {hasDeprecation && (
+        <DeprecatedBannerInner
+          key={`deprecated-${info.current}`}
+          current={info.current}
+          deprecated={info.deprecated!}
+          latest={info.latest}
+          packageName={info.packageName}
+          registry={info.registry}
+          installMethod={info.installMethod}
+          updating={!!updating}
+          onUpdate={onUpdate}
+        />
+      )}
+      {hasUpdate && (
+        <UpdateBannerInner
+          key={info.latest}
+          current={info.current}
+          latest={info.latest!}
+          packageName={info.packageName}
+          registry={info.registry}
+          installMethod={info.installMethod}
+          updating={!!updating}
+          onUpdate={onUpdate}
+        />
+      )}
+    </>
+  )
+}
+
+function DeprecatedBannerInner({
+  current,
+  deprecated,
+  latest,
+  packageName,
+  registry,
+  installMethod,
+  updating,
+  onUpdate,
+}: {
+  current: string
+  deprecated: string | true
+  latest?: string
+  packageName: string
+  registry?: string
+  installMethod: UpdateInfo['installMethod']
+  updating: boolean
+  onUpdate?: () => Promise<UpdateActionResult>
+}) {
+  const toast = useToast()
+  const UPGRADE_COMMAND = buildUpgradeCommand(packageName, registry)
+  const [dismissed, setDismissed] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  const canUpdateInApp = installMethod === 'global' && !!onUpdate
+
+  if (dismissed) return null
+
+  const deprecationMsg =
+    typeof deprecated === 'string' ? deprecated : 'This version has been deprecated by the maintainer.'
+
+  const runUpdate = () => {
+    if (!onUpdate) return
+    onUpdate().then(
+      (res) => {
+        if (res.performed) {
+          if (res.updateApplied) {
+            toast.success(
+              `Installed ${res.installedVersion ?? res.latest ?? 'the latest version'} on disk — restart the server to apply.`,
+            )
+            setDismissed(true)
+          } else {
+            toast.info(
+              res.installedVersion
+                ? `Already on the latest version (${res.installedVersion}).`
+                : 'Install completed, but the new version could not be confirmed on disk.',
+            )
+          }
+        } else {
+          toast.info("In-app update isn’t available for this install — copy the command instead.")
+        }
+      },
+      (err: unknown) => {
+        toast.error(`Update failed: ${err instanceof Error ? err.message : String(err)}`)
+      },
+    )
+  }
+
+  const copy = () => {
+    if (!navigator.clipboard) return
+    navigator.clipboard.writeText(UPGRADE_COMMAND).then(
+      () => {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 2000)
+      },
+      (err: unknown) => {
+        console.warn('clipboard write failed:', err)
+      },
+    )
+  }
+
+  return (
+    <div className="update-banner update-banner-deprecated" role="alert" aria-live="assertive">
+      <span className="update-banner-icon" aria-hidden="true">⚠</span>
+      <span className="update-banner-text">
+        Version <strong>{current}</strong> is deprecated
+        {latest && latest !== current && <> — update to <strong>{latest}</strong></>}
+        <span style={{ display: 'block', fontSize: 12, color: 'var(--fg-muted)', marginTop: 2 }}>
+          {deprecationMsg}
+        </span>
+      </span>
+      {/* Only show upgrade controls when there's a newer version to upgrade to.
+          When current === latest (the latest version itself is deprecated),
+          the upgrade command would just reinstall the same deprecated version. */}
+      {latest && latest !== current && canUpdateInApp && (
+        <button
+          type="button"
+          className="update-banner-btn"
+          onClick={runUpdate}
+          disabled={updating}
+          title="Run the upgrade on the server, then restart to apply."
+        >
+          {updating ? 'Updating…' : 'Update now'}
+        </button>
+      )}
+      {latest && latest !== current && (
+        <>
+          <code className="update-banner-cmd">{UPGRADE_COMMAND}</code>
+          <button
+            type="button"
+            className={canUpdateInApp ? 'update-banner-btn-ghost' : 'update-banner-btn'}
+            onClick={copy}
+            title="Copy upgrade command to clipboard"
+          >
+            {copied ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>Copied <IconCheck size={12} /></span> : 'Copy'}
+          </button>
+        </>
+      )}
+      <button
+        type="button"
+        className="update-banner-close"
+        onClick={() => setDismissed(true)}
+        aria-label="Dismiss deprecation notice"
+        title="Dismiss"
+      >
+        <IconX size={14} />
+      </button>
+    </div>
   )
 }
 

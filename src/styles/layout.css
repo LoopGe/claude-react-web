@@ -1133,3 +1133,36 @@ body.resizing-col * {
   background: var(--btn-hover-bg);
   color: var(--fg);
 }
+
+/* Deprecated-version warning banner — same layout as .update-banner but
+ * uses danger colours to convey urgency. Shown when the npm registry
+ * reports the running version has been `npm deprecate`-d. */
+.update-banner-deprecated {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 18px;
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg));
+  border-bottom: 1px solid color-mix(in srgb, var(--danger) 30%, var(--bg));
+  color: var(--fg);
+  font-size: 13px;
+}
+.update-banner-deprecated .update-banner-icon {
+  background: var(--danger);
+  color: var(--bg);
+}
+.update-banner-deprecated .update-banner-cmd {
+  background: color-mix(in srgb, var(--bg) 65%, var(--danger));
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--bg));
+}
+.update-banner-deprecated .update-banner-btn {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+.update-banner-deprecated .update-banner-btn:hover {
+  background: color-mix(in srgb, var(--danger) 85%, black);
+}
+.update-banner-deprecated .update-banner-btn-ghost {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--bg));
+}

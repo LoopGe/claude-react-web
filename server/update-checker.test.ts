@@ -78,18 +78,26 @@ describe('checkForUpdates', () => {
   })
 
   it('records the registry response and computes hasUpdate', async () => {
-    const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ version: '99.99.99' }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }),
-    )
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/latest')) {
+        return new Response(JSON.stringify({ version: '99.99.99' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      // Packument for deprecation check — current version not deprecated.
+      return new Response(
+        JSON.stringify({ versions: { [getCurrentVersion()]: { version: getCurrentVersion() } } }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    })
     vi.stubGlobal('fetch', fetchMock)
 
     const info = await checkForUpdates(true)
     expect(info.latest).toBe('99.99.99')
     expect(info.hasUpdate).toBe(true)
     expect(info.error).toBeUndefined()
+    expect(info.deprecated).toBeUndefined()
     expect(info.checkedAt).toBeTypeOf('number')
     expect(info.current).toBe(getCurrentVersion())
     // installMethod must be populated on every snapshot so the client can
@@ -125,40 +133,156 @@ describe('checkForUpdates', () => {
     // return 404 on the dist-tag path (`…/<scope>%2F<name>/latest`).
     // Every registry we care about accepts the literal-slash form, so we
     // send that instead. See update-checker.ts for the full story.
-    const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ version: '0.0.0' }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }),
-    )
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/latest')) {
+        return new Response(JSON.stringify({ version: '0.0.0' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response(
+        JSON.stringify({ versions: { [getCurrentVersion()]: { version: getCurrentVersion() } } }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    })
     vi.stubGlobal('fetch', fetchMock)
 
     await checkForUpdates(true)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    // mock.calls[0] is the argument tuple; vitest infers an empty
-    // tuple for parameter-less mocks (the closure here doesn't accept
-    // args), so we cast through `unknown[]` to read the URL slot.
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    // Both fetch calls should use literal slashes — check the first (latest).
     const args = fetchMock.mock.calls[0] as unknown as unknown[]
     const url = args[0] as string
     expect(url).not.toContain('%2F')
     expect(url).toContain('/claude-react-web/latest')
+    // And the second (packument for deprecation).
+    const args2 = fetchMock.mock.calls[1] as unknown as unknown[]
+    const url2 = args2[0] as string
+    expect(url2).not.toContain('%2F')
+    expect(url2).toContain('/claude-react-web')
+    expect(url2).not.toContain('/latest')
+  })
+
+  it('includes deprecation message when the current version is deprecated', async () => {
+    const deprecationMsg = 'Critical security vulnerability — upgrade immediately.'
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/latest')) {
+        return new Response(JSON.stringify({ version: '99.99.99' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      // Current version is deprecated.
+      return new Response(
+        JSON.stringify({
+          versions: {
+            [getCurrentVersion()]: { version: getCurrentVersion(), deprecated: deprecationMsg },
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const info = await checkForUpdates(true)
+    expect(info.deprecated).toBe(deprecationMsg)
+    expect(info.latest).toBe('99.99.99')
+    expect(info.hasUpdate).toBe(true)
+  })
+
+  it('includes deprecated=true when the version is deprecated without a message', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/latest')) {
+        return new Response(JSON.stringify({ version: '99.99.99' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response(
+        JSON.stringify({
+          versions: {
+            [getCurrentVersion()]: { version: getCurrentVersion(), deprecated: true },
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const info = await checkForUpdates(true)
+    expect(info.deprecated).toBe(true)
+  })
+
+  it('sets deprecated to undefined when the version is not deprecated', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/latest')) {
+        return new Response(JSON.stringify({ version: '99.99.99' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response(
+        JSON.stringify({
+          versions: {
+            [getCurrentVersion()]: { version: getCurrentVersion() },
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const info = await checkForUpdates(true)
+    expect(info.deprecated).toBeUndefined()
+  })
+
+  it('still reports latest when the deprecation probe fails', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/latest')) {
+        return new Response(JSON.stringify({ version: '99.99.99' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      // Packument fetch fails — e.g. network hiccup.
+      return new Response('boom', { status: 503 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const info = await checkForUpdates(true)
+    // The latest probe succeeded, so hasUpdate is still computed.
+    expect(info.latest).toBe('99.99.99')
+    expect(info.hasUpdate).toBe(true)
+    // Deprecation is best-effort — a failure means we don't know, not that
+    // it's deprecated.
+    expect(info.deprecated).toBeUndefined()
+    // No overall error — the primary probe succeeded.
+    expect(info.error).toBeUndefined()
   })
 
   it('dedupes concurrent in-flight probes', async () => {
     let resolved = 0
     const fetchMock = vi.fn(
-      async () =>
+      async (url: string) =>
         new Promise<Response>((resolve) => {
           // Resolve on a microtask so both callers see the same in-flight
           // promise.
           queueMicrotask(() => {
             resolved += 1
-            resolve(
-              new Response(JSON.stringify({ version: '0.0.0' }), {
-                status: 200,
-                headers: { 'content-type': 'application/json' },
-              }),
-            )
+            if (url.endsWith('/latest')) {
+              resolve(
+                new Response(JSON.stringify({ version: '0.0.0' }), {
+                  status: 200,
+                  headers: { 'content-type': 'application/json' },
+                }),
+              )
+            } else {
+              resolve(
+                new Response(
+                  JSON.stringify({ versions: { [getCurrentVersion()]: { version: getCurrentVersion() } } }),
+                  { status: 200, headers: { 'content-type': 'application/json' } },
+                ),
+              )
+            }
           })
         }),
     )
@@ -166,7 +290,9 @@ describe('checkForUpdates', () => {
 
     const [a, b] = await Promise.all([checkForUpdates(true), checkForUpdates(true)])
     expect(a).toBe(b)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(resolved).toBe(1)
+    // Two fetch calls (latest + packument) per probe, but only one probe
+    // runs due to dedup — so 2 total, not 4.
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(resolved).toBe(2)
   })
 })
