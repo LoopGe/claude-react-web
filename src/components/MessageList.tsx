@@ -1589,8 +1589,31 @@ function MessageTimestamp({ ms }: { ms: number | undefined }) {
  *  prompt, not in this message, but the metadata here is enough to
  *  give the user a visual cue that the preceding transcript has been
  *  compressed. */
+/** Reverse server/exec.ts `escapeXml`. The `!` bash-mode synthetic message
+ *  XML-escapes the command + stdout + stderr before embedding them in
+ *  `<bash-input>` / `<bash-stdout>` / `<bash-stderr>` tags (so a stdout body
+ *  containing `</bash-stdout>` can't break the tag slicing). `extractTag`
+ *  pulls the escaped text back out verbatim; without un-escaping here, a `>`
+ *  in command output would render as the literal `&gt;` (React sets it via
+ *  textContent, which does NOT re-parse entities).
+ *
+ *  This MUST mirror `escapeXml` exactly — it only ever produces `&amp;`,
+ *  `&lt;`, `&gt;`, so we only decode those three. Decoding other entities
+ *  (`&quot;`, `&apos;`, …) would corrupt output that legitimately contains
+ *  those literal strings. Order matters: `&amp;` is decoded LAST so
+ *  `&amp;lt;` round-trips to `&lt;` (literal), not to `<` — mirroring how
+ *  `escapeXml` encodes `&` first. */
+function unescapeXml(s: string): string {
+  return s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+}
+
 /** Extract the inner text of the first `<tag>...</tag>` in `s`, or null.
- *  Used to parse the <bash-*> tags the server injects for `!` mode. */
+ *  Used to parse the <bash-*> tags the server injects for `!` mode. The
+ *  returned text is run through `unescapeXml` so it matches what the
+ *  server originally captured (see `escapeXml` in server/exec.ts). */
 function extractTag(s: string, tag: string): string | null {
   const open = `<${tag}>`
   const close = `</${tag}>`
@@ -1598,7 +1621,7 @@ function extractTag(s: string, tag: string): string | null {
   if (start < 0) return null
   const end = s.indexOf(close, start + open.length)
   if (end < 0) return null
-  return s.slice(start + open.length, end)
+  return unescapeXml(s.slice(start + open.length, end))
 }
 
 /** Render a `!` bash-mode synthetic message. Parses <bash-input>,
