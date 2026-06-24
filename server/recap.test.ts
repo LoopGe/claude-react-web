@@ -446,7 +446,7 @@ describe('recap', () => {
       await generateRecap(messages, 'api-body')
 
       const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)
-      expect(body.system).toContain('session recap assistant')
+      expect(body.system).toContain('high-level task')
       expect(body.messages[0].role).toBe('user')
       expect(body.messages[0].content).toContain('[1] User: hello')
       expect(body.model).toBeDefined()
