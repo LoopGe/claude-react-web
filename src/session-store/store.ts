@@ -1,9 +1,21 @@
 import { createInitialSessionState, type ServerMirror, type SessionAction, type SessionSnapshot, type SessionState, type TranscriptItem } from './types'
-import { rebuildIndexesFromMessages, reduceSessionState } from './reducer'
+import { rebuildIndexesFromMessages, reduceSessionState, MEMORY_ITEM_CAP } from './reducer'
 import { toTranscriptItem } from './normalize'
 import type { SdkMessage } from '../types'
 import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME } from '../constants/toolNames'
 import { projectMessage } from './project'
+import {
+  openDb,
+  putMessages,
+  putMeta,
+  deleteMessages,
+  getMeta,
+  scanUuidSeqs,
+  cursorRecent,
+  clearSession,
+  type MessageRecord,
+} from './idb'
+import type { IDBPDatabase } from 'idb'
 
 type Listener = () => void
 
@@ -116,6 +128,22 @@ function isQuotaError(e: unknown): boolean {
       e.name === 'QuotaExceededError' ||
       e.name === 'NS_ERROR_DOM_QUOTA_REACHED')
   )
+}
+
+/** IDB quota error — same DOMException shape as localStorage, plus the
+ *  rare `UnknownError`/`ConstraintError` browsers throw when IDB is full. */
+function isIdbQuotaError(e: unknown): boolean {
+  if (isQuotaError(e)) return true
+  if (e instanceof DOMException) {
+    return e.name === 'UnknownError' || e.name === 'ConstraintError' || e.name === 'QuotaExceededError'
+  }
+  return false
+}
+
+/** Extract the uuid from a (raw) SdkMessage. Returns '' when absent. */
+function msgUuid(msg: SdkMessage): string {
+  const u = (msg as { uuid?: unknown }).uuid
+  return typeof u === 'string' ? u : ''
 }
 
 function persistToStorage(sessionId: string, state: SessionState): void {
@@ -268,6 +296,34 @@ export class SessionStore {
   private cachedWorkflowsMap: ServerMirror['activeWorkflows'] | null = null
   private cachedRunningWorkflows: SessionSnapshot['activeWorkflows'] = []
 
+  // ── IndexedDB (Plan C) ───────────────────────────────────────────
+  // IDB is a progressive-enhancement full-transcript cache. localStorage
+  // (Plan B) remains the sync first-paint path + fallback. If IDB is
+  // unavailable (private mode / quota), `idbAvailable=false` and every IDB
+  // op is a no-op — behavior regresses to Plan B.
+  private idbAvailable = true
+  /** Resolves when the async IDB open + scan + cold-load has settled. Tests
+   *  await this to assert post-hydrate IDB state; Phase 2's loadOlder gates on it. */
+  readonly idbReady: Promise<void>
+  /** uuids known to be in IDB, for O(1) delta-diff on save. NOT trimmed by
+   *  trimFront — tracks IDB, not memory. */
+  private persistedUuids = new Set<string>()
+  /** uuid → seq, for O(1) lookup on loadOlder (Phase 2). Mirrors persistedUuids. */
+  private uuidToSeq = new Map<string, number>()
+  /** Per-session seq watermarks. Live/replay appends → ++maxSeq; loadOlder
+   *  backfill → --minSeq. Assigned once per uuid at persist time, stable. */
+  private maxSeq = 0
+  private minSeq = 0
+  /** uuids superseded by api_retry in-place replace, drained to IDB delete
+   *  on the next save so they don't re-emerge on cold-load cursor. */
+  private supersededUuids = new Set<string>()
+  /** In-flight IDB write; clearPersisted awaits it before clearing. */
+  private pendingIdbWrite: Promise<void> | null = null
+  /** True between clearPersisted and the IDB-clear completing — blocks saves
+   *  from resurrecting cleared messages. */
+  private cleared = false
+  private idbClearPromise: Promise<void> | null = null
+
   constructor(sessionId: string) {
     registerStoreForDebug(sessionId, this)
     // Try to restore from localStorage cache first
@@ -303,6 +359,62 @@ export class SessionStore {
       this.state = createInitialSessionState(sessionId)
       this.snapshot = this.buildSnapshot(this.state)
     }
+    // Kick off async IDB hydration (open + scan + cold-load). Does not block
+    // construction — the LS tail is already painted sync above. IDB supersedes
+    // it with a fuller recent window when ready.
+    this.idbReady = this.initIdb()
+  }
+
+  /** Open IDB, rebuild persistedUuids/uuidToSeq/seq watermarks, and cold-load
+   *  up to MEMORY_ITEM_CAP most-recent messages from IDB (superseding the tiny
+   *  LS tail). Fire-and-forget from the constructor; failures set
+   *  idbAvailable=false and silently regress to Plan B. */
+  private async initIdb(): Promise<void> {
+    let db: IDBPDatabase | null
+    try {
+      db = await openDb()
+    } catch {
+      db = null
+    }
+    if (!db) {
+      this.idbAvailable = false
+      return
+    }
+    const sessionId = this.state.sessionId
+    try {
+      // Rebuild tracking from IDB. scanUuidSeqs reads every record's uuid+seq.
+      const uuidSeqs = await scanUuidSeqs(db, sessionId)
+      for (const [uuid, seq] of uuidSeqs) {
+        this.persistedUuids.add(uuid)
+        this.uuidToSeq.set(uuid, seq)
+        if (seq > this.maxSeq) this.maxSeq = seq
+        if (seq < this.minSeq) this.minSeq = seq
+      }
+      // If meta has watermarks beyond what scan found (scan is authoritative,
+      // but meta is the cheap path), reconcile — scan already sets them.
+      const meta = await getMeta(db, sessionId)
+      if (meta) {
+        if (meta.maxSeq > this.maxSeq) this.maxSeq = meta.maxSeq
+        if (meta.minSeq < this.minSeq) this.minSeq = meta.minSeq
+      }
+      // Cold-load: only if IDB has more recent history than memory currently
+      // holds. Fetch up to MEMORY_ITEM_CAP most-recent and PREPEND (dedup vs
+      // the LS tail by uuid). Skip if memory is already at the cap (a live
+      // session mid-stream) to avoid a re-render jump.
+      if (this.state.mirror.items.length < MEMORY_ITEM_CAP && this.maxSeq > 0) {
+        const records = await cursorRecent(db, sessionId, MEMORY_ITEM_CAP)
+        if (records.length > 0) {
+          const msgs = records.map((r) => r.msg)
+          // Dispatch PREPEND_MESSAGES — the reducer dedups by uuid against
+          // the in-memory LS tail, so overlapping recent messages don't
+          // duplicate. Older IDB messages extend the view backward.
+          this.dispatch({ type: 'PREPEND_MESSAGES', messages: msgs })
+        }
+      }
+    } catch {
+      // IDB read failure — disable IDB for this store, regress to Plan B.
+      this.idbAvailable = false
+    }
   }
 
   getState(): SessionState {
@@ -321,8 +433,26 @@ export class SessionStore {
   }
 
   dispatch(action: SessionAction): void {
+    // Detect api_retry tail-supersession: the reducer's updateTranscriptMirror
+    // replaces/strips the trailing api_retry in place when a new api_retry (or
+    // a non-retry after a retry) lands. The dropped uuid would otherwise linger
+    // in IDB and re-emerge on cold-load cursor — capture it here for deletion.
+    let prevTailUuid: string | undefined
+    if (action.type === 'MESSAGE') {
+      const items = this.state.mirror.items
+      prevTailUuid = items.length > 0 ? items[items.length - 1].id : undefined
+    }
     const next = reduceSessionState(this.state, action)
     if (next === this.state) return
+    if (prevTailUuid != null && action.type === 'MESSAGE') {
+      const stillPresent = next.mirror.items.some((i) => i.id === prevTailUuid)
+      if (!stillPresent) this.supersededUuids.add(prevTailUuid)
+    }
+    // CLEAR_TRANSCRIPT (the /clear wipe) resets IDB tracking so the next save
+    // re-persists the fresh empty → new state from scratch.
+    if (action.type === 'CLEAR_TRANSCRIPT') {
+      this.resetIdbTracking()
+    }
     this.state = next
     this.snapshot = this.buildSnapshot(next)
     this.scheduleFlush()
@@ -378,6 +508,32 @@ export class SessionStore {
     }
     this.saveDirtySince = null
     clearSessionStorage(this.state.sessionId)
+    // IDB clear: set `cleared` (blocks saves from resurrecting), await the
+    // in-flight write, then delete all IDB records for the session. The
+    // `cleared` flag is reset once the delete completes so post-clear new
+    // messages re-persist from scratch. Fire-and-forget — the LS key is
+    // already gone synchronously above.
+    if (this.idbAvailable) {
+      this.cleared = true
+      this.idbClearPromise = this.clearIdb()
+    }
+  }
+
+  private async clearIdb(): Promise<void> {
+    try {
+      if (this.pendingIdbWrite) await this.pendingIdbWrite
+      const db = await openDb()
+      if (!db) {
+        this.idbAvailable = false
+        return
+      }
+      await clearSession(db, this.state.sessionId)
+    } catch {
+      // best-effort
+    } finally {
+      this.cleared = false
+      this.idbClearPromise = null
+    }
   }
 
   destroy(): void {
@@ -428,6 +584,139 @@ export class SessionStore {
   private save(): void {
     this.saveDirtySince = null
     persistToStorage(this.state.sessionId, this.state)
+    // Fire-and-forget IDB delta-write. Tracked as pendingIdbWrite so
+    // clearPersisted can await it before clearing (avoids resurrect-after-clear).
+    if (this.idbAvailable) {
+      this.pendingIdbWrite = this.saveIdb().catch(() => {
+        // saveIdb already handles quota/disabled; swallow unexpected rejections
+        // so the pendingIdbWrite chain never rejects.
+      })
+    }
+  }
+
+  /** Bypass the save debounce and persist immediately (sync LS + async IDB).
+   *  Used by `destroy()` and tests. */
+  persistNow(): void {
+    if (this.saveTimer != null) {
+      window.clearTimeout(this.saveTimer)
+      this.saveTimer = null
+    }
+    this.saveDirtySince = null
+    this.save()
+  }
+
+  /** Await the in-flight IDB write (if any). For tests and Phase 3 destroy. */
+  async flushIdb(): Promise<void> {
+    if (this.pendingIdbWrite) await this.pendingIdbWrite
+    if (this.idbClearPromise) await this.idbClearPromise
+  }
+
+  /** Reset in-memory IDB tracking. Called on CLEAR_TRANSCRIPT (the wipe) so the
+   *  post-clear state re-persists from scratch. Does NOT touch IDB itself —
+   *  clearPersisted drives the IDB clear. */
+  private resetIdbTracking(): void {
+    this.persistedUuids.clear()
+    this.uuidToSeq.clear()
+    this.maxSeq = 0
+    this.minSeq = 0
+    this.supersededUuids.clear()
+  }
+
+  /** Delta-write new in-memory messages to IDB, assigning each a stable `seq`
+   *  (chronological rank) at persist time. New messages only ever arrive at
+   *  the ends of `mirror.messages` (live/replay append at the tail; loadOlder
+   *  backfill at the head), so the unpersisted set forms a prefix (older →
+   *  --minSeq) and/or suffix (newer → ++maxSeq). Also drains superseded
+   *  api_retry uuids. */
+  private async saveIdb(): Promise<void> {
+    if (this.cleared || !this.idbAvailable) return
+    const db = await openDb()
+    if (!db) {
+      this.idbAvailable = false
+      return
+    }
+    const sessionId = this.state.sessionId
+    const messages = this.state.mirror.messages
+
+    // Find the first and last persisted indices. New messages sit before the
+    // first persisted (prefix) or after the last (suffix). A middle gap
+    // (unpersisted between two persisted) shouldn't occur given trimFront +
+    // splitReplayAgainstCache semantics; if it does, treat as suffix.
+    let firstPersisted = -1
+    let lastPersisted = -1
+    for (let i = 0; i < messages.length; i++) {
+      const uuid = msgUuid(messages[i])
+      if (uuid && this.persistedUuids.has(uuid)) {
+        if (firstPersisted === -1) firstPersisted = i
+        lastPersisted = i
+      }
+    }
+
+    const newRecords: MessageRecord[] = []
+
+    // Prefix (older than the persisted window) → --minSeq. mirror.messages is
+    // oldest-first, so prefix[0] is oldest → smallest seq.
+    if (firstPersisted > 0) {
+      const len = firstPersisted
+      for (let i = 0; i < len; i++) {
+        const uuid = msgUuid(messages[i])
+        if (!uuid || this.persistedUuids.has(uuid)) continue
+        const seq = this.minSeq - (len - i) // oldest (i=0) → minSeq-len
+        newRecords.push({ sessionId, uuid, seq, msg: projectMessage(messages[i]) })
+        this.persistedUuids.add(uuid)
+        this.uuidToSeq.set(uuid, seq)
+      }
+      this.minSeq -= len
+    }
+
+    // Suffix (newer than the persisted window) → ++maxSeq, in arrival order.
+    const suffixStart = lastPersisted === -1 ? (firstPersisted === -1 ? 0 : messages.length) : lastPersisted + 1
+    for (let i = suffixStart; i < messages.length; i++) {
+      const uuid = msgUuid(messages[i])
+      if (!uuid || this.persistedUuids.has(uuid)) continue
+      this.maxSeq += 1
+      const seq = this.maxSeq
+      newRecords.push({ sessionId, uuid, seq, msg: projectMessage(messages[i]) })
+      this.persistedUuids.add(uuid)
+      this.uuidToSeq.set(uuid, seq)
+    }
+
+    // Middle-unpersisted (gap fill, rare) → ++maxSeq.
+    if (firstPersisted !== -1) {
+      for (let i = firstPersisted + 1; i < lastPersisted; i++) {
+        const uuid = msgUuid(messages[i])
+        if (!uuid || this.persistedUuids.has(uuid)) continue
+        this.maxSeq += 1
+        const seq = this.maxSeq
+        newRecords.push({ sessionId, uuid, seq, msg: projectMessage(messages[i]) })
+        this.persistedUuids.add(uuid)
+        this.uuidToSeq.set(uuid, seq)
+      }
+    }
+
+    const superseded = Array.from(this.supersededUuids)
+    this.supersededUuids.clear()
+
+    if (newRecords.length === 0 && superseded.length === 0) return
+
+    const meta = { sessionId, maxSeq: this.maxSeq, minSeq: this.minSeq }
+    try {
+      // Await any in-flight clear first — a clear racing this write would
+      // either delete what we just put or let this put resurrect cleared data.
+      if (this.idbClearPromise) await this.idbClearPromise
+      if (superseded.length > 0) await deleteMessages(db, sessionId, superseded)
+      if (newRecords.length > 0) await putMessages(db, newRecords, meta)
+      else await putMeta(db, meta)
+      for (const u of superseded) {
+        this.persistedUuids.delete(u)
+        this.uuidToSeq.delete(u)
+      }
+    } catch (e) {
+      if (isIdbQuotaError(e)) {
+        this.idbAvailable = false
+      }
+      // Non-quota errors: best-effort, swallow. The LS cache is the fallback.
+    }
   }
 
   /** Per-instance equivalent of the old module-global running-subagents

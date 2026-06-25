@@ -604,7 +604,7 @@ function applyMessageConsumed(state: SessionState, uuid: string, consumedAt: num
 // long autonomous-agent session can accumulate tens of thousands of frames.
 // We keep at most MEMORY_ITEM_CAP items in memory; trimmed messages remain
 // recoverable by scrolling up (loadOlder re-reads them from disk).
-const MEMORY_ITEM_CAP = 1000
+export const MEMORY_ITEM_CAP = 1000
 // Hysteresis: only trim once we exceed CAP + SLACK, then drop back to CAP. So
 // trimming runs once every SLACK appends (not every message), keeping the
 // common append path allocation-free.
