@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A local browser UI for `@anthropic-ai/claude-agent-sdk`. Ships as a single `npx claude-react-web` binary that serves both the Hono API (port 3456) and the built React client. Each chat session holds a live SDK `Query` on the server, so multi-turn conversations, interrupts, model switches, and permission-mode changes all drive an actual subprocess.
+A local browser UI for `@anthropic-ai/claude-agent-sdk`. Ships as a single `npx claude-react-web` binary that serves both the Hono API (port 3456) and the built React client. Sessions are backed by a pluggable **provider** layer (`server/providers/`); the default `claude` provider wraps a live SDK `Query` per session, so multi-turn conversations, interrupts, model switches, and permission-mode changes all drive an actual subprocess.
 
 ## Commands
 
@@ -19,38 +19,45 @@ npm run start       # run the built dist/cli.mjs directly
 npm run preview     # build + start
 ```
 
-Launch env: set `ANTHROPIC_API_KEY` (or `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`) before starting. CLI flags: `-p/--port`, `--host`, `--no-open`, `--cwd`, `--model`.
+Launch env: Anthropic credentials live in `~/.claude-react-web/config.json` (`authToken` / `baseUrl`), not env vars — `server/config.ts` reads no `process.env`; the server injects them into each SDK subprocess. The CLI warns at startup if `authToken` is unset. CLI flags: `-p/--port`, `--host`, `--token` (web access token; auto-generated on non-loopback host), `-o/--open` / `--no-open`, `--cwd`, `--model`, `--state-dir`, `--claude-binary`.
 
 Two tsconfigs exist because the browser (`src/`) and Node (`server/`, `build.mjs`, `vite.config.ts`) have different `lib`/`types` needs; always run both when typechecking. Server tests run in Node; client hook tests run with jsdom via vitest workspaces.
 
 ## Architecture
 
-### Server: one `Query` per session
+### Server: one provider session per tab
 
-`server/session-manager.ts` is the core. For each session it holds:
+`server/session-manager.ts` is the core. It owns a pool of sessions, each backed by a **provider session handle** (`server/providers/types.ts` — `ProviderSessionHandle`) rather than an SDK `Query` directly. The default `claude` provider (`server/providers/claude/claude-provider.ts` + `claude-session.ts`) is the one that wraps the SDK `Query`; providers are registered in a `ProviderRegistry` (`server/providers/registry.ts`) and selected per session, so the manager itself is provider-agnostic. The `claude` provider advertises a `capabilities` set (supports interrupt / model switch / MCP / resume / fork / plugins / fast mode / effort level / …) that the manager guards control operations against.
 
-- A `Pushable<SDKUserMessage>` input queue (`server/pushable.ts`) whose `.iterable` is passed as `prompt` to `query({ prompt, options })`. User turns from HTTP `POST /sessions/:id/messages` are `.push()`'d into it — either via `send(id, text)` for plain text or `sendContent(id, content)` for multimodal (text + image) arrays.
-- The `Query` async generator returned by the SDK. A background `pump()` task iterates it, appends every message to a bounded history ring (`HISTORY_CAP = 500`), and fans out to all live WebSocket subscribers of that session.
-- A `pending` map of tool-permission requests (`PendingPermission`). The session registers a `canUseTool` callback (unless `permissionMode === 'bypassPermissions'`) that parks each request in this map, broadcasts on the permission channel, and resolves the SDK's promise only when the client POSTs a decision.
-- Two subscriber sets: one for SDK messages, one for permission events. Each WebSocket connection gets its own queue+waiter iterable so a slow client can't block the SDK pump.
+For each session the manager holds:
 
-Control operations (`interrupt`, `setModel`, `setPermissionMode`, `applyFlagSettings`) are forwarded straight to `Query`'s methods, which implement them as in-band control requests to the CLI subprocess. The session holder also proxies `supportedModels`, `supportedCommands`, `supportedAgents`, `mcpServerStatus`, `getContextUsage`.
+- A provider handle exposing a queued input (`enqueueUserMessage` / `sendControlMessage` / `clearQueuedInput`) and a streamed `messages` async iterable. Under the hood the `claude` provider backs this with a `Pushable<SDKUserMessage>` queue (`server/pushable.ts`) whose `.iterable` is passed as `prompt` to `query({ prompt, options })`. User turns from HTTP `POST /sessions/:id/messages` are enqueued — via `send(id, text)` for plain text or `sendContent(id, content)` for multimodal (text + image) arrays.
+- The provider's message stream. A background `pump()` task (`server/session-pump.ts`) iterates it, appends every message to a bounded history ring (`HISTORY_CAP = 500`), and fans out to all live WebSocket subscribers of that session.
+- A `pending` map of tool-permission requests (`PendingPermission`). The session registers a `canUseTool` callback (unless `permissionMode === 'bypassPermissions'`) that parks each request in this map, broadcasts on the permission channel, and resolves the SDK's promise only when the client POSTs a decision. The broker lives in `server/permission-broker.ts`.
+- Two subscriber sets: one for messages, one for permission events. Each WebSocket connection gets its own queue+waiter iterable so a slow client can't block the pump.
 
-Idle GC runs every minute; sessions whose `lastActivityAt` is older than `idleMs` (default 30 min) **and** have zero subscribers are deleted.
+Control operations (`interrupt`, `setModel`, `setPermissionMode`, `applyFlagSettings`) are delegated through the provider handle (guarded by its capabilities); the `claude` provider forwards them to `Query`'s methods, which implement them as in-band control requests to the CLI subprocess. The session holder also proxies `supportedModels`, `supportedCommands`, `supportedAgents`, `mcpServerStatus`, `getContextUsage` (again, capability-gated).
+
+Stuck-session GC runs every 60s via `server/session-health.ts`. **Idle sessions are no longer auto-unloaded** — they persist until explicitly deleted by the user. The GC tick only catches sessions that are mid-turn (`pendingTurns > 0` or permissions pending) and have been silent longer than `workingStuckMs`: it auto-interrupts first, then escalates to a force-unload if the subprocess stays wedged (see `checkStuck`'s three cases: mid-turn silence, init-never-landed, and already-interrupted-escalation).
 
 ### WebSocket + REST wire protocol
 
-The server uses a single WebSocket connection per browser tab (`server/ws.ts` + `server/ws-protocol.ts`) that multiplexes all channels. The client connects via `useWsHub` (`src/hooks/useWsHub.ts`) which provides exponential backoff, ping heartbeat, and ref-counted subscriptions.
+The server uses a single WebSocket connection per browser tab (`server/ws.ts`) that multiplexes all channels. The canonical frame definitions live in `shared/ws-protocol.ts` (generic); `server/ws-protocol.ts` and `src/ws-types.ts` are thin instantiation aliases that bind those generics to the server's SDK types and the browser's lightweight types respectively — **not** duplicated mirrors. The client connects via `useWsHub` (`src/hooks/useWsHub.ts`) which provides exponential backoff, ping heartbeat, and ref-counted subscriptions.
 
-**WebSocket frame kinds** (server → client):
+**WebSocket frame kinds** (server → client) — canonical list in `shared/ws-protocol.ts`:
 - `sessions-snapshot` / `session-created` / `session-update` / `session-removed` — global session list mutations
-- `session-replay` / `session-replay-done` / `session-message` — per-session message stream (replay on subscribe, then live)
-- `session-permission-request` / `session-permission-resolved` — per-session tool permission events
+- `replay` / `replay-done` / `message` — per-session message stream (replay on subscribe, then live)
+- `message-consumed` — the SDK has read a queued user turn (drives the "sending → sent" transition)
+- `permission-request` / `permission-resolved` — per-session tool permission events
+- `session-cleared` — a `/clear` completed and the server truncated its history ring; clients reset their transcript store
 - `global-permission-request` — cross-session permission notification (for sidebar badge)
-- `session-context-usage` — per-session context window usage
+- `context-usage` — per-session context window usage
+- `session-recap-update` — a recap state transition (pending / ready / error / cleared) for this session
+- `hook-run` — a hook lifecycle event fired during the turn
+- `commands-changed` — the supported slash-command set changed (e.g. after dynamic skill/command discovery)
 - `git-status-changed` — per-session signal that the worktree may have changed (debounced, fired after Claude's mutating tools land); clients refetch their own status / branches / stashes / session-files
 
-`server/routes.ts` exposes the REST surface under `/api`:
+`server/routes/index.ts` (`buildApiRouter`) composes the REST surface under `/api` from per-concern sub-routers in `server/routes/` (`sessions.ts`, `permissions.ts`, `uploads.ts`, `recap.ts`, `config-routes.ts`, `health-routes.ts`, `mp-marketplace.ts`, `git-write.ts`, `update-routes.ts`, `search.ts`, `skills.ts`, `hooks.ts`):
 
 - `GET /sessions`, `POST /sessions`, `DELETE /sessions/:id`
 - `POST /sessions/:id/messages` — accepts either legacy `{ text }` string or `{ content }` array (text + image blocks for multimodal input). Image blocks use `{ type: 'image', source: { type: 'base64', data, media_type } }`. Total base64 payload capped at 28 MB. Valid image types: jpeg, png, gif, webp.
@@ -62,8 +69,9 @@ The server uses a single WebSocket connection per browser tab (`server/ws.ts` + 
 - `POST /sessions/:id/recap` — AI-generated session summary
 - `/api/fs` (from `server/fs-routes.ts`) — minimal directory-only browser used by the cwd picker. Lists sub-directories of an absolute path; never returns file contents.
 - `/api/git/*` (from `server/git-routes.ts`) — read-only `GET /status`, `/diff`, `/log`, all `?cwd=…`-scoped. Returns `{ isRepo: false }` (200) when the cwd is reachable but isn't a work tree. Writes live under `/api/sessions/:id/git/*` (in `server/routes/git-write.ts`): `stage`, `unstage`, `discard`, `commit`, `abort-merge`, `abort-rebase`, `stash`/`stash-pop`/`stash-drop`, `branch`, `checkout`, `session-files`, `session-diff`, `commit-message`. Destructive verbs require `confirm: true` in the body. After every write the route broadcasts `git-status-changed` and returns the freshly-fetched `GitStatus` (and `branches` / `stashes` when relevant) so clients update without a second round-trip.
+- Disk-backed stores, each mounted as its own router and persisted under the state dir: `/api/mcp-config/*` (global MCP server config, `mcp-config.ts`), `/api/mp/*` (homegrown git-repo marketplace — `mp-store.ts`; enabled entries are injected into `Options.plugins` on spawn, so it's the plugin path), `/api/snippets` (composer text macros, `snippet-store.ts`), `/api/ui-state` (session groups + sidebar order, `ui-state-store.ts`). `/api/update-info` (stateless in-app upgrade check, `update-routes.ts`); `/api/search` (message search across a session); `/api/sessions/:id/skills` and `/api/sessions/:id/hooks` (skill policy + hook config per session, backed by `shared/skills.ts` / `shared/hooks.ts`).
 
-`server/app.ts` composes the Hono app, mounts CORS and logging middleware, and locates the built client by walking a few candidate paths so both `tsx server/cli.ts` and the bundled `dist/cli.mjs` find `dist/client/` without config.
+`server/app.ts` composes the Hono app: a web-access auth gate (no-op unless bound non-loopback or a token is set), CORS (reflects trusted/loopback/LAN origins only), a 32 MB body limit, security headers, request logging, then the API/WS routers and static client serving. It also mounts the per-store routers (`/api/mcp-config`, `/api/snippets`, `/api/ui-state`) only when their stores were provided, and locates the built client by walking a few candidate paths so both `tsx server/cli.ts` and the bundled `dist/cli.mjs` find `dist/client/` without config.
 
 ### Client: React 19 + Vite
 
@@ -76,7 +84,7 @@ The server uses a single WebSocket connection per browser tab (`server/ws.ts` + 
 - `src/hooks/usePermissionChannel.ts` — permission state, optimistic decide+answer.
 - `src/hooks/useApi.ts` — thin `fetch` wrapper with `/api` base (REST calls only; streaming goes through WS).
 - `src/hooks/useKeyboardShortcuts.ts` — global shortcut dispatcher with input-safe routing.
-- `src/types.ts` — UI-side types. The browser bundle does **not** import `@anthropic-ai/claude-agent-sdk`; SDK messages are typed as `SdkMessage` (loose shape with `type/subtype/message/event/...`) and rendered defensively. `src/ws-types.ts` mirrors `server/ws-protocol.ts` (intentional duplication; no automated drift check).
+- `src/types.ts` — UI-side types. The browser bundle does **not** import `@anthropic-ai/claude-agent-sdk`; SDK messages are typed as `SdkMessage` (loose shape with `type/subtype/message/event/...`) and rendered defensively. `src/ws-types.ts` binds the generic frames from `shared/ws-protocol.ts` to browser types (see the wire-protocol note above). Shared, SDK-agnostic types and logic that both server and client use live in `shared/` (`ws-protocol.ts`, `hooks.ts`, `skills.ts`, `mcp-types.ts`, `permission-request.ts`, `session-info.ts`, `search/`, …).
 
 Vite dev server on 5174 proxies `/api` to 3456. Production: `vite build` → `dist/client/`, served statically by the same Hono app that hosts the API. An SPA fallback returns `index.html` for any unmatched GET so client-side routing works.
 

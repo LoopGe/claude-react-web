@@ -135,40 +135,84 @@ Useful scripts:
 ## Architecture
 
 ```mermaid
-graph LR
-    Browser["Browser UI<br/>(React 19)"] <-->|"WebSocket<br/>(multiplexed)"| Server["Hono Server<br/>(port 3456)"]
-    Server <-->|"REST API"| SDK["Claude Agent SDK<br/>(subprocess)"]
-    Server --> Sessions["Session Manager<br/>(Query lifecycle)"]
-    Server --> Permissions["Permission Broker<br/>(canUseTool)"]
-    Server --> Git["Git Layer<br/>(status, diff, commit)"]
-    Sessions --> History["History Ring<br/>(capped, 500 msgs)"]
-    History -->|"fan-out"| Browser
+graph TB
+  Browser["Browser UI<br/>React 19 · components · hooks · session-store"]
+  Browser <-->|"WebSocket (multiplexed) + REST /api"| Routers
+
+  subgraph Server["Hono Server · port 3456"]
+    direction TB
+    Gate["Auth gate (web token / LAN) · CORS · body-limit"]
+    Routers["REST routers /api/* + WebSocket hub"]
+    Gate --> Routers
+  end
+
+  subgraph SM["Session Manager — one live session per tab"]
+    direction TB
+    Pool["Session pool"]
+    Pump["Session Pump → history ring (500) → fan-out"]
+    Broker["Permission Broker (canUseTool)"]
+    Health["Health Monitor (stuck-session GC)"]
+    Pool --> Pump & Broker & Health
+  end
+
+  Reg["Provider Registry<br/>(pluggable AgentProvider)"]
+  Claude["claude provider → SDK Query"]
+  SDK["Claude Agent SDK<br/>spawns claude CLI subprocess"]
+  Anthro["Anthropic Messages API<br/>recap · commit-message (direct)"]
+  Stores["Disk-backed stores<br/>sessions.json · config.json · MCP · marketplace→plugins · snippets · UI state"]
+  Git["Git Layer — git.ts owns all execution"]
+  Disk[("~/.claude/projects/<br/>full transcripts · resumed via options.resume")]
+
+  Routers --> Pool
+  Pool --> Reg --> Claude --> SDK
+  Broker -.->|canUseTool| Claude
+  Routers --> Anthro
+  Routers --> Stores
+  Pump --> Git
+  Claude --> Disk
+  Pump -.->|history-reader| Disk
 ```
 
 ```
 server/
-  cli.ts              # bin entry — parse argv, start server, open browser
-  app.ts              # Hono app + static serve + route mounting
-  routes/             # REST endpoints (sessions, permissions, uploads, config, git-write, …)
-  git-routes.ts       # Read-only git endpoints; git.ts owns all git execution
-  ws.ts               # WebSocket hub (single connection, multiplexed channels)
-  ws-protocol.ts      # Shared frame types for the WebSocket wire format
-  session-manager.ts  # Multi-session pool, Query lifecycle, WebSocket fan-out
-  session-pump.ts     # Drains each Query generator into history + subscribers
-  permission-broker.ts# Parks canUseTool requests until the client decides
-  config.ts           # Centralised defaults loaded from config.json
-  persistence.ts      # ~/.claude-react-web/sessions.json read/write
-  auth.ts             # Web-access token gating
-  pushable.ts         # Async iterable with push()
-  fs-routes.ts        # Directory picker backend
+  cli.ts                # bin entry — argv, startup banner, QR, browser open
+  app.ts                # Hono app: auth gate, CORS, body-limit, route mounting, static serve
+  routes/               # REST routers: sessions, permissions, uploads, recap, config,
+                        # health, marketplace (mp), git-write, update, search, skills, hooks
+  session-manager.ts    # multi-session pool, provider wiring, WS fan-out, idle GC
+  session-pump.ts       # drains each provider stream → history ring + subscribers
+  providers/            # AgentProvider interface + registry; claude provider wraps the SDK Query
+  permission-broker.ts  # parks canUseTool requests until the client decides
+  session-health.ts     # stuck-session detector (mid-turn silence GC)
+  recap.ts              # AI session summaries, via anthropic-api.ts
+  history-reader.ts     # reads ~/.claude/projects transcripts; resume / fork anchors
+  ws.ts                 # WebSocket hub (single connection, multiplexed channels)
+  git.ts                # owns ALL git execution (runGit); git-broadcast.ts debounces mutations
+  git-routes.ts         # read-only git endpoints (status, diff, log)
+  mcp-config.ts         # global MCP server store; mcp-routes.ts exposes it
+  mp-store.ts           # homegrown git-repo marketplace → injects Options.plugins
+  snippet-store.ts      # composer text macros (snippet-routes.ts)
+  ui-state-store.ts     # session groups + sidebar order (json-file-store.ts backed)
+  config.ts             # centralised defaults from config.json
+  persistence.ts        # ~/.claude-react-web/sessions.json read/write
+  auth.ts               # web-access token gating (LAN)
+  exec.ts               # child_process helpers; process-monitor.ts watches subprocesses
+  update-checker.ts     # in-app upgrade detection (update-routes.ts)
+  log.ts                # createLogger(scope) — all diagnostics go through this
+
+shared/                 # types + logic shared by server and client
+                        # ws-protocol, hooks, skills, mcp-types, permission-request, search/, …
 
 src/
-  App.tsx             # multi-panel chat grid, sidebar, settings overlay, command palette
-  components/         # Chat, Composer, MessageList, SessionList, GitPanel, CommandPalette, …
-  hooks/              # useWsHub, useChatStream, usePastedImages, usePermissionChannel, useKeyboardShortcuts, useGitStatus, …
+  App.tsx               # multi-panel chat grid, sidebar, settings overlay, command palette
+  components/           # Chat, Composer, MessageList, SessionList, GitPanel, CommandPalette,
+                        # MarketplaceTab, McpInstaller, UpdateBanner, SubagentOverlay, …
+  hooks/                # useWsHub, useChatStream, usePastedImages, usePermissionChannel,
+                        # useGitStatus, useUpdateInfo, useUiState, useSessionRecap, …
+  session-store/        # client-side message store (reducer + selectors)
 ```
 
-The server keeps one live `Query` per session — `session-pump.ts` drains it and fans each SDK message out to every WebSocket subscriber via a single multiplexed connection per tab. Metadata is persisted in `~/.claude-react-web/sessions.json`, so sessions survive restarts; the SDK itself stores full conversation history in `~/.claude/projects/` and resumes them via `options.resume`. Server-side defaults (model list, recap model, commit-message model, upload limits, etc.) are centralised in `config.ts` and configurable via `~/.claude-react-web/config.json` — see [CONFIG.md](./CONFIG.md).
+The server keeps one live provider session per tab — the default `claude` provider wraps the SDK `Query`, and `session-pump.ts` drains it, fanning each SDK message out to every WebSocket subscriber via a single multiplexed connection per tab. Metadata is persisted in `~/.claude-react-web/sessions.json`, so sessions survive restarts; the SDK itself stores full conversation history in `~/.claude/projects/` and resumes them via `options.resume`. Server-side defaults (model list, recap model, commit-message model, upload limits, etc.) are centralised in `config.ts` and configurable via `~/.claude-react-web/config.json` — see [CONFIG.md](./CONFIG.md).
 
 ## Contributing
 
