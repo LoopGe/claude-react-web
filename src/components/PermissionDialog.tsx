@@ -150,7 +150,7 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
             <span aria-hidden style={{ display: 'inline-flex' }}>{isPlanRequest ? <IconClipboardList size={16} /> : <IconLock size={16} />}</span>
             {isPlanRequest ? 'Plan ready for review' : 'Tool permission required'}
           </h3>
-          {isPlanRequest && onMinimize && (
+          {onMinimize && (
             <button
               className="btn-icon"
               aria-label="Minimize"

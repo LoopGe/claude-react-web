@@ -102,3 +102,38 @@ describe('PermissionDialog plan approval', () => {
     expect(labels.some((l) => l.startsWith('Approve'))).toBe(false)
   })
 })
+
+describe('PermissionDialog minimize button', () => {
+  it('renders a Minimize button for a non-plan request when onMinimize is provided', () => {
+    const onMinimize = vi.fn()
+    const { container } = render(
+      <PermissionDialog request={toolRequest()} onDecide={vi.fn()} onMinimize={onMinimize} />,
+    )
+    const btn = within(container).getByRole('button', { name: 'Minimize' })
+    expect(btn).toBeTruthy()
+  })
+
+  it('does not render a Minimize button when onMinimize is not provided', () => {
+    const { container } = render(
+      <PermissionDialog request={toolRequest()} onDecide={vi.fn()} />,
+    )
+    expect(within(container).queryByRole('button', { name: 'Minimize' })).toBeNull()
+  })
+
+  it('clicking the Minimize button calls onMinimize', () => {
+    const onMinimize = vi.fn()
+    const { container } = render(
+      <PermissionDialog request={toolRequest()} onDecide={vi.fn()} onMinimize={onMinimize} />,
+    )
+    fireEvent.click(within(container).getByRole('button', { name: 'Minimize' }))
+    expect(onMinimize).toHaveBeenCalledTimes(1)
+  })
+
+  it('still renders a Minimize button for a plan request when onMinimize is provided (regression)', () => {
+    const onMinimize = vi.fn()
+    const { container } = render(
+      <PermissionDialog request={planRequest()} onDecide={vi.fn()} onMinimize={onMinimize} />,
+    )
+    expect(within(container).getByRole('button', { name: 'Minimize' })).toBeTruthy()
+  })
+})
