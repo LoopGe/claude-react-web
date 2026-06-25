@@ -26,6 +26,7 @@ import { countMatches, extractPlainText } from '../search'
 import { BlockView, ToolResultBlock } from './message-list/blocks'
 import { OlderHistoryHeader, StreamingFooter } from './message-list/transcript-chrome'
 import { Skeleton } from './Skeleton'
+import { ChatEmptyState } from './ChatEmptyState'
 import { AnsiText } from './AnsiText'
 import { ResultConsumedCtx, useResultConsumed } from './message-list/result-consumed-context'
 import { extractUserText, makeResultConsumed, willRenderEmpty } from './message-list/rendering'
@@ -1156,7 +1157,7 @@ export const MessageList = memo(function MessageList({ items, working, replayRea
         {renderableItems.length === 0 ? (
           <div className="chat-messages-empty">
             {replayReady
-              ? (emptyStateContent ?? 'Type a message below to start the conversation.')
+              ? (emptyStateContent ?? <ChatEmptyState />)
               : <Skeleton rows={3} className="chat-messages-skeleton" />}
           </div>
         ) : (

@@ -141,11 +141,22 @@ describe('MessageList', () => {
     virtuosoMockState.streamingSpacerHeight = 0
   })
 
-  it('shows empty state when messages are empty', () => {
+  it('shows the default empty state when messages are empty', () => {
     const { container } = render(
       <MessageList items={[]} replayReady />,
     )
-    expect(container.textContent).toContain('Type a message below')
+    // Default empty state renders a titled stack (not the old bare string).
+    expect(container.textContent).toContain('Start a conversation')
+    expect(container.querySelector('.chat-empty')).toBeTruthy()
+  })
+
+  it('renders a custom emptyStateContent when provided', () => {
+    const { container } = render(
+      <MessageList items={[]} replayReady emptyStateContent={<div data-testid="custom-empty">side chat hint</div>} />,
+    )
+    expect(container.querySelector('[data-testid="custom-empty"]')).toBeTruthy()
+    // Default empty state must NOT also render.
+    expect(container.querySelector('.chat-empty')).toBeNull()
   })
 
   it('shows loading state when replayReady is false', () => {
