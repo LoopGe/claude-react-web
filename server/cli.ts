@@ -12,6 +12,7 @@ import { dirname, join } from 'node:path'
 import open from 'open'
 import QRCode from 'qrcode'
 import { buildApp } from './app.js'
+import pkg from '../package.json' with { type: 'json' }
 import { isLoopbackHost, lanIPv4Addresses } from './net.js'
 import { setWebAuth } from './auth.js'
 import { loadConfig, config } from './config.js'
@@ -37,6 +38,7 @@ interface CliArgs {
   claudeBinary?: string
   token?: string
   help: boolean
+  version: boolean
 }
 
 /** Resolve the absolute path to the `claude` CLI binary.
@@ -173,6 +175,7 @@ Options:
                        CLAUDE_CODE_BINARY env or \`which claude\`. Use this if
                        the SDK's auto-detection picks a wrong native build
                        (e.g. musl binary on a glibc host).
+  -V, --version        Print version and exit
   -h, --help           Show this help and exit
 `.trim()
 
@@ -182,6 +185,7 @@ function parseArgs(argv: string[]): CliArgs {
     host: '127.0.0.1',
     open: true,
     help: false,
+    version: false,
   }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -226,6 +230,10 @@ function parseArgs(argv: string[]): CliArgs {
       case '--help':
         args.help = true
         break
+      case '-V':
+      case '--version':
+        args.version = true
+        break
       default:
         console.error(`unknown argument: ${a}`)
         process.exit(2)
@@ -236,6 +244,10 @@ function parseArgs(argv: string[]): CliArgs {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2))
+  if (args.version) {
+    console.log(pkg.version)
+    return
+  }
   if (args.help) {
     console.log(HELP)
     return
