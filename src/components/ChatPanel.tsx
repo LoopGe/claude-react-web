@@ -723,10 +723,10 @@ export const ChatPanel = memo(function ChatPanel({
         ) : (
           <div className="empty-state">
             {isResuming ? (
-              <>
+              <div className="empty-state-loading">
                 <div className="app-loading-spinner" />
                 <p>Resuming session...</p>
-              </>
+              </div>
             ) : (
               <>
                 <h2>Session is dormant</h2>

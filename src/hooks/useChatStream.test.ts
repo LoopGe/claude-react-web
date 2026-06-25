@@ -417,6 +417,11 @@ describe('useChatStream', () => {
     expect(result.current.contextUsage).toBeNull()
     expect(result.current.tokenRate).toBeNull()
     expect(result.current.error).toBeNull()
+    // reset() shares the /clear wipe semantic: the post-reset state is live
+    // and empty with no pending replay, so replayReady must be true —
+    // otherwise MessageList sits on the skeleton (the /clear stuck-skeleton
+    // bug, which reset() would silently reintroduce if it diverged).
+    expect(result.current.replayReady).toBe(true)
   })
 
   // ── session-cleared ───────────────────────────────────────────
@@ -498,6 +503,36 @@ describe('useChatStream', () => {
     // The pre-clear messages must NOT be resurrected.
     await waitFor(() => expect(result.current.messages).toEqual([]))
     expect(result.current.hasOlder).toBe(false)
+  })
+
+  it('marks the transcript ready after a session-cleared frame (no stuck skeleton)', async () => {
+    // Regression: /clear resets the store, but the post-clear session is
+    // live and empty. There is no pending replay — the WS subscription
+    // persists across clear (no re-subscribe), the server doesn't re-replay,
+    // and the fresh Query's system/init is NOT broadcast to clients. So
+    // replayReady MUST flip true on session-cleared, otherwise MessageList
+    // shows an infinite skeleton until the user sends a message.
+    const { result } = renderHook(
+      () => useChatStream('s1', noopPerms),
+    )
+
+    // Populate + ready the transcript first.
+    act(() => {
+      dispatchToSession('s1', {
+        kind: 'replay',
+        sessionId: 's1',
+        messages: [{ type: 'user', uuid: 'u1' }],
+      })
+      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
+    })
+    await waitFor(() => expect(result.current.replayReady).toBe(true))
+
+    act(() => {
+      dispatchToSession('s1', { kind: 'session-cleared', sessionId: 's1' })
+    })
+
+    await waitFor(() => expect(result.current.messages).toEqual([]))
+    expect(result.current.replayReady).toBe(true)
   })
 
   // ── subscribe/unsubscribe lifecycle ──────────────────────────

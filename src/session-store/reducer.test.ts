@@ -1214,3 +1214,26 @@ describe('reducer: REPLAY_REPLACE on top of a cache', () => {
     expect(ids(after)).toEqual(['a1', 'a2', 'a3', 'a4', 'a5'])
   })
 })
+
+describe('reducer: CLEAR_TRANSCRIPT', () => {
+  it('wipes both layers and marks the transcript ready (replayReady=true)', () => {
+    // /clear resets the session to a fresh, live, empty state. Unlike RESET
+    // (which leaves replayReady=false for the incoming replay), there is no
+    // pending replay after a clear — the empty-state should show, not the
+    // skeleton.
+    let state = seedCache([userMsg('u1', 'hi'), asstMsg('a1', 'hello')])
+    state = applyOptimistic(state, 'pending turn', 'optimistic:p1')
+    expect(renderedItems(state).length).toBeGreaterThan(0)
+    expect(state.mirror.permissionPending.size).toBe(0)
+    expect(state.mirror.replayReady).toBe(true)
+
+    const after = reduceSessionState(state, { type: 'CLEAR_TRANSCRIPT' })
+
+    expect(after.mirror.items).toEqual([])
+    expect(after.mirror.messages).toEqual([])
+    expect(after.mirror.replayReady).toBe(true)
+    expect(after.intent.pendingPlaceholders.size).toBe(0)
+    expect(isEmpty(after.mirror.toolStatus)).toBe(true)
+    expect(isEmpty(after.mirror.activeSubagents)).toBe(true)
+  })
+})

@@ -164,14 +164,19 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
         },
       })
     }
-    case 'RESET':
-      // RESET is the ONE action that legitimately wipes BOTH layers. Used
-      // by the /clear flow and by store.reset().
+    case 'CLEAR_TRANSCRIPT': {
+      // Same full wipe as RESET, but the post-/clear session is live and
+      // empty with no pending replay (the WS subscription persists, the
+      // server doesn't re-replay, system/init isn't broadcast). Mark the
+      // transcript ready so MessageList shows the empty-state instead of
+      // an infinite skeleton.
+      const mirror = { ...createInitialServerMirror(), replayReady: true }
       return {
         sessionId: state.sessionId,
-        mirror: createInitialServerMirror(),
+        mirror,
         intent: createInitialClientIntent(),
       }
+    }
     default:
       return state
   }

@@ -361,7 +361,16 @@ export type SessionAction =
   | { type: 'MESSAGE_CONSUMED'; uuid: string; consumedAt: number }
   | { type: 'ERROR'; message: string | null }
   | { type: 'LIVE_TURN_FLUSH' }
-  | { type: 'RESET' }
+  /** Wipe BOTH layers (mirror + intent) and leave `replayReady=true`. Used
+   *  by the /clear flow (and by store.reset()): the post-wipe state is
+   *  "live and empty" with no pending replay, so the MessageList shows the
+   *  empty-state, not the skeleton. This is the ONLY wipe semantic — the
+   *  WS subscription persists across the wipe, the server doesn't re-replay,
+   *  and the new Query's `system/init` isn't broadcast to clients, so nothing
+   *  else flips replayReady back to true. The initial pre-subscribe state
+   *  (replayReady=false) is set by createInitialServerMirror at construction,
+   *  not by an action. */
+  | { type: 'CLEAR_TRANSCRIPT' }
 
 export interface SessionSnapshot {
   replayReady: boolean
@@ -428,8 +437,8 @@ export function createInitialServerMirror(): ServerMirror {
 }
 
 /** Build a fresh ClientIntent. Used by createInitialSessionState and by
- *  RESET (which intentionally wipes both layers). NEVER called from any
- *  server-frame handler. */
+ *  CLEAR_TRANSCRIPT (which intentionally wipes both layers). NEVER called
+ *  from any server-frame handler. */
 export function createInitialClientIntent(): ClientIntent {
   return {
     pendingPlaceholders: new Map<string, TranscriptItem>(),

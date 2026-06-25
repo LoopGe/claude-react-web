@@ -327,25 +327,34 @@ export class SessionStore {
     this.emit()
   }
 
-  reset(): void {
+  /** Wipe both layers and mark the transcript ready (replayReady=true).
+   *  Shared by reset() and clearPersisted(). The post-wipe state is "live
+   *  and empty" — there is no pending replay, so replayReady MUST be true or
+   *  MessageList sits on the skeleton forever (the WS subscription persists
+   *  across the wipe, the server doesn't re-replay, system/init isn't
+   *  broadcast). Cancels the flushTimer first so a pending live-turn flush
+   *  can't fire after the mirror is rebuilt. */
+  private wipe(): void {
     if (this.flushTimer != null) {
       window.clearTimeout(this.flushTimer)
       this.flushTimer = null
     }
-    this.dispatch({ type: 'RESET' })
+    this.dispatch({ type: 'CLEAR_TRANSCRIPT' })
+  }
+
+  reset(): void {
+    this.wipe()
   }
 
   /** Reset in-memory state AND erase the localStorage cache, with no
-   *  pending write left behind. Used by the /clear flow: a plain reset()
-   *  would dispatch RESET, which schedules a debounced save that later
-   *  rewrites the key with the empty state — so a separate
-   *  clearSessionStorage() call races that timer and the key reappears.
-   *  Here we cancel BOTH timers and remove the key synchronously after the
-   *  reset, so the cache is gone and stays gone. */
+   *  pending write left behind. Used by the /clear flow. wipe() dispatches
+   *  CLEAR_TRANSCRIPT, which schedules a debounced save that would later
+   *  rewrite the key with the empty state — cancel that timer and remove the
+   *  key synchronously here so the cache is gone and stays gone. */
   clearPersisted(): void {
-    this.reset()
-    // Cancel the debounced save that reset()'s RESET dispatch just
-    // scheduled — otherwise it fires later and re-creates the key.
+    this.wipe()
+    // Cancel the debounced save that wipe()'s dispatch just scheduled —
+    // otherwise it fires later and re-creates the key.
     if (this.saveTimer != null) {
       window.clearTimeout(this.saveTimer)
       this.saveTimer = null

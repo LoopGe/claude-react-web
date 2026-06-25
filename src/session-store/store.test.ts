@@ -120,6 +120,9 @@ describe('SessionStore.clearPersisted', () => {
 
     store.clearPersisted()
     expect(store.getSnapshot().items).toEqual([])
+    // /clear leaves the session live + empty (no pending replay), so the
+    // transcript is ready — the empty-state shows, not the replay skeleton.
+    expect(store.getSnapshot().replayReady).toBe(true)
     expect(localStorage.getItem(STORAGE_PREFIX + id)).toBeNull()
   })
 
