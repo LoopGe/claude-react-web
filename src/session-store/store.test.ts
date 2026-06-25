@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionStore } from './store'
+import { toTranscriptItem } from './normalize'
 import type { SdkMessage } from '../types'
 
 // Mirrors the literal in store.ts. Kept in sync manually — if this
@@ -36,6 +37,17 @@ function userToolResult(toolUseId: string, uuid: string, isError = false): SdkMe
   } as unknown as SdkMessage
 }
 
+/** Read a message's content blocks as a typed array (test-only convenience
+ *  that also dodges noUncheckedIndexedAccess on the [0] lookup). */
+function blocksOf<T>(msg: SdkMessage): T[] {
+  return (msg.message?.content as unknown) as T[]
+}
+/** Read the i-th content block of a message as a typed object. */
+function blockField<T>(msg: SdkMessage, i: number): T {
+  const blocks = (msg.message?.content as unknown) as T[]
+  return blocks[i] as T
+}
+
 describe('SessionStore hydration', () => {
   beforeEach(() => {
     localStorage.clear()
@@ -60,19 +72,14 @@ describe('SessionStore hydration', () => {
       assistantToolUse('Grep', 'tu_grep', 'a-3'),
       // tu_grep has no result — still genuinely running.
     ]
-    const items = messages.map((msg, i) => ({
-      id: typeof msg.uuid === 'string' ? msg.uuid : `i-${i}`,
-      msg,
-      isCompactSummary: false,
-      hiddenByDefault: false,
-    }))
+    // v2 cache shape: only messages (capped projection) + lastMessageUuid.
+    // TranscriptItems are re-derived on load via toTranscriptItem.
     localStorage.setItem(
       STORAGE_PREFIX + sessionId,
       JSON.stringify({
-        v: 1,
+        v: 2,
         savedAt: Date.now(),
         messages,
-        items,
         lastMessageUuid: 'a-3',
       }),
     )
@@ -86,10 +93,240 @@ describe('SessionStore hydration', () => {
     expect(snap.items).toHaveLength(messages.length)
   })
 
+  it('discards v1 cache shape (treats as no-cache)', () => {
+    // v1 stored a duplicated items[] array; v2 drops it. Old v1 entries are
+    // discarded on load — the cache is a non-essential render hint and the
+    // WS replay repopulates within seconds.
+    const sessionId = 'session-v1-discard'
+    localStorage.setItem(
+      STORAGE_PREFIX + sessionId,
+      JSON.stringify({
+        v: 1,
+        savedAt: Date.now(),
+        messages: [assistantToolUse('Bash', 'tu_bash', 'a-1')],
+        items: [{ id: 'a-1', msg: assistantToolUse('Bash', 'tu_bash', 'a-1'), isCompactSummary: false, hiddenByDefault: false }],
+        lastMessageUuid: 'a-1',
+      }),
+    )
+
+    const store = new SessionStore(sessionId)
+    const snap = store.getSnapshot()
+    expect(snap.items).toEqual([])
+    expect(snap.replayReady).toBe(false)
+  })
+
+  it('re-derives items from cached messages identically to a live build', () => {
+    // Dropping the duplicated items[] array is only safe if re-deriving via
+    // toTranscriptItem(msg, prev) reproduces the exact items the live store
+    // would produce — including isCompactSummary (depends on prev system
+    // compact_boundary) and api_retry handling.
+    const sessionId = 'session-rederive'
+    const store = new SessionStore(sessionId)
+    const messages: SdkMessage[] = [
+      // compact_boundary system frame → next user msg is a compact summary.
+      { type: 'system', subtype: 'compact_boundary', uuid: 's-cb' } as unknown as SdkMessage,
+      // The compacted summary lands as a user message.
+      { type: 'user', uuid: 'u-summary', message: { role: 'user', content: 'summary of prior context' } } as unknown as SdkMessage,
+      assistantToolUse('Bash', 'tu_bash', 'a-1'),
+      userToolResult('tu_bash', 'r-1'),
+    ]
+    for (const msg of messages) {
+      store.dispatch({ type: 'MESSAGE', message: msg })
+    }
+    const liveItems = store.getSnapshot().items
+
+    // destroy() calls save() synchronously, flushing the v2 projection to disk.
+    store.destroy()
+    const raw = localStorage.getItem(STORAGE_PREFIX + sessionId)
+    expect(raw).not.toBeNull()
+    const data = JSON.parse(raw!)
+    expect(data.v).toBe(2)
+    expect(Array.isArray(data.messages)).toBe(true)
+
+    // Re-derive from the persisted messages and compare field-by-field.
+    const rederived: typeof liveItems = []
+    let prev: (typeof liveItems)[number] | undefined
+    for (const msg of data.messages as SdkMessage[]) {
+      const item = toTranscriptItem(msg, prev)
+      if (item) {
+        rederived.push(item)
+        prev = item
+      }
+    }
+    expect(rederived).toHaveLength(liveItems.length)
+    for (let i = 0; i < liveItems.length; i++) {
+      expect(rederived[i].id).toBe(liveItems[i].id)
+      expect(rederived[i].isCompactSummary).toBe(liveItems[i].isCompactSummary)
+      expect(rederived[i].hiddenByDefault).toBe(liveItems[i].hiddenByDefault)
+      expect(rederived[i].plainText).toBe(liveItems[i].plainText)
+      expect(rederived[i].deliveryStatus).toBe(liveItems[i].deliveryStatus)
+    }
+  })
+
   it('starts with an empty toolStatus when no cache exists', () => {
     const store = new SessionStore('session-no-cache')
     expect(store.getSnapshot().toolStatus.size).toBe(0)
     expect(store.getSnapshot().replayReady).toBe(false)
+  })
+})
+
+describe('SessionStore projection (persist-only capping)', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    localStorage.clear()
+  })
+
+  it('caps large content fields on persist and leaves live state untouched', () => {
+    const id = 'proj-caps'
+    const store = new SessionStore(id)
+    const big = 'x'.repeat(20_000) // > 8000 (tool_result) and > 16000 (text)
+    const writeInput = 'y'.repeat(70_000) // > 64KB tool_use input cap
+    const imageB64 = 'i'.repeat(50_000)
+
+    // Large tool_result content (> 8000).
+    store.dispatch({
+      type: 'MESSAGE',
+      message: {
+        type: 'user',
+        uuid: 'u-tr',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'tu1', content: big }],
+        },
+      } as unknown as SdkMessage,
+    })
+    // Large assistant text block (> 16000).
+    store.dispatch({
+      type: 'MESSAGE',
+      message: {
+        type: 'assistant',
+        uuid: 'a-text',
+        message: { role: 'assistant', content: [{ type: 'text', text: big }] },
+      } as unknown as SdkMessage,
+    })
+    // Write tool_use with large content (> 64KB).
+    store.dispatch({
+      type: 'MESSAGE',
+      message: {
+        type: 'assistant',
+        uuid: 'a-write',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'tu_write', name: 'Write', input: { file_path: '/x', content: writeInput } }],
+        },
+      } as unknown as SdkMessage,
+    })
+    // Image block (should be dropped on persist).
+    store.dispatch({
+      type: 'MESSAGE',
+      message: {
+        type: 'user',
+        uuid: 'u-img',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'see this:' },
+            { type: 'image', source: { type: 'base64', data: imageB64, media_type: 'image/png' } },
+          ],
+        },
+      } as unknown as SdkMessage,
+    })
+
+    // Live state is UNCAPPED — projection is persist-only.
+    const live = store.getSnapshot()
+    const liveTr = blockField<{ content: string }>(live.messages[0], 0).content
+    expect(liveTr.length).toBe(20_000)
+    const liveText = blockField<{ text: string }>(live.messages[1], 0).text
+    expect(liveText.length).toBe(20_000)
+    const liveWriteInput = blockField<{ input: { content: string } }>(live.messages[2], 0).input.content
+    expect(liveWriteInput.length).toBe(70_000)
+
+    // Flush the debounced save.
+    vi.runAllTimers()
+
+    const raw = localStorage.getItem(STORAGE_PREFIX + id)
+    expect(raw).not.toBeNull()
+    const data = JSON.parse(raw!)
+    expect(data.v).toBe(2)
+    const msgs = data.messages as SdkMessage[]
+
+    // tool_result content capped (<= 8000 + marker).
+    const tr = blockField<{ content: string }>(msgs[0], 0).content
+    expect(tr.length).toBeLessThanOrEqual(8000 + '\n…[truncated]'.length)
+    expect(tr).toContain('…[truncated]')
+
+    // assistant text capped (<= 16000 + marker).
+    const text = blockField<{ text: string }>(msgs[1], 0).text
+    expect(text.length).toBeLessThanOrEqual(16_000 + '\n…[truncated]'.length)
+    expect(text).toContain('…[truncated]')
+
+    // Write input content capped (<= 64KB + marker).
+    const wInput = blockField<{ input: { content: string } }>(msgs[2], 0).input.content
+    expect(wInput.length).toBeLessThanOrEqual(64 * 1024 + '\n…[truncated]'.length)
+    expect(wInput).toContain('…[truncated]')
+
+    // Image block dropped; the text block it shared the message with survives.
+    const imgBlocks = blocksOf<{ type: string }>(msgs[3]).filter((b) => b.type === 'image')
+    expect(imgBlocks).toHaveLength(0)
+    const textBlocks = blocksOf<{ type: string }>(msgs[3]).filter((b) => b.type === 'text')
+    expect(textBlocks.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('substitutes a marker when an image-only message would be left empty', () => {
+    const id = 'proj-img-only'
+    const store = new SessionStore(id)
+    store.dispatch({
+      type: 'MESSAGE',
+      message: {
+        type: 'user',
+        uuid: 'u-img-only',
+        message: {
+          role: 'user',
+          content: [{ type: 'image', source: { type: 'base64', data: 'i'.repeat(1000), media_type: 'image/png' } }],
+        },
+      } as unknown as SdkMessage,
+    })
+    vi.runAllTimers()
+    const data = JSON.parse(localStorage.getItem(STORAGE_PREFIX + id)!)
+    const blocks = data.messages[0].message.content as Array<{ type: string; text?: string }>
+    expect(blocks.filter((b) => b.type === 'image')).toHaveLength(0)
+    expect(blocks.some((b) => b.type === 'text' && /image omitted/.test(b.text ?? ''))).toBe(true)
+  })
+
+  it('byte-budget backstop drops oldest messages but keeps the floor (50)', () => {
+    // Build a session whose projected payload exceeds 2MB: many messages
+    // each carrying a tool_result just under the 8000 cap (~8KB each).
+    // ~300 such messages ≈ 2.4MB projected > 2MB limit.
+    const id = 'proj-budget'
+    const store = new SessionStore(id)
+    const tr = 'x'.repeat(7800)
+    for (let i = 0; i < 300; i++) {
+      store.dispatch({
+        type: 'MESSAGE',
+        message: {
+          type: 'user',
+          uuid: `u-${i}`,
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: `tu-${i}`, content: tr }],
+          },
+        } as unknown as SdkMessage,
+      })
+    }
+    vi.runAllTimers()
+    const raw = localStorage.getItem(STORAGE_PREFIX + id)!
+    expect(raw.length).toBeLessThanOrEqual(2 * 1024 * 1024 + 256) // within budget (+slack for the floor overshoot)
+    const data = JSON.parse(raw)
+    const kept = data.messages.length
+    // Floor enforced — never trimmed below 50.
+    expect(kept).toBeGreaterThanOrEqual(50)
+    expect(kept).toBeLessThan(300)
+    // lastMessageUuid preserved.
+    expect(data.lastMessageUuid).toBe('u-299')
   })
 })
 
@@ -161,7 +398,7 @@ function seedCacheEntry(id: string, savedAt: number, bytes: number): void {
   const padding = 'x'.repeat(Math.max(0, bytes - 80))
   localStorage.setItem(
     STORAGE_PREFIX + id,
-    JSON.stringify({ v: 1, savedAt, messages: [], items: [], pad: padding }),
+    JSON.stringify({ v: 2, savedAt, messages: [], pad: padding }),
   )
 }
 

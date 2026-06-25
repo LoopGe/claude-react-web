@@ -1,8 +1,9 @@
 import { createInitialSessionState, type ServerMirror, type SessionAction, type SessionSnapshot, type SessionState, type TranscriptItem } from './types'
 import { rebuildIndexesFromMessages, reduceSessionState } from './reducer'
-import { extractMessagePlainText } from '../search'
+import { toTranscriptItem } from './normalize'
 import type { SdkMessage } from '../types'
 import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME } from '../constants/toolNames'
+import { projectMessage } from './project'
 
 type Listener = () => void
 
@@ -17,8 +18,11 @@ const STORAGE_MAX_BYTES = 2 * 1024 * 1024 // 2MB per session
 // and cause QuotaExceededError on unrelated setItem calls.
 const STORAGE_TOTAL_BUDGET = 4 * 1024 * 1024 // 4MB across all sessions
 const MAX_CACHED_SESSIONS = 20
-/** Number of messages to keep when trimming an oversized transcript. */
-const STORAGE_TRIM_MESSAGES = 500
+/** Floor for the byte-budget trim: even when a projected session still
+ *  exceeds STORAGE_MAX_BYTES, keep at least this many most-recent messages
+ *  so the cold-load render hint is non-empty. Older messages are re-fetched
+ *  on scroll-up via the /history endpoint (loadOlder). */
+const STORAGE_TRIM_FLOOR_MESSAGES = 50
 
 /** Remove a session's localStorage cache. Called on explicit delete. */
 export function clearSessionStorage(sessionId: string): void {
@@ -115,49 +119,60 @@ function isQuotaError(e: unknown): boolean {
 }
 
 function persistToStorage(sessionId: string, state: SessionState): void {
-  // plainText is derived from msg via extractMessagePlainText — we never
-  // persist it. loadFromStorage re-derives on hydrate so format upgrades
-  // to the extractor land automatically.
-  //
-  // Only the server-authored mirror is persisted. ClientIntent (optimistic
-  // placeholders, ephemeral error) is by-design discarded on reload — those
-  // placeholders die with the tab.
+  // Only the server-authored mirror is persisted, as a per-field-capped
+  // render projection (see project.ts). plainText / items / ClientIntent are
+  // NOT persisted — re-derived on hydrate. Optimistic placeholders die with
+  // the tab by design.
   const mirror = state.mirror
-  const payload = JSON.stringify({
-    v: 1,
+  // Project each message (no-op ref for small messages). Live state is never
+  // touched — projection is persist-only.
+  const projected: SdkMessage[] = mirror.messages.map(projectMessage)
+  const lastMessageUuid = mirror.lastMessageUuid
+
+  let toWrite: string
+  let trimmedCount = 0
+
+  // Fast path: stringify once. The projection caps usually keep a session
+  // well under the budget, so this single stringify is the common case.
+  const fullPayload = JSON.stringify({
+    v: 2,
     savedAt: Date.now(),
-    messages: mirror.messages,
-    items: mirror.items.map((i) => ({
-      id: i.id,
-      isCompactSummary: i.isCompactSummary,
-      hiddenByDefault: i.hiddenByDefault,
-      // Store msg as raw object — SdkMessage is loosely type
-      msg: i.msg,
-    })),
-    lastMessageUuid: mirror.lastMessageUuid,
+    messages: projected,
+    lastMessageUuid,
   })
-  // Trim oversized transcripts to their last STORAGE_TRIM_MESSAGES so a
-  // single session can't blow past STORAGE_MAX_BYTES.
-  if (payload.length > STORAGE_MAX_BYTES) {
+
+  if (fullPayload.length <= STORAGE_MAX_BYTES) {
+    toWrite = fullPayload
+  } else {
+    // Over budget: compute per-message sizes (O(n)) to pick the largest
+    // suffix that fits, then stringify just that slice. Never drop below the
+    // floor — a non-empty render hint is worth more than enforcing the budget
+    // on pathological inputs (the on-disk log + loadOlder cover the dropped
+    // older messages). +1 per message accounts for the array comma.
+    const sizes = projected.map((m) => JSON.stringify(m).length + 1)
+    const wrapperOverhead = 96 + (lastMessageUuid?.length ?? 0)
+    let total = wrapperOverhead
+    let kept = 0
+    for (let i = sizes.length - 1; i >= 0; i--) {
+      if (total + sizes[i] > STORAGE_MAX_BYTES && kept >= STORAGE_TRIM_FLOOR_MESSAGES) break
+      total += sizes[i]
+      kept++
+    }
+    const keptMessages = kept < projected.length ? projected.slice(projected.length - kept) : projected
+    trimmedCount = projected.length - kept
+    toWrite = JSON.stringify({
+      v: 2,
+      savedAt: Date.now(),
+      messages: keptMessages,
+      lastMessageUuid,
+    })
+  }
+
+  if (trimmedCount > 0) {
     console.warn(
-      `[persistToStorage] ${sessionId}: payload ${(payload.length / 1024).toFixed(0)}KB > ${(STORAGE_MAX_BYTES / 1024).toFixed(0)}KB limit, trimming from ${mirror.items.length} to ${STORAGE_TRIM_MESSAGES} messages`,
+      `[persistToStorage] ${sessionId}: projected payload > ${(STORAGE_MAX_BYTES / 1024).toFixed(0)}KB limit, dropped oldest ${trimmedCount} of ${projected.length} messages (kept last ${projected.length - trimmedCount})`,
     )
   }
-  const toWrite =
-    payload.length > STORAGE_MAX_BYTES
-      ? JSON.stringify({
-          v: 1,
-          savedAt: Date.now(),
-          messages: mirror.messages.slice(-STORAGE_TRIM_MESSAGES),
-          items: mirror.items.slice(-STORAGE_TRIM_MESSAGES).map((i) => ({
-            id: i.id,
-            msg: i.msg,
-            isCompactSummary: i.isCompactSummary,
-            hiddenByDefault: i.hiddenByDefault,
-          })),
-          lastMessageUuid: mirror.lastMessageUuid,
-        })
-      : payload
 
   const key = STORAGE_PREFIX + sessionId
   try {
@@ -187,27 +202,29 @@ function loadFromStorage(sessionId: string): { messages: TranscriptItem[]; rawMe
     const raw = localStorage.getItem(STORAGE_PREFIX + sessionId)
     if (!raw) return null
     const data = JSON.parse(raw)
-    if (!data || data.v !== 1 || !Array.isArray(data.items)) return null
-    const items = data.items as Array<{
-      id: string
-      msg: SdkMessage
-      isCompactSummary?: boolean
-      hiddenByDefault?: boolean
-    }>
-    const messages = items.map((i) => ({
-      id: i.id,
-      msg: i.msg,
-      // Re-derive on hydrate.  Older payloads (pre-rename) had a
-      // `searchableText` field; we ignore it because the extractor
-      // we're using now produces a different (and aligned) view.
-      plainText: extractMessagePlainText(i.msg),
-      isCompactSummary: i.isCompactSummary ?? false,
-      hiddenByDefault: i.hiddenByDefault ?? false,
-    })) as TranscriptItem[]
+    // v2 shape only: { v:2, savedAt, messages: SdkMessage[], lastMessageUuid }.
+    // v1 caches (which stored a duplicated items[] array) are discarded —
+    // the cache is a non-essential render hint and the WS replay repopulates
+    // within seconds.
+    if (!data || data.v !== 2 || !Array.isArray(data.messages)) return null
+    const rawMessages = data.messages as SdkMessage[]
+    // Re-derive TranscriptItems from the messages via the SAME producer the
+    // live store uses (toTranscriptItem with prev-threading), so the hydrated
+    // items are byte-identical to what a live build would produce. This drops
+    // the duplicated items[] array the v1 cache stored.
+    const messages: TranscriptItem[] = []
+    let prev: TranscriptItem | undefined
+    for (const msg of rawMessages) {
+      const item = toTranscriptItem(msg, prev)
+      if (item) {
+        messages.push(item)
+        prev = item
+      }
+    }
     return {
       messages,
-      rawMessages: data.messages ?? [],
-      lastMessageUuid: data.lastMessageUuid ?? null,
+      rawMessages,
+      lastMessageUuid: typeof data.lastMessageUuid === 'string' ? data.lastMessageUuid : null,
     }
   } catch {
     return null
@@ -886,5 +903,34 @@ function dumpToolStatus(): ToolStatusDump[] {
 if (typeof window !== 'undefined') {
   ;(window as unknown as { __crwDumpToolStatus?: () => ToolStatusDump[] }).__crwDumpToolStatus =
     dumpToolStatus
+
+  /** Debug helper: dump liveTurn state for all sessions.
+   *  Usage in DevTools console: __crwDumpLiveTurn() */
+  ;(window as unknown as { __crwDumpLiveTurn?: () => void }).__crwDumpLiveTurn = () => {
+    console.group('🔍 LiveTurn Debug')
+    for (const [sessionId, stores] of debugStores) {
+      let i = 0
+      for (const store of stores) {
+        const state = store.getState()
+        const liveTurn = state.mirror.liveTurn
+        const now = Date.now()
+        const elapsed = liveTurn?.startedAt ? ((now - liveTurn.startedAt) / 1000).toFixed(2) : 'N/A'
+        const writingElapsed = liveTurn?.writingStartedAt
+          ? ((now - liveTurn.writingStartedAt) / 1000).toFixed(2)
+          : 'N/A'
+        console.log(`Session ${sessionId} (store ${i++}):`, {
+          liveTurn,
+          tokenRate: liveTurn?.tokenRate ?? null,
+          outputTokens: liveTurn?.outputTokens ?? undefined,
+          phase: liveTurn?.phase ?? null,
+          hasTextChunks: liveTurn?.textChunks?.length ?? 0,
+          totalChars: liveTurn?.totalChars ?? 0,
+          elapsed: `${elapsed}s`,
+          writingElapsed: `${writingElapsed}s`,
+        })
+      }
+    }
+    console.groupEnd()
+  }
 }
 
