@@ -74,6 +74,8 @@ type ToolViewProps = {
   input?: Record<string, unknown>
   toolName?: string
   toolUseId?: string
+  searchQuery?: string
+  activeMatchIdx?: number
 }
 type ToolInputView = ComponentType<ToolViewProps>
 
@@ -102,7 +104,7 @@ function isSafeUrl(url: string): boolean {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-export const ToolUseBlock = memo(function ToolUseBlock({ block }: { block: Block }) {
+export const ToolUseBlock = memo(function ToolUseBlock({ block, searchQuery, activeMatchIdx }: { block: Block; searchQuery?: string; activeMatchIdx?: number }) {
   const name = block.name
   const input = block.input as Record<string, unknown> | undefined
   const id = extractToolUseId(block)
@@ -151,7 +153,7 @@ export const ToolUseBlock = memo(function ToolUseBlock({ block }: { block: Block
 
   const View = name ? TOOL_VIEWS[name] : undefined
   if (View) {
-    return <View input={input} toolName={name} toolUseId={id} />
+    return <View input={input} toolName={name} toolUseId={id} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />
   }
   // Unknown tool — fall back to raw JSON inside a generic ToolCard so the
   // status badge is still visible and the row aligns with the rest of the
@@ -164,6 +166,8 @@ export const ToolUseBlock = memo(function ToolUseBlock({ block }: { block: Block
       copyValue={() => formatJson(input)}
       copyLabel="Copy raw input"
       className="tool-card-unknown"
+      searchQuery={searchQuery}
+      activeMatchIdx={activeMatchIdx}
     >
       <pre className="tool-input">{formatJson(input)}</pre>
     </ToolCard>
@@ -540,7 +544,7 @@ function QuestionItemView({
 // Edit / MultiEdit
 // ---------------------------------------------------------------------------
 
-const EditToolView = memo(function EditToolView({ input, toolUseId }: ToolViewProps) {
+const EditToolView = memo(function EditToolView({ input, toolUseId, searchQuery, activeMatchIdx }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -595,6 +599,8 @@ const EditToolView = memo(function EditToolView({ input, toolUseId }: ToolViewPr
       copyValue={copyValue}
       copyLabel="Copy edit"
       className="tool-card-diff"
+      searchQuery={searchQuery}
+      activeMatchIdx={activeMatchIdx}
     >
       <div className="diff-block-inner">
         {editList.map((e, i) => (
@@ -615,7 +621,7 @@ const EditToolView = memo(function EditToolView({ input, toolUseId }: ToolViewPr
 // Write
 // ---------------------------------------------------------------------------
 
-const WriteToolView = memo(function WriteToolView({ input, toolUseId }: ToolViewProps) {
+const WriteToolView = memo(function WriteToolView({ input, toolUseId, searchQuery, activeMatchIdx }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -634,6 +640,8 @@ const WriteToolView = memo(function WriteToolView({ input, toolUseId }: ToolView
       copyValue={() => content}
       copyLabel="Copy file content"
       className="tool-card-diff"
+      searchQuery={searchQuery}
+      activeMatchIdx={activeMatchIdx}
     >
       <div className="diff-block-inner">
         <ExpandableDiff
@@ -811,7 +819,7 @@ function detectLangSafe(path: string): string | null {
 // TodoWrite
 // ---------------------------------------------------------------------------
 
-function TodoWriteView({ input, toolUseId }: ToolViewProps) {
+function TodoWriteView({ input, toolUseId, searchQuery, activeMatchIdx }: ToolViewProps) {
   if (!input || !Array.isArray(input.todos)) {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -843,6 +851,8 @@ function TodoWriteView({ input, toolUseId }: ToolViewProps) {
       chips={<>{chips}</>}
       toolUseId={toolUseId}
       className="tool-card-todo"
+      searchQuery={searchQuery}
+      activeMatchIdx={activeMatchIdx}
     >
       <ul className="inline-todo-list">
         {todos.map((item, i) => {
@@ -893,7 +903,7 @@ const BASH_SINGLE_LINE_PREVIEW = 200
  * universally recognised shell prompts and disambiguate the language
  * at a glance when both tools appear in the same transcript.
  */
-const BashToolView = memo(function BashToolView({ input, toolName, toolUseId }: ToolViewProps) {
+const BashToolView = memo(function BashToolView({ input, toolName, toolUseId, searchQuery, activeMatchIdx }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -943,6 +953,8 @@ const BashToolView = memo(function BashToolView({ input, toolName, toolUseId }: 
       copyValue={() => command}
       copyLabel="Copy command"
       className="tool-card-bash"
+      searchQuery={searchQuery}
+      activeMatchIdx={activeMatchIdx}
     >
       {(tooLong || description) && (
         <div className="bash-tool-body">
@@ -990,7 +1002,7 @@ function formatBashTimeout(ms: number): string {
  * chip when offset/limit/pages are set. Reads have no body — the file path
  * + range is the entire useful payload at the tool_use stage.
  */
-const ReadToolView = memo(function ReadToolView({ input, toolUseId }: ToolViewProps) {
+const ReadToolView = memo(function ReadToolView({ input, toolUseId, searchQuery, activeMatchIdx }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -1021,6 +1033,8 @@ const ReadToolView = memo(function ReadToolView({ input, toolUseId }: ToolViewPr
       toolUseId={toolUseId}
       copyValue={() => filePath}
       copyLabel="Copy path"
+      searchQuery={searchQuery}
+      activeMatchIdx={activeMatchIdx}
       className="tool-card-read"
     />
   )
@@ -1035,7 +1049,7 @@ const ReadToolView = memo(function ReadToolView({ input, toolUseId }: ToolViewPr
  * for glob/type/path/output_mode and the case/multiline/-n flags. Order
  * mirrors how a human reads `rg "pattern" --glob='*.tsx' src/`.
  */
-const GrepToolView = memo(function GrepToolView({ input, toolUseId }: ToolViewProps) {
+const GrepToolView = memo(function GrepToolView({ input, toolUseId, searchQuery, activeMatchIdx }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -1088,6 +1102,8 @@ const GrepToolView = memo(function GrepToolView({ input, toolUseId }: ToolViewPr
       copyValue={() => pattern}
       copyLabel="Copy pattern"
       className="tool-card-grep"
+      searchQuery={searchQuery}
+      activeMatchIdx={activeMatchIdx}
     />
   )
 })
@@ -1105,7 +1121,7 @@ const GrepToolView = memo(function GrepToolView({ input, toolUseId }: ToolViewPr
  * what's present — nothing in the input means "this field is unchanged"
  * and we don't render a blank line for it.
  */
-function TaskMutationView({ input, toolUseId }: ToolViewProps) {
+function TaskMutationView({ input, toolUseId, searchQuery, activeMatchIdx }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -1144,6 +1160,8 @@ function TaskMutationView({ input, toolUseId }: ToolViewProps) {
       chips={chips}
       toolUseId={toolUseId}
       className="tool-card-task"
+      searchQuery={searchQuery}
+      activeMatchIdx={activeMatchIdx}
     >
       {(description || addBlocks?.length || addBlockedBy?.length) ? (
         <div className="task-mutation-body">
@@ -1176,7 +1194,7 @@ function TaskMutationView({ input, toolUseId }: ToolViewProps) {
  * Pattern-only file matcher. Visually a stripped-down Grep — same row
  * layout, same chip vocabulary.
  */
-function GlobToolView({ input, toolUseId }: ToolViewProps) {
+function GlobToolView({ input, toolUseId, searchQuery, activeMatchIdx }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -1194,6 +1212,8 @@ function GlobToolView({ input, toolUseId }: ToolViewProps) {
       copyValue={() => pattern}
       copyLabel="Copy pattern"
       className="tool-card-glob"
+      searchQuery={searchQuery}
+      activeMatchIdx={activeMatchIdx}
     />
   )
 }
@@ -1211,7 +1231,7 @@ function GlobToolView({ input, toolUseId }: ToolViewProps) {
  * the chat tab is never what the user wants here, and a webpage that
  * inherits this app's window context could read its origin.
  */
-function WebFetchToolView({ input, toolUseId }: ToolViewProps) {
+function WebFetchToolView({ input, toolUseId, searchQuery, activeMatchIdx }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -1250,6 +1270,8 @@ function WebFetchToolView({ input, toolUseId }: ToolViewProps) {
       title={titleNode}
       toolUseId={toolUseId}
       copyValue={() => url}
+      searchQuery={searchQuery}
+      activeMatchIdx={activeMatchIdx}
       copyLabel="Copy URL"
       className="tool-card-web"
     >
@@ -1272,7 +1294,7 @@ function WebFetchToolView({ input, toolUseId }: ToolViewProps) {
  * — visually parallels Grep / Glob so the "I'm searching X with these
  *   modifiers" pattern reads consistently across tools.
  */
-function WebSearchToolView({ input, toolUseId }: ToolViewProps) {
+function WebSearchToolView({ input, toolUseId, searchQuery, activeMatchIdx }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -1306,6 +1328,8 @@ function WebSearchToolView({ input, toolUseId }: ToolViewProps) {
       icon={<IconWebSearch />}
       title={<code className="grep-tool-pattern">&ldquo;{query}&rdquo;</code>}
       chips={chips}
+      searchQuery={searchQuery}
+      activeMatchIdx={activeMatchIdx}
       toolUseId={toolUseId}
       copyValue={() => query}
       copyLabel="Copy query"
@@ -1327,7 +1351,7 @@ function WebSearchToolView({ input, toolUseId }: ToolViewProps) {
  *   - 'delete'            : cell removed — show an empty body with
  *                           "(cell deleted)" instead of a diff.
  */
-function NotebookEditToolView({ input, toolUseId }: ToolViewProps) {
+function NotebookEditToolView({ input, toolUseId, searchQuery, activeMatchIdx }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -1363,6 +1387,8 @@ function NotebookEditToolView({ input, toolUseId }: ToolViewProps) {
       copyValue={isDelete ? undefined : () => newSource}
       copyLabel="Copy cell content"
       className="tool-card-diff"
+      searchQuery={searchQuery}
+      activeMatchIdx={activeMatchIdx}
     >
       {isDelete ? (
         <div className="notebook-edit-deleted">

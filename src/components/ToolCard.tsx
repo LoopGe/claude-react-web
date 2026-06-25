@@ -174,9 +174,13 @@ export const ToolStatusBadge = memo(function ToolStatusBadge({
 export const ToolResultDetails = memo(function ToolResultDetails({
   content,
   className = '',
+  searchQuery,
+  activeMatchIdx,
 }: {
   content: unknown
   className?: string
+  searchQuery?: string
+  activeMatchIdx?: number
 }) {
   const preview = toolResultPreview(content)
   const isString = typeof content === 'string'
@@ -192,14 +196,28 @@ export const ToolResultDetails = memo(function ToolResultDetails({
           .join('\n\n')
         return truncate(texts || formatJson(content), 4000)
       })()
+  const hasSearch = Boolean(searchQuery?.trim())
+  const bodyRef = useRef<HTMLDivElement>(null)
+
+  // When navigating search results, scroll the active <mark> into view
+  // inside this (potentially scrollable) tool-result container.
+  useEffect(() => {
+    if (!hasSearch) return
+    const el = bodyRef.current
+    if (!el) return
+    const active = el.querySelector('.search-hl-active')
+    if (active) active.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  })
+
   return (
     <AnimatedDetails
       className={`tool-result-details ${className}`.trim()}
       summaryClassName="tool-result-summary"
       summary={preview}
+      open={hasSearch ? true : undefined}
     >
-      <div className="tool-input">
-        {isString ? <AnsiText text={body} /> : body}
+      <div className="tool-input" ref={bodyRef}>
+        {isString ? <AnsiText text={body} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} /> : body}
       </div>
     </AnimatedDetails>
   )
@@ -255,6 +273,8 @@ export const ToolCard = memo(function ToolCard({
   copyLabel,
   className = '',
   children,
+  searchQuery,
+  activeMatchIdx,
 }: {
   icon: ReactNode
   title?: ReactNode
@@ -268,6 +288,11 @@ export const ToolCard = memo(function ToolCard({
   copyLabel?: string
   className?: string
   children?: ReactNode
+  /** Current search query — passed to inline tool result for highlighting. */
+  searchQuery?: string
+  /** Index of the active search match within this card's tool result.
+   *  Passed through to AnsiText so the Nth <mark> gets `search-hl-active`. */
+  activeMatchIdx?: number
 }) {
   // The originating tool_result (when it has landed) is rendered inline at
   // the bottom of this card. `useToolResult` returns undefined while the
@@ -287,7 +312,7 @@ export const ToolCard = memo(function ToolCard({
         {copyValue && <CopyButton getValue={copyValue} label={copyLabel} />}
       </div>
       {children != null && <div className="tool-card-body">{children}</div>}
-      {result && <ToolCardResult result={result} />}
+      {result && <ToolCardResult result={result} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />}
     </div>
   )
 })
@@ -295,10 +320,10 @@ export const ToolCard = memo(function ToolCard({
 /** Inline result section at the bottom of a merged tool card. Kept as a
  *  tiny wrapper (rather than inlining the JSX) so the result row carries
  *  its own container class for spacing/border and an error tint. */
-const ToolCardResult = memo(function ToolCardResult({ result }: { result: ToolResultEntry }) {
+const ToolCardResult = memo(function ToolCardResult({ result, searchQuery, activeMatchIdx }: { result: ToolResultEntry; searchQuery?: string; activeMatchIdx?: number }) {
   return (
     <div className={`tool-card-result${result.isError ? ' tool-card-result-error' : ''}`}>
-      <ToolResultDetails content={result.content} />
+      <ToolResultDetails content={result.content} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />
     </div>
   )
 })

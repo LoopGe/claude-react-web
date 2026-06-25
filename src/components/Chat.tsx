@@ -549,6 +549,11 @@ export const Chat = memo(function Chat({
   const [searchQuery, setSearchQuery] = useState('')
   const debouncedQuery = useDebouncedValue(searchQuery, 200)
   const [searchActiveIdx, setSearchActiveIdx] = useState(0)
+  // Top-most visible item index, reported by MessageList on scroll.
+  // Used to find the nearest search match to the viewport. Kept as a
+  // ref (not state) to avoid re-renders on every scroll tick.
+  const topVisibleIdxRef = useRef(0)
+  const handleVisibleRangeChange = useCallback((idx: number) => { topVisibleIdxRef.current = idx }, [])
   /** Flat list of text-level matches across the transcript. Each entry
    *  records the transcript item it lives in plus its local index
    *  within that item (0-based, so the third "foo" inside item #5 is
@@ -574,8 +579,30 @@ export const Chat = memo(function Chat({
     }
     return out
   }, [stream.items, debouncedQuery])
-  // Reset active index when the match set changes (new query or new messages).
-  useEffect(() => { setSearchActiveIdx(0) }, [searchMatches])
+  // When the match set changes (new query or new messages), find the
+  // nearest match to the current viewport rather than always starting
+  // from the first one.
+  useEffect(() => {
+    if (searchMatches.length === 0) {
+      setSearchActiveIdx(0)
+      return
+    }
+    const top = topVisibleIdxRef.current
+    // Binary search for the first match whose itemIdx >= top.
+    let lo = 0
+    let hi = searchMatches.length
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1
+      if (searchMatches[mid].itemIdx < top) lo = mid + 1
+      else hi = mid
+    }
+    // lo is the first match at or after the viewport. The match
+    // immediately before it (lo-1) might be closer, so compare.
+    const after = lo < searchMatches.length ? searchMatches[lo].itemIdx : Infinity
+    const before = lo > 0 ? searchMatches[lo - 1].itemIdx : -Infinity
+    const nearest = (top - before) <= (after - top) ? lo - 1 : lo
+    setSearchActiveIdx(Math.max(0, Math.min(nearest, searchMatches.length - 1)))
+  }, [searchMatches])
 
   const handledJumpNonceRef = useRef<number | null>(null)
   const [pendingJump, setPendingJump] = useState<MessageJumpTarget | null>(null)
@@ -1091,6 +1118,7 @@ export const Chat = memo(function Chat({
           onRegisterNavigate={registerNavigate}
           onSwitchModel={() => onOpenSettingsTab(session.id, 'general')}
           onAbortBash={abortBashCommand}
+          onVisibleRangeChange={handleVisibleRangeChange}
         />
         </div>
         </ReopenQuestionProvider>

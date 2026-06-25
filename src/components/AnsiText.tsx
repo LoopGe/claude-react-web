@@ -17,8 +17,9 @@
 // default-fg problem. The override is done via CSS variables so NO JS theme
 // state is read here; it re-skins automatically when the theme flips.
 
-import { memo, useMemo } from 'react'
+import { memo, useMemo, type ReactNode } from 'react'
 import ansicolor from 'ansicolor'
+import { findRanges } from '../search/match.js'
 export { stripAnsi } from '../utils/text.js'
 
 /** Parse a CSS string like "color:rgba(0,204,0,1);font-weight:bold;" into
@@ -66,13 +67,45 @@ function invisibleOverride(s: AnsiSpan): 'dim' | 'muted' | null {
   return null
 }
 
-export const AnsiText = memo(function AnsiText({ text }: { text: string }) {
+export const AnsiText = memo(function AnsiText({
+  text,
+  searchQuery,
+  activeMatchIdx,
+}: {
+  text: string
+  searchQuery?: string
+  /** Index of the "active" match within this component's own match list
+   *  (0-based). The Nth <mark> gets `search-hl-active`. Undefined means
+   *  no match is active (all render at the default highlight colour). */
+  activeMatchIdx?: number
+}) {
   const spans = useMemo(() => ansicolor.parse(text), [text])
+  const q = searchQuery?.trim()
+  const ranges = useMemo(() => (q ? findRanges(text, q) : []), [text, q])
 
-  // Fast path: no ANSI codes → raw text, zero overhead.
-  if (spans.spans.length === 1 && !spans.spans[0].css) {
+  // Pre-compute cumulative character offsets for each ANSI span so
+  // highlightSpan can map ranges (in full-plain-text coordinates) to
+  // local positions within each span.
+  const spanOffsets = useMemo(() => {
+    const offsets: number[] = []
+    let offset = 0
+    for (const s of spans.spans) {
+      offsets.push(offset)
+      offset += s.text.length
+    }
+    return offsets
+  }, [spans])
+
+  // Fast path: no ANSI codes and no search → raw text, zero overhead.
+  if (spans.spans.length === 1 && !spans.spans[0].css && !q) {
     return <>{text}</>
   }
+
+  // Normalise the active-range index (mirrors rehypeHighlightQuery logic).
+  const safeActive =
+    activeMatchIdx != null && activeMatchIdx >= 0 && activeMatchIdx < ranges.length
+      ? activeMatchIdx
+      : undefined
 
   return (
     <>
@@ -93,10 +126,61 @@ export const AnsiText = memo(function AnsiText({ text }: { text: string }) {
           // visible but clearly secondary.
           style.color = 'var(--ansi-muted, var(--fg-muted))'
         }
-        return Object.keys(style).length > 0
-          ? <span key={i} style={style}>{s.text}</span>
-          : <span key={i}>{s.text}</span>
+        const hasStyle = Object.keys(style).length > 0
+        const children = ranges.length > 0 ? highlightSpan(s.text, ranges, spanOffsets[i], safeActive) : s.text
+        return hasStyle
+          ? <span key={i} style={style}>{children}</span>
+          : <span key={i}>{children}</span>
       })}
     </>
   )
 })
+
+/** Wrap portions of `text` that overlap with `ranges` in <mark> elements.
+ *  Ranges are in the coordinate space of the full plain-text string (i.e.
+ *  the ANSI-stripped version of the entire input).  `text` is one span's
+ *  worth of characters starting at `offset` in that full string.  Returns
+ *  the original string unchanged when no ranges overlap.
+ *
+ *  `activeRangeIdx` (optional) marks one range as the navigation target;
+ *  its <mark> gets the extra `search-hl-active` class. */
+function highlightSpan(
+  text: string,
+  ranges: Array<{ start: number; end: number }>,
+  offset: number,
+  activeRangeIdx?: number,
+): ReactNode {
+  const nodeEnd = offset + text.length
+  const overlapping: Array<{ range: { start: number; end: number }; idx: number }> = []
+  for (let i = 0; i < ranges.length; i++) {
+    const r = ranges[i]
+    if (r.end <= offset) continue
+    if (r.start >= nodeEnd) break
+    overlapping.push({ range: r, idx: i })
+  }
+  if (overlapping.length === 0) return text
+
+  const parts: ReactNode[] = []
+  let cursor = 0
+  for (const { range: r, idx } of overlapping) {
+    const localStart = Math.max(0, r.start - offset)
+    const localEnd = Math.min(text.length, r.end - offset)
+    if (localStart > cursor) {
+      parts.push(text.slice(cursor, localStart))
+    }
+    const isActive = activeRangeIdx != null && idx === activeRangeIdx
+    parts.push(
+      <mark
+        key={`hl-${localStart}`}
+        className={isActive ? 'search-hl search-hl-active' : 'search-hl'}
+      >
+        {text.slice(localStart, localEnd)}
+      </mark>,
+    )
+    cursor = localEnd
+  }
+  if (cursor < text.length) {
+    parts.push(text.slice(cursor))
+  }
+  return <>{parts}</>
+}

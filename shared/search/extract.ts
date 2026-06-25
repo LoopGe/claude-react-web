@@ -67,9 +67,12 @@ export function extractPlainText(markdown: string): string {
 
 /** Extract the searchable plain text for an entire SDK message.
  *
- *  Per the design decision: only `text`-type content blocks
- *  contribute; tool_use / tool_result / image / thinking blocks are
- *  excluded.  Multiple text blocks in the same message are joined
+ *  `text`-type content blocks are extracted through the markdown
+ *  pipeline.  `tool_result` blocks also contribute — their `content`
+ *  field (string or nested text blocks) is extracted as plain text
+ *  so tool output (e.g. bash stdout/stderr) is searchable.
+ *
+ *  Multiple contributing blocks in the same message are joined
  *  with a double newline so cross-block phrase matches don't fire
  *  (and so paragraph separation reads naturally to the user). */
 export function extractMessagePlainText(msg: SearchableMessage): string | null {
@@ -82,9 +85,24 @@ export function extractMessagePlainText(msg: SearchableMessage): string | null {
   if (Array.isArray(content)) {
     const parts: string[] = []
     for (const b of content as SearchableBlock[]) {
-      if (b.type !== 'text' || typeof b.text !== 'string') continue
-      const text = extractPlainText(b.text)
-      if (text) parts.push(text)
+      if (b.type === 'text' && typeof b.text === 'string') {
+        const text = extractPlainText(b.text)
+        if (text) parts.push(text)
+      } else if (b.type === 'tool_result') {
+        // tool_result content can be a string or an array of nested blocks.
+        const rc = (b as { content?: unknown }).content
+        if (typeof rc === 'string') {
+          const text = extractPlainText(rc)
+          if (text) parts.push(text)
+        } else if (Array.isArray(rc)) {
+          for (const inner of rc as SearchableBlock[]) {
+            if (inner.type === 'text' && typeof inner.text === 'string') {
+              const text = extractPlainText(inner.text)
+              if (text) parts.push(text)
+            }
+          }
+        }
+      }
     }
     return parts.length ? parts.join('\n\n') : null
   }

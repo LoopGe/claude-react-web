@@ -110,6 +110,10 @@ interface Props {
    *  message. The parent opens its model picker / settings so the user can
    *  pick a valid model without leaving the transcript. */
   onSwitchModel?: () => void
+  /** Called when the visible range of messages changes. Reports the
+   *  top-most visible item index (in data-array space). Used by the
+   *  search system to find the nearest match to the viewport. */
+  onVisibleRangeChange?: (topIdx: number) => void
   /** Force-stop the current in-flight `!`/`!!` command. Wired to the "stop"
    *  button on a pending bash card. Undefined when no abort surface is
    *  available (e.g. Side Chat drawer renders its own MessageList without it). */
@@ -230,7 +234,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, emptyStateContent, onSwitchModel, onAbortBash }: Props) {
+export const MessageList = memo(function MessageList({ items, working, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, emptyStateContent, onSwitchModel, onAbortBash, onVisibleRangeChange }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -982,8 +986,10 @@ export const MessageList = memo(function MessageList({ items, working, replayRea
     firstItemIndexValRef.current = firstItemIndex
   }, [firstItemIndex])
   const handleRangeChanged = useCallback((range: { startIndex: number; endIndex: number }) => {
-    topVisibleIdxRef.current = range.startIndex - firstItemIndexValRef.current
-  }, [])
+    const idx = range.startIndex - firstItemIndexValRef.current
+    topVisibleIdxRef.current = idx
+    onVisibleRangeChange?.(idx)
+  }, [onVisibleRangeChange])
 
   const navigate = useCallback((dir: 'prev' | 'next') => {
     const indices = userMsgIndicesRef.current
@@ -1313,6 +1319,37 @@ const MessageView = memo(function MessageView({
     return out
   }, [blocks, searchQuery, activeMatchInItem])
 
+  // Compute the active match index for tool_result content (both inline
+  // via ToolCard and orphan bubbles). After text-block matches are
+  // consumed, any remaining matches live in tool_result content.
+  const toolResultActiveMatchIdx = useMemo(() => {
+    const q = searchQuery?.trim()
+    if (!q || activeMatchInItem == null || activeMatchInItem < 0) return undefined
+    // Subtract text-block matches first.
+    let remaining = activeMatchInItem
+    for (const b of blocks) {
+      if (b.type !== 'text' || typeof b.text !== 'string') continue
+      remaining -= countMatches(extractPlainText(b.text), q)
+      if (remaining < 0) return undefined // active match is in a text block
+    }
+    // Walk tool_result blocks to find which one contains the active match.
+    for (const b of blocks) {
+      if (b.type !== 'tool_result') continue
+      const rc = (b as { content?: unknown }).content
+      const text = typeof rc === 'string' ? rc
+        : Array.isArray(rc) ? (rc as Array<{ type?: string; text?: string }>)
+            .filter(x => x.type === 'text' && typeof x.text === 'string')
+            .map(x => x.text).join('\n\n')
+        : ''
+      if (!text) continue
+      const n = countMatches(text, q)
+      if (n === 0) continue
+      if (remaining < n) return remaining
+      remaining -= n
+    }
+    return undefined
+  }, [blocks, searchQuery, activeMatchInItem])
+
   // The result-consumed predicate is built ONCE by MessageList and shared via
   // context, so willRenderEmpty (the item filter) and this render path use the
   // exact same instance — they can't drift. Read unconditionally per
@@ -1377,7 +1414,7 @@ const MessageView = memo(function MessageView({
           <div className="msg-body">
             {userContent && <div style={{ marginBottom: 6, opacity: 0.8 }}>{userContent}</div>}
             {toolBlocks.map((b, i) => (
-              <ToolResultBlock key={i} block={b} />
+              <ToolResultBlock key={i} block={b} searchQuery={searchQuery} activeMatchIdx={toolResultActiveMatchIdx} />
             ))}
           </div>
         </div>
@@ -1390,7 +1427,7 @@ const MessageView = memo(function MessageView({
     // of a normal "you" bubble. The placeholder (optimistic, pre-POST) only
     // has <bash-input>; the server-injected result adds <bash-stdout> etc.
     if (userContent && userContent.includes('<bash-input>')) {
-      return <BashMessage text={userContent} sending={sending} onAbort={onAbortBash} />
+      return <BashMessage text={userContent} sending={sending} onAbort={onAbortBash} searchQuery={searchQuery} activeMatchInItem={activeMatchInItem} />
     }
     const imageBlocks = blocks.filter((b) => b.type === 'image')
     // Show the "queued" chip only while the turn is genuinely waiting behind
@@ -1485,7 +1522,7 @@ const MessageView = memo(function MessageView({
         </div>
         <div className="msg-body">
           {blocks.map((b, i) => (
-            <BlockView key={i} block={b} searchQuery={searchQuery} activeMatchIdx={blockActiveIdx[i]} />
+            <BlockView key={i} block={b} searchQuery={searchQuery} activeMatchIdx={blockActiveIdx[i]} toolResultActiveMatchIdx={toolResultActiveMatchIdx} />
           ))}
           {modelNotFound && onSwitchModel && (
             <button type="button" className="btn btn-sm msg-switch-model-btn" onClick={onSwitchModel}>
@@ -1639,10 +1676,44 @@ function extractTag(s: string, tag: string): string | null {
  *  command + output as a card resembling a Bash tool result. While the
  *  optimistic placeholder is in flight (only <bash-input>, no stdout), a
  *  spinner takes the output's place. */
-function BashMessage({ text, sending, onAbort }: { text: string; sending?: boolean; onAbort?: () => void }) {
+function BashMessage({ text, sending, onAbort, searchQuery, activeMatchInItem }: {
+  text: string
+  sending?: boolean
+  onAbort?: () => void
+  searchQuery?: string
+  activeMatchInItem?: number
+}) {
   const command = extractTag(text, 'bash-input') ?? ''
   const stdout = extractTag(text, 'bash-stdout')
   const stderr = extractTag(text, 'bash-stderr')
+  const q = searchQuery?.trim()
+  const hasSearch = Boolean(q)
+  const bodyRef = useRef<HTMLDivElement>(null)
+
+  // Determine which AnsiText (stdout / stderr) contains the active match
+  // and what its local index is. Matches in the command itself are skipped
+  // (the <code> element doesn't go through AnsiText).
+  const { stdoutActiveIdx, stderrActiveIdx } = useMemo(() => {
+    if (!q || activeMatchInItem == null || activeMatchInItem < 0) return { stdoutActiveIdx: undefined, stderrActiveIdx: undefined }
+    const cmdMatches = countMatches(command, q)
+    const stdoutMatches = stdout ? countMatches(stdout, q) : 0
+    let remaining = activeMatchInItem - cmdMatches
+    if (remaining < 0) return { stdoutActiveIdx: undefined, stderrActiveIdx: undefined }
+    if (remaining < stdoutMatches) return { stdoutActiveIdx: remaining, stderrActiveIdx: undefined }
+    remaining -= stdoutMatches
+    if (stderr && remaining < countMatches(stderr, q)) return { stdoutActiveIdx: undefined, stderrActiveIdx: remaining }
+    return { stdoutActiveIdx: undefined, stderrActiveIdx: undefined }
+  }, [command, stdout, stderr, q, activeMatchInItem])
+
+  // Scroll the active search <mark> into view inside the (potentially
+  // scrollable) stdout/stderr <pre> containers.
+  useEffect(() => {
+    if (!hasSearch) return
+    const el = bodyRef.current
+    if (!el) return
+    const active = el.querySelector('.search-hl-active')
+    if (active) active.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  })
   // <bash-exit code="0" timedOut="true" interrupted="true" truncated="true" />
   const exitMatch = text.match(/<bash-exit\s+code="(-?\d+)"([^/]*)\/?>/)
   const exitCode = exitMatch ? parseInt(exitMatch[1], 10) : null
@@ -1683,7 +1754,7 @@ function BashMessage({ text, sending, onAbort }: { text: string; sending?: boole
         )}
       </div>
       {(stdout || stderr || pending) && (
-        <div className="bash-msg-body">
+        <div className="bash-msg-body" ref={bodyRef}>
           {pending ? (
             <span className="bash-msg-pending-text">Running…</span>
           ) : (
@@ -1691,13 +1762,13 @@ function BashMessage({ text, sending, onAbort }: { text: string; sending?: boole
               {stdout && (
                 <div className="bash-msg-out bash-msg-out--stdout">
                   <span className="bash-msg-out-label">stdout</span>
-                  <pre className="bash-msg-pre"><AnsiText text={stdout} /></pre>
+                  <pre className="bash-msg-pre"><AnsiText text={stdout} searchQuery={searchQuery} activeMatchIdx={stdoutActiveIdx} /></pre>
                 </div>
               )}
               {stderr && (
                 <div className="bash-msg-out bash-msg-out--stderr">
                   <span className="bash-msg-out-label">stderr</span>
-                  <pre className="bash-msg-pre"><AnsiText text={stderr} /></pre>
+                  <pre className="bash-msg-pre"><AnsiText text={stderr} searchQuery={searchQuery} activeMatchIdx={stderrActiveIdx} /></pre>
                 </div>
               )}
               {truncated && <div className="bash-msg-truncated">output truncated</div>}

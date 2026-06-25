@@ -75,12 +75,43 @@ describe('extractMessagePlainText', () => {
     expect(extractMessagePlainText(msg)).toBe('first block\n\nsecond block')
   })
 
-  it('skips non-text blocks per the design decision', () => {
+  it('extracts tool_result content for searchability', () => {
     const msg = {
       type: 'user',
       message: {
         content: [
-          { type: 'tool_result', tool_use_id: 'x', content: 'should not be searchable' },
+          { type: 'tool_result', tool_use_id: 'x', content: 'bash output here' },
+          { type: 'image', source: {} },
+        ],
+      },
+    } as unknown as SdkMessage
+    expect(extractMessagePlainText(msg)).toBe('bash output here')
+  })
+
+  it('extracts tool_result with nested text blocks', () => {
+    const msg = {
+      type: 'user',
+      message: {
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'x',
+            content: [
+              { type: 'text', text: 'line one' },
+              { type: 'text', text: 'line two' },
+            ],
+          },
+        ],
+      },
+    } as unknown as SdkMessage
+    expect(extractMessagePlainText(msg)).toBe('line one\n\nline two')
+  })
+
+  it('skips non-text, non-tool_result blocks', () => {
+    const msg = {
+      type: 'user',
+      message: {
+        content: [
           { type: 'image', source: {} },
         ],
       },
