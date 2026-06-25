@@ -7,7 +7,7 @@ import { parseSkillContent } from '../utils/skill-frontmatter'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { formatBytes } from '../utils/format'
 import { IconX, IconCheck, IconArrowUp, IconArrowDown, IconChevronDown, IconFolder, IconDownload, IconRefresh, IconFileText } from './icons/ToolIcons'
-import { buildUpgradeCommand, buildInstallCommand } from '../utils/upgrade-command'
+import { buildUpgradeCommand } from '../utils/upgrade-command'
 import type { FullServerConfig } from '../types/config'
 import type { SkillImportFile, SkillImportResponse, SkillLoadMode, SkillRecord, SkillsListResponse } from '../../shared/skills'
 import type { McpConnectionTestResult, McpServerConfigMeta, McpServerTool } from '../types'
@@ -1708,7 +1708,6 @@ function AboutTab({
   const versionsDisabled = !!versions?.disabled
   const canInstallVersion =
     !!onUpdate &&
-    info?.installMethod === 'global' &&
     !versionsLoading &&
     !updating &&
     !!effectivePicked &&
@@ -2037,34 +2036,14 @@ function AboutTab({
                     )}
                   </div>
                 </Field>
-                {info?.installMethod === 'global' ? (
-                  <button
-                    className="btn btn-primary"
-                    onClick={() => void runInstallVersion()}
-                    disabled={!canInstallVersion}
-                    title="Install the selected version in place, then restart to apply."
-                  >
-                    {updating ? 'Installing...' : `Install ${effectivePicked || ''}`.trim()}
-                  </button>
-                ) : (
-                  // npx / unknown: no in-place install. Show the copy-command
-                  // for the picked version — this is the recovery command.
-                  effectivePicked && (
-                    <Field
-                      label="Install command"
-                      hint="Copy this to a terminal to install the selected version. Works even if this app won't start."
-                    >
-                      <div style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>
-                        {buildInstallCommand(
-                          info?.packageName ?? 'claude-react-web',
-                          effectivePicked,
-                          info?.registry,
-                          false,
-                        )}
-                      </div>
-                    </Field>
-                  )
-                )}
+                <button
+                  className="btn btn-primary"
+                  onClick={() => void runInstallVersion()}
+                  disabled={!canInstallVersion}
+                  title="Install the selected version, then restart to apply."
+                >
+                  {updating ? 'Installing...' : `Install ${effectivePicked || ''}`.trim()}
+                </button>
                 {versionsError && (
                   <div className="modal-error" style={{ marginTop: 8 }}>
                     Could not load versions: {versionsError}

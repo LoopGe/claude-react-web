@@ -106,26 +106,36 @@ describe('POST /api/update', () => {
     readInstalledVersion.mockReturnValue(null)
   })
 
-  it('short-circuits for npx without spawning an install', async () => {
+  it('runs the install for npx installs too', async () => {
+    await primeUpdateInfo()
     detectInstallMethod.mockReturnValue('npx')
+    readInstalledVersion.mockReturnValue('99.99.99')
+
     const res = await makeApp().request('/update', { method: 'POST' })
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body).toMatchObject({
-      performed: false,
+      performed: true,
       installMethod: 'npx',
-      fallbackToCopyCommand: true,
+      restartRequired: true,
     })
-    expect(runNpmInstall).not.toHaveBeenCalled()
+    expect(runNpmInstall).toHaveBeenCalled()
   })
 
-  it('short-circuits for unknown installs', async () => {
+  it('runs the install for unknown (dev) installs too', async () => {
+    await primeUpdateInfo()
     detectInstallMethod.mockReturnValue('unknown')
+    readInstalledVersion.mockReturnValue('99.99.99')
+
     const res = await makeApp().request('/update', { method: 'POST' })
-    const body = (await res.json()) as { performed: boolean; fallbackToCopyCommand: boolean }
-    expect(body.performed).toBe(false)
-    expect(body.fallbackToCopyCommand).toBe(true)
-    expect(runNpmInstall).not.toHaveBeenCalled()
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).toMatchObject({
+      performed: true,
+      installMethod: 'unknown',
+      restartRequired: true,
+    })
+    expect(runNpmInstall).toHaveBeenCalled()
   })
 
   it('runs the install for a global install with server-trusted args', async () => {

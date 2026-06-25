@@ -149,18 +149,6 @@ export function buildUpdateRouter(claudeBinary?: string): Hono {
   app.post('/update', async (c) => {
     const installMethod = detectInstallMethod()
 
-    // Only a global install can be upgraded in place. For npx / dev runs
-    // there's no persistent install to replace, so tell the client to use
-    // the copy-command fallback instead of spawning a doomed install.
-    if (installMethod !== 'global') {
-      const result: UpdateActionResult = {
-        performed: false,
-        installMethod,
-        fallbackToCopyCommand: true,
-      }
-      return c.json(result)
-    }
-
     // Use server-trusted values — the package name we were built as and the
     // configured registry — never anything from the request body. Keeps the
     // npm argv free of any client-supplied input. The registry comes from
@@ -224,7 +212,7 @@ export function buildUpdateRouter(claudeBinary?: string): Hono {
 
     const result: UpdateActionResult = {
       performed: true,
-      installMethod: 'global',
+      installMethod,
       restartRequired: versionChanged,
       latest: info.latest,
       installedVersion,

@@ -49,7 +49,6 @@ export function UpdateBanner({ info, updating, onUpdate }: Props) {
           latest={info.latest}
           packageName={info.packageName}
           registry={info.registry}
-          installMethod={info.installMethod}
           updating={!!updating}
           onUpdate={onUpdate}
         />
@@ -61,7 +60,6 @@ export function UpdateBanner({ info, updating, onUpdate }: Props) {
           latest={info.latest!}
           packageName={info.packageName}
           registry={info.registry}
-          installMethod={info.installMethod}
           updating={!!updating}
           onUpdate={onUpdate}
         />
@@ -76,7 +74,6 @@ function DeprecatedBannerInner({
   latest,
   packageName,
   registry,
-  installMethod,
   updating,
   onUpdate,
 }: {
@@ -85,7 +82,6 @@ function DeprecatedBannerInner({
   latest?: string
   packageName: string
   registry?: string
-  installMethod: UpdateInfo['installMethod']
   updating: boolean
   onUpdate?: () => Promise<UpdateActionResult>
 }) {
@@ -94,7 +90,7 @@ function DeprecatedBannerInner({
   const [dismissed, setDismissed] = useState(false)
   const [copied, setCopied] = useState(false)
 
-  const canUpdateInApp = installMethod === 'global' && !!onUpdate
+  const canUpdateInApp = !!onUpdate
 
   if (dismissed) return null
 
@@ -196,7 +192,6 @@ function UpdateBannerInner({
   latest,
   packageName,
   registry,
-  installMethod,
   updating,
   onUpdate,
 }: {
@@ -204,7 +199,6 @@ function UpdateBannerInner({
   latest: string
   packageName: string
   registry?: string
-  installMethod: UpdateInfo['installMethod']
   updating: boolean
   onUpdate?: () => Promise<UpdateActionResult>
 }) {
@@ -219,7 +213,7 @@ function UpdateBannerInner({
   // An in-app update can only replace a global install. For npx / dev runs
   // there's nothing to upgrade in place, so the button is hidden and the
   // user falls back to the copy-command. Mirrors the About-tab gate.
-  const canUpdateInApp = installMethod === 'global' && !!onUpdate
+  const canUpdateInApp = !!onUpdate
 
   if (dismissed) return null
 
