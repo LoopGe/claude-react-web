@@ -205,10 +205,25 @@ export interface LiveTurnState {
   textChunks: string[]
   flushedText: string
   outputTokens?: number
+  /** Output token rate in tok/s. This is a CUMULATIVE AVERAGE over the
+   *  writing phase (outputTokens / writing-elapsed), not an instantaneous
+   *  rate, so it converges toward the mean as the turn grows longer. Null
+   *  until the first real message_delta (or the char-flow fallback) lands. */
   tokenRate: number | null
   startedAt: number
   lastDeltaAt: number
   dirty: boolean
+  /** Total characters received in content_block_delta events.
+   *  Used to estimate token rate from character flow when message_delta
+   *  events arrive too infrequently (e.g., only at turn end). Converted to
+   *  tokens at 4 chars/token — see reducer for rationale. */
+  totalChars: number
+  /** Timestamp of last tokenRate update from character-based estimation.
+   *  Throttled to avoid jitter (minimum 500ms between updates). */
+  lastRateUpdate: number
+  /** Timestamp when the first text content_block_start arrived.
+   *  Excludes thinking phase time from rate calculation. */
+  writingStartedAt: number | null
 }
 
 /** Server-authored fields. Everything here is derived purely from WS frames

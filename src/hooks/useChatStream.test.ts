@@ -287,15 +287,17 @@ describe('useChatStream', () => {
     // Dispatch replay + replay-done + both message_delta events all in a
     // single act() so they hit the SAME listener instance (before React
     // re-renders and re-runs the effect, which resets the local replayDone
-    // flag). The perfSpy mock is set up outside act so it's active when
-    // the listener calls performance.now().
-    const perfSpy = vi.spyOn(performance, 'now')
-    perfSpy.mockReturnValue(1000)
+    // flag). The dateSpy mock is set up outside act so it's active when
+    // the listener calls Date.now() (the reducer uses wall-clock ms for
+    // rate timing, not performance.now()).
+    const dateSpy = vi.spyOn(Date, 'now')
+    dateSpy.mockReturnValue(1000)
 
     act(() => {
       dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
       dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
-      // First message_delta — establishes baseline, no rate yet.
+      // First message_delta — lazily creates liveTurn (startedAt = 1000).
+      // elapsed is 0, below the 0.5s guard, so no rate yet.
       dispatchToSession('s1', {
         kind: 'message',
         sessionId: 's1',
@@ -304,14 +306,16 @@ describe('useChatStream', () => {
           event: { type: 'message_delta', usage: { output_tokens: 50 } },
         },
       })
-      // Second message_delta — 100 tokens in 500ms = 200 tok/s.
-      perfSpy.mockReturnValue(1500)
+      // Second message_delta — cumulative semantics: 120 tokens over 0.6s
+      // (writingStart falls back to startedAt since no text block arrived)
+      // = 200 tok/s.
+      dateSpy.mockReturnValue(1600)
       dispatchToSession('s1', {
         kind: 'message',
         sessionId: 's1',
         message: {
           type: 'stream_event',
-          event: { type: 'message_delta', usage: { output_tokens: 150 } },
+          event: { type: 'message_delta', usage: { output_tokens: 120 } },
         },
       })
     })
@@ -328,15 +332,16 @@ describe('useChatStream', () => {
       () => useChatStream('s1', noopPerms),
     )
 
-    const perfSpy = vi.spyOn(performance, 'now')
-    perfSpy.mockReturnValue(0)
+    const dateSpy = vi.spyOn(Date, 'now')
+    dateSpy.mockReturnValue(1000)
 
     // All dispatches in one act to keep the same listener instance.
-    // message_stop clears the baseline ref; result clears tokenRate entirely.
+    // message_stop clears outputTokens; result clears tokenRate entirely
+    // (and nulls the mirror's liveTurn).
     act(() => {
       dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
       dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
-      // Establish baseline.
+      // Establish baseline (startedAt = 1000, elapsed 0, no rate yet).
       dispatchToSession('s1', {
         kind: 'message',
         sessionId: 's1',
@@ -345,17 +350,17 @@ describe('useChatStream', () => {
           event: { type: 'message_delta', usage: { output_tokens: 10 } },
         },
       })
-      // Compute rate: 100 tokens in 500ms = 200 tok/s.
-      perfSpy.mockReturnValue(500)
+      // Cumulative rate: 120 tokens over 0.6s = 200 tok/s.
+      dateSpy.mockReturnValue(1600)
       dispatchToSession('s1', {
         kind: 'message',
         sessionId: 's1',
         message: {
           type: 'stream_event',
-          event: { type: 'message_delta', usage: { output_tokens: 110 } },
+          event: { type: 'message_delta', usage: { output_tokens: 120 } },
         },
       })
-      // message_stop clears the baseline ref but NOT the displayed rate.
+      // message_stop clears outputTokens but NOT the displayed rate.
       dispatchToSession('s1', {
         kind: 'message',
         sessionId: 's1',
@@ -364,7 +369,7 @@ describe('useChatStream', () => {
           event: { type: 'message_stop' },
         },
       })
-      // result message clears everything (tokenRate + ref).
+      // result message clears everything (tokenRate + liveTurn).
       dispatchToSession('s1', {
         kind: 'message',
         sessionId: 's1',
