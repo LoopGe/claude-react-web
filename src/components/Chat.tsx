@@ -498,7 +498,14 @@ export const Chat = memo(function Chat({
   }, [permissions.pending])
 
   const reopenCtxValue = useMemo(
-    () => ({ minimizedToolUseIds, minimizedPlanToolUseIds, onReopen: reopenQuestion, onReopenPlan: reopenPlan }),
+    () => ({
+      minimizedToolUseIds,
+      minimizedPlanToolUseIds,
+      minimizedPermissionToolUseIds: new Set<string>(),
+      onReopen: reopenQuestion,
+      onReopenPlan: reopenPlan,
+      onReopenPermission: () => {},
+    }),
     [minimizedToolUseIds, minimizedPlanToolUseIds, reopenQuestion, reopenPlan],
   )
   const activePendingRequest = permissions.pending[0]
