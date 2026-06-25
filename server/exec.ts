@@ -14,7 +14,9 @@
 // authority.
 
 import { spawn } from 'node:child_process'
+import { TextDecoder } from 'node:util'
 import { createLogger } from './log.js'
+import { resolveShellEncoding } from './shell-encoding.js'
 
 const log = createLogger('exec')
 
@@ -81,9 +83,30 @@ export function execCommand(cwd: string, command: string, opts: ExecOptions = {}
     let lineBuf = ''
     let settled = false
 
+    // Decode captured bytes with the shell's actual output encoding rather
+    // than assuming UTF-8: cmd.exe on non-English Windows emits localised
+    // messages in the OEM codepage (e.g. CP936/GBK), which mojibake under
+    // UTF-8. TextDecoder with { stream: true } keeps state across chunks so
+    // multibyte sequences split on a chunk boundary are reassembled, not
+    // broken mid-character. One decoder per bucket (they are stateful).
+    const encoding = resolveShellEncoding()
+    const decoders: Readonly<Record<'stdout' | 'stderr', TextDecoder>> = {
+      stdout: new TextDecoder(encoding, { fatal: false }),
+      stderr: new TextDecoder(encoding, { fatal: false }),
+    }
+
     const finish = (partial: Partial<ExecResult>) => {
       if (settled) return
       settled = true
+      // Flush any trailing multibyte bytes still buffered in the decoders.
+      try {
+        const tailOut = decoders.stdout.decode()
+        const tailErr = decoders.stderr.decode()
+        if (tailOut) stdout += tailOut
+        if (tailErr) stderr += tailErr
+      } catch {
+        /* ignore trailing-byte decode failures */
+      }
       const cappedOut = capOutput(stdout)
       const cappedErr = capOutput(stderr)
       resolve({
@@ -112,7 +135,7 @@ export function execCommand(cwd: string, command: string, opts: ExecOptions = {}
 
     const onChunk = (stream: NodeJS.ReadableStream, bucket: 'stdout' | 'stderr') => {
       stream.on('data', (chunk: Buffer) => {
-        const text = chunk.toString('utf8')
+        const text = decoders[bucket].decode(chunk, { stream: true })
         if (bucket === 'stdout') stdout += text
         else stderr += text
         // Line-buffer for progress: emit complete lines as they arrive.
