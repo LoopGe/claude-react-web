@@ -12,6 +12,7 @@ import {
   getMeta,
   scanUuidSeqs,
   cursorRecent,
+  cursorOlder,
   clearSession,
   type MessageRecord,
 } from './idb'
@@ -609,6 +610,46 @@ export class SessionStore {
   async flushIdb(): Promise<void> {
     if (this.pendingIdbWrite) await this.pendingIdbWrite
     if (this.idbClearPromise) await this.idbClearPromise
+  }
+
+  /** Read up to `n` messages older than the current oldest in-memory message
+   *  from IDB (Phase 2 loadOlder path). Returns null if IDB is unavailable,
+   *  not ready, or the oldest in-memory message isn't persisted yet (caller
+   *  falls back to the server). `contiguous` is false when there's a seq gap
+   *  at the boundary (tab closed mid-write) — the caller should probe the
+   *  server to bridge it. `messages` is oldest-first (ready to PREPEND). */
+  async loadOlderFromIdb(
+    n: number,
+  ): Promise<{ messages: SdkMessage[]; hasMore: boolean; contiguous: boolean } | null> {
+    if (!this.idbAvailable) return null
+    const items = this.state.mirror.items
+    if (items.length === 0) return null
+    const oldestUuid = items[0].id
+    const oldestSeq = this.uuidToSeq.get(oldestUuid)
+    if (oldestSeq === undefined) return null
+    let db: IDBPDatabase | null
+    try {
+      db = await openDb()
+    } catch {
+      db = null
+    }
+    if (!db) {
+      this.idbAvailable = false
+      return null
+    }
+    try {
+      const { records, hasMore } = await cursorOlder(db, this.state.sessionId, oldestSeq, n)
+      // records descend (newest-older first); reverse to oldest-first for PREPEND.
+      records.reverse()
+      const messages = records.map((r) => r.msg)
+      // Contiguous iff the newest-returned record abuts the oldest in memory
+      // (seq == oldestSeq - 1). A gap signals missing IDB records — caller
+      // probes the server to bridge.
+      const contiguous = messages.length === 0 || records[records.length - 1].seq === oldestSeq - 1
+      return { messages, hasMore, contiguous }
+    } catch {
+      return null
+    }
   }
 
   /** Reset in-memory IDB tracking. Called on CLEAR_TRANSCRIPT (the wipe) so the

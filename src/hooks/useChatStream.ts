@@ -378,6 +378,37 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     setLoadingOlder(false)
   }, [sessionId])
 
+  /** Fetch one page from the server /history endpoint (the pre-IDB path, and
+   *  the gap-probe when IDB is exhausted/has a boundary gap). Manages
+   *  `cursorRef` (server startIndex) across calls. Returns the number of
+   *  messages prepended; sets hasOlder via the setter passed by the caller. */
+  const fetchServerPage = useCallback(async (): Promise<{ count: number; hasMore: boolean }> => {
+    const params = new URLSearchParams({ limit: '200' })
+    if (cursorRef.current != null) {
+      // Subsequent pages: page strictly before the last startIndex.
+      params.set('before', String(cursorRef.current))
+    } else {
+      // First page: anchor on the oldest disk-stable message on screen.
+      const current = store.getState().mirror.items
+      let anchor: string | null = null
+      for (const it of current) {
+        const u = diskStableUuid(it.msg)
+        if (u) { anchor = u; break }
+      }
+      if (anchor) params.set('beforeUuid', anchor)
+      // If no anchor exists (transcript is only user prompts so far), omit
+      // both — the server returns the newest page, dedup-by-uuid drops dupes.
+    }
+    const page = await api.get<HistoryPageResponse>(
+      `/sessions/${sessionId}/history?${params.toString()}`,
+    )
+    cursorRef.current = page.startIndex
+    if (page.messages.length > 0) {
+      store.dispatch({ type: 'PREPEND_MESSAGES', messages: page.messages })
+    }
+    return { count: page.messages.length, hasMore: page.hasMore }
+  }, [sessionId, store])
+
   const loadOlder = useCallback(async (): Promise<number> => {
     if (inFlightRef.current) return 0
     // After a /clear, the pre-clear transcript still exists on disk but
@@ -386,34 +417,29 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     inFlightRef.current = true
     setLoadingOlder(true)
     try {
-      const params = new URLSearchParams({ limit: '200' })
-      if (cursorRef.current != null) {
-        // Subsequent pages: page strictly before the last startIndex.
-        params.set('before', String(cursorRef.current))
-      } else {
-        // First page: anchor on the oldest disk-stable message on screen.
-        // Scan current items front-to-back for the first uuid the disk
-        // transcript will recognise (assistant/system/tool_result user).
-        const current = store.getState().mirror.items
-        let anchor: string | null = null
-        for (const it of current) {
-          const u = diskStableUuid(it.msg)
-          if (u) { anchor = u; break }
+      // 1. Try IDB first (local, no server round-trip).
+      const idb = await store.loadOlderFromIdb(200)
+      if (idb) {
+        let count = 0
+        if (idb.messages.length > 0) {
+          store.dispatch({ type: 'PREPEND_MESSAGES', messages: idb.messages })
+          count = idb.messages.length
         }
-        if (anchor) params.set('beforeUuid', anchor)
-        // If no anchor exists (e.g. transcript is only user prompts so far),
-        // omit both — the server returns the newest page, and dedup-by-uuid
-        // in the reducer drops anything already shown.
+        // 2. Probe the server when IDB is exhausted OR there's a seq gap at
+        // the boundary (tab closed mid-write left a hole in IDB). The server
+        // page is deduped by uuid on prepend, and the next save backfills IDB.
+        if (!idb.hasMore || !idb.contiguous) {
+          const server = await fetchServerPage()
+          setHasOlder(idb.hasMore || server.hasMore)
+          return count + server.count
+        }
+        setHasOlder(idb.hasMore)
+        return count
       }
-
-      const page = await api.get<HistoryPageResponse>(
-        `/sessions/${sessionId}/history?${params.toString()}`,
-      )
-      cursorRef.current = page.startIndex
-      setHasOlder(page.hasMore)
-      if (page.messages.length === 0) return 0
-      store.dispatch({ type: 'PREPEND_MESSAGES', messages: page.messages })
-      return page.messages.length
+      // 3. IDB unavailable — full server path.
+      const server = await fetchServerPage()
+      setHasOlder(server.hasMore)
+      return server.count
     } catch {
       // Network/parse error — leave hasOlder as-is so the user can retry by
       // scrolling again. Don't surface to the error banner (non-fatal).
@@ -422,7 +448,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       inFlightRef.current = false
       setLoadingOlder(false)
     }
-  }, [sessionId, store])
+  }, [store, fetchServerPage])
 
   return useMemo(
     () => ({

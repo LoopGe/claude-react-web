@@ -5,7 +5,7 @@ import 'fake-indexeddb/auto'
 import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { SessionStore } from './store'
-import { _resetDbForTests, openDb, scanUuidSeqs, cursorRecent, clearSession } from './idb'
+import { _resetDbForTests, openDb, scanUuidSeqs, cursorRecent, clearSession, putMessages } from './idb'
 import type { SdkMessage } from '../types'
 
 const STORAGE_PREFIX = 'claude-web-session:'
@@ -162,5 +162,44 @@ describe('SessionStore IDB cache (Phase 1)', () => {
     const db = await openDb()
     await clearSession(db!, 's7')
     expect((await scanUuidSeqs(db!, 's7')).size).toBe(0)
+  })
+
+  // ── Phase 2: loadOlder from IDB ────────────────────────────────────
+
+  it('loadOlderFromIdb pages older messages not in memory (cold-load leaves older in IDB)', async () => {
+    // Seed IDB directly with 1001 messages (seqs 1..1001). Cold-load fetches
+    // the most-recent 1000 (MEMORY_ITEM_CAP), leaving seq 1 only in IDB.
+    const db = await openDb()
+    const records = Array.from({ length: 1001 }, (_, i) => ({
+      sessionId: 's8',
+      uuid: `old-${i}`,
+      seq: i + 1,
+      msg: asstMsg(`old-${i}`, `msg ${i}`),
+    }))
+    await putMessages(db!, records, { sessionId: 's8', maxSeq: 1001, minSeq: 1 })
+
+    const store = new SessionStore('s8')
+    await store.idbReady
+    // Memory holds the 1000 most-recent (seqs 2..1001); seq 1 is only in IDB.
+    expect(store.getSnapshot().items.length).toBe(1000)
+    expect(store.getSnapshot().items[0].id).toBe('old-1') // oldest in memory = seq 2
+
+    const page = await store.loadOlderFromIdb(200)
+    expect(page).not.toBeNull()
+    expect(page!.messages).toHaveLength(1)
+    expect(page!.messages[0].uuid).toBe('old-0') // seq 1, oldest-first
+    expect(page!.hasMore).toBe(false)
+    expect(page!.contiguous).toBe(true) // seq 1 abuts seq 2
+  }, 30000)
+
+  it('loadOlderFromIdb returns null when IDB is unavailable', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(globalThis as any).indexedDB = undefined
+    _resetDbForTests()
+    const store = new SessionStore('s9')
+    await store.idbReady
+    store.dispatch({ type: 'MESSAGE', message: asstMsg('a-0') })
+    const page = await store.loadOlderFromIdb(200)
+    expect(page).toBeNull()
   })
 })
