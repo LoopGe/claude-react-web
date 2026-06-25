@@ -449,6 +449,22 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             }
           }
         }
+        // Also derive a snapshot from each main-thread `assistant` message
+        // so the bar refreshes MID-TURN (per API response) instead of only
+        // at turn end dmatching the Claude CLI's cadence. We reuse the
+        // context window / model / auto-compact threshold cached on the
+        // last `result`; until the first `result` lands there is no window
+        // to divide against, so liteContextUsageFromAssistant returns null
+        // and we skip. Subagent frames are filtered out inside the helper.
+        if (msg.type === 'assistant') {
+          const usage = liteContextUsageFromAssistant(msg, session.lastContextUsage)
+          if (usage) {
+            session.lastContextUsage = usage
+            for (const sub of session.contextUsageSubscribers) {
+              try { sub.push(usage) } catch { /* subscriber dead dskip */ }
+            }
+          }
+        }
         // `result` marks a completed turn.
         //
         // If the user queued another message while this turn was running
@@ -580,6 +596,78 @@ export interface LiteContextUsage {
   /** Tokens served from cache on this turn (cache read / hit). Present when
    *  the source iteration reports it; absent on turns that lack the field. */
   cacheReadTokens?: number
+  /** Output tokens the model generated on this API call. Surfaced so the
+   *  bar can show throughput alongside context fill. */
+  outputTokens?: number
+  /** Token count at which the SDK's auto-compact triggers, derived from
+   *  the model's effective context window. Present once a `result` has
+   *  supplied `modelUsage[model].contextWindow`/`maxOutputTokens`; the
+   *  client renders "X% until auto-compact" from it. Carried forward onto
+   *  mid-turn `assistant` snapshots so the warning stays live. */
+  autoCompactThreshold?: number
+}
+
+/** Buffer the SDK reserves before triggering auto-compact. Matches the
+ *  CLI's AUTOCOMPACT_BUFFER_TOKENS in src/services/compact/autoCompact.ts. */
+const AUTOCOMPACT_BUFFER_TOKENS = 13000
+/** The CLI subtracts at most this many tokens of output headroom when
+ *  computing the effective context window for the auto-compact threshold. */
+const AUTOCOMPACT_MAX_OUTPUT_FLOOR = 20000
+
+/** Compute the auto-compact threshold (in tokens) from a model's advertised
+ *  context window and max output, mirroring the CLI's formula:
+ *    effectiveContextWindow = contextWindow - min(maxOutputTokens, 20000)
+ *  Returns undefined when contextWindow is missing/non-positive. When
+ *  maxOutputTokens is absent we assume the floor, so the threshold degrades
+ *  gracefully instead of going undefined. */
+function computeAutoCompactThreshold(
+  contextWindow: number,
+  maxOutputTokens?: number,
+): number | undefined {
+  if (!contextWindow || contextWindow <= 0) return undefined
+  const outputHeadroom = Math.min(
+    maxOutputTokens ?? AUTOCOMPACT_MAX_OUTPUT_FLOOR,
+    AUTOCOMPACT_MAX_OUTPUT_FLOOR,
+  )
+  return Math.max(0, contextWindow - outputHeadroom - AUTOCOMPACT_BUFFER_TOKENS)
+}
+
+/** Shared assembly for both `result`- and `assistant`-derived snapshots.
+ *  Sums the three input buckets (the true prompt size per Anthropic docs),
+ *  defensively clamps against an impossible >100% reading, computes the
+ *  percentage, and forwards cache/output/threshold buckets only when present
+ *  (so "not reported" stays distinguishable from "zero"). Returns null when
+ *  the prompt size exceeds the context window — unparseable SDK data, where
+ *  we keep the last known good value rather than showing a false 100%. */
+function assembleLiteUsage(opts: {
+  inputTokens: number
+  cacheCreation: number | null | undefined
+  cacheRead: number | null | undefined
+  outputTokens?: number | null
+  contextWindow: number
+  model: string
+  autoCompactThreshold?: number
+}): LiteContextUsage | null {
+  const totalTokens =
+    opts.inputTokens + (opts.cacheCreation ?? 0) + (opts.cacheRead ?? 0)
+  if (totalTokens > opts.contextWindow) {
+    log.debug(
+      `[context-usage] raw total ${totalTokens} > contextWindow ${opts.contextWindow} for model ${opts.model}; skipping update`,
+    )
+    return null
+  }
+  const out: LiteContextUsage = {
+    totalTokens,
+    maxTokens: opts.contextWindow,
+    rawMaxTokens: opts.contextWindow,
+    percentage: (totalTokens / opts.contextWindow) * 100,
+    model: opts.model,
+  }
+  if (typeof opts.cacheCreation === 'number') out.cacheCreationTokens = opts.cacheCreation
+  if (typeof opts.cacheRead === 'number') out.cacheReadTokens = opts.cacheRead
+  if (typeof opts.outputTokens === 'number') out.outputTokens = opts.outputTokens
+  if (typeof opts.autoCompactThreshold === 'number') out.autoCompactThreshold = opts.autoCompactThreshold
+  return out
 }
 
 /** Build a LiteContextUsage from a `result` SDK message. Returns null when
@@ -602,7 +690,7 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
   }
   const result = msg as unknown as {
     usage: IterationUsage & { iterations: IterationUsage[] | null }
-    modelUsage: Record<string, { contextWindow: number }>
+    modelUsage: Record<string, { contextWindow: number; maxOutputTokens?: number }>
   }
   const usage = result.usage
   const modelUsage = result.modelUsage
@@ -612,10 +700,12 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
   // exactly one entry per turn dbut we iterate defensively.
   let model = ''
   let contextWindow = 0
+  let maxOutputTokens: number | undefined
   for (const [name, info] of Object.entries(modelUsage)) {
     if (info?.contextWindow && info.contextWindow > 0) {
       model = name
       contextWindow = info.contextWindow
+      maxOutputTokens = info.maxOutputTokens
       break
     }
   }
@@ -646,14 +736,12 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
   // Per Anthropic SDK docs: "Calculate the true context window size
   // from the last iteration." dbut only the last `message` iteration.
   let source: IterationUsage = usage
-  let sourceLabel = 'top-level'
   if (usage.iterations && usage.iterations.length > 0) {
     let pickedMessage = false
     for (let i = usage.iterations.length - 1; i >= 0; i--) {
       if (usage.iterations[i].type === 'message') {
         source = usage.iterations[i]
         pickedMessage = true
-        sourceLabel = `iteration[${i}]`
         break
       }
     }
@@ -670,38 +758,63 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
       return null
     }
   }
-  const rawTotal =
-    (source.input_tokens ?? 0) +
-    (source.cache_creation_input_tokens ?? 0) +
-    (source.cache_read_input_tokens ?? 0)
-
-  // Defensive clamp: a single API call's prompt cannot legitimately
-  // exceed the model's context window. If we still see > 100%, the
-  // SDK is reporting in a way we don't understand dskip the update
-  // rather than showing a false 100% reading.
-  if (rawTotal > contextWindow) {
-    log.debug(
-      `[context-usage] raw total ${rawTotal} > contextWindow ${contextWindow} for model ${model} ` +
-      `(source=${sourceLabel}); skipping update`,
-    )
-    return null
-  }
-  const totalTokens = rawTotal
-
   // Surface the cache buckets of the picked iteration so the UI can show
-  // cache hit rate. We only forward non-null values — turns that genuinely
-  // lack the fields (e.g. provider that doesn't report them) keep the
-  // wire shape clean by omitting the keys entirely.
-  const cacheCreationTokens = source.cache_creation_input_tokens
-  const cacheReadTokens = source.cache_read_input_tokens
-  const out: LiteContextUsage = {
-    totalTokens,
-    maxTokens: contextWindow,
-    rawMaxTokens: contextWindow,
-    percentage: (totalTokens / contextWindow) * 100,
+  // cache hit rate, plus its output_tokens for the throughput readout, and
+  // derive the auto-compact threshold from the model's context window.
+  return assembleLiteUsage({
+    inputTokens: source.input_tokens ?? 0,
+    cacheCreation: source.cache_creation_input_tokens,
+    cacheRead: source.cache_read_input_tokens,
+    outputTokens: source.output_tokens,
+    contextWindow,
     model,
-  }
-  if (typeof cacheCreationTokens === 'number') out.cacheCreationTokens = cacheCreationTokens
-  if (typeof cacheReadTokens === 'number') out.cacheReadTokens = cacheReadTokens
-  return out
+    autoCompactThreshold: computeAutoCompactThreshold(contextWindow, maxOutputTokens),
+  })
+}
+
+/** Build a LiteContextUsage from an `assistant` SDK message, reusing the
+ *  context-window / model / threshold carried by the last `result`-derived
+ *  snapshot. This is what lets the bar refresh MID-TURN (per API response)
+ *  instead of only at turn end dmatching the Claude CLI's cadence. Returns
+ *  null when there is no cached context window yet (the very first turn,
+ *  before any `result` has landed), when the assistant message lacks a
+ *  usable usage payload, or when it is a subagent frame (parent_tool_use_id
+ *  set) whose own context window would misrepresent the main thread.
+ *  @internal dexported only for unit tests; not part of the module's
+ *              public API. */
+export function liteContextUsageFromAssistant(
+  msg: SDKMessage,
+  cached: LiteContextUsage | undefined,
+): LiteContextUsage | null {
+  if (msg.type !== 'assistant') return null
+  // Subagent assistant frames carry their own (smaller) context window;
+  // updating the main-thread bar from them would be misleading.
+  if (getParentToolUseId(msg) != null) return null
+  if (!cached || !cached.maxTokens || cached.maxTokens <= 0) return null
+  const beta = (
+    msg as unknown as {
+      message?: {
+        usage?: {
+          input_tokens?: number
+          cache_creation_input_tokens?: number | null
+          cache_read_input_tokens?: number | null
+          output_tokens?: number | null
+        }
+      }
+    }
+  ).message?.usage
+  if (!beta) return null
+  // `input_tokens` on a BetaMessage usage is the non-cached prompt portion;
+  // the true prompt size sums all three input buckets (Anthropic docs).
+  return assembleLiteUsage({
+    inputTokens: beta.input_tokens ?? 0,
+    cacheCreation: beta.cache_creation_input_tokens,
+    cacheRead: beta.cache_read_input_tokens,
+    outputTokens: beta.output_tokens,
+    contextWindow: cached.maxTokens,
+    model: cached.model,
+    // Carry the threshold forward from the last `result` so the warning
+    // stays live between turn-end refreshes.
+    autoCompactThreshold: cached.autoCompactThreshold,
+  })
 }

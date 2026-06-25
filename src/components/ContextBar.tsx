@@ -38,6 +38,22 @@ export const ContextBar = memo(function ContextBar({ usage }: Props) {
   const bounded = Math.min(100, Math.max(0, computedPct))
   const level = bounded >= 90 ? 'danger' : bounded >= 70 ? 'warn' : 'ok'
 
+  // Auto-compact warning: only render once we have a threshold (i.e. after
+  // the first `result`) AND the user is far enough along that the nudge is
+  // actionable (within 50% of the threshold). Mirrors the CLI's TokenWarning
+  // "X% until auto-compact" line.
+  const threshold = usage.autoCompactThreshold
+  let warning: { percentLeft: number; level: 'ok' | 'warn' | 'danger' } | null = null
+  if (typeof threshold === 'number' && threshold > 0) {
+    const percentLeft = Math.max(0, Math.round(((threshold - used) / threshold) * 100))
+    if (percentLeft <= 50) {
+      warning = {
+        percentLeft,
+        level: percentLeft <= 15 ? 'danger' : percentLeft <= 30 ? 'warn' : 'ok',
+      }
+    }
+  }
+
   return (
     <div className={`ctx-bar ctx-bar-${level}`}>
       <div className="ctx-bar-label">
@@ -48,6 +64,11 @@ export const ContextBar = memo(function ContextBar({ usage }: Props) {
         <span className="ctx-bar-nums">
           {formatTokens(used)} / {formatTokens(max)}
           <span className="ctx-bar-pct"> · {bounded.toFixed(1)}%</span>
+          {usage.outputTokens != null && usage.outputTokens > 0 && (
+            <span className="ctx-bar-out" title={`Output tokens this call: ${formatTokens(usage.outputTokens)}`}>
+              {' '}· {formatTokens(usage.outputTokens)} out
+            </span>
+          )}
           {usage.cacheReadTokens != null && usage.cacheReadTokens > 0 && (
             <span className="ctx-bar-cache" title={`Cache hit: ${formatTokens(usage.cacheReadTokens)} read · ${formatTokens(usage.cacheCreationTokens ?? 0)} written`}>
               {' '}· cache {formatTokens(usage.cacheReadTokens)}
@@ -61,6 +82,11 @@ export const ContextBar = memo(function ContextBar({ usage }: Props) {
           style={{ ['--ctx-progress' as string]: bounded / 100 } as CSSProperties}
         />
       </div>
+      {warning && (
+        <div className={`ctx-bar-warning ctx-bar-warning-${warning.level}`}>
+          {warning.percentLeft}% until auto-compact
+        </div>
+      )}
     </div>
   )
 })

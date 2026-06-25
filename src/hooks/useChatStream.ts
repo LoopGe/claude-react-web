@@ -41,6 +41,13 @@ export interface ContextUsage {
   /** Tokens served from cache on this turn (cache hit). Present when the
    *  source iteration reports it; absent otherwise. */
   cacheReadTokens?: number
+  /** Output tokens the model generated on this API call. Present when the
+   *  source reports it; absent otherwise. */
+  outputTokens?: number
+  /** Token count at which the SDK's auto-compact triggers. Present once a
+   *  `result` has supplied the model's context window; the bar renders
+   *  "X% until auto-compact" from it. */
+  autoCompactThreshold?: number
   skills?: {
     includedSkills: number
     totalSkills: number

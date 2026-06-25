@@ -331,7 +331,17 @@
 }
 .ctx-bar-nums { letter-spacing: 0.02em; }
 .ctx-bar-pct { color: var(--fg-muted); }
+.ctx-bar-out { color: var(--fg-muted); }
 .ctx-bar-cache { color: var(--fg-muted); }
+.ctx-bar-warning {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  text-align: right;
+}
+.ctx-bar-warning-ok { color: var(--fg-muted); }
+.ctx-bar-warning-warn { color: var(--warn); }
+.ctx-bar-warning-danger { color: var(--danger); }
 .ctx-bar-model {
   margin-left: 6px;
   font-size: 11px;

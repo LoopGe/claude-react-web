@@ -3,11 +3,13 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
   fastModeStateOf,
   hookLifecycleMessage,
+  liteContextUsageFromAssistant,
   liteContextUsageFromResult,
   toolResultIds,
   trimLargeToolResults,
   userMessageHasToolResult,
 } from './session-pump.js'
+import type { LiteContextUsage } from './session-pump.js'
 
 // ---------------------------------------------------------------------------
 // Drop-filter discriminators
@@ -91,7 +93,7 @@ describe('toolResultIds', () => {
 
 function makeResult(overrides: {
   usage?: Record<string, unknown>
-  modelUsage?: Record<string, { contextWindow?: number }>
+  modelUsage?: Record<string, { contextWindow?: number; maxOutputTokens?: number }>
 } = {}): SDKMessage {
   return {
     type: 'result',
@@ -344,6 +346,143 @@ describe('liteContextUsageFromResult', () => {
     const out = liteContextUsageFromResult(msg)
     expect(out!.model).toBe('real-model')
     expect(out!.maxTokens).toBe(100000)
+  })
+
+  it('surfaces outputTokens from the picked message iteration', () => {
+    const msg = makeResult({
+      usage: {
+        input_tokens: 0,
+        iterations: [
+          { type: 'message', input_tokens: 1000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 4321 },
+        ],
+      },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+    })
+    expect(liteContextUsageFromResult(msg)!.outputTokens).toBe(4321)
+  })
+
+  it('computes autoCompactThreshold from contextWindow and maxOutputTokens', () => {
+    // effectiveContextWindow = 200000 - min(32000, 20000) = 180000
+    // threshold            = 180000 - 13000 = 167000
+    const msg = makeResult({
+      usage: { input_tokens: 1000 },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000, maxOutputTokens: 32000 } },
+    })
+    expect(liteContextUsageFromResult(msg)!.autoCompactThreshold).toBe(167000)
+  })
+
+  it('falls back to the 20000 output floor when maxOutputTokens is absent', () => {
+    // effectiveContextWindow = 200000 - 20000 = 180000; threshold = 167000
+    const msg = makeResult({
+      usage: { input_tokens: 1000 },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+    })
+    expect(liteContextUsageFromResult(msg)!.autoCompactThreshold).toBe(167000)
+  })
+
+  it('caps maxOutputTokens at the 20000 floor even when it is smaller', () => {
+    // maxOutputTokens 8000 < 20000, so effective = 200000 - 8000 = 192000
+    // threshold = 192000 - 13000 = 179000
+    const msg = makeResult({
+      usage: { input_tokens: 1000 },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000, maxOutputTokens: 8000 } },
+    })
+    expect(liteContextUsageFromResult(msg)!.autoCompactThreshold).toBe(179000)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// liteContextUsageFromAssistant — mid-turn refresh from each `assistant`
+// message, reusing the context window cached on the last `result` snapshot.
+// ---------------------------------------------------------------------------
+
+function makeAssistant(overrides: {
+  usage?: Record<string, unknown>
+  parent_tool_use_id?: string | null
+} = {}): SDKMessage {
+  return {
+    type: 'assistant',
+    parent_tool_use_id: overrides.parent_tool_use_id ?? null,
+    message: { role: 'assistant', content: [], usage: overrides.usage },
+  } as unknown as SDKMessage
+}
+
+describe('liteContextUsageFromAssistant', () => {
+  const cached: LiteContextUsage = {
+    totalTokens: 1000,
+    maxTokens: 200000,
+    rawMaxTokens: 200000,
+    percentage: 0.5,
+    model: 'claude-opus-4-7',
+    autoCompactThreshold: 167000,
+  }
+
+  it('returns null for non-assistant messages', () => {
+    expect(liteContextUsageFromAssistant({ type: 'result' } as unknown as SDKMessage, cached)).toBeNull()
+  })
+
+  it('returns null when no cached snapshot exists (first turn, pre-result)', () => {
+    const msg = makeAssistant({ usage: { input_tokens: 1000 } })
+    expect(liteContextUsageFromAssistant(msg, undefined)).toBeNull()
+  })
+
+  it('returns null when cached snapshot lacks a usable context window', () => {
+    const msg = makeAssistant({ usage: { input_tokens: 1000 } })
+    expect(liteContextUsageFromAssistant(msg, { ...cached, maxTokens: 0 })).toBeNull()
+  })
+
+  it('returns null when the assistant message lacks a usage payload', () => {
+    const msg = { type: 'assistant', parent_tool_use_id: null, message: { content: [] } } as unknown as SDKMessage
+    expect(liteContextUsageFromAssistant(msg, cached)).toBeNull()
+  })
+
+  it('skips subagent frames (parent_tool_use_id set)', () => {
+    // A subagent has its own context window; updating the main-thread bar
+    // from it would misrepresent the main conversation.
+    const msg = makeAssistant({
+      usage: { input_tokens: 500 },
+      parent_tool_use_id: 'tu_subagent',
+    })
+    expect(liteContextUsageFromAssistant(msg, cached)).toBeNull()
+  })
+
+  it('sums all three input buckets and reuses the cached window/model/threshold', () => {
+    const msg = makeAssistant({
+      usage: {
+        input_tokens: 1000,
+        cache_creation_input_tokens: 200,
+        cache_read_input_tokens: 5000,
+        output_tokens: 4321,
+      },
+    })
+    const out = liteContextUsageFromAssistant(msg, cached)
+    expect(out).not.toBeNull()
+    expect(out!.totalTokens).toBe(6200)
+    expect(out!.maxTokens).toBe(200000)
+    expect(out!.rawMaxTokens).toBe(200000)
+    expect(out!.percentage).toBeCloseTo((6200 / 200000) * 100, 5)
+    expect(out!.model).toBe('claude-opus-4-7')
+    expect(out!.outputTokens).toBe(4321)
+    expect(out!.autoCompactThreshold).toBe(167000)
+    // Cache buckets forwarded from the assistant message's own usage.
+    expect(out!.cacheCreationTokens).toBe(200)
+    expect(out!.cacheReadTokens).toBe(5000)
+  })
+
+  it('omits cache/output keys when the assistant usage lacks them', () => {
+    const msg = makeAssistant({ usage: { input_tokens: 500 } })
+    const out = liteContextUsageFromAssistant(msg, cached)
+    expect(out!.totalTokens).toBe(500)
+    expect(out!.cacheCreationTokens).toBeUndefined()
+    expect(out!.cacheReadTokens).toBeUndefined()
+    expect(out!.outputTokens).toBeUndefined()
+  })
+
+  it('returns null when the prompt size exceeds the cached context window', () => {
+    const msg = makeAssistant({
+      usage: { input_tokens: 500000, cache_read_input_tokens: 600000 },
+    })
+    expect(liteContextUsageFromAssistant(msg, cached)).toBeNull()
   })
 })
 
