@@ -122,7 +122,7 @@ export interface PermissionHandlers {
 
 /** Clear all cached session state. Used in tests to avoid cross-test leaks. */
 export function cacheClear() {
-  sessionStoreRegistry.clear()
+  void sessionStoreRegistry.clear()
   // Also wipe localStorage entries so stores recreated after clear()
   // don't reload stale data from a previous test.
   clearAllSessionStorage()

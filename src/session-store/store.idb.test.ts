@@ -72,7 +72,7 @@ describe('SessionStore IDB cache (Phase 1)', () => {
     }
     s1.persistNow()
     await s1.flushIdb()
-    s1.destroy()
+    await s1.destroy()
 
     // Second store: cold-load should prepend the IDB messages.
     const s2 = new SessionStore('s2')

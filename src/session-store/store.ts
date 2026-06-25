@@ -537,7 +537,11 @@ export class SessionStore {
     }
   }
 
-  destroy(): void {
+  /** Tear down the store: persist final state (sync LS + async IDB), cancel
+   *  timers, drop listeners. Async so the in-flight IDB write lands before
+   *  the store is torn down (idle-evict durability) — callers that need the
+   *  write durable (registry.delete) await this. */
+  async destroy(): Promise<void> {
     unregisterStoreForDebug(this.state.sessionId, this)
     // Persist messages to localStorage before tearing down so they survive
     // idle pruning and page reloads.
@@ -552,6 +556,10 @@ export class SessionStore {
     }
     this.saveDirtySince = null
     this.listeners.clear()
+    // Await the in-flight IDB write so it lands before teardown. The write
+    // holds `this` alive via its closure, but awaiting makes the contract
+    // explicit and lets registry.delete sequence its IDB clear after.
+    await this.flushIdb()
   }
 
   private emit(): void {

@@ -1,4 +1,5 @@
 import { SessionStore, clearSessionStorage } from './store'
+import { openDb, clearSession } from './idb'
 
 interface StoreEntry {
   store: SessionStore
@@ -46,19 +47,27 @@ class SessionStoreRegistry {
     }
   }
 
-  /** Permanently drop a session's cache. Destroys the in-memory store (if
-   *  one exists) BEFORE clearing localStorage — otherwise the idle sweep's
-   *  destroy()→save() would re-persist the key and resurrect the orphan.
-   *  Clears storage unconditionally so a cached transcript with no live
-   *  store entry (e.g. left over from a previous tab/session) is still
-   *  purged. */
-  delete(sessionId: string): void {
+  /** Permanently drop a session's cache. Awaits the in-memory store's final
+   *  IDB flush (destroy) BEFORE clearing localStorage + IDB — otherwise the
+   *  idle sweep's destroy()→save() IDB write could land after the clear and
+   *  resurrect the orphan. Clears storage unconditionally so a cached
+   *  transcript with no live store entry is still purged. */
+  async delete(sessionId: string): Promise<void> {
     const entry = this.stores.get(sessionId)
     if (entry) {
-      entry.store.destroy()
+      await entry.store.destroy()
       this.stores.delete(sessionId)
     }
     clearSessionStorage(sessionId)
+    // Clear IDB records for the session too — a deleted session must not
+    // linger in the IDB cache. Best-effort: if IDB is unavailable, the LS
+    // clear above + the source-of-truth server disk log cover it.
+    try {
+      const db = await openDb()
+      if (db) await clearSession(db, sessionId)
+    } catch {
+      /* best-effort */
+    }
   }
 
   private ensureEntry(sessionId: string): StoreEntry {
@@ -77,17 +86,17 @@ class SessionStoreRegistry {
   /** Start the periodic sweep if not already running. */
   private ensureSweep(): void {
     if (this.sweepTimer) return
-    this.sweepTimer = setInterval(() => this.sweep(), SWEEP_INTERVAL_MS)
+    this.sweepTimer = setInterval(() => { void this.sweep() }, SWEEP_INTERVAL_MS)
     // Allow the process to exit even if the timer is still running.
     if (this.sweepTimer.unref) this.sweepTimer.unref()
   }
 
   /** Evict stores whose refCount has been 0 for longer than IDLE_TTL_MS. */
-  private sweep(): void {
+  private async sweep(): Promise<void> {
     const now = Date.now()
     for (const [id, entry] of this.stores) {
       if (entry.refCount === 0 && entry.idleSince > 0 && now - entry.idleSince > IDLE_TTL_MS) {
-        entry.store.destroy()
+        await entry.store.destroy()
         this.stores.delete(id)
       }
     }
@@ -98,8 +107,8 @@ class SessionStoreRegistry {
     }
   }
 
-  clear(): void {
-    for (const entry of this.stores.values()) entry.store.destroy()
+  async clear(): Promise<void> {
+    for (const entry of this.stores.values()) await entry.store.destroy()
     this.stores.clear()
     if (this.sweepTimer) {
       clearInterval(this.sweepTimer)
