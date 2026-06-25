@@ -514,35 +514,44 @@ export class SessionManager {
     if (meta.terminated) {
       throw new HttpError(410, `session ${id} has ended and cannot be resumed`)
     }
-    // Guard: the SDK only writes session data to disk after the first
-    // `result` message.  If no turn was completed there is nothing to
-    // resume dthe SDK would fail with
-    //   "No conversation found with session ID: <uuid>"
-    // Mark the session as terminated so the client can clean it up.
-    if (!meta.lastTurnAt) {
-      meta.terminated = true
-      meta.terminatedReason = 'no_data'
-      this.store.upsert(meta)
-      // Broadcast so the client removes / dims the session immediately
-      // instead of letting the user click it again and again.
-      this.broadcastGlobal({ kind: 'update', session: this.infoFromMeta(meta) })
-      throw new HttpError(
-        410,
-        `session ${id} has no conversation data on disk dit cannot be resumed (the first turn never completed)`,
-      )
+    // Ground-truth resume gate: probe the SDK's on-disk transcript FIRST.
+    // `lastTurnAt` is only a fallible in-memory proxy (the pump sets it
+    // solely on a real `result`, observed in THIS process) — it can be
+    // stale or lost while a perfectly good transcript still lives on disk
+    // (e.g. the pre-fix spawn()-drops-lastTurnAt bug left real conversations
+    // with lastTurnAt===undefined). The disk probe is authoritative, so key
+    // the decision off it rather than the proxy.
+    const hasTranscript = await this.hasSdkTranscript(meta)
+    if (!hasTranscript) {
+      if (meta.lastTurnAt) {
+        // We once observed a `result` (lastTurnAt set) but the jsonl is now
+        // gone — deleted out of band, synced from another machine, etc. The
+        // CLI would error with "No conversation found with session ID:
+        // <uuid>" the moment we hand it `resume: id`. Mark terminated so the
+        // sidebar dims it and the user can clean up.
+        this.markTranscriptMissing(meta, 'resume')
+        throw new HttpError(
+          410,
+          `session ${id}'s SDK transcript file is missing on disk — it cannot be resumed. The session has been marked terminated; delete it from the sidebar.`,
+        )
+      }
+      // No transcript AND no completed turn: the session never produced a
+      // model reply. The common case is a session that only ran local `!`
+      // commands (local-only output never enters the SDK input queue, so no
+      // turn / result / transcript is ever written), or one created and
+      // never used. The SDK genuinely has nothing to resume, but the
+      // session config (cwd / model / permissionMode / grouping) is still
+      // valid and the user wants to keep using it — dead-ending it as
+      // terminated:'no_data' is a pointless dead end. The `!` output was
+      // already lost the moment the session went dormant (it lived only in
+      // the in-memory history ring; the SDK transcript never existed and our
+      // store keeps metadata only). Respawn a FRESH conversation on the same
+      // id (no `resume:`), mirroring clear()'s respawn, so the user gets a
+      // working continuation instead of a permanently-dimmed sidebar item.
+      return this.respawnFresh(id, meta)
     }
-    // Same disk-vs-memory mismatch as fork(): the persisted meta says
-    // the session is resumable, but if the SDK's jsonl was deleted out
-    // of band the CLI subprocess will error with "No conversation found
-    // with session ID: <uuid>" the moment we hand it `resume: id`.
-    // Catch it here, mark terminated, and let the user clean up.
-    if (!(await this.hasSdkTranscript(meta))) {
-      this.markTranscriptMissing(meta, 'resume')
-      throw new HttpError(
-        410,
-        `session ${id}'s SDK transcript file is missing on disk dit cannot be resumed. The session has been marked terminated; delete it from the sidebar.`,
-      )
-    }
+    // Transcript exists → safe to resume even if our lastTurnAt proxy is
+    // stale. Fall through to build resumeOpts with `resume: id`.
     const provider = meta.provider ?? this.defaultProvider
     const resumeOpts: Options & { provider?: string } = {
       provider,
@@ -592,6 +601,59 @@ export class SessionManager {
       /* disk read failed dfall back to an empty ring (pre-fix behaviour) */
     }
     return this.spawn(id, resumeOpts, undefined, historySeed)
+  }
+
+  /** Respawn a FRESH conversation on an existing session id, discarding any
+   *  prior turn-less state. Used by resume() when the session has no SDK
+   *  transcript AND never completed a turn — e.g. one that only ran local
+   *  `!` commands (whose output never entered the SDK input, so no turn /
+   *  result / transcript was ever written). Mirrors clear()'s respawn, but
+   *  operates on a DORMANT session (no live Query to tear down first).
+   *
+   *  Reuses the id, cwd, model, permissionMode, betas, effort, and hooks so
+   *  the user keeps the same sidebar entry / grouping; starts a brand-new
+   *  SDK conversation under that id (no `resume:`). The prior `!` output is
+   *  gone regardless — it lived only in the in-memory ring, already lost at
+   *  dormancy.
+   *
+   *  No `parentId` / Side-Chat systemPrompt is carried: a turn-less Side
+   *  Chat that went dormant is an edge case, and carrying parentId would
+   *  make the respawned session an orphan (filtered out of the sidebar) and
+   *  subject to the abandoned-side-chat GC. Dropping it promotes the session
+   *  to a normal, usable one — the safer outcome, consistent with the
+   *  spawn()-doesn't-carry-parentId review. */
+  private async respawnFresh(id: string, meta: SessionMeta): Promise<SessionInfo> {
+    const provider = meta.provider ?? this.defaultProvider
+    const freshOpts: Options & { provider?: string } = {
+      provider,
+      cwd: meta.cwd,
+      model: meta.model,
+      permissionMode: meta.permissionMode,
+      title: meta.title,
+      effort: meta.effortLevel,
+      betas: meta.betas as Options['betas'],
+      settings: meta.hooks ? ({ hooks: toSdkHooksSettings(meta.hooks) } as Settings) : undefined,
+    }
+    // Re-apply globally configured MCP servers (same as resume / clear).
+    // Refresh OAuth tokens for remote servers BEFORE snapshotting the config
+    // so the fresh Query receives live access tokens.
+    const allGlobalMcpNames = Object.keys(this.mcpStore.toSdkConfig() ?? {})
+    if (allGlobalMcpNames.length > 0) {
+      await this.mcpStore.refreshOAuthTokens(allGlobalMcpNames)
+      freshOpts.mcpServers = this.mcpStore.toSdkConfig()
+    }
+    log.info(
+      `[session ${id}] respawnFresh: no transcript + no completed turn — ` +
+      `starting a fresh conversation on the same id`,
+    )
+    // spawn() with no `resume:` / `forkSession` sets sessionId=id (a fresh
+    // conversation reusing the id) and builds a new canUseTool. The prior
+    // persisted meta is read for carry-forward fields (gitStartSha, fastMode,
+    // hooks, lastTurnAt=undefined, clearBoundaryUuid, createdAt) but NOT
+    // parentId. No transcript file exists for a turn-less session, so the
+    // fresh same-id spawn does not trip the CLI's "Session ID already in
+    // use" file-existence guard.
+    return this.spawn(id, freshOpts)
   }
 
   /** Adopt a session that exists on disk but isn't in our store di.e. one
@@ -834,18 +896,21 @@ export class SessionManager {
     const live = this.sessions.get(parentId)
     const meta = live ?? this.store.get(parentId)
     if (!meta) throw new HttpError(404, `parent session ${parentId} not found`)
-    if (!meta.lastTurnAt) {
-      throw new HttpError(
-        400,
-        'Send at least one message and wait for the reply before starting a Side Chat.',
-      )
-    }
     if (meta.terminated) {
       throw new HttpError(400, 'Cannot create a Side Chat from a terminated session.')
     }
     if (meta.parentId) {
       throw new HttpError(400, 'Cannot create a Side Chat from a Side Chat.')
     }
+    // Side Chat forks the parent's SDK transcript (resume + forkSession). The
+    // only real precondition is that a transcript exists to fork — and a
+    // freshly resumed session always has one (resume itself probes the disk
+    // and would have marked it terminated otherwise). `lastTurnAt` is NOT a
+    // valid gate here: it's a fallible in-memory proxy stamped only on a real
+    // `result`, so a bare resume (system/init, no result) or a session left
+    // over from the spawn()-drops-lastTurnAt bug starts with it undefined
+    // despite a perfectly good transcript. Gate on the authoritative disk
+    // probe instead, mirroring resume(). See session-manager.ts:517-523.
     if (!(await this.hasSdkTranscript(meta))) {
       const persisted: SessionMeta = this.store.get(parentId) ?? {
         id: meta.id,
@@ -990,6 +1055,18 @@ export class SessionManager {
       gitStartSha: existingMeta?.gitStartSha,
       fastMode: existingMeta?.fastMode,
       hooks: existingMeta?.hooks ?? metaSnapshot.hooks,
+      // Carry lastTurnAt forward from the persisted meta on resume. The
+      // pump only stamps `lastTurnAt` when a real `result` lands
+      // (session-pump.ts); a bare resume emits system/init but NO result,
+      // so without this the resurrected session starts with
+      // lastTurnAt === undefined. writeStore() below is a wholesale
+      // replace (not a merge), so it would then overwrite the on-disk
+      // lastTurnAt with undefined — and the NEXT resume (after the
+      // session goes dormant again without a new completed turn) trips
+      // the `!meta.lastTurnAt` "the first turn never completed" guard in
+      // resume() and marks the session terminated. create()/fork() pass
+      // a fresh id (no existingMeta) so this stays undefined for them.
+      lastTurnAt: existingMeta?.lastTurnAt,
       // Side Chat parentId — set here so the `created` broadcast already
       // carries the field, avoiding a sidebar flash of the session without it.
       parentId: (opts as Record<string, unknown>).parentId as string | undefined,
@@ -1233,10 +1310,21 @@ export class SessionManager {
     if (!cwd) throw new HttpError(400, 'session has no cwd — cannot run a shell command')
     const share = opts.share ?? false
     log.info(`[session ${id}] exec${share ? ' (shared)' : ' (local)'}: ${command.slice(0, 120)}`)
-    const result = await execCommand(cwd, command, {
-      timeoutMs: opts.timeoutMs,
-      onProgress: opts.onProgress,
-    })
+    // Park an AbortController on the session so the /exec/abort route can
+    // SIGKILL the child mid-run (the "stop" button on the bash card). Cleared
+    // in the finally below. `!` is serial so at most one exec is in flight.
+    const controller = new AbortController()
+    s.execAbort = controller
+    let result
+    try {
+      result = await execCommand(cwd, command, {
+        timeoutMs: opts.timeoutMs,
+        onProgress: opts.onProgress,
+        signal: controller.signal,
+      })
+    } finally {
+      if (s.execAbort === controller) s.execAbort = undefined
+    }
     // Build the synthetic user message with <bash-*> tags (mirrors Claude
     // Code's format). <bash-exit> lets the renderer show a status badge
     // without a separate WS channel.
@@ -1273,6 +1361,18 @@ export class SessionManager {
       this.broadcastGlobal({ kind: 'update', session: this.info(s) })
     }
     return { ...result, message: userMsg }
+  }
+
+  /** Force-stop the current in-flight `!`/`!!` command (SIGKILL the child),
+   *  like Ctrl+C in a terminal. No-op when no command is running on the
+   *  session — mirroring interrupt()'s tolerance for "nothing to stop".
+   *  Aborting fires execCommand's onAbort → finish({interrupted:true}); the
+   *  still-running execInSession then completes normally and injects the
+   *  interrupted result as a <bash-exit interrupted="true"> message, so the
+   *  client needs no special handling. */
+  abortExec(id: string): void {
+    const s = this.sessions.get(id)
+    s?.execAbort?.abort()
   }
 
   /** Reset the session's conversation context.
@@ -2322,6 +2422,11 @@ export class SessionManager {
       if (opts.reason) s.terminatedReason = opts.reason
     }
     s.running = false
+    // Abort any in-flight `!`/`!!` exec so its child process doesn't outlive
+    // the session. execInSession's finally still clears execAbort, but this
+    // fires the SIGKILL promptly rather than letting the orphan run to its
+    // timeout / natural completion.
+    s.execAbort?.abort()
     s.handle.destroy(opts.reason ?? 'unload')
     // When terminating (explicit delete or graceful shutdown), await the
     // pump so the SDK subprocess has time to exit cleanly.

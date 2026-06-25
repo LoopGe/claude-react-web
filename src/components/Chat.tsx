@@ -904,6 +904,19 @@ export const Chat = memo(function Chat({
     }
   }, [session.id])
 
+  /** Force-stop the current in-flight `!`/`!!` command (SIGKILL the child),
+   *  like Ctrl+C. The server then completes execInSession with
+   *  interrupted:true and injects the result as a normal bash message, so no
+   *  placeholder rollback is needed here — the existing echo-merge replaces
+   *  the optimistic placeholder with the interrupted result. */
+  const abortBashCommand = useCallback(async () => {
+    try {
+      await api.post(`/sessions/${session.id}/exec/abort`, {})
+    } catch (e) {
+      setLocalError((e as Error).message)
+    }
+  }, [session.id])
+
   // Expose the interrupt callback to the parent so the ESC shortcut in
   // App.tsx can trigger the same code-path. The "interrupted" (? result
   // label is now derived from the SDK result message's `terminal_reason`,
@@ -1077,6 +1090,7 @@ export const Chat = memo(function Chat({
           loadingOlder={stream.loadingOlder}
           onRegisterNavigate={registerNavigate}
           onSwitchModel={() => onOpenSettingsTab(session.id, 'general')}
+          onAbortBash={abortBashCommand}
         />
         </div>
         </ReopenQuestionProvider>

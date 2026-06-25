@@ -175,6 +175,37 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
   }
 })
 
+// Mock server/exec.js so exec-abort tests can drive the abort path without
+// spawning a real subprocess (the real execCommand goes through cmd.exe on
+// Windows, where SIGKILL on the shell wrapper orphans the child — a real
+// exec.ts limitation, not something the abort-wiring tests should depend on).
+// escapeXml is passed through as the real implementation; execCommand is
+// controllable: it resolves {interrupted:true} when the supplied signal
+// aborts, otherwise hangs like a long-running command until aborted.
+vi.mock('./exec.js', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./exec.js')>()
+  return {
+    ...orig,
+    escapeXml: orig.escapeXml,
+    execCommand: vi.fn(
+      (_cwd: string, _command: string, opts: { signal?: AbortSignal } = {}) =>
+        new Promise((resolve) => {
+          const done = { stdout: '', stderr: '', exitCode: 0, timedOut: false, interrupted: false, truncated: false }
+          if (opts.signal) {
+            if (opts.signal.aborted) { resolve({ ...done, interrupted: true }); return }
+            opts.signal.addEventListener(
+              'abort',
+              () => resolve({ ...done, interrupted: true }),
+              { once: true },
+            )
+          }
+          // No abort → never resolves (mirrors a long-running command). Tests
+          // that want a normal completion call mockResolvedValueOnce instead.
+        }),
+    ),
+  }
+})
+
 // Helper: yield to the event loop so the SessionManager's pump() can
 // process whatever the mock just emitted. The pump iterates asynchronously,
 // so a `setImmediate`-tick is enough to drain one message.
@@ -185,6 +216,7 @@ import { SessionManager } from './session-manager.js'
 import { SessionStore } from './persistence.js'
 import { config as defaultConfig } from './config.js'
 import { McpConfigStore } from './mcp-config.js'
+import { execCommand as mockExecCommand } from './exec.js'
 import { buildSessionRouter } from './routes/sessions.js'
 
 function makeTmpDir(): string {
@@ -205,6 +237,7 @@ describe('SessionManager', () => {
     mockGetSessionInfo.mockImplementation(async (id) => ({ sessionId: id }))
     mockListSessions.mockReset()
     mockListSessions.mockImplementation(async () => [])
+    vi.mocked(mockExecCommand).mockClear()
     dir = makeTmpDir()
     store = new SessionStore({ stateDir: dir })
     await store.load()
@@ -595,6 +628,99 @@ describe('SessionManager', () => {
     // is still in memory. Unload to persist the terminal state.
     await sm.unload(info.id)
     await expect(sm.resume(info.id)).rejects.toThrow(/ended/i)
+  })
+
+  it('resume() preserves lastTurnAt so a second resume after going dormant still works', async () => {
+    // Regression: spawn() used to drop lastTurnAt from the persisted meta
+    // on resume (it carried gitStartSha/fastMode/hooks/clearBoundaryUuid
+    // forward but not lastTurnAt). writeStore() is a wholesale replace,
+    // not a merge, so the first resume clobbered the on-disk lastTurnAt
+    // back to undefined. A bare resume emits system/init but NO `result`,
+    // so the pump (which only stamps lastTurnAt on a real result) never
+    // re-stamped it. When the session then went dormant again WITHOUT a
+    // new completed turn, the NEXT resume tripped the `!meta.lastTurnAt`
+    // guard and threw "the first turn never completed", marking the
+    // session terminated — so a session could be resumed exactly once.
+    const info = sm.create({ cwd: '/tmp', model: 'm1' })
+    // Complete a real turn so lastTurnAt is stamped + persisted.
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    await tick()
+    await sm.unload(info.id)
+    expect(store.get(info.id)?.lastTurnAt).toBeDefined()
+
+    // First resume: must NOT clobber the persisted lastTurnAt. Before the
+    // fix, writeStore(session) here overwrote it with undefined.
+    const r1 = await sm.resume(info.id)
+    expect(r1.id).toBe(info.id)
+    expect(store.get(info.id)?.lastTurnAt).toBeDefined()
+    // The resurrected live session carries lastTurnAt forward too.
+    expect(sm.get(info.id).lastTurnAt).toBeDefined()
+
+    // Go dormant again WITHOUT a new completed turn (no result emitted on
+    // the resumed session).
+    await sm.unload(info.id)
+
+    // Second resume: before the fix this threw HttpError(410, "the first
+    // turn never completed") and marked the session terminated.
+    const r2 = await sm.resume(info.id)
+    expect(r2.id).toBe(info.id)
+    expect(r2.terminated).toBe(false)
+    expect(r2.lastTurnAt).toBeDefined()
+  })
+
+  it('resume() respawns a fresh conversation for a turn-less session (e.g. only ran ! commands)', async () => {
+    // A session that never completed a model turn has no SDK transcript
+    // (the SDK only writes ~/.claude/projects/<id>.jsonl after the first
+    // `result`). The common real case: the user only ran local `!`
+    // commands, whose output never enters the SDK input queue. Before the
+    // restructure this dead-ended as terminated:'no_data' ("the first turn
+    // never completed") — a permanent dead end whose only "recovery" was
+    // "create a new session", abandoning the id / cwd / grouping.
+    const info = sm.create({ cwd: '/tmp', model: 'm1' })
+    // No send / no result → lastTurnAt undefined, and (simulated) no
+    // transcript on disk.
+    await sm.unload(info.id)
+    mockGetSessionInfo.mockResolvedValueOnce(undefined)
+
+    const resumed = await sm.resume(info.id)
+    expect(resumed.id).toBe(info.id)
+    expect(resumed.terminated).toBe(false)
+    expect(resumed.running).toBe(true)
+    // A new Query was spawned — as a FRESH conversation (no `resume:`),
+    // reusing the session id (not a new UUID) and the original config.
+    expect(mockHandles).toHaveLength(2)
+    expect(mockHandles[1].options.resume).toBeUndefined()
+    expect(mockHandles[1].options.sessionId).toBe(info.id)
+    expect(mockHandles[1].options.cwd).toBe('/tmp')
+    expect(mockHandles[1].options.model).toBe('m1')
+  })
+
+  it('resume() resumes normally when the transcript exists even if lastTurnAt was lost', async () => {
+    // Regression for the pre-fix lastTurnAt-clobber bug's residual: a real
+    // conversation whose persisted lastTurnAt got wiped to undefined (but
+    // whose SDK transcript is intact on disk) must still RESUME — not
+    // dead-end as terminated:'no_data'. The disk probe (hasSdkTranscript)
+    // is ground truth; lastTurnAt is only a fallible proxy, so the guard
+    // keys off the probe.
+    const info = sm.create({ cwd: '/tmp', model: 'm1' })
+    sm.send(info.id, 'hi')
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    await tick()
+    await sm.unload(info.id)
+    expect(store.get(info.id)?.lastTurnAt).toBeDefined()
+
+    // Simulate the clobber: wipe lastTurnAt from the persisted meta, exactly
+    // as the pre-fix spawn()-drops-lastTurnAt bug did on the first resume.
+    const clobbered = store.get(info.id)!
+    store.upsert({ ...clobbered, lastTurnAt: undefined })
+    // Default mock → transcript exists on disk (ground truth says resumable).
+
+    const resumed = await sm.resume(info.id)
+    expect(resumed.id).toBe(info.id)
+    expect(resumed.terminated).toBe(false)
+    // Resumed (resume: id), NOT respawned fresh.
+    expect(mockHandles[1].options.resume).toBe(info.id)
+    expect(mockHandles[1].options.sessionId).toBeUndefined()
   })
 
   it('setModel() updates the session and forwards to the Query', async () => {
@@ -1216,6 +1342,57 @@ describe('SessionManager', () => {
     it('404s when the session exists neither in store nor on disk', async () => {
       mockGetSessionInfo.mockResolvedValueOnce(undefined)
       await expect(sm.resume('ghost')).rejects.toMatchObject({ status: 404 })
+    })
+  })
+
+  // `!`/`!!` exec abort — the "stop" button on a bash card. execCommand is
+  // mocked (see the vi.mock above) so we drive the abort path without spawning
+  // a real subprocess: the mock resolves {interrupted:true} when its signal
+  // aborts, otherwise hangs like a long-running command.
+  describe('exec abort (Ctrl+C analogue)', () => {
+    it('abortExec() aborts the in-flight command and returns interrupted:true', async () => {
+      const info = sm.create({ cwd: dir, model: 'm1' })
+      // Don't await — run in the background so we can abort mid-flight. The
+      // mock hangs until the signal aborts.
+      const execP = sm.execInSession(info.id, 'long-running-cmd', { timeoutMs: 60_000 })
+      // execInSession parks the AbortController before awaiting execCommand;
+      // let that synchronous setup land.
+      await tick()
+      sm.abortExec(info.id)
+      const result = await execP
+      expect(result.interrupted).toBe(true)
+      // execCommand received a signal (the wiring we added).
+      const callOpts = vi.mocked(mockExecCommand).mock.calls[0]?.[2]
+      expect(callOpts?.signal).toBeInstanceOf(AbortSignal)
+    })
+
+    it('abortExec() is a no-op when no command is running', () => {
+      const info = sm.create({ cwd: dir, model: 'm1' })
+      // No exec in flight — must not throw.
+      expect(() => sm.abortExec(info.id)).not.toThrow()
+    })
+
+    it('the AbortController is cleared after execInSession settles', async () => {
+      const info = sm.create({ cwd: dir, model: 'm1' })
+      const execP = sm.execInSession(info.id, 'long-running-cmd', { timeoutMs: 60_000 })
+      await tick()
+      sm.abortExec(info.id)
+      await execP
+      // A second abort after settle is a no-op (controller was cleared), and
+      // the session is still usable.
+      expect(() => sm.abortExec(info.id)).not.toThrow()
+      expect(sm.get(info.id)).toBeTruthy()
+    })
+
+    it('unload() aborts an in-flight exec so it does not hang', async () => {
+      const info = sm.create({ cwd: dir, model: 'm1' })
+      const execP = sm.execInSession(info.id, 'long-running-cmd', { timeoutMs: 60_000 })
+      await tick()
+      await sm.unload(info.id)
+      // unload() aborted the in-flight exec, so execP resolves (interrupted)
+      // instead of hanging until the 60s timeout.
+      const result = await execP
+      expect(result.interrupted).toBe(true)
     })
   })
 })

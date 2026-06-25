@@ -21,11 +21,12 @@ import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { getBlocks, getEnterPlanToolUseIds } from '../session-store/normalize'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
-import { IconArrowDown, IconZap, IconUser, IconExternalLink } from './icons/ToolIcons'
+import { IconArrowDown, IconZap, IconUser, IconExternalLink, IconSquare } from './icons/ToolIcons'
 import { countMatches, extractPlainText } from '../search'
 import { BlockView, ToolResultBlock } from './message-list/blocks'
 import { OlderHistoryHeader, StreamingFooter } from './message-list/transcript-chrome'
 import { Skeleton } from './Skeleton'
+import { AnsiText } from './AnsiText'
 import { ResultConsumedCtx, useResultConsumed } from './message-list/result-consumed-context'
 import { extractUserText, makeResultConsumed, willRenderEmpty } from './message-list/rendering'
 
@@ -109,6 +110,10 @@ interface Props {
    *  message. The parent opens its model picker / settings so the user can
    *  pick a valid model without leaving the transcript. */
   onSwitchModel?: () => void
+  /** Force-stop the current in-flight `!`/`!!` command. Wired to the "stop"
+   *  button on a pending bash card. Undefined when no abort surface is
+   *  available (e.g. Side Chat drawer renders its own MessageList without it). */
+  onAbortBash?: () => void
 }
 
 /** An item in the Virtuoso data array. Pre-computing isCompactSummary
@@ -225,7 +230,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, emptyStateContent, onSwitchModel }: Props) {
+export const MessageList = memo(function MessageList({ items, working, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, emptyStateContent, onSwitchModel, onAbortBash }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -1088,10 +1093,11 @@ export const MessageList = memo(function MessageList({ items, working, replayRea
           working={working}
           nextItemType={nextItemTypeMap.get(item.id)}
           onSwitchModel={onSwitchModel}
+          onAbortBash={onAbortBash}
         />
       </div>
     )
-  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, handleEnterAnimationEnd, working, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel])
+  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, handleEnterAnimationEnd, working, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash])
 
   /* eslint-disable react-hooks/refs -- the pending reveal flag must commit in
      the same render as the ready transcript so the first visible frame can be
@@ -1216,6 +1222,7 @@ const MessageView = memo(function MessageView({
   working,
   nextItemType,
   onSwitchModel,
+  onAbortBash,
 }: {
   msg: SdkMessage
   isCompactSummary?: boolean
@@ -1249,6 +1256,9 @@ const MessageView = memo(function MessageView({
   /** Called when the user clicks "Switch model" on a model_not_found
    *  error message. Forwarded from MessageList's onSwitchModel prop. */
   onSwitchModel?: () => void
+  /** Force-stop the current in-flight `!`/`!!` command. Forwarded to the
+   *  pending bash card's "stop" button. */
+  onAbortBash?: () => void
 }) {
   const type = msg.type
 
@@ -1380,7 +1390,7 @@ const MessageView = memo(function MessageView({
     // of a normal "you" bubble. The placeholder (optimistic, pre-POST) only
     // has <bash-input>; the server-injected result adds <bash-stdout> etc.
     if (userContent && userContent.includes('<bash-input>')) {
-      return <BashMessage text={userContent} sending={sending} />
+      return <BashMessage text={userContent} sending={sending} onAbort={onAbortBash} />
     }
     const imageBlocks = blocks.filter((b) => b.type === 'image')
     // Show the "queued" chip only while the turn is genuinely waiting behind
@@ -1629,7 +1639,7 @@ function extractTag(s: string, tag: string): string | null {
  *  command + output as a card resembling a Bash tool result. While the
  *  optimistic placeholder is in flight (only <bash-input>, no stdout), a
  *  spinner takes the output's place. */
-function BashMessage({ text, sending }: { text: string; sending?: boolean }) {
+function BashMessage({ text, sending, onAbort }: { text: string; sending?: boolean; onAbort?: () => void }) {
   const command = extractTag(text, 'bash-input') ?? ''
   const stdout = extractTag(text, 'bash-stdout')
   const stderr = extractTag(text, 'bash-stderr')
@@ -1654,7 +1664,23 @@ function BashMessage({ text, sending }: { text: string; sending?: boolean }) {
             {timedOut ? 'timeout' : interrupted ? 'interrupted' : `exit ${exitCode}`}
           </span>
         )}
-        {pending && <span className="bash-msg-pending" aria-label="running"><span className="msg-sending-spinner" aria-hidden /></span>}
+        {pending && (
+          <span className="bash-msg-pending" aria-label="running">
+            <span className="msg-sending-spinner" aria-hidden />
+            {onAbort && (
+              <button
+                type="button"
+                className="bash-msg-abort"
+                onClick={onAbort}
+                aria-label="Stop command"
+                title="Stop command (Ctrl+C)"
+              >
+                <IconSquare size={11} />
+                <span>停止</span>
+              </button>
+            )}
+          </span>
+        )}
       </div>
       {(stdout || stderr || pending) && (
         <div className="bash-msg-body">
@@ -1662,8 +1688,18 @@ function BashMessage({ text, sending }: { text: string; sending?: boolean }) {
             <span className="bash-msg-pending-text">Running…</span>
           ) : (
             <>
-              {stdout && <pre className="bash-msg-pre">{stdout}</pre>}
-              {stderr && <pre className="bash-msg-pre bash-msg-stderr">{stderr}</pre>}
+              {stdout && (
+                <div className="bash-msg-out bash-msg-out--stdout">
+                  <span className="bash-msg-out-label">stdout</span>
+                  <pre className="bash-msg-pre"><AnsiText text={stdout} /></pre>
+                </div>
+              )}
+              {stderr && (
+                <div className="bash-msg-out bash-msg-out--stderr">
+                  <span className="bash-msg-out-label">stderr</span>
+                  <pre className="bash-msg-pre"><AnsiText text={stderr} /></pre>
+                </div>
+              )}
               {truncated && <div className="bash-msg-truncated">output truncated</div>}
             </>
           )}

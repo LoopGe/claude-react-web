@@ -247,6 +247,14 @@ export interface Session {
    *  exits cleanly and needs to be re-spawned without recreating the
    *  permission handling logic. */
   canUseTool?: CanUseTool
+  /** Abort handle for the current in-flight `!`/`!!` exec, if any. `!` is
+   *  serial (the client's sendingRef blocks concurrent commands), so at most
+   *  one exec runs per session at a time — no exec-id tracking needed.
+   *  execInSession sets this before awaiting execCommand and clears it in a
+   *  finally; the /exec/abort route fires it to SIGKILL the child. Not
+   *  persisted (runtime-only); unload() aborts any in-flight exec to avoid
+   *  leaking the child process. */
+  execAbort?: AbortController
   /** AI-generated session recap state. Lives on the live session (not
    *  in `history`) so it isn't subject to the 500-msg ring-buffer cap
    *  and so the WS frame can carry it as a type payload rather than

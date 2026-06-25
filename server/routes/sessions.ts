@@ -234,6 +234,14 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     return c.json(result)
   })
 
+  // Force-stop the current in-flight `!`/`!!` command (SIGKILL the child), like
+  // Ctrl+C in a terminal. No `confirm` gate — stopping is a safe operation, not
+  // a destructive command execution. No-op when nothing is running.
+  app.post('/sessions/:id/exec/abort', (c) => {
+    sm.abortExec(c.req.param('id'))
+    return c.json({ ok: true })
+  })
+
   // Change model
   app.post('/sessions/:id/model', async (c) => {
     const body = await safeJson<{ model: string }>(c.req)

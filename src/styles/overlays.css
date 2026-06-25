@@ -336,7 +336,25 @@
 }
 .bash-msg-exit.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
 .bash-msg-exit.err { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
-.bash-msg-pending { display: inline-flex; align-items: center; }
+.bash-msg-pending { display: inline-flex; align-items: center; gap: 6px; }
+/* Stop button for an in-flight `!`/`!!` command (Ctrl-C analogue). Sits next
+   to the running spinner in the card header; danger-tinted to read as
+   "interrupt". Sized to match the exit badge so the header stays tidy. */
+.bash-msg-abort {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  font-family: var(--mono);
+  padding: 1px 7px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.bash-msg-abort:hover { background: color-mix(in srgb, var(--danger) 20%, transparent); }
 .bash-msg-body { padding: 8px 10px; }
 .bash-msg-pre {
   margin: 0;
@@ -350,7 +368,37 @@
   overflow-y: auto;
 }
 .bash-msg-pre + .bash-msg-pre { margin-top: 6px; }
-.bash-msg-stderr { color: var(--danger); }
+/* Output blocks (stdout / stderr) share one structure: a labelled, tinted,
+   left-ruled region. The base class lays it out and reads its accent from a
+   local --out-accent variable; each modifier just sets that variable, so the
+   two streams share identical chrome and differ ONLY in hue — neutral grey
+   for stdout (the common case), danger red for stderr. Text colour stays with
+   AnsiText so command-emitted colours survive (we never tint the text itself,
+   only the region). */
+.bash-msg-out {
+  margin-top: 6px;
+  border-left: 3px solid var(--out-accent);
+  background: color-mix(in srgb, var(--out-accent) 8%, transparent);
+  border-radius: 0 4px 4px 0;
+  overflow: hidden;
+}
+.bash-msg-out:first-child { margin-top: 0; }
+.bash-msg-out > .bash-msg-pre { margin: 0; padding: 6px 10px; max-height: 320px; }
+.bash-msg-out-label {
+  display: block;
+  padding: 3px 10px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--out-accent);
+  background: color-mix(in srgb, var(--out-accent) 14%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--out-accent) 16%, transparent);
+}
+/* stdout: neutral grey (the default/expected stream — understated). */
+.bash-msg-out--stdout { --out-accent: var(--fg-muted); }
+/* stderr: danger red (errors stand out). */
+.bash-msg-out--stderr { --out-accent: var(--danger); }
 .bash-msg-pending-text { font-size: 12px; color: var(--fg-muted); }
 .bash-msg-truncated { font-size: 11px; color: var(--fg-muted); margin-top: 6px; font-style: italic; }
 

@@ -21,6 +21,13 @@
   --border: #262b36;
   --fg: #e6e8eb;
   --fg-muted: #8c94a3;
+  /* ANSI colour overrides for rendered command output (AnsiText). `ansicolor`
+     hardcodes dim=black@50% and bright-black=mid-grey, both near-invisible on
+     this dark background. These replace them with visible-but-secondary greys
+     so `git log`/`pytest`/`cargo` secondary text stays readable. Brighter than
+     --fg-muted so dim/bright-black read as "de-emphasised" without vanishing. */
+  --ansi-dim: #9aa1ad;
+  --ansi-muted: #aab0bb;
   --accent: #7b8cde;
   --accent-strong: #5b6fc7;
   /* Foreground colour for text/icons placed on top of --accent (e.g. primary
@@ -172,6 +179,10 @@
   --border: #d0d4db;
   --fg: #1a1d24;
   --fg-muted: #5e6774;
+  /* Light-theme ANSI overrides: on a light background the de-emphasised
+     greys should stay DARK (the opposite polarity to the dark theme). */
+  --ansi-dim: #6b7280;
+  --ansi-muted: #535a66;
   --accent: #4f62c8;
   --accent-strong: #3b4ea8;
   --on-accent: #ffffff;
