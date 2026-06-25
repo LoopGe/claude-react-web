@@ -12,9 +12,10 @@ import type { ChatStream } from '../hooks/useChatStream'
 import type { UsePermissionChannel } from '../hooks/usePermissionChannel'
 import { MessageList, WorkingBubble } from './MessageList'
 import { PermissionDialog } from './PermissionDialog'
-import { IconX, IconArrowLeft, IconSendInterruptToggle, IconLoader } from './icons/ToolIcons'
+import { IconX, IconArrowLeft, IconSendInterruptToggle, IconLoader, IconPaperclip } from './icons/ToolIcons'
 import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
+import { usePastedImages } from '../hooks/usePastedImages'
 
 interface SendMessageResponse {
   ok: boolean
@@ -48,24 +49,37 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
+  const pastedImages = usePastedImages()
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleSend = useCallback(async () => {
     const text = input.trim()
-    if (!text || sending) return
+    if ((!text && pastedImages.images.length === 0) || sending) return
     setSending(true)
     // Optimistic insert — message appears immediately in the transcript.
-    const pendingId = stream.insertUserMessage(text)
+    const pendingId = stream.insertUserMessage(text || '(image)')
     try {
-      const res = await api.post<SendMessageResponse>(`/sessions/${session.id}/messages`, { text })
+      let res: SendMessageResponse
+      if (pastedImages.images.length > 0) {
+        const content: Array<{ type: string; text?: string; source?: { type: string; data: string; media_type: string } }> = []
+        if (text) content.push({ type: 'text', text })
+        for (const img of pastedImages.images) {
+          content.push({ type: 'image', source: { type: 'base64', data: img.data, media_type: img.mediaType } })
+        }
+        res = await api.post<SendMessageResponse>(`/sessions/${session.id}/messages`, { content })
+      } else {
+        res = await api.post<SendMessageResponse>(`/sessions/${session.id}/messages`, { text })
+      }
       stream.ackUserMessage(pendingId, res.message?.uuid ?? '', res.message?.receivedAt)
       setInput('')
+      pastedImages.clear()
     } catch (e) {
       console.warn('Side Chat send failed:', (e as Error).message)
       stream.rollbackUserMessage(pendingId)
     } finally {
       setSending(false)
     }
-  }, [input, sending, session.id, stream])
+  }, [input, sending, session.id, stream, pastedImages])
 
   const handleInterrupt = useCallback(async () => {
     try { await api.post(`/sessions/${session.id}/interrupt`, {}) } catch { /* */ }
@@ -217,42 +231,101 @@ export const SideChatDrawer = memo(function SideChatDrawer({
       )}
 
       <div className="side-chat-drawer-footer">
-        <textarea
-          ref={textareaRef}
-          className="side-chat-drawer-input"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            // Skip Enter while an IME composition is active — Enter in
-            // that context confirms the candidate, not submission. Without
-            // this check Chinese/Japanese/Korean users would send partial
-            // candidate strings.
-            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault()
-              void handleSend()
-            }
+        {pastedImages.images.length > 0 && (
+          <div className="image-previews">
+            {pastedImages.images.map((img) => (
+              <div key={img.id} className="image-preview-card">
+                <img src={img.previewUrl} alt="Pasted image" />
+                <button
+                  type="button"
+                  className="image-preview-remove"
+                  onClick={() => pastedImages.removeImage(img.id)}
+                  aria-label="Remove image"
+                >
+                  <IconX size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {pastedImages.error && (
+          <div className="side-chat-image-error">{pastedImages.error}</div>
+        )}
+        <div className="side-chat-drawer-input-row">
+          <textarea
+            ref={textareaRef}
+            className="side-chat-drawer-input"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              // Skip Enter while an IME composition is active — Enter in
+              // that context confirms the candidate, not submission. Without
+              // this check Chinese/Japanese/Korean users would send partial
+              // candidate strings.
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault()
+                void handleSend()
+              }
+            }}
+            onPaste={(e) => {
+              const items = e.clipboardData?.items
+              if (!items) return
+              for (const item of items) {
+                if (item.type.startsWith('image/') && item.type !== 'image/svg+xml') {
+                  const file = item.getAsFile()
+                  if (file) void pastedImages.addImage(file)
+                  return
+                }
+              }
+            }}
+            placeholder={session.terminated ? 'Session ended' : 'Ask something...'}
+            disabled={session.terminated || sending}
+            rows={1}
+          />
+          <div className="side-chat-drawer-actions">
+            <button
+              type="button"
+              className="btn btn-icon"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={session.terminated || sending}
+              title="Attach image"
+              aria-label="Attach image"
+            >
+              <IconPaperclip size={16} />
+            </button>
+            <button
+              type="button"
+              className={`btn btn-icon ${session.working ? 'btn-danger' : 'btn-primary'}`}
+              onClick={session.working ? handleInterrupt : handleSend}
+              disabled={(!input.trim() && pastedImages.images.length === 0 && !session.working) || sending}
+              title={session.working ? 'Interrupt' : 'Send message (Enter)'}
+              aria-label={session.working ? 'Interrupt' : 'Send message'}
+            >
+              {sending && !session.working ? (
+                <IconLoader size={16} className="composer-send-spinner" />
+              ) : (
+                <IconSendInterruptToggle
+                  size={session.working ? 14 : 16}
+                  className={`composer-action-toggle ${session.working ? 'interrupt' : 'send'}`}
+                />
+              )}
+            </button>
+          </div>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/gif,image/webp"
+          multiple
+          aria-hidden
+          tabIndex={-1}
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            const files = e.target.files ? Array.from(e.target.files) : []
+            e.target.value = ''
+            for (const f of files) void pastedImages.addImage(f)
           }}
-          placeholder={session.terminated ? 'Session ended' : 'Ask something...'}
-          disabled={session.terminated || sending}
-          rows={1}
         />
-        <button
-          type="button"
-          className={`btn btn-icon ${session.working ? 'btn-danger' : 'btn-primary'}`}
-          onClick={session.working ? handleInterrupt : handleSend}
-          disabled={(!input.trim() && !session.working) || sending}
-          title={session.working ? 'Interrupt' : 'Send message (Enter)'}
-          aria-label={session.working ? 'Interrupt' : 'Send message'}
-        >
-          {sending && !session.working ? (
-            <IconLoader size={16} className="composer-send-spinner" />
-          ) : (
-            <IconSendInterruptToggle
-              size={session.working ? 14 : 16}
-              className={`composer-action-toggle ${session.working ? 'interrupt' : 'send'}`}
-            />
-          )}
-        </button>
       </div>
     </div>
   )

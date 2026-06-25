@@ -63,6 +63,7 @@ import {
   clampMaxOpen,
 } from './constants/storageKeys'
 import type { Defaults, ConfigResponse } from './types/config'
+import { setMaxUploadBytes } from './hooks/config-store'
 import { notificationTooltip } from './utils/notifications'
 import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
 import { randomId } from './utils/uuid'
@@ -350,6 +351,7 @@ export function App() {
         setDefaults(r.defaults)
         if (r.models?.length) setServerModels(r.models)
         if (r.maxOpenPanels != null) setServerMaxOpen(r.maxOpenPanels)
+        if (r.maxUploadBytes != null) setMaxUploadBytes(r.maxUploadBytes)
       })
       .catch(() => setIsConfigured(true))
   }, [])

@@ -11,6 +11,7 @@ export interface ConfigResponse {
   defaults: Defaults
   models?: string[]
   maxOpenPanels?: number
+  maxUploadBytes?: number
 }
 
 /** Full config returned by GET /api/config/full (settings modal). */
