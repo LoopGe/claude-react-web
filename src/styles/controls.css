@@ -55,6 +55,29 @@
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
 }
+/* The composer's send/interrupt control is the only .btn-icon that also
+   carries .btn-primary / .btn-danger. .btn-icon is declared below those two
+   in this file, so its `background`/`border`/`color` shorthand wins at equal
+   specificity and strips the accent fill — the send button renders as a flat
+   dark icon button and the interrupt button loses its red. In the glow skin
+   it's worse: the glow .btn-primary rule paints a white sheen + accent halo
+   onto the still-unfilled dark button. Restore the fill at .btn-icon.btn-*
+   specificity using longhands (not the `background` shorthand) so the glow
+   skin's background-image sheen survives layered on the accent fill. */
+.btn-icon.btn-primary {
+  background-color: var(--accent-strong);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.btn-icon.btn-primary:hover:not(:disabled) { background-color: var(--accent); }
+.btn-icon.btn-danger {
+  background-color: transparent;
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+}
+.btn-icon.btn-danger:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--danger) 12%, transparent);
+}
 .notification-icon .notification-icon-slash {
   stroke-dasharray: 1;
   stroke-dashoffset: 0;

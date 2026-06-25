@@ -346,7 +346,20 @@
   background-image: var(--surface-gradient);
 }
 
-/* Primary buttons get a subtle gradient + accent glow. */
+/* Every button gets the raised skeuomorphic treatment — a top-down sheen +
+   inset top-edge highlight — so flat buttons (attach, header toggles, text
+   buttons) share the same tactile language as the primary send button,
+   not just primary CTAs. Declared before .btn-primary / .btn-icon.active /
+   .btn-danger:hover below: those keep their accent/danger glow box-shadows
+   (equal-or-higher specificity, later in source order) while inheriting the
+   sheen; this rule only fills in the plain buttons. */
+[data-skin="glow"] .btn,
+[data-skin="glow"] .btn-icon,
+[data-skin="glow"] .btn-icon-sm {
+  background-image: linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent), transparent);
+  box-shadow: 0 1px 0 color-mix(in srgb, #fff 22%, transparent) inset;
+}
+/* Primary buttons layer an accent glow on top of the raised base. */
 [data-skin="glow"] .btn-primary {
   background-image: linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent), transparent);
   box-shadow: 0 1px 0 color-mix(in srgb, #fff 22%, transparent) inset,
@@ -381,6 +394,16 @@
    the composer (a visible seam). So the composer matches the ctx-bar at rest
    and only lights up on focus — the meaningful moment. */
 [data-skin="glow"] .chat-composer:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent),
+              inset 0 0 20px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+/* Side Chat footer is the drawer's composer equivalent. Without this it
+   stays flat on focus — the most visible tell being the attach button
+   reading as un-adapted next to the glowing .btn-primary send button,
+   since (like the main composer's attach button) it's a plain .btn-icon
+   that relies on its container's focus glow to feel part of the skin. */
+[data-skin="glow"] .side-chat-drawer-footer:focus-within {
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent),
               inset 0 0 20px color-mix(in srgb, var(--accent) 12%, transparent);

@@ -1987,15 +1987,20 @@
   font-size: var(--fs-xs);
   color: var(--fg-danger, #e55);
 }
+/* Stack attach + send vertically, mirroring the main composer's
+   .chat-composer-actions column so the two footers read the same. */
 .side-chat-drawer-actions {
   display: flex;
-  gap: 4px;
-  align-items: center;
+  flex-direction: column;
+  gap: 6px;
   flex-shrink: 0;
 }
+/* Stretch (not flex-end) so the action column and textarea share one
+   height — the textarea grows to match the stacked buttons, just like
+   the main composer row. */
 .side-chat-drawer-input-row {
   display: flex;
-  align-items: flex-end;
+  align-items: stretch;
   gap: 8px;
 }
 .side-chat-drawer-input {
