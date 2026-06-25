@@ -19,6 +19,7 @@ import {
 } from './icons/ToolIcons'
 import { AnimatedDetails } from './AnimatedCollapse'
 import { useToolResult, useToolStatus } from '../hooks/usePlanStatus'
+import { useReopenQuestion } from '../hooks/useReopenQuestion'
 import type { ToolResultEntry, ToolStatus } from '../session-store/types'
 import type { Block } from '../types'
 import { formatJson } from '../utils/format'
@@ -299,6 +300,11 @@ export const ToolCard = memo(function ToolCard({
   // result is still pending or for tools that own their result rendering
   // (Plan/Question/Subagent never reach ToolCard anyway).
   const result = useToolResult(toolUseId)
+  // When this tool's pending permission dialog has been minimized, surface a
+  // "Review permission" chip so the user can re-open it. Mirrors the inline
+  // reopen button PlanCard/QuestionCard render when minimized.
+  const { minimizedPermissionToolUseIds, onReopenPermission } = useReopenQuestion()
+  const isPermMinimized = !!toolUseId && minimizedPermissionToolUseIds.has(toolUseId)
   return (
     <div className={`tool-card ${className}`.trim()}>
       <div className="tool-card-header">
@@ -307,6 +313,15 @@ export const ToolCard = memo(function ToolCard({
         </span>
         {title != null && <span className="tool-card-title">{title}</span>}
         {chips}
+        {isPermMinimized && toolUseId && (
+          <button
+            type="button"
+            className="tool-card-perm-reopen"
+            onClick={() => onReopenPermission(toolUseId)}
+          >
+            Review permission
+          </button>
+        )}
         <span className="tool-card-spacer" />
         {!hideStatus && <ToolStatusBadge toolUseId={toolUseId} status={status} />}
         {copyValue && <CopyButton getValue={copyValue} label={copyLabel} />}
