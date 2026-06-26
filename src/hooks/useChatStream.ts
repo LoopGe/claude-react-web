@@ -380,9 +380,10 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
 
   /** Fetch one page from the server /history endpoint (the pre-IDB path, and
    *  the gap-probe when IDB is exhausted/has a boundary gap). Manages
-   *  `cursorRef` (server startIndex) across calls. Returns the number of
-   *  messages prepended; sets hasOlder via the setter passed by the caller. */
-  const fetchServerPage = useCallback(async (): Promise<{ count: number; hasMore: boolean }> => {
+   *  `cursorRef` (server startIndex) across calls. Returns the messages (NOT
+   *  dispatched — the caller prepends them, possibly combined with IDB
+   *  messages) + hasMore. */
+  const fetchServerPage = useCallback(async (): Promise<{ messages: SdkMessage[]; hasMore: boolean }> => {
     const params = new URLSearchParams({ limit: '200' })
     if (cursorRef.current != null) {
       // Subsequent pages: page strictly before the last startIndex.
@@ -403,10 +404,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       `/sessions/${sessionId}/history?${params.toString()}`,
     )
     cursorRef.current = page.startIndex
-    if (page.messages.length > 0) {
-      store.dispatch({ type: 'PREPEND_MESSAGES', messages: page.messages })
-    }
-    return { count: page.messages.length, hasMore: page.hasMore }
+    return { messages: page.messages, hasMore: page.hasMore }
   }, [sessionId, store])
 
   const loadOlder = useCallback(async (): Promise<number> => {
@@ -420,26 +418,35 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       // 1. Try IDB first (local, no server round-trip).
       const idb = await store.loadOlderFromIdb(200)
       if (idb) {
-        let count = 0
-        if (idb.messages.length > 0) {
-          store.dispatch({ type: 'PREPEND_MESSAGES', messages: idb.messages })
-          count = idb.messages.length
-        }
         // 2. Probe the server when IDB is exhausted OR there's a seq gap at
-        // the boundary (tab closed mid-write left a hole in IDB). The server
-        // page is deduped by uuid on prepend, and the next save backfills IDB.
+        // the boundary (tab closed mid-write left a hole in IDB). Do this
+        // BEFORE prepending so fetchServerPage anchors beforeUuid on the
+        // ORIGINAL oldest in memory (the gap sits between the IDB block and
+        // that oldest — anchoring on the post-prepend oldest would page the
+        // wrong window and never bridge the gap). Server messages bridge the
+        // gap (newer than the IDB block, older than memory) so they append
+        // AFTER the IDB block in the combined oldest-first prepend; dedup by
+        // uuid drops any IDB overlap. The next save backfills IDB.
+        let combined = idb.messages
+        let hasMore = idb.hasMore
         if (!idb.hasMore || !idb.contiguous) {
           const server = await fetchServerPage()
-          setHasOlder(idb.hasMore || server.hasMore)
-          return count + server.count
+          combined = combined.concat(server.messages)
+          hasMore = idb.hasMore || server.hasMore
         }
-        setHasOlder(idb.hasMore)
-        return count
+        if (combined.length > 0) {
+          store.dispatch({ type: 'PREPEND_MESSAGES', messages: combined })
+        }
+        setHasOlder(hasMore)
+        return combined.length
       }
       // 3. IDB unavailable — full server path.
       const server = await fetchServerPage()
+      if (server.messages.length > 0) {
+        store.dispatch({ type: 'PREPEND_MESSAGES', messages: server.messages })
+      }
       setHasOlder(server.hasMore)
-      return server.count
+      return server.messages.length
     } catch {
       // Network/parse error — leave hasOlder as-is so the user can retry by
       // scrolling again. Don't surface to the error banner (non-fatal).

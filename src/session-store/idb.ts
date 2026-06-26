@@ -111,7 +111,9 @@ export async function putMeta(db: IDBPDatabase, meta: SessionMeta): Promise<void
  *  lazily). For a long session this is O(n) but runs once on cold open. */
 export async function scanUuidSeqs(db: IDBPDatabase, sessionId: string): Promise<Map<string, number>> {
   const out = new Map<string, number>()
-  const range = IDBKeyRange.bound([sessionId, SEQ_FLOOR], [sessionId, Number.MAX_SAFE_INTEGER])
+  // 3-element upper bound matches the bySeq index key [sessionId, seq, uuid];
+  // '￿' exceeds any uuid char so the inclusive bound captures every record.
+  const range = IDBKeyRange.bound([sessionId, SEQ_FLOOR], [sessionId, Number.MAX_SAFE_INTEGER, '￿'])
   let cursor = await db.transaction(MESSAGES_STORE).store.index('bySeq').openCursor(range)
   while (cursor) {
     const rec = cursor.value as MessageRecord
@@ -131,6 +133,32 @@ export async function putMessages(
   const tx = db.transaction([MESSAGES_STORE, META_STORE], 'readwrite')
   for (const r of records) {
     await tx.objectStore(MESSAGES_STORE).put(r)
+  }
+  await tx.objectStore(META_STORE).put(meta)
+  await tx.done
+}
+
+/** Apply a save atomically in ONE transaction: put new records, delete
+ *  superseded uuids, update meta. Doing all three in a single readwrite tx
+ *  means a racing clearSession (its own tx) serializes wholly before or
+ *  wholly after this write — never delete-then-put (resurrect) or
+ *  put-then-partial-delete. The tx is created synchronously on entry (before
+ *  any await), so once this is called the write is ordered against any
+ *  concurrent clear deterministically by IDB's tx-creation order. */
+export async function applyWrites(
+  db: IDBPDatabase,
+  sessionId: string,
+  records: MessageRecord[],
+  deleteUuids: string[],
+  meta: SessionMeta,
+): Promise<void> {
+  const tx = db.transaction([MESSAGES_STORE, META_STORE], 'readwrite')
+  const messages = tx.objectStore(MESSAGES_STORE)
+  for (const r of records) {
+    await messages.put(r)
+  }
+  for (const uuid of deleteUuids) {
+    await messages.delete([sessionId, uuid])
   }
   await tx.objectStore(META_STORE).put(meta)
   await tx.done

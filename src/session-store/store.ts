@@ -6,9 +6,7 @@ import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME } from 
 import { projectMessage } from './project'
 import {
   openDb,
-  putMessages,
-  putMeta,
-  deleteMessages,
+  applyWrites,
   getMeta,
   scanUuidSeqs,
   cursorRecent,
@@ -318,11 +316,17 @@ export class SessionStore {
   /** uuids superseded by api_retry in-place replace, drained to IDB delete
    *  on the next save so they don't re-emerge on cold-load cursor. */
   private supersededUuids = new Set<string>()
-  /** In-flight IDB write; clearPersisted awaits it before clearing. */
-  private pendingIdbWrite: Promise<void> | null = null
-  /** True between clearPersisted and the IDB-clear completing — blocks saves
-   *  from resurrecting cleared messages. */
-  private cleared = false
+  /** In-flight IDB write chain; clearPersisted/destroy await the tail. Writes
+   *  are CHAINED (each saveIdb awaits the previous) so flushIdb awaiting the
+   *  tail awaits every queued write — no write is orphaned to land after a
+   *  clear and resurrect records. */
+  private pendingIdbWrite: Promise<void> = Promise.resolve()
+  /** Monotonic counter bumped on every clearPersisted. saveIdb captures the
+   *  value at start and re-checks after each await; if a clear happened
+   *  mid-save, the save bails (writes nothing) instead of resurrecting. This
+   *  replaces a boolean `cleared` flag, which couldn't distinguish "a clear
+   *  happened during my await" from "a clear happened and finished." */
+  private clearGeneration = 0
   private idbClearPromise: Promise<void> | null = null
 
   constructor(sessionId: string) {
@@ -498,7 +502,13 @@ export class SessionStore {
    *  pending write left behind. Used by the /clear flow. wipe() dispatches
    *  CLEAR_TRANSCRIPT, which schedules a debounced save that would later
    *  rewrite the key with the empty state — cancel that timer and remove the
-   *  key synchronously here so the cache is gone and stays gone. */
+   *  key synchronously here so the cache is gone and stays gone.
+   *
+   *  IDB clear: bump `clearGeneration` so any in-flight saveIdb bails (writes
+   *  nothing) instead of resurrecting after the clear. clearIdb does NOT await
+   *  pendingIdbWrite — the generation check in saveIdb is the serialization,
+   *  so there's no mutual-await deadlock. Fire-and-forget; the LS key is gone
+   *  synchronously above. */
   clearPersisted(): void {
     this.wipe()
     // Cancel the debounced save that wipe()'s dispatch just scheduled —
@@ -509,20 +519,42 @@ export class SessionStore {
     }
     this.saveDirtySince = null
     clearSessionStorage(this.state.sessionId)
-    // IDB clear: set `cleared` (blocks saves from resurrecting), await the
-    // in-flight write, then delete all IDB records for the session. The
-    // `cleared` flag is reset once the delete completes so post-clear new
-    // messages re-persist from scratch. Fire-and-forget — the LS key is
-    // already gone synchronously above.
     if (this.idbAvailable) {
-      this.cleared = true
+      this.clearGeneration++
       this.idbClearPromise = this.clearIdb()
     }
   }
 
+  /** Permanently purge a session's cache (registry.delete path). Unlike
+   *  destroy() (which SAVES the final state for idle-evict durability), purge
+   *  writes NOTHING — it drains in-flight writes (which bail via the
+   *  generation bump), then clears LS + IDB. This avoids both the "write then
+   *  clear" waste and the window where a rapid re-open hydrates from a stale
+   *  LS key that destroy()'s save() would have written. */
+  async purge(): Promise<void> {
+    unregisterStoreForDebug(this.state.sessionId, this)
+    if (this.flushTimer != null) {
+      window.clearTimeout(this.flushTimer)
+      this.flushTimer = null
+    }
+    if (this.saveTimer != null) {
+      window.clearTimeout(this.saveTimer)
+      this.saveTimer = null
+    }
+    this.saveDirtySince = null
+    // Bump generation so any in-flight saveIdb bails; drain the write chain.
+    this.clearGeneration++
+    await this.flushIdb()
+    clearSessionStorage(this.state.sessionId)
+    if (this.idbAvailable) {
+      this.idbClearPromise = this.clearIdb()
+      await this.idbClearPromise
+    }
+    this.listeners.clear()
+  }
+
   private async clearIdb(): Promise<void> {
     try {
-      if (this.pendingIdbWrite) await this.pendingIdbWrite
       const db = await openDb()
       if (!db) {
         this.idbAvailable = false
@@ -532,15 +564,13 @@ export class SessionStore {
     } catch {
       // best-effort
     } finally {
-      this.cleared = false
       this.idbClearPromise = null
     }
   }
 
   /** Tear down the store: persist final state (sync LS + async IDB), cancel
-   *  timers, drop listeners. Async so the in-flight IDB write lands before
-   *  the store is torn down (idle-evict durability) — callers that need the
-   *  write durable (registry.delete) await this. */
+   *  timers, drop listeners. Used by the idle sweep (save-then-teardown for
+   *  durability). registry.delete uses purge() instead (no save). */
   async destroy(): Promise<void> {
     unregisterStoreForDebug(this.state.sessionId, this)
     // Persist messages to localStorage before tearing down so they survive
@@ -593,14 +623,23 @@ export class SessionStore {
   private save(): void {
     this.saveDirtySince = null
     persistToStorage(this.state.sessionId, this.state)
-    // Fire-and-forget IDB delta-write. Tracked as pendingIdbWrite so
-    // clearPersisted can await it before clearing (avoids resurrect-after-clear).
+    // CHAIN the IDB write onto any in-flight one. This makes flushIdb
+    // (which awaits the tail) await EVERY queued write, so destroy/purge
+    // can't return while an earlier write is still outstanding — closing the
+    // "overwrite pendingIdbWrite, lose the earlier write" hole that let a
+    // write land after a clear and resurrect records.
     if (this.idbAvailable) {
-      this.pendingIdbWrite = this.saveIdb().catch(() => {
-        // saveIdb already handles quota/disabled; swallow unexpected rejections
-        // so the pendingIdbWrite chain never rejects.
-      })
+      this.pendingIdbWrite = this.pendingIdbWrite
+        .catch(() => {})
+        .then(() => this.saveIdb())
     }
+  }
+
+  /** Await the in-flight IDB write chain + any pending clear. For tests,
+   *  destroy(), and purge(). */
+  async flushIdb(): Promise<void> {
+    await this.pendingIdbWrite
+    if (this.idbClearPromise) await this.idbClearPromise
   }
 
   /** Bypass the save debounce and persist immediately (sync LS + async IDB).
@@ -612,12 +651,6 @@ export class SessionStore {
     }
     this.saveDirtySince = null
     this.save()
-  }
-
-  /** Await the in-flight IDB write (if any). For tests and Phase 3 destroy. */
-  async flushIdb(): Promise<void> {
-    if (this.pendingIdbWrite) await this.pendingIdbWrite
-    if (this.idbClearPromise) await this.idbClearPromise
   }
 
   /** Read up to `n` messages older than the current oldest in-memory message
@@ -678,12 +711,21 @@ export class SessionStore {
    *  --minSeq) and/or suffix (newer → ++maxSeq). Also drains superseded
    *  api_retry uuids. */
   private async saveIdb(): Promise<void> {
-    if (this.cleared || !this.idbAvailable) return
-    const db = await openDb()
+    if (!this.idbAvailable) return
+    const gen = this.clearGeneration
+    let db: IDBPDatabase | null
+    try {
+      db = await openDb()
+    } catch {
+      db = null
+    }
     if (!db) {
       this.idbAvailable = false
       return
     }
+    // A clear may have bumped the generation while we awaited openDb. Bail
+    // before touching IDB — clearIdb will (or already did) wipe the session.
+    if (this.clearGeneration !== gen) return
     const sessionId = this.state.sessionId
     const messages = this.state.mirror.messages
 
@@ -748,14 +790,21 @@ export class SessionStore {
 
     if (newRecords.length === 0 && superseded.length === 0) return
 
+    // If a clear started while we built records (sync, no await above), bail —
+    // writing now would resurrect what clearIdb is about to wipe.
+    if (this.clearGeneration !== gen) return
+    // If a clear is in flight, wait for it to finish before our write so IDB
+    // orders our tx AFTER the clear's tx (clearIdb doesn't await us, so no
+    // deadlock). Then re-check generation: if the clear bumped it, bail.
+    if (this.idbClearPromise) await this.idbClearPromise
+    if (this.clearGeneration !== gen) return
+
     const meta = { sessionId, maxSeq: this.maxSeq, minSeq: this.minSeq }
     try {
-      // Await any in-flight clear first — a clear racing this write would
-      // either delete what we just put or let this put resurrect cleared data.
-      if (this.idbClearPromise) await this.idbClearPromise
-      if (superseded.length > 0) await deleteMessages(db, sessionId, superseded)
-      if (newRecords.length > 0) await putMessages(db, newRecords, meta)
-      else await putMeta(db, meta)
+      // Single atomic tx (put records + delete superseded + put meta). A
+      // racing clearSession (separate tx) now serializes wholly before or
+      // wholly after — never a delete-then-put that resurrects.
+      await applyWrites(db, sessionId, newRecords, superseded, meta)
       for (const u of superseded) {
         this.persistedUuids.delete(u)
         this.uuidToSeq.delete(u)
@@ -763,8 +812,14 @@ export class SessionStore {
     } catch (e) {
       if (isIdbQuotaError(e)) {
         this.idbAvailable = false
+      } else {
+        // Non-quota error (stale handle after terminated(), tx abort, version
+        // conflict). Surface once so a recurring failure isn't silent — the LS
+        // cache is the fallback, but a write that fails every 2-10s shouldn't
+        // be invisible. Don't permanently disable IDB (transient aborts
+        // self-heal on the next openDb()).
+        console.warn(`[session-store] IDB write for ${sessionId} failed:`, e)
       }
-      // Non-quota errors: best-effort, swallow. The LS cache is the fallback.
     }
   }
 

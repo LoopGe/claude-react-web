@@ -202,4 +202,70 @@ describe('SessionStore IDB cache (Phase 1)', () => {
     const page = await store.loadOlderFromIdb(200)
     expect(page).toBeNull()
   })
+
+  // ── Regression: clearPersisted + in-flight saveIdb (no deadlock/resurrect) ──
+  it('clearPersisted while a saveIdb is in-flight does not deadlock or resurrect', async () => {
+    const store = new SessionStore('s-deadlock')
+    await store.idbReady
+    // Dispatch + persistNow kicks a saveIdb (in-flight via the chained
+    // pendingIdbWrite). DON'T await flushIdb — leave the write in flight.
+    store.dispatch({ type: 'MESSAGE', message: asstMsg('a-1', 'one') })
+    store.dispatch({ type: 'MESSAGE', message: asstMsg('a-2', 'two') })
+    store.persistNow()
+
+    // While the saveIdb is in flight, run /clear. Pre-fix this deadlocked
+    // (clearIdb awaited pendingIdbWrite while saveIdb awaited idbClearPromise)
+    // and/or resurrected (saveIdb wrote after the clear).
+    store.clearPersisted()
+
+    // flushIdb must resolve (not hang). Use a timeout to fail-fast on deadlock.
+    await Promise.race([
+      store.flushIdb(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('flushIdb deadlocked')), 5000)),
+    ])
+
+    // IDB should have NO records for the session (clear won; the in-flight
+    // saveIdb bailed via the generation check rather than resurrecting).
+    const records = await readAllIdbRecords('s-deadlock')
+    expect(records).toHaveLength(0)
+    // LS key gone too.
+    expect(localStorage.getItem(STORAGE_PREFIX + 's-deadlock')).toBeNull()
+  })
+
+  it('saveIdb that read the pre-clear mirror bails on clearGeneration and does not resurrect', async () => {
+    // Force saveIdb to read the PRE-clear mirror (2 messages) by letting its
+    // microtask run one tick before /clear. Then clearPersisted bumps
+    // clearGeneration; the in-flight saveIdb must bail at the gen check
+    // instead of writing the pre-clear records after the clear.
+    const store = new SessionStore('s-genbail')
+    await store.idbReady
+    store.dispatch({ type: 'MESSAGE', message: asstMsg('a-1', 'one') })
+    store.dispatch({ type: 'MESSAGE', message: asstMsg('a-2', 'two') })
+    store.persistNow()
+    // Let saveIdb start (read mirror) but not finish — one macrotask is
+    // enough for the cached openDb + mirror read to land.
+    await new Promise((r) => setTimeout(r, 0))
+
+    store.clearPersisted()
+    await Promise.race([
+      store.flushIdb(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('flushIdb deadlocked')), 5000)),
+    ])
+
+    const records = await readAllIdbRecords('s-genbail')
+    expect(records).toHaveLength(0)
+  })
+
+  it('clearPersisted after a completed save does not resurrect', async () => {
+    const store = new SessionStore('s-resurrect')
+    await store.idbReady
+    store.dispatch({ type: 'MESSAGE', message: asstMsg('a-1', 'one') })
+    store.persistNow()
+    await store.flushIdb() // save fully landed
+    expect((await readAllIdbRecords('s-resurrect')).length).toBe(1)
+
+    store.clearPersisted()
+    await store.flushIdb()
+    expect((await readAllIdbRecords('s-resurrect')).length).toBe(0)
+  })
 })

@@ -17,6 +17,10 @@ const SWEEP_INTERVAL_MS = 60 * 1000 // 1 minute
 class SessionStoreRegistry {
   private stores = new Map<string, StoreEntry>()
   private sweepTimer: ReturnType<typeof setInterval> | null = null
+  /** True while a sweep is in flight — prevents overlapping sweeps from
+   *  double-destroying the same store (the `await destroy()` yields, and the
+   *  60s interval could start a second sweep before the first finishes). */
+  private sweeping = false
 
   getOrCreate(sessionId: string): SessionStore {
     const existing = this.stores.get(sessionId)
@@ -47,26 +51,25 @@ class SessionStoreRegistry {
     }
   }
 
-  /** Permanently drop a session's cache. Awaits the in-memory store's final
-   *  IDB flush (destroy) BEFORE clearing localStorage + IDB — otherwise the
-   *  idle sweep's destroy()→save() IDB write could land after the clear and
-   *  resurrect the orphan. Clears storage unconditionally so a cached
+  /** Permanently drop a session's cache. Uses store.purge() (which writes
+   *  NOTHING — it drains in-flight writes via the generation bump, then clears
+   *  LS + IDB) so there's no "save then clear" window where a rapid re-open
+   *  hydrates from a stale LS key. Clears storage unconditionally so a cached
    *  transcript with no live store entry is still purged. */
   async delete(sessionId: string): Promise<void> {
     const entry = this.stores.get(sessionId)
     if (entry) {
-      await entry.store.destroy()
+      await entry.store.purge()
       this.stores.delete(sessionId)
-    }
-    clearSessionStorage(sessionId)
-    // Clear IDB records for the session too — a deleted session must not
-    // linger in the IDB cache. Best-effort: if IDB is unavailable, the LS
-    // clear above + the source-of-truth server disk log cover it.
-    try {
-      const db = await openDb()
-      if (db) await clearSession(db, sessionId)
-    } catch {
-      /* best-effort */
+    } else {
+      clearSessionStorage(sessionId)
+      // No live store — clear IDB best-effort.
+      try {
+        const db = await openDb()
+        if (db) await clearSession(db, sessionId)
+      } catch {
+        /* best-effort */
+      }
     }
   }
 
@@ -93,17 +96,23 @@ class SessionStoreRegistry {
 
   /** Evict stores whose refCount has been 0 for longer than IDLE_TTL_MS. */
   private async sweep(): Promise<void> {
-    const now = Date.now()
-    for (const [id, entry] of this.stores) {
-      if (entry.refCount === 0 && entry.idleSince > 0 && now - entry.idleSince > IDLE_TTL_MS) {
-        await entry.store.destroy()
-        this.stores.delete(id)
+    if (this.sweeping) return
+    this.sweeping = true
+    try {
+      const now = Date.now()
+      for (const [id, entry] of this.stores) {
+        if (entry.refCount === 0 && entry.idleSince > 0 && now - entry.idleSince > IDLE_TTL_MS) {
+          await entry.store.destroy()
+          this.stores.delete(id)
+        }
       }
-    }
-    // Stop the sweep timer if there are no more stores to track.
-    if (this.stores.size === 0 && this.sweepTimer) {
-      clearInterval(this.sweepTimer)
-      this.sweepTimer = null
+      // Stop the sweep timer if there are no more stores to track.
+      if (this.stores.size === 0 && this.sweepTimer) {
+        clearInterval(this.sweepTimer)
+        this.sweepTimer = null
+      }
+    } finally {
+      this.sweeping = false
     }
   }
 
