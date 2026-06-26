@@ -248,6 +248,239 @@
 }
 
 /* ════════════════════════════════════════════════════════════════════
+   HIGH CONTRAST SKIN  ([data-skin="hc"])
+   ────────────────────────────────────────────────────────────────────
+   VSCode-style accessibility skin, orthogonal to the dark/light mode just
+   like glow / anthropic. The user picks "High Contrast" in the appearance
+   panel's SKIN row; the normal dark/light/system MODE row still controls
+   the variant:
+     • [data-skin="hc"]                       (on dark :root) — pure black
+       bg, pure white fg, bright secondary text, 1px solid bright borders
+       (no shadows/blur/alpha), high-saturation syntax, 3px bright-blue
+       focus ring, and SQUARE corners on all rectangular UI.
+     • [data-skin="hc"][data-theme="light"]   (on light)      — pure white
+       bg, pure black fg, dark high-saturation variants.
+
+   The accent is LOCKED (bright blue): useTheme removes the inline
+   --accent override when skin==='hc', so the values here own --accent /
+   --accent-strong / --on-accent.
+
+   All message tokens are OPAQUE — no color-mix() with transparent. Text
+   targets WCAG AAA (7:1) against the pure bg. The square-corners element
+   override lives at the end of glass.css (last-imported, so it wins).
+   ════════════════════════════════════════════════════════════════════ */
+
+/* ── High Contrast · dark (pure black) ── */
+[data-skin="hc"] {
+  --bg: #000000;
+  --bg-elev: #000000;
+  --bg-elev-1: #000000;
+  --bg-elev-2: #1a1a1a;
+  --bg-elev-3: #2a2a2a;
+  --border: #ffffff;
+  --fg: #ffffff;
+  --fg-muted: #00ffff;
+  --ansi-dim: #00ffff;
+  --ansi-muted: #ffffff;
+  --accent: #0080ff;
+  --accent-strong: #0080ff;
+  --on-accent: #ffffff;
+  --danger: #ff4040;
+  --ok: #00ff00;
+  --warn: #ffff00;
+  --fast: #ff00ff;
+  --msg-tool-bg: #000000;
+  --msg-tool-border: #00ffff;
+  --msg-tool-result-bg: #1a1a1a;
+  --msg-tool-result-border: #00ffff;
+  --msg-system-bg: #1a1a1a;
+  --msg-system-border: #ffffff;
+  --msg-error-bg: #1a0000;
+  --msg-error-border: #ff4040;
+  --msg-error-fg: #ffa0a0;
+  --msg-rate-limit-bg: #1a1a00;
+  --msg-rate-limit-border: #ffff00;
+  --msg-rate-limit-fg: #ffff80;
+  --msg-user-bg: #001a33;
+  --msg-user-border: #0080ff;
+  --msg-user-fg: #ffffff;
+  --msg-user-header-fg: #0080ff;
+  --msg-user-link-fg: #0080ff;
+  --msg-user-code-bg: #001a33;
+  --msg-user-pre-bg: #000000;
+  --msg-user-pre-border: #0080ff;
+  --btn-hover-bg: #1a1a1a;
+  --btn-hover-border: #ffffff;
+  --drag-over-bg: #1a1a33;
+  --assistant-header-fg: #00ffff;
+  --code-bg: #000000;
+  --code-fg: #ffffff;
+  --code-bar-bg: #1a1a1a;
+  --code-block-border: #ffffff;
+  /* Syntax-highlighting token colours — high-saturation brights on black,
+     each a distinct hue for maximum distinguishability. */
+  --hljs-fg: #ffffff;
+  --hljs-comment: #00ff00;
+  --hljs-keyword: #ff00ff;
+  --hljs-red: #ff4040;
+  --hljs-cyan: #00ffff;
+  --hljs-green: #00ff00;
+  --hljs-orange: #ffa500;
+  --hljs-blue: #0080ff;
+  --hljs-yellow: #ffff00;
+  --plugin-active: var(--ok);
+  --plugin-inactive: #00ffff;
+  /* Effects: all translucency / blur / glow / shadow OFF — HC uses 1px
+     solid bright borders for separation instead. */
+  --overlay-shadow: none;
+  --card-shadow: none;
+  --modal-shadow: none;
+  --drawer-shadow: none;
+  --toast-shadow: none;
+  --tooltip-shadow: none;
+  --fab-shadow: none;
+  --backdrop-color: rgba(0, 0, 0, 0.85);
+  --glass-blur: none;
+  --glass-surface-bg: var(--bg-elev);
+  --glass-surface-border: #ffffff;
+  --glass-blur-strong: none;
+  --glass-edge-highlight: none;
+  --surface-gradient: none;
+  --dot-glow: none;
+  /* Thick bright focus ring — VSCode HC signature. */
+  --focus-ring: 3px solid #0080ff;
+  --focus-glow: none;
+  --qr-bg: #ffffff;
+}
+
+/* HC element overrides — diff / search highlighting. The base rules
+   (.diff-line-add/del, .git-diff-line.add/del, mark.search-hl) use a
+   12% color-mix fill which is near-invisible under HC. Replace with an
+   opaque, clearly-tinted background so added/removed lines stay legible
+   without relying on the faint wash. */
+[data-skin="hc"] .diff-line-add {
+  background: #003a00;
+  color: #00ff00;
+}
+[data-skin="hc"] .diff-line-del {
+  background: #3a0000;
+  color: #ff4040;
+}
+[data-skin="hc"] .git-diff-line.add {
+  background: #003a00;
+  color: #00ff00;
+}
+[data-skin="hc"] .git-diff-line.del {
+  background: #3a0000;
+  color: #ff4040;
+}
+[data-skin="hc"] mark.search-hl {
+  background: #4a4a00;
+  color: #ffff00;
+}
+
+[data-skin="hc"][data-theme="light"] {
+  --bg: #ffffff;
+  --bg-elev: #ffffff;
+  --bg-elev-1: #ffffff;
+  --bg-elev-2: #e8e8e8;
+  --bg-elev-3: #d4d4d4;
+  --border: #000000;
+  --fg: #000000;
+  --fg-muted: #0000cc;
+  --ansi-dim: #0000cc;
+  --ansi-muted: #000000;
+  --accent: #0000ff;
+  --accent-strong: #0000ff;
+  --on-accent: #ffffff;
+  --danger: #cc0000;
+  --ok: #006600;
+  --warn: #666600;
+  --fast: #660066;
+  --msg-tool-bg: #ffffff;
+  --msg-tool-border: #0000cc;
+  --msg-tool-result-bg: #e8e8e8;
+  --msg-tool-result-border: #0000cc;
+  --msg-system-bg: #e8e8e8;
+  --msg-system-border: #000000;
+  --msg-error-bg: #ffe8e8;
+  --msg-error-border: #cc0000;
+  --msg-error-fg: #990000;
+  --msg-rate-limit-bg: #ffffe8;
+  --msg-rate-limit-border: #666600;
+  --msg-rate-limit-fg: #4d4d00;
+  --msg-user-bg: #e8e8ff;
+  --msg-user-border: #0000ff;
+  --msg-user-fg: #000000;
+  --msg-user-header-fg: #0000ff;
+  --msg-user-link-fg: #0000ff;
+  --msg-user-code-bg: #e8e8ff;
+  --msg-user-pre-bg: #ffffff;
+  --msg-user-pre-border: #0000ff;
+  --btn-hover-bg: #e8e8e8;
+  --btn-hover-border: #000000;
+  --drag-over-bg: #e8e8ff;
+  --assistant-header-fg: #0000cc;
+  --code-bg: #ffffff;
+  --code-fg: #000000;
+  --code-bar-bg: #e8e8e8;
+  --code-block-border: #000000;
+  /* Syntax-highlighting token colours — dark high-saturation on white. */
+  --hljs-fg: #000000;
+  --hljs-comment: #006600;
+  --hljs-keyword: #660066;
+  --hljs-red: #cc0000;
+  --hljs-cyan: #006699;
+  --hljs-green: #006600;
+  --hljs-orange: #993300;
+  --hljs-blue: #0000ff;
+  --hljs-yellow: #666600;
+  --plugin-active: var(--ok);
+  --plugin-inactive: #0000cc;
+  --overlay-shadow: none;
+  --card-shadow: none;
+  --modal-shadow: none;
+  --drawer-shadow: none;
+  --toast-shadow: none;
+  --tooltip-shadow: none;
+  --fab-shadow: none;
+  --backdrop-color: rgba(0, 0, 0, 0.5);
+  --glass-blur: none;
+  --glass-surface-bg: var(--bg-elev);
+  --glass-surface-border: #000000;
+  --glass-blur-strong: none;
+  --glass-edge-highlight: none;
+  --surface-gradient: none;
+  --dot-glow: none;
+  --focus-ring: 3px solid #0000ff;
+  --focus-glow: none;
+  --qr-bg: #ffffff;
+}
+
+/* HC · light element overrides — diff / search highlighting with opaque
+   high-contrast tints on white. */
+[data-skin="hc"][data-theme="light"] .diff-line-add {
+  background: #c8f0c8;
+  color: #006600;
+}
+[data-skin="hc"][data-theme="light"] .diff-line-del {
+  background: #f0c8c8;
+  color: #cc0000;
+}
+[data-skin="hc"][data-theme="light"] .git-diff-line.add {
+  background: #c8f0c8;
+  color: #006600;
+}
+[data-skin="hc"][data-theme="light"] .git-diff-line.del {
+  background: #f0c8c8;
+  color: #cc0000;
+}
+[data-skin="hc"][data-theme="light"] mark.search-hl {
+  background: #ffff80;
+  color: #000000;
+}
+
+/* ════════════════════════════════════════════════════════════════════
    GLOW SKIN  ([data-skin="glow"])
    ────────────────────────────────────────────────────────────────────
    A "skin" is orthogonal to the light/dark mode: it only changes the

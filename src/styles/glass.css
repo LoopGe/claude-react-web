@@ -138,18 +138,20 @@
    slightly in the corner where light would hit).
 
    Skipped for the glow skin which already paints --surface-gradient
-   onto these surfaces (would compound and over-light).
+   onto these surfaces (would compound and over-light). Also skipped for
+   the High Contrast skin (hc): its flat pure-bg aesthetic relies on 1px
+   solid borders, and a faint fg wash would undermine it.
    ════════════════════════════════════════════════════════════════════ */
-:where(:not([data-skin="glow"])) .modal,
-:where(:not([data-skin="glow"])) .palette,
-:where(:not([data-skin="glow"])) .settings-overlay > .settings-panel,
-:where(:not([data-skin="glow"])) .git-overlay > .git-panel,
-:where(:not([data-skin="glow"])) .perm-overlay > .perm-card,
-:where(:not([data-skin="glow"])) .ctx-menu,
-:where(:not([data-skin="glow"])) .model-picker,
-:where(:not([data-skin="glow"])) .cmd-picker,
-:where(:not([data-skin="glow"])) .accent-popover,
-:where(:not([data-skin="glow"])) .appearance-panel {
+:where(:not([data-skin="glow"]):not([data-skin="hc"])) .modal,
+:where(:not([data-skin="glow"]):not([data-skin="hc"])) .palette,
+:where(:not([data-skin="glow"]):not([data-skin="hc"])) .settings-overlay > .settings-panel,
+:where(:not([data-skin="glow"]):not([data-skin="hc"])) .git-overlay > .git-panel,
+:where(:not([data-skin="glow"]):not([data-skin="hc"])) .perm-overlay > .perm-card,
+:where(:not([data-skin="glow"]):not([data-skin="hc"])) .ctx-menu,
+:where(:not([data-skin="glow"]):not([data-skin="hc"])) .model-picker,
+:where(:not([data-skin="glow"]):not([data-skin="hc"])) .cmd-picker,
+:where(:not([data-skin="glow"]):not([data-skin="hc"])) .accent-popover,
+:where(:not([data-skin="glow"]):not([data-skin="hc"])) .appearance-panel {
   background-image: linear-gradient(
     to bottom,
     color-mix(in srgb, var(--fg) 4%, transparent) 0%,
@@ -174,3 +176,35 @@
     transparent 80px
   );
 }
+
+/* ════════════════════════════════════════════════════════════════════
+   HIGH CONTRAST SKIN — square corners on ALL UI
+   ════════════════════════════════════════════════════════════════════
+   HC's stark aesthetic uses right angles everywhere — message bubbles,
+   popups, modals, buttons, inputs, cards, code blocks, the lot. A
+   per-class whitelist proved leaky (245 border-radius sites, more added
+   over time), so this is a UNIVERSAL override: every element under
+   [data-skin="hc"] gets border-radius:0. This file is imported LAST (see
+   index.css) and the rules use !important, so it wins against any
+   per-component radius regardless of source order or specificity.
+
+   The only elements that must STAY circular are loading spinners — a
+   rotating square reads as broken. They are restored to 50% below.
+   Everything else (status dots, avatars, swatches, scrollbar thumbs)
+   becoming square is intentional and consistent with the HC look.
+   ════════════════════════════════════════════════════════════════════ */
+[data-skin="hc"] *,
+[data-skin="hc"] *::before,
+[data-skin="hc"] *::after {
+  border-radius: 0 !important;
+}
+
+/* Restore circular spinners (rotation on a square is illegible). */
+[data-skin="hc"] .chat-clearing-spinner,
+[data-skin="hc"] .composer-send-spinner,
+[data-skin="hc"] .msg-sending-spinner,
+[data-skin="hc"] .app-loading-spinner,
+[data-skin="hc"] .session-resuming-spinner {
+  border-radius: 50% !important;
+}
+

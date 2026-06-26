@@ -978,6 +978,16 @@
      border-radius/liquid-glass edges. */
   overflow: hidden;
 }
+/* High Contrast skin: the streaming bubble must be fully opaque (HC
+   forbids alpha translucency on content surfaces) with no backdrop blur.
+   The .liquid-glass variant below has equal specificity and later source
+   order, so it is listed explicitly to win the background override.
+   [data-skin="hc"] covers both the dark and light HC variants. */
+[data-skin="hc"] .streaming-msg,
+[data-skin="hc"] .streaming-msg.liquid-glass {
+  background: var(--bg-elev);
+  backdrop-filter: none;
+}
 @keyframes stream-border-glow {
   0%, 100% {
     border-color: color-mix(in srgb, var(--accent) 45%, var(--border));

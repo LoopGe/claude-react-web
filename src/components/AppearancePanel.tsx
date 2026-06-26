@@ -33,12 +33,19 @@ const SKIN_OPTIONS: { value: Skin; label: string; desc: string }[] = [
   { value: 'default', label: 'Default', desc: 'Flat, high-contrast' },
   { value: 'glow', label: 'Glow', desc: 'Soft depth & glow' },
   { value: 'anthropic', label: 'Anthropic', desc: 'Warm paper & terracotta' },
+  { value: 'hc', label: 'High Contrast', desc: 'Pure B/W · square corners · a11y' },
 ]
 
 /** Anthropic's locked brand accent (terracotta). Mirrors the value in
  *  styles.css's [data-skin="anthropic"] block — shown as a non-interactive
  *  swatch so users see the colour is fixed, not pickable. */
 const ANTHROPIC_ACCENT = '#d97757'
+
+/** HC locked accent (bright blue). Mirrors the value in tokens.css's
+ *  [data-skin="hc"] block — the HC light variant uses #0000FF but the
+ *  swatch shows the dark-variant colour; the lock message clarifies it is
+ *  fixed, not pickable. */
+const HC_ACCENT = '#0080FF'
 
 const MODE_OPTIONS: { value: Theme; label: string; icon: ReactNode }[] = [
   { value: 'light', label: 'Light', icon: <IconSun size={15} /> },
@@ -166,6 +173,17 @@ function AppearancePopover({
             />
             <span className="appearance-accent-locked-label">
               Locked to Anthropic terracotta
+            </span>
+          </div>
+        ) : skin === 'hc' ? (
+          <div className="appearance-accent-locked">
+            <span
+              className="appearance-accent-locked-swatch"
+              style={{ background: HC_ACCENT }}
+              aria-hidden
+            />
+            <span className="appearance-accent-locked-label">
+              Locked to high-contrast blue
             </span>
           </div>
         ) : (
