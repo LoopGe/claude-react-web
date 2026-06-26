@@ -1947,12 +1947,12 @@ function ApiRetryView({ msg }: { msg: SdkMessage }) {
   const seconds = Math.ceil(remainingMs / 1000)
 
   const label = errorStatus === 429
-    ? 'Rate limited'
+    ? 'rate limited'
     : errorStatus === 529
-      ? 'Overloaded'
+      ? 'overloaded'
       : errorKind === 'server_error'
-        ? 'Server error'
-        : 'Retrying'
+        ? 'server error'
+        : 'retrying'
   // Once we've ticked down to 0 the next attempt is mid-flight; "now"
   // is more honest than "in 0s".
   const phase = seconds > 0 ? `retrying in ${seconds}s` : 'retrying now'
@@ -1961,10 +1961,9 @@ function ApiRetryView({ msg }: { msg: SdkMessage }) {
   const attemptText =
     maxRetries > 0 ? `attempt ${attempt}/${maxRetries}` : `attempt ${attempt}`
   return (
-    <div className="msg api-retry">
-      <div className="msg-header">
-        <span>{label} - {phase} ({attemptText})</span>
-      </div>
+    <div className="msg result retry">
+      <span className="result-mark">⏳ {label}</span>
+      <span className="result-meta">{phase} · {attemptText}</span>
     </div>
   )
 }
