@@ -255,29 +255,29 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   // --- /clear veil exit -----------------------------------------------
   // The veil fades IN while `clearing` is true, then fades OUT when
   // `clearing` flips false (the session-cleared frame just wiped the
-  // store). useLayoutEffect so the `exiting` class commits before paint
-  // — otherwise the veil unmounts for one frame and flickers. Unmount is
-  // timer-driven (not onAnimationEnd) to match the streaming-region exit
-  // pattern above and to stay robust under prefers-reduced-motion, where
-  // animationend may not fire.
-  const [clearingVeilExiting, setClearingVeilExiting] = useState(false)
-  const prevClearingRef = useRef(false)
+  // store). Mirrors the streaming-region presence pattern above: the
+  // exit state is DERIVED during render (React's "adjust state during
+  // render" escape hatch) so the `exiting` class commits in the same
+  // paint as the flip — no flicker — and the unmount is timer-driven
+  // (not onAnimationEnd) to stay robust under prefers-reduced-motion.
+  const clearingActive = clearing ?? false
+  const [clearingVeil, setClearingVeil] = useState({ source: false, exiting: false })
+  const nextClearingVeil = clearingActive !== clearingVeil.source
+    ? { source: clearingActive, exiting: !clearingActive && clearingVeil.source }
+    : clearingVeil
+  if (nextClearingVeil !== clearingVeil) {
+    setClearingVeil(nextClearingVeil)
+  }
   const veilExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useLayoutEffect(() => {
-    const prev = prevClearingRef.current
-    prevClearingRef.current = clearing ?? false
-    if (!clearing && prev) setClearingVeilExiting(true)
-    else if (clearing) setClearingVeilExiting(false)
-  }, [clearing])
   useEffect(() => {
     if (veilExitTimerRef.current) {
       clearTimeout(veilExitTimerRef.current)
       veilExitTimerRef.current = null
     }
-    if (!clearingVeilExiting) return
+    if (!nextClearingVeil.exiting) return
     veilExitTimerRef.current = setTimeout(() => {
       veilExitTimerRef.current = null
-      setClearingVeilExiting(false)
+      setClearingVeil({ source: false, exiting: false })
     }, CLEARING_VEIL_EXIT_MS)
     return () => {
       if (veilExitTimerRef.current) {
@@ -285,8 +285,8 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
         veilExitTimerRef.current = null
       }
     }
-  }, [clearingVeilExiting])
-  const veilVisible = clearing || clearingVeilExiting
+  }, [nextClearingVeil.exiting])
+  const veilVisible = clearingActive || nextClearingVeil.exiting
   const [streamingOverlayHeight, setStreamingOverlayHeight] = useState(0)
   // `atBottom` is state (not a ref) because the jump-to-bottom button's
   // visibility needs to re-render when it changes. The ref-mirror keeps
@@ -1259,7 +1259,7 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
         </div>
       )}
       {veilVisible && (
-        <div className={`chat-clearing-veil${clearingVeilExiting ? ' exiting' : ''}`}>
+        <div className={`chat-clearing-veil${nextClearingVeil.exiting ? ' exiting' : ''}`}>
           <span className="chat-clearing-spinner" aria-hidden="true" />
           <span className="chat-clearing-label">清理中…</span>
         </div>
