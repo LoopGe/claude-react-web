@@ -99,7 +99,7 @@ body.resizing-col * {
   min-height: 0;
   display: grid;
   grid-template-columns: 1fr;
-  background: var(--border);
+  background: var(--bg);
   overflow: hidden;
   position: relative;
 }
