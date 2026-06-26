@@ -49,6 +49,7 @@ import { useToast } from '../hooks/useToast'
 import { useWsHub } from '../hooks/useWsHub'
 import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
 import type { AgentInfo, SessionInfo, SlashCommand } from '../types'
+import type { Skin } from '../utils/theme'
 import type { GitStatusResponse } from '../../shared/git-types'
 import type { MessageJumpTarget } from '../../shared/message-jump'
 import { LOCAL_COMMANDS, matchLocalCommand } from '../local-commands'
@@ -158,6 +159,9 @@ interface Props {
   sideChatWorking?: boolean
   /** Toggle Side Chat expanded/collapsed. */
   onToggleCollapseSideChat?: () => void
+  /** Active skin, forwarded to <TodoChecklist> so its pending / in-progress
+   *  markers can switch to square checkboxes under the High-Contrast skin. */
+  skin?: Skin
 }
 
 interface SendMessageResponse {
@@ -175,7 +179,7 @@ export const Chat = memo(function Chat({
   recapOpen, onCloseRecap,
   onSessionUpdate, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, settingsTabRequest, messageJumpTarget, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, onRegisterInjectInput,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, groupLabel, onOpenSettingsPanel, onSideChat,
-  sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat,
+  sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
 }: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
   // The parent remounts Chat on session switch (<Chat key={session.id}>), so
@@ -1196,7 +1200,7 @@ export const Chat = memo(function Chat({
         </WorkflowProvider>
       </SubagentProvider>
 
-      <TodoChecklist messages={stream.messages} working={session.working} />
+      <TodoChecklist messages={stream.messages} working={session.working} skin={skin} />
       <MonitorBar messages={stream.messages} />
 
       {/* Always-mounted live region ?see `.error-bar-empty` in styles.css.

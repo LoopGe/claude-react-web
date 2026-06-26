@@ -24,6 +24,7 @@ import { shortenPath } from '../utils/paths'
 import { IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconZap } from './icons/ToolIcons'
 import { PermissionModeIcon, permissionModeLabel } from './permission-mode-display'
 import type { EffortLevel, PermissionMode, SessionInfo, SlashCommand } from '../types'
+import type { Skin } from '../utils/theme'
 import type { SettingsTabName } from '../local-commands'
 import { PERMISSION_MODES, EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL } from '../types'
 import type { GitStatus } from '../../shared/git-types'
@@ -168,6 +169,9 @@ export interface ChatPanelProps {
   onOpenSnippetsManager: () => void
   /** Capture composer text and ask App to prompt for a snippet label. */
   onSaveCurrentAsSnippet: (content: string) => void
+  /** Active skin, forwarded to <Chat> → <TodoChecklist> so its markers can
+   *  switch to square checkboxes under the High-Contrast skin. */
+  skin?: Skin
 }
 
 export const ChatPanel = memo(function ChatPanel({
@@ -208,6 +212,7 @@ export const ChatPanel = memo(function ChatPanel({
   snippets,
   onOpenSnippetsManager,
   onSaveCurrentAsSnippet,
+  skin,
 }: ChatPanelProps) {
   // Panel swap via drag is a multi-panel desktop affordance; mobile is
   // single-panel and touch can't HTML5-drag, so disable it there.
@@ -719,6 +724,7 @@ export const ChatPanel = memo(function ChatPanel({
             sideChatCollapsed={sideChatCollapsed}
             sideChatWorking={!!sideChatSession?.working}
             onToggleCollapseSideChat={onToggleCollapseSideChat}
+            skin={skin}
           />
         ) : (
           <div className="empty-state">

@@ -2528,6 +2528,7 @@ export function App() {
                     snippets={snippets}
                     onOpenSnippetsManager={openSnippetsManager}
                     onSaveCurrentAsSnippet={saveCurrentAsSnippet}
+                    skin={skin}
                   />
                 </ErrorBoundary>
               )

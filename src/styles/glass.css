@@ -208,3 +208,27 @@
   border-radius: 50% !important;
 }
 
+/* ::-webkit-scrollbar-thumb is a non-element pseudo — the universal
+   border-radius:0 rule above (which targets *::before/::after) can't
+   reach it, so it kept its 999px pill radius. Square it explicitly, and
+   drop the transparent-border + padding-box clip that insets the thumb
+   (HC wants a hard-edged fill that meets the track, not a floating pill).
+
+   NOTE the selector shape: `html[data-skin="hc"]::-webkit-scrollbar-thumb`
+   (NO space before ::-) — the document scrollbar lives on <html> itself,
+   which carries data-skin. A descendant selector like
+   `[data-skin="hc"] ::-webkit-scrollbar-thumb` would only match scrollbars
+   on elements INSIDE a skinned ancestor, never <html>'s own. Firefox's
+   scrollbar-color is already opaque via the token cascade. */
+html[data-skin="hc"]::-webkit-scrollbar-thumb,
+html[data-skin="hc"]::-webkit-scrollbar-thumb:hover,
+html[data-skin="hc"]::-webkit-scrollbar-thumb:active,
+[data-skin="hc"] ::-webkit-scrollbar-thumb,
+[data-skin="hc"] ::-webkit-scrollbar-thumb:hover,
+[data-skin="hc"] ::-webkit-scrollbar-thumb:active {
+  border-radius: 0 !important;
+  border: 0 !important;
+  background-clip: border-box !important;
+}
+
+
