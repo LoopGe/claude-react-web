@@ -109,6 +109,71 @@
     transform: none;
   }
 }
+/* /clear transition: blur-fade the transcript out and veil it with a
+   "清理中" affordance while the server tears down + respawns the CLI
+   subprocess (~1.7s). The class is removed only after the session-cleared
+   frame wipes the store, so messages never snap back into view. */
+.chat-messages.chat-messages-clearing {
+  animation: clear-blur-fade var(--motion-duration-slow) var(--motion-ease-exit) both;
+}
+@keyframes clear-blur-fade {
+  0%   { opacity: 1; filter: blur(0); transform: scale(1); }
+  40%  { opacity: 0.9; filter: blur(6px); transform: scale(0.99); }
+  100% { opacity: 0; filter: blur(10px); transform: scale(0.96); }
+}
+
+/* "清理中" veil — centered over the transcript. Fades in shortly after
+   the blur-fade starts, fades out to reveal the post-clear empty state. */
+.chat-clearing-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  pointer-events: none;
+  animation: clear-veil-in var(--motion-duration-base) var(--motion-ease-enter) both;
+  animation-delay: var(--motion-duration-fast);
+}
+.chat-clearing-veil.exiting {
+  animation: clear-veil-out var(--motion-duration-base) var(--motion-ease-exit) both;
+  animation-delay: 0s;
+}
+.chat-clearing-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  animation: clear-spinner 0.7s linear infinite;
+}
+@keyframes clear-veil-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes clear-veil-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+@keyframes clear-spinner {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-messages.chat-messages-clearing {
+    animation: none;
+    opacity: 0;
+  }
+  .chat-clearing-veil,
+  .chat-clearing-veil.exiting {
+    animation: none;
+  }
+  .chat-clearing-spinner {
+    animation: none;
+  }
+}
 /* Each virtualised item is wrapped in this div so that .msg.user's
    align-self: flex-end still works (the old flex column on
    .chat-messages is gone; each item is its own flex column now).
