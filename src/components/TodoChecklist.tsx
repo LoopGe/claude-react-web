@@ -22,7 +22,8 @@
 
 import { memo, useMemo } from 'react'
 import type { SdkMessage } from '../types'
-import { IconCheck, IconCircleDot, IconCircle } from './icons/ToolIcons'
+import type { Skin } from '../utils/theme'
+import { IconCheck, IconCircleDot, IconCircle, IconCheckboxDot, IconCheckbox } from './icons/ToolIcons'
 
 interface Todo {
   content: string
@@ -36,10 +37,15 @@ interface Props {
    *  if the last update was stale (e.g. user interrupted before a fresh
    *  TodoWrite landed). */
   working?: boolean
+  /** Active skin — drives the pending / in-progress marker shape so the
+   *  High-Contrast skin gets square checkboxes (the circular SVG icons
+   *  can't be squared via border-radius). Completed always uses a check. */
+  skin?: Skin
 }
 
-export const TodoChecklist = memo(function TodoChecklist({ messages, working }: Props) {
+export const TodoChecklist = memo(function TodoChecklist({ messages, working, skin }: Props) {
   const result = useMemo(() => extractTodos(messages, !!working), [messages, working])
+  const hc = skin === 'hc'
 
   // Hide when there's nothing useful to show.
   if (!result || result.todos.length === 0) return null
@@ -73,7 +79,13 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working }: 
         {todos.map((t, i) => (
           <li key={i} className={`todo-item todo-${t.status}`}>
             <span className="todo-icon" aria-hidden>
-              {t.status === 'completed' ? <IconCheck size={12} /> : t.status === 'in_progress' ? <IconCircleDot size={12} /> : <IconCircle size={12} />}
+              {t.status === 'completed' ? (
+                <IconCheck size={12} />
+              ) : t.status === 'in_progress' ? (
+                hc ? <IconCheckboxDot size={12} /> : <IconCircleDot size={12} />
+              ) : (
+                hc ? <IconCheckbox size={12} /> : <IconCircle size={12} />
+              )}
             </span>
             <span className="todo-text">
               {t.status === 'in_progress' && t.activeForm ? t.activeForm : t.content}

@@ -197,6 +197,28 @@ export function IconCircle(props: IconProps) {
   )
 }
 
+// Square checkbox variants of IconCircle / IconCircleDot, used by the
+// Checklist under the High-Contrast skin so the pending / in-progress
+// markers are right-angled like the rest of HC UI (the circular variants
+// draw their roundness in the SVG path, which border-radius can't touch).
+// Same 24×24 viewBox + r=9 footprint as the circles so they swap 1:1.
+export function IconCheckbox(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="3" y="3" width="18" height="18" rx="0" />
+    </Icon>
+  )
+}
+
+export function IconCheckboxDot(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="3" y="3" width="18" height="18" rx="0" />
+      <rect x="9" y="9" width="6" height="6" rx="0" fill="currentColor" stroke="none" />
+    </Icon>
+  )
+}
+
 export function IconCopy(props: IconProps) {
   return (
     <Icon {...props}>
