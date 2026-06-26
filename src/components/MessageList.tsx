@@ -1637,8 +1637,8 @@ const MessageView = memo(function MessageView({
       ? 'too many requests — message saved, send again'
       : raw
     return (
-      <div className="msg result error" title={message}>
-        <span className="result-mark">{isRateLimit ? '✕ rate limited' : '✕ error'}</span>
+      <div className="msg result error" title={message} aria-label={isRateLimit ? 'rate limit error' : 'system error'}>
+        <span className="result-mark" aria-hidden="true">{isRateLimit ? '✕ rate limited' : '✕ error'}</span>
         <span className="result-meta">{message}</span>
       </div>
     )
@@ -1956,8 +1956,8 @@ function ApiRetryView({ msg }: { msg: SdkMessage }) {
   const attemptText =
     maxRetries > 0 ? `attempt ${attempt}/${maxRetries}` : `attempt ${attempt}`
   return (
-    <div className="msg result retry">
-      <span className="result-mark">⏳ {label}</span>
+    <div className="msg result retry" aria-label="api retry">
+      <span className="result-mark" aria-hidden="true">⏳ {label}</span>
       <span className="result-meta">{phase} · {attemptText}</span>
     </div>
   )
