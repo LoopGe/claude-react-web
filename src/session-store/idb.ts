@@ -105,19 +105,21 @@ export async function putMeta(db: IDBPDatabase, meta: SessionMeta): Promise<void
 }
 
 /** Scan all message records for a session, returning uuid → seq. Used on
- *  open to rebuild the in-memory `persistedUuids`/`uuidToSeq` without reading
- *  full msg bodies (key-only would lose seq, so we read the record but only
- *  keep uuid+seq — the msg body is already on the live mirror or fetched
- *  lazily). For a long session this is O(n) but runs once on cold open. */
+ *  open to rebuild the in-memory `persistedUuids`/`uuidToSeq`. Reads only the
+ *  `bySeq` index KEY ([sessionId, seq, uuid]) — not the record body — so a
+ *  long session doesn't deserialize thousands of full message bodies on cold
+ *  open. O(n) but runs once per open. */
 export async function scanUuidSeqs(db: IDBPDatabase, sessionId: string): Promise<Map<string, number>> {
   const out = new Map<string, number>()
   // 3-element upper bound matches the bySeq index key [sessionId, seq, uuid];
   // '￿' exceeds any uuid char so the inclusive bound captures every record.
   const range = IDBKeyRange.bound([sessionId, SEQ_FLOOR], [sessionId, Number.MAX_SAFE_INTEGER, '￿'])
-  let cursor = await db.transaction(MESSAGES_STORE).store.index('bySeq').openCursor(range)
+  let cursor = await db.transaction(MESSAGES_STORE).store.index('bySeq').openKeyCursor(range)
   while (cursor) {
-    const rec = cursor.value as MessageRecord
-    out.set(rec.uuid, rec.seq)
+    // Index key is [sessionId, seq, uuid] — read seq + uuid without touching
+    // the value (the full msg body stays on disk).
+    const key = cursor.key as [string, number, string]
+    out.set(key[2], key[1])
     cursor = await cursor.continue()
   }
   return out
