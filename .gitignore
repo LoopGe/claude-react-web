@@ -14,3 +14,6 @@ coverage/
 codesclaude-react-web.*/
 # Local Claude Code session state (plans, worktrees, settings).
 .claude/
+
+# Visual brainstorming mockups
+.superpowers/
