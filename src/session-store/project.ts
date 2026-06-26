@@ -113,10 +113,18 @@ function capToolResultBlock(block: Block): Block {
       changed = true
     }
   } else if (Array.isArray(content)) {
-    // Cap inner text blocks; drop inner non-text blocks (rare in tool_result).
+    // Cap inner text blocks; DROP inner image blocks (a tool that returns a
+    // screenshot / MCP image result puts a base64 image block here — left
+    // alone it would persist at full size, and IDB has no byte cap, so this
+    // is the unbounded-growth path the projection exists to prevent). Other
+    // non-text, non-image blocks (rare in tool_result) pass through.
     const capped: Block[] = []
     let arrChanged = false
     for (const inner of content) {
+      if (inner && typeof inner === 'object' && (inner as Block).type === 'image') {
+        arrChanged = true // drop
+        continue
+      }
       if (inner && typeof inner === 'object' && (inner as Block).type === 'text') {
         const t = (inner as Block).text
         if (typeof t === 'string' && t.length > CAP_TOOL_RESULT) {
@@ -128,6 +136,13 @@ function capToolResultBlock(block: Block): Block {
       capped.push(inner as Block)
     }
     if (arrChanged) {
+      // If dropping image(s) emptied the array (an image-only tool result —
+      // e.g. a screenshot tool), substitute a text marker so the card doesn't
+      // render as a blank "(empty)" on cold load. Mirrors the top-level
+      // image-only handling in projectMessage.
+      if (capped.length === 0) {
+        capped.push({ type: 'text', text: IMAGE_MARKER })
+      }
       nextContent = capped
       changed = true
     }
