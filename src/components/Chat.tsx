@@ -199,6 +199,12 @@ export const Chat = memo(function Chat({
   // pattern PermissionDialog uses for its busy guard.
   const sendingRef = useRef(false)
   const [localError, setLocalError] = useState<string | null>(null)
+  /** True while a /clear is in flight. Drives the MessageList blur-fade +
+   *  "清理中" veil. Set synchronously on trigger; cleared by the onCleared
+   *  WS callback (fires when session-cleared lands, after the store wipe —
+   *  so the clearing class is dropped only once the transcript is already
+   *  empty, preventing any snap-back). Also cleared in the catch path. */
+  const [clearing, setClearing] = useState(false)
   /** Increments whenever we want the Composer's textarea refocused.
    *  Bumped after a successful send ?otherwise the click on the Send
    *  button would leave focus on the button, breaking the
@@ -351,7 +357,10 @@ export const Chat = memo(function Chat({
   const stream = useChatStream(session.id, {
     onRequest: permissions.onRequest,
     onResolved: permissions.onResolved,
-    onCleared: permissions.reset,
+    onCleared: () => {
+      permissions.reset()
+      setClearing(false)
+    },
   })
   const attachments = useAttachments(session.id, session.cwd)
   const pastedImages = usePastedImages()
@@ -818,6 +827,7 @@ export const Chat = memo(function Chat({
   )
 
   const requestClearSession = useCallback((sessionId: string) => {
+    setClearing(true)
     clearError()
     questionDraftsRef.current.clear()
     setMinimizedQ(new Set())
@@ -826,8 +836,13 @@ export const Chat = memo(function Chat({
         permissions.reset()
         clearAttachments()
         pastedImages.clear()
+        // NOTE: clearing is NOT reset here. The onCleared WS callback
+        // (fired by the session-cleared frame, in the same handler that
+        // wipes the store) drops it — so the blur-fade class is removed
+        // only once the transcript is already empty, preventing snap-back.
       })
       .catch((e) => {
+        setClearing(false)
         setLocalError((e as Error).message)
       })
   }, [clearAttachments, clearError, pastedImages, permissions])
@@ -1157,6 +1172,7 @@ export const Chat = memo(function Chat({
           items={stream.items}
           working={session.working}
           replayReady={stream.replayReady}
+          clearing={clearing}
           transcriptRevealKey={session.id}
           streamingContent={stream.streamingContent}
           planStatus={stream.planStatus}
