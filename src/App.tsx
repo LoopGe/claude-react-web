@@ -366,6 +366,13 @@ export function App() {
   const maxOpenRef = useRef(maxOpen)
   const groupsRef = useRef(groups)
   const activeGroupIdRef = useRef<string | null>(null)
+  /** Forward ref to animatePanels (declared much later). closeSession /
+   *  handleAddToGroup / handleReorderSidebar all need to FLIP-animate the
+   *  surviving panels when openIds shrinks or grows, but animatePanels
+   *  lives next to its sibling panel-grid machinery hundreds of lines
+   *  down. Bridging through a ref keeps the related code grouped without
+   *  causing TDZ violations. */
+  const animatePanelsRef = useRef<((...ids: string[]) => void) | null>(null)
   const paletteOpenRef = useRef(paletteOpen)
   const helpOpenRef = useRef(helpOpen)
   const historyPanelOpenRef = useRef(historyPanelOpen)
@@ -801,6 +808,15 @@ export function App() {
       // side-effect pattern. The setFocusedId call is issued from
       // inside setOpenIds's updater so `next` is guaranteed to be the
       // post-filter result regardless of batching order.
+      // Capture surviving panel positions before openIds shrinks so the
+      // FLIP can smoothly grow them into the closed panel's space — the
+      // closingPanels ghost handles the exiting panel's fade-out, but
+      // without this the survivors snap to their new wider grid track.
+      const prevOpen = openIdsRef.current
+      const survivors = prevOpen.filter((x) => x !== id)
+      if (survivors.length > 0 && survivors.length !== prevOpen.length) {
+        animatePanelsRef.current?.(...survivors)
+      }
       setOpenIds((prev) => {
         const next = prev.filter((x) => x !== id)
         // Schedule the focusedId update inside this updater where
@@ -875,6 +891,17 @@ export function App() {
       for (const id of desired) if (!ordered.includes(id)) ordered.push(id)
       const final = ordered.filter((id) => desired.includes(id)).slice(0, maxOpenRef.current)
       if (final.length === prevOpen.length && final.every((id, i) => id === prevOpen[i])) return
+      // FLIP-animate the surviving panels' position+width so they don't
+      // teleport to their new grid-template-columns ratio when one panel
+      // is added or removed (e.g. dragging a session into / out of the
+      // active group). Capture must run before setOpenIds since
+      // animatePanels reads current DOM positions synchronously and
+      // schedules a rAF that fires after React commits the new layout.
+      // Closing panels keep their own ghost-overlay exit animation
+      // (`closingPanels`) and entering panels keep their `entering`
+      // fade-in — this only smooths the survivors.
+      const survivors = prevOpen.filter((id) => final.includes(id))
+      if (survivors.length > 0) animatePanelsRef.current?.(...survivors)
       setOpenIds(final)
     },
     [setGroups, maxGroupSize, toast, setOpenIds],
@@ -1545,35 +1572,53 @@ export function App() {
   // It captures old positions of the given panel IDs, waits for the
   // browser to paint the new grid layout, then FLIP-animates them all
   // simultaneously — A slides to B's spot and vice versa.
+  //
+  // The capture also records width so the FLIP includes a scaleX component:
+  // moving a session in/out of the active group changes openIds.length,
+  // which re-flows grid-template-columns and snaps the surviving panels
+  // to new widths. Without the scale, survivors teleport to their new
+  // size while only the position smoothly slides — the user sees an
+  // instant width jump. Height is captured too for symmetry but in
+  // practice all panels are full-height so scaleY stays at 1.
   const animatePanels = useCallback((...ids: string[]) => {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
     const bodyEl = bodyRef.current
     if (!bodyEl) return
     const bodyR = bodyEl.getBoundingClientRect()
-    const snapshots: { el: HTMLElement; x: number; y: number }[] = []
+    const snapshots: { el: HTMLElement; x: number; y: number; w: number; h: number }[] = []
     for (const id of ids) {
       const el = bodyEl.querySelector<HTMLElement>(`[data-panel-id="${id}"]`)
       if (!el) continue
       const r = el.getBoundingClientRect()
-      snapshots.push({ el, x: r.left - bodyR.left, y: r.top - bodyR.top })
+      snapshots.push({ el, x: r.left - bodyR.left, y: r.top - bodyR.top, w: r.width, h: r.height })
     }
     if (snapshots.length === 0) return
     // Wait for the grid to repaint with the new order, then animate.
     requestAnimationFrame(() => {
       const opts: KeyframeAnimationOptions = { duration: 180, easing: 'cubic-bezier(.2,.8,.2,1)' }
       const bodyR2 = bodyEl.getBoundingClientRect()
-      for (const { el, x, y } of snapshots) {
+      for (const { el, x, y, w, h } of snapshots) {
         const r = el.getBoundingClientRect()
         const dx = x - (r.left - bodyR2.left)
         const dy = y - (r.top - bodyR2.top)
-        if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue
+        const sx = r.width > 0 ? w / r.width : 1
+        const sy = r.height > 0 ? h / r.height : 1
+        if (Math.abs(dx) < 1 && Math.abs(dy) < 1 && Math.abs(sx - 1) < 0.01 && Math.abs(sy - 1) < 0.01) continue
         el.animate(
-          [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'translate(0,0)' }],
+          [
+            { transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`, transformOrigin: 'top left' },
+            { transform: 'translate(0, 0) scale(1, 1)', transformOrigin: 'top left' },
+          ],
           opts,
         )
       }
     })
   }, [])
+  // Expose animatePanels through the ref declared near handleAddToGroup
+  // so that earlier callbacks (defined before this useCallback runs) can
+  // invoke it without a TDZ violation. Render-phase mutation of a ref is
+  // safe — no React render-output depends on .current.
+  animatePanelsRef.current = animatePanels
 
   const endPanelExit = useCallback((id: string) => {
     setClosingPanels((prev) => prev.filter((p) => p.id !== id))
@@ -1856,7 +1901,13 @@ export function App() {
           const isGroupView = prevOpen.length > 0 && prevOpen.every((id) => prevGroup.sessionIds.includes(id))
           if (isGroupView) {
             const next = prevOpen.filter((id) => id !== draggedId)
-            if (next.length !== prevOpen.length) setOpenIds(next)
+            if (next.length !== prevOpen.length) {
+              // Same FLIP as handleAddToGroup: animate the surviving
+              // panels so they grow into the vacated grid track instead
+              // of teleporting to the new width when openIds shrinks.
+              if (next.length > 0) animatePanelsRef.current?.(...next)
+              setOpenIds(next)
+            }
           }
         }
       }

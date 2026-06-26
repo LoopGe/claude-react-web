@@ -451,6 +451,20 @@ export const SessionList = memo(function SessionList({
     [onReorderInGroup, prepareMoveAnimation],
   )
 
+  /** Wrapped cross-section move (drag-drop into a group header/body, or
+   *  context-menu "Move to group" / "Remove from group"). Without FLIP
+   *  the row teleports to its new section the instant `groups` state
+   *  flips — using the same animation as keyboard reorder keeps the
+   *  motion language consistent. */
+  const animatedAddToGroup = useCallback(
+    (sessionId: string, groupId: string) => {
+      const animateMove = prepareMoveAnimation()
+      ;(onDropIntoGroup ?? onAddToGroup)(sessionId, groupId)
+      animateMove()
+    },
+    [onDropIntoGroup, onAddToGroup, prepareMoveAnimation],
+  )
+
   /** Render a SessionCard with all shared props pre-bound. Extracted from
    *  the 3 render sites (grouped, ungrouped-section, flat) to avoid
    *  duplicating 17+ props. */
@@ -738,7 +752,7 @@ export const SessionList = memo(function SessionList({
                       setDraggingId(null)
                       if (!payload || payload.kind !== 'sidebar-card') return
                       e.preventDefault()
-                      onDropIntoGroup(payload.id, sec.group.id)
+                      animatedAddToGroup(payload.id, sec.group.id)
                     }}
                   >
                     <button
@@ -814,7 +828,7 @@ export const SessionList = memo(function SessionList({
                           setDraggingId(null)
                           if (!payload || payload.kind !== 'sidebar-card') return
                           e.preventDefault()
-                          onDropIntoGroup(payload.id, sec.group.id)
+                          animatedAddToGroup(payload.id, sec.group.id)
                         }}
                       >
                         {sec.sessions.map((s) => renderCard(s, sec.group.id))}
@@ -839,7 +853,7 @@ export const SessionList = memo(function SessionList({
                           setDraggingId(null)
                           if (!payload || payload.kind !== 'sidebar-card') return
                           e.preventDefault()
-                          onDropIntoGroup(payload.id, sec.group.id)
+                          animatedAddToGroup(payload.id, sec.group.id)
                         }}
                       >
                         No sessions in this group.
@@ -901,7 +915,7 @@ export const SessionList = memo(function SessionList({
         sessionColor={sessionColors?.[menu.id]}
         onEditAccent={() => setAccentPopover({ x: menu.x, y: menu.y, id: menu.id })}
         groups={groups}
-        onAddToGroup={onAddToGroup}
+        onAddToGroup={animatedAddToGroup}
         maxOpen={maxOpen}
         onShowSuccess={toast.success}
         onAskConfirm={handleAskConfirm}
