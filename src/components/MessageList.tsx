@@ -40,6 +40,11 @@ interface Props {
    *  "processing" indicator on consumed user messages so it doesn't
    *  reappear on historical messages after a reconnect. */
   working?: boolean
+  /** True while a /clear is in flight (trigger → session-cleared frame).
+   *  Adds a blur-fade-out to the transcript and a "清理中" veil so the
+   *  ~1.7s server teardown+respawn reads as an intentional transition
+   *  instead of a frozen screen followed by a hard snap to empty. */
+  clearing?: boolean
   /** False while the initial replay from the server is still buffering.
    *  When false, shows a loading skeleton instead of the empty-state
    *  message, preventing a flash of "no messages" on session switch. */
@@ -197,6 +202,12 @@ const MAX_ENTER_BATCH = 4
 const ENTER_MAX_AGE_MS = 10_000
 const KNOWN_IDS_CAP = 4000
 const STREAMING_EXIT_MS = 180
+/** How long the "清理中" veil's fade-out runs before unmount. Mirrors the
+ *  --motion-duration-base (180ms) used by `.chat-clearing-veil.exiting` so
+ *  the unmount lands as the fade completes. Timer-driven (not onAnimationEnd)
+ *  to stay robust under prefers-reduced-motion — see the streaming-region
+ *  exit pattern above. */
+const CLEARING_VEIL_EXIT_MS = 180
 
 /** Return a `Set` whose *identity* is stable as long as its *contents* are
  *  unchanged.
@@ -235,12 +246,47 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, emptyStateContent, onSwitchModel, onAbortBash, onVisibleRangeChange }: Props) {
+export const MessageList = memo(function MessageList({ items, working, clearing, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, emptyStateContent, onSwitchModel, onAbortBash, onVisibleRangeChange }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
   const scrollerRef = useRef<HTMLElement | null>(null)
   const streamingRegionRef = useRef<HTMLDivElement | null>(null)
+  // --- /clear veil exit -----------------------------------------------
+  // The veil fades IN while `clearing` is true, then fades OUT when
+  // `clearing` flips false (the session-cleared frame just wiped the
+  // store). useLayoutEffect so the `exiting` class commits before paint
+  // — otherwise the veil unmounts for one frame and flickers. Unmount is
+  // timer-driven (not onAnimationEnd) to match the streaming-region exit
+  // pattern above and to stay robust under prefers-reduced-motion, where
+  // animationend may not fire.
+  const [clearingVeilExiting, setClearingVeilExiting] = useState(false)
+  const prevClearingRef = useRef(false)
+  const veilExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useLayoutEffect(() => {
+    const prev = prevClearingRef.current
+    prevClearingRef.current = clearing ?? false
+    if (!clearing && prev) setClearingVeilExiting(true)
+    else if (clearing) setClearingVeilExiting(false)
+  }, [clearing])
+  useEffect(() => {
+    if (veilExitTimerRef.current) {
+      clearTimeout(veilExitTimerRef.current)
+      veilExitTimerRef.current = null
+    }
+    if (!clearingVeilExiting) return
+    veilExitTimerRef.current = setTimeout(() => {
+      veilExitTimerRef.current = null
+      setClearingVeilExiting(false)
+    }, CLEARING_VEIL_EXIT_MS)
+    return () => {
+      if (veilExitTimerRef.current) {
+        clearTimeout(veilExitTimerRef.current)
+        veilExitTimerRef.current = null
+      }
+    }
+  }, [clearingVeilExiting])
+  const veilVisible = clearing || clearingVeilExiting
   const [streamingOverlayHeight, setStreamingOverlayHeight] = useState(0)
   // `atBottom` is state (not a ref) because the jump-to-bottom button's
   // visibility needs to re-render when it changes. The ref-mirror keeps
@@ -1116,9 +1162,13 @@ export const MessageList = memo(function MessageList({ items, working, replayRea
     pendingTranscriptRevealKeyRef.current = renderableItems.length > 0 ? transcriptRevealKey : undefined
   }
   const isTranscriptRevealPending = transcriptRevealKey != null && pendingTranscriptRevealKeyRef.current === transcriptRevealKey
-  const messagesClassName = isTranscriptRevealPending
-    ? 'chat-messages chat-messages-reveal-pending'
-    : 'chat-messages'
+  const messagesClassName = [
+    'chat-messages',
+    isTranscriptRevealPending && 'chat-messages-reveal-pending',
+    clearing && 'chat-messages-clearing',
+  ]
+    .filter(Boolean)
+    .join(' ')
   const visibleStreamingContent = nextStreamingPresence.content
   const streamingRegionClassName = nextStreamingPresence.exiting
     ? 'chat-streaming-region exiting'
@@ -1206,6 +1256,12 @@ export const MessageList = memo(function MessageList({ items, working, replayRea
           aria-hidden={nextStreamingPresence.exiting}
         >
           <StreamingFooter content={visibleStreamingContent} />
+        </div>
+      )}
+      {veilVisible && (
+        <div className={`chat-clearing-veil${clearingVeilExiting ? ' exiting' : ''}`}>
+          <span className="chat-clearing-spinner" aria-hidden="true" />
+          <span className="chat-clearing-label">清理中…</span>
         </div>
       )}
       </div>
