@@ -769,3 +769,67 @@ describe('ApiRetryView divider', () => {
     expect(meta?.textContent).toContain('retrying now')
   })
 })
+
+describe('system error divider', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('renders a 429 system error as a red error divider with canned rate-limit copy', () => {
+    const items = toItems([
+      makeMsg('system', {
+        subtype: 'error',
+        error: '429 rate_limit_error: too many requests',
+      }),
+    ])
+    const { container } = render(<MessageList items={items} replayReady />)
+
+    const divider = container.querySelector('.msg.result.error')
+    expect(divider).toBeTruthy()
+
+    const mark = divider?.querySelector('.result-mark')
+    expect(mark?.textContent).toContain('✕')
+    expect(mark?.textContent).toContain('rate limited')
+
+    const meta = divider?.querySelector('.result-meta')
+    expect(meta?.textContent).toContain('send again')
+
+    // Full message preserved in the title tooltip.
+    expect(divider?.getAttribute('title')).toContain('send again')
+  })
+
+  it('renders a generic system error with the raw error text in the meta + title', () => {
+    const raw = 'API error 500: internal server error — request failed, please retry'
+    const items = toItems([
+      makeMsg('system', {
+        subtype: 'error',
+        error: raw,
+      }),
+    ])
+    const { container } = render(<MessageList items={items} replayReady />)
+
+    const divider = container.querySelector('.msg.result.error')
+    expect(divider).toBeTruthy()
+
+    const mark = divider?.querySelector('.result-mark')
+    expect(mark?.textContent).toContain('✕')
+    expect(mark?.textContent).toContain('error')
+
+    // Meta carries the raw text (may be ellipsis-truncated in the DOM, but
+    // textContent holds the full string); title holds it verbatim too.
+    const meta = divider?.querySelector('.result-meta')
+    expect(meta?.textContent).toContain('API error 500')
+    expect(divider?.getAttribute('title')).toBe(raw)
+  })
+
+  it('falls back to "unknown error" when msg.error is missing', () => {
+    const items = toItems([
+      makeMsg('system', { subtype: 'error' }),
+    ])
+    const { container } = render(<MessageList items={items} replayReady />)
+
+    const meta = container.querySelector('.msg.result.error .result-meta')
+    expect(meta?.textContent).toContain('unknown error')
+  })
+})

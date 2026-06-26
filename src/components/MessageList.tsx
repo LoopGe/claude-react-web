@@ -1633,18 +1633,13 @@ const MessageView = memo(function MessageView({
   if (type === 'system' && msg.subtype === 'error') {
     const raw = String(msg.error ?? 'unknown error')
     const isRateLimit = /429|rate.?limit/i.test(raw)
+    const message = isRateLimit
+      ? 'too many requests — message saved, send again'
+      : raw
     return (
-      <div className={`msg error${isRateLimit ? ' rate-limit' : ''}`}>
-        <div className="msg-header">
-          <span>{isRateLimit ? 'rate limited' : 'error'}</span>
-        </div>
-        <div className="msg-body">
-          {isRateLimit ? (
-            <>Too many requests - the API rate limit was hit. Your message was saved; send it again in a moment.</>
-          ) : (
-            raw
-          )}
-        </div>
+      <div className="msg result error" title={message}>
+        <span className="result-mark">{isRateLimit ? '✕ rate limited' : '✕ error'}</span>
+        <span className="result-meta">{message}</span>
       </div>
     )
   }
