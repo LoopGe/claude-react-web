@@ -310,9 +310,14 @@ export class SessionStore {
   /** uuid → seq, for O(1) lookup on loadOlder (Phase 2). Mirrors persistedUuids. */
   private uuidToSeq = new Map<string, number>()
   /** Per-session seq watermarks. Live/replay appends → ++maxSeq; loadOlder
-   *  backfill → --minSeq. Assigned once per uuid at persist time, stable. */
+   *  backfill → --minSeq. Assigned once per uuid at persist time, stable.
+   *  `minSeq` uses +Infinity as its "nothing persisted yet" sentinel (NOT 0):
+   *  real seqs are ≥ 1, so a 0 sentinel never lowers on the suffix-only path,
+   *  stays stale, and the first prefix backfill then assigns seqs below 0
+   *  leaving a hole in the seq space — which makes loadOlder's contiguity
+   *  check false-fire. Infinity lowers correctly on the first assigned seq. */
   private maxSeq = 0
-  private minSeq = 0
+  private minSeq = Number.POSITIVE_INFINITY
   /** uuids superseded by api_retry in-place replace, drained to IDB delete
    *  on the next save so they don't re-emerge on cold-load cursor. */
   private supersededUuids = new Set<string>()
@@ -328,6 +333,11 @@ export class SessionStore {
    *  happened during my await" from "a clear happened and finished." */
   private clearGeneration = 0
   private idbClearPromise: Promise<void> | null = null
+  /** True after we've already warned about the current IDB write-failure
+   *  streak. Re-armed on a successful write so a recurring failure warns
+   *  once per streak (not once per save, which would spam every 2-10s during
+   *  a stream) while still surfacing a fresh failure after a recovery. */
+  private idbWriteFailureWarned = false
 
   constructor(sessionId: string) {
     registerStoreForDebug(sessionId, this)
@@ -397,10 +407,13 @@ export class SessionStore {
       }
       // If meta has watermarks beyond what scan found (scan is authoritative,
       // but meta is the cheap path), reconcile — scan already sets them.
+      // Guard minSeq against a stale 0 sentinel from a pre-fix meta: real seqs
+      // are ≥ 1 (or negative after prefix backfill, which scan already caught),
+      // so a 0 in meta is always the empty sentinel, never a real minimum.
       const meta = await getMeta(db, sessionId)
       if (meta) {
         if (meta.maxSeq > this.maxSeq) this.maxSeq = meta.maxSeq
-        if (meta.minSeq < this.minSeq) this.minSeq = meta.minSeq
+        if (meta.minSeq > 0 && meta.minSeq < this.minSeq) this.minSeq = meta.minSeq
       }
       // Cold-load: only if IDB has more recent history than memory currently
       // holds. Fetch up to MEMORY_ITEM_CAP most-recent and PREPEND (dedup vs
@@ -409,11 +422,37 @@ export class SessionStore {
       if (this.state.mirror.items.length < MEMORY_ITEM_CAP && this.maxSeq > 0) {
         const records = await cursorRecent(db, sessionId, MEMORY_ITEM_CAP)
         if (records.length > 0) {
-          const msgs = records.map((r) => r.msg)
-          // Dispatch PREPEND_MESSAGES — the reducer dedups by uuid against
-          // the in-memory LS tail, so overlapping recent messages don't
-          // duplicate. Older IDB messages extend the view backward.
-          this.dispatch({ type: 'PREPEND_MESSAGES', messages: msgs })
+          // IDB's job is to extend the view BACKWARD. If the LS tail is stale
+          // (LS write skipped/failed while IDB kept newer records), the recent
+          // window from IDB can include records NEWER than the in-memory tail.
+          // Naively prepending those would invert the transcript (newer ahead
+          // of older). So drop any record whose seq is >= the oldest in-memory
+          // message's seq — those are either duplicates (handled by uuid dedup
+          // anyway) or newer-than-LS (the WS replay fills them in order). Only
+          // records strictly older than the in-memory tail are prepended.
+          const items = this.state.mirror.items
+          let msgs: SdkMessage[] | null = null
+          if (items.length === 0) {
+            // No in-memory tail — load the full recent window (no anchor needed).
+            msgs = records.map((r) => r.msg)
+          } else {
+            const oldestInMemorySeq = this.uuidToSeq.get(items[0].id)
+            if (oldestInMemorySeq !== undefined) {
+              // Anchor known — keep only strictly-older records (extend backward).
+              msgs = records.filter((r) => r.seq < oldestInMemorySeq).map((r) => r.msg)
+            }
+            // else: the oldest in-memory message isn't in IDB (LS has a record
+            // IDB never got — a partial-write edge). We can't safely anchor a
+            // seq filter, and prepending the IDB window (which may be newer)
+            // would risk inverting the transcript. Skip the cold-load prepend
+            // entirely — the WS replay fills the full history in correct order
+            // within seconds. Leave msgs null.
+          }
+          if (msgs && msgs.length > 0) {
+            // PREPEND_MESSAGES dedups by uuid against the in-memory LS tail,
+            // so any residual overlap doesn't duplicate.
+            this.dispatch({ type: 'PREPEND_MESSAGES', messages: msgs })
+          }
         }
       }
     } catch {
@@ -700,8 +739,11 @@ export class SessionStore {
     this.persistedUuids.clear()
     this.uuidToSeq.clear()
     this.maxSeq = 0
-    this.minSeq = 0
+    this.minSeq = Number.POSITIVE_INFINITY
     this.supersededUuids.clear()
+    // Re-arm the write-failure warning so a fresh failure streak after a
+    // /clear surfaces its first warning (the streak ended with the clear).
+    this.idbWriteFailureWarned = false
   }
 
   /** Delta-write new in-memory messages to IDB, assigning each a stable `seq`
@@ -767,6 +809,9 @@ export class SessionStore {
       if (!uuid || this.persistedUuids.has(uuid)) continue
       this.maxSeq += 1
       const seq = this.maxSeq
+      // First suffix assignment lowers minSeq off the +Infinity sentinel to
+      // the real minimum (suffix seqs ascend from 1, so the first is the min).
+      if (seq < this.minSeq) this.minSeq = seq
       newRecords.push({ sessionId, uuid, seq, msg: projectMessage(messages[i]) })
       this.persistedUuids.add(uuid)
       this.uuidToSeq.set(uuid, seq)
@@ -779,6 +824,7 @@ export class SessionStore {
         if (!uuid || this.persistedUuids.has(uuid)) continue
         this.maxSeq += 1
         const seq = this.maxSeq
+        if (seq < this.minSeq) this.minSeq = seq
         newRecords.push({ sessionId, uuid, seq, msg: projectMessage(messages[i]) })
         this.persistedUuids.add(uuid)
         this.uuidToSeq.set(uuid, seq)
@@ -799,7 +845,15 @@ export class SessionStore {
     if (this.idbClearPromise) await this.idbClearPromise
     if (this.clearGeneration !== gen) return
 
-    const meta = { sessionId, maxSeq: this.maxSeq, minSeq: this.minSeq }
+    const meta = {
+      sessionId,
+      maxSeq: this.maxSeq,
+      // minSeq is +Infinity until the first record persists; persisting
+      // Infinity would round-trip badly through structured clone / JSON, so
+      // store 0 for the empty case (scan reconciles to the real value on the
+      // next cold-load anyway — meta is just a cheap hint).
+      minSeq: Number.isFinite(this.minSeq) ? this.minSeq : 0,
+    }
     try {
       // Single atomic tx (put records + delete superseded + put meta). A
       // racing clearSession (separate tx) now serializes wholly before or
@@ -809,16 +863,23 @@ export class SessionStore {
         this.persistedUuids.delete(u)
         this.uuidToSeq.delete(u)
       }
+      // Success re-arms the per-streak warning so a later fresh failure is
+      // surfaced again.
+      this.idbWriteFailureWarned = false
     } catch (e) {
       if (isIdbQuotaError(e)) {
         this.idbAvailable = false
       } else {
         // Non-quota error (stale handle after terminated(), tx abort, version
-        // conflict). Surface once so a recurring failure isn't silent — the LS
-        // cache is the fallback, but a write that fails every 2-10s shouldn't
-        // be invisible. Don't permanently disable IDB (transient aborts
-        // self-heal on the next openDb()).
-        console.warn(`[session-store] IDB write for ${sessionId} failed:`, e)
+        // conflict). Warn ONCE PER FAILURE STREAK — a persistent failure
+        // would otherwise console.warn every debounced save (every 2-10s
+        // during a stream). The LS cache is the fallback; don't permanently
+        // disable IDB (transient aborts self-heal on the next openDb(), and
+        // a healed write re-arms the warning above).
+        if (!this.idbWriteFailureWarned) {
+          this.idbWriteFailureWarned = true
+          console.warn(`[session-store] IDB write for ${sessionId} failed:`, e)
+        }
       }
     }
   }

@@ -297,6 +297,83 @@ describe('SessionStore projection (persist-only capping)', () => {
     expect(blocks.some((b) => b.type === 'text' && /image omitted/.test(b.text ?? ''))).toBe(true)
   })
 
+  it('drops image blocks nested inside a tool_result.content array on persist', () => {
+    // A tool that returns a screenshot (computer-use / MCP image result) puts
+    // an image block inside tool_result.content. Projection must drop it on
+    // persist just like top-level image blocks — otherwise the full base64
+    // lands in localStorage (and, via the same projectMessage, in IDB, which
+    // has no byte cap → unbounded growth).
+    const id = 'proj-tool-result-image'
+    const store = new SessionStore(id)
+    const imageB64 = 'i'.repeat(50_000)
+    store.dispatch({
+      type: 'MESSAGE',
+      message: {
+        type: 'user',
+        uuid: 'u-tr-img',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'tu1',
+              content: [
+                { type: 'text', text: 'screenshot:' },
+                { type: 'image', source: { type: 'base64', data: imageB64, media_type: 'image/png' } },
+              ],
+            },
+          ],
+        },
+      } as unknown as SdkMessage,
+    })
+    vi.runAllTimers()
+    const data = JSON.parse(localStorage.getItem(STORAGE_PREFIX + id)!)
+    const tr = data.messages[0].message.content[0] as {
+      content: Array<{ type: string; text?: string; source?: { data: string } }>
+    }
+    // No image block survives into the persisted tool_result content.
+    expect(tr.content.filter((b) => b.type === 'image')).toHaveLength(0)
+    // The sibling text block survives (only the image is dropped).
+    expect(tr.content.some((b) => b.type === 'text' && b.text === 'screenshot:')).toBe(true)
+  })
+
+  it('substitutes a marker when an image-only tool_result would be left empty', () => {
+    // A tool that returns ONLY a screenshot (computer-use / MCP image result)
+    // has tool_result.content = [image]. Dropping the image must not leave an
+    // empty array (which renders as a blank "(empty)" card on cold load) —
+    // substitute a text marker, mirroring the top-level image-only handling.
+    const id = 'proj-tool-result-image-only'
+    const store = new SessionStore(id)
+    store.dispatch({
+      type: 'MESSAGE',
+      message: {
+        type: 'user',
+        uuid: 'u-tr-img-only',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'tu1',
+              content: [
+                { type: 'image', source: { type: 'base64', data: 'i'.repeat(50_000), media_type: 'image/png' } },
+              ],
+            },
+          ],
+        },
+      } as unknown as SdkMessage,
+    })
+    vi.runAllTimers()
+    const data = JSON.parse(localStorage.getItem(STORAGE_PREFIX + id)!)
+    const tr = data.messages[0].message.content[0] as {
+      content: Array<{ type: string; text?: string }>
+    }
+    // Not an empty array — a marker text block fills it.
+    expect(tr.content).not.toEqual([])
+    expect(tr.content.length).toBeGreaterThanOrEqual(1)
+    expect(tr.content.some((b) => b.type === 'text' && /image omitted/.test(b.text ?? ''))).toBe(true)
+  })
+
   it('byte-budget backstop drops oldest messages but keeps the floor (50)', () => {
     // Build a session whose projected payload exceeds 2MB: many messages
     // each carrying a tool_result just under the 8000 cap (~8KB each).
