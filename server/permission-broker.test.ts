@@ -582,6 +582,50 @@ describe('PermissionBroker', () => {
 
       expect(pending.resolve).toHaveBeenCalled()
     })
+
+    // ─── allowedPrompts verification ───
+    // ExitPlanMode's tool_use input carries `allowedPrompts` (the list the UI
+    // renders as "On approval, allow:"). This test pins down what the broker
+    // actually hands back to the SDK when a plan is approved via the real UI
+    // path (planTargetMode, no persistForSession — exactly what the
+    // PermissionDialog sends). The expectation is the open question: does the
+    // broker translate allowedPrompts into updatedPermissions rules?
+    it('ExitPlanMode approval: echoes allowedPrompts in updatedInput but does NOT derive updatedPermissions', () => {
+      const session = makeFakeSession()
+      const allowedPrompts = [
+        { tool: 'Bash', prompt: 'run tests' },
+        { tool: 'Bash', prompt: 'install dependencies' },
+      ]
+      const pending = makeToolPermission({
+        id: 'perm-plan',
+        toolName: 'ExitPlanMode',
+        input: { plan: 'do the thing', allowedPrompts },
+        title: 'Plan ready',
+        displayName: 'ExitPlanMode',
+        description: '',
+        suggestions: [],
+        toolUseID: 'tu-plan',
+      })
+      session.pending.set(pending.id, pending)
+
+      broker.decide(session, pending.id, {
+        behavior: 'allow',
+        planTargetMode: 'default',
+      })
+
+      expect(pending.resolve).toHaveBeenCalledTimes(1)
+      const result = (pending.resolve as ReturnType<typeof vi.fn>).mock.calls[0][0]
+
+      // 1. The allow result echoes the original input unchanged, so
+      //    allowedPrompts rides along back to the SDK inside updatedInput.
+      expect(result.behavior).toBe('allow')
+      expect(result.updatedInput).toEqual({ plan: 'do the thing', allowedPrompts })
+
+      // 2. THE KEY ASSERTION: the broker does NOT translate allowedPrompts
+      //    into updatedPermissions. Whatever makes the list effective must
+      //    therefore happen inside the SDK/CLI subprocess, not in our code.
+      expect(result.updatedPermissions).toBeUndefined()
+    })
   })
 
   // 鈹€鈹€鈹€ answerQuestion 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
