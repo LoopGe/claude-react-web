@@ -88,8 +88,6 @@
   --msg-error-bg: #2b1616;
   --msg-error-border: #5a2525;
   --msg-error-fg: #ffb1b1;
-  --msg-rate-limit-bg: #2b2416;
-  --msg-rate-limit-border: #5a4a25;
   --msg-rate-limit-fg: #ffe0a0;
   /* User message bubble derives its color from the theme's accent so the
      "you" side automatically follows whatever palette is active. Mixed
@@ -199,8 +197,6 @@
   --msg-error-bg: #fdf0f0;
   --msg-error-border: #e8b4b4;
   --msg-error-fg: #a82020;
-  --msg-rate-limit-bg: #fdf8ef;
-  --msg-rate-limit-border: #e8d4a4;
   --msg-rate-limit-fg: #8a6510;
   /* --msg-user-* is defined once in :root using color-mix() against the
      theme variables, so the light theme inherits a re-mixed palette
@@ -298,8 +294,6 @@
   --msg-error-bg: #1a0000;
   --msg-error-border: #ff4040;
   --msg-error-fg: #ffa0a0;
-  --msg-rate-limit-bg: #1a1a00;
-  --msg-rate-limit-border: #ffff00;
   --msg-rate-limit-fg: #ffff80;
   --msg-user-bg: #001a33;
   --msg-user-border: #0080ff;
@@ -406,8 +400,6 @@
   --msg-error-bg: #ffe8e8;
   --msg-error-border: #cc0000;
   --msg-error-fg: #990000;
-  --msg-rate-limit-bg: #ffffe8;
-  --msg-rate-limit-border: #666600;
   --msg-rate-limit-fg: #4d4d00;
   --msg-user-bg: #e8e8ff;
   --msg-user-border: #0000ff;
