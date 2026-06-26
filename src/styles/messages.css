@@ -15,9 +15,6 @@
 .msg.msg-error-card { border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
 .msg-switch-model-btn { margin-top: 8px; }
 .msg.system { background: var(--msg-system-bg); border-color: var(--msg-system-border); font-family: var(--mono); font-size: 12px; }
-.msg.error { background: var(--msg-error-bg); border-color: var(--msg-error-border); color: var(--msg-error-fg); }
-.msg.error.rate-limit { background: var(--msg-rate-limit-bg); border-color: var(--msg-rate-limit-border); color: var(--msg-rate-limit-fg); }
-.msg.api-retry { background: var(--msg-rate-limit-bg); border-color: var(--msg-rate-limit-border); color: var(--msg-rate-limit-fg); font-family: var(--mono); font-size: 12px; }
 /* Turn-complete marker. NOT a card — a centered hairline divider with a
    success tick and de-emphasised tabular metadata. Shares the .msg.recap
    divider vocabulary so a turn boundary reads consistently with a recap /
@@ -60,6 +57,30 @@
 .msg.result.interrupted::before,
 .msg.result.interrupted::after { background: color-mix(in srgb, var(--warn, var(--danger)) 45%, var(--border)); }
 .msg.result.interrupted .result-mark { color: var(--warn, var(--danger)); }
+
+/* Transient API retry: amber divider, same vocabulary as .interrupted.
+   Replaces the old filled .msg.api-retry card. The mark (⏳ + label) is
+   bold amber; the meta (retrying in Ns · attempt X/Y) is muted amber,
+   tabular, nowrap — it's always short, so no truncation is needed. */
+.msg.result.retry { color: var(--msg-rate-limit-fg); }
+.msg.result.retry::before,
+.msg.result.retry::after { background: color-mix(in srgb, var(--warn) 45%, var(--border)); }
+.msg.result.retry .result-mark { color: var(--warn); }
+
+/* Fatal system error: red divider. Replaces the old filled .msg.error /
+   .msg.error.rate-limit cards. The meta carries the raw error string,
+   which is unbounded — so it shrinks and ellipsis-truncates, with the
+   full text in the container's title attribute. */
+.msg.result.error { color: var(--msg-error-fg); }
+.msg.result.error::before,
+.msg.result.error::after { background: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.msg.result.error .result-mark { color: var(--danger); }
+.msg.result.error .result-meta {
+  flex-shrink: 1;            /* override .result-meta's flex-shrink:0 so it can truncate */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;   /* .result-meta already sets white-space: nowrap */
+}
 
 .msg-body { word-wrap: break-word; }
 .msg-body code {
