@@ -861,7 +861,7 @@ export const Chat = memo(function Chat({
     try {
       const res = await api.post<{
         message: { uuid: string; receivedAt?: number }
-      }>(`/sessions/${session.id}/exec`, { command, confirm: true, share: opts.share })
+      }>(`/sessions/${session.id}/exec`, { command, confirm: true, share: opts.share }, { timeoutMs: 0 })
       if (pendingId && typeof res.message?.uuid === 'string') {
         ackUserMessage(pendingId, res.message.uuid, res.message.receivedAt)
       }

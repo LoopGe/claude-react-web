@@ -41,10 +41,15 @@ export async function apiRequest<T>(
   opts: { timeoutMs?: number } = {},
 ): Promise<T> {
   // Merge caller-supplied signal with our timeout signal. When either
-  // fires the request is aborted.
+  // fires the request is aborted. `timeoutMs: 0` disables the wall-clock
+  // limit — used by the `!` bash exec path, which runs until the command
+  // exits or the user hits the stop button (/exec/abort) rather than being
+  // cut off at a fixed deadline.
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const timeoutController = new AbortController()
-  const timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs)
+  const timeoutId = timeoutMs > 0
+    ? setTimeout(() => timeoutController.abort(), timeoutMs)
+    : null
 
   // If the caller already provided a signal, propagate its abort to our
   // controller so either source can cancel the fetch.
@@ -90,7 +95,7 @@ export async function apiRequest<T>(
     }
     throw err
   } finally {
-    clearTimeout(timeoutId)
+    if (timeoutId) clearTimeout(timeoutId)
     if (callerSignal && callerAbort) {
       callerSignal.removeEventListener('abort', callerAbort)
     }

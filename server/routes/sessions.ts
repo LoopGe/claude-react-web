@@ -222,7 +222,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   // the SDK transcript so the model sees it (triggers a model turn); the
   // default `share:false` (`!cmd`) is local-only — zero model round-trips.
   app.post('/sessions/:id/exec', async (c) => {
-    const body = await safeJson<{ command: string; confirm?: boolean; timeoutMs?: number; share?: boolean }>(c.req)
+    const body = await safeJson<{ command: string; confirm?: boolean; share?: boolean }>(c.req)
     if (typeof body.command !== 'string' || !body.command.trim()) {
       return c.json({ error: 'command is required' }, 400)
     }
@@ -230,7 +230,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     // Coerce share to a strict boolean — a truthy non-boolean (e.g. the
     // string "false") must not silently flip to share:true.
     const share = body.share === true
-    const result = await sm.execInSession(c.req.param('id'), body.command, { timeoutMs: body.timeoutMs, share })
+    const result = await sm.execInSession(c.req.param('id'), body.command, { share })
     return c.json(result)
   })
 

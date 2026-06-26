@@ -1295,12 +1295,11 @@ export class SessionManager {
   async execInSession(
     id: string,
     command: string,
-    opts: { timeoutMs?: number; onProgress?: (line: string) => void; share?: boolean } = {},
+    opts: { onProgress?: (line: string) => void; share?: boolean } = {},
   ): Promise<{
     stdout: string
     stderr: string
     exitCode: number | null
-    timedOut: boolean
     interrupted: boolean
     truncated: boolean
     message: SDKUserMessage
@@ -1318,7 +1317,6 @@ export class SessionManager {
     let result
     try {
       result = await execCommand(cwd, command, {
-        timeoutMs: opts.timeoutMs,
         onProgress: opts.onProgress,
         signal: controller.signal,
       })
@@ -1328,7 +1326,7 @@ export class SessionManager {
     // Build the synthetic user message with <bash-*> tags (mirrors Claude
     // Code's format). <bash-exit> lets the renderer show a status badge
     // without a separate WS channel.
-    const exitTag = `<bash-exit code="${result.exitCode ?? -1}"${result.timedOut ? ' timedOut="true"' : ''}${result.interrupted ? ' interrupted="true"' : ''}${result.truncated ? ' truncated="true"' : ''} />`
+    const exitTag = `<bash-exit code="${result.exitCode ?? -1}"${result.interrupted ? ' interrupted="true"' : ''}${result.truncated ? ' truncated="true"' : ''} />`
     const text =
       `<bash-input>${escapeXml(command)}</bash-input>\n` +
       `${exitTag}\n` +

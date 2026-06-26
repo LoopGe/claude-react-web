@@ -27,12 +27,10 @@ const log = createLogger('exec')
 const MAX_OUTPUT_BYTES = 1_000_000
 const HEAD_BYTES = 400_000
 const TAIL_BYTES = 400_000
-const DEFAULT_TIMEOUT_MS = 30_000
 
 export interface ExecOptions {
-  /** Hard wall-clock limit. Tree-kills the process on expiry. */
-  timeoutMs?: number
-  /** Optional abort signal (e.g. tied to a session interrupt). */
+  /** Optional abort signal (e.g. tied to the user-driven /exec/abort stop
+   *  button). SIGKILLs the child when fired. */
   signal?: AbortSignal
   /** Streamed line callback for live progress UI. Receives each new line of
    *  combined stdout+stderr as it lands. */
@@ -43,7 +41,6 @@ export interface ExecResult {
   stdout: string
   stderr: string
   exitCode: number | null
-  timedOut: boolean
   interrupted: boolean
   truncated: boolean
 }
@@ -72,10 +69,14 @@ function capOutput(raw: string): { text: string; truncated: boolean } {
 }
 
 /** Execute `command` in `cwd` via the system shell. Never rejects — failures
- *  (non-zero exit, timeout, interrupt) are reported via the result fields so
- *  the caller can inject a uniform <bash-*> message regardless of outcome. */
+ *  (non-zero exit, interrupt) are reported via the result fields so the caller
+ *  can inject a uniform <bash-*> message regardless of outcome.
+ *
+ *  No wall-clock timeout: a long-running command runs until it exits or the
+ *  user stops it via the abort signal (the stop button on the bash card,
+ *  wired through /exec/abort). Session unload/delete aborts too, so an
+ *  in-flight child never outlives its session. */
 export function execCommand(cwd: string, command: string, opts: ExecOptions = {}): Promise<ExecResult> {
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
   return new Promise((resolve) => {
     const { binary, flag } = resolveShell()
     let stdout = ''
@@ -113,7 +114,6 @@ export function execCommand(cwd: string, command: string, opts: ExecOptions = {}
         stdout: cappedOut.text,
         stderr: cappedErr.text,
         exitCode: partial.exitCode ?? null,
-        timedOut: partial.timedOut ?? false,
         interrupted: partial.interrupted ?? false,
         truncated: cappedOut.truncated || cappedErr.truncated,
       })
@@ -151,12 +151,6 @@ export function execCommand(cwd: string, command: string, opts: ExecOptions = {}
     if (child.stdout) onChunk(child.stdout, 'stdout')
     if (child.stderr) onChunk(child.stderr, 'stderr')
 
-    const timeoutId = setTimeout(() => {
-      log.info(`command timed out after ${timeoutMs}ms: "${command.slice(0, 80)}"`)
-      try { child.kill('SIGKILL') } catch { /* already gone */ }
-      finish({ timedOut: true })
-    }, timeoutMs)
-
     const onAbort = () => {
       log.info(`command aborted: "${command.slice(0, 80)}"`)
       try { child.kill('SIGKILL') } catch { /* already gone */ }
@@ -169,11 +163,9 @@ export function execCommand(cwd: string, command: string, opts: ExecOptions = {}
 
     child.on('error', (err) => {
       log.error(`child error for "${command.slice(0, 80)}":`, err)
-      clearTimeout(timeoutId)
       finish({ exitCode: -1 })
     })
     child.on('close', (code) => {
-      clearTimeout(timeoutId)
       // Flush any trailing partial line to progress.
       if (lineBuf.length > 0) opts.onProgress?.(lineBuf)
       finish({ exitCode: code ?? 0 })

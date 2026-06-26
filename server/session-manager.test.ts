@@ -190,7 +190,7 @@ vi.mock('./exec.js', async (importOriginal) => {
     execCommand: vi.fn(
       (_cwd: string, _command: string, opts: { signal?: AbortSignal } = {}) =>
         new Promise((resolve) => {
-          const done = { stdout: '', stderr: '', exitCode: 0, timedOut: false, interrupted: false, truncated: false }
+          const done = { stdout: '', stderr: '', exitCode: 0, interrupted: false, truncated: false }
           if (opts.signal) {
             if (opts.signal.aborted) { resolve({ ...done, interrupted: true }); return }
             opts.signal.addEventListener(
@@ -1354,7 +1354,7 @@ describe('SessionManager', () => {
       const info = sm.create({ cwd: dir, model: 'm1' })
       // Don't await — run in the background so we can abort mid-flight. The
       // mock hangs until the signal aborts.
-      const execP = sm.execInSession(info.id, 'long-running-cmd', { timeoutMs: 60_000 })
+      const execP = sm.execInSession(info.id, 'long-running-cmd')
       // execInSession parks the AbortController before awaiting execCommand;
       // let that synchronous setup land.
       await tick()
@@ -1374,7 +1374,7 @@ describe('SessionManager', () => {
 
     it('the AbortController is cleared after execInSession settles', async () => {
       const info = sm.create({ cwd: dir, model: 'm1' })
-      const execP = sm.execInSession(info.id, 'long-running-cmd', { timeoutMs: 60_000 })
+      const execP = sm.execInSession(info.id, 'long-running-cmd')
       await tick()
       sm.abortExec(info.id)
       await execP
@@ -1386,11 +1386,11 @@ describe('SessionManager', () => {
 
     it('unload() aborts an in-flight exec so it does not hang', async () => {
       const info = sm.create({ cwd: dir, model: 'm1' })
-      const execP = sm.execInSession(info.id, 'long-running-cmd', { timeoutMs: 60_000 })
+      const execP = sm.execInSession(info.id, 'long-running-cmd')
       await tick()
       await sm.unload(info.id)
       // unload() aborted the in-flight exec, so execP resolves (interrupted)
-      // instead of hanging until the 60s timeout.
+      // instead of hanging forever (exec has no wall-clock timeout).
       const result = await execP
       expect(result.interrupted).toBe(true)
     })
