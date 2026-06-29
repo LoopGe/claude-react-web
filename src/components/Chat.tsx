@@ -1014,7 +1014,19 @@ export const Chat = memo(function Chat({
   const settingsOverlayRef = useRef<HTMLDivElement>(null)
   const gitOverlayRef = useRef<HTMLDivElement>(null)
   useFocusTrap(settingsOverlayRef, { restoreFocus: true, active: !!settingsOpen, escapeSelector: '.chat-panel' })
-  useFocusTrap(gitOverlayRef, { restoreFocus: false, active: !!gitPanelOpen, escapeSelector: '.chat-panel' })
+  // `active` is gated on `gitPresence.shouldRender` (not just `gitPanelOpen`)
+  // because the git overlay is conditionally rendered via useExitPresence, which
+  // flips `shouldRender` one render *after* `gitPanelOpen` turns true (the
+  // presence state is updated in an effect). Without this gate the trap's effect
+  // runs on the first open frame when `gitOverlayRef.current` is still null and
+  // early-returns; `active` then never changes again, so the trap never engages
+  // and the triggering chip button retains :focus — leaving its tooltip stuck
+  // open via :focus-within after the mouse leaves. Gating on shouldRender makes
+  // active go false→true only once the overlay is actually mounted, so the trap
+  // re-runs and moves focus into the panel. `restoreFocus: true` returns focus
+  // to the chip on close (matching the settings overlay, and avoiding a
+  // regression where closing would strand focus on <body>).
+  useFocusTrap(gitOverlayRef, { restoreFocus: true, active: !!gitPanelOpen && gitPresence.shouldRender, escapeSelector: '.chat-panel' })
 
   const interrupt = useCallback(async () => {
     try {
