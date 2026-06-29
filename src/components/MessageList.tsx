@@ -1559,29 +1559,34 @@ const MessageView = memo(function MessageView({
     // user sees when they manually abort a turn — instead of a normal
     // assistant bubble that parrots the CLI's raw error text.
     //
-    // Two detection paths, because the marker differs by transport:
-    //   • History reload: the CLI's JSONL transcript carries an explicit
-    //     `isApiErrorMessage: true` flag (not in the SDK's streamed type,
-    //     so it only surfaces when history-reader parses the on-disk log).
-    //   • Live stream: the SDK stream omits that flag, but the message
-    //     body still contains the stable CLI string "Connection closed
-    //     mid-response" — match it as the live fallback.
+    // Detection is gated on `msg.error` (or the explicit isApiErrorMessage
+    // flag) so a NORMAL assistant reply that merely quotes the phrase — e.g.
+    // an explanation of this very fix — is never mis-rendered. Only error-
+    // flagged assistant messages can be the synthetic disconnect; for those,
+    // two transports carry different markers:
+    //   • History reload: the CLI's JSONL transcript has isApiErrorMessage
+    //     (absent from the SDK's streamed type, so it only surfaces via
+    //     history-reader parsing the on-disk log).
+    //   • Live stream: the SDK omits that flag, but the body still carries
+    //     the stable CLI string "Connection closed mid-response".
     // The raw text is kept in the title for debugging.
-    const apiErrText = extractMessagePlainText(msg) ?? ''
-    const isDisconnected =
-      msg.isApiErrorMessage === true ||
-      /connection closed mid-response/i.test(apiErrText)
-    if (isDisconnected) {
-      return (
-        <div
-          className="msg result interrupted"
-          title={apiErrText}
-          aria-label="connection interrupted"
-        >
-          <span className="result-mark" aria-hidden="true">!</span>
-          <span className="result-meta">connection interrupted · reply may be incomplete, resend to continue</span>
-        </div>
-      )
+    if (msg.isApiErrorMessage === true || typeof msg.error === 'string') {
+      const apiErrText = extractMessagePlainText(msg) ?? ''
+      const isDisconnected =
+        msg.isApiErrorMessage === true ||
+        /connection closed mid-response/i.test(apiErrText)
+      if (isDisconnected) {
+        return (
+          <div
+            className="msg result interrupted"
+            title={apiErrText}
+            aria-label="connection interrupted"
+          >
+            <span className="result-mark" aria-hidden="true">!</span>
+            <span className="result-meta">connection interrupted · reply may be incomplete, resend to continue</span>
+          </div>
+        )
+      }
     }
     // Subagent assistant turns (from Task tool workers with
     // forwardSubagentText on) carry the same shape as main-thread

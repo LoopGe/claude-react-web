@@ -850,6 +850,28 @@ describe('system error divider', () => {
     expect(divider?.getAttribute('title')).toBe(raw)
   })
 
+  it('does NOT mis-render a normal assistant reply that merely quotes "connection closed mid-response"', () => {
+    // Regression guard: the content-match fallback must be gated on msg.error
+    // so a normal reply discussing the error (no msg.error set) renders as a
+    // regular assistant bubble, not a disconnect divider.
+    const items = toItems([
+      makeMsg('assistant', {
+        message: {
+          content: [
+            { type: 'text', text: 'The CLI emits "API Error: Connection closed mid-response" when the stream breaks.' },
+            { type: 'text', text: 'Here is the rest of my normal explanation.' },
+          ],
+        },
+      }),
+    ])
+    const { container } = render(<MessageList items={items} replayReady />)
+
+    expect(container.querySelector('.msg.result.interrupted')).toBeNull()
+    const bubble = container.querySelector('.msg.assistant')
+    expect(bubble).toBeTruthy()
+    expect(bubble?.textContent).toContain('rest of my normal explanation')
+  })
+
   it('renders a generic system error with the raw error text in the meta + title', () => {
     const raw = 'API error 500: internal server error — request failed, please retry'
     const items = toItems([
