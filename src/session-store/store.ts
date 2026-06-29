@@ -157,7 +157,6 @@ function persistToStorage(sessionId: string, state: SessionState): void {
   const lastMessageUuid = mirror.lastMessageUuid
 
   let toWrite: string
-  let trimmedCount = 0
 
   // Fast path: stringify once. The projection caps usually keep a session
   // well under the budget, so this single stringify is the common case.
@@ -186,19 +185,12 @@ function persistToStorage(sessionId: string, state: SessionState): void {
       kept++
     }
     const keptMessages = kept < projected.length ? projected.slice(projected.length - kept) : projected
-    trimmedCount = projected.length - kept
     toWrite = JSON.stringify({
       v: 2,
       savedAt: Date.now(),
       messages: keptMessages,
       lastMessageUuid,
     })
-  }
-
-  if (trimmedCount > 0) {
-    console.warn(
-      `[persistToStorage] ${sessionId}: projected payload > ${(STORAGE_MAX_BYTES / 1024).toFixed(0)}KB limit, dropped oldest ${trimmedCount} of ${projected.length} messages (kept last ${projected.length - trimmedCount})`,
-    )
   }
 
   const key = STORAGE_PREFIX + sessionId
