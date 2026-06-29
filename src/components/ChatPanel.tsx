@@ -2,11 +2,12 @@
  *  carries the close button, focus click-target, and a dormant/terminated
  *  placeholder when the session's Query isn't live. */
 
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { Chat } from './Chat'
 import { SideChatDrawer } from './SideChatDrawer'
 import { ContextMenu } from './ContextMenu'
+import { ConfirmDialog } from './ConfirmDialog'
 import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
@@ -114,6 +115,10 @@ export interface ChatPanelProps {
    *  "Close all panels in <group>" (only for grouped sessions). Undefined
    *  when the session is ungrouped. */
   onCloseGroupPanels?: () => void
+  /** Delete the session entirely (App.handleDelete). Offered as a
+   *  "Delete session" item in the panel context menu, mirroring the
+   *  sidebar's Delete. */
+  onDelete?: (sessionId: string) => void
   onSessionUpdate: (s: SessionInfo) => void
   /** Swap this panel with another open panel (called with the dragged id). */
   onSwap: (draggedId: string, targetId: string) => void
@@ -191,6 +196,7 @@ export const ChatPanel = memo(function ChatPanel({
   onClose,
   groupLabel,
   onCloseGroupPanels,
+  onDelete,
   onSessionUpdate,
   onSwap,
   onAcceptSidebarDrop,
@@ -249,6 +255,41 @@ export const ChatPanel = memo(function ChatPanel({
   const [effortMenu, setEffortMenu] = useState<{ x: number; y: number } | null>(null)
   const permMenuPresence = usePresenceValue(permMenu, 120)
   const effortMenuPresence = usePresenceValue(effortMenu, 120)
+  // Confirmation dialog for destructive panel-menu actions (Delete session).
+  // Mirrors SessionList's confirm plumbing so the panel menu's Delete uses
+  // the same ConfirmDialog + busy state as the sidebar's.
+  const [confirmState, setConfirmState] = useState<{
+    title: string
+    message: ReactNode
+    confirmLabel: string
+    destructive?: boolean
+    onConfirm: () => void | Promise<void>
+  } | null>(null)
+  const [confirmBusy, setConfirmBusy] = useState(false)
+  const confirmPresence = usePresenceValue(confirmState)
+  const handleAskConfirm = useCallback((config: {
+    title: string
+    message: ReactNode
+    confirmLabel: string
+    destructive?: boolean
+    onConfirm: () => void | Promise<void>
+  }) => {
+    setConfirmState({
+      title: config.title,
+      message: config.message,
+      confirmLabel: config.confirmLabel,
+      destructive: config.destructive,
+      onConfirm: async () => {
+        setConfirmBusy(true)
+        try {
+          await config.onConfirm()
+        } finally {
+          setConfirmBusy(false)
+          setConfirmState(null)
+        }
+      },
+    })
+  }, [])
   const modelMenuPresence = usePresenceValue(modelMenu, 120)
   /** Global toast hub. Model/permission failures used to render an
    *  inline panel banner; they now surface as right-bottom toasts. */
@@ -657,6 +698,18 @@ export const ChatPanel = memo(function ChatPanel({
             onClose={() => setModelMenu(null)}
           />
         )}
+        {confirmPresence.value && (
+          <ConfirmDialog
+            open={confirmState != null}
+            title={confirmPresence.value.title}
+            message={confirmPresence.value.message}
+            confirmLabel={confirmPresence.value.confirmLabel}
+            destructive={confirmPresence.value.destructive}
+            busy={confirmBusy}
+            onConfirm={confirmPresence.value.onConfirm}
+            onCancel={() => { if (!confirmBusy) setConfirmState(null) }}
+          />
+        )}
         </div>
         {session.error && (
           <Tooltip label={session.error}>
@@ -725,6 +778,8 @@ export const ChatPanel = memo(function ChatPanel({
             onOpenSnippetsManager={onOpenSnippetsManager}
             onSaveCurrentAsSnippet={onSaveCurrentAsSnippet}
             onClosePanel={onClose}
+            onDelete={onDelete}
+            onAskConfirm={onDelete ? handleAskConfirm : undefined}
             groupLabel={groupLabel}
             onCloseGroupPanels={onCloseGroupPanels}
             onSideChat={onSideChat}

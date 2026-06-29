@@ -2575,6 +2575,7 @@ export function App() {
                     onCloseGroupPanels={
                       owningGroup ? () => closeGroupPanels(owningGroup.id) : undefined
                     }
+                    onDelete={handleDelete}
                     onSessionUpdate={updateSession}
                     settingsOpen={settingsOpenFor === s.id}
                     messageJumpTarget={messageJumpTarget?.sessionId === s.id ? messageJumpTarget : null}

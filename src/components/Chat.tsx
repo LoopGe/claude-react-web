@@ -42,7 +42,7 @@ import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
 import { ContextMenu } from './ContextMenu'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
-import { IconSearch, IconFileText, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconMessageCircle, IconArrowLeft } from './icons/ToolIcons'
+import { IconSearch, IconFileText, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconMessageCircle, IconArrowLeft, IconTrash } from './icons/ToolIcons'
 import { PLAN_TOOL_NAMES } from '../constants/toolNames'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
@@ -141,6 +141,20 @@ interface Props {
    *  message-area context menu can offer a "Close panel" item now that the
    *  header X button is gone. */
   onClosePanel?: (sessionId: string) => void
+  /** Delete the session entirely (App.handleDelete — exit animation +
+   *  Undo grace window). Offered as a "Delete session" item in the panel
+   *  context menu, mirroring the sidebar's. */
+  onDelete?: (sessionId: string) => void
+  /** Request a confirmation dialog (rendered by ChatPanel) before a
+   *  destructive action. Mirrors SessionList's onAskConfirm so the panel
+   *  menu's Delete uses the same confirm UX as the sidebar's. */
+  onAskConfirm?: (config: {
+    title: string
+    message: React.ReactNode
+    confirmLabel: string
+    destructive?: boolean
+    onConfirm: () => void | Promise<void>
+  }) => void
   /** Owning group name, or undefined when ungrouped. Relabels the close
    *  menu item to "Remove from <group>" since closing a group member
    *  removes it from the group (App.closeSession). */
@@ -183,7 +197,7 @@ export const Chat = memo(function Chat({
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
   recapOpen, onCloseRecap,
   onSessionUpdate, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, settingsTabRequest, messageJumpTarget, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, onRegisterInjectInput,
-  snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
+  snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
 }: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
@@ -1158,6 +1172,40 @@ export const Chat = memo(function Chat({
                     label: groupLabel ? `Remove from "${groupLabel}"` : 'Close panel',
                     icon: <IconX size={14} />,
                     onClick: () => onClosePanel(session.id),
+                  },
+                ]
+              : []),
+            // Delete the session entirely (same handler + Undo window as the
+            // sidebar's Delete). Confirm first when there's history at stake;
+            // empty scratch sessions delete immediately. Mirrors
+            // SessionContextMenu's Delete row.
+            ...(onDelete
+              ? [
+                  { label: '' },
+                  {
+                    label: 'Delete session',
+                    icon: <IconTrash size={14} />,
+                    danger: true,
+                    onClick: () => {
+                      const title = session.title ?? session.id.slice(0, 8)
+                      const hasHistory = session.messageCount > 0
+                      if (hasHistory && onAskConfirm) {
+                        onAskConfirm({
+                          title: 'Delete session?',
+                          message: (
+                            <>
+                              <p>Delete &ldquo;{title}&rdquo;?</p>
+                              <p>This permanently removes the conversation from disk. The Anthropic SDK&rsquo;s own session log in ~/.claude/projects/ is kept, but the app won&rsquo;t reference it anymore.</p>
+                            </>
+                          ),
+                          confirmLabel: 'Delete',
+                          destructive: true,
+                          onConfirm: () => onDelete(session.id),
+                        })
+                        return
+                      }
+                      onDelete(session.id)
+                    },
                   },
                 ]
               : []),
