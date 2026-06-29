@@ -86,25 +86,46 @@ export const ContextMenu = memo(function ContextMenu({ x, y, items, onClose, isE
       // window) doesn't fire when the user clicks the menu itself.
       onMouseDown={(e) => e.stopPropagation()}
     >
-      {items.map((item, i) => {
-        if (!item.label) return <div key={`sep-${i}`} className="ctx-menu-sep" role="separator" />
-        return (
-          <button
-            key={`${i}-${item.label}`}
-            className={`ctx-menu-item ${item.danger ? 'danger' : ''}`}
-            role="menuitem"
-            disabled={item.disabled}
-            onClick={() => {
-              if (item.disabled) return
-              item.onClick?.()
-              onClose()
-            }}
-          >
-            {item.icon && <span className="ctx-menu-icon" style={item.iconStyle} aria-hidden>{item.icon}</span>}
-            <span className="ctx-menu-label">{item.label}</span>
-          </button>
-        )
-      })}
+      {(() => {
+        // Collapse consecutive separators and trim leading/trailing ones.
+        // Callers build the item list from conditional spreads, so a separator
+        // can end up adjacent to another (or at an edge) when the items
+        // between them are absent — e.g. a panel menu whose Side Chat /
+        // Settings / Close-panel rows are all gated off. Dropping those here
+        // keeps every caller's separator placement simple without each one
+        // having to track its neighbours.
+        const visible: ContextMenuItem[] = []
+        for (const item of items) {
+          const isSep = !item.label
+          if (isSep) {
+            const last = visible[visible.length - 1]
+            // Skip leading separators and consecutive separators.
+            if (visible.length === 0 || !last.label) continue
+          }
+          visible.push(item)
+        }
+        // Trim a trailing separator.
+        if (visible.length > 0 && !visible[visible.length - 1].label) visible.pop()
+        return visible.map((item, i) => {
+          if (!item.label) return <div key={`sep-${i}`} className="ctx-menu-sep" role="separator" />
+          return (
+            <button
+              key={`${i}-${item.label}`}
+              className={`ctx-menu-item ${item.danger ? 'danger' : ''}`}
+              role="menuitem"
+              disabled={item.disabled}
+              onClick={() => {
+                if (item.disabled) return
+                item.onClick?.()
+                onClose()
+              }}
+            >
+              {item.icon && <span className="ctx-menu-icon" style={item.iconStyle} aria-hidden>{item.icon}</span>}
+              <span className="ctx-menu-label">{item.label}</span>
+            </button>
+          )
+        })
+      })()}
     </div>
   )
 })
