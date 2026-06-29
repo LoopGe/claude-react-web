@@ -945,15 +945,15 @@
 /* Live streaming bubble ?rendered outside Virtuoso while a turn is
    in progress. Matches assistant card styling but without the header.
 
-   It carries a "breathing glow" border so the in-progress turn is easy to
-   spot among settled messages: the accent border brightens and an outer
-   glow pulses in/out. NOTE: border-color and box-shadow are paint-phase
-   properties (NOT compositor-friendly despite the earlier comment claiming
-   so), so this does add a per-frame repaint on the bubble — accepted here
-   because only ONE bubble streams at a time and the glow is the clearest
-   in-progress affordance; reduced-motion disables it (below). All colours
-   are theme variables (--accent / --border), so light and dark themes
-   adapt automatically. */
+   Visually aligned with the Recap floating window (overlays.css): a neutral
+   1px border and frosted --bg surface, no accent glow. The previous design
+   pulsed an accent border to flag the in-progress turn; that loud
+   affordance is dropped in favour of the calmer Recap card aesthetic — the
+   blinking .streaming-cursor is enough to signal liveness. Radius and tail
+   match .msg.assistant so the bubble doesn't morph when streaming ends and
+   it re-renders as a settled Markdown message. All colours are theme
+   variables (--bg / --border), so light and dark themes adapt
+   automatically. */
 .streaming-msg {
   align-self: stretch;
   /* Always render at the full reading width rather than shrink-wrapping the
@@ -961,13 +961,12 @@
      content streams in instead of jittering wider with each flush. */
   width: 100%;
   max-width: min(var(--chat-reading-max-width), 100%);
-  border: 2px solid var(--accent);
+  border: 1px solid var(--border);
   border-radius: 8px;
   border-bottom-left-radius: 3px;
-  background: color-mix(in srgb, var(--bg-elev) 68%, transparent);
+  background: color-mix(in srgb, var(--bg) 75%, transparent);
   backdrop-filter: var(--glass-blur);
   margin: 4px 0;
-  animation: stream-border-glow 1.8s ease-in-out infinite;
   /* The bubble sizes to its content directly — no max-height grow
      animation. Animating max-height (a layout property) on every
      streaming flush (many times per second) triggered a reflow of the
@@ -988,22 +987,12 @@
   background: var(--bg-elev);
   backdrop-filter: none;
 }
-@keyframes stream-border-glow {
-  0%, 100% {
-    border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
-  }
-  50% {
-    border-color: var(--accent);
-    box-shadow: 0 0 12px 1px color-mix(in srgb, var(--accent) 45%, transparent);
-  }
-}
-/* Respect reduced-motion: keep the accent border (still a clear marker) but
-   hold the pulse still. */
+/* Respect reduced-motion: nothing to disable now (the glow animation was
+   removed when the bubble was aligned to the neutral Recap card style), but
+   keep the guard in case a future animation is added. */
 @media (prefers-reduced-motion: reduce) {
   .streaming-msg {
     animation: none;
-    border-color: var(--accent);
   }
 }
 /* New-message entrance animation ("blur + rise"). Applied for one play to
@@ -1086,6 +1075,15 @@
   /* Keep the pinned last line clear of the bottom edge even at scrollTop
      extremes (scroll-padding reserves space inside the scroll viewport). */
   scroll-padding-bottom: 10px;
+  /* Edge fade: streaming text dissolves into the top/bottom padding instead
+     of hard-clipping at the overflow edge. The fade band matches the
+     vertical padding (10px) exactly, so stationary text — which begins at
+     the padding inner edge — is never dimmed; only lines that scroll under
+     the edge fade out. #000 = fully visible, transparent = masked out. */
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 10px, #000 calc(100% - 10px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 10px, #000 calc(100% - 10px), transparent 100%);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
 }
 .streaming-cursor {
   display: inline-block;
