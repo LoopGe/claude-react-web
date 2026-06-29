@@ -109,6 +109,11 @@ export interface ChatPanelProps {
    *  <group>" for grouped sessions (closing a group member removes it
    *  from the group), plain "Close panel" for ungrouped ones. */
   groupLabel?: string
+  /** Deactivate this session's group: close every open panel in the group
+   *  while preserving membership. Shown in the panel context menu as
+   *  "Close all panels in <group>" (only for grouped sessions). Undefined
+   *  when the session is ungrouped. */
+  onCloseGroupPanels?: () => void
   onSessionUpdate: (s: SessionInfo) => void
   /** Swap this panel with another open panel (called with the dragged id). */
   onSwap: (draggedId: string, targetId: string) => void
@@ -185,6 +190,7 @@ export const ChatPanel = memo(function ChatPanel({
   onFocus,
   onClose,
   groupLabel,
+  onCloseGroupPanels,
   onSessionUpdate,
   onSwap,
   onAcceptSidebarDrop,
@@ -720,6 +726,7 @@ export const ChatPanel = memo(function ChatPanel({
             onSaveCurrentAsSnippet={onSaveCurrentAsSnippet}
             onClosePanel={onClose}
             groupLabel={groupLabel}
+            onCloseGroupPanels={onCloseGroupPanels}
             onSideChat={onSideChat}
             sideChatCollapsed={sideChatCollapsed}
             sideChatWorking={!!sideChatSession?.working}

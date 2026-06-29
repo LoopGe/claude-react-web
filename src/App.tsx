@@ -64,6 +64,7 @@ import {
 } from './constants/storageKeys'
 import type { Defaults, ConfigResponse } from './types/config'
 import { setMaxUploadBytes } from './hooks/config-store'
+import { closeGroupPanelsState } from './utils/group-panels'
 import { notificationTooltip } from './utils/notifications'
 import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
 import { randomId } from './utils/uuid'
@@ -827,6 +828,33 @@ export function App() {
       })
     },
     [setGroups],
+  )
+
+  /** Deactivate a group: close every open panel that belongs to it WITHOUT
+   *  touching group membership (the group and its members stay, so the
+   *  sidebar header can re-activate it later). This is intentionally a
+   *  separate path from `closeSession`, whose synced close==ungroup
+   *  semantics would empty the group. The pure transition lives in
+   *  `closeGroupPanelsState` so it is unit-testable without mounting App. */
+  const closeGroupPanels = useCallback(
+    (groupId: string) => {
+      const group = groupsRef.current.find((g) => g.id === groupId)
+      if (!group) return
+      const prevOpen = openIdsRef.current
+      const { openIds: nextOpen, focusedId: nextFocused } = closeGroupPanelsState({
+        openIds: prevOpen,
+        groupSessionIds: group.sessionIds,
+        focusedId: focusedIdRef.current,
+      })
+      // FLIP any surviving (non-group) panels into the freed space, mirroring
+      // closeSession. When the group was the whole open set this is a no-op.
+      if (nextOpen.length !== prevOpen.length) {
+        animatePanelsRef.current?.(...nextOpen)
+      }
+      setOpenIds(() => nextOpen)
+      setFocusedId(() => nextFocused)
+    },
+    [],
   )
 
   /** Move a session into a group (or out of all groups when groupId is
@@ -1618,6 +1646,7 @@ export function App() {
   // so that earlier callbacks (defined before this useCallback runs) can
   // invoke it without a TDZ violation. Render-phase mutation of a ref is
   // safe — no React render-output depends on .current.
+  // eslint-disable-next-line react-hooks/refs -- intentional render-time ref sync (same pattern as openIdsRef etc.)
   animatePanelsRef.current = animatePanels
 
   const endPanelExit = useCallback((id: string) => {
@@ -2525,6 +2554,7 @@ export function App() {
             // eslint-disable-next-line react-hooks/refs -- intentional: entering flag read during render
             openSessions.flatMap((s, i) => {
               const entering = enteringSetRef.current.has(s.id)
+              const owningGroup = groups.find((g) => g.sessionIds.includes(s.id))
               const node = (
                 // Per-panel ErrorBoundary: if one panel's render throws
                 // (e.g. a malformed assistant message), the other open
@@ -2541,7 +2571,10 @@ export function App() {
                     accentStyle={sessionAccentMap.get(s.id)}
                     onFocus={focusPanel}
                     onClose={closeSession}
-                    groupLabel={groups.find((g) => g.sessionIds.includes(s.id))?.name}
+                    groupLabel={owningGroup?.name}
+                    onCloseGroupPanels={
+                      owningGroup ? () => closeGroupPanels(owningGroup.id) : undefined
+                    }
                     onSessionUpdate={updateSession}
                     settingsOpen={settingsOpenFor === s.id}
                     messageJumpTarget={messageJumpTarget?.sessionId === s.id ? messageJumpTarget : null}

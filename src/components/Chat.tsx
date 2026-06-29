@@ -145,6 +145,11 @@ interface Props {
    *  menu item to "Remove from <group>" since closing a group member
    *  removes it from the group (App.closeSession). */
   groupLabel?: string
+  /** Deactivate this session's group — close every open panel in the group
+   *  while preserving membership (App.closeGroupPanels). Shown in the panel
+   *  context menu as "Close all panels in <group>", only for grouped
+   *  sessions. */
+  onCloseGroupPanels?: () => void
   /** Open this panel's settings overlay. Forwarded from ChatPanel so the
    *  message-area context menu can offer a "Settings" item now that the
    *  header gear button is gone. */
@@ -178,7 +183,7 @@ export const Chat = memo(function Chat({
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
   recapOpen, onCloseRecap,
   onSessionUpdate, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, settingsTabRequest, messageJumpTarget, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, onRegisterInjectInput,
-  snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, groupLabel, onOpenSettingsPanel, onSideChat,
+  snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
 }: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
@@ -1131,6 +1136,19 @@ export const Chat = memo(function Chat({
                     label: 'Settings',
                     icon: <IconSettings size={14} />,
                     onClick: () => onOpenSettingsPanel(session.id),
+                  },
+                ]
+              : []),
+            // Deactivate the whole group: close every open panel in it while
+            // keeping membership (App.closeGroupPanels). Distinct from the
+            // "Remove from <group>" item below, which closes just this panel
+            // and ungroups it. Only offered for grouped sessions.
+            ...(onCloseGroupPanels && groupLabel
+              ? [
+                  {
+                    label: `Close all panels in "${groupLabel}"`,
+                    icon: <IconX size={14} />,
+                    onClick: () => onCloseGroupPanels(),
                   },
                 ]
               : []),
