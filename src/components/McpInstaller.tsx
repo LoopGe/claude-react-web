@@ -40,7 +40,6 @@ export function McpInstaller({ open = true, server, onSave, onClose }: Props) {
   const [argsText, setArgsText] = useState(server?.args?.join('\n') ?? '')
   const [url, setUrl] = useState(server?.url ?? '')
   const [alwaysLoad, setAlwaysLoad] = useState(server?.alwaysLoad ?? false)
-  const [timeout, setTimeout] = useState(server?.timeout ? String(server.timeout) : '')
   // When editing, pre-populate with existing keys (values are masked,
   // so value fields are left empty — the server merges on PUT).
   const [envRows, setEnvRows] = useState<KvRow[]>(() =>
@@ -86,8 +85,6 @@ export function McpInstaller({ open = true, server, onSave, onClose }: Props) {
       type,
       alwaysLoad: alwaysLoad || undefined,
     }
-    const timeoutMs = timeout ? parseInt(timeout, 10) : undefined
-    if (timeoutMs && Number.isFinite(timeoutMs)) input.timeout = timeoutMs
     if (type === 'stdio') {
       input.command = command.trim() || undefined
       const args = argsText.split('\n').map((l) => l.trim()).filter(Boolean)
@@ -134,11 +131,6 @@ export function McpInstaller({ open = true, server, onSave, onClose }: Props) {
         const hdrUpdate = recordFromRows(headerRows.filter((r) => r.value.trim()))
         if (hdrUpdate) update.headers = hdrUpdate
         if (alwaysLoad !== (server!.alwaysLoad ?? false)) update.alwaysLoad = alwaysLoad
-        const prevTimeout = server!.timeout ? String(server!.timeout) : ''
-        if (timeout !== prevTimeout) {
-          const ms = timeout ? parseInt(timeout, 10) : undefined
-          update.timeout = ms && Number.isFinite(ms) ? ms : undefined
-        }
         await api.put(`/mcp-config/${encodeURIComponent(name)}`, update)
       } else {
         await api.post('/mcp-config', input)
@@ -267,24 +259,6 @@ export function McpInstaller({ open = true, server, onSave, onClose }: Props) {
             />
             Always load tools (included in every prompt)
           </label>
-
-          {/* Per-server tool-call timeout */}
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-            <span style={{ minWidth: 120 }}>Tool call timeout (ms)</span>
-            <input
-              type="number"
-              min={1000}
-              step={1000}
-              className="modal-input"
-              style={{ flex: 1 }}
-              value={timeout}
-              onChange={(e) => setTimeout(e.target.value)}
-              placeholder="default"
-            />
-          </label>
-          <div className="hint" style={{ marginTop: -4 }}>
-            Per-server hard wall-clock limit per tool call. Min 1000; leave empty for default.
-          </div>
 
           {/* Errors */}
           {errors.length > 0 && (

@@ -90,8 +90,6 @@ export interface StoredMcpServer {
   alwaysLoad?: boolean
   /** User can disable without deleting */
   enabled?: boolean
-  /** Per-server tool-call timeout (ms). Values <1000 are ignored by the SDK. */
-  timeout?: number
   /** Remote MCP OAuth state. Contains secrets and is never returned raw. */
   oauth?: StoredMcpOAuthState
   createdAt: number
@@ -122,8 +120,6 @@ export interface MaskedMcpServer {
   url?: string
   alwaysLoad?: boolean
   enabled?: boolean
-  /** Per-server tool-call timeout (ms). */
-  timeout?: number
   createdAt: number
   updatedAt: number
   /** Environment variable keys (values hidden) */
@@ -281,7 +277,6 @@ export function coerceStoredMcpServer(raw: unknown, fallbackName?: string): Stor
   if (isOAuthState(r.oauth)) server.oauth = r.oauth as StoredMcpOAuthState
   if (typeof r.alwaysLoad === 'boolean') server.alwaysLoad = r.alwaysLoad
   if (typeof r.enabled === 'boolean') server.enabled = r.enabled
-  if (typeof r.timeout === 'number' && Number.isFinite(r.timeout)) server.timeout = r.timeout
   return server
 }
 
@@ -647,7 +642,6 @@ function toSdkServerConfig(server: StoredMcpServer): McpServerConfig | null {
     if (server.args && server.args.length > 0) cfg.args = server.args
     if (server.env && Object.keys(server.env).length > 0) cfg.env = server.env
     if (server.alwaysLoad) cfg.alwaysLoad = true
-    if (typeof server.timeout === 'number') cfg.timeout = server.timeout
     return cfg
   }
   if (server.type === 'sse') {
@@ -656,7 +650,6 @@ function toSdkServerConfig(server: StoredMcpServer): McpServerConfig | null {
     const headers = headersWithOAuth(server)
     if (Object.keys(headers).length > 0) cfg.headers = headers
     if (server.alwaysLoad) cfg.alwaysLoad = true
-    if (typeof server.timeout === 'number') cfg.timeout = server.timeout
     return cfg
   }
   if (server.type === 'http') {
@@ -665,7 +658,6 @@ function toSdkServerConfig(server: StoredMcpServer): McpServerConfig | null {
     const headers = headersWithOAuth(server)
     if (Object.keys(headers).length > 0) cfg.headers = headers
     if (server.alwaysLoad) cfg.alwaysLoad = true
-    if (typeof server.timeout === 'number') cfg.timeout = server.timeout
     return cfg
   }
   return null

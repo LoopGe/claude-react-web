@@ -306,8 +306,6 @@ export interface McpServerConfigMeta {
   enabled?: boolean
   createdAt: number
   updatedAt: number
-  /** Per-server tool-call timeout (ms). */
-  timeout?: number
   envKeys?: string[]
   headerKeys?: string[]
   oauthAuthorized?: boolean
