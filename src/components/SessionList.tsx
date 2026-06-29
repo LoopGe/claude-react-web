@@ -7,6 +7,7 @@ import { isInAppDrag, readDragPayload } from '../hooks/useDragPayload'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
 import { buildSessionAccentMap } from '../theme'
+import { isAccentLocked, type Skin } from '../utils/theme'
 import type { NewSessionForm, SessionGroup, SessionInfo, SidebarSection } from '../types'
 import { NewSessionDialog } from './session-list/NewSessionDialog'
 import { SessionContextMenu } from './session-list/SessionContextMenu'
@@ -83,6 +84,10 @@ interface Props {
   sessionColors?: Record<string, string>
   /** Set or clear a session's accent colour. Pass `undefined` to reset. */
   onSessionColorChange?: (sessionId: string, color: string | undefined) => void
+  /** Active skin. Accent-locking skins (Anthropic / HC) hide the per-session
+   *  accent picker and suppress per-session tinting so the brand accent
+   *  applies uniformly. */
+  skin?: Skin
   // --- Group management ---
   /** Persisted list of user-created session groups. */
   groups: SessionGroup[]
@@ -122,6 +127,7 @@ export const SessionList = memo(function SessionList({
   deletingIds,
   sessionColors,
   onSessionColorChange,
+  skin,
   groups,
   sidebarSections,
   collapsedGroups,
@@ -398,8 +404,9 @@ export const SessionList = memo(function SessionList({
   }
 
   /** Pre-computed accent styles per session so SessionCard's React.memo
-   *  sees stable references instead of new objects every render. */
-  const accentStyleMap = useMemo(() => buildSessionAccentMap(sessionColors), [sessionColors])
+   *  sees stable references instead of new objects every render. Pass
+   *  `skin` so an accent-locking skin yields no per-session overrides. */
+  const accentStyleMap = useMemo(() => buildSessionAccentMap(sessionColors, skin), [sessionColors, skin])
 
   /** O(1) lookups for open-session state. */
   const openIdSet = useMemo(() => new Set(openIds), [openIds])
@@ -914,6 +921,7 @@ export const SessionList = memo(function SessionList({
         onRestart={(id) => onRestart?.(id)}
         sessionColor={sessionColors?.[menu.id]}
         onEditAccent={() => setAccentPopover({ x: menu.x, y: menu.y, id: menu.id })}
+        accentLocked={isAccentLocked(skin)}
         groups={groups}
         onAddToGroup={animatedAddToGroup}
         maxOpen={maxOpen}
@@ -922,7 +930,7 @@ export const SessionList = memo(function SessionList({
       />
       })()}
 
-      {accentPopover && (
+      {accentPopover && !isAccentLocked(skin) && (
         <AccentPickerPanel
           x={accentPopover.x}
           y={accentPopover.y}
@@ -943,6 +951,7 @@ export const SessionList = memo(function SessionList({
           initialGroupId={activeGroupId ?? undefined}
           groups={groups}
           maxOpen={maxOpen}
+          accentLocked={isAccentLocked(skin)}
           onCancel={() => {
             setShowDialog(false)
             setPrefilledCwd(undefined)

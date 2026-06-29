@@ -40,6 +40,9 @@ export interface SessionContextMenuProps {
   /** Open the unified accent-colour popover. The parent owns the popover
    *  and positions it at the menu's anchor coordinates. */
   onEditAccent?: () => void
+  /** When true the current skin locks the accent to a brand colour
+   *  (Anthropic / HC), so the "Accent colour…" entry is omitted. */
+  accentLocked?: boolean
   // --- Group actions ---
   groups: SessionGroup[]
   onAddToGroup: (sessionId: string, groupId: string) => void
@@ -74,6 +77,7 @@ export function SessionContextMenu({
   onRestart,
   sessionColor,
   onEditAccent,
+  accentLocked,
   groups,
   onAddToGroup,
   maxOpen,
@@ -211,18 +215,26 @@ export function SessionContextMenu({
           } as ContextMenuItem,
         ]
       : []),
-    { label: '' }, // separator
-    {
-      // Opens the unified accent-colour popover (AccentPickerPanel),
-      // hosted by the parent at the menu's anchor coordinates. The menu
-      // itself closes on click (as always); the parent re-opens the
-      // popover from the saved anchor.
-      label: 'Accent colour…',
-      icon:
-        sessionColor ? <IconCircleDot size={14} /> : <IconCircle size={14} />,
-      iconStyle: sessionColor ? { color: sessionColor } : undefined,
-      onClick: () => onEditAccent?.(),
-    },
+    // Accent-locking skins (Anthropic / HC) fix the accent to a brand
+    // colour, so the per-session accent picker is hidden entirely — the
+    // leading separator is dropped with it to avoid a double divider
+    // before "Delete session".
+    ...(!accentLocked
+      ? [
+          { label: '' } as ContextMenuItem, // separator
+          {
+            // Opens the unified accent-colour popover (AccentPickerPanel),
+            // hosted by the parent at the menu's anchor coordinates. The menu
+            // itself closes on click (as always); the parent re-opens the
+            // popover from the saved anchor.
+            label: 'Accent colour…',
+            icon:
+              sessionColor ? <IconCircleDot size={14} /> : <IconCircle size={14} />,
+            iconStyle: sessionColor ? { color: sessionColor } : undefined,
+            onClick: () => onEditAccent?.(),
+          } as ContextMenuItem,
+        ]
+      : []),
     { label: '' }, // separator
     {
       label: 'Delete session',

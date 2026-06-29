@@ -2369,6 +2369,7 @@ export function App() {
           deletingIds={deletingSessionIds}
           sessionColors={sessionColors}
           onSessionColorChange={handleSessionColorChange}
+          skin={skin}
           onSelect={handleSelectFromSidebar}
           onCreate={handleCreate}
           onDelete={handleDelete}

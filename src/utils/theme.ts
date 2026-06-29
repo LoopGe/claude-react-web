@@ -33,6 +33,17 @@ export function getStoredSkin(): Skin {
   return 'default'
 }
 
+/** True for skins that lock the accent colour to a brand value (Anthropic
+ *  terracotta / High-Contrast blue) defined in tokens.css's
+ *  `[data-skin="…"]` blocks. When locked, the global accent picker, the
+ *  per-session accent picker, and per-session inline `--accent` overrides
+ *  are all suppressed so the skin's CSS-defined accent wins. Centralised
+ *  here so every gating site (AppearancePanel, SessionList, buildSessionAccentMap)
+ *  agrees on which skins lock the accent. */
+export function isAccentLocked(skin: Skin | undefined | null): boolean {
+  return skin === 'anthropic' || skin === 'hc'
+}
+
 /** Apply a skin by toggling the `data-skin` attribute on <html>. The
  *  'default' skin removes the attribute entirely so the base :root /
  *  [data-theme] rules apply untouched. */

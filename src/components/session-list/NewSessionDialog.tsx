@@ -40,9 +40,12 @@ export interface NewSessionDialogProps {
   initialGroupId?: string
   /** Max sessions per group. */
   maxOpen: number
+  /** When true the active skin locks the accent (Anthropic / HC), so the
+   *  per-session accent picker is hidden in the new-session form. */
+  accentLocked?: boolean
 }
 
-export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, onCancel, groups, serverModels, initialGroupId, maxOpen }: NewSessionDialogProps) {
+export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, onCancel, groups, serverModels, initialGroupId, maxOpen, accentLocked }: NewSessionDialogProps) {
   const [cwd, setCwd] = useState<string>(initialCwd ?? defaults.cwd ?? '')
   const [model, setModel] = useState<string>(defaults.model ?? '')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
@@ -431,6 +434,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
               </select>
             </div>
 
+            {!accentLocked && (
             <div className="settings-field">
               <label>Accent colour</label>
               <AccentPicker
@@ -440,6 +444,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                 ariaLabel="Session accent"
               />
             </div>
+            )}
 
             <div className="settings-field">
               <label>System prompt (optional)</label>

@@ -11,6 +11,7 @@ import {
   getStoredTheme,
   getStoredSkin,
   toggleTheme,
+  isAccentLocked,
   type Skin,
 } from './theme'
 
@@ -146,5 +147,23 @@ describe('applySkin', () => {
       applySkin(v as Skin)
       expect(document.documentElement.getAttribute('data-skin')).toBe(v)
     }
+  })
+})
+
+describe('isAccentLocked', () => {
+  it('locks the accent for the Anthropic and HC skins', () => {
+    expect(isAccentLocked('anthropic')).toBe(true)
+    expect(isAccentLocked('hc')).toBe(true)
+  })
+
+  it('leaves the accent pickable for the default and glow skins', () => {
+    expect(isAccentLocked('default')).toBe(false)
+    expect(isAccentLocked('glow')).toBe(false)
+  })
+
+  it('treats absent/unknown skin as unlocked', () => {
+    expect(isAccentLocked(undefined)).toBe(false)
+    expect(isAccentLocked(null)).toBe(false)
+    expect(isAccentLocked('neon' as Skin)).toBe(false)
   })
 })

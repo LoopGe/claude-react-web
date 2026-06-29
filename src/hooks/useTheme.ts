@@ -24,7 +24,7 @@ import {
   onAccentFor,
 } from '../theme'
 import type { CSSProperties } from 'react'
-import { applySkin, applyTheme, getStoredSkin, getStoredTheme, onSystemThemeChange, toggleTheme, type Skin, type Theme } from '../utils/theme'
+import { applySkin, applyTheme, getStoredSkin, getStoredTheme, isAccentLocked, onSystemThemeChange, toggleTheme, type Skin, type Theme } from '../utils/theme'
 
 export interface UseThemeResult {
   theme: Theme
@@ -137,14 +137,22 @@ export function useTheme(): UseThemeResult {
 
   // Pre-computed per-session accent CSS overrides. Stable references so
   // ChatPanel's React.memo can skip unchanged panels — recomputing only
-  // when sessionColors itself changes.
+  // when sessionColors itself changes. Pass `skin` so an accent-locking
+  // skin (Anthropic / HC) yields an empty map — its brand accent is then
+  // inherited from the [data-skin] CSS instead of being overridden by
+  // stale per-session inline styles.
   const sessionAccentMap = useMemo(
-    () => buildSessionAccentMap(sessionColors),
-    [sessionColors],
+    () => buildSessionAccentMap(sessionColors, skin),
+    [sessionColors, skin],
   )
 
   const handleSessionColorChange = useCallback(
     (id: string, color: string | undefined) => {
+      // Accent-locking skins (Anthropic / HC) forbid per-session accent
+      // overrides — the UI hides the picker, but no-op here too as a
+      // backstop so a stale/programmatic call can't write a colour that
+      // buildSessionAccentMap would then suppress anyway.
+      if (isAccentLocked(skin)) return
       // Bypass the React state updater. Opening the context menu is the
       // only way this fires, and clicking a colour unmounts the menu in
       // the same tick — React 19 may then discard a setState updater
@@ -161,7 +169,7 @@ export function useTheme(): UseThemeResult {
       }
       setSessionColors(curr)
     },
-    [setSessionColors],
+    [setSessionColors, skin],
   )
 
   return {

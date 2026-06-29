@@ -4,6 +4,7 @@
 // context-menu picker) so the two stay in sync without duplication.
 
 import type { CSSProperties } from 'react'
+import { isAccentLocked, type Skin } from './utils/theme'
 
 /** Each preset carries a main accent and a stronger variant used for
  *  hover / active states. `--accent-strong` falls back to `accent` when
@@ -102,12 +103,19 @@ export function onAccentFor(hex: string): string {
  *  Used by App.tsx (driving ChatPanel) and SessionList.tsx (driving
  *  SessionCard). Each style sets `--accent` and `--accent-strong` so a
  *  single `style={accentStyle}` on the panel root cascades to every
- *  descendant rule that reads those vars. */
+ *  descendant rule that reads those vars.
+ *
+ *  When `skin` locks the accent (Anthropic / HC), returns an empty map:
+ *  the per-session inline `--accent` would otherwise be element-level
+ *  inline styles that override the skin's locked `--accent` (defined on
+ *  `[data-skin="…"]`), defeating the lock visually. Returning nothing
+ *  lets the skin's inherited accent cascade through. */
 export function buildSessionAccentMap(
   sessionColors: Record<string, string> | undefined,
+  skin?: Skin,
 ): Map<string, CSSProperties> {
   const map = new Map<string, CSSProperties>()
-  if (!sessionColors) return map
+  if (!sessionColors || isAccentLocked(skin)) return map
   for (const [id, hex] of Object.entries(sessionColors)) {
     map.set(id, {
       '--accent': hex,
