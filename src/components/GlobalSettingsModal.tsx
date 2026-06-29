@@ -398,7 +398,13 @@ export function GlobalSettingsModal({
         className="global-settings-modal"
         role="dialog"
         aria-modal={open ? 'true' : 'false'}
-        aria-hidden={!open}
+        // `inert` (not `aria-hidden`) while closing: the modal stays mounted
+        // through its exit animation (useExitPresence), so aria-hidden=true
+        // would hide a still-focused descendant from AT and trip the browser's
+        // "Blocked aria-hidden" warning. `inert` removes focus from the
+        // subtree and excludes it from the tab order — the desired behaviour
+        // during the close transition. React 19 supports `inert` natively.
+        inert={!open || undefined}
         aria-label="Settings"
         onClick={(e) => e.stopPropagation()}
       >
