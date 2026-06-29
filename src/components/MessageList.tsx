@@ -22,7 +22,7 @@ import { getBlocks, getEnterPlanToolUseIds } from '../session-store/normalize'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
 import { IconArrowDown, IconZap, IconUser, IconExternalLink, IconSquare } from './icons/ToolIcons'
-import { countMatches, extractPlainText } from '../search'
+import { countMatches, extractPlainText, extractMessagePlainText } from '../search'
 import { BlockView, ToolResultBlock } from './message-list/blocks'
 import { OlderHistoryHeader, StreamingFooter } from './message-list/transcript-chrome'
 import { Skeleton } from './Skeleton'
@@ -1551,6 +1551,38 @@ const MessageView = memo(function MessageView({
   }
 
   if (type === 'assistant') {
+    // The CLI emits a synthetic assistant message when an upstream API error
+    // breaks the turn mid-response — most commonly "API Error: Connection
+    // closed mid-response. The response above may be incomplete." It's a
+    // transient network blip, not a tool/model failure, so render it with
+    // the interrupted (amber `!`) divider vocabulary — the same visual the
+    // user sees when they manually abort a turn — instead of a normal
+    // assistant bubble that parrots the CLI's raw error text.
+    //
+    // Two detection paths, because the marker differs by transport:
+    //   • History reload: the CLI's JSONL transcript carries an explicit
+    //     `isApiErrorMessage: true` flag (not in the SDK's streamed type,
+    //     so it only surfaces when history-reader parses the on-disk log).
+    //   • Live stream: the SDK stream omits that flag, but the message
+    //     body still contains the stable CLI string "Connection closed
+    //     mid-response" — match it as the live fallback.
+    // The raw text is kept in the title for debugging.
+    const apiErrText = extractMessagePlainText(msg) ?? ''
+    const isDisconnected =
+      msg.isApiErrorMessage === true ||
+      /connection closed mid-response/i.test(apiErrText)
+    if (isDisconnected) {
+      return (
+        <div
+          className="msg result interrupted"
+          title={apiErrText}
+          aria-label="connection interrupted"
+        >
+          <span className="result-mark" aria-hidden="true">!</span>
+          <span className="result-meta">connection interrupted · reply may be incomplete, resend to continue</span>
+        </div>
+      )
+    }
     // Subagent assistant turns (from Task tool workers with
     // forwardSubagentText on) carry the same shape as main-thread
     // assistant turns but with a non-null parent_tool_use_id. Label

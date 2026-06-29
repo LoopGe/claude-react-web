@@ -203,6 +203,13 @@ export interface SdkMessage {
    *  and non-null for tool results and subagent-internal frames. The SDK
    *  declares this on both SDKUserMessage and SDKAssistantMessage. */
   parent_tool_use_id?: string | null
+  /** The CLI emits a synthetic assistant message with this flag when an
+   *  upstream API error breaks the turn mid-response (e.g. "API Error:
+   *  Connection closed mid-response"). The text body is the CLI's polished
+   *  error string. We render these as a gentle interrupted-style divider
+   *  (transient network blip) rather than a normal assistant bubble or a
+   *  fatal error card — see MessageList's assistant branch. */
+  isApiErrorMessage?: boolean
   // `message` is present on user/assistant. For user: { role: 'user', content: string }.
   // For assistant: { role: 'assistant', content: ContentBlock[] } (Anthropic SDK shape).
   message?: {

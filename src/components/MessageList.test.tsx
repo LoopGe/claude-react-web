@@ -799,6 +799,57 @@ describe('system error divider', () => {
     expect(divider?.getAttribute('title')).toContain('send again')
   })
 
+  it('renders a synthetic isApiErrorMessage assistant message as an interrupted-style divider', () => {
+    // The CLI emits this shape when an upstream API error breaks the turn
+    // mid-response (e.g. "API Error: Connection closed mid-response").
+    const raw = 'API Error: Connection closed mid-response. The response above may be incomplete.'
+    const items = toItems([
+      makeMsg('assistant', {
+        isApiErrorMessage: true,
+        message: { content: [{ type: 'text', text: raw }] },
+      }),
+    ])
+    const { container } = render(<MessageList items={items} replayReady />)
+
+    // Uses the interrupted (amber `!`) vocabulary, NOT a normal assistant bubble.
+    const divider = container.querySelector('.msg.result.interrupted')
+    expect(divider).toBeTruthy()
+    expect(container.querySelector('.msg.assistant')).toBeNull()
+
+    const mark = divider?.querySelector('.result-mark')
+    expect(mark?.textContent).toBe('!')
+
+    // Friendly resend hint, not the raw SDK English.
+    const meta = divider?.querySelector('.result-meta')
+    expect(meta?.textContent).toContain('resend')
+    expect(meta?.textContent).not.toContain('mid-response')
+
+    // Raw SDK text preserved in the title tooltip for debugging.
+    expect(divider?.getAttribute('title')).toBe(raw)
+  })
+
+  it('renders a live-stream API error (no isApiErrorMessage flag, error=server_error) as an interrupted divider', () => {
+    // Live stream shape: the SDK omits the isApiErrorMessage flag (it's only
+    // in the CLI's on-disk transcript), so the message arrives as a plain
+    // assistant message with error='server_error' and the CLI's error text
+    // in the body. Detection must fall back to matching the body text.
+    const raw = 'API Error: Connection closed mid-response. The response above may be incomplete.'
+    const items = toItems([
+      makeMsg('assistant', {
+        error: 'server_error',
+        message: { content: [{ type: 'text', text: raw }] },
+      }),
+    ])
+    const { container } = render(<MessageList items={items} replayReady />)
+
+    const divider = container.querySelector('.msg.result.interrupted')
+    expect(divider).toBeTruthy()
+    expect(container.querySelector('.msg.assistant')).toBeNull()
+    // The server_error header label must NOT leak through.
+    expect(container.textContent).not.toContain('server_error')
+    expect(divider?.getAttribute('title')).toBe(raw)
+  })
+
   it('renders a generic system error with the raw error text in the meta + title', () => {
     const raw = 'API error 500: internal server error — request failed, please retry'
     const items = toItems([
