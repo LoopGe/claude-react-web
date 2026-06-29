@@ -70,6 +70,18 @@ describe('usePermissionChannel', () => {
     expect(result.current.pending).toEqual([])
   })
 
+  it('does not fetch when sessionId is empty (e.g. no side chat)', async () => {
+    // ChatPanel subscribes the side-chat slot with `sideChatSession?.id ?? ''`
+    // when no side chat exists. The snapshot effect must short-circuit so we
+    // don't fire `/sessions//permissions` (404) on every panel mount.
+    renderHook(() => usePermissionChannel(''))
+
+    // Flush any pending microtasks; the guard means no call should land.
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(mockGet).not.toHaveBeenCalled()
+  })
+
   // ── onRequest / onResolved ────────────────────────────────────
 
   it('adds request via onRequest', () => {

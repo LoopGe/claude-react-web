@@ -58,6 +58,11 @@ export function usePermissionChannel(sessionId: string): UsePermissionChannel {
   // request on connect, but grabbing the REST snapshot makes the modal
   // appear immediately after a hard refresh even before the stream opens.
   useEffect(() => {
+    // No session (e.g. ChatPanel's side-chat slot when no side chat exists)
+    // → skip the snapshot. The WebSocket subscription is itself a no-op on
+    // an empty id (see useChatStream), so there is nothing to seed, and
+    // firing `/sessions//permissions` would just 404 on every panel mount.
+    if (!sessionId) return
     let cancelled = false
     api
       .get<{ pending: PermissionRequest[] }>(`/sessions/${sessionId}/permissions`)
