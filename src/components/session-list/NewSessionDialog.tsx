@@ -668,6 +668,9 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                       Plugins can't be added after the session starts — choose them here.
                     </span>
                     {allPluginKeys.map((key) => {
+                      // Compound key is "<plugin>@<marketplace>"; neither
+                      // segment contains '@' (assertSafeName enforces
+                      // [a-zA-Z0-9._-] on both), so a single split is safe.
                       const [pluginName, marketplace] = key.split('@')
                       return (
                         <label
