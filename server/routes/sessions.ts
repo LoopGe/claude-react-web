@@ -26,6 +26,17 @@ function validateEnabledMcpServers(value: unknown): string | null {
   return null
 }
 
+/** Validate the optional `enabledPlugins` field on POST /sessions. Same
+ *  shape rule as enabledMcpServers: must be a string[] if present, so a
+ *  stray string can't be iterated character-by-character downstream. */
+function validateEnabledPlugins(value: unknown): string | null {
+  if (value == null) return null
+  if (!Array.isArray(value) || !value.every((s) => typeof s === 'string')) {
+    return 'enabledPlugins must be an array of strings'
+  }
+  return null
+}
+
 /** Environment variable names that can alter process execution, inject code,
  *  or redirect I/O. Blocked from user-supplied `env` overrides to prevent
  *  privilege escalation in spawned child processes. */
@@ -72,13 +83,16 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   // Create session
   app.post('/sessions', async (c) => {
     const body = await safeJson<Partial<Options> & { cwd?: string; provider?: string; enabledMcpServers?: string[] }>(c.req)
-    const { enabledMcpServers, mcpServers, env: customEnv, ...rest } = body as Record<string, unknown> & {
+    const { enabledMcpServers, enabledPlugins, mcpServers, env: customEnv, ...rest } = body as Record<string, unknown> & {
       enabledMcpServers?: string[]
+      enabledPlugins?: string[]
       mcpServers?: Record<string, unknown>
       env?: Record<string, string>
     }
     const enabledErr = validateEnabledMcpServers(enabledMcpServers)
     if (enabledErr) return c.json({ error: enabledErr }, 400)
+    const pluginsErr = validateEnabledPlugins(enabledPlugins)
+    if (pluginsErr) return c.json({ error: pluginsErr }, 400)
     const envErr = validateEnv(customEnv)
     if (envErr) return c.json({ error: envErr }, 400)
     if (rest.permissionMode != null && !isUserSelectablePermissionMode(rest.permissionMode)) {
@@ -92,6 +106,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     }
     const mergedMcp = await sm.mergeMcpServersAsync(enabledMcpServers, mcpServers)
     if (mergedMcp) rest.mcpServers = mergedMcp
+    if (enabledPlugins !== undefined) (rest as { enabledPlugins?: string[] }).enabledPlugins = enabledPlugins
     const info = sm.create(rest as Options & { provider?: string }, customEnv as Record<string, string> | undefined)
     return c.json({ session: info }, 201)
   })

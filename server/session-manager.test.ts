@@ -1691,6 +1691,20 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     expect(mockHandles).toHaveLength(0)
   })
 
+  // enabledPlugins shares the same validator shape as enabledMcpServers.
+  it('create route 400s when enabledPlugins is a string (not an array)', async () => {
+    const res = await app().request('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cwd: '/tmp', enabledPlugins: 'plugA@mp1' }),
+    })
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect((body as { error: string }).error).toMatch(/enabledPlugins/)
+    // No session should have spawned.
+    expect(mockHandles).toHaveLength(0)
+  })
+
   it('create route 400s when env is not an object', async () => {
     const res = await app().request('/sessions', {
       method: 'POST',
