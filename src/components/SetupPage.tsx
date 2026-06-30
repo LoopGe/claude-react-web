@@ -302,7 +302,7 @@ export function SetupPage({ onConfigured }: Props) {
       // flipped isConfigured), so calling setSubmitting(false) would warn
       // about state-on-unmounted in dev.
     },
-    [authToken, baseUrl, modelList, recapModel, commitMessageModel, updateRegistry, onConfigured, setupCompleted],
+    [authToken, baseUrl, modelList, recapModel, commitMessageModel, updateRegistry, onConfigured, setupCompleted, tokenPrefilled],
   )
 
   // ── Navigation helpers ──

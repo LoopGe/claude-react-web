@@ -20,7 +20,6 @@
 import { memo, useMemo, type ReactNode } from 'react'
 import ansicolor from 'ansicolor'
 import { findRanges } from '../search/match.js'
-export { stripAnsi } from '../utils/text.js'
 
 /** Parse a CSS string like "color:rgba(0,204,0,1);font-weight:bold;" into
  *  a React CSSProperties object. Only handles the subset that ansicolor

@@ -1301,7 +1301,7 @@ export function App() {
         toast.error(`Couldn't restart session: ${(e as Error).message}`)
       }
     },
-    [sessions, groups, openIds, performDelete, toast],
+    [sessions, groups, openIds, performDelete, toast, setLastSeenTurn, setGroups],
   )
 
   /** Activate a group: replace main-area panels with the group's sessions. */
@@ -1593,7 +1593,7 @@ export function App() {
       .filter(Boolean) as { id: string; session: SessionInfo; rect: DOMRect }[]
     if (snapshots.length === 0) return
     setClosingPanels((prev) => [...prev, ...snapshots])
-  }, [openIds])
+  }, [openIds, bodyRef])
 
   // ── Panel swap animation ─────────────────────────────────────────────
   // animatePanels is called AFTER a state update (swapPanels / handleReorderInGroup).
@@ -1641,7 +1641,7 @@ export function App() {
         )
       }
     })
-  }, [])
+  }, [bodyRef])
   // Expose animatePanels through the ref declared near handleAddToGroup
   // so that earlier callbacks (defined before this useCallback runs) can
   // invoke it without a TDZ violation. Render-phase mutation of a ref is
@@ -2311,7 +2311,7 @@ export function App() {
   // see a new object reference on every render.
   const stableSettingsTabRequest = useMemo(
     () => settingsTabRequest ? { tab: settingsTabRequest.tab, nonce: settingsTabRequest.nonce } : null,
-    [settingsTabRequest?.tab, settingsTabRequest?.nonce],
+    [settingsTabRequest],
   )
 
   if (isConfigured === null) {
