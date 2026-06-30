@@ -647,6 +647,9 @@ function assembleLiteUsage(opts: {
   contextWindow: number
   model: string
   autoCompactThreshold?: number
+  /** Caller tag so the diagnostic log can tell us which path produced a
+   *  suspicious payload ('result' = end-of-turn, 'assistant' = mid-turn). */
+  source?: 'result' | 'assistant'
 }): LiteContextUsage | null {
   const totalTokens =
     opts.inputTokens + (opts.cacheCreation ?? 0) + (opts.cacheRead ?? 0)
@@ -655,6 +658,25 @@ function assembleLiteUsage(opts: {
       `[context-usage] raw total ${totalTokens} > contextWindow ${opts.contextWindow} for model ${opts.model}; skipping update`,
     )
     return null
+  }
+  // DIAGNOSTIC (2026-06): users report the ContextBar dropping to 0% at the
+  // end of a turn. The only way that can happen on the server is for
+  // assembleLiteUsage to return an object with totalTokens=0 — which is
+  // currently allowed (no zero-guard). Log loudly (warn, not debug) when
+  // we're about to emit that, so a reproduction surfaces in the default-
+  // level logs without anyone having to flip LOG_LEVEL. Behavior unchanged:
+  // we still return the zero-valued snapshot so we don't mask the bug
+  // before we've confirmed the SDK is actually the source.
+  if (totalTokens <= 0) {
+    log.warn(
+      `[context-usage] zero totalTokens about to be broadcast ` +
+      `(source=${opts.source ?? 'unknown'}, model=${opts.model}, ` +
+      `inputTokens=${opts.inputTokens}, ` +
+      `cacheCreation=${opts.cacheCreation === undefined ? 'undef' : opts.cacheCreation}, ` +
+      `cacheRead=${opts.cacheRead === undefined ? 'undef' : opts.cacheRead}, ` +
+      `outputTokens=${opts.outputTokens === undefined ? 'undef' : opts.outputTokens}, ` +
+      `contextWindow=${opts.contextWindow})`,
+    )
   }
   const out: LiteContextUsage = {
     totalTokens,
@@ -769,6 +791,7 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
     contextWindow,
     model,
     autoCompactThreshold: computeAutoCompactThreshold(contextWindow, maxOutputTokens),
+    source: 'result',
   })
 }
 
@@ -816,5 +839,6 @@ export function liteContextUsageFromAssistant(
     // Carry the threshold forward from the last `result` so the warning
     // stays live between turn-end refreshes.
     autoCompactThreshold: cached.autoCompactThreshold,
+    source: 'assistant',
   })
 }
