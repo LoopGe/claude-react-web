@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { rmSync, mkdirSync, writeFileSync } from 'node:fs'
+import { rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildFsRouter, validateFolderName } from './fs-routes.js'
 import { tempDir, json } from './__test-utils__/index.js'
@@ -188,6 +188,113 @@ describe('fs-routes', () => {
       const app = buildFsRouter()
       const res = await app.request(`/resolve-cwd?path=${join(dir, 'nope')}`)
       expect(res.status).toBe(404)
+    })
+  })
+
+  describe('POST /mkdir', () => {
+    it('creates a directory and returns 201 with the path', async () => {
+      const app = buildFsRouter()
+      const res = await app.request('/mkdir', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ parent: dir, name: 'newdir' }),
+      })
+      expect(res.status).toBe(201)
+      const body = await json(res)
+      expect(body.path).toBe(join(dir, 'newdir'))
+      expect(existsSync(join(dir, 'newdir'))).toBe(true)
+    })
+
+    it('returns 400 when parent is missing', async () => {
+      const app = buildFsRouter()
+      const res = await app.request('/mkdir', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'x' }),
+      })
+      expect(res.status).toBe(400)
+    })
+
+    it('returns 400 for relative parent', async () => {
+      const app = buildFsRouter()
+      const res = await app.request('/mkdir', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ parent: 'relative', name: 'x' }),
+      })
+      expect(res.status).toBe(400)
+    })
+
+    it('returns 404 when parent does not exist', async () => {
+      const app = buildFsRouter()
+      const res = await app.request('/mkdir', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ parent: join(dir, 'nope'), name: 'x' }),
+      })
+      expect(res.status).toBe(404)
+    })
+
+    it('returns 400 when parent is a file', async () => {
+      writeFileSync(join(dir, 'file.txt'), 'hi')
+      const app = buildFsRouter()
+      const res = await app.request('/mkdir', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ parent: join(dir, 'file.txt'), name: 'x' }),
+      })
+      expect(res.status).toBe(400)
+    })
+
+    it('returns 400 for empty name', async () => {
+      const app = buildFsRouter()
+      const res = await app.request('/mkdir', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ parent: dir, name: '   ' }),
+      })
+      expect(res.status).toBe(400)
+    })
+
+    it('returns 400 for name with a separator', async () => {
+      const app = buildFsRouter()
+      const res = await app.request('/mkdir', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ parent: dir, name: 'a/b' }),
+      })
+      expect(res.status).toBe(400)
+    })
+
+    it('returns 400 for name ".."', async () => {
+      const app = buildFsRouter()
+      const res = await app.request('/mkdir', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ parent: dir, name: '..' }),
+      })
+      expect(res.status).toBe(400)
+    })
+
+    it('returns 400 for name with Windows-illegal char', async () => {
+      const app = buildFsRouter()
+      const res = await app.request('/mkdir', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ parent: dir, name: 'a:b' }),
+      })
+      expect(res.status).toBe(400)
+    })
+
+    it('returns 409 when target already exists', async () => {
+      mkdirSync(join(dir, 'exists'))
+      const app = buildFsRouter()
+      const res = await app.request('/mkdir', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ parent: dir, name: 'exists' }),
+      })
+      expect(res.status).toBe(409)
     })
   })
 })

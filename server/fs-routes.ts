@@ -1,4 +1,4 @@
-// Directory browsing for the "pick a working directory" UI.
+// Directory browsing + folder creation for the "pick a working directory" UI.
 //
 // This is not a general file-browser API — we only list sub-directories,
 // refuse to return file contents, and apply minimal hardening:
@@ -10,10 +10,13 @@
 // Since the server is intended to run locally as the same user as the person
 // driving the browser, this is treated as an authorization-free "show me my
 // own home" tool, not a sandboxed file API.
+//
+// The single write operation is POST /mkdir (create one sub-directory); it
+// follows the same local-same-user trust model as the read paths.
 
 import { Hono, type Context } from 'hono'
 import { createErrorHandler } from './errors.js'
-import { readdir, stat } from 'node:fs/promises'
+import { readdir, stat, mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, resolve as resolvePath, sep } from 'node:path'
 
@@ -115,6 +118,41 @@ export function buildFsRouter(): Hono {
       return c.json({ cwd: dirname(path), resolvedFromFile: true })
     } catch (err) {
       return fsError(c, err, 'no such path')
+    }
+  })
+
+  // Create a single sub-directory under `parent`. Single-level only: the
+  // name is validated (no separators, no traversal, no Windows-illegal
+  // chars). Existence is pre-checked so we return 409 rather than relying
+  // on EEXIST errno. Same local-same-user trust model as the read routes.
+  app.post('/mkdir', async (c) => {
+    const body = await c.req.json().catch(() => null)
+    if (!body || typeof body.parent !== 'string' || typeof body.name !== 'string') {
+      return c.json({ error: 'parent and name are required' }, 400)
+    }
+    const parentCheck = requireAbsPath(body.parent, c)
+    if ('error' in parentCheck) return parentCheck.error
+    const { path: parent } = parentCheck
+
+    const nameErr = validateFolderName(body.name)
+    if (nameErr) return c.json({ error: nameErr }, 400)
+
+    const target = resolvePath(parent, body.name.trim())
+
+    try {
+      const parentStat = await stat(parent)
+      if (!parentStat.isDirectory()) return c.json({ error: 'parent is not a directory' }, 400)
+      // Pre-check existence so we can return a clean 409.
+      try {
+        await stat(target)
+        return c.json({ error: 'already exists' }, 409)
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+      }
+      await mkdir(target, { recursive: false })
+      return c.json({ path: target }, 201)
+    } catch (err) {
+      return fsError(c, err, 'parent directory not found')
     }
   })
 
