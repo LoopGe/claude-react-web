@@ -56,6 +56,9 @@ export function DirectoryPicker({
   const [showHidden, setShowHidden] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [showCreateRow, setShowCreateRow] = useState(false)
+  const [createName, setCreateName] = useState('')
+  const [creating, setCreating] = useState(false)
   const listBoxRef = useRef<HTMLDivElement>(null)
   const listContentRef = useRef<HTMLDivElement>(null)
 
@@ -95,6 +98,8 @@ export function DirectoryPicker({
       setList(res)
       setPath(res.path)
       setDraft(res.path)
+      setShowCreateRow(false)
+      setCreateName('')
       listBoxRef.current?.scrollTo({ top: 0 })
     } catch (e) {
       setError((e as Error).message)
@@ -122,6 +127,24 @@ export function DirectoryPicker({
     void loadList(draft.trim(), showHidden)
   }
 
+  const createFolder = useCallback(async () => {
+    const name = createName.trim()
+    if (!name || !list || creating) return
+    setCreating(true)
+    setError(null)
+    try {
+      const res = await api.post<{ path: string }>('/fs/mkdir', { parent: list.path, name })
+      setCreateName('')
+      setShowCreateRow(false)
+      // Enter the new directory (spec §1: post-create behavior = enter).
+      await loadList(res.path, showHidden)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setCreating(false)
+    }
+  }, [createName, list, creating, showHidden, loadList])
+
   // Close on Escape. Registered in the CAPTURE phase + stopImmediatePropagation
   // so the picker wins the Escape regardless of listener registration order.
   // Without this, App's global Escape chain (registered at mount, i.e. before
@@ -135,12 +158,19 @@ export function DirectoryPicker({
       if (open && e.key === 'Escape') {
         e.stopImmediatePropagation()
         e.preventDefault()
+        // The create row is the topmost overlay: consume one Escape to
+        // dismiss it before falling through to close the whole picker.
+        if (showCreateRow) {
+          setShowCreateRow(false)
+          setCreateName('')
+          return
+        }
         onClose()
       }
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [onClose, open])
+  }, [onClose, open, showCreateRow])
 
   const crumbs = buildCrumbs(path)
 
@@ -163,7 +193,7 @@ export function DirectoryPicker({
           <button
             className="btn"
             onClick={() => home && void loadList(home.home, showHidden)}
-            disabled={!home}
+            disabled={!home || creating}
             title="Home directory"
           >
             Home
@@ -171,7 +201,7 @@ export function DirectoryPicker({
           <button
             className="btn"
             onClick={() => home && void loadList(home.cwd, showHidden)}
-            disabled={!home}
+            disabled={!home || creating}
             title="Server working directory"
           >
             Server CWD
@@ -179,7 +209,7 @@ export function DirectoryPicker({
           <button
             className="btn"
             onClick={() => list?.parent && void loadList(list.parent, showHidden)}
-            disabled={!list?.parent}
+            disabled={!list?.parent || creating}
           >
             ↑ Up
           </button>
@@ -190,12 +220,21 @@ export function DirectoryPicker({
             }} />
             Hidden
           </label>
+          <button
+            className="btn"
+            onClick={() => { setShowCreateRow(true); setCreateName('') }}
+            disabled={loading || !list || creating}
+            title="Create a new folder here"
+          >
+            + New folder
+          </button>
         </div>
 
         <div className="modal-path">
           <input
             className="input"
             value={draft}
+            disabled={creating}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
@@ -206,7 +245,7 @@ export function DirectoryPicker({
             placeholder="/absolute/path"
             spellCheck={false}
           />
-          <button className="btn" onClick={gotoDraft} disabled={loading}>
+          <button className="btn" onClick={gotoDraft} disabled={loading || creating}>
             Go
           </button>
         </div>
@@ -214,7 +253,7 @@ export function DirectoryPicker({
         <div className="modal-crumbs">
           {crumbs.map((c, i) => (
             <span key={c.path}>
-              <button className="crumb" onClick={() => void loadList(c.path, showHidden)}>
+              <button className="crumb" onClick={() => void loadList(c.path, showHidden)} disabled={creating}>
                 {c.label}
               </button>
               {i < crumbs.length - 1 && <span className="crumb-sep">/</span>}
@@ -227,6 +266,41 @@ export function DirectoryPicker({
         </AnimatedCollapse>
 
         <div className="modal-list" ref={listBoxRef}>
+          {showCreateRow && (
+            <div className="modal-create-row">
+              <span className="folder-icon"><IconFolder size={14} /></span>
+              <input
+                className="input modal-create-input"
+                autoFocus
+                placeholder="Folder name"
+                value={createName}
+                disabled={creating}
+                onChange={(e) => setCreateName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    void createFolder()
+                  }
+                }}
+                spellCheck={false}
+              />
+              <button
+                className="btn"
+                onClick={() => void createFolder()}
+                disabled={creating || !createName.trim()}
+              >
+                {creating ? 'Creating…' : 'Create'}
+              </button>
+              <button
+                className="btn btn-icon-sm"
+                onClick={() => { setShowCreateRow(false); setCreateName('') }}
+                disabled={creating}
+                aria-label="Cancel create folder"
+              >
+                <IconX size={12} />
+              </button>
+            </div>
+          )}
           <div className="modal-list-content" ref={listContentRef}>
             {loading ? (
               <div className="modal-empty">Loading...</div>
@@ -235,8 +309,9 @@ export function DirectoryPicker({
                 <button
                   key={e.path}
                   className="modal-list-item"
-                  onDoubleClick={() => void loadList(e.path, showHidden)}
+                  onDoubleClick={() => !creating && void loadList(e.path, showHidden)}
                   onClick={() => setDraft(e.path)}
+                  disabled={creating}
                 >
                   <span className="folder-icon"><IconFolder size={14} /></span>
                   <span className="folder-name">{e.name}</span>

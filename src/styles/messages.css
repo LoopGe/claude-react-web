@@ -575,6 +575,20 @@
   font-size: 13px;
   border-bottom: 1px solid var(--msg-error-border);
 }
+.modal-create-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 8px;
+  margin: 0 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elev-2);
+}
+.modal-create-input {
+  flex: 1;
+  min-width: 0;
+}
 .modal-list {
   flex: 1;
   min-height: 0;
