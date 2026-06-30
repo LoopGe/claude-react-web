@@ -82,7 +82,7 @@ export class ClaudeProvider implements AgentProvider {
     if (opts.effortLevel !== undefined) sdkOptions.effort = opts.effortLevel as Options['effort']
 
     const requestedMode = (opts.permissionMode ?? sdkOptions.permissionMode) as PermissionMode | undefined
-    this.applyStandardQueryOpts(sdkOptions, opts.env)
+    this.applyStandardQueryOpts(sdkOptions, opts.env, opts.enabledPlugins)
     sdkOptions.permissionMode = this.sdkForwardMode(requestedMode)
     if (!sdkOptions.resume || sdkOptions.forkSession) {
       sdkOptions.sessionId = opts.id
@@ -174,7 +174,7 @@ export class ClaudeProvider implements AgentProvider {
     return mode === 'plan' ? 'plan' : undefined
   }
 
-  private applyStandardQueryOpts(opts: Options, customEnv?: Record<string, string>): void {
+  private applyStandardQueryOpts(opts: Options, customEnv?: Record<string, string>, enabledPlugins?: string[]): void {
     if (opts.includePartialMessages === undefined) opts.includePartialMessages = true
     if (!opts.pathToClaudeCodeExecutable && this.opts.claudeBinary) {
       opts.pathToClaudeCodeExecutable = this.opts.claudeBinary
@@ -189,7 +189,12 @@ export class ClaudeProvider implements AgentProvider {
     }
     if (customEnv) opts.env = { ...opts.env, ...customEnv }
     if (this.opts.mpStore) {
-      const enabledPaths = this.opts.mpStore.getEnabledPluginAbsolutePaths()
+      // `enabledPlugins` undefined = all enabled (default). Present (incl. [])
+      // = resolve only that subset. [] naturally yields an empty path list,
+      // leaving opts.plugins unset so no plugins load.
+      const enabledPaths = enabledPlugins !== undefined
+        ? this.opts.mpStore.getEnabledPluginAbsolutePathsFor(enabledPlugins)
+        : this.opts.mpStore.getEnabledPluginAbsolutePaths()
       if (enabledPaths.length > 0) {
         const existing = opts.plugins ?? []
         opts.plugins = [

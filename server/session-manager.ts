@@ -407,6 +407,7 @@ export class SessionManager {
       gitStartSha: s.gitStartSha,
       parentId: s.parentId,
       mcpServerNames: s.mcpServerNames,
+      enabledPlugins: s.enabledPlugins,
     })
   }
 
@@ -441,7 +442,7 @@ export class SessionManager {
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
-  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; effortLevel?: EffortLevel; hooks?: SessionHooksConfig; mcpServerNames?: string[] } {
+  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; effortLevel?: EffortLevel; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[] } {
     const settingsHooks = typeof opts.settings === 'object' && opts.settings && !Array.isArray(opts.settings)
       ? (opts.settings as { hooks?: SessionHooksConfig }).hooks
       : undefined
@@ -462,6 +463,7 @@ export class SessionManager {
       // Capture the resolved MCP server names so the client can compute
       // "available" without the flaky mcp-status SDK control request.
       mcpServerNames: opts.mcpServers ? Object.keys(opts.mcpServers as Record<string, unknown>) : undefined,
+      enabledPlugins: (opts as { enabledPlugins?: string[] }).enabledPlugins,
     }
   }
 
@@ -553,7 +555,7 @@ export class SessionManager {
     // Transcript exists → safe to resume even if our lastTurnAt proxy is
     // stale. Fall through to build resumeOpts with `resume: id`.
     const provider = meta.provider ?? this.defaultProvider
-    const resumeOpts: Options & { provider?: string } = {
+    const resumeOpts: Options & { provider?: string; enabledPlugins?: string[] } = {
       provider,
       resume: id,
       cwd: meta.cwd,
@@ -570,6 +572,7 @@ export class SessionManager {
       // newer flag the SDK type hasn't learned about yet still survives.
       betas: meta.betas as Options['betas'],
       settings: meta.hooks ? ({ hooks: toSdkHooksSettings(meta.hooks) } as Settings) : undefined,
+      enabledPlugins: meta.enabledPlugins,
     }
     // Re-apply globally configured MCP servers so a resumed session picks up
     // the same tools it had before the restart.  Refresh OAuth tokens for
@@ -842,7 +845,7 @@ export class SessionManager {
     }
     const title = meta.title ? `${meta.title} (fork)` : undefined
     const sourceProvider = meta.provider ?? this.defaultProvider
-    const forkOpts: Options & { provider?: string } = {
+    const forkOpts: Options & { provider?: string; enabledPlugins?: string[] } = {
       provider: sourceProvider,
       resume: id,
       forkSession: true,
@@ -856,6 +859,7 @@ export class SessionManager {
       // the same effective window as the source. See resume() for the cast rationale.
       betas: meta.betas as Options['betas'],
       settings: meta.hooks ? ({ hooks: toSdkHooksSettings(meta.hooks) } as Settings) : undefined,
+      enabledPlugins: meta.enabledPlugins,
     }
     // Re-apply globally configured MCP servers (same as resume).
     const allGlobalMcpNames = Object.keys(this.mcpStore.toSdkConfig() ?? {})
@@ -1114,6 +1118,7 @@ export class SessionManager {
       fastMode: session.fastMode,
       env: customEnv,
       mcpServers: fullOpts.mcpServers as Record<string, unknown> | undefined,
+      enabledPlugins: (fullOpts as { enabledPlugins?: string[] }).enabledPlugins ?? existingMeta?.enabledPlugins,
       includePartialMessages: fullOpts.includePartialMessages,
       includeHookEvents: true,
       resume: fullOpts.resume,
@@ -2785,6 +2790,7 @@ export class SessionManager {
       recap: s.recap,
       parentId: s.parentId,
       mcpServerNames: s.mcpServerNames,
+      enabledPlugins: s.enabledPlugins,
       skillOverride: s.skillOverride,
     }
   }
@@ -2845,6 +2851,7 @@ export class SessionManager {
       recap: undefined,
       parentId: meta.parentId,
       mcpServerNames: meta.mcpServerNames,
+      enabledPlugins: meta.enabledPlugins,
     }
   }
 

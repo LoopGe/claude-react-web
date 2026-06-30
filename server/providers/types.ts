@@ -16,6 +16,9 @@ export interface CreateSessionOptions {
   env?: Record<string, string>
   mcpServers?: Record<string, unknown>
   enabledMcpServers?: string[]
+  /** Compound keys (`<plugin>@<marketplace>`) of the plugin subset to load
+   *  for this session. `undefined` = all enabled (default); `[]` = none. */
+  enabledPlugins?: string[]
   includePartialMessages?: boolean
   includeHookEvents?: boolean
   resume?: string

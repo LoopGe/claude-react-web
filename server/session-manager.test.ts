@@ -217,6 +217,7 @@ import { SessionManager } from './session-manager.js'
 import { SessionStore } from './persistence.js'
 import { config as defaultConfig } from './config.js'
 import { McpConfigStore } from './mcp-config.js'
+import { MpStore } from './mp-store.js'
 import { execCommand as mockExecCommand } from './exec.js'
 import { buildSessionRouter } from './routes/sessions.js'
 
@@ -1479,6 +1480,87 @@ describe('mergeMcpServers', () => {
     // chars. 'global-a' as a string would otherwise produce keys 'g','l',...
     const merged = sm.mergeMcpServers('global-a' as unknown as string[], undefined)
     expect(merged).toBeUndefined()
+  })
+})
+
+describe('plugin subset selection', () => {
+  let dir: string
+  let store: SessionStore
+  let mpStore: MpStore
+  let sm: SessionManager
+
+  beforeEach(async () => {
+    mockHandles.length = 0
+    mockGetSessionInfo.mockReset()
+    mockGetSessionInfo.mockImplementation(async (id) => ({ sessionId: id }))
+    mockListSessions.mockReset()
+    mockListSessions.mockImplementation(async () => [])
+    dir = makeTmpDir()
+    store = new SessionStore({ stateDir: dir })
+    await store.load()
+    mpStore = new MpStore({ stateDir: dir })
+    await mpStore.load()
+    // Seed one marketplace with two enabled in-repo plugins (fake dirs are
+    // fine — in-repo plugin paths are pushed without an existsSync guard).
+    mpStore.upsert({
+      id: 'mp1',
+      displayName: 'mp1',
+      source: { type: 'https', url: 'https://example.com/mp1.git' },
+      cloneDir: join(dir, 'mp1'),
+      addedAt: 1, lastRefreshedAt: 1, lastSha: 'a'.repeat(40),
+      manifest: { name: 'mp1', plugins: [
+        { name: 'plugA', dir: '/fake/plugA' },
+        { name: 'plugB', dir: '/fake/plugB' },
+      ] },
+    })
+    mpStore.setEnabled('plugA', 'mp1', true)
+    mpStore.setEnabled('plugB', 'mp1', true)
+    sm = new SessionManager({ store, mpStore })
+  })
+
+  afterEach(async () => {
+    await sm.shutdown()
+    rmRf(dir)
+  })
+
+  it('create() with enabledPlugins injects only the selected plugin paths', () => {
+    const info = sm.create({
+      cwd: dir,
+      enabledPlugins: [MpStore.keyOf('plugA', 'mp1')],
+    } as any)
+    expect(mockHandles[0].options.plugins).toEqual([
+      { type: 'local', path: '/fake/plugA' },
+    ])
+    expect(info.enabledPlugins).toEqual([MpStore.keyOf('plugA', 'mp1')])
+  })
+
+  it('create() without enabledPlugins injects all enabled plugins (default)', () => {
+    sm.create({ cwd: dir })
+    expect(mockHandles[0].options.plugins).toEqual([
+      { type: 'local', path: '/fake/plugA' },
+      { type: 'local', path: '/fake/plugB' },
+    ])
+  })
+
+  it('create() with enabledPlugins: [] injects no plugins', () => {
+    const info = sm.create({
+      cwd: dir,
+      enabledPlugins: [],
+    } as any)
+    expect(mockHandles[0].options.plugins).toBeUndefined()
+    expect(info.enabledPlugins).toEqual([])
+  })
+
+  it('resume() re-injects the persisted plugin subset', async () => {
+    const info = sm.create({
+      cwd: dir,
+      enabledPlugins: [MpStore.keyOf('plugA', 'mp1')],
+    } as any)
+    await sm.unload(info.id)
+    await sm.resume(info.id)
+    expect(mockHandles[1].options.plugins).toEqual([
+      { type: 'local', path: '/fake/plugA' },
+    ])
   })
 })
 
