@@ -29,6 +29,7 @@ import {
   isValidParsedSource,
   parseRepoManifest,
   type MarketplaceManifest,
+  type ParsedPlugin,
 } from './marketplace-parser.js'
 
 const log = createLogger('mp-store')
@@ -267,6 +268,23 @@ export class MpStore extends JsonFileStore<MpEntry> {
     return out
   }
 
+  /** Parse a compound `<plugin>@<marketplace>` key and resolve it to the
+   *  plugin definition in its marketplace's manifest. Returns null if the
+   *  key is malformed, the marketplace is gone, or the plugin no longer
+   *  exists in the manifest. Shared by every method that walks
+   *  `this.enabled` so the parsing logic lives in one place. */
+  private resolveEnabledPlugin(key: string): { marketplaceId: string; plugin: ParsedPlugin } | null {
+    const at = key.lastIndexOf('@')
+    if (at <= 0) return null
+    const pluginName = key.slice(0, at)
+    const marketplaceId = key.slice(at + 1)
+    const entry = this.get(marketplaceId)
+    if (!entry) return null
+    const plugin = entry.manifest.plugins.find((p) => p.name === pluginName)
+    if (!plugin) return null
+    return { marketplaceId, plugin }
+  }
+
   /** Walk every enabled plugin and return its absolute on-disk dir.
    *  Used by SessionManager.spawn() to populate Options.plugins. Plugins
    *  whose marketplace is gone, or whose dir disappeared, are silently
@@ -286,14 +304,9 @@ export class MpStore extends JsonFileStore<MpEntry> {
     }
     for (const [key, on] of this.enabled) {
       if (!on) continue
-      const at = key.lastIndexOf('@')
-      if (at <= 0) continue
-      const pluginName = key.slice(0, at)
-      const marketplaceId = key.slice(at + 1)
-      const entry = this.get(marketplaceId)
-      if (!entry) continue
-      const plugin = entry.manifest.plugins.find((p) => p.name === pluginName)
-      if (!plugin) continue
+      const resolved = this.resolveEnabledPlugin(key)
+      if (!resolved) continue
+      const { plugin } = resolved
       if (plugin.source && plugin.source.kind === 'git-subdir') {
         // The plugin's files live in an external repo cloned lazily on
         // enable. Resolve its eventual subdir; skip silently if the clone
@@ -329,14 +342,9 @@ export class MpStore extends JsonFileStore<MpEntry> {
     for (const [key, on] of this.enabled) {
       if (!on) continue
       if (!wanted.has(key)) continue
-      const at = key.lastIndexOf('@')
-      if (at <= 0) continue
-      const pluginName = key.slice(0, at)
-      const marketplaceId = key.slice(at + 1)
-      const entry = this.get(marketplaceId)
-      if (!entry) continue
-      const plugin = entry.manifest.plugins.find((p) => p.name === pluginName)
-      if (!plugin) continue
+      const resolved = this.resolveEnabledPlugin(key)
+      if (!resolved) continue
+      const { plugin } = resolved
       if (plugin.source && plugin.source.kind === 'git-subdir') {
         const abs = resolvePath(
           this.externalCloneDir(plugin.source.url, plugin.source.sha),
@@ -362,14 +370,10 @@ export class MpStore extends JsonFileStore<MpEntry> {
     const referenced = new Set<string>()
     for (const [key, on] of this.enabled) {
       if (!on) continue
-      const at = key.lastIndexOf('@')
-      if (at <= 0) continue
-      const pluginName = key.slice(0, at)
-      const marketplaceId = key.slice(at + 1)
-      const entry = this.get(marketplaceId)
-      if (!entry) continue
-      const plugin = entry.manifest.plugins.find((p) => p.name === pluginName)
-      if (plugin?.source && plugin.source.kind === 'git-subdir') {
+      const resolved = this.resolveEnabledPlugin(key)
+      if (!resolved) continue
+      const { plugin } = resolved
+      if (plugin.source?.kind === 'git-subdir') {
         referenced.add(this.externalCloneDir(plugin.source.url, plugin.source.sha))
       }
     }
@@ -393,20 +397,14 @@ export class MpStore extends JsonFileStore<MpEntry> {
     const out: { key: string; name: string; marketplace: string; description?: string; version?: string }[] = []
     for (const [key, on] of this.enabled) {
       if (!on) continue
-      const at = key.lastIndexOf('@')
-      if (at <= 0) continue
-      const pluginName = key.slice(0, at)
-      const marketplaceId = key.slice(at + 1)
-      const entry = this.get(marketplaceId)
-      if (!entry) continue
-      const plugin = entry.manifest.plugins.find((p) => p.name === pluginName)
-      if (!plugin) continue
+      const resolved = this.resolveEnabledPlugin(key)
+      if (!resolved) continue
       out.push({
         key,
-        name: plugin.name,
-        marketplace: marketplaceId,
-        description: plugin.description,
-        version: plugin.version,
+        name: resolved.plugin.name,
+        marketplace: resolved.marketplaceId,
+        description: resolved.plugin.description,
+        version: resolved.plugin.version,
       })
     }
     return out

@@ -13,28 +13,29 @@ const log = createLogger('http')
 
 const VALID_IMG_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
 
-/** Validate the optional `enabledMcpServers` field shared by the create and
- *  dynamic-MCP routes. Returns an error string if present-but-malformed, or
+/** Validate an optional string-array field (e.g. `enabledMcpServers`,
+ *  `enabledPlugins`). Returns an error string if present-but-malformed, or
  *  null if absent or a valid string[]. Guards against a string being passed
- *  where an array is expected (mergeMcpServers would otherwise iterate it
- *  character-by-character). */
-function validateEnabledMcpServers(value: unknown): string | null {
+ *  where an array is expected — callers iterate the result, and a stray
+ *  string would otherwise be split character-by-character. */
+function validateStringArray(fieldName: string, value: unknown): string | null {
   if (value == null) return null
   if (!Array.isArray(value) || !value.every((s) => typeof s === 'string')) {
-    return 'enabledMcpServers must be an array of strings'
+    return `${fieldName} must be an array of strings`
   }
   return null
 }
 
-/** Validate the optional `enabledPlugins` field on POST /sessions. Same
- *  shape rule as enabledMcpServers: must be a string[] if present, so a
- *  stray string can't be iterated character-by-character downstream. */
+/** Validate the optional `enabledMcpServers` field shared by the create and
+ *  dynamic-MCP routes. See {@link validateStringArray}. */
+function validateEnabledMcpServers(value: unknown): string | null {
+  return validateStringArray('enabledMcpServers', value)
+}
+
+/** Validate the optional `enabledPlugins` field on POST /sessions. See
+ *  {@link validateStringArray}. */
 function validateEnabledPlugins(value: unknown): string | null {
-  if (value == null) return null
-  if (!Array.isArray(value) || !value.every((s) => typeof s === 'string')) {
-    return 'enabledPlugins must be an array of strings'
-  }
-  return null
+  return validateStringArray('enabledPlugins', value)
 }
 
 /** Environment variable names that can alter process execution, inject code,
