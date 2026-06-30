@@ -1649,6 +1649,40 @@ export function App() {
   // eslint-disable-next-line react-hooks/refs -- intentional render-time ref sync (same pattern as openIdsRef etc.)
   animatePanelsRef.current = animatePanels
 
+  // Scroll-position protection for panel reorder. Reordering openIds moves the
+  // keyed <ChatPanel> DOM subtrees (React insertBefore), which can drop the
+  // Virtuoso scroller's scrollTop for any panel the user had scrolled up in.
+  // We snapshot each open panel's scrollTop right before the reorder and
+  // restore it in a layout effect after React commits the moved DOM, before
+  // paint. Idempotent: if the browser preserved scrollTop, the write is a no-op.
+  const pendingScrollRestoreRef = useRef<Map<string, number> | null>(null)
+
+  const snapshotPanelScrolls = useCallback(() => {
+    const bodyEl = bodyRef.current
+    if (!bodyEl) return
+    const map = new Map<string, number>()
+    for (const panel of bodyEl.querySelectorAll<HTMLElement>('[data-panel-id]')) {
+      const id = panel.dataset.panelId
+      if (!id) continue
+      const scroller = panel.querySelector<HTMLElement>('.chat-virtuoso-scroller')
+      if (scroller) map.set(id, scroller.scrollTop)
+    }
+    pendingScrollRestoreRef.current = map
+  }, [bodyRef])
+
+  useLayoutEffect(() => {
+    const map = pendingScrollRestoreRef.current
+    if (!map) return
+    pendingScrollRestoreRef.current = null
+    const bodyEl = bodyRef.current
+    if (!bodyEl) return
+    for (const [id, top] of map) {
+      const panel = bodyEl.querySelector<HTMLElement>(`[data-panel-id="${id}"]`)
+      const scroller = panel?.querySelector<HTMLElement>('.chat-virtuoso-scroller')
+      if (scroller && Math.abs(scroller.scrollTop - top) > 1) scroller.scrollTop = top
+    }
+  }, [openIds, bodyRef])
+
   const endPanelExit = useCallback((id: string) => {
     setClosingPanels((prev) => prev.filter((p) => p.id !== id))
   }, [])
@@ -2087,28 +2121,35 @@ export function App() {
           for (const id of desired) if (!ordered.includes(id)) ordered.push(id)
           const final = ordered.filter((id) => desired.includes(id)).slice(0, maxOpenRef.current)
           if (!(final.length === prevOpen.length && final.every((id, i) => id === prevOpen[i]))) {
+            snapshotPanelScrolls()
             setOpenIds(final)
           }
         }
       } else {
         // Plain reorder (same group, or a non-active group): re-order the
         // currently-open group sessions to match the new order, preserving
-        // non-group sessions in place.
-        setOpenIds((prev) => {
-          const groupSet = new Set(newIds)
-          const openGroup = prev.filter((id) => groupSet.has(id))
-          if (openGroup.length < 2) return prev
+        // non-group sessions in place. Computed eagerly from the ref (not a
+        // functional updater) so we only snapshot scroll when the open order
+        // truly changes — a no-op setOpenIds would skip the restore effect and
+        // leave a stale snapshot.
+        const prev = openIdsRef.current
+        const groupSet = new Set(newIds)
+        const openGroup = prev.filter((id) => groupSet.has(id))
+        if (openGroup.length >= 2) {
           const reordered = newIds.filter((id) => groupSet.has(id) && prev.includes(id))
-          if (openGroup.join() === reordered.join()) return prev
-          let ri = 0
-          return prev.map((id) => (groupSet.has(id) ? reordered[ri++] : id))
-        })
+          if (openGroup.join() !== reordered.join()) {
+            let ri = 0
+            const next = prev.map((id) => (groupSet.has(id) ? reordered[ri++] : id))
+            snapshotPanelScrolls()
+            setOpenIds(next)
+          }
+        }
       }
       // Animate all open group panels to their new grid positions.
       const openGroup = openIdsRef.current.filter((id) => newIds.includes(id))
       if (openGroup.length >= 2) animatePanels(...openGroup)
     },
-    [setGroups, setOpenIds, animatePanels],
+    [setGroups, setOpenIds, animatePanels, snapshotPanelScrolls],
   )
 
   const toggleGroupCollapse = useCallback(
@@ -2127,14 +2168,18 @@ export function App() {
    *  made "drag panel 1 → 2" appear broken while "2 → 1" worked. */
   const swapPanels = useCallback((draggedId: string, targetId: string) => {
     if (draggedId === targetId) return
-    setOpenIds((prev) => {
-      const i = prev.indexOf(draggedId)
-      const j = prev.indexOf(targetId)
-      if (i < 0 || j < 0 || i === j) return prev
+    // Eager (not functional updater) so we only snapshot scroll when the
+    // order actually changes — a no-op setOpenIds would skip the restore
+    // effect and strand a stale snapshot.
+    const prev = openIdsRef.current
+    const i = prev.indexOf(draggedId)
+    const j = prev.indexOf(targetId)
+    if (i >= 0 && j >= 0 && i !== j) {
       const next = prev.slice()
       ;[next[i], next[j]] = [next[j], next[i]]
-      return next
-    })
+      snapshotPanelScrolls()
+      setOpenIds(next)
+    }
     // Sync group order (true swap of the two ids).
     setGroups((prev) => {
       const groupId = prev.find(
@@ -2153,7 +2198,7 @@ export function App() {
     })
     setFocusedId(draggedId)
     animatePanels(draggedId, targetId)
-  }, [setGroups, animatePanels])
+  }, [setGroups, animatePanels, snapshotPanelScrolls])
 
   /** Drop a sidebar card onto a specific slot in the main grid. If the
    *  slot is occupied by another session, that session is evicted (panel
