@@ -353,6 +353,33 @@ describe('MessageList', () => {
     expect(container.querySelector('.chat-messages-stage')?.contains(streaming)).toBe(true)
   })
 
+  it('does not render the streaming footer before any text has flushed (empty string)', () => {
+    // A live turn exists from its first stream event, but `flushedText`
+    // starts as '' — the pre-text "thinking" phase (or a tool-use turn
+    // that never produces assistant prose). Rendering the bubble then
+    // yields an empty placeholder: the gradient mask on .streaming-plain
+    // fades out the lone cursor, so the bubble reserves layout space but
+    // shows nothing. WorkingBubble already signals the active phase, so
+    // the empty streaming footer should not mount until real text arrives.
+    const msgs = [
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Settled message' }] },
+      }),
+    ]
+
+    const { container, rerender } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} replayReady streamingContent="" />,
+    )
+
+    expect(container.querySelector('.streaming-footer-wrapper')).toBeNull()
+    expect(container.querySelector('.chat-streaming-region')).toBeNull()
+
+    // Once real text flushes, the footer mounts.
+    rerender(<MessageList items={toItems(msgs as SdkMessage[])} replayReady streamingContent="Live tokens" />)
+    expect(container.querySelector('.streaming-footer-wrapper')).not.toBeNull()
+    expect(container.querySelector('.streaming-footer-wrapper')?.textContent).toContain('Live tokens')
+  })
+
   it('hides jump-to-bottom when the scroller cannot scroll down', async () => {
     virtuosoMockState.atBottomReport = false
     virtuosoMockState.reportBeforeRef = true

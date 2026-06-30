@@ -231,8 +231,15 @@
   flex-direction: column;
   padding-left: var(--chat-reading-inset);
   padding-right: var(--chat-reading-inset);
-  padding-top: 7px;
-  padding-bottom: 14px;
+  /* Vertical padding doubles as breathing room for the streaming bubble's
+     accent halo (streaming-breathe): .chat-streaming-region has
+     overflow:hidden (the entrance/exit max-height wipe needs it), so the
+     glow is clipped at the region's padding box. The top/bottom padding
+     here is what gives the glow space to render — especially at the
+     bottom, which used to read as "no glow" because the halo had no room
+     below the bubble. Keep both ≥ the halo's outer blur. */
+  padding-top: 12px;
+  padding-bottom: 18px;
   pointer-events: none;
 }
 .streaming-footer-wrapper > .streaming-msg {
@@ -250,14 +257,14 @@
   }
   to {
     opacity: 1;
-    max-height: calc(3lh + 56px);
+    max-height: calc(3lh + 72px);
     transform: translateY(0);
   }
 }
 @keyframes streaming-region-out {
   from {
     opacity: 1;
-    max-height: calc(3lh + 56px);
+    max-height: calc(3lh + 72px);
     transform: translateY(0);
   }
   to {
@@ -967,6 +974,14 @@
   background: color-mix(in srgb, var(--bg) 75%, transparent);
   backdrop-filter: var(--glass-blur);
   margin: 4px 0;
+  /* Dynamic breathing glow: a slow accent halo + inset rim that pulses to
+     signal the live turn. box-shadow is animated (not layout), so this is
+     cheap on the streaming hot path — no reflow, just a composited shadow
+     repaint. Outer blur (≤14px) stays within .chat-streaming-region's
+     padding (sides ≥20px, bottom 14px) so the region's overflow:hidden
+     doesn't clip the halo; the inset rim carries the breath on the bubble
+     edge regardless. Disabled under reduced-motion and HC skin below. */
+  animation: streaming-breathe 2.6s var(--motion-ease-standard) infinite;
   /* The bubble sizes to its content directly — no max-height grow
      animation. Animating max-height (a layout property) on every
      streaming flush (many times per second) triggered a reflow of the
@@ -977,19 +992,45 @@
      border-radius/liquid-glass edges. */
   overflow: hidden;
 }
+/* Dynamic breathing halo for the live streaming bubble. Only the soft
+   outer glow and inset rim swell toward --accent and back — the border
+   itself stays at its neutral --border so the effect reads as a diffuse
+   halo "breathing" around the bubble, not a hard accent-coloured edge
+   (animating border-color made the border feel too loud). The outer blur
+   (20px) is sized to fit inside .streaming-footer-wrapper's vertical
+   padding (top 12+4 margin, bottom 18+4) so .chat-streaming-region's
+   overflow:hidden doesn't clip the halo — including at the bottom, which
+   previously read as "no glow". Peak alpha is bumped so the breath is
+   clearly visible against both dark and light themes. */
+@keyframes streaming-breathe {
+  0%, 100% {
+    box-shadow:
+      inset 0 0 14px color-mix(in srgb, var(--accent) 4%, transparent),
+      0 0 10px color-mix(in srgb, var(--accent) 5%, transparent);
+  }
+  50% {
+    box-shadow:
+      inset 0 0 22px color-mix(in srgb, var(--accent) 14%, transparent),
+      0 0 20px color-mix(in srgb, var(--accent) 20%, transparent);
+  }
+}
 /* High Contrast skin: the streaming bubble must be fully opaque (HC
    forbids alpha translucency on content surfaces) with no backdrop blur.
-   The .liquid-glass variant below has equal specificity and later source
-   order, so it is listed explicitly to win the background override.
-   [data-skin="hc"] covers both the dark and light HC variants. */
+   The breathing halo is also disabled here — its accent-tinted alpha
+   shadows would violate HC's opacity rule, and HC prioritises legibility
+   over flourish. The .liquid-glass variant below has equal specificity and
+   later source order, so it is listed explicitly to win the background
+   override. [data-skin="hc"] covers both the dark and light HC variants. */
 [data-skin="hc"] .streaming-msg,
 [data-skin="hc"] .streaming-msg.liquid-glass {
   background: var(--bg-elev);
   backdrop-filter: none;
+  animation: none;
+  box-shadow: none;
 }
-/* Respect reduced-motion: nothing to disable now (the glow animation was
-   removed when the bubble was aligned to the neutral Recap card style), but
-   keep the guard in case a future animation is added. */
+/* Respect reduced-motion: stop the breathing halo so the bubble stays
+   statically styled (no infinite animation) for users who opt out of
+   motion. The cursor blink is left to its own reduced-motion handling. */
 @media (prefers-reduced-motion: reduce) {
   .streaming-msg {
     animation: none;

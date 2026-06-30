@@ -413,7 +413,18 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     return geometry
   }, [syncBottomState])
 
-  const liveStreamingContent = streamingContent ?? null
+  // An empty string is the turn's pre-text phase: a `liveTurn` already
+  // exists (created on the turn's first stream event) but no text delta
+  // has flushed yet — the "thinking" phase, or a tool-use turn that never
+  // produces assistant prose. Rendering the streaming bubble then yields
+  // an empty placeholder that reserves layout space but shows nothing
+  // (the gradient mask on .streaming-plain fades out the lone cursor),
+  // and WorkingBubble already signals the active phase. Treat "" as null
+  // so the footer doesn't mount until real text arrives. The exit-fade
+  // logic below still works: at turn end `liveTurn` is cleared to null
+  // (reducer sets `liveTurn: null`), which triggers the exit branch and
+  // keeps the last non-empty content visible during the fade-out.
+  const liveStreamingContent = streamingContent && streamingContent.length > 0 ? streamingContent : null
   const [streamingPresence, setStreamingPresence] = useState(() => ({
     source: liveStreamingContent,
     content: liveStreamingContent,
