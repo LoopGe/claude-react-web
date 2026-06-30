@@ -2118,20 +2118,24 @@ export function App() {
     [setCollapsedGroups],
   )
 
-  /** Move a panel to the target panel's position (splice-move, same
-   *  semantics as sidebar reordering). If both panels belong to the same
-   *  group, the group's `sessionIds` order is synced to match. */
+  /** Swap two open panels' slots. If both panels belong to the same group,
+   *  the group's `sessionIds` order is synced to match. NOTE: this is a true
+   *  two-element swap, NOT a splice-move — splicing the dragged panel into
+   *  the target's index is a no-op when the dragged panel sits to the left
+   *  of the target (removing it shifts the target's index down by one, so
+   *  re-inserting at that index restores the original order). That asymmetry
+   *  made "drag panel 1 → 2" appear broken while "2 → 1" worked. */
   const swapPanels = useCallback((draggedId: string, targetId: string) => {
     if (draggedId === targetId) return
-    // Splice-move: remove draggedId, insert at targetId's index.
     setOpenIds((prev) => {
-      const without = prev.filter((id) => id !== draggedId)
-      const idx = without.indexOf(targetId)
-      if (idx < 0) return prev
-      without.splice(idx, 0, draggedId)
-      return without
+      const i = prev.indexOf(draggedId)
+      const j = prev.indexOf(targetId)
+      if (i < 0 || j < 0 || i === j) return prev
+      const next = prev.slice()
+      ;[next[i], next[j]] = [next[j], next[i]]
+      return next
     })
-    // Sync group order (same splice-move semantics).
+    // Sync group order (true swap of the two ids).
     setGroups((prev) => {
       const groupId = prev.find(
         (g) => g.sessionIds.includes(draggedId) && g.sessionIds.includes(targetId),
@@ -2139,10 +2143,11 @@ export function App() {
       if (!groupId) return prev
       return prev.map((g) => {
         if (g.id !== groupId) return g
-        const ids = g.sessionIds.filter((id) => id !== draggedId)
-        const idx = ids.indexOf(targetId)
-        if (idx < 0) return g
-        ids.splice(idx, 0, draggedId)
+        const i = g.sessionIds.indexOf(draggedId)
+        const j = g.sessionIds.indexOf(targetId)
+        if (i < 0 || j < 0) return g
+        const ids = g.sessionIds.slice()
+        ;[ids[i], ids[j]] = [ids[j], ids[i]]
         return { ...g, sessionIds: ids }
       })
     })
@@ -2153,19 +2158,21 @@ export function App() {
   /** Drop a sidebar card onto a specific slot in the main grid. If the
    *  slot is occupied by another session, that session is evicted (panel
    *  closes, session stays alive) and the new one takes its place.
-   *  When both sessions are already open, uses splice-move (consistent
+   *  When both sessions are already open, swaps their slots (consistent
    *  with swapPanels) and syncs the shared group's order. */
   const openAtSlot = useCallback(
     (id: string, targetId: string, lastTurnAt: number | undefined) => {
       setOpenIds((prev) => {
-        // Already open — splice-move to the target slot (same semantics
-        // as swapPanels). Also sync group order below.
+        // Already open — swap slots with the target (same semantics as
+        // swapPanels; a true swap, not a splice-move). Also sync group
+        // order below.
         if (prev.includes(id)) {
-          const without = prev.filter((x) => x !== id)
-          const idx = without.indexOf(targetId)
-          if (idx < 0) return prev
-          without.splice(idx, 0, id)
-          return without
+          const i = prev.indexOf(id)
+          const j = prev.indexOf(targetId)
+          if (i < 0 || j < 0 || i === j) return prev
+          const next = prev.slice()
+          ;[next[i], next[j]] = [next[j], next[i]]
+          return next
         }
         // Not open yet: replace whatever's in the target slot.
         const j = prev.indexOf(targetId)
@@ -2174,8 +2181,8 @@ export function App() {
         next[j] = id
         return next
       })
-      // Sync group order when both sessions share a group (same pattern
-      // as swapPanels).
+      // Sync group order when both sessions share a group (true swap of
+      // the two ids, same pattern as swapPanels).
       setGroups((prev) => {
         const groupId = prev.find(
           (g) => g.sessionIds.includes(id) && g.sessionIds.includes(targetId),
@@ -2183,10 +2190,11 @@ export function App() {
         if (!groupId) return prev
         return prev.map((g) => {
           if (g.id !== groupId) return g
-          const ids = g.sessionIds.filter((sid) => sid !== id)
-          const idx = ids.indexOf(targetId)
-          if (idx < 0) return g
-          ids.splice(idx, 0, id)
+          const i = g.sessionIds.indexOf(id)
+          const j = g.sessionIds.indexOf(targetId)
+          if (i < 0 || j < 0) return g
+          const ids = g.sessionIds.slice()
+          ;[ids[i], ids[j]] = [ids[j], ids[i]]
           return { ...g, sessionIds: ids }
         })
       })
