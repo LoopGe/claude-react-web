@@ -267,7 +267,7 @@ export function QuestionDialog({ open = true, request, onSubmit, onSkipAll, onMi
             onClick={onMinimize}
             disabled={busy}
             aria-label="Minimize"
-            title="收起 — 稍后可点消息里的问题卡片重新打开"
+            title="Minimize — reopen later from the question card in the transcript"
           >
             <IconX size={14} />
           </button>

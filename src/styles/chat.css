@@ -110,7 +110,7 @@
   }
 }
 /* /clear transition: blur-fade the transcript out and veil it with a
-   "清理中" affordance while the server tears down + respawns the CLI
+   "Clearing…" affordance while the server tears down + respawns the CLI
    subprocess (~1.7s). The class is removed only after the session-cleared
    frame wipes the store, so messages never snap back into view. */
 .chat-messages.chat-messages-clearing {
@@ -122,7 +122,7 @@
   100% { opacity: 0; filter: blur(10px); transform: scale(0.96); }
 }
 
-/* "清理中" veil — centered over the transcript. Fades in shortly after
+/* "Clearing…" veil — centered over the transcript. Fades in shortly after
    the blur-fade starts, fades out to reveal the post-clear empty state. */
 .chat-clearing-veil {
   position: absolute;

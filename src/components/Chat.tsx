@@ -223,7 +223,7 @@ export const Chat = memo(function Chat({
   const sendingRef = useRef(false)
   const [localError, setLocalError] = useState<string | null>(null)
   /** True while a /clear is in flight. Drives the MessageList blur-fade +
-   *  "清理中" veil. Set synchronously on trigger; cleared by the onCleared
+   *  "Clearing…" veil. Set synchronously on trigger; cleared by the onCleared
    *  WS callback (fires when session-cleared lands, after the store wipe —
    *  so the clearing class is dropped only once the transcript is already
    *  empty, preventing any snap-back). Also cleared in the catch path. */
@@ -1450,6 +1450,7 @@ export const Chat = memo(function Chat({
         <RecapWindow
           recap={session.recap}
           isExiting={recapPresence.isExiting}
+          clearing={clearing}
           onClose={() => onCloseRecap?.()}
         />
       )}

@@ -226,6 +226,15 @@
   animation: recap-window-out var(--motion-duration-fast) var(--motion-ease-exit) both;
   pointer-events: none;
 }
+/* During a /clear, reuse the transcript's `clear-blur-fade` keyframes
+   (defined in chat.css — @keyframes are global) so the recap dissolves
+   in sync with the message list. Ordered AFTER the [data-state="closing"]
+   rule so it wins on the (rare) overlap where the user dismisses the recap
+   while a clear is already in flight. */
+.recap-window.recap-window-clearing {
+  animation: clear-blur-fade var(--motion-duration-slow) var(--motion-ease-exit) both;
+  pointer-events: none;
+}
 @keyframes recap-window-in {
   from { opacity: 0; transform: translateY(-8px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -293,6 +302,8 @@
 @media (prefers-reduced-motion: reduce) {
   .recap-window,
   .recap-window-body-inner { animation: none; }
+  /* Mirror the transcript's reduced-motion clear: no animation, just hidden. */
+  .recap-window.recap-window-clearing { animation: none; opacity: 0; }
 }
 
 /* ── `!` bash-mode message ───────────────────────────────────────────

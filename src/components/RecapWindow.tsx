@@ -26,13 +26,17 @@ interface Props {
   recap: SessionRecap
   /** True while the exit animation is playing; drives data-state="closing". */
   isExiting?: boolean
+  /** True while a /clear is in flight. Reuses the transcript's
+   *  `clear-blur-fade` exit animation so the recap dissolves in sync with
+   *  the message list instead of snapping out when the server confirms. */
+  clearing?: boolean
   onClose: () => void
 }
 
-export const RecapWindow = memo(function RecapWindow({ recap, isExiting, onClose }: Props) {
+export const RecapWindow = memo(function RecapWindow({ recap, isExiting, clearing, onClose }: Props) {
   return (
     <div
-      className="recap-window"
+      className={`recap-window${clearing ? ' recap-window-clearing' : ''}`}
       role="dialog"
       aria-label="Session recap"
       data-state={isExiting ? 'closing' : 'open'}

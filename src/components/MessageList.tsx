@@ -41,7 +41,7 @@ interface Props {
    *  reappear on historical messages after a reconnect. */
   working?: boolean
   /** True while a /clear is in flight (trigger → session-cleared frame).
-   *  Adds a blur-fade-out to the transcript and a "清理中" veil so the
+   *  Adds a blur-fade-out to the transcript and a "Clearing…" veil so the
    *  ~1.7s server teardown+respawn reads as an intentional transition
    *  instead of a frozen screen followed by a hard snap to empty. */
   clearing?: boolean
@@ -202,7 +202,7 @@ const MAX_ENTER_BATCH = 4
 const ENTER_MAX_AGE_MS = 10_000
 const KNOWN_IDS_CAP = 4000
 const STREAMING_EXIT_MS = 180
-/** How long the "清理中" veil's fade-out runs before unmount. Mirrors the
+/** How long the "Clearing…" veil's fade-out runs before unmount. Mirrors the
  *  --motion-duration-base (180ms) used by `.chat-clearing-veil.exiting` so
  *  the unmount lands as the fade completes. Timer-driven (not onAnimationEnd)
  *  to stay robust under prefers-reduced-motion — see the streaming-region
@@ -1272,7 +1272,7 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
       {veilVisible && (
         <div className={`chat-clearing-veil${nextClearingVeil.exiting ? ' exiting' : ''}`}>
           <span className="chat-clearing-spinner" aria-hidden="true" />
-          <span className="chat-clearing-label">清理中…</span>
+          <span className="chat-clearing-label">Clearing…</span>
         </div>
       )}
       </div>
@@ -1847,7 +1847,7 @@ function BashMessage({ text, sending, onAbort, searchQuery, activeMatchInItem }:
                 title="Stop command (Ctrl+C)"
               >
                 <IconSquare size={11} />
-                <span>停止</span>
+                <span>Stop</span>
               </button>
             )}
           </span>

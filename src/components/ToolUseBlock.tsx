@@ -432,9 +432,9 @@ const QuestionCard = memo(function QuestionCard({
                 e.stopPropagation()
                 onReopen(toolUseId)
               }}
-              title="重新打开问题弹窗"
+              title="Reopen question dialog"
             >
-              点击回答
+              Click to answer
             </button>
           )}
         </div>
