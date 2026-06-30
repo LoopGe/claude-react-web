@@ -29,7 +29,7 @@ describe('McpConfigStore', () => {
     dir = tempDir('mcp')
   })
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
   })
 
   it('returns empty list when file does not exist', async () => {
@@ -135,7 +135,7 @@ describe('McpConfigStore.toSdkConfig', () => {
   let dir: string
 
   beforeEach(() => { dir = tempDir('mcp') })
-  afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+  afterEach(() => { rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }) })
 
   it('maps stdio servers to SDK config shape', async () => {
     const store = new McpConfigStore({ stateDir: dir })

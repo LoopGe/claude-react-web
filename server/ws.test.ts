@@ -137,7 +137,7 @@ describe('WebSocket multiplexer', () => {
     await shutdownWs()
     await new Promise<void>((resolve) => server.close(() => resolve()))
     await sm.shutdown()
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
   })
 
   /** Open a WS client and collect all frames into an array. Returns a

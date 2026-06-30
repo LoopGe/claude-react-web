@@ -24,7 +24,7 @@ describe('SnippetStore', () => {
     store = new SnippetStore({ stateDir: dir })
   })
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
   })
 
   describe('load', () => {

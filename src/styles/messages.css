@@ -911,13 +911,22 @@
 .todo-completed .todo-text { text-decoration: line-through; }
 .todo-completed .todo-icon { color: var(--ok); }
 .todo-in_progress { color: var(--fg); }
-.todo-in_progress .todo-icon {
-  color: var(--accent);
+.todo-in_progress .todo-icon { color: var(--accent); }
+.todo-in_progress .todo-text { color: var(--fg); }
+/* The breathing pulse + shimmer run ONLY while the assistant is mid-turn
+   (`.todo-panel-working` is on the root when `working` is true). When idle
+   — interrupted, or waiting on the next turn — an in_progress item still
+   reads as the active task (accent icon + full-brightness text, vs pending's
+   muted/half-opacity and completed's strikethrough) but stays static. Without
+   this gate the icon and label would pulse forever on a stale in_progress
+   row, suggesting work that isn't happening and burning an infinite
+   animation for nothing. */
+.todo-panel-working .todo-in_progress .todo-icon {
   /* Slow breathing pulse — same 2s period as the text shimmer below so
      the two read as one synchronized "working" rhythm. */
   animation: todo-icon-pulse 2s ease-in-out infinite;
 }
-.todo-in_progress .todo-text {
+.todo-panel-working .todo-in_progress .todo-text {
   /* Text shimmer: an accent highlight sweeps across the label so the
      active task visibly "moves". Reuses the project's shimmer vocabulary
      (recap bar, skeleton rows). background-clip:text paints the gradient
@@ -1091,13 +1100,13 @@
    a targeted rule. The shimmer falls back to a solid accent label so the
    active row still stands out without any motion. */
 @media (prefers-reduced-motion: reduce) {
-  .todo-in_progress .todo-icon,
+  .todo-panel-working .todo-in_progress .todo-icon,
   .inline-todo-in_progress .inline-todo-icon,
   .monitor-icon {
     animation: none;
     transform: translateY(-0.5px);
   }
-  .todo-in_progress .todo-text,
+  .todo-panel-working .todo-in_progress .todo-text,
   .inline-todo-in_progress .inline-todo-text {
     animation: none;
     background: none;

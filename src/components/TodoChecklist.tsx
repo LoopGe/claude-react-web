@@ -68,7 +68,11 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
   const doneCount = todos.filter((t) => t.status === 'completed').length
 
   return (
-    <div className="todo-panel" role="status" aria-label="Task checklist">
+    <div
+      className={`todo-panel${working ? ' todo-panel-working' : ''}`}
+      role="status"
+      aria-label="Task checklist"
+    >
       <div className="todo-panel-header">
         <span className="todo-panel-title">Checklist</span>
         <span className="todo-panel-count">

@@ -96,6 +96,23 @@ describe('TodoChecklist', () => {
     const text = container.querySelector('.todo-text')
     expect(text?.textContent).toBe('Writing code…')
   })
+
+  it('flags the panel as working only while the assistant is mid-turn', () => {
+    // The breathing/shimmer animations are scoped to .todo-panel-working, so
+    // an in_progress row must NOT carry that class when the turn has ended —
+    // otherwise the icon+text pulse forever on a stale task (the "animation
+    // keeps playing when nothing is running" bug).
+    const msgs = [
+      multiTodoMsg([{ content: 'In flight', status: 'in_progress' }]),
+    ]
+    const { container, rerender } = render(<TodoChecklist messages={msgs} working />)
+    expect(container.querySelector('.todo-panel')?.classList.contains('todo-panel-working')).toBe(true)
+
+    rerender(<TodoChecklist messages={msgs} working={false} />)
+    expect(container.querySelector('.todo-panel')?.classList.contains('todo-panel-working')).toBe(false)
+    // The in_progress row is still shown — just static now.
+    expect(container.querySelector('.todo-in_progress')).not.toBeNull()
+  })
 })
 
 // ---------------------------------------------------------------------------

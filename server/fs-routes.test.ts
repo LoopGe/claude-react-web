@@ -11,7 +11,10 @@ describe('fs-routes', () => {
     dir = tempDir('fs')
   })
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true })
+    // maxRetries tolerates the transient EBUSY/EPERM Windows throws when AV
+    // briefly locks a file in the temp dir — without it, an afterEach throw
+    // here would spuriously fail the test under parallel fs load.
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
   })
 
   describe('validateFolderName', () => {

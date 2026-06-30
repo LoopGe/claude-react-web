@@ -40,7 +40,7 @@ describe('JsonFileStore', () => {
   })
 
   afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true })
+    rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
   })
 
   // ─── Basic operations ───────────────────────────────────────────
@@ -95,7 +95,7 @@ describe('JsonFileStore', () => {
     })
 
     it('creates the directory if it does not exist', async () => {
-      rmSync(tmpDir, { recursive: true, force: true })
+      rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
       // Re-create the store pointing at a nested path
       const nested = join(tmpDir, 'deep', 'nested')
       const s = new TestStore({ stateDir: nested }, 'test.json', undefined, 'test-store')

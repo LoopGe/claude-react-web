@@ -25,7 +25,7 @@ describe('snippet routes', () => {
     await store.load()
   })
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
   })
 
   const app = () => buildSnippetRouter(store)

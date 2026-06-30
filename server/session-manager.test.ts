@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { rmRf } from './__test-utils__/index.js'
 
 // --- SDK mock ---------------------------------------------------------------
 //
@@ -246,7 +247,7 @@ describe('SessionManager', () => {
 
   afterEach(async () => {
     await sm.shutdown()
-    rmSync(dir, { recursive: true, force: true })
+    rmRf(dir)
   })
 
   it('create() spawns a Query and returns info with working=false', () => {
@@ -1439,8 +1440,8 @@ describe('mergeMcpServers', () => {
 
   afterEach(async () => {
     await sm.shutdown()
-    rmSync(dir, { recursive: true, force: true })
-    rmSync(mcpDir, { recursive: true, force: true })
+    rmRf(dir)
+    rmRf(mcpDir)
   })
 
   it('resolves enabled global server names to their SDK config', () => {
@@ -1510,8 +1511,8 @@ describe('setMcpServers (dynamic, on a live session)', () => {
 
   afterEach(async () => {
     await sm.shutdown()
-    rmSync(dir, { recursive: true, force: true })
-    rmSync(mcpDir, { recursive: true, force: true })
+    rmRf(dir)
+    rmRf(mcpDir)
   })
 
   it('forwards the given servers straight to query.setMcpServers', async () => {

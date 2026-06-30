@@ -22,7 +22,7 @@ describe('SessionStore', () => {
     dir = tempDir('store')
   })
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
   })
 
   it('returns empty list when file does not exist', async () => {
