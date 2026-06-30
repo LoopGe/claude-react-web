@@ -91,6 +91,10 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   // Global MCP server config state
   const [globalMcpServers, setGlobalMcpServers] = useState<McpServerConfigMeta[]>([])
   const [enabledMcpServers, setEnabledMcpServers] = useState<Set<string>>(new Set())
+
+  // Plugin picker state
+  const [enabledPlugins, setEnabledPlugins] = useState<Set<string>>(new Set())
+  const [allPluginKeys, setAllPluginKeys] = useState<string[]>([])
   const [showMcpInstaller, setShowMcpInstaller] = useState(false)
   const [mcpInstallerEdit, setMcpInstallerEdit] = useState<McpServerConfigMeta | undefined>(undefined)
   const mcpInstallerPresence = useExitPresence(showMcpInstaller)
@@ -207,6 +211,9 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
       disallowedTools: csv(disallowedToolsStr),
       tools: csv(toolsStr),
       enabledMcpServers: enabledMcpServers.size > 0 ? Array.from(enabledMcpServers) : undefined,
+      enabledPlugins: enabledPlugins.size === allPluginKeys.length
+        ? undefined
+        : Array.from(enabledPlugins),
       mcpServers,
       env,
     })
@@ -241,11 +248,34 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
     return () => { ac.abort() }
   }, [])
 
+  // Fetch enabled plugins when dialog opens
+  useEffect(() => {
+    const ac = new AbortController()
+    api
+      .get<{ plugins: { key: string; name: string; marketplace: string }[] }>('/mp/enabled-plugins', { signal: ac.signal })
+      .then((r) => {
+        setAllPluginKeys(r.plugins.map((p) => p.key))
+        // Pre-select all (default = carry every enabled plugin)
+        setEnabledPlugins(new Set(r.plugins.map((p) => p.key)))
+      })
+      .catch(() => { /* no enabled plugins is fine */ })
+    return () => { ac.abort() }
+  }, [])
+
   const toggleGlobalMcp = (name: string) => {
     setEnabledMcpServers((prev) => {
       const next = new Set(prev)
       if (next.has(name)) next.delete(name)
       else next.add(name)
+      return next
+    })
+  }
+
+  const togglePlugin = (key: string) => {
+    setEnabledPlugins((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
       return next
     })
   }
@@ -631,6 +661,31 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                     </span>
                   )}
                 </div>
+                {allPluginKeys.length > 0 && (
+                  <div className="settings-field" style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
+                    <label style={{ margin: 0 }}>Plugins</label>
+                    <span className="hint" style={{ marginTop: 4, display: 'block' }}>
+                      Plugins can't be added after the session starts — choose them here.
+                    </span>
+                    {allPluginKeys.map((key) => {
+                      const [pluginName, marketplace] = key.split('@')
+                      return (
+                        <label
+                          key={key}
+                          style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={enabledPlugins.has(key)}
+                            onChange={() => togglePlugin(key)}
+                          />
+                          <span style={{ flex: 1 }}>{pluginName}</span>
+                          <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>{marketplace}</span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                )}
                 <div className="settings-field">
                   <label>Session MCP overrides (JSON)</label>
                   <textarea

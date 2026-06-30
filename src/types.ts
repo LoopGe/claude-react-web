@@ -109,6 +109,9 @@ export interface NewSessionForm {
   tools?: string[]
   /** Names of global MCP servers to enable for this session. */
   enabledMcpServers?: string[]
+  /** Compound keys of globally-enabled plugins to carry into this session.
+   *  Omitted when all enabled plugins are selected (default); `[]` when none. */
+  enabledPlugins?: string[]
   // Advanced (JSON blobs — rendered as <textarea> and parsed on submit)
   mcpServers?: unknown
   /** Custom environment variables merged into the subprocess environment. */
