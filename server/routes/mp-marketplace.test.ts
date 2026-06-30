@@ -436,4 +436,32 @@ describe('mp-marketplace routes', () => {
     const res = await app.request('/mp/marketplaces/nonexistent/plugins')
     expect(res.status).toBe(404)
   })
+
+  it('GET /mp/enabled-plugins lists only enabled plugins with compound keys', async () => {
+    store.upsert({
+      id: 'mp1',
+      displayName: 'mp1',
+      source: { type: 'https', url: 'https://example.com/mp1.git' },
+      cloneDir: join(stateDir, 'mp1'),
+      addedAt: 1, lastRefreshedAt: 1, lastSha: 'a'.repeat(40),
+      manifest: { name: 'mp1', plugins: [
+        { name: 'plugA', description: 'A', version: '1.0.0' },
+        { name: 'plugB', description: 'B', version: '2.0.0' },
+      ] },
+    })
+    store.setEnabled('plugA', 'mp1', true)
+    // plugB left disabled
+
+    const res = await app.request('/mp/enabled-plugins')
+    expect(res.status).toBe(200)
+    const body = await jsonOf<{ plugins: { key: string; name: string; marketplace: string; description?: string; version?: string }[] }>(res)
+    expect(body.plugins).toHaveLength(1)
+    expect(body.plugins[0]).toEqual({
+      key: 'plugA@mp1',
+      name: 'plugA',
+      marketplace: 'mp1',
+      description: 'A',
+      version: '1.0.0',
+    })
+  })
 })

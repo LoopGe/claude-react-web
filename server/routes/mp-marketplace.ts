@@ -304,6 +304,13 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
     })
   })
 
+  // ─── Enabled plugins (flat list for plugin picker) ──────────────
+
+  app.get('/mp/enabled-plugins', (c) => {
+    const plugins = store.enabledPluginEntries()
+    return c.json({ plugins })
+  })
+
   return app
 }
 

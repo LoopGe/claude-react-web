@@ -386,6 +386,32 @@ export class MpStore extends JsonFileStore<MpEntry> {
     }
   }
 
+  /** Metadata for every enabled plugin across all marketplaces, for the
+   *  New Session dialog's plugin picker. `key` is the compound key the
+   *  dialog submits back as `enabledPlugins`. */
+  enabledPluginEntries(): { key: string; name: string; marketplace: string; description?: string; version?: string }[] {
+    const out: { key: string; name: string; marketplace: string; description?: string; version?: string }[] = []
+    for (const [key, on] of this.enabled) {
+      if (!on) continue
+      const at = key.lastIndexOf('@')
+      if (at <= 0) continue
+      const pluginName = key.slice(0, at)
+      const marketplaceId = key.slice(at + 1)
+      const entry = this.get(marketplaceId)
+      if (!entry) continue
+      const plugin = entry.manifest.plugins.find((p) => p.name === pluginName)
+      if (!plugin) continue
+      out.push({
+        key,
+        name: plugin.name,
+        marketplace: marketplaceId,
+        description: plugin.description,
+        version: plugin.version,
+      })
+    }
+    return out
+  }
+
   /** Snapshot of every enabled `<plugin>@<marketplace>` key. Used by the
    *  toggle route to push state into live sessions. */
   enabledKeys(): string[] {
