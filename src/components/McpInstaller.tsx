@@ -3,9 +3,10 @@
 // Renders a structured form instead of raw JSON. Dynamic key-value rows
 // for env vars and headers, type-specific fields, client + server validation.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from '../hooks/useApi'
+import { useFocusTrap } from '../hooks/useFocusTrap'
 import type { McpServerConfigMeta, McpServerInput } from '../types'
 import { IconX } from './icons/ToolIcons'
 
@@ -31,8 +32,29 @@ function recordFromRows(rows: KvRow[]): Record<string, string> | undefined {
   return entries.length > 0 ? Object.fromEntries(entries) : undefined
 }
 
-export function McpInstaller({ open = true, server, onSave, onClose }: Props) {
+function initialKvRows(keys?: string[]): KvRow[] {
+  return keys && keys.length > 0
+    ? keys.map((k) => ({ id: nextKvId(), key: k, value: '' }))
+    : [{ id: nextKvId(), key: '', value: '' }]
+}
+
+export function McpInstaller(props: Props) {
+  // Callers keep this portal mounted for exit animations. Keying the real form
+  // by edit target forces a fresh state initializer when reopening on another
+  // server before the previous exit animation has unmounted.
+  const serverKey = props.server?.name ?? 'new'
+  return <McpInstallerForm key={serverKey} {...props} />
+}
+
+function McpInstallerForm({ open = true, server, onSave, onClose }: Props) {
   const isEdit = !!server
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const titleId = useId()
+  const nameId = useId()
+  const typeId = useId()
+  const commandId = useId()
+  const argsId = useId()
+  const urlId = useId()
 
   const [name, setName] = useState(server?.name ?? '')
   const [type, setType] = useState<'stdio' | 'sse' | 'http'>(server?.type ?? 'stdio')
@@ -42,18 +64,12 @@ export function McpInstaller({ open = true, server, onSave, onClose }: Props) {
   const [alwaysLoad, setAlwaysLoad] = useState(server?.alwaysLoad ?? false)
   // When editing, pre-populate with existing keys (values are masked,
   // so value fields are left empty — the server merges on PUT).
-  const [envRows, setEnvRows] = useState<KvRow[]>(() =>
-    server?.envKeys && server.envKeys.length > 0
-      ? server.envKeys.map((k) => ({ id: nextKvId(), key: k, value: '' }))
-      : [{ id: nextKvId(), key: '', value: '' }],
-  )
-  const [headerRows, setHeaderRows] = useState<KvRow[]>(() =>
-    server?.headerKeys && server.headerKeys.length > 0
-      ? server.headerKeys.map((k) => ({ id: nextKvId(), key: k, value: '' }))
-      : [{ id: nextKvId(), key: '', value: '' }],
-  )
+  const [envRows, setEnvRows] = useState<KvRow[]>(() => initialKvRows(server?.envKeys))
+  const [headerRows, setHeaderRows] = useState<KvRow[]>(() => initialKvRows(server?.headerKeys))
   const [errors, setErrors] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
+
+  useFocusTrap(dialogRef, { restoreFocus: true, excludeDisabled: true, active: open })
 
   // Esc closes
   useEffect(() => {
@@ -151,20 +167,25 @@ export function McpInstaller({ open = true, server, onSave, onClose }: Props) {
     <div
       className="modal-backdrop"
       data-state={open ? 'open' : 'closing'}
+      role="dialog"
+      aria-modal={open ? 'true' : 'false'}
+      aria-labelledby={titleId}
       aria-hidden={!open}
+      inert={!open || undefined}
       onClick={() => { if (open) onClose() }}
     >
-      <div className="modal" style={{ width: 'min(520px, 92vw)' }} onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} className="modal" style={{ width: 'min(520px, 92vw)' }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h3>{isEdit ? `Edit: ${server!.name}` : 'Add MCP Server'}</h3>
+          <h3 id={titleId}>{isEdit ? `Edit: ${server!.name}` : 'Add MCP Server'}</h3>
           <button className="btn" onClick={onClose} style={{ padding: '2px 10px' }} aria-label="Close"><IconX size={14} /></button>
         </div>
 
         <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 12, maxHeight: '65vh', overflowY: 'auto' }}>
           {/* Name */}
           <div className="settings-field">
-            <label>Name</label>
+            <label htmlFor={nameId}>Name</label>
             <input
+              id={nameId}
               className="input"
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -175,8 +196,9 @@ export function McpInstaller({ open = true, server, onSave, onClose }: Props) {
 
           {/* Type */}
           <div className="settings-field">
-            <label>Type</label>
+            <label htmlFor={typeId}>Type</label>
             <select
+              id={typeId}
               className="input"
               value={type}
               onChange={(e) => setType(e.target.value as 'stdio' | 'sse' | 'http')}
@@ -192,8 +214,9 @@ export function McpInstaller({ open = true, server, onSave, onClose }: Props) {
           {type === 'stdio' && (
             <>
               <div className="settings-field">
-                <label>Command</label>
+                <label htmlFor={commandId}>Command</label>
                 <input
+                  id={commandId}
                   className="input"
                   value={command}
                   onChange={(e) => setCommand(e.target.value)}
@@ -201,8 +224,9 @@ export function McpInstaller({ open = true, server, onSave, onClose }: Props) {
                 />
               </div>
               <div className="settings-field">
-                <label>Arguments (one per line)</label>
+                <label htmlFor={argsId}>Arguments (one per line)</label>
                 <textarea
+                  id={argsId}
                   className="textarea"
                   rows={3}
                   value={argsText}
@@ -216,8 +240,9 @@ export function McpInstaller({ open = true, server, onSave, onClose }: Props) {
           {/* sse / http: url */}
           {type !== 'stdio' && (
             <div className="settings-field">
-              <label>URL</label>
+              <label htmlFor={urlId}>URL</label>
               <input
+                id={urlId}
                 className="input"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
@@ -304,34 +329,42 @@ function KvEditor({
     <div className="settings-field">
       <label>{label}</label>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        {rows.map((row) => (
-          <div key={row.id} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-            <input
-              className="input"
-              style={{ flex: 1, fontSize: 12 }}
-              placeholder="key"
-              value={row.key}
-              onChange={(e) => onUpdate(row.id, 'key', e.target.value)}
-            />
-            <input
-              className="input"
-              type="password"
-              style={{ flex: 1, fontSize: 12 }}
-              placeholder={valuePlaceholder ?? 'value'}
-              value={row.value}
-              onChange={(e) => onUpdate(row.id, 'value', e.target.value)}
-            />
-            <button
-              className="btn"
-              style={{ padding: '2px 6px', fontSize: 11, flexShrink: 0 }}
-              onClick={() => onRemove(row.id)}
-              title="Remove"
-              aria-label="Remove"
-            >
-              <IconX size={12} />
-            </button>
-          </div>
-        ))}
+        {rows.map((row) => {
+          const keyId = `${row.id}-key`
+          const valueId = `${row.id}-value`
+          return (
+            <div key={row.id} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+              <label className="sr-only" htmlFor={keyId}>{label} key</label>
+              <input
+                id={keyId}
+                className="input"
+                style={{ flex: 1, fontSize: 12 }}
+                placeholder="key"
+                value={row.key}
+                onChange={(e) => onUpdate(row.id, 'key', e.target.value)}
+              />
+              <label className="sr-only" htmlFor={valueId}>{label} value</label>
+              <input
+                id={valueId}
+                className="input"
+                type="password"
+                style={{ flex: 1, fontSize: 12 }}
+                placeholder={valuePlaceholder ?? 'value'}
+                value={row.value}
+                onChange={(e) => onUpdate(row.id, 'value', e.target.value)}
+              />
+              <button
+                className="btn"
+                style={{ padding: '2px 6px', fontSize: 11, flexShrink: 0 }}
+                onClick={() => onRemove(row.id)}
+                title="Remove"
+                aria-label="Remove"
+              >
+                <IconX size={12} />
+              </button>
+            </div>
+          )
+        })}
         <button
           className="btn"
           style={{ fontSize: 11, alignSelf: 'flex-start', padding: '2px 8px' }}
