@@ -82,7 +82,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
 
   // Create session
   app.post('/sessions', async (c) => {
-    const body = await safeJson<Partial<Options> & { cwd?: string; provider?: string; enabledMcpServers?: string[] }>(c.req)
+    const body = await safeJson<Partial<Options> & { cwd?: string; provider?: string; enabledMcpServers?: string[]; enabledPlugins?: string[] }>(c.req)
     const { enabledMcpServers, enabledPlugins, mcpServers, env: customEnv, ...rest } = body as Record<string, unknown> & {
       enabledMcpServers?: string[]
       enabledPlugins?: string[]
