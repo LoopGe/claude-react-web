@@ -13,6 +13,20 @@
   --chat-reading-min-inset: 20px;
   --chat-reading-inset: max(var(--chat-reading-min-inset), calc((100% - var(--chat-reading-max-width)) / 2));
 }
+@supports (width: round(1px, 1px)) {
+  .chat,
+  .side-chat-drawer {
+    /* round() to a whole CSS pixel: the centered column is rendered through two
+       different boxes — message rows live inside .chat-virtuoso-scroller (whose
+       content box is inset by the scrollbar gutter, then shifted back by it) while
+       .chat-streaming-region is an absolutely-positioned full-width sibling. A
+       fractional inset like 137.5px snaps in two steps on the row path
+       (round(gutter)+round(inset-gutter)) vs one step on the streaming path
+       (round(inset)), landing ~1px apart on non-integer-DPR displays. Quantizing
+       to an integer px makes both paths snap to the same column edge. */
+    --chat-reading-inset: max(var(--chat-reading-min-inset), round((100% - var(--chat-reading-max-width)) / 2, 1px));
+  }
+}
 .chat {
   display: flex;
   flex-direction: column;
@@ -299,6 +313,28 @@
   text-align: center;
   gap: 11px;
   padding: 0 20px;
+}
+/* Entrance: the stack fades and rises in, with icon/title/subtitle staggered
+   so the eye lands on them in reading order. Tokens keep it consistent with
+   the rest of the app's motion language. */
+.chat-empty-icon,
+.chat-empty-title,
+.chat-empty-subtitle {
+  animation: chat-empty-item-in var(--motion-duration-slow) var(--motion-ease-enter) both;
+}
+.chat-empty-icon { animation-delay: 40ms; }
+.chat-empty-title { animation-delay: 120ms; }
+.chat-empty-subtitle { animation-delay: 200ms; }
+@keyframes chat-empty-item-in {
+  from { opacity: 0; transform: translateY(var(--motion-distance-md)) scale(var(--motion-scale-enter)); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-empty-icon,
+  .chat-empty-title,
+  .chat-empty-subtitle {
+    animation: none;
+  }
 }
 .chat-empty-icon {
   width: 36px;
