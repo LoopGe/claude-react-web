@@ -579,34 +579,50 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                   </div>
                   {globalMcpServers.length > 0 && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
-                      {globalMcpServers.map((srv) => (
-                        <label
-                          key={srv.name}
-                          style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={enabledMcpServers.has(srv.name)}
-                            onChange={() => toggleGlobalMcp(srv.name)}
-                          />
-                          <span style={{ flex: 1 }}>{srv.name}</span>
-                          <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>{srv.type}</span>
-                          <button
-                            className="btn"
-                            style={{ fontSize: 10, padding: '1px 5px' }}
-                            onClick={(e) => {
-                              e.preventDefault()
-                              e.stopPropagation()
-                              setMcpInstallerEdit(srv)
-                              setShowMcpInstaller(true)
-                            }}
-                            title="Edit server"
-                            aria-label="Edit server"
+                      {globalMcpServers.map((srv) => {
+                        // Globally-disabled servers are off by default (not
+                        // pre-checked) but the user can still opt into them
+                        // for this session by checking the box. Surface that
+                        // state so the unchecked default isn't confused with
+                        // "just another enabled server".
+                        const globallyOff = srv.enabled === false
+                        return (
+                          <label
+                            key={srv.name}
+                            style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}
                           >
-                            <IconPencil size={12} />
-                          </button>
-                        </label>
-                      ))}
+                            <input
+                              type="checkbox"
+                              checked={enabledMcpServers.has(srv.name)}
+                              onChange={() => toggleGlobalMcp(srv.name)}
+                            />
+                            <span style={{ flex: 1 }}>{srv.name}</span>
+                            {globallyOff && (
+                              <span
+                                style={{ fontSize: 10, color: 'var(--fg-muted)' }}
+                                title="Globally disabled — opt in by checking the box"
+                              >
+                                off
+                              </span>
+                            )}
+                            <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>{srv.type}</span>
+                            <button
+                              className="btn"
+                              style={{ fontSize: 10, padding: '1px 5px' }}
+                              onClick={(e) => {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                setMcpInstallerEdit(srv)
+                                setShowMcpInstaller(true)
+                              }}
+                              title="Edit server"
+                              aria-label="Edit server"
+                            >
+                              <IconPencil size={12} />
+                            </button>
+                          </label>
+                        )
+                      })}
                     </div>
                   )}
                   {globalMcpServers.length === 0 && (

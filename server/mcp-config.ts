@@ -214,13 +214,33 @@ export class McpConfigStore extends JsonFileStore<StoredMcpServer> {
     return result
   }
 
+  /** Return the SDK config for a single named server, **ignoring its
+   *  `enabled` flag**. Returns null if no server with that name exists.
+   *
+   *  Use this when a caller has explicitly requested a server by name
+   *  (e.g. the new-session dialog's checked list) and the global `enabled`
+   *  default must not gate it — `enabled` only controls the *default*
+   *  pre-selection, not whether an explicitly-chosen server can be used.
+   *  For the "all enabled servers" map, keep using {@link toSdkConfig}. */
+  getSdkServerConfig(name: string): McpServerConfig | null {
+    const server = this.index.get(name)
+    return server ? toSdkServerConfig(server) : null
+  }
+
   /** Refresh stored OAuth tokens before serialising configs for real SDK sessions. */
   async refreshOAuthTokens(names?: Iterable<string>): Promise<void> {
     const selected = names ? new Set(Array.from(names).filter((name): name is string => typeof name === 'string')) : undefined
     let changed = false
     for (const [name, server] of this.index) {
-      if (server.enabled === false) continue
-      if (selected && !selected.has(name)) continue
+      // An explicitly-requested name overrides the global `enabled` flag —
+      // a globally-disabled server can still be opted into a session by
+      // name, and its OAuth tokens must be refreshed before serialising.
+      // Only the "refresh all" path (no `names` arg) honours `enabled`.
+      if (selected) {
+        if (!selected.has(name)) continue
+      } else if (server.enabled === false) {
+        continue
+      }
       const before = JSON.stringify(server.oauth ?? null)
       try {
         await refreshMcpOAuth(server)

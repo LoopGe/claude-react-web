@@ -1918,11 +1918,21 @@ export class SessionManager {
     const global = this.mcpStore.toSdkConfig() ?? {}
     const result: Record<string, unknown> = {}
 
-    // Add enabled global servers. Guard on Array.isArray so a stray string
-    // (e.g. enabledMcpServers:"foo") can't be iterated character-by-character.
+    // Add explicitly-requested global servers. Guard on Array.isArray so a
+    // stray string (e.g. enabledMcpServers:"foo") can't be iterated
+    // character-by-character.
+    //
+    // An explicit request overrides the global `enabled` flag: a globally
+    // disabled server is "off by default" (not pre-checked in the new-session
+    // dialog) but the user can still opt into it per session by checking its
+    // box. `toSdkConfig` skips disabled servers, so for names not present
+    // there we fall back to `getSdkServerConfig`, which ignores `enabled`.
+    // Unknown names resolve to nothing and are silently dropped.
     if (Array.isArray(enabledGlobal)) {
       for (const name of enabledGlobal) {
-        if (typeof name === 'string' && global[name]) result[name] = global[name]
+        if (typeof name !== 'string') continue
+        const cfg = global[name] ?? this.mcpStore.getSdkServerConfig(name)
+        if (cfg) result[name] = cfg
       }
     }
 

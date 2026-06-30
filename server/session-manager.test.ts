@@ -1450,9 +1450,13 @@ describe('mergeMcpServers', () => {
     })
   })
 
-  it('skips unknown and disabled global names', () => {
+  it('skips unknown names but honors an explicitly-requested disabled server', () => {
+    // A globally-disabled server is "off by default" (not pre-checked in the
+    // new-session dialog) but the user can still opt into it per session by
+    // checking its box — so an explicit request must override `enabled:false`.
     const merged = sm.mergeMcpServers(['global-a', 'global-off', 'nope'], undefined)
-    expect(Object.keys(merged ?? {})).toEqual(['global-a'])
+    expect(Object.keys(merged ?? {}).sort()).toEqual(['global-a', 'global-off'])
+    expect(merged?.['global-off']).toEqual({ type: 'stdio', command: 'node' })
   })
 
   it('lets inline session servers override a global of the same name', () => {
