@@ -50,6 +50,7 @@ export function validateFolderName(name: string): string | null {
   if (trimmed === '.' || trimmed === '..') return '"." and ".." are not allowed'
   if (/[. ]$/.test(name)) return 'name must not end with a space or dot'
   if (/[\\/]/.test(trimmed)) return 'name must not contain path separators'
+  // eslint-disable-next-line no-control-regex -- control chars are intentionally rejected per spec
   if (/[<>:"|?*\x00-\x1f]/.test(trimmed)) return 'name contains illegal characters'
   return null
 }
