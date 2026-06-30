@@ -445,8 +445,8 @@ describe('mp-marketplace routes', () => {
       cloneDir: join(stateDir, 'mp1'),
       addedAt: 1, lastRefreshedAt: 1, lastSha: 'a'.repeat(40),
       manifest: { name: 'mp1', plugins: [
-        { name: 'plugA', description: 'A', version: '1.0.0' },
-        { name: 'plugB', description: 'B', version: '2.0.0' },
+        { name: 'plugA', description: 'A', version: '1.0.0', dir: null },
+        { name: 'plugB', description: 'B', version: '2.0.0', dir: null },
       ] },
     })
     store.setEnabled('plugA', 'mp1', true)
