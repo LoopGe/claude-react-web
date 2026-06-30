@@ -142,16 +142,16 @@
    the High Contrast skin (hc): its flat pure-bg aesthetic relies on 1px
    solid borders, and a faint fg wash would undermine it.
    ════════════════════════════════════════════════════════════════════ */
-:where(:not([data-skin="glow"]):not([data-skin="hc"])) .modal,
-:where(:not([data-skin="glow"]):not([data-skin="hc"])) .palette,
-:where(:not([data-skin="glow"]):not([data-skin="hc"])) .settings-overlay > .settings-panel,
-:where(:not([data-skin="glow"]):not([data-skin="hc"])) .git-overlay > .git-panel,
-:where(:not([data-skin="glow"]):not([data-skin="hc"])) .perm-overlay > .perm-card,
-:where(:not([data-skin="glow"]):not([data-skin="hc"])) .ctx-menu,
-:where(:not([data-skin="glow"]):not([data-skin="hc"])) .model-picker,
-:where(:not([data-skin="glow"]):not([data-skin="hc"])) .cmd-picker,
-:where(:not([data-skin="glow"]):not([data-skin="hc"])) .accent-popover,
-:where(:not([data-skin="glow"]):not([data-skin="hc"])) .appearance-panel {
+html:not([data-skin="glow"]):not([data-skin="hc"]) .modal,
+html:not([data-skin="glow"]):not([data-skin="hc"]) .palette,
+html:not([data-skin="glow"]):not([data-skin="hc"]) .settings-overlay > .settings-panel,
+html:not([data-skin="glow"]):not([data-skin="hc"]) .git-overlay > .git-panel,
+html:not([data-skin="glow"]):not([data-skin="hc"]) .perm-overlay > .perm-card,
+html:not([data-skin="glow"]):not([data-skin="hc"]) .ctx-menu,
+html:not([data-skin="glow"]):not([data-skin="hc"]) .model-picker,
+html:not([data-skin="glow"]):not([data-skin="hc"]) .cmd-picker,
+html:not([data-skin="glow"]):not([data-skin="hc"]) .accent-popover,
+html:not([data-skin="glow"]):not([data-skin="hc"]) .appearance-panel {
   background-image: linear-gradient(
     to bottom,
     color-mix(in srgb, var(--fg) 4%, transparent) 0%,
@@ -160,16 +160,16 @@
 }
 /* Light theme: keep the wash but cooler — too much white-over-white
    crushes the soft tint, so we use a near-transparent slate-ish fill. */
-[data-theme="light"]:where(:not([data-skin="glow"])) .modal,
-[data-theme="light"]:where(:not([data-skin="glow"])) .palette,
-[data-theme="light"]:where(:not([data-skin="glow"])) .settings-overlay > .settings-panel,
-[data-theme="light"]:where(:not([data-skin="glow"])) .git-overlay > .git-panel,
-[data-theme="light"]:where(:not([data-skin="glow"])) .perm-overlay > .perm-card,
-[data-theme="light"]:where(:not([data-skin="glow"])) .ctx-menu,
-[data-theme="light"]:where(:not([data-skin="glow"])) .model-picker,
-[data-theme="light"]:where(:not([data-skin="glow"])) .cmd-picker,
-[data-theme="light"]:where(:not([data-skin="glow"])) .accent-popover,
-[data-theme="light"]:where(:not([data-skin="glow"])) .appearance-panel {
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .modal,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .palette,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .settings-overlay > .settings-panel,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .git-overlay > .git-panel,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .perm-overlay > .perm-card,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .ctx-menu,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .model-picker,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .cmd-picker,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .accent-popover,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .appearance-panel {
   background-image: linear-gradient(
     to bottom,
     color-mix(in srgb, var(--fg) 2.5%, transparent) 0%,
