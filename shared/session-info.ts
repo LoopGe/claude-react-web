@@ -122,6 +122,10 @@ export interface SessionInfoBase<PM = string> {
    *  via persistence. Undefined only for sessions created before this
    *  field was added (legacy). */
   mcpServerNames?: string[]
+  /** Compound keys (`<plugin>@<marketplace>`) of the plugin subset this
+   *  session was spawned with. `undefined` = all enabled; `[]` = none.
+   *  Persisted via SessionMeta. */
+  enabledPlugins?: string[]
   /** Per-session skill policy override. Undefined or `{kind:'inherit'}`
    *  means "follow the global config". Overrides are RAM-only — they
    *  reset to inherit on resume so multi-panel users can pin different

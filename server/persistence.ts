@@ -75,6 +75,10 @@ export interface SessionMeta {
    *  restarts so the client can compute "available" without relying
    *  on the flaky mcp-status SDK control request. */
   mcpServerNames?: string[]
+  /** Compound keys (`<plugin>@<marketplace>`) of the plugin subset this
+   *  session was spawned with. `undefined` = all enabled (default); `[]` =
+   *  none. Persisted so resume/fork re-inject the same subset. */
+  enabledPlugins?: string[]
 }
 
 const FILE_NAME = 'sessions.json'
@@ -179,6 +183,9 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     parentId: typeof r.parentId === 'string' ? r.parentId : undefined,
     mcpServerNames: Array.isArray(r.mcpServerNames) && r.mcpServerNames.every((n: unknown) => typeof n === 'string')
       ? (r.mcpServerNames as string[])
+      : undefined,
+    enabledPlugins: Array.isArray(r.enabledPlugins) && r.enabledPlugins.every((n: unknown) => typeof n === 'string')
+      ? (r.enabledPlugins as string[])
       : undefined,
   }
 }

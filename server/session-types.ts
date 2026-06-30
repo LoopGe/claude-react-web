@@ -205,6 +205,9 @@ export interface Session {
    *  via SessionMeta and mirrored into SessionInfo so the client can
    *  compute "available" reliably without the flaky mcp-status request. */
   mcpServerNames?: string[]
+  /** Compound keys of the plugin subset this session was spawned with.
+   *  `undefined` = all enabled; `[]` = none. Persisted via SessionMeta. */
+  enabledPlugins?: string[]
   /** Per-subscriber pushables for context_usage events dseparate from
    *  message history so reconnects don't replay stale usage snapshots.
    *  Each WS subscriber gets its own pushable to avoid waiter overwrite

@@ -143,6 +143,58 @@ describe('SessionStore', () => {
     expect(loaded[0].gitStartSha).toBe(sha)
   })
 
+  // ── enabledPlugins persistence ─────────────────────────────────
+  it('round-trips enabledPlugins', async () => {
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    store.upsert(makeMeta('a', { enabledPlugins: ['plugA@mp1', 'plugB@mp1'] }))
+    await store.flush()
+
+    const store2 = new SessionStore({ stateDir: dir })
+    await store2.load()
+    const reloaded = store2.get('a')
+    expect(reloaded?.enabledPlugins).toEqual(['plugA@mp1', 'plugB@mp1'])
+  })
+
+  it('round-trips enabledPlugins absent as undefined', async () => {
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    store.upsert(makeMeta('a')) // no enabledPlugins
+    await store.flush()
+
+    const store2 = new SessionStore({ stateDir: dir })
+    await store2.load()
+    const reloaded = store2.get('a')
+    expect(reloaded?.enabledPlugins).toBeUndefined()
+  })
+
+  it('round-trips enabledPlugins empty array as [] (not undefined)', async () => {
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    store.upsert(makeMeta('a', { enabledPlugins: [] }))
+    await store.flush()
+
+    const store2 = new SessionStore({ stateDir: dir })
+    await store2.load()
+    const reloaded = store2.get('a')
+    // Empty array must survive the round-trip as [] — NOT collapsed to undefined.
+    expect(reloaded?.enabledPlugins).toEqual([])
+  })
+
+  it('drops non-string entries from enabledPlugins during coerce', async () => {
+    writeFileSync(
+      join(dir, 'sessions.json'),
+      JSON.stringify([
+        { id: 'a', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, enabledPlugins: ['ok', 42, null] },
+      ]),
+    )
+    const store = new SessionStore({ stateDir: dir })
+    const loaded = await store.load()
+    expect(loaded).toHaveLength(1)
+    // Non-string entries cause the whole array to be dropped (undefined).
+    expect(loaded[0].enabledPlugins).toBeUndefined()
+  })
+
   it('drops non-string gitStartSha during coerce', async () => {
     writeFileSync(
       join(dir, 'sessions.json'),
