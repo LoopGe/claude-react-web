@@ -1562,6 +1562,18 @@ describe('plugin subset selection', () => {
       { type: 'local', path: '/fake/plugA' },
     ])
   })
+
+  it('clear() re-injects the persisted plugin subset', async () => {
+    const info = sm.create({
+      cwd: dir,
+      enabledPlugins: [MpStore.keyOf('plugA', 'mp1')],
+    } as any)
+    // mockHandles[0] is the original spawn. clear() respawns → mockHandles[1].
+    await sm.clear(info.id)
+    expect(mockHandles[1].options.plugins).toEqual([
+      { type: 'local', path: '/fake/plugA' },
+    ])
+  })
 })
 
 describe('setMcpServers (dynamic, on a live session)', () => {

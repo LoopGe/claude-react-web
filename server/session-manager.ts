@@ -951,6 +951,7 @@ export class SessionManager {
       title,
       effort: meta.effortLevel,
       betas: meta.betas as Options['betas'],
+      enabledPlugins: meta.enabledPlugins,
       settings: meta.hooks ? ({ hooks: toSdkHooksSettings(meta.hooks) } as Settings) : undefined,
       parentId,
       // Inject side-chat instructions via the system prompt so the model
@@ -1548,6 +1549,7 @@ export class SessionManager {
         betas: s.betas,
         effortLevel: s.effortLevel,
         fastMode: s.fastMode,
+        enabledPlugins: s.enabledPlugins,
         includeHookEvents: true,
         // No `resume:` — fresh conversation. The provider sets
         // sdkOptions.sessionId = s.id, preserving the app-level identity.
@@ -2979,6 +2981,7 @@ export class SessionManager {
       betas: session.betas,
       effortLevel: session.effortLevel,
       fastMode: session.fastMode,
+      enabledPlugins: session.enabledPlugins,
       includeHookEvents: true,
       resume: session.id,
       onUserMessageConsumed: (msg) => this.onInputConsumed(session.id, msg as SDKUserMessage),
