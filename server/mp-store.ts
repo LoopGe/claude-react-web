@@ -312,6 +312,44 @@ export class MpStore extends JsonFileStore<MpEntry> {
     return paths
   }
 
+  /** Like {@link getEnabledPluginAbsolutePaths}, but resolve only the
+   *  plugins whose compound key is in `keys` (and which are still enabled).
+   *  Used when a session explicitly requests a subset of enabled plugins.
+   *  Disabled or unknown keys are silently dropped; the same path-dedupe
+   *  and existsSync guards as the parent method apply. */
+  getEnabledPluginAbsolutePathsFor(keys: string[]): string[] {
+    const wanted = new Set(keys)
+    const paths: string[] = []
+    const seen = new Set<string>()
+    const push = (p: string) => {
+      if (seen.has(p)) return
+      seen.add(p)
+      paths.push(p)
+    }
+    for (const [key, on] of this.enabled) {
+      if (!on) continue
+      if (!wanted.has(key)) continue
+      const at = key.lastIndexOf('@')
+      if (at <= 0) continue
+      const pluginName = key.slice(0, at)
+      const marketplaceId = key.slice(at + 1)
+      const entry = this.get(marketplaceId)
+      if (!entry) continue
+      const plugin = entry.manifest.plugins.find((p) => p.name === pluginName)
+      if (!plugin) continue
+      if (plugin.source && plugin.source.kind === 'git-subdir') {
+        const abs = resolvePath(
+          this.externalCloneDir(plugin.source.url, plugin.source.sha),
+          plugin.source.subPath,
+        )
+        if (existsSync(abs)) push(abs)
+      } else if (plugin.dir) {
+        push(plugin.dir)
+      }
+    }
+    return paths
+  }
+
   /** Best-effort GC of external git-subdir clones no longer referenced by
    *  any still-enabled plugin across ALL marketplaces. Called after remove /
    *  refresh. Filesystem errors are swallowed — an orphaned clone only costs

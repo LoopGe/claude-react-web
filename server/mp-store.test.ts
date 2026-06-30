@@ -318,6 +318,54 @@ describe('MpStore', () => {
     expect(s.getEnabledPluginAbsolutePaths()).toEqual([])
   })
 
+  it('getEnabledPluginAbsolutePathsFor returns paths only for requested enabled keys', async () => {
+    const s = new MpStore({ stateDir: dir })
+    await s.load()
+    s.upsert(fakeEntry('mp1', { manifest: fakeManifest(['plugA', 'plugB']) }))
+    s.setEnabled('plugA', 'mp1', true)
+    s.setEnabled('plugB', 'mp1', true)
+    await s.flush()
+
+    const paths = s.getEnabledPluginAbsolutePathsFor([MpStore.keyOf('plugA', 'mp1')])
+    expect(paths).toEqual(['/fake/plugA'])
+  })
+
+  it('getEnabledPluginAbsolutePathsFor drops disabled and unknown keys', async () => {
+    const s = new MpStore({ stateDir: dir })
+    await s.load()
+    s.upsert(fakeEntry('mp1', { manifest: fakeManifest(['plugA', 'plugB']) }))
+    s.setEnabled('plugA', 'mp1', true)
+    // plugB NOT enabled; 'plugC' does not exist
+    await s.flush()
+
+    const paths = s.getEnabledPluginAbsolutePathsFor([
+      MpStore.keyOf('plugA', 'mp1'),
+      MpStore.keyOf('plugB', 'mp1'), // enabled? no → drop
+      MpStore.keyOf('plugC', 'mp1'), // unknown → drop
+    ])
+    expect(paths).toEqual(['/fake/plugA'])
+  })
+
+  it('getEnabledPluginAbsolutePathsFor dedupes paths resolving to the same dir', async () => {
+    const s = new MpStore({ stateDir: dir })
+    await s.load()
+    s.upsert(fakeEntry('mp1', {
+      manifest: { name: 'fake', plugins: [
+        { name: 'plugA', dir: '/fake/same' },
+        { name: 'plugB', dir: '/fake/same' },
+      ] },
+    }))
+    s.setEnabled('plugA', 'mp1', true)
+    s.setEnabled('plugB', 'mp1', true)
+    await s.flush()
+
+    const paths = s.getEnabledPluginAbsolutePathsFor([
+      MpStore.keyOf('plugA', 'mp1'),
+      MpStore.keyOf('plugB', 'mp1'),
+    ])
+    expect(paths).toEqual(['/fake/same'])
+  })
+
   it('snapshot enabledMapFor returns only that marketplace', async () => {
     const s = new MpStore({ stateDir: dir })
     await s.load()
