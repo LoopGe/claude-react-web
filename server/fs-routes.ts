@@ -39,6 +39,18 @@ function fsError(c: Context, err: unknown, notFoundMsg: string) {
   return c.json({ error: (err as Error).message }, 500)
 }
 
+/** Validate a single folder name for /mkdir. Returns an error message, or null when valid.
+ *  Single-level only: no separators, no traversal, no Windows-illegal chars. */
+export function validateFolderName(name: string): string | null {
+  const trimmed = name.trim()
+  if (!trimmed) return 'name is required'
+  if (trimmed === '.' || trimmed === '..') return '"." and ".." are not allowed'
+  if (/[. ]$/.test(name)) return 'name must not end with a space or dot'
+  if (/[\\/]/.test(trimmed)) return 'name must not contain path separators'
+  if (/[<>:"|?*\x00-\x1f]/.test(trimmed)) return 'name contains illegal characters'
+  return null
+}
+
 export function buildFsRouter(): Hono {
   const app = new Hono()
   app.onError(createErrorHandler('[fs]'))

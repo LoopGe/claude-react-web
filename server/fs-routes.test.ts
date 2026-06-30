@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { buildFsRouter } from './fs-routes.js'
+import { buildFsRouter, validateFolderName } from './fs-routes.js'
 import { tempDir, json } from './__test-utils__/index.js'
 
 describe('fs-routes', () => {
@@ -12,6 +12,40 @@ describe('fs-routes', () => {
   })
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true })
+  })
+
+  describe('validateFolderName', () => {
+    it('accepts a simple valid name', () => {
+      expect(validateFolderName('newdir')).toBeNull()
+      expect(validateFolderName('my project 2')).toBeNull()
+    })
+
+    it('rejects empty or whitespace-only', () => {
+      expect(validateFolderName('')).toMatch(/required/i)
+      expect(validateFolderName('   ')).toMatch(/required/i)
+    })
+
+    it('rejects . and ..', () => {
+      expect(validateFolderName('.')).toMatch(/not allowed/i)
+      expect(validateFolderName('..')).toMatch(/not allowed/i)
+    })
+
+    it('rejects path separators / and \\', () => {
+      expect(validateFolderName('a/b')).toMatch(/separator/i)
+      expect(validateFolderName('a\\b')).toMatch(/separator/i)
+    })
+
+    it('rejects Windows-illegal chars and control chars', () => {
+      expect(validateFolderName('a:b')).toMatch(/illegal/i)
+      expect(validateFolderName('a<b')).toMatch(/illegal/i)
+      expect(validateFolderName('a*b')).toMatch(/illegal/i)
+      expect(validateFolderName('a"b')).toMatch(/illegal/i)
+    })
+
+    it('rejects trailing space or dot', () => {
+      expect(validateFolderName('a ')).toMatch(/end with/i)
+      expect(validateFolderName('a.')).toMatch(/end with/i)
+    })
   })
 
   describe('GET /home', () => {
