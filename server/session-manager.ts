@@ -627,7 +627,7 @@ export class SessionManager {
    *  spawn()-doesn't-carry-parentId review. */
   private async respawnFresh(id: string, meta: SessionMeta): Promise<SessionInfo> {
     const provider = meta.provider ?? this.defaultProvider
-    const freshOpts: Options & { provider?: string } = {
+    const freshOpts: Options & { provider?: string; enabledPlugins?: string[] } = {
       provider,
       cwd: meta.cwd,
       model: meta.model,
@@ -636,6 +636,11 @@ export class SessionManager {
       effort: meta.effortLevel,
       betas: meta.betas as Options['betas'],
       settings: meta.hooks ? ({ hooks: toSdkHooksSettings(meta.hooks) } as Settings) : undefined,
+      // Re-inject the persisted plugin subset so a turn-less session that
+      // goes dormant keeps its picker selection on respawn (same as
+      // resume/fork/clear). Without this, snapshotMeta would capture
+      // undefined and writeStore would clobber the persisted subset.
+      enabledPlugins: meta.enabledPlugins,
     }
     // Re-apply globally configured MCP servers (same as resume / clear).
     // Refresh OAuth tokens for remote servers BEFORE snapshotting the config
@@ -941,7 +946,7 @@ export class SessionManager {
     }
     const title = meta.title ? `${meta.title} — Side Chat` : 'Side Chat'
     const sourceProvider = meta.provider ?? this.defaultProvider
-    const sideChatOpts: Options & { provider?: string; parentId?: string } = {
+    const sideChatOpts: Options & { provider?: string; parentId?: string; enabledPlugins?: string[] } = {
       provider: sourceProvider,
       resume: parentId,
       forkSession: true,
@@ -1107,6 +1112,12 @@ export class SessionManager {
 
     const sdkOptions = { ...applySkillPolicyToOptions(fullOpts, skillOverride) } as Options & { provider?: string }
     delete sdkOptions.provider
+    // Strip the app-level plugin selection so it doesn't reach the SDK:
+    // Options.enabledPlugins is a {[k:string]: string[]|boolean|object} MAP
+    // (plugin@marketplace → enabled flag), but we carry a string[] of keys
+    // for our own subset resolution. The SDK only needs Options.plugins
+    // (resolved paths, set by applyStandardQueryOpts via the provider).
+    delete (sdkOptions as { enabledPlugins?: unknown }).enabledPlugins
     const handle = provider.createSession({
       id,
       provider: providerName,

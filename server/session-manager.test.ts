@@ -1574,6 +1574,35 @@ describe('plugin subset selection', () => {
       { type: 'local', path: '/fake/plugA' },
     ])
   })
+
+  it('respawnFresh() preserves the persisted plugin subset (no transcript + no turn)', async () => {
+    // Force hasSdkTranscript=false (getSessionInfo → undefined) so resume()
+    // takes the respawnFresh path. lastTurnAt is undefined (no turn completed),
+    // which is the other respawnFresh precondition.
+    mockGetSessionInfo.mockReset()
+    mockGetSessionInfo.mockResolvedValue(undefined)
+    const info = sm.create({
+      cwd: dir,
+      enabledPlugins: [MpStore.keyOf('plugA', 'mp1')],
+    } as any)
+    await sm.unload(info.id)
+    await sm.resume(info.id)
+    // The respawned session must still carry the persisted subset — both on
+    // the live Session and re-persisted to disk (no clobber to undefined).
+    expect(sm.get(info.id)?.enabledPlugins).toEqual([MpStore.keyOf('plugA', 'mp1')])
+    expect(store.get(info.id)?.enabledPlugins).toEqual([MpStore.keyOf('plugA', 'mp1')])
+  })
+
+  it('does not leak the app-level enabledPlugins string[] into SDK Options', () => {
+    // SDK Options.enabledPlugins is a {[k:string]: ...} map, not a string[].
+    // The app-level selection must be stripped from sdkOptions before reaching
+    // query() (only Options.plugins — resolved paths — should reach the SDK).
+    sm.create({
+      cwd: dir,
+      enabledPlugins: [MpStore.keyOf('plugA', 'mp1')],
+    } as any)
+    expect(mockHandles[0].options.enabledPlugins).toBeUndefined()
+  })
 })
 
 describe('setMcpServers (dynamic, on a live session)', () => {
