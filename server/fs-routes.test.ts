@@ -18,6 +18,7 @@ describe('fs-routes', () => {
     it('accepts a simple valid name', () => {
       expect(validateFolderName('newdir')).toBeNull()
       expect(validateFolderName('my project 2')).toBeNull()
+      expect(validateFolderName('  newdir')).toBeNull()
     })
 
     it('rejects empty or whitespace-only', () => {
@@ -28,6 +29,7 @@ describe('fs-routes', () => {
     it('rejects . and ..', () => {
       expect(validateFolderName('.')).toMatch(/not allowed/i)
       expect(validateFolderName('..')).toMatch(/not allowed/i)
+      expect(validateFolderName('  ..  ')).toMatch(/not allowed/i)
     })
 
     it('rejects path separators / and \\', () => {
@@ -40,6 +42,10 @@ describe('fs-routes', () => {
       expect(validateFolderName('a<b')).toMatch(/illegal/i)
       expect(validateFolderName('a*b')).toMatch(/illegal/i)
       expect(validateFolderName('a"b')).toMatch(/illegal/i)
+      expect(validateFolderName('a\x00b')).toMatch(/illegal/i)
+      expect(validateFolderName('a\tb')).toMatch(/illegal/i)
+      expect(validateFolderName('a|b')).toMatch(/illegal/i)
+      expect(validateFolderName('a?b')).toMatch(/illegal/i)
     })
 
     it('rejects trailing space or dot', () => {
