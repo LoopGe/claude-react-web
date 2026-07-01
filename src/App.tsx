@@ -5,6 +5,7 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { SessionList } from './components/SessionList'
 import { ChatPanel } from './components/ChatPanel'
+import { PanelSlot } from './components/PanelSlot'
 import { api } from './hooks/useApi'
 import { isInAppDrag, readDragPayload } from './hooks/useDragPayload'
 import { useIsMobile } from './hooks/useIsMobile'
@@ -2658,8 +2659,9 @@ export function App() {
                 // (e.g. a malformed assistant message), the other open
                 // panels and the sidebar keep working. children identity
                 // changes on prop updates, so a recovered render auto-clears.
-                <ErrorBoundary key={s.id}>
-                  <ChatPanel
+                <PanelSlot key={i}>
+                  <ErrorBoundary key={s.id}>
+                    <ChatPanel
                     session={s}
                     focused={s.id === focusedId}
                     hasUnread={!!unread[s.id]}
@@ -2715,6 +2717,7 @@ export function App() {
                     skin={skin}
                   />
                 </ErrorBoundary>
+                </PanelSlot>
               )
               if (i === openSessions.length - 1) return [node]
               return [
