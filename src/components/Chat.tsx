@@ -1268,6 +1268,7 @@ export const Chat = memo(function Chat({
           onSwitchModel={() => onOpenSettingsTab(session.id, 'general')}
           onAbortBash={abortBashCommand}
           onVisibleRangeChange={handleVisibleRangeChange}
+          cwd={session.cwd}
         />
         </div>
         </ReopenQuestionProvider>

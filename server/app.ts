@@ -14,6 +14,7 @@ import { createErrorHandler } from './errors.js'
 import { buildApiRouter } from './routes/index.js'
 import { buildFsRouter } from './fs-routes.js'
 import { buildGitRouter } from './git-routes.js'
+import { buildEditLocateRouter } from './edit-locate-routes.js'
 import { buildMcpConfigRouter } from './mcp-routes.js'
 import { buildSnippetRouter } from './snippet-routes.js'
 import { buildUiStateRouter } from './routes/ui-state-routes.js'
@@ -226,6 +227,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
   app.route('/api', apiRouter)
   app.route('/api/fs', buildFsRouter())
   app.route('/api/git', buildGitRouter())
+  app.route('/api/edit-locate', buildEditLocateRouter())
   if (opts.mcpConfigStore) {
     app.route('/api/mcp-config', buildMcpConfigRouter(opts.mcpConfigStore))
   }

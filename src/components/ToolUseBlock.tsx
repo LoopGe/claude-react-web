@@ -25,11 +25,13 @@
 // status badge from running → success/error when the matching tool_result
 // lands. Without it, the badge would be permanently stuck on "running".
 
-import { memo, type ComponentType, type ReactNode } from 'react'
+import { memo, useMemo, type ComponentType, type ReactNode } from 'react'
 import { Markdown } from './Markdown'
 import { usePlanStatus, usePlanContent } from '../hooks/usePlanStatus'
 import { useQuestionAnswers } from '../hooks/useQuestionAnswers'
 import { useReopenQuestion } from '../hooks/useReopenQuestion'
+import { useSessionCwd } from '../hooks/useSessionCwd'
+import { useEditStartLines, type EditAnchor } from '../hooks/useEditStartLines'
 import { SubagentCard } from './SubagentCard'
 import { WorkflowCard } from './WorkflowCard'
 import { ToolCard } from './ToolCard'
@@ -545,29 +547,53 @@ function QuestionItemView({
 // ---------------------------------------------------------------------------
 
 const EditToolView = memo(function EditToolView({ input, toolUseId, searchQuery, activeMatchIdx }: ToolViewProps) {
-  if (!input || typeof input !== 'object') {
-    return <div className="tool-input">{formatJson(input)}</div>
-  }
+  // Hooks must run before the early return below, so derive editList /
+  // filePath via useMemo and resolve start lines unconditionally.
+  const cwd = useSessionCwd()
 
-  const filePath = typeof input.file_path === 'string' ? input.file_path : null
-  const edits = input.edits
+  const filePath = useMemo(
+    () =>
+      input && typeof input === 'object' && typeof input.file_path === 'string'
+        ? input.file_path
+        : null,
+    [input],
+  )
 
   // MultiEdit: { file_path, edits: [{ old_string, new_string }] }
   // Single Edit: { file_path, old_string, new_string }
-  const editList: Array<{ old: string; new: string }> = Array.isArray(edits)
-    ? edits.map((e) => {
+  const editList = useMemo<Array<{ old: string; new: string }>>(() => {
+    if (!input || typeof input !== 'object') return []
+    const edits = input.edits
+    if (Array.isArray(edits)) {
+      return edits.map((e) => {
         const o = e as Record<string, unknown>
         return {
           old: typeof o.old_string === 'string' ? o.old_string : '',
           new: typeof o.new_string === 'string' ? o.new_string : '',
         }
       })
-    : [
-        {
-          old: typeof input.old_string === 'string' ? input.old_string : '',
-          new: typeof input.new_string === 'string' ? input.new_string : '',
-        },
-      ]
+    }
+    return [
+      {
+        old: typeof input.old_string === 'string' ? input.old_string : '',
+        new: typeof input.new_string === 'string' ? input.new_string : '',
+      },
+    ]
+  }, [input])
+
+  // Real file line numbers per edit — the server reads <cwd>/<path> and
+  // locates new_string (applied) or old_string (not applied). null while
+  // loading or when the location can't be pinned down (file changed /
+  // ambiguous / missing) — DiffChunk then renders no gutter rather than a
+  // misleading number.
+  const anchors = useMemo<EditAnchor[]>(() => editList.map((e) => ({ old: e.old, new: e.new })), [editList])
+  const startLines = useEditStartLines(cwd, filePath ?? undefined, anchors)
+
+  if (!input || typeof input !== 'object') {
+    return <div className="tool-input">{formatJson(input)}</div>
+  }
+
+  const edits = input.edits
 
   // Copy: serialise the edit as -/+ marked lines so a paste into chat,
   // a code review tool, or a Slack thread reads visually like a diff.
@@ -610,6 +636,7 @@ const EditToolView = memo(function EditToolView({ input, toolUseId, searchQuery,
             newText={e.new}
             filePath={filePath ?? undefined}
             label={editList.length > 1 ? `edit ${i + 1}` : undefined}
+            startLine={startLines[i]}
           />
         ))}
       </div>
@@ -657,24 +684,106 @@ const WriteToolView = memo(function WriteToolView({ input, toolUseId, searchQuer
 // Shared sub-components (diff rendering)
 // ---------------------------------------------------------------------------
 
+/** Line-level LCS diff of two strings → interleaved op sequence
+ *  (equal / delete / add) with 0-based oldIdx / newIdx per op. Used by
+ *  DiffChunk to render a unified-style interleaved diff (claude-code /
+ *  `git diff` reading order) instead of a before/after split.
+ *
+ *  O(M·N) DP is fine here: old_string / new_string are edit fragments, not
+ *  whole files, so M and N are small (typically <100 lines). */
+type LineDiffOp =
+  | { type: 'eq'; oldIdx: number; newIdx: number; text: string }
+  | { type: 'del'; oldIdx: number; newIdx: number; text: string }
+  | { type: 'add'; oldIdx: number; newIdx: number; text: string }
+
+function lineDiff(oldLines: readonly string[], newLines: readonly string[]): LineDiffOp[] {
+  const m = oldLines.length
+  const n = newLines.length
+  if (m === 0) return newLines.map((text, j) => ({ type: 'add' as const, oldIdx: 0, newIdx: j, text }))
+  if (n === 0) return oldLines.map((text, i) => ({ type: 'del' as const, oldIdx: i, newIdx: 0, text }))
+
+  // LCS length DP, built from the bottom-right so we can walk forward.
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0))
+  for (let i = m - 1; i >= 0; i--) {
+    const row = dp[i]
+    const next = dp[i + 1]
+    const oi = oldLines[i]
+    for (let j = n - 1; j >= 0; j--) {
+      row[j] = oi === newLines[j] ? next[j + 1] + 1 : Math.max(next[j], row[j + 1])
+    }
+  }
+
+  const ops: LineDiffOp[] = []
+  let i = 0
+  let j = 0
+  while (i < m && j < n) {
+    if (oldLines[i] === newLines[j]) {
+      ops.push({ type: 'eq', oldIdx: i, newIdx: j, text: oldLines[i] })
+      i++; j++
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      ops.push({ type: 'del', oldIdx: i, newIdx: j, text: oldLines[i] })
+      i++
+    } else {
+      ops.push({ type: 'add', oldIdx: i, newIdx: j, text: newLines[j] })
+      j++
+    }
+  }
+  while (i < m) {
+    ops.push({ type: 'del', oldIdx: i, newIdx: j, text: oldLines[i] })
+    i++
+  }
+  while (j < n) {
+    ops.push({ type: 'add', oldIdx: i, newIdx: j, text: newLines[j] })
+    j++
+  }
+  return ops
+}
+
 /** Render a single diff line with optional syntax highlighting via the
  *  shared lowlight instance. Empty / unknown-language lines fall back to
- *  plain text rather than throwing. */
+ *  plain text rather than throwing. The gutter is two columns (old | new):
+ *  ctx rows show both, del rows blank the new cell, add rows blank the old
+ *  cell. When a column's width is 0/undefined the cell isn't rendered. */
 const DiffLine = memo(function DiffLine({
   line,
   marker,
   variant,
   language,
+  oldLine,
+  newLine,
+  gutterOldWidth,
+  gutterNewWidth,
 }: {
   line: string
   marker: '+' | '-' | ' '
   variant: 'add' | 'del' | 'ctx'
   language: string | null
+  /** Old-file line number for the gutter (ctx / del rows). undefined = blank
+   *  cell. The old cell only renders when gutterOldWidth > 0. */
+  oldLine?: number
+  /** New-file line number for the gutter (ctx / add rows). undefined = blank. */
+  newLine?: number
+  /** Old gutter column width in ch (0 / undefined → don't render the cell). */
+  gutterOldWidth?: number
+  /** New gutter column width in ch (0 / undefined → don't render the cell). */
+  gutterNewWidth?: number
 }) {
   // Empty lines: skip highlighting for a tiny perf win.
   const hast = line && language ? highlightLineHast(language, line) : null
+  const showOld = (gutterOldWidth ?? 0) > 0
+  const showNew = (gutterNewWidth ?? 0) > 0
   return (
     <div className={`diff-line diff-line-${variant === 'add' ? 'add' : variant === 'del' ? 'del' : 'ctx'}`}>
+      {showOld && (
+        <span className="diff-line-gutter diff-line-gutter-old" style={{ minWidth: `${gutterOldWidth}ch` }}>
+          {oldLine ?? ''}
+        </span>
+      )}
+      {showNew && (
+        <span className="diff-line-gutter diff-line-gutter-new" style={{ minWidth: `${gutterNewWidth}ch` }}>
+          {newLine ?? ''}
+        </span>
+      )}
       <span className="diff-line-marker">{marker}</span>
       <span className="diff-line-text">
         {hast ?? line}
@@ -688,26 +797,67 @@ const DiffChunk = memo(function DiffChunk({
   newText,
   filePath,
   label,
+  startLine,
 }: {
   oldText: string
   newText: string
   filePath?: string
   label?: string
+  /** 1-based file line where this edit's old_string / new_string begins.
+   *  Edit replaces in place, so old and new fragments share this start line.
+   *  Computed server-side by locating the string in the current file (see
+   *  /api/edit-locate). null = couldn't be located (ambiguous / file changed
+   *  / missing) → no gutter, interleaved +/- markers still render. undefined
+   *  = not fetched yet → same as null until it resolves. */
+  startLine?: number | null
 }) {
-  const oldLines = oldText.split('\n')
-  const newLines = newText.split('\n')
   const language = filePath ? detectLangSafe(filePath) : null
+  // '' → 0 lines (pure insertion / deletion); '\n' → ['', ''] (two empty
+  // lines). Without this guard an empty old_string would render a spurious
+  // empty del row.
+  const oldLines = useMemo(
+    () => (oldText === '' ? [] : oldText.split('\n')),
+    [oldText],
+  )
+  const newLines = useMemo(
+    () => (newText === '' ? [] : newText.split('\n')),
+    [newText],
+  )
+  const ops = useMemo(() => lineDiff(oldLines, newLines), [oldLines, newLines])
+
+  const hasGutter = typeof startLine === 'number'
+  // Width each column to its widest number so rows align. ctx rows show
+  // both numbers; del rows blank the new cell; add rows blank the old cell.
+  const gutterOldWidth = hasGutter && oldLines.length > 0
+    ? String(startLine! + oldLines.length - 1).length
+    : 0
+  const gutterNewWidth = hasGutter && newLines.length > 0
+    ? String(startLine! + newLines.length - 1).length
+    : 0
 
   return (
     <>
       {label && <div className="diff-chunk-label">{label}</div>}
       <div className="diff-lines">
-        {oldLines.map((line, i) => (
-          <DiffLine key={`del-${i}`} line={line} marker="-" variant="del" language={language} />
-        ))}
-        {newLines.map((line, i) => (
-          <DiffLine key={`add-${i}`} line={line} marker="+" variant="add" language={language} />
-        ))}
+        {ops.map((op, idx) => {
+          const variant = op.type === 'eq' ? 'ctx' : op.type === 'del' ? 'del' : 'add'
+          const marker = op.type === 'eq' ? ' ' : op.type === 'del' ? '-' : '+'
+          const oldLine = hasGutter && op.type !== 'add' ? startLine! + op.oldIdx : undefined
+          const newLine = hasGutter && op.type !== 'del' ? startLine! + op.newIdx : undefined
+          return (
+            <DiffLine
+              key={idx}
+              line={op.text}
+              marker={marker}
+              variant={variant}
+              language={language}
+              oldLine={oldLine}
+              newLine={newLine}
+              gutterOldWidth={gutterOldWidth}
+              gutterNewWidth={gutterNewWidth}
+            />
+          )
+        })}
       </div>
     </>
   )
@@ -730,6 +880,9 @@ const ExpandableDiff = memo(function ExpandableDiff({
 }) {
   const language = filePath ? detectLangSafe(filePath) : null
   const total = lines.length
+  // Pure additions (Write / NotebookEdit) → single new-file line-number
+  // column, no old column.
+  const gutterNewWidth = String(total).length
   if (total <= MAX_PREVIEW_LINES) {
     return (
       <div className="diff-lines">
@@ -740,6 +893,8 @@ const ExpandableDiff = memo(function ExpandableDiff({
             marker="+"
             variant="add"
             language={language}
+            newLine={i + 1}
+            gutterNewWidth={gutterNewWidth}
           />
         ))}
       </div>
@@ -757,6 +912,8 @@ const ExpandableDiff = memo(function ExpandableDiff({
             marker="+"
             variant="add"
             language={language}
+            newLine={i + 1}
+            gutterNewWidth={gutterNewWidth}
           />
         ))}
       </div>
@@ -776,6 +933,8 @@ const ExpandableDiff = memo(function ExpandableDiff({
               marker="+"
               variant="add"
               language={language}
+              newLine={MAX_PREVIEW_LINES + i + 1}
+              gutterNewWidth={gutterNewWidth}
             />
           ))}
         </div>

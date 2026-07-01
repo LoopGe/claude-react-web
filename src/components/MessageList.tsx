@@ -12,6 +12,7 @@ import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { Markdown } from './Markdown'
 import { PlanStatusProvider, PlanContentProvider, ToolStatusProvider, ToolResultProvider } from '../hooks/usePlanStatus'
 import { QuestionAnswersProvider } from '../hooks/useQuestionAnswers'
+import { SessionCwdProvider } from '../hooks/useSessionCwd'
 import type { SdkMessage } from '../types'
 import { formatTokens, formatElapsed, formatClockTime, formatFullTimestamp } from '../utils/format'
 import { Tooltip } from './Tooltip'
@@ -124,6 +125,10 @@ interface Props {
    *  button on a pending bash card. Undefined when no abort surface is
    *  available (e.g. Side Chat drawer renders its own MessageList without it). */
   onAbortBash?: () => void
+  /** Owning session's cwd. Provided to nested tool cards via SessionCwd
+   *  context so EditToolView can resolve real file line numbers via
+   *  /api/edit-locate. Undefined when no cwd is in scope. */
+  cwd?: string
 }
 
 /** An item in the Virtuoso data array. Pre-computing isCompactSummary
@@ -246,7 +251,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, clearing, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, emptyStateContent, onSwitchModel, onAbortBash, onVisibleRangeChange }: Props) {
+export const MessageList = memo(function MessageList({ items, working, clearing, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, emptyStateContent, onSwitchModel, onAbortBash, onVisibleRangeChange, cwd }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -1283,6 +1288,7 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   }, [streamingOverlayHeight, loadOlder, loadingOlder, hasOlder])
 
   return (
+    <SessionCwdProvider value={cwd}>
     <PlanStatusProvider value={planStatus}>
     <PlanContentProvider value={planContent}>
     <QuestionAnswersProvider value={questionAnswers}>
@@ -1360,6 +1366,7 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     </QuestionAnswersProvider>
     </PlanContentProvider>
     </PlanStatusProvider>
+    </SessionCwdProvider>
   )
 })
 

@@ -341,6 +341,23 @@
   text-align: center;
   user-select: none;
 }
+.diff-line-gutter {
+  flex-shrink: 0;
+  min-width: 2.5ch;
+  text-align: right;
+  color: var(--fg-muted);
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+.diff-line-gutter-old {
+  padding-right: 6px;
+  /* Faint divider between the old-line and new-line columns. */
+  border-right: 1px solid var(--border);
+}
+.diff-line-gutter-new {
+  padding-right: 8px;
+}
 .diff-line-text { flex: 1; }
 .diff-truncation {
   padding: 4px 10px;
@@ -942,6 +959,16 @@
 }
 .todo-pending { color: var(--fg-muted); }
 .todo-pending .todo-icon { opacity: 0.5; }
+/* During a /clear, reuse the transcript's `clear-blur-fade` keyframes
+   (defined in chat.css — @keyframes are global) so the checklist dissolves
+   in sync with the message list instead of snapping out when the server
+   wipes the store. The component freezes the last visible list for the
+   duration so the panel stays mounted (and fading) after `messages`
+   empties. */
+.todo-panel.todo-panel-clearing {
+  animation: clear-blur-fade var(--motion-duration-slow) var(--motion-ease-exit) both;
+  pointer-events: none;
+}
 
 /* Monitor bar — surfaces currently-running Monitor background tasks. Shares
    the visual vocabulary of .todo-panel (sticky, top glow, count chip, pulsing
@@ -1021,6 +1048,15 @@
   -webkit-text-fill-color: transparent;
   color: transparent;
   animation: todo-text-shimmer 2s linear infinite;
+}
+/* During a /clear, reuse the transcript's `clear-blur-fade` keyframes
+   (defined in chat.css — @keyframes are global) so the monitor bar dissolves
+   in sync with the message list instead of snapping out when the server
+   wipes the store. The component freezes the last visible list for the
+   duration so the bar stays mounted (and fading) after `messages` empties. */
+.monitor-bar.monitor-bar-clearing {
+  animation: clear-blur-fade var(--motion-duration-slow) var(--motion-ease-exit) both;
+  pointer-events: none;
 }
 
 /* Inline TodoWrite tool-use rendering (inside the message transcript).
@@ -1114,6 +1150,9 @@
     color: var(--accent);
     font-weight: 600;
   }
+  /* Mirror the transcript's reduced-motion clear: no animation, just hidden. */
+  .todo-panel.todo-panel-clearing { animation: none; opacity: 0; }
+  .monitor-bar.monitor-bar-clearing { animation: none; opacity: 0; }
   .monitor-text {
     animation: none;
     background: none;
