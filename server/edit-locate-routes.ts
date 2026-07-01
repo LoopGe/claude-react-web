@@ -13,11 +13,16 @@
 // `buildEditLocateRouter()` returning a bare app, mounted on /api/edit-locate
 // by buildApp(); inline validation throws HttpError(400) → JSON via onError.
 //
-// The route returns hunks (line numbers + diff lines) — never raw file
-// contents — so the "directory-only /api/fs" content posture is preserved.
+// Path safety: the request's `path` may be relative or absolute, but the
+// resolved absolute path MUST live inside `cwd`. Absolute paths outside cwd
+// and relative paths that escape via `..` are rejected with 400. Without this
+// gate the route would leak arbitrary file contents in hunk `lines[]` (the
+// context lines are literal file text with a diff-marker prefix), which is
+// inconsistent with the directory-only /api/fs posture and the
+// validateRepoRelativePath discipline used by /api/git/*.
 
 import { Hono } from 'hono'
-import { isAbsolute, resolve as resolvePath } from 'node:path'
+import { isAbsolute, relative as relativePath, resolve as resolvePath } from 'node:path'
 import { readFile, stat } from 'node:fs/promises'
 import { structuredPatch } from 'diff'
 import { HttpError, createErrorHandler } from './errors.js'
@@ -94,7 +99,18 @@ export function buildEditLocateRouter(): Hono {
       parsed.push({ old: o.old, new: o.new })
     }
 
-    const absPath = isAbsolute(filePath) ? filePath : resolvePath(cwd, filePath)
+    const absPath = isAbsolute(filePath) ? resolvePath(filePath) : resolvePath(cwd, filePath)
+    // Reject any resolved path that escapes cwd. `path.relative(cwd, absPath)`
+    // starts with '..' iff absPath is outside cwd; `isAbsolute(rel)` catches
+    // the Windows cross-drive case where `relative` returns an absolute path.
+    // We allow absPath === cwd (relative returns '') on the assumption a
+    // directory has no `old`/`new` string to match, so the read below will
+    // fail benignly — no need to special-case it here.
+    const cwdNormalized = resolvePath(cwd)
+    const rel = relativePath(cwdNormalized, absPath)
+    if (rel.startsWith('..') || isAbsolute(rel)) {
+      throw new HttpError(400, 'path must be within cwd')
+    }
     const content = await readFileText(absPath)
     if (content === null) {
       return c.json({ results: parsed.map(() => ({ hunks: null })) })
