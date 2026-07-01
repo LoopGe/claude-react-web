@@ -145,6 +145,28 @@ describe('PermissionDialog plan approval', () => {
       interrupt: true,
     })
   })
+
+  it('Esc on a plan dialog denies with interrupt:true', () => {
+    const onDecide = vi.fn()
+    const { container } = render(
+      <PermissionDialog request={planRequest()} onDecide={onDecide} currentMode={'default'} />,
+    )
+    const dialog = container.querySelector('.perm-card') as HTMLElement
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    expect(onDecide).toHaveBeenCalledWith({ behavior: 'deny', interrupt: true })
+  })
+})
+
+describe('PermissionDialog Esc', () => {
+  it('Esc on a plain tool dialog denies without interrupt (regression)', () => {
+    const onDecide = vi.fn()
+    const { container } = render(
+      <PermissionDialog request={toolRequest()} onDecide={onDecide} currentMode={'default'} />,
+    )
+    const dialog = container.querySelector('.perm-card') as HTMLElement
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    expect(onDecide).toHaveBeenCalledWith({ behavior: 'deny' })
+  })
 })
 
 describe('PermissionDialog minimize button', () => {

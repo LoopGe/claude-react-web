@@ -69,8 +69,16 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
     onDecide(d)
   }
 
+  // Plan-mode approval is its own UX: the request is "I'm done planning,
+  // here's the plan — should I start executing?" The dialog renders the
+  // plan as markdown and the Allow/Deny buttons re-label so they read
+  // like a code-review approval rather than a tool gate.
+  const isPlanRequest = PLAN_TOOL_NAMES.has(request.toolName)
+
   // Escape should deny and close — not fall through to the global Escape
-  // handler which would interrupt the session instead.
+  // handler which would interrupt the session instead. For plan requests,
+  // Esc means "stop the turn" (interrupt:true, aligns with the CLI); for
+  // plain tool permissions, Esc is a soft deny (model re-plans).
   useEffect(() => {
     const el = dialogRef.current
     if (!el) return
@@ -78,18 +86,17 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
       if (open && e.key === 'Escape' && !busyRef.current) {
         e.preventDefault()
         e.stopPropagation()
-        click({ behavior: 'deny' })
+        if (isPlanRequest) {
+          click({ behavior: 'deny', interrupt: true })
+        } else {
+          click({ behavior: 'deny' })
+        }
       }
     }
     el.addEventListener('keydown', onKey)
     return () => el.removeEventListener('keydown', onKey)
   })
 
-  // Plan-mode approval is its own UX: the request is "I'm done planning,
-  // here's the plan — should I start executing?" The dialog renders the
-  // plan as markdown and the Allow/Deny buttons re-label so they read
-  // like a code-review approval rather than a tool gate.
-  const isPlanRequest = PLAN_TOOL_NAMES.has(request.toolName)
   const planInput = isPlanRequest ? (request.input as Record<string, unknown> | undefined) : undefined
   const planText =
     typeof planInput?.plan === 'string'
