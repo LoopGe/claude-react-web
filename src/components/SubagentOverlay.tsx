@@ -7,7 +7,7 @@
 import { memo, useEffect } from 'react'
 import { MessageList } from './MessageList'
 import { formatElapsed } from '../utils/format'
-import { IconX } from './icons/ToolIcons'
+import { IconX, IconArrowLeft } from './icons/ToolIcons'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 
@@ -116,25 +116,16 @@ export const SubagentOverlay = memo(function SubagentOverlay({
     >
       <div className="subagent-overlay-panel">
         <div className="subagent-overlay-header">
-          {stack.length > 1 ? (
-            <button
-              type="button"
-              className="subagent-overlay-back"
-              onClick={onPop}
-              disabled={isExiting}
-              title="Back to outer subagent"
-              aria-label="Back"
-            >
-              ⏴
-            </button>
-          ) : (
-            // Reserve the back-button slot when there's nothing to go
-            // back to, so drilling 1→2 (and back 2→1) does not jump
-            // every label in the title row sideways by ~36px (button
-            // width + gap). The placeholder is aria-hidden because it
-            // carries no semantics — it only preserves layout.
-            <span className="subagent-overlay-back-spacer" aria-hidden />
-          )}
+          <button
+            type="button"
+            className="subagent-overlay-back"
+            onClick={stack.length > 1 ? onPop : onClose}
+            disabled={isExiting}
+            title={stack.length > 1 ? 'Back to outer subagent' : 'Back to conversation'}
+            aria-label="Back"
+          >
+            <IconArrowLeft size={14} />
+          </button>
           <div className="subagent-overlay-title">
             {stack.length > 1 && (
               <span className="subagent-overlay-breadcrumb">

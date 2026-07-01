@@ -1607,14 +1607,6 @@
   color: var(--fg);
   background: var(--bg-elev);
 }
-/* Layout placeholder rendered when there is no Back button (stack
- * depth = 1). Same width footprint as `.subagent-overlay-back` so
- * drilling between depth 1 ?2 does not shift the title sideways. */
-.subagent-overlay-back-spacer {
-  display: inline-block;
-  width: 28px;
-  flex-shrink: 0;
-}
 .subagent-overlay-title {
   flex: 1;
   min-width: 0;
