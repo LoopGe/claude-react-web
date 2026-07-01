@@ -1,35 +1,63 @@
-// Resolve real file line numbers for Edit / MultiEdit diff cards.
+// Resolve real file line numbers + context for Edit / MultiEdit diff cards.
 //
 // The SDK's Edit tool input carries only { file_path, old_string, new_string }
 // — no file line offset — so the client can't know where in the file an edit
-// lands without reading the file. This route reads <cwd>/<path> and locates
-// new_string (edit already applied) or old_string (not yet applied / denied),
-// returning the 1-based start line per anchor. Mirrors claude-code's
-// read-file-and-locate approach (structuredPatch), adapted to our
-// client/server split where the SDK runs Edit in a subprocess and doesn't
-// surface line info.
+// lands without reading the file. This route reads <cwd>/<path>, reconstructs
+// the old/new file contents around the edit, and runs `diff`'s
+// `structuredPatch` to produce a canonical unified-diff hunk (with real
+// old/new line numbers and K lines of context) per anchor — the same primitive
+// claude-code's in-process FileEditTool uses, re-derived here because the SDK
+// runs Edit in a subprocess and doesn't surface line info.
 //
 // Conventions mirror fs-routes.ts / git-routes.ts: Hono factory
 // `buildEditLocateRouter()` returning a bare app, mounted on /api/edit-locate
 // by buildApp(); inline validation throws HttpError(400) → JSON via onError.
 //
-// The route returns line numbers only — never file contents — so the
-// "directory-only /api/fs" content posture is preserved.
+// The route returns hunks (line numbers + diff lines) — never raw file
+// contents — so the "directory-only /api/fs" content posture is preserved.
 
 import { Hono } from 'hono'
 import { isAbsolute, resolve as resolvePath } from 'node:path'
 import { readFile, stat } from 'node:fs/promises'
+import { structuredPatch } from 'diff'
 import { HttpError, createErrorHandler } from './errors.js'
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024
 const MAX_ANCHORS = 100
 /** Unchanged context lines shown above and below each edit hunk (git-diff
- *  style). The client mirrors this for line-number arithmetic. */
+ *  style), passed straight to structuredPatch. */
 const DIFF_CONTEXT_LINES = 3
 
 interface Anchor {
   old: string
   new: string
+}
+
+/** Read a file's text. Returns null when the path is missing / not a regular
+ *  file / too large / unreadable. */
+async function readFileText(absPath: string): Promise<string | null> {
+  let st
+  try {
+    st = await stat(absPath)
+  } catch {
+    return null
+  }
+  if (!st.isFile()) return null
+  if (st.size > MAX_FILE_BYTES) return null
+  try {
+    return await readFile(absPath, 'utf8')
+  } catch {
+    return null
+  }
+}
+
+/** True if `needle` occurs exactly once in `content` (so its position is
+ *  unambiguous). Empty needle → false. */
+function isUnique(content: string, needle: string): boolean {
+  if (needle.length === 0) return false
+  const first = content.indexOf(needle)
+  if (first === -1) return false
+  return content.indexOf(needle, first + needle.length) === -1
 }
 
 export function buildEditLocateRouter(): Hono {
@@ -67,72 +95,33 @@ export function buildEditLocateRouter(): Hono {
     }
 
     const absPath = isAbsolute(filePath) ? filePath : resolvePath(cwd, filePath)
-    const nulls = (): (number | null)[] => parsed.map(() => null)
-
-    let content: string
-    try {
-      const st = await stat(absPath)
-      // Not a regular file (directory / missing / special) → no line info.
-      if (!st.isFile()) return c.json({ lines: nulls() })
-      // Cap the read so a giant generated file can't stall the request.
-      if (st.size > MAX_FILE_BYTES) return c.json({ lines: nulls() })
-      content = await readFile(absPath, 'utf8')
-    } catch {
-      // File missing / unreadable — edit may target a not-yet-created file,
-      // or be outside the reachable filesystem. No line info.
-      return c.json({ lines: nulls() })
-    }
-
-    // Precompute newline offsets once for O(log N) line lookup per anchor.
-    const nl: number[] = []
-    for (let i = 0; i < content.length; i++) {
-      if (content.charCodeAt(i) === 10) nl.push(i)
-    }
-    const lineAt = (idx: number): number => {
-      // 1-based line number of character index idx = (count of '\n' before idx) + 1.
-      let lo = 0
-      let hi = nl.length
-      while (lo < hi) {
-        const mid = (lo + hi) >>> 1
-        if (nl[mid] < idx) lo = mid + 1
-        else hi = mid
-      }
-      return lo + 1
-    }
-
-    /** Find the 1-based start AND end line of `needle` in `content`, or null
-     *  when the needle is absent or appears more than once (ambiguous → we'd
-     *  rather show no gutter than a wrong one). endLine is inclusive and
-     *  spans the needle's full line count (multi-line strings included). */
-    const locateUnique = (needle: string): { startLine: number; endLine: number } | null => {
-      if (needle.length === 0) return null
-      const first = content.indexOf(needle)
-      if (first === -1) return null
-      if (content.indexOf(needle, first + needle.length) !== -1) return null
-      const startLine = lineAt(first)
-      const endLine = startLine + needle.split('\n').length - 1
-      return { startLine, endLine }
-    }
-
-    // Surrounding unchanged context lines (git-diff style) so the hunk reads
-    // with its actual file neighbourhood. before = K lines immediately above
-    // the match; after = K lines immediately below. Clamped at file start/end.
-    const fileLines = content.split('\n')
-    const sliceCtx = (startLine: number, endLine: number) => {
-      const beforeStart = Math.max(0, startLine - 1 - DIFF_CONTEXT_LINES)
-      const before = fileLines.slice(beforeStart, startLine - 1)
-      const after = fileLines.slice(endLine, endLine + DIFF_CONTEXT_LINES)
-      return { before, after }
+    const content = await readFileText(absPath)
+    if (content === null) {
+      return c.json({ results: parsed.map(() => ({ hunks: null })) })
     }
 
     const results = parsed.map(({ old, new: neu }) => {
-      // Applied edit: new_string is in the file. Not applied / denied:
-      // old_string is. Try new first, then old. The surrounding context is
-      // the same unchanged region either way.
-      const matched = locateUnique(neu) ?? locateUnique(old)
-      if (!matched) return { startLine: null, before: [], after: [] }
-      const { startLine, endLine } = matched
-      return { startLine, ...sliceCtx(startLine, endLine) }
+      // Reconstruct old/new file contents around the edit so structuredPatch
+      // can compute a real unified-diff hunk (line numbers + context) in one
+      // shot. Applied edit → new_string is in the file; not applied / denied
+      // → old_string is. Require uniqueness so the reconstruction targets the
+      // right occurrence; otherwise we'd rather show no gutter than a wrong
+      // one.
+      let oldContent: string
+      let newContent: string
+      if (isUnique(content, neu)) {
+        newContent = content
+        oldContent = content.replace(neu, old)
+      } else if (isUnique(content, old)) {
+        oldContent = content
+        newContent = content.replace(old, neu)
+      } else {
+        return { hunks: null }
+      }
+      const patch = structuredPatch(filePath, filePath, oldContent, newContent, '', '', {
+        context: DIFF_CONTEXT_LINES,
+      })
+      return { hunks: patch.hunks }
     })
 
     return c.json({ results })

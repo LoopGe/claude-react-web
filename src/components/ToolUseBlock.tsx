@@ -804,15 +804,14 @@ const DiffChunk = memo(function DiffChunk({
   newText: string
   filePath?: string
   label?: string
-  /** Server-resolved start line + surrounding context for this edit. null /
-   *  undefined startLine → no gutter and no context, interleaved +/- markers
-   *  still render. */
+  /** Server-resolved unified-diff hunks for this edit. null / undefined → no
+   *  gutter and no context; the bare interleaved +/- fragment still renders. */
   info?: EditDiffInfo | null
 }) {
   const language = filePath ? detectLangSafe(filePath) : null
   // '' → 0 lines (pure insertion / deletion); '\n' → ['', ''] (two empty
   // lines). Without this guard an empty old_string would render a spurious
-  // empty del row.
+  // empty del row. Used only for the no-hunks fallback.
   const oldLines = useMemo(
     () => (oldText === '' ? [] : oldText.split('\n')),
     [oldText],
@@ -823,42 +822,99 @@ const DiffChunk = memo(function DiffChunk({
   )
   const ops = useMemo(() => lineDiff(oldLines, newLines), [oldLines, newLines])
 
-  const startLine = info?.startLine ?? null
-  const before = info?.before ?? []
-  const after = info?.after ?? []
-  const hasGutter = typeof startLine === 'number'
-  const m = oldLines.length
-  const n = newLines.length
+  const hunks = info?.hunks ?? null
 
-  // Width each column to its widest visible number (the after-context's last
-  // line is the largest) so ctx / del / add rows stay aligned across the hunk.
-  const maxOldLine = startLine !== null ? startLine + m + after.length - 1 : 0
-  const maxNewLine = startLine !== null ? startLine + n + after.length - 1 : 0
-  const gutterOldWidth = hasGutter && maxOldLine > 0 ? String(maxOldLine).length : 0
-  const gutterNewWidth = hasGutter && maxNewLine > 0 ? String(maxNewLine).length : 0
+  if (hunks && hunks.length > 0) {
+    // Width each column to its widest visible number so ctx / del / add rows
+    // stay aligned across every hunk.
+    let maxOld = 0
+    let maxNew = 0
+    for (const h of hunks) {
+      maxOld = Math.max(maxOld, h.oldStart + h.oldLines - 1)
+      maxNew = Math.max(maxNew, h.newStart + h.newLines - 1)
+    }
+    const gutterOldWidth = maxOld > 0 ? String(maxOld).length : 0
+    const gutterNewWidth = maxNew > 0 ? String(maxNew).length : 0
 
+    // Walk each hunk's lines, tracking the running old/new line number.
+    // structuredPatch prefixes lines with ' ' (ctx) / '-' (del) / '+' (add);
+    // ctx increments both counters, del increments old, add increments new.
+    const rows: ReactNode[] = []
+    for (let hi = 0; hi < hunks.length; hi++) {
+      const h = hunks[hi]
+      let oldLine = h.oldStart
+      let newLine = h.newStart
+      for (let li = 0; li < h.lines.length; li++) {
+        const raw = h.lines[li]
+        const prefix = raw[0]
+        const text = raw.slice(1)
+        if (prefix === ' ') {
+          rows.push(
+            <DiffLine
+              key={`${hi}-${li}`}
+              line={text}
+              marker=" "
+              variant="ctx"
+              language={language}
+              oldLine={oldLine}
+              newLine={newLine}
+              gutterOldWidth={gutterOldWidth}
+              gutterNewWidth={gutterNewWidth}
+            />,
+          )
+          oldLine++
+          newLine++
+        } else if (prefix === '-') {
+          rows.push(
+            <DiffLine
+              key={`${hi}-${li}`}
+              line={text}
+              marker="-"
+              variant="del"
+              language={language}
+              oldLine={oldLine}
+              gutterOldWidth={gutterOldWidth}
+              gutterNewWidth={gutterNewWidth}
+            />,
+          )
+          oldLine++
+        } else if (prefix === '+') {
+          rows.push(
+            <DiffLine
+              key={`${hi}-${li}`}
+              line={text}
+              marker="+"
+              variant="add"
+              language={language}
+              newLine={newLine}
+              gutterOldWidth={gutterOldWidth}
+              gutterNewWidth={gutterNewWidth}
+            />,
+          )
+          newLine++
+        }
+        // Other prefixes (e.g. '\ No newline at end of file') are skipped.
+      }
+    }
+
+    return (
+      <>
+        {label && <div className="diff-chunk-label">{label}</div>}
+        <div className="diff-lines">{rows}</div>
+      </>
+    )
+  }
+
+  // Fallback: edit couldn't be located in the file, so no line numbers /
+  // context. Render the bare interleaved +/- fragment so the card still shows
+  // what changed.
   return (
     <>
       {label && <div className="diff-chunk-label">{label}</div>}
       <div className="diff-lines">
-        {hasGutter && before.map((line, i) => (
-          <DiffLine
-            key={`b-${i}`}
-            line={line}
-            marker=" "
-            variant="ctx"
-            language={language}
-            oldLine={startLine! - before.length + i}
-            newLine={startLine! - before.length + i}
-            gutterOldWidth={gutterOldWidth}
-            gutterNewWidth={gutterNewWidth}
-          />
-        ))}
         {ops.map((op, idx) => {
           const variant = op.type === 'eq' ? 'ctx' : op.type === 'del' ? 'del' : 'add'
           const marker = op.type === 'eq' ? ' ' : op.type === 'del' ? '-' : '+'
-          const oldLine = hasGutter && op.type !== 'add' ? startLine! + op.oldIdx : undefined
-          const newLine = hasGutter && op.type !== 'del' ? startLine! + op.newIdx : undefined
           return (
             <DiffLine
               key={idx}
@@ -866,26 +922,9 @@ const DiffChunk = memo(function DiffChunk({
               marker={marker}
               variant={variant}
               language={language}
-              oldLine={oldLine}
-              newLine={newLine}
-              gutterOldWidth={gutterOldWidth}
-              gutterNewWidth={gutterNewWidth}
             />
           )
         })}
-        {hasGutter && after.map((line, i) => (
-          <DiffLine
-            key={`a-${i}`}
-            line={line}
-            marker=" "
-            variant="ctx"
-            language={language}
-            oldLine={startLine! + m + i}
-            newLine={startLine! + n + i}
-            gutterOldWidth={gutterOldWidth}
-            gutterNewWidth={gutterNewWidth}
-          />
-        ))}
       </div>
     </>
   )

@@ -1,15 +1,13 @@
-// Resolve real file line numbers + surrounding context for Edit / MultiEdit
-// diff chunks.
+// Resolve real file line numbers + context for Edit / MultiEdit diff chunks.
 //
 // The SDK's Edit tool input carries only { file_path, old_string, new_string }
 // — no file line offset — so a chunk can't know where in the file it lands.
-// This hook asks the server (POST /api/edit-locate) to read <cwd>/<path> and
-// locate new_string (edit applied) or old_string (not applied / denied),
-// returning the 1-based start line plus K unchanged context lines above and
-// below (git-diff style) so the hunk renders with its real neighbourhood.
-// startLine null means the string couldn't be located (ambiguous / file
-// changed / too large / missing) — callers render no gutter and no context
-// rather than a misleading number.
+// This hook asks the server (POST /api/edit-locate) to read <cwd>/<path>,
+// reconstruct the old/new file contents, and run `diff`'s structuredPatch to
+// produce canonical unified-diff hunks (with real old/new line numbers and K
+// lines of context). null hunks means the edit couldn't be located
+// (ambiguous / file changed / too large / missing) — callers fall back to
+// rendering the bare interleaved +/- fragment with no gutter.
 //
 // Results are cached for the tab lifetime by (cwd, path, anchors) and a single
 // in-flight request per key is shared across concurrent callers, so a
@@ -23,16 +21,20 @@ export interface EditAnchor {
   new: string
 }
 
+/** A unified-diff hunk, mirroring `diff`'s StructuredPatchHunk. oldStart /
+ *  newStart are 1-based; lines are prefixed ' ' (ctx) / '-' (del) / '+'
+ *  (add). */
+export interface EditDiffHunk {
+  oldStart: number
+  oldLines: number
+  newStart: number
+  newLines: number
+  lines: string[]
+}
+
 export interface EditDiffInfo {
-  /** 1-based file line where old_string / new_string begins, or null when
-   *  unlocatable. */
-  startLine: number | null
-  /** Unchanged lines immediately above the edit (oldest first). Empty when
-   *  unlocatable or at file start. */
-  before: string[]
-  /** Unchanged lines immediately below the edit (top first). Empty when
-   *  unlocatable or at file end. */
-  after: string[]
+  /** Unified-diff hunks for this edit, or null when unlocatable. */
+  hunks: EditDiffHunk[] | null
 }
 
 const cache = new Map<string, EditDiffInfo[]>()
@@ -47,12 +49,12 @@ function cacheKey(
 }
 
 function emptyResult(anchors: readonly EditAnchor[]): EditDiffInfo[] {
-  return anchors.map(() => ({ startLine: null, before: [], after: [] }))
+  return anchors.map(() => ({ hunks: null }))
 }
 
 /** Returns an array aligned with `anchors`: each entry is the edit's
- *  { startLine, before, after }. startLine is null (and context empty) while
- *  loading or unlocatable. No-op when cwd or filePath is missing. */
+ *  { hunks }. hunks is null while loading or unlocatable. No-op when cwd or
+ *  filePath is missing. */
 export function useEditDiffInfo(
   cwd: string | undefined,
   filePath: string | undefined,
@@ -81,9 +83,7 @@ export function useEditDiffInfo(
         .then((r) => {
           const info = Array.isArray(r?.results)
             ? r.results.map((it) => ({
-                startLine: typeof it?.startLine === 'number' ? it.startLine : null,
-                before: Array.isArray(it?.before) ? it.before.map(String) : [],
-                after: Array.isArray(it?.after) ? it.after.map(String) : [],
+                hunks: Array.isArray(it?.hunks) ? it.hunks.map(normalizeHunk) : null,
               }))
             : emptyResult(anchors)
           cache.set(key, info)
@@ -106,4 +106,17 @@ export function useEditDiffInfo(
   }, [key, cwd, filePath, anchors])
 
   return snapshot.info ?? emptyResult(anchors)
+}
+
+/** Coerce a server-supplied hunk to the EditDiffHunk shape, tolerating any
+ *  stray fields. */
+function normalizeHunk(h: unknown): EditDiffHunk {
+  const o = (h ?? {}) as Record<string, unknown>
+  return {
+    oldStart: typeof o.oldStart === 'number' ? o.oldStart : 0,
+    oldLines: typeof o.oldLines === 'number' ? o.oldLines : 0,
+    newStart: typeof o.newStart === 'number' ? o.newStart : 0,
+    newLines: typeof o.newLines === 'number' ? o.newLines : 0,
+    lines: Array.isArray(o.lines) ? o.lines.map(String) : [],
+  }
 }
