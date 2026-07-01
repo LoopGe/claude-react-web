@@ -545,6 +545,33 @@ describe('PermissionBroker', () => {
       expect(session.pending.has(pending.id)).toBe(false)
     })
 
+    it('resolves a pending permission with deny + interrupt:true when requested', () => {
+      const session = makeFakeSession()
+      const pending = makeToolPermission()
+      session.pending.set(pending.id, pending)
+
+      broker.decide(session, pending.id, { behavior: 'deny', message: 'stop', interrupt: true })
+
+      expect(pending.resolve).toHaveBeenCalledWith(expect.objectContaining({
+        behavior: 'deny',
+        message: 'stop',
+        interrupt: true,
+      }))
+    })
+
+    it('defaults interrupt to false when not provided on deny', () => {
+      const session = makeFakeSession()
+      const pending = makeToolPermission()
+      session.pending.set(pending.id, pending)
+
+      broker.decide(session, pending.id, { behavior: 'deny', message: 'nope' })
+
+      expect(pending.resolve).toHaveBeenCalledWith(expect.objectContaining({
+        behavior: 'deny',
+        interrupt: false,
+      }))
+    })
+
     it('promotes suggestions to session when persistForSession=true', () => {
       const session = makeFakeSession()
       const pending = makeToolPermission({

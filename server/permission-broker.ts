@@ -492,8 +492,9 @@ export class PermissionBroker {
    * suggestions to the current session scope, so the same tool+args won't
    * prompt again within this Query.
    *
-   * For "deny": we always return interrupt=false, so the model sees the
-   * deny result and can re-plan rather than aborting the whole turn.
+   * For "deny": `interrupt` defaults to false (the model sees the deny result
+   * and re-plans). A caller can pass `interrupt: true` to abort the whole turn
+   * instead (used by the plan dialog's "Stop & take over" action).
    */
   decide(
     session: Session,
@@ -503,7 +504,7 @@ export class PermissionBroker {
       // mode switch), not here — accepted in the type so the same decision
       // object can flow through unchanged.
       | { behavior: 'allow'; persistForSession?: boolean; planTargetMode?: PermissionMode }
-      | { behavior: 'deny'; message?: string },
+      | { behavior: 'deny'; message?: string; interrupt?: boolean },
   ): void {
     const p = session.pending.get(pid)
     if (!p) throw new HttpError(404, `pending permission ${pid} not found`)
@@ -542,7 +543,7 @@ export class PermissionBroker {
       p.resolve({
         behavior: 'deny',
         message,
-        interrupt: false,
+        interrupt: decision.interrupt ?? false,
         toolUseID: p.toolUseID,
       })
       this.broadcastPermissionResolved(session, pid, {

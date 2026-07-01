@@ -38,4 +38,33 @@ describe('permission routes', () => {
       planTargetMode: 'acceptEdits',
     })
   })
+
+  it('forwards interrupt:true on deny', async () => {
+    const { app, sm } = makeApp()
+    const res = await app.request('/sessions/s1/permissions/p1/decide', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ behavior: 'deny', interrupt: true }),
+    })
+    expect(res.status).toBe(200)
+    expect(sm.decide).toHaveBeenCalledWith('s1', 'p1', {
+      behavior: 'deny',
+      message: undefined,
+      interrupt: true,
+    })
+  })
+
+  it('omits interrupt on deny when not provided', async () => {
+    const { app, sm } = makeApp()
+    const res = await app.request('/sessions/s1/permissions/p1/decide', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ behavior: 'deny', message: 'no' }),
+    })
+    expect(res.status).toBe(200)
+    expect(sm.decide).toHaveBeenCalledWith('s1', 'p1', {
+      behavior: 'deny',
+      message: 'no',
+    })
+  })
 })

@@ -16,7 +16,9 @@ export type PermissionDecision =
   // `planTargetMode` only applies when approving a plan proposal (ExitPlanMode):
   // the execution mode the session switches to after the plan is approved.
   | { behavior: 'allow'; persistForSession: boolean; planTargetMode?: PlanTargetMode }
-  | { behavior: 'deny'; message?: string }
+  // `interrupt` defaults to false (model re-plans). `interrupt: true` aborts
+  // the whole turn — used by the plan dialog's "Stop & take over" action.
+  | { behavior: 'deny'; message?: string; interrupt?: boolean }
 
 /** Execution modes a session can switch into when a plan is approved. */
 export type PlanTargetMode = 'default' | 'acceptEdits' | 'bypassPermissions'

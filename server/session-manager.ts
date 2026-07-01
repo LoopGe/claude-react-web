@@ -2118,15 +2118,15 @@ export class SessionManager {
    * suggestions to the current session scope, so the same tool+args won't
    * prompt again within this Query.
    *
-   * For "deny": we always return interrupt=false, so the model sees the
-   * deny result and can re-plan rather than aborting the whole turn.
+   * For "deny": `interrupt` defaults to false (model re-plans). `interrupt: true`
+   * aborts the turn — used by the plan dialog's "Stop & take over" action.
    */
   async decide(
     sid: string,
     pid: string,
     decision:
       | { behavior: 'allow'; persistForSession?: boolean; planTargetMode?: PermissionMode }
-      | { behavior: 'deny'; message?: string },
+      | { behavior: 'deny'; message?: string; interrupt?: boolean },
   ): Promise<void> {
     const s = this.require(sid)
     // Capture whether this pending is a plan proposal BEFORE broker.decide

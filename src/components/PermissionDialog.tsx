@@ -21,13 +21,19 @@ import { IconClipboardList, IconLock, IconX } from './icons/ToolIcons'
  *  is rendered by `<QuestionDialog />` instead. */
 type PermissionRequestPermission = Extract<PermissionRequest, { kind: 'permission' }>
 
+/** Deny message for the plan "stop the turn" actions (the Stop & take over
+ *  button and Esc on a plan dialog). Contains the `denied by user` rejection
+ *  needle so `computePlanStatus` classifies the resulting tool_result as
+ *  `rejected` (not `approved`), and tells the model the user stopped the turn. */
+const PLAN_STOP_MESSAGE = 'Plan denied by user — stopping the turn.'
+
 interface Props {
   open?: boolean
   request: PermissionRequestPermission
   onDecide: (
     decision:
       | { behavior: 'allow'; persistForSession: boolean; planTargetMode?: PlanTargetMode }
-      | { behavior: 'deny'; message?: string },
+      | { behavior: 'deny'; message?: string; interrupt?: boolean },
   ) => void
   /** Plan body text from ExitPlanMode tool_result outputs.  The CLI
    *  injects plan content into the tool_result (not the tool_use input),
@@ -48,6 +54,7 @@ interface Props {
 export const PermissionDialog = memo(function PermissionDialog({ open = true, request, onDecide, planContentMap, currentMode, onMinimize }: Props) {
   const [showRaw, setShowRaw] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [feedback, setFeedback] = useState('')
   // Ref provides a synchronous guard so that rapid double-clicks
   // can't slip through before React commits the state update.
   const busyRef = useRef(false)
@@ -60,7 +67,7 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
   const click = (
     d:
       | { behavior: 'allow'; persistForSession: boolean; planTargetMode?: PlanTargetMode }
-      | { behavior: 'deny'; message?: string },
+      | { behavior: 'deny'; message?: string; interrupt?: boolean },
   ) => {
     if (busyRef.current) return
     busyRef.current = true
@@ -68,8 +75,16 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
     onDecide(d)
   }
 
+  // Plan-mode approval is its own UX: the request is "I'm done planning,
+  // here's the plan — should I start executing?" The dialog renders the
+  // plan as markdown and the Allow/Deny buttons re-label so they read
+  // like a code-review approval rather than a tool gate.
+  const isPlanRequest = PLAN_TOOL_NAMES.has(request.toolName)
+
   // Escape should deny and close — not fall through to the global Escape
-  // handler which would interrupt the session instead.
+  // handler which would interrupt the session instead. For plan requests,
+  // Esc means "stop the turn" (interrupt:true, aligns with the CLI); for
+  // plain tool permissions, Esc is a soft deny (model re-plans).
   useEffect(() => {
     const el = dialogRef.current
     if (!el) return
@@ -77,18 +92,17 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
       if (open && e.key === 'Escape' && !busyRef.current) {
         e.preventDefault()
         e.stopPropagation()
-        click({ behavior: 'deny' })
+        if (isPlanRequest) {
+          click({ behavior: 'deny', message: PLAN_STOP_MESSAGE, interrupt: true })
+        } else {
+          click({ behavior: 'deny' })
+        }
       }
     }
     el.addEventListener('keydown', onKey)
     return () => el.removeEventListener('keydown', onKey)
   })
 
-  // Plan-mode approval is its own UX: the request is "I'm done planning,
-  // here's the plan — should I start executing?" The dialog renders the
-  // plan as markdown and the Allow/Deny buttons re-label so they read
-  // like a code-review approval rather than a tool gate.
-  const isPlanRequest = PLAN_TOOL_NAMES.has(request.toolName)
   const planInput = isPlanRequest ? (request.input as Record<string, unknown> | undefined) : undefined
   const planText =
     typeof planInput?.plan === 'string'
@@ -238,20 +252,39 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
                   })}
                 </div>
               ))}
+              <textarea
+                className="perm-feedback-input"
+                placeholder="Tell Claude what to change"
+                value={feedback}
+                onChange={(e) => setFeedback(e.target.value)}
+                disabled={busy}
+                rows={2}
+                aria-label="Plan feedback"
+              />
               <div style={{ display: 'flex', gap: 8 }}>
                 <button
+                  className="btn"
+                  onClick={() => click({ behavior: 'deny', message: `Plan denied by user. Feedback: ${feedback.trim()}` })}
+                  disabled={busy || feedback.trim().length === 0}
+                  style={{ flex: 1 }}
+                  title="Send this feedback to Claude — it keeps planning in this turn"
+                >
+                  Send feedback
+                </button>
+                <button
                   className="btn btn-danger"
-                  onClick={() => click({ behavior: 'deny' })}
+                  onClick={() => click({ behavior: 'deny', message: PLAN_STOP_MESSAGE, interrupt: true })}
                   disabled={busy}
                   style={{ flex: 1 }}
+                  title="Stop this turn and return to the input box"
                 >
-                  Keep planning
+                  Stop & take over
                 </button>
               </div>
               <span className="hint" style={{ textAlign: 'center' }}>
                 Approving exits plan mode and lets Claude execute in the chosen
-                mode. "Keep planning" returns control to Claude with feedback so
-                it can revise.
+                mode. "Send feedback" returns your note to Claude so it can
+                revise. "Stop & take over" ends this turn so you can type.
               </span>
             </>
           ) : (

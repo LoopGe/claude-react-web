@@ -47,6 +47,27 @@ describe('computePlanStatus', () => {
     expect(out.get('tu_1')).toBe('rejected')
   })
 
+  it('marks plan as rejected for the "Send feedback" deny message', () => {
+    // The plan dialog constructs: "Plan denied by user. Feedback: <text>"
+    // — must contain the `denied by user` needle so it classifies as rejected
+    // (Claude is revising, not approved).
+    const out = computePlanStatus([
+      asstWithToolUse('ExitPlanMode', 'tu_1'),
+      userToolResult('tu_1', 'Plan denied by user. Feedback: add more tests'),
+    ])
+    expect(out.get('tu_1')).toBe('rejected')
+  })
+
+  it('marks plan as rejected for the "Stop & take over" deny message', () => {
+    // The plan dialog's stop action (and Esc) construct:
+    // "Plan denied by user — stopping the turn." — must classify as rejected.
+    const out = computePlanStatus([
+      asstWithToolUse('ExitPlanMode', 'tu_1'),
+      userToolResult('tu_1', 'Plan denied by user — stopping the turn.'),
+    ])
+    expect(out.get('tu_1')).toBe('rejected')
+  })
+
   it('marks plan as approved on a generic non-rejection tool_result', () => {
     // The SDK echoes the plan back in tool_result on approval.
     const out = computePlanStatus([
