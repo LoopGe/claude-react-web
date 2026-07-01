@@ -1275,8 +1275,8 @@ export const Chat = memo(function Chat({
         </WorkflowProvider>
       </SubagentProvider>
 
-      <TodoChecklist messages={stream.messages} working={session.working} skin={skin} />
-      <MonitorBar messages={stream.messages} />
+      <TodoChecklist messages={stream.messages} working={session.working} skin={skin} clearing={clearing} />
+      <MonitorBar messages={stream.messages} clearing={clearing} />
 
       {/* Always-mounted live region ?see `.error-bar-empty` in styles.css.
           Keeping the region in the DOM (just visually hidden when empty)

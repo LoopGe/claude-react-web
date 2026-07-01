@@ -115,6 +115,89 @@ describe('TodoChecklist', () => {
   })
 })
 
+// /clear blur-fade: while a clear is in flight the checklist must reuse the
+// transcript's `clear-blur-fade` (via a `todo-panel-clearing` class) and stay
+// mounted on its last visible list after the store wipes `messages`, instead
+// of snapping out the instant the messages array empties. Mirrors the Recap
+// fix in b48c0e0.
+describe('TodoChecklist — /clear blur-fade', () => {
+  it('does not carry the clearing class by default', () => {
+    const msgs = [
+      multiTodoMsg([{ content: 'Task A', status: 'in_progress' }]),
+    ]
+    const { container } = render(<TodoChecklist messages={msgs} working />)
+    const panel = container.querySelector('.todo-panel')
+    expect(panel).not.toBeNull()
+    expect(panel?.classList.contains('todo-panel-clearing')).toBe(false)
+  })
+
+  it('applies the clearing class while a /clear is in flight', () => {
+    const msgs = [
+      multiTodoMsg([{ content: 'Task A', status: 'in_progress' }]),
+    ]
+    const { container } = render(<TodoChecklist messages={msgs} working clearing />)
+    const panel = container.querySelector('.todo-panel')
+    expect(panel?.classList.contains('todo-panel-clearing')).toBe(true)
+  })
+
+  it('keeps the working class independent of clearing', () => {
+    // clearing drives the root blur-fade; working drives the child shimmer.
+    // Both can be true at once — the classes are orthogonal, mirroring how
+    // RecapWindow keeps data-state="closing" independent of clearing.
+    const msgs = [
+      multiTodoMsg([{ content: 'Task A', status: 'in_progress' }]),
+    ]
+    const { container } = render(<TodoChecklist messages={msgs} working clearing />)
+    const panel = container.querySelector('.todo-panel')
+    expect(panel?.classList.contains('todo-panel-clearing')).toBe(true)
+    expect(panel?.classList.contains('todo-panel-working')).toBe(true)
+  })
+
+  it('freezes the last visible list so it keeps fading after the store wipes messages', () => {
+    // The regression: the moment `session-cleared` empties `stream.messages`,
+    // extractTodos([]) → null and the panel would snap out mid-fade. The
+    // component freezes the last visible result and keeps rendering it (with
+    // the clearing class) for the duration of the clear.
+    const msgs = [
+      multiTodoMsg([
+        { content: 'Task A', status: 'completed' },
+        { content: 'Task B', status: 'in_progress' },
+      ]),
+    ]
+    const { container, rerender } = render(<TodoChecklist messages={msgs} working />)
+    // Panel is up with 2 items before the clear.
+    expect(container.querySelectorAll('.todo-item').length).toBe(2)
+
+    // /clear fires: clearing flips true synchronously, store wipe empties
+    // messages on the same render window. The panel must stay mounted on the
+    // frozen 2-item list, now with the clearing class — not vanish.
+    rerender(<TodoChecklist messages={[]} working={false} clearing />)
+    const panel = container.querySelector('.todo-panel')
+    expect(panel).not.toBeNull()
+    expect(panel?.classList.contains('todo-panel-clearing')).toBe(true)
+    expect(container.querySelectorAll('.todo-item').length).toBe(2)
+    // The frozen content is the last visible list, not a fresh empty one.
+    expect(container.querySelector('.todo-panel-count')?.textContent).toBe('1/2')
+  })
+
+  it('does not resurrect a hidden panel when a clear starts', () => {
+    // If the panel was already hidden (all done + idle) when /clear fires,
+    // there is nothing to fade — the frozen capture is null, so the panel
+    // stays null rather than fading back in a stale list.
+    const msgs = [
+      multiTodoMsg([
+        { content: 'A', status: 'completed' },
+        { content: 'B', status: 'completed' },
+      ]),
+    ]
+    const { container, rerender } = render(<TodoChecklist messages={msgs} working={false} />)
+    expect(container.firstChild).toBeNull()
+
+    rerender(<TodoChecklist messages={[]} working={false} clearing />)
+    expect(container.firstChild).toBeNull()
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Task* (TaskCreate / TaskUpdate) reconstruction — the default tool family in
 // claude-code 2.x. Wire shapes below are taken verbatim from a real CLI run:

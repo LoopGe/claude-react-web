@@ -25,7 +25,7 @@
 // stream — so a text scan would falsely hide a RUNNING monitor. Showing a
 // finished monitor slightly too long is far better than hiding a live one.
 
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { SdkMessage } from '../types'
 import { IconCircleDot } from './icons/ToolIcons'
 
@@ -40,11 +40,17 @@ interface MonitorInfo {
 
 interface Props {
   messages: SdkMessage[]
+  /** True while a /clear is in flight. Reuses the transcript's
+   *  `clear-blur-fade` exit animation so the bar dissolves in sync with the
+   *  message list instead of snapping out when the server wipes the store.
+   *  The last visible list is frozen for the duration so the bar stays
+   *  mounted (and fading) after `messages` empties. */
+  clearing?: boolean
 }
 
 const TICK_MS = 5000
 
-export const MonitorBar = memo(function MonitorBar({ messages }: Props) {
+export const MonitorBar = memo(function MonitorBar({ messages, clearing }: Props) {
   const [now, setNow] = useState(() => Date.now())
 
   // Refresh `now` so the timeout heuristic advances. Only meaningful while the
@@ -56,16 +62,35 @@ export const MonitorBar = memo(function MonitorBar({ messages }: Props) {
 
   const monitors = useMemo(() => extractRunningMonitors(messages, now), [messages, now])
 
-  if (monitors.length === 0) return null
+  // Freeze the last non-empty monitor list so a /clear can keep rendering it
+  // (fading) after the store wipes `messages`. Updated only while NOT
+  // clearing — during a clear we read the frozen value, never overwrite.
+  // Setting it to null when the bar is empty (no running monitors) also
+  // clears any stale capture, so a clear that starts while the bar is
+  // already hidden doesn't resurrect a faded-out stale list.
+  const frozenRef = useRef<MonitorInfo[] | null>(null)
+  if (!clearing) frozenRef.current = monitors.length > 0 ? monitors : null
+
+  // During a clear, dissolve in sync with the transcript instead of snapping
+  // out. Prefer the frozen capture (keeps fading after the store wipe); fall
+  // back to the live list when the ref is empty (a clear that lands on the
+  // very first render, before any non-clearing render populated it). If both
+  // are empty the bar was hidden when the clear started — nothing to fade.
+  const renderList = clearing ? (frozenRef.current ?? monitors) : monitors
+  if (renderList.length === 0) return null
 
   return (
-    <div className="monitor-bar" role="status" aria-label="Running monitors">
+    <div
+      className={`monitor-bar${clearing ? ' monitor-bar-clearing' : ''}`}
+      role="status"
+      aria-label="Running monitors"
+    >
       <div className="monitor-bar-header">
         <span className="monitor-bar-title">Monitors</span>
-        <span className="monitor-bar-count">{monitors.length}</span>
+        <span className="monitor-bar-count">{renderList.length}</span>
       </div>
       <ul className="monitor-bar-list">
-        {monitors.map((m) => (
+        {renderList.map((m) => (
           <li key={m.key} className="monitor-item">
             <span className="monitor-icon" aria-hidden>
               <IconCircleDot size={12} />

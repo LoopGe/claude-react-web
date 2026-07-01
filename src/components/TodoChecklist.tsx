@@ -20,7 +20,7 @@
 // The panel auto-hides when there are no tasks or when all tasks are done and
 // the assistant has stopped working.
 
-import { memo, useMemo } from 'react'
+import { memo, useMemo, useRef } from 'react'
 import type { SdkMessage } from '../types'
 import type { Skin } from '../utils/theme'
 import { IconCheck, IconCircleDot, IconCircle, IconCheckboxDot, IconCheckbox } from './icons/ToolIcons'
@@ -41,35 +41,55 @@ interface Props {
    *  High-Contrast skin gets square checkboxes (the circular SVG icons
    *  can't be squared via border-radius). Completed always uses a check. */
   skin?: Skin
+  /** True while a /clear is in flight. Reuses the transcript's
+   *  `clear-blur-fade` exit animation so the checklist dissolves in sync
+   *  with the message list instead of snapping out when the server wipes
+   *  the store. The last visible list is frozen for the duration so the
+   *  panel stays mounted (and fading) after `messages` empties. */
+  clearing?: boolean
 }
 
-export const TodoChecklist = memo(function TodoChecklist({ messages, working, skin }: Props) {
+export const TodoChecklist = memo(function TodoChecklist({ messages, working, skin, clearing }: Props) {
   const result = useMemo(() => extractTodos(messages, !!working), [messages, working])
   const hc = skin === 'hc'
 
-  // Hide when there's nothing useful to show.
-  if (!result || result.todos.length === 0) return null
-  const { todos, source } = result
-  const done = todos.every((t) => t.status === 'completed')
-  if (done) {
-    // An all-done list still showing here means it's the CURRENT batch (for
-    // Task*, stale-completed tasks were already filtered out during
-    // reconstruction; for TodoWrite it's the latest snapshot). We keep it up
-    // briefly so the user sees the finished ✔ state:
-    //   - Task*: cleanup is driven by the next USER message, not completion.
-    //     A finished batch lingers until then; once a new turn starts the
-    //     stale filter empties the list and the panel disappears on its own.
-    //     So we never force-hide here regardless of `working`.
-    //   - TodoWrite: a per-turn full snapshot. Keep visible while working
-    //     (next snapshot hasn't landed); hide when idle and all done.
-    if (source === 'todowrite' && !working) return null
-  }
+  // The result that would be shown right now under the normal hide rules
+  // (null when the panel should be hidden). Mirrors the old inline early
+  // returns: empty list → hide; all-done TodoWrite snapshot while idle →
+  // hide. (Task* keeps an all-done batch up until the next user turn;
+  // TodoWrite keeps it up while working — see extractFromTaskEvents /
+  // extractLatestTodos for the cleanup boundaries.)
+  const visibleResult = (() => {
+    if (!result || result.todos.length === 0) return null
+    const done = result.todos.every((t) => t.status === 'completed')
+    if (done && result.source === 'todowrite' && !working) return null
+    return result
+  })()
 
+  // Freeze the last visible result so a /clear can keep rendering it
+  // (fading) after the store wipes `messages`. Updated only while NOT
+  // clearing — during a clear we read the frozen value, never overwrite.
+  // Setting it to `visibleResult` (which is null when hidden) also clears
+  // any stale capture, so a clear that starts while the panel is already
+  // hidden doesn't resurrect a faded-out stale list.
+  const frozenRef = useRef<ExtractResult | null>(null)
+  if (!clearing) frozenRef.current = visibleResult
+
+  // During a clear, dissolve in sync with the transcript instead of
+  // snapping out. Prefer the frozen capture (so the panel keeps fading after
+  // the store wipes `messages`); fall back to the live `visibleResult` when
+  // the capture is empty — e.g. a clear that lands on the very first render,
+  // before any non-clearing render populated the ref. If both are null the
+  // panel was hidden when the clear started, so there's nothing to fade.
+  const renderResult = clearing ? (frozenRef.current ?? visibleResult) : visibleResult
+  if (!renderResult) return null
+
+  const todos = renderResult.todos
   const doneCount = todos.filter((t) => t.status === 'completed').length
 
   return (
     <div
-      className={`todo-panel${working ? ' todo-panel-working' : ''}`}
+      className={`todo-panel${working ? ' todo-panel-working' : ''}${clearing ? ' todo-panel-clearing' : ''}`}
       role="status"
       aria-label="Task checklist"
     >
