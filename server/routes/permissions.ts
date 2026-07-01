@@ -23,7 +23,7 @@ export function buildPermissionRouter(sm: SessionManager): Hono {
   app.post('/sessions/:id/permissions/:pid/decide', async (c) => {
     const id = c.req.param('id')
     const pid = c.req.param('pid')
-    const raw = await safeJson<{ behavior: unknown; persistForSession: unknown; message: unknown; planTargetMode: unknown }>(c.req)
+    const raw = await safeJson<{ behavior: unknown; persistForSession: unknown; message: unknown; planTargetMode: unknown; interrupt: unknown }>(c.req)
     if (raw.behavior === 'allow') {
       log.info(`decide session=${id} pid=${pid} behavior=allow persistForSession=${!!raw.persistForSession}`)
       // planTargetMode: when approving an ExitPlanMode (plan proposal), the
@@ -44,10 +44,11 @@ export function buildPermissionRouter(sm: SessionManager): Hono {
       return c.json({ ok: true })
     }
     if (raw.behavior === 'deny') {
-      log.info(`decide session=${id} pid=${pid} behavior=deny`)
+      log.info(`decide session=${id} pid=${pid} behavior=deny interrupt=${raw.interrupt === true}`)
       await sm.decide(id, pid, {
         behavior: 'deny',
         message: typeof raw.message === 'string' ? raw.message : undefined,
+        interrupt: typeof raw.interrupt === 'boolean' ? raw.interrupt : undefined,
       })
       return c.json({ ok: true })
     }
