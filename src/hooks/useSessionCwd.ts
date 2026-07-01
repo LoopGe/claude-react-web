@@ -7,7 +7,7 @@
 // provider pattern.
 //
 // Used by EditToolView to resolve real file line numbers via the
-// /api/edit-locate route (see useEditStartLines).
+// /api/edit-locate route (see useEditDiffInfo).
 
 import { createContext, createElement, useContext, type ReactNode } from 'react'
 
