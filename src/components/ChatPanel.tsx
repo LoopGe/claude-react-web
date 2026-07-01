@@ -94,6 +94,10 @@ export interface ChatPanelProps {
   hasUnread?: boolean
   /** True when this panel just mounted and should play its enter animation. */
   entering?: boolean
+  /** True while App is playing the /clear fade-in on this slot. Threaded
+   *  through to <Chat> so TodoChecklist / MessageList / MonitorBar get their
+   *  content-blur classes for the duration of the fade-in. */
+  clearing?: boolean
   /** Called when the enter animation ends so the parent can clear the flag. */
   onAnimEnd?: (id: string) => void
   /** Slot number (1-indexed) in the main grid. Shown as a pill in the
@@ -215,6 +219,7 @@ export const ChatPanel = memo(function ChatPanel({
   onCloseSideChat,
   onSideChat,
   settingsTabRequest,
+  clearing,
   messageJumpTarget,
   settingsOpen,
   onOpenSettings,
@@ -758,6 +763,7 @@ export const ChatPanel = memo(function ChatPanel({
             key={session.id}
             session={session}
             focused={focused}
+            clearing={clearing}
             onSessionUpdate={onSessionUpdate}
             onRequestResumeForPanel={onRequestResumeForPanel}
             onClearSession={onClearSession}

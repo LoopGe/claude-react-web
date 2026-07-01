@@ -144,6 +144,10 @@ interface Props {
   /** Whether this panel is the currently focused (active) one. Used by
    *  useSessionRecap to track last-viewed timestamps. */
   focused?: boolean
+  /** True while App is playing the /clear fade-in on this panel. Combined
+   *  with the local `clearing` state (which serves the SDK in-band cleared
+   *  path) via `effectiveClearing = clearingProp || localClearing`. */
+  clearing?: boolean
   /** Called whenever the live stream message count changes, so the parent
    *  header can display an up-to-date count without waiting for a
    *  server-pushed session-update (which only fires at turn boundaries). */
@@ -220,6 +224,7 @@ interface SendMessageResponse {
 
 export const Chat = memo(function Chat({
   session,
+  clearing: clearingProp,
   settingsOpen, onCloseSettings,
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
   recapOpen, onCloseRecap,
@@ -252,16 +257,19 @@ export const Chat = memo(function Chat({
   // pattern PermissionDialog uses for its busy guard.
   const sendingRef = useRef(false)
   const [localError, setLocalError] = useState<string | null>(null)
-  /** True while a /clear is in flight. Drives the MessageList blur-fade +
-   *  "Clearing…" veil. Set synchronously on trigger; cleared by the onCleared
-   *  WS callback (fires when session-cleared lands, after the store wipe —
-   *  so the clearing class is dropped only once the transcript is already
-   *  empty, preventing any snap-back). Also cleared in the catch path. */
-  const [clearing, setClearing] = useState(false)
+  /** Local /clear signal — the SDK in-band `cleared` control event flips this
+   *  false via onCleared. The local `/clear` command drives the animation via
+   *  the App-owned `clearingProp` instead, so this state is only reached by
+   *  the SDK-emitted path today. */
+  const [localClearing, setLocalClearing] = useState(false)
+  /** Effective clearing signal for the downstream classes on TodoChecklist /
+   *  MessageList / MonitorBar. During a local `/clear` fade-in it comes from
+   *  App via prop; during an SDK-emitted clear it comes from local state. */
+  const effectiveClearing = (clearingProp ?? false) || localClearing
   // Hold TodoChecklist / MonitorBar mounted through the veil's exit fade so
   // their height doesn't collapse mid-exit and shift the centered "Clearing…"
   // text. 220ms covers the veil's --motion-duration-base (180ms) exit.
-  const clearingLinger = useLingerFalse(clearing, 220)
+  const clearingLinger = useLingerFalse(effectiveClearing, 220)
   /** Increments whenever we want the Composer's textarea refocused.
    *  Bumped after a successful send ?otherwise the click on the Send
    *  button would leave focus on the button, breaking the
@@ -416,7 +424,7 @@ export const Chat = memo(function Chat({
     onResolved: permissions.onResolved,
     onCleared: () => {
       permissions.reset()
-      setClearing(false)
+      setLocalClearing(false)
     },
   })
   const attachments = useAttachments(session.id, session.cwd)
@@ -1319,7 +1327,7 @@ export const Chat = memo(function Chat({
           items={stream.items}
           working={session.working}
           replayReady={stream.replayReady}
-          clearing={clearing}
+          clearing={effectiveClearing}
           transcriptRevealKey={session.id}
           streamingContent={stream.streamingContent}
           planStatus={stream.planStatus}
@@ -1516,7 +1524,7 @@ export const Chat = memo(function Chat({
         <RecapWindow
           recap={session.recap}
           isExiting={recapPresence.isExiting}
-          clearing={clearing}
+          clearing={effectiveClearing}
           onClose={() => onCloseRecap?.()}
         />
       )}
