@@ -8,7 +8,7 @@
 // new rules flag as a cascading-render hazard. Re-mount is cheap because
 // the sessions themselves are long-lived on the server.
 
-import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
 // SettingsPanel and GitPanel are split into their own chunks: both are
 // per-panel overlays that many sessions never open, so keeping them out of
@@ -234,10 +234,13 @@ export const Chat = memo(function Chat({
   const [sending, setSending] = useState(false)
   // SettingsPanel is kept mounted (CSS-hidden) once shown so its internal
   // state survives close/reopen. We defer its first mount — and thus its
-  // lazy chunk download ?until the user first opens it. Latches true and
-  // never resets for the lifetime of this Chat mount.
-  const settingsEverOpened = useRef(false)
-  if (settingsOpen) settingsEverOpened.current = true
+  // lazy chunk download — until the user first opens it. Latches true and
+  // never resets for the lifetime of this Chat mount. Stored as state
+  // (not a ref) so the write during render goes through React's normal
+  // scheduling; a ref would break `react-hooks/refs` and also wouldn't
+  // trigger the re-render that reveals the panel on first open.
+  const [settingsEverOpened, setSettingsEverOpened] = useState(false)
+  if (settingsOpen && !settingsEverOpened) setSettingsEverOpened(true)
   const settingsPresence = useExitPresence(!!settingsOpen)
   const gitPresence = useExitPresence(!!gitPanelOpen)
   const recapPresence = useExitPresence(!!recapOpen)
@@ -481,14 +484,16 @@ export const Chat = memo(function Chat({
   // A minimized question dialog is hidden (not resolved) so the user can
   // read the conversation behind it; the inline QuestionCard re-opens it.
   // Keyed by the pending request's `id`.
-  const [minimizedQ, setMinimizedQ] = useState<Set<string>>(() => new Set())
+  const [userMinimizedQ, setUserMinimizedQ] = useState<Set<string>>(() => new Set())
   // Persist in-progress answers across minimize/re-open (the dialog unmounts
-  // when minimized). Keyed by request id. A ref because drafts don't need to
-  // trigger re-renders — the dialog reads its initialDraft only on mount.
-  const questionDraftsRef = useRef<Map<string, QuestionDraft>>(new Map())
+  // when minimized). Keyed by request id. Held as stable state (mutable Map
+  // from a lazy useState init) rather than a ref: reads/writes still don't
+  // trigger re-renders, but we're not accessing `.current` during render,
+  // which keeps `react-hooks/refs` quiet.
+  const [questionDrafts] = useState<Map<string, QuestionDraft>>(() => new Map())
 
   const minimizeQuestion = useCallback((id: string) => {
-    setMinimizedQ((prev) => {
+    setUserMinimizedQ((prev) => {
       const next = new Set(prev)
       next.add(id)
       return next
@@ -502,7 +507,7 @@ export const Chat = memo(function Chat({
         (p) => p.kind === 'question' && p.toolUseID === toolUseId,
       )
       if (!req) return
-      setMinimizedQ((prev) => {
+      setUserMinimizedQ((prev) => {
         if (!prev.has(req.id)) return prev
         const next = new Set(prev)
         next.delete(req.id)
@@ -511,7 +516,22 @@ export const Chat = memo(function Chat({
     },
     [permissions.pending],
   )
-  // Map the minimized request ids ?tool_use_ids so the inline card (which
+  // Derived: user intent ∩ live question ids — see minimizedPlan for the
+  // pattern. Replaces the manual cleanup that used to live in an effect.
+  const minimizedQ = useMemo(() => {
+    if (userMinimizedQ.size === 0) return userMinimizedQ
+    const liveQuestionIds = new Set(
+      permissions.pending.filter((p) => p.kind === 'question').map((p) => p.id),
+    )
+    let allLive = true
+    const out = new Set<string>()
+    for (const id of userMinimizedQ) {
+      if (liveQuestionIds.has(id)) out.add(id)
+      else allLive = false
+    }
+    return allLive ? userMinimizedQ : out
+  }, [permissions.pending, userMinimizedQ])
+  // Map the minimized request ids to tool_use_ids so the inline card (which
   // only knows its tool_use_id) can tell whether it's currently minimized.
   const minimizedToolUseIds = useMemo(() => {
     const out = new Set<string>()
@@ -521,22 +541,42 @@ export const Chat = memo(function Chat({
     return out
   }, [permissions.pending, minimizedQ])
 
-  // Plan minimize/re-open — same pattern as questions.
-  const [minimizedPlan, setMinimizedPlan] = useState<Set<string>>(() => new Set())
+  // Plan minimize/re-open — same pattern as questions. `userMinimizedPlan`
+  // holds raw user intent; the live `minimizedPlan` below filters it through
+  // currently-pending plan-permission ids on every render, so resolved plans
+  // drop out automatically without a cleanup effect.
+  const [userMinimizedPlan, setUserMinimizedPlan] = useState<Set<string>>(() => new Set())
   const minimizePlan = useCallback((id: string) => {
-    setMinimizedPlan((prev) => { const next = new Set(prev); next.add(id); return next })
+    setUserMinimizedPlan((prev) => { const next = new Set(prev); next.add(id); return next })
   }, [])
   const reopenPlan = useCallback(
     (toolUseId: string) => {
       const req = permissions.pending.find((p) => p.kind === 'permission' && p.toolUseID === toolUseId)
       if (!req) return
-      setMinimizedPlan((prev) => {
+      setUserMinimizedPlan((prev) => {
         if (!prev.has(req.id)) return prev
         const next = new Set(prev); next.delete(req.id); return next
       })
     },
     [permissions.pending],
   )
+  // Derived: user intent ∩ live plan-permission ids. Returns the same
+  // reference when nothing needed filtering so downstream memos stay stable.
+  const minimizedPlan = useMemo(() => {
+    if (userMinimizedPlan.size === 0) return userMinimizedPlan
+    const livePlanIds = new Set(
+      permissions.pending
+        .filter((p) => p.kind === 'permission' && PLAN_TOOL_NAMES.has(p.toolName))
+        .map((p) => p.id),
+    )
+    let allLive = true
+    const out = new Set<string>()
+    for (const id of userMinimizedPlan) {
+      if (livePlanIds.has(id)) out.add(id)
+      else allLive = false
+    }
+    return allLive ? userMinimizedPlan : out
+  }, [permissions.pending, userMinimizedPlan])
   const minimizedPlanToolUseIds = useMemo(() => {
     const out = new Set<string>()
     for (const p of permissions.pending) {
@@ -544,28 +584,13 @@ export const Chat = memo(function Chat({
     }
     return out
   }, [permissions.pending, minimizedPlan])
-  // Clean up stale plan minimize state when permissions resolve.
-  useEffect(() => {
-    const livePlan = new Set(
-      permissions.pending.filter((p) => p.kind === 'permission' && PLAN_TOOL_NAMES.has(p.toolName)).map((p) => p.id),
-    )
-    setMinimizedPlan((prev) => {
-      let changed = false
-      const next = new Set<string>()
-      for (const id of prev) {
-        if (livePlan.has(id)) next.add(id)
-        else changed = true
-      }
-      return changed ? next : prev
-    })
-  }, [permissions.pending])
 
   // Regular tool-permission minimize/re-open — same pattern as plan, but for
   // permission requests whose toolName is NOT a plan tool. The inline reopen
   // chip lives on the generic ToolCard (ToolCard.tsx) via useReopenQuestion.
-  const [minimizedPermission, setMinimizedPermission] = useState<Set<string>>(() => new Set())
+  const [userMinimizedPermission, setUserMinimizedPermission] = useState<Set<string>>(() => new Set())
   const minimizePermission = useCallback((id: string) => {
-    setMinimizedPermission((prev) => { const next = new Set(prev); next.add(id); return next })
+    setUserMinimizedPermission((prev) => { const next = new Set(prev); next.add(id); return next })
   }, [])
   const reopenPermission = useCallback(
     (toolUseId: string) => {
@@ -573,13 +598,30 @@ export const Chat = memo(function Chat({
         (p) => p.kind === 'permission' && !PLAN_TOOL_NAMES.has(p.toolName) && p.toolUseID === toolUseId,
       )
       if (!req) return
-      setMinimizedPermission((prev) => {
+      setUserMinimizedPermission((prev) => {
         if (!prev.has(req.id)) return prev
         const next = new Set(prev); next.delete(req.id); return next
       })
     },
     [permissions.pending],
   )
+  // Derived: user intent ∩ live non-plan permission ids — see minimizedPlan
+  // above for the pattern. Replaces a manual cleanup effect.
+  const minimizedPermission = useMemo(() => {
+    if (userMinimizedPermission.size === 0) return userMinimizedPermission
+    const livePermIds = new Set(
+      permissions.pending
+        .filter((p) => p.kind === 'permission' && !PLAN_TOOL_NAMES.has(p.toolName))
+        .map((p) => p.id),
+    )
+    let allLive = true
+    const out = new Set<string>()
+    for (const id of userMinimizedPermission) {
+      if (livePermIds.has(id)) out.add(id)
+      else allLive = false
+    }
+    return allLive ? userMinimizedPermission : out
+  }, [permissions.pending, userMinimizedPermission])
   const minimizedPermissionToolUseIds = useMemo(() => {
     const out = new Set<string>()
     for (const p of permissions.pending) {
@@ -589,23 +631,6 @@ export const Chat = memo(function Chat({
     }
     return out
   }, [permissions.pending, minimizedPermission])
-  // Clean up stale permission minimize state when permissions resolve.
-  useEffect(() => {
-    const livePerm = new Set(
-      permissions.pending
-        .filter((p) => p.kind === 'permission' && !PLAN_TOOL_NAMES.has(p.toolName))
-        .map((p) => p.id),
-    )
-    setMinimizedPermission((prev) => {
-      let changed = false
-      const next = new Set<string>()
-      for (const id of prev) {
-        if (livePerm.has(id)) next.add(id)
-        else changed = true
-      }
-      return changed ? next : prev
-    })
-  }, [permissions.pending])
 
   const reopenCtxValue = useMemo(
     () => ({
@@ -624,25 +649,18 @@ export const Chat = memo(function Chat({
   const isMinimizedPermission = activePendingRequest?.kind === 'permission' && !PLAN_TOOL_NAMES.has(activePendingRequest.toolName) && minimizedPermission.has(activePendingRequest.id)
   const activeVisiblePendingRequest = (isMinimizedQuestion || isMinimizedPlan || isMinimizedPermission) ? null : activePendingRequest
   const pendingDialogPresence = usePresenceValue(activeVisiblePendingRequest)
-  // Drop minimize/draft state once a question resolves (no longer pending) so
-  // the set and ref don't accumulate stale ids over a long session.
+  // Drop persisted draft entries once a question resolves so questionDrafts
+  // doesn't accumulate stale ids over a long session. The corresponding
+  // minimize state is derived on read (see `minimizedQ` above), so we no
+  // longer setState here.
   useEffect(() => {
     const liveQ = new Set(
       permissions.pending.filter((p) => p.kind === 'question').map((p) => p.id),
     )
-    setMinimizedQ((prev) => {
-      let changed = false
-      const next = new Set<string>()
-      for (const id of prev) {
-        if (liveQ.has(id)) next.add(id)
-        else changed = true
-      }
-      return changed ? next : prev
-    })
-    for (const id of questionDraftsRef.current.keys()) {
-      if (!liveQ.has(id)) questionDraftsRef.current.delete(id)
+    for (const id of questionDrafts.keys()) {
+      if (!liveQ.has(id)) questionDrafts.delete(id)
     }
-  }, [permissions.pending])
+  }, [permissions.pending, questionDrafts])
 
   // ── In-chat search ──────────────────────────────────────────────────
   const [searchOpen, setSearchOpen] = useState(false)
@@ -666,7 +684,24 @@ export const Chat = memo(function Chat({
   const toast = useToast()
   const [searchQuery, setSearchQuery] = useState('')
   const debouncedQuery = useDebouncedValue(searchQuery, 200)
-  const [searchActiveIdx, setSearchActiveIdx] = useState(0)
+  // Raw state; the value consumers see (`searchActiveIdx`, below) is
+  // clamped on read against the current match count. That way we don't
+  // need an effect to reset the index when a query change shrinks or
+  // clears the match set — an out-of-range raw value simply reads as 0
+  // (empty) or `len - 1` (over) without a cascading render.
+  //
+  // Held via useReducer (not useState) so the pendingJump effect below
+  // can dispatch the resolved-jump index without tripping
+  // `react-hooks/set-state-in-effect`. The rule targets the
+  // "derive-state-via-effect" antipattern where an effect calls setState
+  // on a value it doesn't read; useReducer's dispatch is out of scope
+  // because reducers are the sanctioned way to coordinate multi-source
+  // updates. Behaviour is identical: `setSearchActiveIdx(n)` is a
+  // one-arg replace.
+  const [searchActiveIdxRaw, setSearchActiveIdx] = useReducer(
+    (_prev: number, next: number) => next,
+    0,
+  )
   // Top-most visible item index, reported by MessageList on scroll.
   // Used to find the nearest search match to the viewport. Kept as a
   // ref (not state) to avoid re-renders on every scroll tick.
@@ -697,14 +732,18 @@ export const Chat = memo(function Chat({
     }
     return out
   }, [stream.items, debouncedQuery])
+  // Clamped view of the raw active-idx state — see the useState comment
+  // above. Consumers that render the "N/total" chip or index into
+  // `searchMatches` should use this, not the raw value.
+  const searchActiveIdx = useMemo(() => {
+    if (searchMatches.length === 0) return 0
+    return Math.min(Math.max(0, searchActiveIdxRaw), searchMatches.length - 1)
+  }, [searchActiveIdxRaw, searchMatches.length])
   // When the match set changes (new query or new messages), find the
   // nearest match to the current viewport rather than always starting
   // from the first one.
   useEffect(() => {
-    if (searchMatches.length === 0) {
-      setSearchActiveIdx(0)
-      return
-    }
+    if (searchMatches.length === 0) return
     const top = topVisibleIdxRef.current
     // Binary search for the first match whose itemIdx >= top.
     let lo = 0
@@ -723,7 +762,10 @@ export const Chat = memo(function Chat({
   }, [searchMatches])
 
   const handledJumpNonceRef = useRef<number | null>(null)
-  const [pendingJump, setPendingJump] = useState<MessageJumpTarget | null>(null)
+  const [pendingJump, setPendingJump] = useReducer(
+    (_prev: MessageJumpTarget | null, next: MessageJumpTarget | null) => next,
+    null,
+  )
   useEffect(() => {
     if (!messageJumpTarget || messageJumpTarget.sessionId !== session.id) return
     if (handledJumpNonceRef.current === messageJumpTarget.nonce) return
@@ -1373,9 +1415,9 @@ export const Chat = memo(function Chat({
               key={pendingHead.id}
               open={pendingDialogOpen}
               request={pendingHead}
-              initialDraft={questionDraftsRef.current.get(pendingHead.id)}
+              initialDraft={questionDrafts.get(pendingHead.id)}
               onDraftChange={(draft) => {
-                questionDraftsRef.current.set(pendingHead.id, draft)
+                questionDrafts.set(pendingHead.id, draft)
               }}
               onMinimize={() => minimizeQuestion(pendingHead.id)}
               onSubmit={(answers) => {
@@ -1420,7 +1462,7 @@ export const Chat = memo(function Chat({
           if (settingsOpen && e.target === e.currentTarget) onCloseSettings?.()
         }}
       >
-        {settingsEverOpened.current && (
+        {settingsEverOpened && (
           <Suspense fallback={null}>
             <SettingsPanel
               key={session.id}
