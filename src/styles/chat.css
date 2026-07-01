@@ -188,6 +188,55 @@
     animation: none;
   }
 }
+/* Slot-level clearing veil — survives the X→Y id-swap that `/clear`
+   performs, so the fade-in → swap-under-veil → fade-out animation can
+   play across a ChatPanel remount. See PanelSlot.tsx. */
+.panel-slot {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.panel-clearing-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  pointer-events: none;
+  background: transparent;
+  animation: panel-clear-veil-in var(--motion-duration-base) var(--motion-ease-enter) both;
+}
+.panel-clearing-veil[data-phase='fading-out'] {
+  animation: panel-clear-veil-out var(--motion-duration-base) var(--motion-ease-exit) both;
+}
+.panel-clearing-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  animation: panel-clear-spinner 0.7s linear infinite;
+}
+@keyframes panel-clear-veil-in  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes panel-clear-veil-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes panel-clear-spinner  { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .panel-clearing-veil,
+  .panel-clearing-veil[data-phase='fading-out'] {
+    animation: none;
+    opacity: 1;
+  }
+  .panel-clearing-spinner {
+    animation: none;
+  }
+}
 /* Each virtualised item is wrapped in this div so that .msg.user's
    align-self: flex-end still works (the old flex column on
    .chat-messages is gone; each item is its own flex column now).
