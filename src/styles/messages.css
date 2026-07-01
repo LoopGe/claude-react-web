@@ -1744,24 +1744,6 @@ details.plan-card-collapsible > summary > .plan-card-header {
   max-height: 160px;
   overflow: auto;
 }
-.question-skip {
-  align-self: flex-start;
-  background: transparent;
-  border: none;
-  color: var(--fg-muted);
-  font-size: 12px;
-  cursor: pointer;
-  padding: 2px 0;
-  text-decoration: underline dotted;
-}
-.question-skip:disabled {
-  opacity: 0.4;
-  cursor: default;
-  text-decoration: none;
-}
-.question-skip:hover:not(:disabled) {
-  color: var(--fg);
-}
 .question-other-input {
   /* Sibling of .question-option (not nested inside its body), so we
    * have to manually indent past the option's padding-left (12px) +

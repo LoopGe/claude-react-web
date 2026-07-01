@@ -131,14 +131,6 @@ export function QuestionDialog({ open = true, request, onSubmit, onSkipAll, onMi
     })
   }
 
-  const skipQuestion = (qIdx: number) => {
-    setChoices((prev) => {
-      const next = prev.slice()
-      next[qIdx] = null
-      return next
-    })
-  }
-
   const toggleOther = (qIdx: number) => {
     setOtherActive((prev) => {
       const next = prev.slice()
@@ -282,7 +274,6 @@ export function QuestionDialog({ open = true, request, onSubmit, onSkipAll, onMi
               value={choices[qIdx]}
               onSingle={(label) => setSingle(qIdx, label)}
               onMulti={(label) => toggleMulti(qIdx, label)}
-              onSkip={() => skipQuestion(qIdx)}
               otherActive={otherActive[qIdx]}
               otherText={otherTexts[qIdx]}
               onOtherToggle={() => toggleOther(qIdx)}
@@ -326,14 +317,13 @@ interface BlockProps {
   value: string | string[] | null
   onSingle: (label: string) => void
   onMulti: (label: string) => void
-  onSkip: () => void
   otherActive: boolean
   otherText: string
   onOtherToggle: () => void
   onOtherTextChange: (text: string) => void
 }
 
-function QuestionBlock({ index, question, value, onSingle, onMulti, onSkip, otherActive, otherText, onOtherToggle, onOtherTextChange }: BlockProps) {
+function QuestionBlock({ index, question, value, onSingle, onMulti, otherActive, otherText, onOtherToggle, onOtherTextChange }: BlockProps) {
   const isMulti = question.multiSelect === true
   const selectedSet =
     value == null ? new Set<string>() : Array.isArray(value) ? new Set(value) : new Set([value])
@@ -479,15 +469,6 @@ function QuestionBlock({ index, question, value, onSingle, onMulti, onSkip, othe
           />
         )}
       </div>
-      <button
-        type="button"
-        className="question-skip"
-        onClick={onSkip}
-        disabled={value == null}
-        title="Clear selection for this question"
-      >
-        Skip this question
-      </button>
     </div>
   )
 }
