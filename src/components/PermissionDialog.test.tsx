@@ -43,8 +43,9 @@ function buttonLabels(container: HTMLElement): string[] {
   return within(container)
     .getAllByRole('button')
     .map((b) => b.textContent?.trim() ?? '')
-    // Drop the "Show raw input" toggle which also lives in the card.
-    .filter((t) => t.startsWith('Approve') || t === 'Keep planning')
+    // Drop the "Show raw input" toggle and the new deny actions; the plan
+    // ordering tests only assert on Approve labels.
+    .filter((t) => t.startsWith('Approve'))
 }
 
 describe('PermissionDialog plan approval', () => {
@@ -100,6 +101,49 @@ describe('PermissionDialog plan approval', () => {
     expect(labels).toContain('Allow once')
     expect(labels).toContain('Deny')
     expect(labels.some((l) => l.startsWith('Approve'))).toBe(false)
+  })
+
+  it('renders a feedback input and two deny actions for a plan request', () => {
+    const { container } = render(
+      <PermissionDialog request={planRequest()} onDecide={vi.fn()} currentMode={'default'} />,
+    )
+    expect(within(container).getByPlaceholderText('Tell Claude what to change')).toBeTruthy()
+    expect(within(container).getByRole('button', { name: /Send feedback/i })).toBeTruthy()
+    expect(within(container).getByRole('button', { name: /Stop & take over/i })).toBeTruthy()
+  })
+
+  it('disables Send feedback when the input is empty', () => {
+    const { container } = render(
+      <PermissionDialog request={planRequest()} onDecide={vi.fn()} currentMode={'default'} />,
+    )
+    const btn = within(container).getByRole('button', { name: /Send feedback/i }) as HTMLButtonElement
+    expect(btn.disabled).toBe(true)
+  })
+
+  it('Send feedback emits deny with message and no interrupt', () => {
+    const onDecide = vi.fn()
+    const { container } = render(
+      <PermissionDialog request={planRequest()} onDecide={onDecide} currentMode={'default'} />,
+    )
+    const input = within(container).getByPlaceholderText('Tell Claude what to change') as HTMLTextAreaElement
+    fireEvent.change(input, { target: { value: 'add more tests' } })
+    fireEvent.click(within(container).getByRole('button', { name: /Send feedback/i }))
+    expect(onDecide).toHaveBeenCalledWith({
+      behavior: 'deny',
+      message: 'add more tests',
+    })
+  })
+
+  it('Stop & take over emits deny with interrupt:true', () => {
+    const onDecide = vi.fn()
+    const { container } = render(
+      <PermissionDialog request={planRequest()} onDecide={onDecide} currentMode={'default'} />,
+    )
+    fireEvent.click(within(container).getByRole('button', { name: /Stop & take over/i }))
+    expect(onDecide).toHaveBeenCalledWith({
+      behavior: 'deny',
+      interrupt: true,
+    })
   })
 })
 

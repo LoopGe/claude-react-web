@@ -27,7 +27,7 @@ interface Props {
   onDecide: (
     decision:
       | { behavior: 'allow'; persistForSession: boolean; planTargetMode?: PlanTargetMode }
-      | { behavior: 'deny'; message?: string },
+      | { behavior: 'deny'; message?: string; interrupt?: boolean },
   ) => void
   /** Plan body text from ExitPlanMode tool_result outputs.  The CLI
    *  injects plan content into the tool_result (not the tool_use input),
@@ -48,6 +48,7 @@ interface Props {
 export const PermissionDialog = memo(function PermissionDialog({ open = true, request, onDecide, planContentMap, currentMode, onMinimize }: Props) {
   const [showRaw, setShowRaw] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [feedback, setFeedback] = useState('')
   // Ref provides a synchronous guard so that rapid double-clicks
   // can't slip through before React commits the state update.
   const busyRef = useRef(false)
@@ -60,7 +61,7 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
   const click = (
     d:
       | { behavior: 'allow'; persistForSession: boolean; planTargetMode?: PlanTargetMode }
-      | { behavior: 'deny'; message?: string },
+      | { behavior: 'deny'; message?: string; interrupt?: boolean },
   ) => {
     if (busyRef.current) return
     busyRef.current = true
@@ -238,20 +239,39 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
                   })}
                 </div>
               ))}
+              <textarea
+                className="perm-feedback-input"
+                placeholder="Tell Claude what to change"
+                value={feedback}
+                onChange={(e) => setFeedback(e.target.value)}
+                disabled={busy}
+                rows={2}
+                aria-label="Plan feedback"
+              />
               <div style={{ display: 'flex', gap: 8 }}>
                 <button
+                  className="btn"
+                  onClick={() => click({ behavior: 'deny', message: feedback })}
+                  disabled={busy || feedback.trim().length === 0}
+                  style={{ flex: 1 }}
+                  title="Send this feedback to Claude — it keeps planning in this turn"
+                >
+                  Send feedback
+                </button>
+                <button
                   className="btn btn-danger"
-                  onClick={() => click({ behavior: 'deny' })}
+                  onClick={() => click({ behavior: 'deny', interrupt: true })}
                   disabled={busy}
                   style={{ flex: 1 }}
+                  title="Stop this turn and return to the input box"
                 >
-                  Keep planning
+                  Stop & take over
                 </button>
               </div>
               <span className="hint" style={{ textAlign: 'center' }}>
                 Approving exits plan mode and lets Claude execute in the chosen
-                mode. "Keep planning" returns control to Claude with feedback so
-                it can revise.
+                mode. "Send feedback" returns your note to Claude so it can
+                revise. "Stop & take over" ends this turn so you can type.
               </span>
             </>
           ) : (

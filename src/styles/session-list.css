@@ -450,6 +450,25 @@
 .perm-card .modal-footer {
   flex-shrink: 0;
 }
+.perm-feedback-input {
+  width: 100%;
+  resize: vertical;
+  min-height: 44px;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: var(--fs-sm, 13px);
+  color: var(--fg);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.perm-feedback-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.perm-feedback-input:disabled {
+  opacity: 0.6;
+}
 /* Minimize (×) button in the QuestionDialog header — hides the dialog so
    the user can read the conversation behind it; the question stays pending
    and the inline message card re-opens it. */
