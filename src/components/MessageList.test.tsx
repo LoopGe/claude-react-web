@@ -167,7 +167,7 @@ describe('MessageList', () => {
     expect(container.querySelector('.chat-empty')).toBeTruthy()
   })
 
-  it('applies clearing class and shows the veil while clearing', () => {
+  it('applies clearing class while clearing', () => {
     const items = toItems([
       makeMsg('assistant', { message: { content: [{ type: 'text', text: 'hi' }] } }),
     ])
@@ -175,13 +175,9 @@ describe('MessageList', () => {
     expect(
       container.querySelector('.chat-messages')?.classList.contains('chat-messages-clearing'),
     ).toBe(true)
-    const veil = container.querySelector('.chat-clearing-veil')
-    expect(veil).toBeTruthy()
-    expect(veil?.classList.contains('exiting')).toBe(false)
   })
 
-  it('fades the veil out when clearing completes', () => {
-    vi.useFakeTimers()
+  it('removes the clearing class and reveals the empty state when clearing completes', () => {
     const items = toItems([
       makeMsg('assistant', { message: { content: [{ type: 'text', text: 'hi' }] } }),
     ])
@@ -193,16 +189,6 @@ describe('MessageList', () => {
       container.querySelector('.chat-messages')?.classList.contains('chat-messages-clearing'),
     ).toBe(false)
     expect(container.querySelector('.chat-messages-empty')).toBeTruthy()
-    // Veil stays mounted, now in its exiting (fade-out) state
-    expect(container.querySelector('.chat-clearing-veil')?.classList.contains('exiting')).toBe(true)
-
-    // After the fade-out duration the veil unmounts (timer-driven, matching
-    // the streaming-region exit pattern).
-    act(() => {
-      vi.advanceTimersByTime(200)
-    })
-    expect(container.querySelector('.chat-clearing-veil')).toBeNull()
-    vi.useRealTimers()
   })
 
   it('renders a custom emptyStateContent when provided', () => {

@@ -136,56 +136,10 @@
   100% { opacity: 0; filter: blur(10px); transform: scale(0.96); }
 }
 
-/* "Clearing…" veil — centered over the transcript. Fades in shortly after
-   the blur-fade starts, fades out to reveal the post-clear empty state. */
-.chat-clearing-veil {
-  position: absolute;
-  inset: 0;
-  z-index: 3;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  color: var(--fg-muted);
-  font-size: var(--fs-sm);
-  pointer-events: none;
-  animation: clear-veil-in var(--motion-duration-base) var(--motion-ease-enter) both;
-  animation-delay: var(--motion-duration-fast);
-}
-.chat-clearing-veil.exiting {
-  animation: clear-veil-out var(--motion-duration-base) var(--motion-ease-exit) both;
-  animation-delay: 0s;
-}
-.chat-clearing-spinner {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  border: 2px solid var(--border);
-  border-top-color: var(--accent);
-  animation: clear-spinner 0.7s linear infinite;
-}
-@keyframes clear-veil-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-@keyframes clear-veil-out {
-  from { opacity: 1; }
-  to   { opacity: 0; }
-}
-@keyframes clear-spinner {
-  to { transform: rotate(360deg); }
-}
 @media (prefers-reduced-motion: reduce) {
   .chat-messages.chat-messages-clearing {
     animation: none;
     opacity: 0;
-  }
-  .chat-clearing-veil,
-  .chat-clearing-veil.exiting {
-    animation: none;
-  }
-  .chat-clearing-spinner {
-    animation: none;
   }
 }
 /* Slot-level clearing veil — survives the X→Y id-swap that `/clear`

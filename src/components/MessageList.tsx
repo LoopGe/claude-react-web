@@ -207,12 +207,6 @@ const MAX_ENTER_BATCH = 4
 const ENTER_MAX_AGE_MS = 10_000
 const KNOWN_IDS_CAP = 4000
 const STREAMING_EXIT_MS = 180
-/** How long the "Clearing…" veil's fade-out runs before unmount. Mirrors the
- *  --motion-duration-base (180ms) used by `.chat-clearing-veil.exiting` so
- *  the unmount lands as the fade completes. Timer-driven (not onAnimationEnd)
- *  to stay robust under prefers-reduced-motion — see the streaming-region
- *  exit pattern above. */
-const CLEARING_VEIL_EXIT_MS = 180
 
 /** Return a `Set` whose *identity* is stable as long as its *contents* are
  *  unchanged.
@@ -257,41 +251,11 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   // can detect viewport shrink (TodoChecklist panel growing).
   const scrollerRef = useRef<HTMLElement | null>(null)
   const streamingRegionRef = useRef<HTMLDivElement | null>(null)
-  // --- /clear veil exit -----------------------------------------------
-  // The veil fades IN while `clearing` is true, then fades OUT when
-  // `clearing` flips false (the session-cleared frame just wiped the
-  // store). Mirrors the streaming-region presence pattern above: the
-  // exit state is DERIVED during render (React's "adjust state during
-  // render" escape hatch) so the `exiting` class commits in the same
-  // paint as the flip — no flicker — and the unmount is timer-driven
-  // (not onAnimationEnd) to stay robust under prefers-reduced-motion.
-  const clearingActive = clearing ?? false
-  const [clearingVeil, setClearingVeil] = useState({ source: false, exiting: false })
-  const nextClearingVeil = clearingActive !== clearingVeil.source
-    ? { source: clearingActive, exiting: !clearingActive && clearingVeil.source }
-    : clearingVeil
-  if (nextClearingVeil !== clearingVeil) {
-    setClearingVeil(nextClearingVeil)
-  }
-  const veilExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(() => {
-    if (veilExitTimerRef.current) {
-      clearTimeout(veilExitTimerRef.current)
-      veilExitTimerRef.current = null
-    }
-    if (!nextClearingVeil.exiting) return
-    veilExitTimerRef.current = setTimeout(() => {
-      veilExitTimerRef.current = null
-      setClearingVeil({ source: false, exiting: false })
-    }, CLEARING_VEIL_EXIT_MS)
-    return () => {
-      if (veilExitTimerRef.current) {
-        clearTimeout(veilExitTimerRef.current)
-        veilExitTimerRef.current = null
-      }
-    }
-  }, [nextClearingVeil.exiting])
-  const veilVisible = clearingActive || nextClearingVeil.exiting
+  // --- /clear veil ----------------------------------------------------
+  // The panel-level `.panel-clearing-veil` (rendered by PanelSlot above
+  // this component) now owns the overlay + fade-out. MessageList just
+  // applies `.chat-messages-clearing` (see messagesClassName below) so
+  // content stays blurred/dimmed under the veil while `clearing` is true.
   const [streamingOverlayHeight, setStreamingOverlayHeight] = useState(0)
   // `atBottom` is state (not a ref) because the jump-to-bottom button's
   // visibility needs to re-render when it changes. The ref-mirror keeps
@@ -1350,12 +1314,6 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
           aria-hidden={nextStreamingPresence.exiting}
         >
           <StreamingFooter content={visibleStreamingContent} />
-        </div>
-      )}
-      {veilVisible && (
-        <div className={`chat-clearing-veil${nextClearingVeil.exiting ? ' exiting' : ''}`}>
-          <span className="chat-clearing-spinner" aria-hidden="true" />
-          <span className="chat-clearing-label">Clearing…</span>
         </div>
       )}
       </div>
