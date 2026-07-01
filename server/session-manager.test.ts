@@ -497,6 +497,25 @@ describe('SessionManager', () => {
     expect(sm.subscribeHookRuns(next.id)!.snapshot).toHaveLength(0)
   })
 
+  it('clear() does not leave lastTurnAt on the fresh session (no spurious "No messages yet" recap)', async () => {
+    // Regression: the recap auto-hook gates on `lastTurnAt`. If clear()
+    // left lastTurnAt set on the fresh Y while Y's history ring is empty,
+    // the hook would fire requestGenerate on empty history and pop up
+    // "No messages yet." Y must start with lastTurnAt undefined.
+    const info = sm.create({})
+    // Complete a real turn so X.lastTurnAt is stamped + history non-empty.
+    sm.send(info.id, 'hi')
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    await tick()
+    expect(sm.get(info.id).lastTurnAt).toBeDefined()
+
+    const next = await sm.clear(info.id)
+
+    // Y is fresh: lastTurnAt MUST be undefined, and no recap synthesized.
+    expect(sm.get(next.id).lastTurnAt).toBeUndefined()
+    expect(sm.get(next.id).recap).toBeUndefined()
+  })
+
   it('subscribeContextUsage() hands a fresh subscriber the last cached snapshot', async () => {
     // A tab that attaches BETWEEN turns (reconnect / new panel / refresh)
     // should see the Context bar value immediately rather than waiting for

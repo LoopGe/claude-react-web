@@ -50,6 +50,11 @@ export interface UseSessionRecapApi {
  *   - phase is 'idle' (no in-flight turn, no queued input, no
  *     pending permissions),
  *   - the session has at least one completed turn,
+ *   - the history ring is non-empty (lastTurnAt is a fallible proxy —
+ *     spawn() carries it forward on resume even when the transcript
+ *     seed is empty, so gating on it alone would fire requestGenerate
+ *     on an empty history and synthesize a misleading "No messages
+ *     yet." popup; messageCount is the ground truth),
  *   - and no recap already covers it (status === 'ready' would mean
  *     a fresh one was just generated; 'pending' means one is in
  *     flight; both block; status === 'error' also blocks auto-retry,
@@ -96,6 +101,12 @@ export function useSessionRecap(session: SessionInfo): UseSessionRecapApi {
     if (session.phase !== 'idle') return
     // No completed turn → nothing to summarise.
     if (!session.lastTurnAt) return
+    // Empty history ring → nothing to summarise. lastTurnAt is a fallible
+    // proxy (spawn() carries it on resume even with an empty transcript
+    // seed), so without this gate the hook would fire requestGenerate on
+    // an empty history and pop up "No messages yet." after a /clear or a
+    // resume of a session whose transcript didn't seed.
+    if (session.messageCount === 0) return
     // Already covered. The server clears session.recap to undefined on
     // every conversation mutation (RecapManager.invalidate), so a
     // present recap means "this is fresh for the current lastTurnAt".
@@ -107,7 +118,7 @@ export function useSessionRecap(session: SessionInfo): UseSessionRecapApi {
       doFetch()
     }, remaining)
     return () => clearTimeout(timer)
-  }, [session.phase, session.lastTurnAt, session.recap, doFetch])
+  }, [session.phase, session.lastTurnAt, session.messageCount, session.recap, doFetch])
 
   // Cancel any in-flight fetch on unmount so a stale response doesn't
   // race against the next mounted hook.

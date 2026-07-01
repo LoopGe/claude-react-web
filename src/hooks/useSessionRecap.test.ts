@@ -34,16 +34,18 @@ import type { SessionInfo } from '../types'
 
 // ── Helpers ────────────────────────────────────────────────────────
 
-/** Build a minimal SessionInfo for the hook. Only the four fields the
- *  hook reads (id, phase, lastTurnAt, recap) actually matter — the rest
- *  satisfy the type. */
+/** Build a minimal SessionInfo for the hook. Only the fields the hook
+ *  reads (id, phase, lastTurnAt, messageCount, recap) actually matter —
+ *  the rest satisfy the type. Defaults messageCount to 5 so a "real"
+ *  session with history is modelled; tests that need an empty history
+ *  pass messageCount: 0 explicitly. */
 function buildSession(partial: Partial<SessionInfo> & Pick<SessionInfo, 'phase'>): SessionInfo {
   return {
     id: 's1',
     createdAt: 0,
     lastActivityAt: 0,
     subscribers: 1,
-    messageCount: 0,
+    messageCount: 5,
     running: true,
     terminated: false,
     working: false,
@@ -96,6 +98,34 @@ describe('useSessionRecap', () => {
     renderHook(() =>
       useSessionRecap(
         buildSession({ phase: 'dormant', lastTurnAt: now - 10 * 60_000 }),
+      ),
+    )
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(mockPost).not.toHaveBeenCalled()
+  })
+
+  // ── Empty-history gate (regression: "No messages yet." after /clear) ──
+
+  it('does NOT fetch when the history ring is empty even if lastTurnAt is set', async () => {
+    // lastTurnAt is a fallible proxy: spawn() carries it forward on resume
+    // even when the transcript seed is empty (and the old in-place /clear
+    // wiped history without resetting it). Gating on lastTurnAt alone would
+    // fire requestGenerate on an empty history and synthesize the misleading
+    // "No messages yet." ready recap. messageCount is the ground truth.
+    const now = Date.now()
+    vi.setSystemTime(now)
+
+    renderHook(() =>
+      useSessionRecap(
+        buildSession({
+          phase: 'idle',
+          lastTurnAt: now - 10 * 60_000,
+          messageCount: 0,
+        }),
       ),
     )
 
