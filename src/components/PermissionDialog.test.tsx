@@ -130,11 +130,11 @@ describe('PermissionDialog plan approval', () => {
     fireEvent.click(within(container).getByRole('button', { name: /Send feedback/i }))
     expect(onDecide).toHaveBeenCalledWith({
       behavior: 'deny',
-      message: 'add more tests',
+      message: 'Plan denied by user. Feedback: add more tests',
     })
   })
 
-  it('Stop & take over emits deny with interrupt:true', () => {
+  it('Stop & take over emits deny with interrupt:true and a stop message', () => {
     const onDecide = vi.fn()
     const { container } = render(
       <PermissionDialog request={planRequest()} onDecide={onDecide} currentMode={'default'} />,
@@ -142,6 +142,7 @@ describe('PermissionDialog plan approval', () => {
     fireEvent.click(within(container).getByRole('button', { name: /Stop & take over/i }))
     expect(onDecide).toHaveBeenCalledWith({
       behavior: 'deny',
+      message: 'Plan denied by user — stopping the turn.',
       interrupt: true,
     })
   })
@@ -153,7 +154,11 @@ describe('PermissionDialog plan approval', () => {
     )
     const dialog = container.querySelector('.perm-card') as HTMLElement
     fireEvent.keyDown(dialog, { key: 'Escape' })
-    expect(onDecide).toHaveBeenCalledWith({ behavior: 'deny', interrupt: true })
+    expect(onDecide).toHaveBeenCalledWith({
+      behavior: 'deny',
+      message: 'Plan denied by user — stopping the turn.',
+      interrupt: true,
+    })
   })
 })
 

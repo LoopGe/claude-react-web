@@ -21,6 +21,12 @@ import { IconClipboardList, IconLock, IconX } from './icons/ToolIcons'
  *  is rendered by `<QuestionDialog />` instead. */
 type PermissionRequestPermission = Extract<PermissionRequest, { kind: 'permission' }>
 
+/** Deny message for the plan "stop the turn" actions (the Stop & take over
+ *  button and Esc on a plan dialog). Contains the `denied by user` rejection
+ *  needle so `computePlanStatus` classifies the resulting tool_result as
+ *  `rejected` (not `approved`), and tells the model the user stopped the turn. */
+const PLAN_STOP_MESSAGE = 'Plan denied by user — stopping the turn.'
+
 interface Props {
   open?: boolean
   request: PermissionRequestPermission
@@ -87,7 +93,7 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
         e.preventDefault()
         e.stopPropagation()
         if (isPlanRequest) {
-          click({ behavior: 'deny', interrupt: true })
+          click({ behavior: 'deny', message: PLAN_STOP_MESSAGE, interrupt: true })
         } else {
           click({ behavior: 'deny' })
         }
@@ -258,7 +264,7 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
               <div style={{ display: 'flex', gap: 8 }}>
                 <button
                   className="btn"
-                  onClick={() => click({ behavior: 'deny', message: feedback })}
+                  onClick={() => click({ behavior: 'deny', message: `Plan denied by user. Feedback: ${feedback.trim()}` })}
                   disabled={busy || feedback.trim().length === 0}
                   style={{ flex: 1 }}
                   title="Send this feedback to Claude — it keeps planning in this turn"
@@ -267,7 +273,7 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
                 </button>
                 <button
                   className="btn btn-danger"
-                  onClick={() => click({ behavior: 'deny', interrupt: true })}
+                  onClick={() => click({ behavior: 'deny', message: PLAN_STOP_MESSAGE, interrupt: true })}
                   disabled={busy}
                   style={{ flex: 1 }}
                   title="Stop this turn and return to the input box"
