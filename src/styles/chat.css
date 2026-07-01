@@ -245,14 +245,16 @@
   flex-direction: column;
   padding-left: var(--chat-reading-inset);
   padding-right: var(--chat-reading-inset);
-  /* Vertical padding doubles as breathing room for the streaming bubble's
-     accent halo (streaming-breathe): .chat-streaming-region has
-     overflow:hidden (the entrance/exit max-height wipe needs it), so the
-     glow is clipped at the region's padding box. The top/bottom padding
-     here is what gives the glow space to render — especially at the
-     bottom, which used to read as "no glow" because the halo had no room
-     below the bubble. Keep both ≥ the halo's outer blur. */
-  padding-top: 12px;
+  /* Top padding is 0 so the streaming bubble's visible top edge sits at the
+     same 14px rhythm below the previous message as any two settled messages
+     (the last settled item carries padding-bottom:14px). Adding top padding
+     here pushed the live bubble ~30px down, reading as a visual "step" the
+     moment streaming began. The top outer glow is therefore clipped by
+     .chat-streaming-region's overflow:hidden, but the inset rim still carries
+     the breath on the bubble's top edge. Bottom padding stays to give the
+     halo room below the bubble (where it used to read as "no glow"); keep it
+     ≥ the halo's outer blur. */
+  padding-top: 0;
   padding-bottom: 18px;
   pointer-events: none;
 }
@@ -1009,7 +1011,7 @@
   border-bottom-left-radius: 3px;
   background: color-mix(in srgb, var(--bg) 75%, transparent);
   backdrop-filter: var(--glass-blur);
-  margin: 4px 0;
+  margin: 0 0 4px;
   /* Dynamic breathing glow: a slow accent halo + inset rim that pulses to
      signal the live turn. box-shadow is animated (not layout), so this is
      cheap on the streaming hot path — no reflow, just a composited shadow
