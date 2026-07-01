@@ -127,6 +127,10 @@ export interface ChatPanelProps {
   /** Open the resume picker scope to this panel — the chosen session
    *  replaces this panel's slot. Triggered by the `/resume` local command. */
   onRequestResumeForPanel: (panelSessionId: string) => void
+  /** `/clear` this panel — the server detaches the pre-clear conversation
+   *  as dormant and returns a fresh session; App swaps the panel id. Triggered
+   *  by the `/clear` local command. */
+  onClearSession: (panelSessionId: string) => void
   /** Open this panel's settings overlay on a specific tab. Triggered by the
    *  `/mcp` local command. */
   onOpenSettingsTab: (panelSessionId: string, tab: SettingsTabName) => void
@@ -201,6 +205,7 @@ export const ChatPanel = memo(function ChatPanel({
   onSwap,
   onAcceptSidebarDrop,
   onRequestResumeForPanel,
+  onClearSession,
   onOpenSettingsTab,
   onShowHelp,
   sideChatSession,
@@ -755,6 +760,7 @@ export const ChatPanel = memo(function ChatPanel({
             focused={focused}
             onSessionUpdate={onSessionUpdate}
             onRequestResumeForPanel={onRequestResumeForPanel}
+            onClearSession={onClearSession}
             onOpenSettingsTab={onOpenSettingsTab}
             onShowHelp={onShowHelp}
             settingsTabRequest={settingsTabRequest}

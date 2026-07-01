@@ -171,16 +171,6 @@ export interface Session {
    *  respawn). Cleared in clear()'s finally block once the new pump is up.
    *  Runtime-only; never persisted. */
   clearing?: boolean
-  /** Set true after clear() respawns a fresh Query so the pump knows to
-   *  stamp `clearBoundaryUuid` from the FIRST `system`/`init` frame it sees
-   *  (the new transcript anchor) and then clear this flag. Without it, a
-   *  resumed-from-disk pagination could resurrect pre-clear rows from the
-   *  same on-disk transcript file. Runtime-only; never persisted. */
-  captureNextInitAsClearBoundary?: boolean
-  /** Raw JSONL uuid of the SDK `system/init` frame that confirmed the most
-   *  recent `/clear`. Used as the persisted history boundary so resume and
-   *  lazy history paging never resurrect pre-clear transcript rows. */
-  clearBoundaryUuid?: string
   /** Epoch ms when the first pending turn starte?. Cleared when all turns
    *  complete (pendingTurns drops to 0) or the session terminates. */
   workingSince?: number

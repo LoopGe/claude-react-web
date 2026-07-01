@@ -92,6 +92,10 @@ interface Props {
   /** Open the in-app help dialog with the given slash commands. Invoked by
    *  the `/help` local command. */
   onShowHelp: (commands: SlashCommand[]) => void
+  /** `/clear` this panel. App owns the POST + panel id-swap (the server
+   *  detaches the pre-clear conversation as dormant and returns a fresh
+   *  session under a new id). Invoked by the `/clear` local command. */
+  onClearSession: (panelSessionId: string) => void
   /** Nonce-stamped request to switch the settings tab ?forwarded to
    *  SettingsPanel, which applies it when the nonce changes. */
   settingsTabRequest?: { tab: SettingsTabName; nonce: number } | null
@@ -196,7 +200,7 @@ export const Chat = memo(function Chat({
   settingsOpen, onCloseSettings,
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
   recapOpen, onCloseRecap,
-  onSessionUpdate, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, settingsTabRequest, messageJumpTarget, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, onRegisterInjectInput,
+  onSessionUpdate, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, onRegisterInjectInput,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
 }: Props) {
@@ -850,25 +854,17 @@ export const Chat = memo(function Chat({
   )
 
   const requestClearSession = useCallback((sessionId: string) => {
-    setClearing(true)
+    // App owns the POST + panel id-swap: the server detaches the pre-clear
+    // conversation as a dormant resumable session and returns a fresh session
+    // Y under a new id; App swaps this panel from X to Y. X unmounts (its
+    // transcript/permissions/attachments state is discarded), Y mounts fresh.
+    // We deliberately do NOT set `clearing` here — the blur-fade was tied to
+    // the old same-id wipe, and a stuck "Clearing…" veil on a failed POST
+    // (onCleared never fires for a local /clear) isn't worth the transition.
+    // `clearing` remains wired for the SDK's own in-band `cleared` event.
     clearError()
-    questionDraftsRef.current.clear()
-    setMinimizedQ(new Set())
-    void api.post(`/sessions/${sessionId}/clear`, {})
-      .then(() => {
-        permissions.reset()
-        clearAttachments()
-        pastedImages.clear()
-        // NOTE: clearing is NOT reset here. The onCleared WS callback
-        // (fired by the session-cleared frame, in the same handler that
-        // wipes the store) drops it — so the blur-fade class is removed
-        // only once the transcript is already empty, preventing snap-back.
-      })
-      .catch((e) => {
-        setClearing(false)
-        setLocalError((e as Error).message)
-      })
-  }, [clearAttachments, clearError, pastedImages, permissions])
+    onClearSession(sessionId)
+  }, [clearError, onClearSession])
 
   /** Run a `!`/`!!` bash command: optimistic placeholder → POST /exec →
    *  ack/rollback. `share:true` (`!!`) injects the result into the SDK

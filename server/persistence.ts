@@ -60,10 +60,6 @@ export interface SessionMeta {
    *  unread badges when a turn completes while the user is looking at
    *  another session. */
   lastTurnAt?: number
-  /** Raw SDK transcript uuid of the post-/clear init frame. When present,
-   *  history reads and resume seeding must ignore rows before this boundary
-   *  so a refreshed tab cannot page pre-clear messages back into view. */
-  clearBoundaryUuid?: string
   /** Snapshot of HEAD captured when the session was first spawned.
    *  Survives across process restarts so the GitPanel "This session"
    *  view stays anchored even if the server is bounced mid-conversation. */
@@ -178,7 +174,6 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     terminatedReason: typeof r.terminatedReason === 'string' ? r.terminatedReason : undefined,
     error: typeof r.error === 'string' ? r.error : undefined,
     lastTurnAt: typeof r.lastTurnAt === 'number' ? r.lastTurnAt : undefined,
-    clearBoundaryUuid: typeof r.clearBoundaryUuid === 'string' ? r.clearBoundaryUuid : undefined,
     gitStartSha: typeof r.gitStartSha === 'string' ? r.gitStartSha : undefined,
     parentId: typeof r.parentId === 'string' ? r.parentId : undefined,
     mcpServerNames: Array.isArray(r.mcpServerNames) && r.mcpServerNames.every((n: unknown) => typeof n === 'string')

@@ -54,7 +54,6 @@ import { SessionHealthMonitor } from './session-health.js'
 import { pushBounded, stampReceivedAt, stampConsumedAt } from './history-utils.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
-import { deleteTranscriptFile } from './history-reader.js'
 import { createPushable, type Pushable } from './pushable.js'
 import { createDefaultProviders } from './providers/default-providers.js'
 import type { ProviderCapabilities, ProviderSessionHandle } from './providers/types.js'
@@ -403,7 +402,6 @@ export class SessionManager {
       terminatedReason: s.terminatedReason,
       error: s.error,
       lastTurnAt: s.lastTurnAt,
-      clearBoundaryUuid: s.clearBoundaryUuid,
       gitStartSha: s.gitStartSha,
       parentId: s.parentId,
       mcpServerNames: s.mcpServerNames,
@@ -597,7 +595,6 @@ export class SessionManager {
     try {
       const page = await this.readProviderHistoryPage(provider, id, {
         limit: this.historyCap,
-        afterUuid: meta.clearBoundaryUuid,
       })
       if (page.messages.length > 0) historySeed = page.messages as SDKMessage[]
     } catch {
@@ -657,7 +654,7 @@ export class SessionManager {
     // spawn() with no `resume:` / `forkSession` sets sessionId=id (a fresh
     // conversation reusing the id) and builds a new canUseTool. The prior
     // persisted meta is read for carry-forward fields (gitStartSha, fastMode,
-    // hooks, lastTurnAt=undefined, clearBoundaryUuid, createdAt) but NOT
+    // hooks, lastTurnAt=undefined, createdAt) but NOT
     // parentId. No transcript file exists for a turn-less session, so the
     // fresh same-id spawn does not trip the CLI's "Session ID already in
     // use" file-existence guard.
@@ -839,7 +836,6 @@ export class SessionManager {
         terminated: true,
         terminatedReason: 'transcript_missing',
         lastTurnAt: meta.lastTurnAt,
-        clearBoundaryUuid: meta.clearBoundaryUuid,
         gitStartSha: meta.gitStartSha,
       }
       this.markTranscriptMissing(persisted, 'fork')
@@ -935,7 +931,6 @@ export class SessionManager {
         terminated: true,
         terminatedReason: 'transcript_missing',
         lastTurnAt: meta.lastTurnAt,
-        clearBoundaryUuid: meta.clearBoundaryUuid,
         gitStartSha: meta.gitStartSha,
       }
       this.markTranscriptMissing(persisted, 'side-chat')
@@ -1054,7 +1049,6 @@ export class SessionManager {
       hookRunSubscribers: new Set(),
       recapSubscribers: new Set(),
       sessionClearedSubscribers: new Set(),
-      clearBoundaryUuid: existingMeta?.clearBoundaryUuid,
       pumpTask: Promise.resolve(),
       running: true,
       terminated: false,
@@ -1390,40 +1384,44 @@ export class SessionManager {
     s?.execAbort?.abort()
   }
 
-  /** Reset the session's conversation context.
+  /** `/clear` — non-destructive context reset.
    *
-   *  The headless `claude` binary refuses the `/clear` slash command (it's
-   *  a REPL-only feature in non-interactive mode), so we cannot ask the SDK
-   *  to clear in-band. Instead we drive it ourselves: tear down the live
-   *  Query, wipe the in-memory transcript + transient state, then spawn a
-   *  fresh Query with no `resume:` so the model starts a brand-new
-   *  conversation. `session.id` is preserved as both the app-level handle
-   *  and the SDK sessionId. The OLD on-disk transcript `.jsonl` is deleted
-   *  before the respawn: the CLI's "Session ID already in use" guard is a
-   *  pure file-existence check (`fs.statSync(<projectsDir>/<id>.jsonl)`),
-   *  so a fresh same-id spawn is rejected when that file already exists.
-   *  Deleting it lets the new process write a brand-new transcript under
-   *  the same id; `clearBoundaryUuid` (captured by the pump from the
-   *  post-clear `init` frame) is now moot (no pre-clear rows survive) but
-   *  its capture logic is harmless and kept.
+   *  The headless `claude` binary refuses the `/clear` slash command (it's a
+   *  REPL-only feature in non-interactive mode), so we drive the reset
+   *  ourselves. Rather than destroy the pre-clear conversation P1, we detach
+   *  it as a **dormant, resumable session under the same id** and spawn a
+   *  **brand-new fresh conversation under a new id** in this tab. P1's
+   *  on-disk transcript + sessions.json entry are left intact so the resume
+   *  picker lists it; the cleared tab gets a clean slate. Both coexist as
+   *  first-class sessions.
    *
-   *  Idempotent: a second clear() while one is already in flight returns
-   *  the current SessionInfo without re-driving the lifecycle. */
+   *  Mental model: "unload X as dormant + create fresh Y with the same
+   *  settings." This mirrors how the `claude` CLI treats /clear (a new
+   *  session) and aligns with the existing fork()/create() spawn paths.
+   *
+   *  No `session-cleared` frame is emitted for this — Y is a fresh session
+   *  with no pre-clear content to hide, so the client simply swaps the panel
+   *  from X to Y. (The `session-cleared` frame still has a second producer —
+   *  the SDK's own in-band `cleared` control event — so the client handler
+   *  stays; only clear() stops emitting it.)
+   *
+   *  Idempotent: a second clear() while one is already in flight returns the
+   *  current SessionInfo without re-driving the lifecycle. */
   async clear(id: string): Promise<SessionInfo> {
     const s = this.requireRunnable(id)
     if (s.clearing) return this.info(s)
 
     s.clearing = true
-    console.log(`[session ${id}] clear: tearing down current Query for context reset`)
+    log.info(`[session ${id}] clear: detaching pre-clear conversation as dormant`)
     try {
       // Resolve any pending tool-permission requests so SDK awaiters
       // don't hang once we destroy the handle.
       this.permBroker.denyAll(s)
 
       // Drain any in-flight assistant turn or queued user input. The
-      // interrupt landed against the OLD Query — its result frame won't
-      // matter once we destroy the handle, but interrupting first lets
-      // the SDK exit cleanly instead of mid-API-call.
+      // interrupt lands against the OLD Query; its result frame won't
+      // matter once we unload, but interrupting first lets the SDK exit
+      // cleanly instead of mid-API-call.
       if (s.pendingTurns > 0 || s.handle.queueDepth > 0) {
         try {
           await this.requireHandleMethod<() => Promise<void>>(
@@ -1433,159 +1431,91 @@ export class SessionManager {
             'supportsInterrupt',
           )()
         } catch (err) {
-          log.warn(`[session ${id}] clear: interrupt before respawn failed:`, err)
+          log.warn(`[session ${id}] clear: interrupt before detach failed:`, err)
         }
       }
       s.handle.clearQueuedInput?.()
 
-      // Destroy the live handle and wait for the old pump to finish so
-      // we don't have two pumps fanning out to the same subscribers.
-      // The pump's cleanupPump observes `s.clearing === true` and bails
-      // before its terminate path — subscribers stay attached across the
-      // gap and the new pump picks them up automatically.
-      s.handle.destroy('clear')
-      try {
-        await Promise.race([
-          s.pumpTask,
-          new Promise<void>((r) => {
-            const t = setTimeout(r, 5000)
-            ;(t as { unref?: () => void }).unref?.()
-          }),
-        ])
-      } catch { /* pump swallows errors internally */ }
-
-      // Wait for the OLD CLI subprocess to actually exit before respawning.
-      // The pump resolves on the abort signal (above), NOT on process exit,
-      // and the SDK's graceful-close path takes up to ~7s (stdin EOF -> 2s
-      // grace -> SIGTERM/SIGKILL) to tear the child down. We need the old
-      // process GONE for two reasons, both downstream of this await:
-      //   1. On Windows it holds the transcript .jsonl open; we can't unlink
-      //      it (next step) until the handle is released.
-      //   2. (defensive) the prior race where a still-dying child could
-      //      interfere with the fresh spawn.
-      // `destroy()` already ran `unregister()` (marking the exit intentional
-      // so it does NOT trigger handleProcessExit); the handle's processExited
-      // resolves on the real 'exit'. For a session that never spawned a real
-      // process (mocked SDK in tests / deferred spawn), unregister resolves
-      // it immediately, so this await is a no-op there. The 10s cap bounds
-      // the worst case so the /clear request can't hang.
-      try {
-        await Promise.race([
-          s.handle.processExited,
-          new Promise<void>((r) => {
-            const t = setTimeout(r, 10_000)
-            ;(t as { unref?: () => void }).unref?.()
-          }),
-        ])
-      } catch { /* processExited never rejects */ }
-
-      // Delete the OLD on-disk transcript BEFORE respawning. The `claude`
-      // CLI's "Session ID already in use" guard (iFt) is a pure file-existence
-      // check: fs.statSync(<projectsDir>/<sessionId>.jsonl). A fresh (no
-      // --resume) spawn reusing this session-id is rejected when that file
-      // already exists — which it does, written by the prior run. Removing it
-      // lets the fresh spawn proceed; the new process writes a brand-new
-      // transcript under the same id. This deviates from the old "append to
-      // the existing file + clearBoundaryUuid" design, which the CLI's
-      // file-existence guard makes impossible. clearBoundaryUuid is now moot
-      // (no pre-clear rows survive in the fresh file) but the capture logic
-      // below is harmless and kept. Must run AFTER the old process exit await
-      // so Windows has released the file handle. Best-effort: a failed unlink
-      // is logged and we still attempt the respawn (which will then surface
-      // "already in use" if the file couldn't be removed).
-      await deleteTranscriptFile(s.id)
-
-      // Wipe in-memory transcript + transient runtime state. Persisted
-      // metadata (model, permissionMode, hooks, parentId, etc.) is kept
-      // — the user wants the same session, just with a clean slate.
-      s.history = []
-      s.lastContextUsage = undefined
-      s.recap = undefined
-      s.pendingTurns = 0
-      s.workingSince = undefined
-      s.autoInterruptedAt = undefined
-      s.fastModeState = undefined
-      s.hookRuns.length = 0
-      s.error = undefined
-      s.terminated = false
-      s.terminatedReason = undefined
-      s.exiting = false
-      s.running = true
-      // The previous boundary anchor is stale once we mint a new
-      // conversation; the pump will stamp the next init's uuid onto
-      // `clearBoundaryUuid`. Setting captureNextInitAsClearBoundary
-      // arms that capture exactly once.
-      s.clearBoundaryUuid = undefined
-      s.captureNextInitAsClearBoundary = true
-      this.recapManager.invalidate(s.id)
-      this.autoResumeCounts.delete(s)
-
-      // Spawn a fresh handle with NO `resume:` so the SDK starts a new
-      // conversation. The provider sets `sessionId = s.id` (see
-      // claude-provider.ts), preserving the app-level identity. Side
-      // Chat sessions re-inject SIDE_DEVELOPER_INSTRUCTIONS so the
-      // boundary survives — same logic as autoResume.
-      const provider = this.providers.get(s.provider)
-      const freshOpts: Options = {
+      // Capture the settings to clone into the fresh session BEFORE unloading
+      // X (unload destroys the handle and removes X from the live map).
+      const settings = {
+        provider: s.provider,
         cwd: s.cwd,
         model: s.model,
         permissionMode: s.permissionMode,
         title: s.title,
-        effort: s.effortLevel,
-        betas: s.betas as Options['betas'],
-        settings: s.hooks ? ({ hooks: toSdkHooksSettings(s.hooks) } as Settings) : undefined,
+        effortLevel: s.effortLevel,
+        betas: s.betas,
+        hooks: s.hooks,
+        fastMode: s.fastMode,
+        enabledPlugins: s.enabledPlugins,
+        parentId: s.parentId,
       }
-      if (s.parentId) {
+
+      // Detach X as dormant. unload() destroys the live Query (the subprocess
+      // exits asynchronously, releasing the transcript file handle), marks the
+      // session not-running, persists its meta, broadcasts a dormant `update`,
+      // and removes it from the live map — so a later resume(X) re-spawns from
+      // disk via the normal resume path. The transcript file and sessions.json
+      // entry are NOT touched: P1 survives as a resumable session. There is no
+      // need to await process exit here: the old reason for waiting was Windows
+      // holding the .jsonl open before `deleteTranscriptFile`, and that step is
+      // gone — the dying subprocess writes to X.jsonl while Y writes to Y.jsonl,
+      // so they never collide.
+      await this.unload(id)
+
+      // Spawn a fresh session Y under a new id, same settings, no `resume:`.
+      // spawn() persists Y, broadcasts `created`, and starts its pump. Side
+      // Chat sessions re-inject SIDE_DEVELOPER_INSTRUCTIONS so the boundary
+      // survives — same logic as the old respawn.
+      const freshOpts: Options & { provider?: string; enabledPlugins?: string[] } = {
+        provider: settings.provider,
+        cwd: settings.cwd,
+        model: settings.model,
+        permissionMode: settings.permissionMode,
+        title: settings.title,
+        effort: settings.effortLevel,
+        betas: settings.betas as Options['betas'],
+        settings: settings.hooks ? ({ hooks: toSdkHooksSettings(settings.hooks) } as Settings) : undefined,
+        enabledPlugins: settings.enabledPlugins,
+      }
+      if (settings.parentId) {
         freshOpts.systemPrompt = {
           type: 'preset',
           preset: 'claude_code',
           append: SIDE_DEVELOPER_INSTRUCTIONS,
         }
+        ;(freshOpts as Options & { parentId?: string }).parentId = settings.parentId
       }
       const allGlobalMcpNames = Object.keys(this.mcpStore.toSdkConfig() ?? {})
       if (allGlobalMcpNames.length > 0) {
         await this.mcpStore.refreshOAuthTokens(allGlobalMcpNames)
         freshOpts.mcpServers = this.mcpStore.toSdkConfig()
       }
-      if (s.canUseTool) {
-        freshOpts.canUseTool = s.canUseTool
-      }
-      s.handle = provider.createSession({
-        id: s.id,
-        provider: s.provider,
-        cwd: s.cwd,
-        model: s.model,
-        permissionMode: s.permissionMode,
-        title: s.title,
-        betas: s.betas,
-        effortLevel: s.effortLevel,
-        fastMode: s.fastMode,
-        enabledPlugins: s.enabledPlugins,
-        includeHookEvents: true,
-        // No `resume:` — fresh conversation. The provider sets
-        // sdkOptions.sessionId = s.id, preserving the app-level identity.
-        // The old transcript file was deleted above (the CLI's iFt guard
-        // rejects a fresh same-id spawn when the .jsonl already exists), so
-        // the new process writes a brand-new transcript under the same id.
-        // clearBoundaryUuid (captured from the new init below) is now moot
-        // — no pre-clear rows survive in the fresh file — but the capture
-        // logic is harmless and kept.
-        onUserMessageConsumed: (msg) => this.onInputConsumed(s.id, msg as SDKUserMessage),
-        canUseTool: s.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
-        providerExtras: { sdkOptions: applySkillPolicyToOptions(freshOpts, s.skillOverride) },
-      })
-      s.lastActivityAt = Date.now()
-      s.pumpTask = this.pump(s)
+      // spawn() builds a fresh canUseTool for Y (permBroker.buildCanUseTool),
+      // so we do NOT reuse X's canUseTool closure — Y gets its own permission
+      // tracker. spawn() also applies the skill policy to sdkOptions.
+      const newY = this.spawn(randomUUID(), freshOpts)
+      const newYId = newY.id
 
-      // Tell live subscribers to drop their transcript + cache. Mirrors
-      // the broadcast the old pump used to fire when an SDK-emitted
-      // post-/clear init landed; the client-side handler is unchanged
-      // (see useChatStream's `session-cleared` case).
-      this.broadcastSessionCleared(s.id)
-      this.broadcastGlobal({ kind: 'update', session: this.info(s) })
-      this.persist(s)
-      console.log(`[session ${id}] clear: respawn complete`)
-      return this.info(s)
+      // fastMode is runtime state re-applied via applyFlagSettings, not an
+      // Options field spawn() reads (it only carries forward from an existing
+      // persisted meta, which Y lacks). Re-apply it on the live Y so a fast-
+      // mode session stays fast after /clear. Best-effort: a failure is logged
+      // and the clear still completes (Y is usable, just without fast mode).
+      if (settings.fastMode) {
+        const provider = this.providers.get(settings.provider)
+        if (provider?.capabilities?.supportsFastMode) {
+          try {
+            await this.setFastMode(newYId, true)
+          } catch (err) {
+            log.warn(`[session ${newYId}] clear: re-applying fastMode failed:`, err)
+          }
+        }
+      }
+
+      log.info(`[session ${id}] clear: detached as dormant, fresh session=${newYId}`)
+      return newY
     } finally {
       s.clearing = false
     }
@@ -2606,7 +2536,6 @@ export class SessionManager {
     }
     return this.readProviderHistoryPage(live?.provider ?? meta?.provider ?? this.defaultProvider, id, {
       ...opts,
-      afterUuid: live?.clearBoundaryUuid ?? meta?.clearBoundaryUuid,
     })
   }
 
@@ -2630,9 +2559,7 @@ export class SessionManager {
 
       let entries: HistoryEntry[]
       try {
-        entries = await provider.readHistoryEntries(info.id, {
-          afterUuid: live?.clearBoundaryUuid ?? meta?.clearBoundaryUuid,
-        })
+        entries = await provider.readHistoryEntries(info.id, {})
       } catch (err) {
         log.warn(`[session-manager] searchMessages(${info.id}) history read failed:`, err)
         return

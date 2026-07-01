@@ -402,33 +402,14 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
 
         // Only broadcast system messages that the frontend actually needs.
         // Other system frames (init, status, — are kept in history for
-        // fastModeState extraction and /clear signaling, but skip the
-        // broadcast to save bandwidth and client memory.
+        // fastModeState extraction, but skip the broadcast to save
+        // bandwidth and client memory.
         if (shouldBroadcastMessage(msg as { type: string; subtype: string })) {
           for (const sub of session.subscribers.values()) {
             try { sub.push(msg) } catch { /* subscriber dead ddon't break broadcast to others */ }
           }
         }
         msgCount++
-        // After SessionManager.clear() respawns a fresh Query, the next
-        // `system`/`init` frame is the anchor for the new conversation in the
-        // on-disk transcript file (the SDK reuses the file across the
-        // clear). Capture that uuid as `clearBoundaryUuid` so resume and
-        // lazy history paging never resurrect pre-clear rows from the same
-        // file. Cleared once captured so a later spawn/resume init can't
-        // overwrite the boundary. Persist the boundary so it survives a
-        // server restart.
-        if (
-          session.captureNextInitAsClearBoundary &&
-          msg.type === 'system' &&
-          (msg as { subtype: string }).subtype === 'init'
-        ) {
-          session.clearBoundaryUuid = (msg as { uuid: string }).uuid
-          session.captureNextInitAsClearBoundary = undefined
-          try { deps.persist(session) } catch (err) {
-            log.warn(`[session ${session.id}] persist failed after clear-boundary capture: ${err}`)
-          }
-        }
         // Derive a context-usage snapshot directly from the result's own
         // `usage` + `modelUsage` payload dno IPC. The result message is
         // the SDK's authoritative tally for the API call that just landed,

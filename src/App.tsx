@@ -2299,6 +2299,50 @@ export function App() {
     setResumeDialogOpen(true)
   }, [])
 
+  /** `/clear` a panel: the server detaches the pre-clear conversation X as a
+   *  dormant resumable session and spawns a fresh session Y under a new id.
+   *  Swap the panel slot X→Y at the same position (mirrors handleRestart's
+   *  in-place id swap). X stays in the sidebar as dormant (the server's
+   *  session-update broadcast dims it); Y takes X's group slot so the active
+   *  group view stays consistent, and X leaves the group — it's now a
+   *  standalone resumable past session, recoverable via the resume picker. */
+  const handleClear = useCallback(
+    async (id: string) => {
+      const sourceGroup = groups.find((g) => g.sessionIds.includes(id))
+      const wasOpen = openIds.includes(id)
+      try {
+        const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/clear`, {})
+        const newId = res.session.id
+        if (wasOpen) {
+          setOpenIds((prev) => {
+            const idx = prev.indexOf(id)
+            if (idx === -1) return prev
+            const next = prev.slice()
+            next[idx] = newId
+            return next
+          })
+          setFocusedId((prev) => (prev === id ? newId : prev))
+        }
+        setLastSeenTurn((prev) => ({ ...prev, [newId]: res.session.lastTurnAt ?? Date.now() }))
+        if (sourceGroup) {
+          setGroups((prev) =>
+            prev.map((g) => {
+              if (g.id !== sourceGroup.id) return g
+              const idx = g.sessionIds.indexOf(id)
+              if (idx === -1) return g
+              const next = g.sessionIds.slice()
+              next[idx] = newId
+              return { ...g, sessionIds: next }
+            }),
+          )
+        }
+      } catch (e) {
+        toast.error(`Couldn't clear session: ${(e as Error).message}`)
+      }
+    },
+    [groups, openIds, toast, setLastSeenTurn, setGroups],
+  )
+
   const refreshConfigResponse = useCallback(async () => {
     const r = await api.get<ConfigResponse>('/config')
     setDefaults(r.defaults)
@@ -2644,6 +2688,7 @@ export function App() {
                     onRegisterInjectInput={registerInjectInput}
                     onAcceptSidebarDrop={handleAcceptSidebarDrop}
                     onRequestResumeForPanel={requestResumeForPanel}
+                    onClearSession={handleClear}
                     onOpenSettingsTab={openSettingsTab}
                     onShowHelp={showHelpWithCommands}
                     sideChatSession={sideChat?.parentId === s.id ? sideChat.session : undefined}

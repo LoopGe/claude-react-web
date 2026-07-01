@@ -82,13 +82,13 @@ describe('toolResultIds', () => {
 })
 
 // ---------------------------------------------------------------------------
-// /clear is now driven entirely by SessionManager.clear() — it tears down the
-// live Query, wipes in-memory state, and respawns a fresh Query (no `resume:`)
-// with the same sessionId. The pump captures the post-clear init's uuid as
-// `clearBoundaryUuid` via the `captureNextInitAsClearBoundary` flag, but the
-// "wait for an SDK-emitted post-/clear init within a window" path is gone —
-// the headless `claude` binary refuses /clear, so there's no init to wait for.
-// The previous `clearSignalAction` helper has been removed.
+// /clear is driven by SessionManager.clear() — it unloads the pre-clear
+// session X as dormant (transcript + meta preserved, so it stays resumable)
+// and spawns a brand-new fresh session Y under a new id (no `resume:`). The
+// pump no longer captures a `clearBoundaryUuid` (separate ids mean there is
+// no boundary to anchor), and clear() no longer broadcasts `session-cleared`
+// (Y has no pre-clear content to hide; that frame's only remaining producer
+// is the SDK's own in-band `cleared` control event, forwarded in ws.ts).
 // ---------------------------------------------------------------------------
 
 function makeResult(overrides: {

@@ -287,9 +287,13 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
           break
         }
         case 'session-cleared': {
-          // The backend confirmed a /clear and already truncated its
-          // history ring (to [init, ...]). Reset the transcript store and
-          // drop the local cache.
+          // SDK-emitted `cleared` control event (forwarded at server/ws.ts).
+          // The local `/clear` command no longer emits this frame: it mints a
+          // fresh session under a new id and the client swaps panels, so there
+          // is no in-place transcript to reset. This handler stays for the
+          // SDK's own in-band clears, which append a new init to the on-disk
+          // transcript — the store + cache reset + reverse-page block below
+          // keep the pre-clear rows from resurrecting on scroll-up.
           //
           // Mid-replay guard: if a reconnect's replay raced ahead of this
           // frame, the buffers below hold PRE-clear messages (the server's

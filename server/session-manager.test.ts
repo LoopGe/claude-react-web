@@ -403,23 +403,24 @@ describe('SessionManager', () => {
     sub.unsubscribe()
   })
 
-  it('clear() tears down the old Query and respawns a fresh one (no /clear control message)', async () => {
+  it('clear() detaches the pre-clear session as dormant and returns a fresh session under a new id', async () => {
     const info = sm.create({})
     expect(mockHandles).toHaveLength(1)
     mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
     await tick()
     expect(sm.getHistory(info.id)!).toHaveLength(1)
 
-    await sm.clear(info.id)
+    const next = await sm.clear(info.id)
 
-    // A brand-new Query was spawned (old handle destroyed, fresh one created).
+    // Y is a brand-new session with a DIFFERENT id; old handle destroyed,
+    // fresh one created. Fresh conversation: no `resume`, and the SDK
+    // session_id is pinned to Y's id (not X's).
+    expect(next.id).not.toBe(info.id)
     expect(mockHandles).toHaveLength(2)
-    // Fresh conversation: no `resume`, but the SDK session_id is pinned to
-    // our id so the new transcript anchor lands in the existing file.
     expect(mockHandles[1].options.resume).toBeUndefined()
-    expect(mockHandles[1].options.sessionId).toBe(info.id)
+    expect(mockHandles[1].options.sessionId).toBe(next.id)
     // We never push a `/clear` slash command into either Query's input
-    // queue (the headless binary rejects it; the respawn IS the clear).
+    // queue (the headless binary rejects it; the unload+spawn IS the clear).
     for (const h of mockHandles) {
       const sawClear = h.consumed.some(
         (m) => (m as { message?: { content?: unknown } }).message?.content === '/clear',
@@ -428,37 +429,34 @@ describe('SessionManager', () => {
     }
   })
 
-  it('clear() empties the in-memory history synchronously', async () => {
+  it('clear() preserves the pre-clear session as resumable and leaves Y empty', async () => {
     const info = sm.create({})
     mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
     await tick()
     expect(sm.getHistory(info.id)!).toHaveLength(1)
 
-    await sm.clear(info.id)
+    const next = await sm.clear(info.id)
 
-    // History is wiped as part of the respawn d no waiting for an SDK init.
-    expect(sm.getHistory(info.id)!).toHaveLength(0)
+    // X is no longer live (unloaded) so its in-memory ring is gone, but its
+    // persisted meta survives so the resume picker can list it.
+    expect(sm.getHistory(info.id)).toBeNull()
+    expect(store.get(info.id)).toBeDefined()
+    // Y is a fresh empty session (no history seeded).
+    expect(sm.getHistory(next.id)!).toHaveLength(0)
   })
 
-  it('clear() broadcasts session-cleared and captures the boundary uuid from the post-respawn init', async () => {
+  it('clear() does not broadcast session-cleared (Y has no pre-clear content to hide)', async () => {
     const info = sm.create({})
     mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
     await tick()
 
-    const cleared = sm.subscribeSessionCleared(info.id)!
-    const nextCleared = cleared.iterable[Symbol.asyncIterator]().next()
-
+    const spy = vi.spyOn(sm, 'broadcastSessionCleared')
     await sm.clear(info.id)
-    // The session-cleared signal fires during clear() (synchronous respawn).
-    await expect(nextCleared).resolves.toMatchObject({ value: { kind: 'session-cleared', sessionId: info.id } })
-
-    // The fresh Query's first init frame anchors the new conversation.
-    mockHandles[1].emit({ type: 'system', subtype: 'init', uuid: 'clear-init', session_id: info.id })
-    await tick()
-
-    expect(sm.getHistory(info.id)!.map((m) => (m as { uuid?: string }).uuid)).toEqual(['clear-init'])
-    expect(store.get(info.id)?.clearBoundaryUuid).toBe('clear-init')
-    cleared.unsubscribe()
+    // clear() must not emit session-cleared; the only remaining producer is
+    // the SDK's own in-band `cleared` control event (forwarded in ws.ts),
+    // which the mock never fires.
+    expect(spy).not.toHaveBeenCalled()
+    spy.mockRestore()
   })
 
   it('clear() resets stale working state from the interrupted turn', async () => {
@@ -466,13 +464,15 @@ describe('SessionManager', () => {
     sm.send(info.id, 'busy')
     expect(sm.get(info.id).working).toBe(true)
 
-    await sm.clear(info.id)
+    const next = await sm.clear(info.id)
 
+    // X is dormant (working false); Y is a fresh idle session.
     expect(sm.get(info.id).working).toBe(false)
-    expect(sm.get(info.id).phase).toBe('idle')
+    expect(sm.get(next.id).working).toBe(false)
+    expect(sm.get(next.id).phase).toBe('idle')
   })
 
-  it('clear() drops hook run records', async () => {
+  it('clear() drops hook run records on the fresh session', async () => {
     const info = sm.create({})
     // Seed two hook runs before the clear.
     sm.recordHookRun(info.id, {
@@ -491,10 +491,10 @@ describe('SessionManager', () => {
     })
     expect(sm.subscribeHookRuns(info.id)!.snapshot).toHaveLength(2)
 
-    await sm.clear(info.id)
+    const next = await sm.clear(info.id)
 
-    // Hook history is dropped as part of the respawn d no SDK round-trip.
-    expect(sm.subscribeHookRuns(info.id)!.snapshot).toHaveLength(0)
+    // Hook history lived on X (now unloaded); Y starts with an empty log.
+    expect(sm.subscribeHookRuns(next.id)!.snapshot).toHaveLength(0)
   })
 
   it('subscribeContextUsage() hands a fresh subscriber the last cached snapshot', async () => {
@@ -634,7 +634,7 @@ describe('SessionManager', () => {
 
   it('resume() preserves lastTurnAt so a second resume after going dormant still works', async () => {
     // Regression: spawn() used to drop lastTurnAt from the persisted meta
-    // on resume (it carried gitStartSha/fastMode/hooks/clearBoundaryUuid
+    // on resume (it carried gitStartSha/fastMode/hooks
     // forward but not lastTurnAt). writeStore() is a wholesale replace,
     // not a merge, so the first resume clobbered the on-disk lastTurnAt
     // back to undefined. A bare resume emits system/init but NO `result`,
@@ -1568,7 +1568,7 @@ describe('plugin subset selection', () => {
       cwd: dir,
       enabledPlugins: [MpStore.keyOf('plugA', 'mp1')],
     } as any)
-    // mockHandles[0] is the original spawn. clear() respawns → mockHandles[1].
+    // mockHandles[0] is X's spawn. clear() unloads X and spawns Y → mockHandles[1].
     await sm.clear(info.id)
     expect(mockHandles[1].options.plugins).toEqual([
       { type: 'local', path: '/fake/plugA' },
