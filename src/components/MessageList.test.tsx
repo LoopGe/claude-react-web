@@ -33,6 +33,11 @@ const virtuosoMockState = vi.hoisted(() => ({
   clientHeight: 0,
   scrollTop: 0,
   streamingSpacerHeight: 0,
+  // Captures the last value returned by the `followOutput` prop when the
+  // mock detects a data-length increase (mirroring when real Virtuoso calls
+  // followOutput). Lets tests assert the follow behavior ('auto' vs 'smooth'
+  // vs false) without a real Virtuoso measurement engine.
+  lastFollowOutput: undefined as string | false | undefined,
 }))
 
 // Mock Virtuoso to render all items directly - Virtuoso needs real
@@ -49,6 +54,7 @@ vi.mock('react-virtuoso', async () => {
       components,
       scrollerRef,
       atBottomStateChange,
+      followOutput,
     }: {
       data: unknown[]
       itemContent: (index: number, item: unknown) => React.ReactNode
@@ -56,8 +62,18 @@ vi.mock('react-virtuoso', async () => {
       components?: { Footer?: React.ComponentType }
       scrollerRef?: (ref: HTMLElement | Window | null) => void
       atBottomStateChange?: (atBottom: boolean) => void
+      followOutput?: (atBottom: boolean) => 'smooth' | 'auto' | false
     }) => {
       const mockScrollerRef = React.useRef<HTMLDivElement | null>(null)
+      // Mirror real Virtuoso: it calls followOutput when the data array
+      // grows at the tail. Capture the return so tests can assert on it.
+      const prevDataLen = React.useRef(data.length)
+      React.useEffect(() => {
+        if (data.length > prevDataLen.current) {
+          virtuosoMockState.lastFollowOutput = followOutput?.(true) ?? undefined
+        }
+        prevDataLen.current = data.length
+      }, [data.length, followOutput])
 
       React.useLayoutEffect(() => {
         const el = mockScrollerRef.current
@@ -139,6 +155,7 @@ describe('MessageList', () => {
     virtuosoMockState.clientHeight = 0
     virtuosoMockState.scrollTop = 0
     virtuosoMockState.streamingSpacerHeight = 0
+    virtuosoMockState.lastFollowOutput = undefined
   })
 
   it('shows the default empty state when messages are empty', () => {
@@ -530,6 +547,105 @@ describe('MessageList', () => {
     // re-pin path is armed for subsequent growth.
     await waitFor(() => {
       expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+    })
+  })
+
+  it('keeps follow armed when the jump scroll event races with streaming growth', async () => {
+    // Regression guard for the one-frame race between the jump's instant
+    // scrollTo and its asynchronous native 'scroll' event.
+    //
+    // jumpToBottom optimistically sets atBottomRef=true to arm the streaming
+    // ResizeObserver re-pin path, then fires an instant scrollTo. The native
+    // 'scroll' event from that scrollTo fires asynchronously. If a streaming
+    // delta grows scrollHeight by >BOTTOM_EPSILON_PX (2) before that event
+    // fires, the scroll handler's `syncBottomGeometry(el, 'preserve')` would
+    // — without the guard — see geometry.atBottom=false, flip atBottomRef
+    // back to false, and re-show the jump button, disarming the re-pin path
+    // the jump just armed. The fix consumes a one-shot guard ref on that
+    // single scroll event so the optimistic atBottomRef=true survives.
+    virtuosoMockState.atBottomReport = false
+    virtuosoMockState.reportBeforeRef = true
+    virtuosoMockState.scrollHeight = 200
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.scrollTop = 0
+
+    const msgs = [
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Scrollable message' }] },
+      }),
+    ]
+
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+    )
+
+    const button = await waitFor(() => {
+      const btn = container.querySelector('.chat-jump-to-bottom') as HTMLButtonElement | null
+      expect(btn).not.toBeNull()
+      return btn as HTMLButtonElement
+    })
+    const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement | null
+    expect(scroller).not.toBeNull()
+
+    // Click arms the guard and fires an instant scrollTo (scrollTop -> 200).
+    fireEvent.click(button)
+
+    // Simulate the race: streaming growth lands in the same frame, growing
+    // scrollHeight past the captured scrollTop before the 'scroll' event
+    // fires. distanceFromBottom = 400 - 0 - 200 - 100 = 100 > BOTTOM_EPSILON_PX.
+    virtuosoMockState.scrollHeight = 400
+
+    // The native 'scroll' event from the instant scrollTo now fires. Without
+    // the guard the handler's 'preserve' path would downgrade atBottomRef
+    // and re-show the jump button.
+    fireEvent.scroll(scroller as HTMLElement)
+
+    expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+  })
+
+  it('follows new messages with an instant scroll, not smooth', async () => {
+    // Regression guard for the "new message doesn't scroll to bottom" bug.
+    //
+    // Root cause: followOutput returned 'smooth', so a new settled message
+    // triggered a ~300ms smooth animation to the bottom. During that window
+    // the viewport was momentarily not at bottom, so the scroll handler
+    // effect's `syncBottomGeometry(el, 'confirm-away')` (re-attached on every
+    // renderableItems.length change) armed the 150ms follow-disable debounce.
+    // The debounce fired mid-follow and set shouldFollow=false + atBottomRef
+    // false — disabling BOTH followOutput for subsequent appends AND the
+    // streaming ResizeObserver instant re-pin. The next new message then
+    // wasn't followed, or streaming growth wasn't instant-pinned, and the
+    // view stayed/lagged short.
+    //
+    // Fix: followOutput returns 'auto' (instant) so the viewport reaches the
+    // bottom in the same frame the data changes — no ~300ms window, so
+    // confirm-away sees dist:0 (restore, not arm), and shouldFollow/atBottomRef
+    // stay armed. This test pins that contract: a tail append while at the
+    // bottom must produce followOutput='auto', never 'smooth'.
+    virtuosoMockState.scrollHeight = 100
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.scrollTop = 0
+
+    const first = makeMsg('assistant', {
+      message: { content: [{ type: 'text', text: 'first' }] },
+    })
+    const { rerender } = render(
+      <MessageList items={toItems([first] as SdkMessage[])} replayReady />,
+    )
+
+    // Append a new settled message at the tail (the new-message case).
+    const second = makeMsg('assistant', {
+      message: { content: [{ type: 'text', text: 'second' }] },
+    })
+    virtuosoMockState.lastFollowOutput = undefined
+    rerender(
+      <MessageList items={toItems([first, second] as SdkMessage[])} replayReady />,
+    )
+
+    // followOutput must return 'auto' (instant). 'smooth' recreates the
+    // animation window that lets the confirm-away debounce disable follow.
+    await waitFor(() => {
+      expect(virtuosoMockState.lastFollowOutput).toBe('auto')
     })
   })
 

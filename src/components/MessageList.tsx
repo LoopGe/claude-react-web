@@ -310,6 +310,20 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   // The post-mount bottom-anchor catch-up effect stops snapping once
   // this is true so we never fight a legitimate user scroll.
   const userInitiatedScrollRef = useRef(false)
+  // One-shot guard set by `jumpToBottom` and consumed by the scroll handler
+  // on its very next event. The instant scrollTo in jumpToBottom fires an
+  // asynchronous native 'scroll' event; if streaming growth moves the real
+  // bottom past the captured scrollTop before that event fires, the handler's
+  // 'preserve' geometry sync would otherwise see geometry.atBottom=false,
+  // downgrade atBottomRef back to false, and re-show the jump button —
+  // disarming the streaming ResizeObserver re-pin path the jump just armed.
+  // Consuming the guard makes the optimistic atBottomRef=true survive that
+  // single event. No timer safety-clear: rAF/setTimeout can fire before the
+  // queued scroll-event task and prematurely clear the guard; consume-on-event
+  // is reliable, and the no-event case (scrollTo no-op) is unreachable while
+  // the jump button is visible (only shown when not at bottom → scrollTo
+  // always moves → an event always fires).
+  const jumpScrollRef = useRef(false)
   const [followDebounceRaw] = useLocalStorage<number>(
     'claude-react-web:follow-debounce-ms',
     150,
@@ -984,6 +998,17 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     const handler = () => {
       const prevScrollTop = lastScrollTopRef.current
       lastScrollTopRef.current = el.scrollTop
+      // The jump's instant scrollTo fires one async 'scroll' event. Consume
+      // the guard and skip the geometry sync for that single event so the
+      // optimistic atBottomRef=true from jumpToBottom survives a same-frame
+      // streaming growth spurt (which would otherwise make geometry.atBottom
+      // briefly false and downgrade the re-pin path the jump just armed).
+      // The jump is a downward programmatic scroll, so skipping also correctly
+      // bypasses the user-intent latch (which only fires on upward scrolls).
+      if (jumpScrollRef.current) {
+        jumpScrollRef.current = false
+        return
+      }
       const isScrollingUp = el.scrollTop < prevScrollTop
       // Latch the user-intent flag: any upward scroll is unambiguously the
       // user driving (programmatic snap-to-bottom only ever increases
@@ -1034,6 +1059,11 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     setBottomState(true)
     setCanJumpToBottom(false)
     clearFollowTimer()
+    // Arm the one-shot guard so the async 'scroll' event from the instant
+    // scrollTo below doesn't downgrade the optimistic atBottomRef=true via
+    // the scroll handler's 'preserve' geometry sync (see jumpScrollRef). The
+    // guard is consumed on the handler's very next event.
+    jumpScrollRef.current = true
     scrollScrollerToBottom('auto')
     clearUnseen()
   }, [clearFollowTimer, clearUnseen, scrollScrollerToBottom, setBottomState])
@@ -1122,7 +1152,22 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     syncBottomGeometry(null)
   }, [syncBottomGeometry])
 
-  const followOutput = useCallback(() => (shouldFollowRef.current ? 'smooth' : false), [])
+  // New settled message arrives → Virtuoso calls followOutput → we return
+  // 'auto' (instant), NOT 'smooth'. A smooth follow creates a ~300ms
+  // animation window during which the viewport is momentarily not at
+  // bottom. The scroll handler effect re-attaches on every
+  // renderableItems.length change and calls syncBottomGeometry(el,
+  // 'confirm-away'); during that window it sees dist>0, arms the 150ms
+  // follow-disable debounce, and that debounce fires mid-follow — flipping
+  // shouldFollow=false AND atBottomRef=false. That disables both this
+  // followOutput (for the NEXT append) and the streaming ResizeObserver
+  // instant re-pin, so the view stays/lags short of the new message's
+  // bottom. Instant follow closes the window: dist returns to 0 in the same
+  // frame, confirm-away restores instead of arming, and both backstops stay
+  // armed. (The live typing bubble is pinned separately by the streaming
+  // ResizeObserver, so this only affects settled-message appends — the
+  // standard chat-UI snap-to-new-message.)
+  const followOutput = useCallback(() => (shouldFollowRef.current ? 'auto' : false), [])
 
   const atBottomStateChange = useCallback((reportedAtBottom: boolean) => {
     // Prefer direct DOM geometry so the button and follow-mode use the
