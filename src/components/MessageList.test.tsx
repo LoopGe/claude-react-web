@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, render, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, waitFor } from '@testing-library/react'
 import type { SdkMessage } from '../types'
 import type { TranscriptItem } from '../session-store/types'
 
@@ -472,6 +472,64 @@ describe('MessageList', () => {
 
     await waitFor(() => {
       expect(container.querySelector('.chat-jump-to-bottom')).not.toBeNull()
+    })
+  })
+
+  it('jumps to bottom with an instant scroll and re-enables follow on click', async () => {
+    // Regression guard for the "click scroll-to-bottom sometimes lands short"
+    // bug. The old code used `behavior: 'smooth'`, which captured
+    // `scrollHeight` at click time and animated toward that pixel target over
+    // hundreds of ms — so any content growth during the animation (streaming
+    // text, Virtuoso row measurement, lazy media) moved the real bottom past
+    // the captured target and the viewport landed short, with no
+    // self-correction (atBottomRef was still false, so the streaming
+    // ResizeObserver re-pin guard skipped).
+    //
+    // Fix: jump uses an instant scroll (no animation window → no stale
+    // target) and optimistically re-enables follow (shouldFollowRef +
+    // atBottomRef) so the existing streaming ResizeObserver re-pin path
+    // tracks further growth. This test pins both halves of the contract.
+    virtuosoMockState.atBottomReport = false
+    virtuosoMockState.reportBeforeRef = true
+    virtuosoMockState.scrollHeight = 200
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.scrollTop = 0
+
+    const msgs = [
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Scrollable message' }] },
+      }),
+    ]
+
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+    )
+
+    const button = await waitFor(() => {
+      const btn = container.querySelector('.chat-jump-to-bottom') as HTMLButtonElement | null
+      expect(btn).not.toBeNull()
+      return btn as HTMLButtonElement
+    })
+
+    // Only inspect scrollTo calls issued by the click itself.
+    vi.mocked(Element.prototype.scrollTo).mockClear()
+    fireEvent.click(button)
+
+    // (1) Instant scroll to the real bottom — `behavior: 'auto'`, NOT
+    // 'smooth'. An instant scroll has no animation window, so the target
+    // can't go stale while content keeps growing.
+    await waitFor(() => {
+      expect(Element.prototype.scrollTo).toHaveBeenCalledWith(
+        expect.objectContaining({ top: 200, behavior: 'auto' }),
+      )
+    })
+
+    // (2) Follow re-enabled optimistically: the button hides immediately
+    // (atBottom=true, canJumpToBottom=false) without waiting for a scroll
+    // event or debounce, so the streaming ResizeObserver's atBottomRef-guarded
+    // re-pin path is armed for subsequent growth.
+    await waitFor(() => {
+      expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
     })
   })
 

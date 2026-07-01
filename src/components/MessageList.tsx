@@ -1002,9 +1002,41 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   }, [clearFollowTimer])
 
   const jumpToBottom = useCallback(() => {
-    scrollScrollerToBottom('smooth')
+    // Jump-to-bottom is a "catch me up" action, not a cinematic pan. Two
+    // reasons it must NOT use `behavior: 'smooth'`:
+    //
+    // 1. Stale target. `el.scrollTo({ top: el.scrollHeight, smooth })`
+    //    captures `scrollHeight` at click time and animates toward that
+    //    pixel over hundreds of ms. While the animation runs, any content
+    //    growth (streaming text mirroring into the spacer Footer, Virtuoso
+    //    row-height measurement settling, lazy images/code blocks) moves
+    //    the real bottom past the captured target. The animation then
+    //    lands short — and nothing corrects it, because atBottomRef is
+    //    still false at that instant, so the streaming ResizeObserver's
+    //    `if (atBottomRef.current) scrollScrollerToBottom('auto')` re-pin
+    //    guard skips. That was the "sometimes doesn't scroll to bottom"
+    //    bug: it failed exactly when content grew during the animation
+    //    window, i.e. during active streaming.
+    //
+    // 2. Follow gap. The user had scrolled up (shouldFollowRef=false,
+    //    latched). The old jump never re-enabled follow, so even when the
+    //    smooth scroll happened to land, a new message arriving before
+    //    atBottomStateChange(true) restored follow left the viewport a
+    //    hair above the new bottom.
+    //
+    // Fix: instant scroll (no animation window → no stale target) plus
+    // optimistic follow re-enable. Setting atBottomRef=true arms the
+    // existing streaming ResizeObserver re-pin path for subsequent growth;
+    // shouldFollowRef=true lets Virtuoso's followOutput track new appends.
+    // clearFollowTimer cancels any pending disable-debounced timer from
+    // the prior scroll-up so it can't flip follow back off mid-jump.
+    shouldFollowRef.current = true
+    setBottomState(true)
+    setCanJumpToBottom(false)
+    clearFollowTimer()
+    scrollScrollerToBottom('auto')
     clearUnseen()
-  }, [clearUnseen, scrollScrollerToBottom])
+  }, [clearFollowTimer, clearUnseen, scrollScrollerToBottom, setBottomState])
 
   // --- Scroll to previous / next user message ----------------------------
   // Data-array (0-based, Virtuoso `scrollToIndex` space) indices of every
