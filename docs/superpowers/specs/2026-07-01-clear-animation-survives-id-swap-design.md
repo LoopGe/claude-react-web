@@ -1,7 +1,7 @@
 # `/clear` blur-fade animation survives the X→Y id-swap
 
 **Date:** 2026-07-01
-**Status:** Draft
+**Status:** Implemented
 **Depends on:** 2026-07-01 `feat(clear): preserve pre-clear conversation as a resumable session` (commit `794c8e7`)
 **Supersedes for the local-`/clear` path:** 2026-06-26 `/clear` blur-fade transition
 
