@@ -23,6 +23,9 @@ import { HttpError, createErrorHandler } from './errors.js'
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024
 const MAX_ANCHORS = 100
+/** Unchanged context lines shown above and below each edit hunk (git-diff
+ *  style). The client mirrors this for line-number arithmetic. */
+const DIFF_CONTEXT_LINES = 3
 
 interface Anchor {
   old: string
@@ -97,26 +100,42 @@ export function buildEditLocateRouter(): Hono {
       return lo + 1
     }
 
-    /** Find the 1-based start line of `needle` in `content`, or null when
-     *  the needle is absent or appears more than once (ambiguous → we'd
-     *  rather show no gutter than a wrong one). */
-    const locateUnique = (needle: string): number | null => {
+    /** Find the 1-based start AND end line of `needle` in `content`, or null
+     *  when the needle is absent or appears more than once (ambiguous → we'd
+     *  rather show no gutter than a wrong one). endLine is inclusive and
+     *  spans the needle's full line count (multi-line strings included). */
+    const locateUnique = (needle: string): { startLine: number; endLine: number } | null => {
       if (needle.length === 0) return null
       const first = content.indexOf(needle)
       if (first === -1) return null
       if (content.indexOf(needle, first + needle.length) !== -1) return null
-      return lineAt(first)
+      const startLine = lineAt(first)
+      const endLine = startLine + needle.split('\n').length - 1
+      return { startLine, endLine }
     }
 
-    const lines = parsed.map(({ old, new: neu }) => {
+    // Surrounding unchanged context lines (git-diff style) so the hunk reads
+    // with its actual file neighbourhood. before = K lines immediately above
+    // the match; after = K lines immediately below. Clamped at file start/end.
+    const fileLines = content.split('\n')
+    const sliceCtx = (startLine: number, endLine: number) => {
+      const beforeStart = Math.max(0, startLine - 1 - DIFF_CONTEXT_LINES)
+      const before = fileLines.slice(beforeStart, startLine - 1)
+      const after = fileLines.slice(endLine, endLine + DIFF_CONTEXT_LINES)
+      return { before, after }
+    }
+
+    const results = parsed.map(({ old, new: neu }) => {
       // Applied edit: new_string is in the file. Not applied / denied:
-      // old_string is. Try new first, then old.
-      const fromNew = locateUnique(neu)
-      if (fromNew !== null) return fromNew
-      return locateUnique(old)
+      // old_string is. Try new first, then old. The surrounding context is
+      // the same unchanged region either way.
+      const matched = locateUnique(neu) ?? locateUnique(old)
+      if (!matched) return { startLine: null, before: [], after: [] }
+      const { startLine, endLine } = matched
+      return { startLine, ...sliceCtx(startLine, endLine) }
     })
 
-    return c.json({ lines })
+    return c.json({ results })
   })
 
   return app

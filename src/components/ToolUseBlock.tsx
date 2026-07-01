@@ -31,7 +31,7 @@ import { usePlanStatus, usePlanContent } from '../hooks/usePlanStatus'
 import { useQuestionAnswers } from '../hooks/useQuestionAnswers'
 import { useReopenQuestion } from '../hooks/useReopenQuestion'
 import { useSessionCwd } from '../hooks/useSessionCwd'
-import { useEditStartLines, type EditAnchor } from '../hooks/useEditStartLines'
+import { useEditDiffInfo, type EditAnchor, type EditDiffInfo } from '../hooks/useEditDiffInfo'
 import { SubagentCard } from './SubagentCard'
 import { WorkflowCard } from './WorkflowCard'
 import { ToolCard } from './ToolCard'
@@ -581,13 +581,14 @@ const EditToolView = memo(function EditToolView({ input, toolUseId, searchQuery,
     ]
   }, [input])
 
-  // Real file line numbers per edit — the server reads <cwd>/<path> and
-  // locates new_string (applied) or old_string (not applied). null while
-  // loading or when the location can't be pinned down (file changed /
-  // ambiguous / missing) — DiffChunk then renders no gutter rather than a
-  // misleading number.
+  // Real file line numbers + surrounding context per edit — the server reads
+  // <cwd>/<path> and locates new_string (applied) or old_string (not applied),
+  // returning the start line plus 3 unchanged lines above/below (git-diff
+  // style). null startLine while loading or when the location can't be pinned
+  // down (file changed / ambiguous / missing) — DiffChunk then renders no
+  // gutter and no context rather than misleading numbers.
   const anchors = useMemo<EditAnchor[]>(() => editList.map((e) => ({ old: e.old, new: e.new })), [editList])
-  const startLines = useEditStartLines(cwd, filePath ?? undefined, anchors)
+  const diffInfos = useEditDiffInfo(cwd, filePath ?? undefined, anchors)
 
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
@@ -636,7 +637,7 @@ const EditToolView = memo(function EditToolView({ input, toolUseId, searchQuery,
             newText={e.new}
             filePath={filePath ?? undefined}
             label={editList.length > 1 ? `edit ${i + 1}` : undefined}
-            startLine={startLines[i]}
+            info={diffInfos[i]}
           />
         ))}
       </div>
@@ -797,19 +798,16 @@ const DiffChunk = memo(function DiffChunk({
   newText,
   filePath,
   label,
-  startLine,
+  info,
 }: {
   oldText: string
   newText: string
   filePath?: string
   label?: string
-  /** 1-based file line where this edit's old_string / new_string begins.
-   *  Edit replaces in place, so old and new fragments share this start line.
-   *  Computed server-side by locating the string in the current file (see
-   *  /api/edit-locate). null = couldn't be located (ambiguous / file changed
-   *  / missing) → no gutter, interleaved +/- markers still render. undefined
-   *  = not fetched yet → same as null until it resolves. */
-  startLine?: number | null
+  /** Server-resolved start line + surrounding context for this edit. null /
+   *  undefined startLine → no gutter and no context, interleaved +/- markers
+   *  still render. */
+  info?: EditDiffInfo | null
 }) {
   const language = filePath ? detectLangSafe(filePath) : null
   // '' → 0 lines (pure insertion / deletion); '\n' → ['', ''] (two empty
@@ -825,20 +823,37 @@ const DiffChunk = memo(function DiffChunk({
   )
   const ops = useMemo(() => lineDiff(oldLines, newLines), [oldLines, newLines])
 
+  const startLine = info?.startLine ?? null
+  const before = info?.before ?? []
+  const after = info?.after ?? []
   const hasGutter = typeof startLine === 'number'
-  // Width each column to its widest number so rows align. ctx rows show
-  // both numbers; del rows blank the new cell; add rows blank the old cell.
-  const gutterOldWidth = hasGutter && oldLines.length > 0
-    ? String(startLine! + oldLines.length - 1).length
-    : 0
-  const gutterNewWidth = hasGutter && newLines.length > 0
-    ? String(startLine! + newLines.length - 1).length
-    : 0
+  const m = oldLines.length
+  const n = newLines.length
+
+  // Width each column to its widest visible number (the after-context's last
+  // line is the largest) so ctx / del / add rows stay aligned across the hunk.
+  const maxOldLine = startLine !== null ? startLine + m + after.length - 1 : 0
+  const maxNewLine = startLine !== null ? startLine + n + after.length - 1 : 0
+  const gutterOldWidth = hasGutter && maxOldLine > 0 ? String(maxOldLine).length : 0
+  const gutterNewWidth = hasGutter && maxNewLine > 0 ? String(maxNewLine).length : 0
 
   return (
     <>
       {label && <div className="diff-chunk-label">{label}</div>}
       <div className="diff-lines">
+        {hasGutter && before.map((line, i) => (
+          <DiffLine
+            key={`b-${i}`}
+            line={line}
+            marker=" "
+            variant="ctx"
+            language={language}
+            oldLine={startLine! - before.length + i}
+            newLine={startLine! - before.length + i}
+            gutterOldWidth={gutterOldWidth}
+            gutterNewWidth={gutterNewWidth}
+          />
+        ))}
         {ops.map((op, idx) => {
           const variant = op.type === 'eq' ? 'ctx' : op.type === 'del' ? 'del' : 'add'
           const marker = op.type === 'eq' ? ' ' : op.type === 'del' ? '-' : '+'
@@ -858,6 +873,19 @@ const DiffChunk = memo(function DiffChunk({
             />
           )
         })}
+        {hasGutter && after.map((line, i) => (
+          <DiffLine
+            key={`a-${i}`}
+            line={line}
+            marker=" "
+            variant="ctx"
+            language={language}
+            oldLine={startLine! + m + i}
+            newLine={startLine! + n + i}
+            gutterOldWidth={gutterOldWidth}
+            gutterNewWidth={gutterNewWidth}
+          />
+        ))}
       </div>
     </>
   )
