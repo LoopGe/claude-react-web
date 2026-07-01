@@ -2704,62 +2704,62 @@ export function App() {
                 <PanelSlot key={i} clearingPhase={clearingPhase}>
                   <ErrorBoundary key={s.id}>
                     <ChatPanel
-                    session={s}
-                    focused={s.id === focusedId}
-                    clearing={clearingPhase === 'fading-in'}
-                    hasUnread={!!unread[s.id]}
-                    slot={i + 1}
-                    entering={entering}
-                    onAnimEnd={entering ? handlePanelAnimEnd : undefined}
-                    accentStyle={sessionAccentMap.get(s.id)}
-                    onFocus={focusPanel}
-                    onClose={closeSession}
-                    groupLabel={owningGroup?.name}
-                    onCloseGroupPanels={
-                      owningGroup ? () => closeGroupPanels(owningGroup.id) : undefined
-                    }
-                    onDelete={handleDelete}
-                    onSessionUpdate={updateSession}
-                    settingsOpen={settingsOpenFor === s.id}
-                    messageJumpTarget={messageJumpTarget?.sessionId === s.id ? messageJumpTarget : null}
-                    onOpenSettings={handleOpenSettings}
-                    onCloseSettings={handleCloseSettings}
-                    gitPanelOpen={gitPanelOpenFor === s.id}
-                    onOpenGitPanel={handleOpenGitPanel}
-                    onCloseGitPanel={handleCloseGitPanel}
-                    onSwap={swapPanels}
-                    onRegisterInterrupt={registerInterrupt}
-                    onRegisterRecap={registerRecap}
-                    onRegisterInjectInput={registerInjectInput}
-                    onAcceptSidebarDrop={handleAcceptSidebarDrop}
-                    onRequestResumeForPanel={requestResumeForPanel}
-                    onClearSession={handleClear}
-                    onOpenSettingsTab={openSettingsTab}
-                    onShowHelp={showHelpWithCommands}
-                    sideChatSession={sideChat?.parentId === s.id ? sideChat.session : undefined}
-                    sideChatCollapsed={sideChat?.parentId === s.id ? sideChat.collapsed : undefined}
-                    sideChatUnread={
-                      sideChat?.parentId === s.id && sideChat.collapsed
-                        ? Math.max(0, sideChat.session.messageCount - sideChat.initialMessageCount)
-                        : 0
-                    }
-                    onToggleCollapseSideChat={
-                      sideChat?.parentId === s.id ? handleToggleCollapseSideChat : undefined
-                    }
-                    onCloseSideChat={sideChat?.parentId === s.id ? handleCloseSideChat : undefined}
-                    onSideChat={handleSideChat}
-                    settingsTabRequest={
-                      settingsTabRequest?.sessionId === s.id
-                        ? stableSettingsTabRequest
-                        : null
-                    }
-                    isResuming={resuming.has(s.id)}
-                    snippets={snippets}
-                    onOpenSnippetsManager={openSnippetsManager}
-                    onSaveCurrentAsSnippet={saveCurrentAsSnippet}
-                    skin={skin}
-                  />
-                </ErrorBoundary>
+                      session={s}
+                      focused={s.id === focusedId}
+                      clearing={clearingPhase === 'fading-in'}
+                      hasUnread={!!unread[s.id]}
+                      slot={i + 1}
+                      entering={entering}
+                      onAnimEnd={entering ? handlePanelAnimEnd : undefined}
+                      accentStyle={sessionAccentMap.get(s.id)}
+                      onFocus={focusPanel}
+                      onClose={closeSession}
+                      groupLabel={owningGroup?.name}
+                      onCloseGroupPanels={
+                        owningGroup ? () => closeGroupPanels(owningGroup.id) : undefined
+                      }
+                      onDelete={handleDelete}
+                      onSessionUpdate={updateSession}
+                      settingsOpen={settingsOpenFor === s.id}
+                      messageJumpTarget={messageJumpTarget?.sessionId === s.id ? messageJumpTarget : null}
+                      onOpenSettings={handleOpenSettings}
+                      onCloseSettings={handleCloseSettings}
+                      gitPanelOpen={gitPanelOpenFor === s.id}
+                      onOpenGitPanel={handleOpenGitPanel}
+                      onCloseGitPanel={handleCloseGitPanel}
+                      onSwap={swapPanels}
+                      onRegisterInterrupt={registerInterrupt}
+                      onRegisterRecap={registerRecap}
+                      onRegisterInjectInput={registerInjectInput}
+                      onAcceptSidebarDrop={handleAcceptSidebarDrop}
+                      onRequestResumeForPanel={requestResumeForPanel}
+                      onClearSession={handleClear}
+                      onOpenSettingsTab={openSettingsTab}
+                      onShowHelp={showHelpWithCommands}
+                      sideChatSession={sideChat?.parentId === s.id ? sideChat.session : undefined}
+                      sideChatCollapsed={sideChat?.parentId === s.id ? sideChat.collapsed : undefined}
+                      sideChatUnread={
+                        sideChat?.parentId === s.id && sideChat.collapsed
+                          ? Math.max(0, sideChat.session.messageCount - sideChat.initialMessageCount)
+                          : 0
+                      }
+                      onToggleCollapseSideChat={
+                        sideChat?.parentId === s.id ? handleToggleCollapseSideChat : undefined
+                      }
+                      onCloseSideChat={sideChat?.parentId === s.id ? handleCloseSideChat : undefined}
+                      onSideChat={handleSideChat}
+                      settingsTabRequest={
+                        settingsTabRequest?.sessionId === s.id
+                          ? stableSettingsTabRequest
+                          : null
+                      }
+                      isResuming={resuming.has(s.id)}
+                      snippets={snippets}
+                      onOpenSnippetsManager={openSnippetsManager}
+                      onSaveCurrentAsSnippet={saveCurrentAsSnippet}
+                      skin={skin}
+                    />
+                  </ErrorBoundary>
                 </PanelSlot>
               )
               if (i === openSessions.length - 1) return [node]

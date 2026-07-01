@@ -152,6 +152,15 @@
   min-width: 0;
   min-height: 0;
 }
+/* .chat-panel was previously a direct grid child of .main-body (grid rows
+   stretch items). Now .panel-slot is the grid child, and .chat-panel sits
+   in a flex column without a flex-grow of its own — so under strict flex
+   it would be content-sized on the main axis, collapsing chat-panel-body
+   (`flex: 1`) at empty sessions. Force it to fill the slot. */
+.panel-slot > .chat-panel {
+  flex: 1;
+  min-height: 0;
+}
 .panel-clearing-veil {
   position: absolute;
   inset: 0;

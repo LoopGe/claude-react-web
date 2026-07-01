@@ -234,10 +234,11 @@ export const Chat = memo(function Chat({
   // pattern PermissionDialog uses for its busy guard.
   const sendingRef = useRef(false)
   const [localError, setLocalError] = useState<string | null>(null)
-  /** Local /clear signal — the SDK in-band `cleared` control event flips this
-   *  false via onCleared. The local `/clear` command drives the animation via
-   *  the App-owned `clearingProp` instead, so this state is only reached by
-   *  the SDK-emitted path today. */
+  /** Local /clear signal. No producer sets this to `true` today — the local
+   *  `/clear` command drives the animation via the App-owned `clearingProp`,
+   *  and `onCleared` only resets it to `false`. Retained as the reset half
+   *  of a future SDK-emitted `cleared` control signal so wiring the producer
+   *  later is a one-line change; until then this state is effectively dead. */
   const [localClearing, setLocalClearing] = useState(false)
   /** Effective clearing signal for the downstream classes on TodoChecklist /
    *  MessageList / MonitorBar. During a local `/clear` fade-in it comes from
