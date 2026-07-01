@@ -78,6 +78,29 @@ function writeDraft(sessionId: string, draft: string): void {
   }
 }
 
+/** Returns `true` while `value` is true, and keeps returning true for `ms`
+ *  after it flips false. Used to hold TodoChecklist / MonitorBar mounted
+ *  (faded, but occupying their height) through the "Clearing…" veil's exit
+ *  animation: without it, they unmount the instant `clearing` ends, their
+ *  height collapses, and the vertically-centered veil text jumps down
+ *  mid-fade. The veil itself (in MessageList) uses the real `clearing` so
+ *  its exit timing is unchanged. */
+function useLingerFalse(value: boolean, ms: number): boolean {
+  const [lingered, setLingered] = useState(value)
+  // When `value` is (or becomes) true, langered must be true immediately —
+  // fix it during render (React's adjust-state-during-render escape hatch)
+  // rather than with a synchronous setState in an effect, which the
+  // react-hooks rules flag as a cascading-render hazard. Guarded so it fires
+  // at most once per true transition.
+  if (value && !lingered) setLingered(true)
+  useEffect(() => {
+    if (value) return
+    const t = setTimeout(() => setLingered(false), ms)
+    return () => clearTimeout(t)
+  }, [value, ms])
+  return lingered
+}
+
 interface Props {
   session: SessionInfo
   /** Reserved for future push updates ?currently unused because session
@@ -232,6 +255,10 @@ export const Chat = memo(function Chat({
    *  so the clearing class is dropped only once the transcript is already
    *  empty, preventing any snap-back). Also cleared in the catch path. */
   const [clearing, setClearing] = useState(false)
+  // Hold TodoChecklist / MonitorBar mounted through the veil's exit fade so
+  // their height doesn't collapse mid-exit and shift the centered "Clearing…"
+  // text. 220ms covers the veil's --motion-duration-base (180ms) exit.
+  const clearingLinger = useLingerFalse(clearing, 220)
   /** Increments whenever we want the Composer's textarea refocused.
    *  Bumped after a successful send ?otherwise the click on the Send
    *  button would leave focus on the button, breaking the
@@ -1275,8 +1302,8 @@ export const Chat = memo(function Chat({
         </WorkflowProvider>
       </SubagentProvider>
 
-      <TodoChecklist messages={stream.messages} working={session.working} skin={skin} clearing={clearing} />
-      <MonitorBar messages={stream.messages} clearing={clearing} />
+      <TodoChecklist messages={stream.messages} working={session.working} skin={skin} clearing={clearingLinger} />
+      <MonitorBar messages={stream.messages} clearing={clearingLinger} />
 
       {/* Always-mounted live region ?see `.error-bar-empty` in styles.css.
           Keeping the region in the DOM (just visually hidden when empty)
