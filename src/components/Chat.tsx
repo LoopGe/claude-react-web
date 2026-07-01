@@ -761,15 +761,25 @@ export const Chat = memo(function Chat({
     setPendingJump(messageJumpTarget)
   }, [messageJumpTarget, session.id])
 
+  // Destructure the fields the pending-jump effect touches. Naming them
+  // directly in the dep array (instead of bare `stream`) keeps the effect
+  // from re-running every time the hook's return identity churns (e.g.
+  // per streaming token), and satisfies react-hooks/exhaustive-deps.
+  const {
+    items: streamItems,
+    hasOlder: streamHasOlder,
+    loadOlder: streamLoadOlder,
+    loadingOlder: streamLoadingOlder,
+  } = stream
   useEffect(() => {
     if (!pendingJump) return
     if (debouncedQuery !== pendingJump.query) return
 
     const itemIdx = pendingJump.messageUuid
-      ? stream.items.findIndex((item) => item.msg.uuid === pendingJump.messageUuid)
+      ? streamItems.findIndex((item) => item.msg.uuid === pendingJump.messageUuid)
       : -1
     if (itemIdx >= 0) {
-      const beforeTarget = stream.items.slice(0, itemIdx)
+      const beforeTarget = streamItems.slice(0, itemIdx)
       let globalIdx = 0
       for (const item of beforeTarget) globalIdx += countMatches(item.plainText, pendingJump.query)
       setSearchActiveIdx(globalIdx)
@@ -777,8 +787,8 @@ export const Chat = memo(function Chat({
       return
     }
 
-    if (!stream.hasOlder) {
-      const visibleMatches = stream.items.reduce(
+    if (!streamHasOlder) {
+      const visibleMatches = streamItems.reduce(
         (total, item) => total + countMatches(item.plainText, pendingJump.query),
         0,
       )
@@ -788,14 +798,14 @@ export const Chat = memo(function Chat({
       setPendingJump(null)
       return
     }
-    if (stream.loadingOlder) return
+    if (streamLoadingOlder) return
 
     let cancelled = false
-    void stream.loadOlder().then((loaded) => {
+    void streamLoadOlder().then((loaded) => {
       if (!cancelled && loaded === 0) setPendingJump(null)
     })
     return () => { cancelled = true }
-  }, [debouncedQuery, pendingJump, stream, stream.hasOlder, stream.items, stream.loadOlder, stream.loadingOlder])
+  }, [debouncedQuery, pendingJump, streamHasOlder, streamItems, streamLoadOlder, streamLoadingOlder])
 
   // Ctrl+F opens search on the *focused* panel only. Without the
   // `focused` guard, every mounted Chat would intercept the same
