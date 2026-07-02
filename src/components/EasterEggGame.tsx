@@ -44,6 +44,8 @@ interface Obstacle {
 const PLAYER_H = 26
 const PLAYER_W = 22
 const PLAYER_X = 48
+const GRAVITY = 0.9
+// JUMP_V is added in Task 6 when jump input is wired (noUnusedLocals flags it otherwise).
 
 function makeInitialState(): GameState {
   return {
@@ -58,6 +60,102 @@ function makeInitialState(): GameState {
     nightBlend: 0,
     lastScoreTime: 0,
   }
+}
+
+const OBSTACLE_PROFILES = {
+  bug:     { w: 26, h: 18 },
+  error:   { w: 16, h: 26 },
+  warning: { w: 18, h: 22 },
+} as const
+
+function spawnObstacle(s: GameState) {
+  const kinds: ('bug' | 'error' | 'warning')[] = ['bug', 'error', 'warning']
+  const kind = kinds[Math.floor(Math.random() * kinds.length)]
+  const p = OBSTACLE_PROFILES[kind]
+  s.obstacles.push({ x: W + 10, w: p.w, h: p.h, kind, passed: false })
+}
+
+function updateRunning(s: GameState) {
+  // physics
+  s.player.vy += GRAVITY
+  s.player.y += s.player.vy
+  const floor = GROUND_Y - PLAYER_H
+  if (s.player.y >= floor) {
+    s.player.y = floor
+    s.player.vy = 0
+    s.player.grounded = true
+  } else {
+    s.player.grounded = false
+  }
+  // score over time
+  const now = performance.now()
+  if (now - s.lastScoreTime >= 100) {
+    s.score += 1
+    s.lastScoreTime = now
+  }
+  // difficulty ramp
+  const tier = Math.floor(s.score / 100)
+  s.speed = Math.min(4.5 + tier * 0.5, 11)
+  // spawning
+  s.spawnIn -= 1
+  if (s.spawnIn <= 0) {
+    spawnObstacle(s)
+    const base = 90 - tier * 4
+    s.spawnIn = Math.max(45, base + Math.floor(Math.random() * 40))
+  }
+  // move obstacles + collision + pass scoring
+  for (const o of s.obstacles) o.x -= s.speed
+  for (const o of s.obstacles) {
+    if (!o.passed && o.x + o.w < PLAYER_X) {
+      o.passed = true
+      s.score += 5
+    }
+    // hitbox (slightly forgiving). Obstacle sits on the ground, spanning
+    // y in [GROUND_Y - o.h, GROUND_Y]. Player spans y in [py, py + ph].
+    const px = PLAYER_X + 3, py = s.player.y + 3
+    const pw = PLAYER_W - 6, ph = PLAYER_H - 6
+    const oxHit = px < o.x + o.w && px + pw > o.x
+    const oyHit = py + ph > GROUND_Y - o.h // py < GROUND_Y always true
+    if (oxHit && oyHit) {
+      s.status = 'gameOver'
+      // (high-score persistence + sound are added in Task 5)
+    }
+  }
+  s.obstacles = s.obstacles.filter(o => o.x + o.w > -20)
+}
+
+function drawObstacle(ctx: CanvasRenderingContext2D, o: Obstacle, c: { fg: string; muted: string; accent: string }) {
+  const x = o.x, baseY = GROUND_Y
+  ctx.save()
+  if (o.kind === 'bug') {
+    ctx.strokeStyle = c.fg
+    ctx.lineWidth = 1.6
+    ctx.beginPath()
+    ctx.arc(x + o.w / 2, baseY - o.h + 4, 4, 0, Math.PI * 2)
+    ctx.stroke()
+    ctx.beginPath()
+    ctx.moveTo(x + o.w / 2, baseY - o.h + 8)
+    ctx.lineTo(x + o.w / 2, baseY)
+    ctx.stroke()
+  } else {
+    // Intentional semantic literals: error=red, warning=amber. These are
+    // not theme tokens (no red/amber exists in the var(--*) set), so they
+    // bypass the "use CSS variables" convention by design-spec exception.
+    const color = o.kind === 'error' ? '#e5484d' : '#f5a623'
+    ctx.strokeStyle = color
+    ctx.lineWidth = 1.4
+    ctx.beginPath()
+    ctx.moveTo(x + o.w / 2, baseY - o.h)
+    ctx.lineTo(x + o.w, baseY)
+    ctx.lineTo(x, baseY)
+    ctx.closePath()
+    ctx.stroke()
+    ctx.fillStyle = color
+    ctx.font = 'bold 11px system-ui, sans-serif'
+    ctx.textAlign = 'center'
+    ctx.fillText('!', x + o.w / 2, baseY - 4)
+  }
+  ctx.restore()
 }
 
 function drawSparkle(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, color: string) {
@@ -111,12 +209,22 @@ function renderFrame(ctx: CanvasRenderingContext2D, s: GameState, c: ThemeColors
   ctx.fillStyle = c.bg
   ctx.fillRect(0, 0, W, H)
   drawGround(ctx, s.groundOffset, c.muted)
+  for (const o of s.obstacles) drawObstacle(ctx, o, c)
   drawSparkle(ctx, PLAYER_X + PLAYER_W / 2, s.player.y + PLAYER_H / 2, 9, c.fg)
   ctx.fillStyle = c.muted
   ctx.font = '12px system-ui, sans-serif'
+  ctx.textAlign = 'left'
+  ctx.fillText('Score ' + s.score, 12, 20)
   ctx.textAlign = 'center'
   if (s.status === 'ready') {
     ctx.fillText('Press Space / Click to start', W / 2, 40)
+  } else if (s.status === 'gameOver') {
+    ctx.fillStyle = c.fg
+    ctx.font = 'bold 16px system-ui, sans-serif'
+    ctx.fillText('Game Over', W / 2, 40)
+    ctx.fillStyle = c.muted
+    ctx.font = '12px system-ui, sans-serif'
+    ctx.fillText('Press Space / Click to restart', W / 2, 60)
   }
 }
 
@@ -152,6 +260,9 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
       const s = stateRef.current
       if (s.status === 'ready' || s.status === 'running') {
         s.groundOffset = (s.groundOffset + s.speed) % 10000
+      }
+      if (s.status === 'running') {
+        updateRunning(s)
       }
       renderFrame(ctx, s, colorsRef.current)
       rafRef.current = requestAnimationFrame(loop)
