@@ -29,6 +29,16 @@ export interface Particle {
   color: string
 }
 
+export interface Firework {
+  phase: 'rising' | 'burst'
+  x: number
+  y: number
+  vy: number
+  targetY: number
+  color: string
+  particles: Particle[]
+}
+
 export interface GameState {
   status: Status
   player: Player
@@ -40,7 +50,7 @@ export interface GameState {
   nightBlend: number // 0..1
   lastScoreTime: number
   frame: number
-  fireworks: Particle[]
+  fireworks: Firework[]
   prevTier: number
   fireworkBurstsLeft: number
   fireworkCooldown: number
@@ -208,24 +218,19 @@ export function spawnObstacle(s: GameState) {
 // Firework burst colors. Intentional festive literals, not theme tokens (no
 // celebration-sky var exists) — spec exception like the obstacle red/amber set.
 const FIREWORK_COLORS = ['#ff5a5a', '#ffd166', '#06d6a0', '#4cc9f0', '#f4f4f5']
-function spawnFireworkBurst(s: GameState) {
-  const cx = 80 + Math.random() * (W - 160)
-  const cy = 20 + Math.random() * 70
+function spawnFirework(s: GameState) {
+  const x = 80 + Math.random() * (W - 160)
+  const targetY = 20 + Math.random() * 70
   const color = FIREWORK_COLORS[Math.floor(Math.random() * FIREWORK_COLORS.length)]
-  const count = 26
-  for (let i = 0; i < count; i++) {
-    const ang = (Math.PI * 2 * i) / count + Math.random() * 0.3
-    const sp = 1.5 + Math.random() * 1.5
-    const life = 40 + Math.floor(Math.random() * 20)
-    s.fireworks.push({
-      x: cx, y: cy,
-      vx: Math.cos(ang) * sp,
-      vy: Math.sin(ang) * sp,
-      life,
-      maxLife: life, // alpha = life/maxLife starts at 1.0 and fades to 0
-      color,
-    })
-  }
+  s.fireworks.push({
+    phase: 'rising',
+    x,
+    y: GROUND_Y,
+    vy: -(3.5 + Math.random() * 1.5),
+    targetY,
+    color,
+    particles: [],
+  })
 }
 
 // exported for unit tests
@@ -270,7 +275,7 @@ export function updateRunning(s: GameState) {
   for (const o of s.obstacles) {
     const px = PLAYER_X + 3, py = s.player.y + 3
     const pw = PLAYER_W - 6, ph = PLAYER_H - 6
-    const oxOverlap = px < o.x + o.w && px + pw > o.x
+    const oxOverlap = px < o.x + o.w - 2 && px + pw > o.x + 2
     // Track bird jump-over: airborne while x-overlapping. If no collision
     // follows, the player was above the bird (cleared it) → qualifies for +10.
     if (o.kind === 'bird' && !o.jumpedOver && oxOverlap && !s.player.grounded) {
@@ -282,7 +287,7 @@ export function updateRunning(s: GameState) {
     }
     // hitbox (slightly forgiving). Obstacle spans y in
     // [GROUND_Y - o.alt - o.h, GROUND_Y - o.alt]. Player spans y in [py, py + ph].
-    const oyHit = py + ph > GROUND_Y - o.alt - o.h && py < GROUND_Y - o.alt
+    const oyHit = py + ph > GROUND_Y - o.alt - o.h + 2 && py < GROUND_Y - o.alt - 2
     if (oxOverlap && oyHit) {
       s.status = 'gameOver'
       // (high-score persistence + sound are handled in the rAF loop where
@@ -301,19 +306,56 @@ export function updateRunning(s: GameState) {
   if (s.fireworkBurstsLeft > 0) {
     s.fireworkCooldown -= 1
     if (s.fireworkCooldown <= 0) {
-      spawnFireworkBurst(s)
+      spawnFirework(s)
       s.fireworkBurstsLeft -= 1
       s.fireworkCooldown = 22
     }
   }
-  // update firework particles
-  for (const p of s.fireworks) {
-    p.vy += 0.08
-    p.x += p.vx
-    p.y += p.vy
-    p.life -= 1
+  // update fireworks: rising shells ascend leaving a trail, then burst into
+  // randomized particle clouds (varied count + speed → not the same each time).
+  for (const fw of s.fireworks) {
+    if (fw.phase === 'rising') {
+      fw.y += fw.vy
+      // trail spark
+      fw.particles.push({
+        x: fw.x + (Math.random() - 0.5) * 2,
+        y: fw.y,
+        vx: 0,
+        vy: 0.3,
+        life: 12,
+        maxLife: 12,
+        color: fw.color,
+      })
+      if (fw.y <= fw.targetY) {
+        fw.phase = 'burst'
+        const count = 20 + Math.floor(Math.random() * 12) // 20–31
+        const baseSpeed = 1.2 + Math.random() * 1.6
+        for (let i = 0; i < count; i++) {
+          const ang = (Math.PI * 2 * i) / count + Math.random() * 0.3
+          const sp = baseSpeed * (0.6 + Math.random() * 0.8)
+          const life = 40 + Math.floor(Math.random() * 20)
+          fw.particles.push({
+            x: fw.x,
+            y: fw.y,
+            vx: Math.cos(ang) * sp,
+            vy: Math.sin(ang) * sp,
+            life,
+            maxLife: life,
+            color: fw.color,
+          })
+        }
+      }
+    } else {
+      for (const p of fw.particles) {
+        p.vy += 0.08
+        p.x += p.vx
+        p.y += p.vy
+        p.life -= 1
+      }
+      fw.particles = fw.particles.filter(p => p.life > 0 && p.y < GROUND_Y)
+    }
   }
-  s.fireworks = s.fireworks.filter(p => p.life > 0 && p.y < GROUND_Y)
+  s.fireworks = s.fireworks.filter(fw => fw.phase === 'rising' || fw.particles.length > 0)
   // day/night blend — smooth lerp toward the tier-parity target. The loop
   // snaps this instantly when prefers-reduced-motion is set.
   const nightTarget = tier % 2 === 1 ? 1 : 0
@@ -331,35 +373,47 @@ export function drawObstacle(ctx: CanvasRenderingContext2D, o: Obstacle, c: { fg
     ctx.strokeStyle = c.fg
     ctx.lineWidth = 1.6
     ctx.lineCap = 'round'
-    // body
+    // body: fills the height of the box
     ctx.beginPath()
-    ctx.arc(x + o.w / 2, cy, 4, 0, Math.PI * 2)
+    ctx.ellipse(x + o.w / 2, cy, 5, o.h / 2 - 1, 0, 0, Math.PI * 2)
     ctx.stroke()
-    // wings (flap)
+    // wings span the width, flapping
     ctx.beginPath()
-    ctx.moveTo(x + o.w / 2 - 2, cy)
-    ctx.lineTo(x + o.w / 2 - 10, cy - 4 - flap)
-    ctx.moveTo(x + o.w / 2 + 2, cy)
-    ctx.lineTo(x + o.w / 2 + 10, cy - 4 - flap)
+    ctx.moveTo(x + o.w / 2 - 4, cy)
+    ctx.lineTo(x + 1, cy - 3 - flap)
+    ctx.moveTo(x + o.w / 2 + 4, cy)
+    ctx.lineTo(x + o.w - 1, cy - 3 - flap)
     ctx.stroke()
     // beak
     ctx.beginPath()
-    ctx.moveTo(x + o.w / 2 + 4, cy)
-    ctx.lineTo(x + o.w / 2 + 8, cy + 1)
-    ctx.lineTo(x + o.w / 2 + 4, cy + 2)
+    ctx.moveTo(x + o.w / 2 + 5, cy)
+    ctx.lineTo(x + o.w / 2 + 9, cy + 1)
+    ctx.lineTo(x + o.w / 2 + 5, cy + 2)
     ctx.stroke()
     ctx.restore()
     return
   }
   if (o.kind === 'bug') {
+    // Body fills the w×h box so the visible size matches the hitbox.
+    const bx = x + o.w / 2
+    const by = baseY - o.h / 2
     ctx.strokeStyle = c.fg
     ctx.lineWidth = 1.6
+    // body
     ctx.beginPath()
-    ctx.arc(x + o.w / 2, baseY - o.h + 4, 4, 0, Math.PI * 2)
+    ctx.ellipse(bx, by, o.w / 2 - 2, o.h / 2 - 1, 0, 0, Math.PI * 2)
     ctx.stroke()
+    // legs
     ctx.beginPath()
-    ctx.moveTo(x + o.w / 2, baseY - o.h + 8)
-    ctx.lineTo(x + o.w / 2, baseY)
+    ctx.moveTo(bx - o.w / 2 + 3, by - 1); ctx.lineTo(bx - o.w / 2 - 2, by + 3)
+    ctx.moveTo(bx - o.w / 2 + 3, by + 1); ctx.lineTo(bx - o.w / 2 - 2, by + 5)
+    ctx.moveTo(bx + o.w / 2 - 3, by - 1); ctx.lineTo(bx + o.w / 2 + 2, by + 3)
+    ctx.moveTo(bx + o.w / 2 - 3, by + 1); ctx.lineTo(bx + o.w / 2 + 2, by + 5)
+    ctx.stroke()
+    // antennae
+    ctx.beginPath()
+    ctx.moveTo(bx - 3, by - o.h / 2 + 2); ctx.lineTo(bx - 5, by - o.h / 2 - 3)
+    ctx.moveTo(bx + 3, by - o.h / 2 + 2); ctx.lineTo(bx + 5, by - o.h / 2 - 3)
     ctx.stroke()
   } else {
     // Intentional semantic literals: error=red, warning=amber. These are
@@ -474,12 +528,23 @@ export function renderFrame(
   // Fireworks (celebration on the first night of each 1000-point block).
   if (s.fireworks.length > 0) {
     ctx.save()
-    for (const p of s.fireworks) {
-      ctx.globalAlpha = Math.max(0, p.life / p.maxLife)
-      ctx.fillStyle = p.color
-      ctx.beginPath()
-      ctx.arc(p.x, p.y, 2, 0, Math.PI * 2)
-      ctx.fill()
+    for (const fw of s.fireworks) {
+      // rising shell: a bright dot at the shell position
+      if (fw.phase === 'rising') {
+        ctx.globalAlpha = 1
+        ctx.fillStyle = fw.color
+        ctx.beginPath()
+        ctx.arc(fw.x, fw.y, 2.4, 0, Math.PI * 2)
+        ctx.fill()
+      }
+      // trail + burst particles
+      for (const p of fw.particles) {
+        ctx.globalAlpha = Math.max(0, p.life / p.maxLife)
+        ctx.fillStyle = p.color
+        ctx.beginPath()
+        ctx.arc(p.x, p.y, 2, 0, Math.PI * 2)
+        ctx.fill()
+      }
     }
     ctx.restore()
   }
