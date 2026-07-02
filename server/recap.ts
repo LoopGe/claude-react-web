@@ -252,7 +252,7 @@ async function callAnthropic(transcript: string, language: string | null, sessio
     model,
     system: buildSystemPrompt(language),
     userContent: transcript,
-    maxTokens: 300,
+    maxTokens: 1000,
     temperature: 0,
   })
   return text.replace(/<\/?React\.Fragment\s*>|<>|<\/>/g, '').replace(/\s{2,}/g, ' ').trim()

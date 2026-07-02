@@ -11,16 +11,7 @@
 import { memo } from 'react'
 import type { SessionRecap } from '../../shared/session-info'
 import { Markdown } from './Markdown'
-import {
-  IconSparkles,
-  IconAlertTriangle,
-  IconX,
-  IconMessageCircle,
-  IconDollar,
-  IconClock,
-  IconWrench,
-} from './icons/ToolIcons'
-import { formatElapsed } from '../utils/format'
+import { IconSparkles, IconAlertTriangle, IconX } from './icons/ToolIcons'
 
 interface Props {
   recap: SessionRecap
@@ -78,36 +69,9 @@ export const RecapWindow = memo(function RecapWindow({ recap, isExiting, clearin
 })
 
 function RecapBody({ recap }: { recap: SessionRecap }) {
-  // status === 'ready' — summary and stats may still legitimately be missing
-  // if the server constructed the ready frame defensively; bail rather than
-  // render a half-card.
-  if (!recap.summary || !recap.stats) return null
-  const { summary, stats } = recap
-  return (
-    <>
-      <Markdown text={summary} />
-      <div className="recap-msg-stats">
-        {stats.userTurns > 0 && (
-          <span className="recap-msg-stat">
-            <IconMessageCircle size={12} /> {stats.userTurns} turn{stats.userTurns === 1 ? '' : 's'}
-          </span>
-        )}
-        {stats.totalCostUsd > 0 && (
-          <span className="recap-msg-stat"><IconDollar size={12} /> {formatCost(stats.totalCostUsd)}</span>
-        )}
-        {stats.durationMs > 0 && (
-          <span className="recap-msg-stat"><IconClock size={12} /> {formatElapsed(stats.durationMs)}</span>
-        )}
-        {stats.toolsUsed.length > 0 && (
-          <span className="recap-msg-stat"><IconWrench size={12} /> {stats.toolsUsed.length} tool{stats.toolsUsed.length === 1 ? '' : 's'}</span>
-        )}
-      </div>
-    </>
-  )
-}
-
-function formatCost(usd: number): string {
-  if (usd === 0) return '$0'
-  if (usd < 0.01) return '<$0.01'
-  return `$${usd.toFixed(2)}`
+  // status === 'ready' — summary may still legitimately be missing if the
+  // server constructed the ready frame defensively; bail rather than render a
+  // half-card.
+  if (!recap.summary) return null
+  return <Markdown text={recap.summary} />
 }
