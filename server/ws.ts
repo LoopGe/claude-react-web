@@ -56,6 +56,18 @@ interface SessionSub {
  *  client is slow (e.g. rendering a large replay). */
 const BACKPRESSURE_HIGH = 1_000_000
 
+/** Hard cap on the total serialized chars buffered in a single
+ *  WsWriteQueue. The backpressure mechanism (BACKPRESSURE_HIGH) suspends
+ *  the drain loop when the kernel socket buffer is full, but while
+ *  suspended the session drivers keep enqueuing — so a client that stays
+ *  alive (TCP-wise) but never catches up could grow this buffer without
+ *  bound. When the cap is exceeded we force-close the socket so the
+ *  client reconnects and replays from the server's bounded history ring
+ *  (mirrors the async-subscription overflow strategy). 8M chars is
+ *  generous enough that it only trips on a pathologically slow client,
+ *  not a transient slow spell. */
+const MAX_QUEUE_CHARS = 8_000_000
+
 /**
  * Async write queue with backpressure control for a single WebSocket.
  *
@@ -78,6 +90,7 @@ class WsWriteQueue {
   private draining = false
   private stopped = false
   private ws: WebSocket
+  private totalChars = 0
 
   constructor(ws: WebSocket) {
     this.ws = ws
@@ -87,8 +100,30 @@ class WsWriteQueue {
    *  has been stopped or is no longer OPEN dcallers don't need to
    *  check readyState themselves. */
   enqueue(frame: WsServerFrame) {
+    this.enqueueRaw(JSON.stringify(frame))
+  }
+
+  /** Enqueue an already-serialized frame string. Used by the broadcast
+   *  path where one message is fanned out to many connections: the frame
+   *  is stringified once (see `messageFrameJson`) and the same string is
+   *  pushed into every subscribed connection's queue, avoiding M×
+   *  JSON.stringify on the hot path. */
+  enqueueRaw(data: string) {
     if (this.stopped || this.ws.readyState !== this.ws.OPEN) return
-    this.queue.push(JSON.stringify(frame))
+    this.queue.push(data)
+    this.totalChars += data.length
+    // Hard cap: a slow-but-alive client can keep this buffer growing
+    // while the drain loop is suspended on backpressure. Force-close so
+    // the client reconnects and replays from the bounded history ring.
+    if (this.totalChars > MAX_QUEUE_CHARS) {
+      log.warn(
+        `WS write queue overflow (${this.totalChars} chars > ${MAX_QUEUE_CHARS}): ` +
+        `force-closing socket to trigger reconnect + replay`,
+      )
+      this.stop()
+      try { this.ws.close(1011, 'write queue overflow') } catch { /* socket may already be closing */ }
+      return
+    }
     if (!this.draining) void this.drain()
   }
 
@@ -98,6 +133,7 @@ class WsWriteQueue {
     this.stopped = true
     this.queue.length = 0
     this.head = 0
+    this.totalChars = 0
   }
 
   private async drain() {
@@ -146,9 +182,37 @@ class WsWriteQueue {
         }
         this.head = 0
       }
+      // Recompute totalChars after compaction so the MAX_QUEUE_CHARS cap
+      // reflects only buffered (unsent) data, not the running lifetime
+      // total — otherwise a long-lived connection would trip the cap
+      // even though its actual backlog is small.
+      this.totalChars = 0
+      for (let i = 0; i < this.queue.length; i++) this.totalChars += this.queue[i]!.length
       this.draining = false
     }
   }
+}
+
+/** Shared cache of serialized `message` frames, keyed by the SDK message
+ *  object identity. The pump pushes the SAME message object reference into
+ *  every subscriber's async-subscription queue (no per-subscriber clone),
+ *  so every WS connection subscribed to a session receives an identical
+ *  `{ kind: 'message', sessionId, message }` frame. Without this cache each
+ *  connection's `enqueue()` would `JSON.stringify` that frame independently
+ *  — M subscribed tabs means M× serialization of the same payload on every
+ *  SDK message (the hot path during streaming). A given message object
+ *  belongs to exactly one session, so baking `sessionId` into the cached
+ *  string is safe. Entries are GC'd automatically when the history ring
+ *  evicts the message object. */
+const messageFrameJsonCache = new WeakMap<object, string>()
+
+function messageFrameJson(sessionId: string, message: object): string {
+  let json = messageFrameJsonCache.get(message)
+  if (json === undefined) {
+    json = JSON.stringify({ kind: 'message', sessionId, message })
+    messageFrameJsonCache.set(message, json)
+  }
+  return json
 }
 
 /** Attach a WebSocket endpoint to an existing Node HTTP server. Returns
@@ -426,7 +490,16 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
               // to one or more WS frames; the retag happens once at the bottom.
               switch (winner.kind) {
                 case 'msg':
-                  queue.enqueue({ kind: 'message', sessionId, message: winner.result.value as never })
+                  // The same message object reference is delivered to every
+                  // connection subscribed to this session, so serialize the
+                  // frame once and reuse across all of them (see
+                  // messageFrameJson). Falls back to enqueue() if the value
+                  // isn't an object (defensive — it always is in practice).
+                  queue.enqueueRaw(
+                    typeof winner.result.value === 'object' && winner.result.value !== null
+                      ? messageFrameJson(sessionId, winner.result.value as object)
+                      : JSON.stringify({ kind: 'message', sessionId, message: winner.result.value as never }),
+                  )
                   break
                 case 'perm': {
                   const ev = winner.result.value as

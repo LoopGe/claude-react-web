@@ -91,9 +91,18 @@ export class ClaudeProvider implements AgentProvider {
       sdkOptions.canUseTool = opts.canUseTool as Options['canUseTool']
     }
 
+    // Cap the input queue as an OOM backstop. In normal operation the SDK
+    // consumes each user turn immediately and depth stays at 0–1; the cap
+    // only bites when the subprocess is wedged and a caller keeps enqueuing
+    // (e.g. many large image turns). The stuck-session health monitor also
+    // bounds that window in time — this bounds it in memory. Drop-oldest at
+    // 64 queued turns only triggers in genuinely pathological spam, where
+    // the history ring still retains every message for the UI and the user
+    // can resend; the alternative is unbounded memory growth.
+    const INPUT_QUEUE_MAX_DEPTH = 64
     const input = createPushable<AgentUserMessage>(
       'input-' + opts.id.slice(0, 8),
-      undefined,
+      INPUT_QUEUE_MAX_DEPTH,
       opts.onUserMessageConsumed,
     )
     const abortController = new AbortController()

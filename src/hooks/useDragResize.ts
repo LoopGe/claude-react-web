@@ -40,6 +40,12 @@ export function useDragResize(
 ): UseDragResize {
   const [dragging, setDragging] = useState(false)
   const startRef = useRef<{ x: number; y: number } | null>(null)
+  // Teardown for the currently-live drag's window listeners. Populated by
+  // startDrag, cleared by onUp. The unmount safety-net effect below calls it
+  // so that unmounting mid-drag (e.g. a WS `session-removed` closing the panel
+  // while the pointer is held) doesn't leak the window mousemove/mouseup
+  // listeners + the `startRef` closure until the next arbitrary mouseup.
+  const cleanupRef = useRef<(() => void) | null>(null)
 
   // Keep the latest onMove in a ref so the mousemove listener doesn't need
   // to re-subscribe every render.
@@ -83,34 +89,39 @@ export function useDragResize(
         if (!startRef.current) return
         onMoveRef.current(deltaOf(ev))
       }
-      const onUp = () => {
+      // Single teardown used by both onUp (normal end) and the unmount
+      // safety net: remove every window listener this drag added, drop the
+      // resize cursor class, and clear the start anchor + self-reference.
+      const teardown = () => {
         window.removeEventListener('mousemove', onThresholdMove)
         window.removeEventListener('mousemove', onLiveMove)
         window.removeEventListener('mouseup', onUp)
+        document.body.classList.remove('resizing-col')
+        startRef.current = null
+        cleanupRef.current = null
+      }
+      const onUp = () => {
         // If the threshold was never crossed this is a no-op click: clean up
         // without having added the cursor class or set dragging.
-        if (promoted) {
-          document.body.classList.remove('resizing-col')
-          setDragging(false)
-        }
-        startRef.current = null
+        if (promoted) setDragging(false)
+        teardown()
       }
       window.addEventListener('mousemove', onThresholdMove)
       window.addEventListener('mouseup', onUp)
+      cleanupRef.current = teardown
     },
     [axis],
   )
 
-  // The live-drag listeners are attached inline in startDrag (above) so the
-  // threshold gate and the live phase share closure scope. This effect only
-  // exists as a safety net to strip the body class if a drag is somehow still
-  // marked active on unmount (e.g. a future caller that forgets cleanup).
+  // Safety net: if a drag is still live when the host unmounts (pointer held
+  // while the panel closes), tear down its window listeners so they don't
+  // leak. Runs once on unmount — `cleanupRef.current` is null when no drag
+  // is active, so this is a no-op in the common case.
   useEffect(() => {
-    if (!dragging) return
     return () => {
-      document.body.classList.remove('resizing-col')
+      cleanupRef.current?.()
     }
-  }, [dragging])
+  }, [])
 
   return { dragging, startDrag }
 }

@@ -91,6 +91,11 @@ export interface Logger {
   info: (...args: unknown[]) => void
   debug: (...args: unknown[]) => void
   trace: (...args: unknown[]) => void
+  /** True iff a message at `level` would be emitted under the current config.
+   *  Use to gate expensive argument construction (e.g. JSON.stringify of a
+   *  large object) so it only runs when the level is actually enabled — the
+   *  variadic log methods receive pre-built args and cannot defer the work. */
+  enabled: (level: LogLevel) => boolean
 }
 
 export function createLogger(scope: string): Logger {
@@ -106,6 +111,7 @@ export function createLogger(scope: string): Logger {
     info:  (...args) => emit('info',  console.log,   args),
     debug: (...args) => emit('debug', console.log,   args),
     trace: (...args) => emit('trace', console.log,   args),
+    enabled: (level) => passes(scope, level),
   }
 }
 

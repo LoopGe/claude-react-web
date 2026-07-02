@@ -24,21 +24,34 @@ export function usePastedImages(): UsePastedImages {
   // value before its await and skips the state update if clear() ran
   // in the interim — otherwise the image lands with a revoked blob URL.
   const clearGenerationRef = useRef(0)
+  // Every blob URL we create is registered here the instant it's minted,
+  // and removed only once it has been explicitly revoked. This closes the
+  // race where the component unmounts while addImage is still awaiting
+  // fileToBase64/getImageDimensions: the previewUrl was created but never
+  // yet pushed into `images` (so imagesRef doesn't know about it), and
+  // the unmount cleanup below would otherwise miss it, pinning the blob's
+  // bytes for the tab's lifetime. Tracking all URLs in one set guarantees
+  // every URL is revoked exactly once regardless of when unmount lands.
+  const allUrlsRef = useRef<Set<string>>(new Set())
+  const revokeUrl = useCallback((url: string) => {
+    URL.revokeObjectURL(url)
+    allUrlsRef.current.delete(url)
+  }, [])
 
   const removeImage = useCallback((id: string) => {
     setImages((prev) => {
       const img = prev.find((i) => i.id === id)
-      if (img) URL.revokeObjectURL(img.previewUrl)
+      if (img) revokeUrl(img.previewUrl)
       return prev.filter((i) => i.id !== id)
     })
-  }, [])
+  }, [revokeUrl])
 
   const clear = useCallback(() => {
     clearGenerationRef.current++
-    for (const img of imagesRef.current) URL.revokeObjectURL(img.previewUrl)
+    for (const img of imagesRef.current) revokeUrl(img.previewUrl)
     setImages([])
     setError(null)
-  }, [])
+  }, [revokeUrl])
 
   const addImage = useCallback(async (file: File) => {
     setError(null)
@@ -60,6 +73,7 @@ export function usePastedImages(): UsePastedImages {
 
     const id = randomId()
     const previewUrl = URL.createObjectURL(file)
+    allUrlsRef.current.add(previewUrl)
     const generation = clearGenerationRef.current
 
     try {
@@ -70,7 +84,7 @@ export function usePastedImages(): UsePastedImages {
       // already been revoked and imagesRef was reset. Discard instead of
       // inserting a broken preview.
       if (clearGenerationRef.current !== generation) {
-        URL.revokeObjectURL(previewUrl)
+        revokeUrl(previewUrl)
         return
       }
 
@@ -87,14 +101,19 @@ export function usePastedImages(): UsePastedImages {
         },
       ])
     } catch {
-      URL.revokeObjectURL(previewUrl)
+      revokeUrl(previewUrl)
     }
-  }, [])
+  }, [revokeUrl])
 
-  // Cleanup on unmount
+  // Cleanup on unmount: revoke every URL we created, including any that
+  // are still mid-decode (not yet in `images`). The Set instance is stable
+  // for the ref's lifetime (we only mutate it, never reassign), so capturing
+  // it here and iterating in the cleanup sees every URL added before unmount.
   useEffect(() => {
+    const all = allUrlsRef.current
     return () => {
-      for (const img of imagesRef.current) URL.revokeObjectURL(img.previewUrl)
+      for (const url of all) URL.revokeObjectURL(url)
+      all.clear()
     }
   }, [])
 

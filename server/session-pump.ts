@@ -263,6 +263,12 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         `pendingTurns=${session.pendingTurns}, pending perms=${session.pending.size})`,
       )
     }, 60_000)
+    // Don't let this per-session watchdog hold the event loop alive on its
+    // own — consistent with the rest of the codebase's timers (health-monitor,
+    // git-broadcast, event-loop-probe). It still fires normally while the
+    // server is running; this only affects a clean shutdown where nothing
+    // else keeps the loop alive. Cleared in the finally block below.
+    idleTimer.unref?.()
     try {
       while (true) {
         nextStartedAt = Date.now()
@@ -715,17 +721,22 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
   if (contextWindow <= 0) return null
 
   // Always log the raw payload so we can diagnose context-usage issues.
-  // This fires once per turn (when a result message lands) dthe cost is
-  // one JSON.stringify per completed turn which is negligible.
-  log.debug(
-    `[context-usage] raw payload for model=${model} contextWindow=${contextWindow}: ` +
-    `top-level=${JSON.stringify({
-      input_tokens: usage.input_tokens,
-      cache_creation_input_tokens: usage.cache_creation_input_tokens,
-      cache_read_input_tokens: usage.cache_read_input_tokens,
-    })} ` +
-    `iterations=${JSON.stringify(usage.iterations ?? null)}`,
-  )
+  // This fires once per turn (when a result message lands). The JSON.stringify
+  // calls are gated behind an enabled() check because the variadic log.debug
+  // would otherwise evaluate them eagerly at the default info level —
+  // `usage.iterations` can be a sizable array, so building it per turn is
+  // pure waste when debug is off.
+  if (log.enabled('debug')) {
+    log.debug(
+      `[context-usage] raw payload for model=${model} contextWindow=${contextWindow}: ` +
+      `top-level=${JSON.stringify({
+        input_tokens: usage.input_tokens,
+        cache_creation_input_tokens: usage.cache_creation_input_tokens,
+        cache_read_input_tokens: usage.cache_read_input_tokens,
+      })} ` +
+      `iterations=${JSON.stringify(usage.iterations ?? null)}`,
+    )
+  }
 
   // Context-window usage = the prompt size of the most recent regular
   // sampling iteration. We must:

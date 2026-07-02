@@ -1161,6 +1161,16 @@ export const Chat = memo(function Chat({
     scrollNavRef.current = fn
   }, [])
 
+  // Stable wrapper so MessageList's `itemContent` useCallback (whose dep
+  // array includes onSwitchModel) keeps a stable identity across streaming
+  // token deltas. An inline arrow here would recreate itemContent on every
+  // token, busting MessageView.memo and re-running every visible row per
+  // delta. onSwitchModel is only consumed in the rare model_not_found branch.
+  const handleSwitchModel = useCallback(
+    () => onOpenSettingsTab(session.id, 'general'),
+    [onOpenSettingsTab, session.id],
+  )
+
   // Note: we used to poll /sessions/:id 500ms after every SDK message to
   // keep the header badges fresh. That added O(messages 脳 sessions) HTTP
   // requests on top of the WebSocket streams, and with three panels open it was
@@ -1349,7 +1359,7 @@ export const Chat = memo(function Chat({
           hasOlder={stream.hasOlder}
           loadingOlder={stream.loadingOlder}
           onRegisterNavigate={registerNavigate}
-          onSwitchModel={() => onOpenSettingsTab(session.id, 'general')}
+          onSwitchModel={handleSwitchModel}
           onAbortBash={abortBashCommand}
           onVisibleRangeChange={handleVisibleRangeChange}
           cwd={session.cwd}
