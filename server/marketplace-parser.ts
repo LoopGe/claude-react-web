@@ -232,32 +232,69 @@ export async function parseMarketplace(repoRoot: string): Promise<ParseResult> {
     }
 
     // External-repo plugins: the plugin's files live in a SEPARATE git repo,
-    // not in the marketplace repo. Two manifest shapes map to this:
+    // not in the marketplace repo. Three manifest shapes map to this:
     //   - `source: 'git-subdir'` — a SUBDIRECTORY of the external repo (`path`
     //     required).
     //   - `source: 'url'`        — the WHOLE external repo (no `path`; the
     //     plugin is the repo root).
-    // Both clone the external repo at `sha` lazily on first enable, so we
-    // don't resolve a local dir here — capture url/subPath/ref/sha and move
+    //   - `source: 'github'`     — Anthropic marketplace convention: an
+    //     external GitHub repo named by `repo` (`owner/name`), pinned at
+    //     `sha` (falling back to `commit`), optionally rooted at a `path`
+    //     subdirectory. Normalised to the git-subdir shape below.
+    // All three clone the external repo at `sha` lazily on first enable, so
+    // we don't resolve a local dir here — capture url/subPath/ref/sha and move
     // on WITHOUT emitting plugin-dir-not-found.
     const srcType = entry.source && typeof entry.source === 'object' && !Array.isArray(entry.source)
       ? (entry.source as Record<string, unknown>).source
       : undefined
-    if (srcType === 'git-subdir' || srcType === 'url') {
+    if (srcType === 'git-subdir' || srcType === 'url' || srcType === 'github') {
       const src = entry.source as Record<string, unknown>
-      if (!isHttpsUrl(src.url)) {
-        warnings.push({
-          kind: 'plugin-bad-shape',
-          detail: `plugin "${pName}" ${srcType} source has a non-https url; skipping`,
-        })
-        continue
-      }
-      // git-subdir requires a path; url defaults to the repo root (`.`).
+      // Normalise the `github` shape into the same (url, subPath, sha, ref)
+      // quadruple the git-subdir/url shapes already produce.
+      let url: string
       let subPath: string | null
-      if (srcType === 'url') {
-        subPath = typeof src.path === 'string' && src.path.trim() ? validateRelativePath(src.path) : '.'
+      let sha: unknown
+      if (srcType === 'github') {
+        const repo = typeof src.repo === 'string' ? src.repo.trim() : ''
+        // `owner/name` only — reject anything that could smuggle path
+        // separators or shell metacharacters into the synthesised URL. The
+        // charset permits `.` for names like `foo.bar`, but a `.` or `..`
+        // segment is path-traversal and must be rejected explicitly.
+        const repoSegs = repo.split('/')
+        const repoOk = repoSegs.length === 2 &&
+          repoSegs.every((s) => /^[A-Za-z0-9._-]+$/.test(s) && s !== '.' && s !== '..')
+        if (!repoOk) {
+          warnings.push({
+            kind: 'plugin-bad-shape',
+            detail: `plugin "${pName}" github source has an invalid repo; skipping`,
+          })
+          continue
+        }
+        url = `https://github.com/${repo}`
+        subPath = typeof src.path === 'string' && src.path.trim()
+          ? validateRelativePath(src.path)
+          : '.'
+        // Prefer `sha` (tree/object sha as published); fall back to `commit`
+        // (the commit sha) when a manifest only carries the commit hash.
+        sha = typeof src.sha === 'string' && src.sha.trim()
+          ? src.sha.trim()
+          : (typeof src.commit === 'string' && src.commit.trim() ? src.commit.trim() : undefined)
       } else {
-        subPath = typeof src.path === 'string' ? validateRelativePath(src.path) : null
+        if (!isHttpsUrl(src.url)) {
+          warnings.push({
+            kind: 'plugin-bad-shape',
+            detail: `plugin "${pName}" ${srcType} source has a non-https url; skipping`,
+          })
+          continue
+        }
+        url = src.url
+        // git-subdir requires a path; url defaults to the repo root (`.`).
+        if (srcType === 'url') {
+          subPath = typeof src.path === 'string' && src.path.trim() ? validateRelativePath(src.path) : '.'
+        } else {
+          subPath = typeof src.path === 'string' ? validateRelativePath(src.path) : null
+        }
+        sha = src.sha
       }
       if (!subPath) {
         warnings.push({
@@ -266,7 +303,7 @@ export async function parseMarketplace(repoRoot: string): Promise<ParseResult> {
         })
         continue
       }
-      if (!isValidSha(src.sha)) {
+      if (!isValidSha(sha)) {
         warnings.push({
           kind: 'plugin-bad-shape',
           detail: `plugin "${pName}" ${srcType} source is missing a valid sha; skipping`,
@@ -279,7 +316,7 @@ export async function parseMarketplace(repoRoot: string): Promise<ParseResult> {
       plugins.push({
         ...meta,
         dir: null,
-        source: { kind: 'git-subdir', url: src.url, subPath, ref, sha: src.sha },
+        source: { kind: 'git-subdir', url, subPath, ref, sha },
       })
       continue
     }

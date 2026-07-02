@@ -274,6 +274,82 @@ describe('parseMarketplace', () => {
     })
   })
 
+  it('captures a `github` source (Anthropic convention) as git-subdir', async () => {
+    // The `github` source type names an external GitHub repo by `owner/name`
+    // and pins it at `sha`. No on-disk dir is created at parse time.
+    writeManifest(repo, {
+      name: 'M',
+      plugins: [
+        {
+          name: 'fullstory',
+          description: 'Connect Claude to Fullstory.',
+          source: {
+            source: 'github',
+            repo: 'fullstorydev/fullstory-skills',
+            commit: '1ec5865e7ab1449f9a0859d164c4b6a8c53b6e2f',
+            sha: 'b20614e2d08d7a7c70775bb62b5af640f60b024b',
+          },
+        },
+      ],
+    })
+    const { manifest, warnings } = await parseMarketplace(repo)
+    expect(warnings).toEqual([])
+    expect(manifest.plugins).toHaveLength(1)
+    expect(manifest.plugins[0].dir).toBeNull()
+    expect(manifest.plugins[0].source).toEqual({
+      kind: 'git-subdir',
+      url: 'https://github.com/fullstorydev/fullstory-skills',
+      subPath: '.',
+      ref: undefined,
+      sha: 'b20614e2d08d7a7c70775bb62b5af640f60b024b',
+    })
+  })
+
+  it('falls back to `commit` when a `github` source has no sha', async () => {
+    writeManifest(repo, {
+      name: 'M',
+      plugins: [
+        {
+          name: 'p',
+          source: {
+            source: 'github',
+            repo: 'o/r',
+            commit: GIT_SUBDIR_SHA,
+          },
+        },
+      ],
+    })
+    const { manifest, warnings } = await parseMarketplace(repo)
+    expect(warnings).toEqual([])
+    expect(manifest.plugins[0].source).toMatchObject({ kind: 'git-subdir', sha: GIT_SUBDIR_SHA })
+  })
+
+  it('skips a `github` source with an invalid repo', async () => {
+    writeManifest(repo, {
+      name: 'M',
+      plugins: [
+        { name: 'p', source: { source: 'github', repo: '../escape', sha: GIT_SUBDIR_SHA } },
+      ],
+    })
+    const { manifest, warnings } = await parseMarketplace(repo)
+    expect(manifest.plugins).toHaveLength(0)
+    expect(warnings.some((w) => w.kind === 'plugin-bad-shape' && w.detail.includes('invalid repo'))).toBe(true)
+    expect(warnings.some((w) => w.kind === 'plugin-dir-not-found')).toBe(false)
+  })
+
+  it('skips a `github` source missing both sha and commit', async () => {
+    writeManifest(repo, {
+      name: 'M',
+      plugins: [
+        { name: 'p', source: { source: 'github', repo: 'o/r' } },
+      ],
+    })
+    const { manifest, warnings } = await parseMarketplace(repo)
+    expect(manifest.plugins).toHaveLength(0)
+    expect(warnings.some((w) => w.kind === 'plugin-bad-shape' && w.detail.includes('sha'))).toBe(true)
+    expect(warnings.some((w) => w.kind === 'plugin-dir-not-found')).toBe(false)
+  })
+
   it('skips a `url` source missing a valid sha', async () => {
     writeManifest(repo, {
       name: 'M',
