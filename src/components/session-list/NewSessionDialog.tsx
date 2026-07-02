@@ -39,13 +39,13 @@ export interface NewSessionDialogProps {
    *  means "no preselected group". */
   initialGroupId?: string
   /** Max sessions per group. */
-  maxOpen: number
+  maxGroupSize: number
   /** When true the active skin locks the accent (Anthropic / HC), so the
    *  per-session accent picker is hidden in the new-session form. */
   accentLocked?: boolean
 }
 
-export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, onCancel, groups, serverModels, initialGroupId, maxOpen, accentLocked }: NewSessionDialogProps) {
+export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, onCancel, groups, serverModels, initialGroupId, maxGroupSize, accentLocked }: NewSessionDialogProps) {
   const [cwd, setCwd] = useState<string>(initialCwd ?? defaults.cwd ?? '')
   const [model, setModel] = useState<string>(defaults.model ?? '')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
@@ -62,7 +62,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
     if (!initialGroupId) return ''
     const g = groups.find((x) => x.id === initialGroupId)
     if (!g) return ''
-    if (g.sessionIds.length >= maxOpen) return ''
+    if (g.sessionIds.length >= maxGroupSize) return ''
     return initialGroupId
   })
   const [showPicker, setShowPicker] = useState(false)
@@ -454,10 +454,10 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
               >
                 <option value="">None (Ungrouped)</option>
                 {groups.map((g) => {
-                  const full = g.sessionIds.length >= maxOpen
+                  const full = g.sessionIds.length >= maxGroupSize
                   return (
                     <option key={g.id} value={g.id}>
-                      {g.name} ({g.sessionIds.length}/{maxOpen}){full ? ' — will replace oldest' : ''}
+                      {g.name} ({g.sessionIds.length}/{maxGroupSize}){full ? ' — will replace oldest' : ''}
                     </option>
                   )
                 })}

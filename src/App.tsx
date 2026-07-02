@@ -1243,9 +1243,16 @@ export function App() {
         betas: source.betas,
         groupId: sourceGroup?.id,
       }
+      // If the source's group is already full the copy can't join it, so
+      // create it ungrouped. The context menu already warns + confirms this
+      // case before we get here, so there's no dialog/toast to show — just
+      // drop the group so handleAddToGroup doesn't re-fire the "full" toast.
+      if (sourceGroup && sourceGroup.sessionIds.length >= maxGroupSize) {
+        form.groupId = undefined
+      }
       await handleCreate(form)
     },
-    [sessions, groups, handleCreate],
+    [sessions, groups, handleCreate, maxGroupSize],
   )
 
   /** The irreversible part: actually hit the server (which kills the Query
@@ -2825,7 +2832,8 @@ export function App() {
           onAddToGroup={handleAddToGroup}
           onToggleGroupCollapse={toggleGroupCollapse}
           activeGroupId={activeGroupId}
-          maxOpen={maxOpen}
+          maxGroupSize={maxGroupSize}
+          isMobile={isMobile}
         />
         <div
           className={`sidebar-resizer ${sidebarResize.dragging ? 'dragging' : ''}`}

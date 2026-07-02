@@ -50,8 +50,9 @@ export interface SessionContextMenuProps {
   // --- Group actions ---
   groups: SessionGroup[]
   onAddToGroup: (sessionId: string, groupId: string) => void
-  /** Max sessions per group. */
-  maxOpen: number
+  /** Per-group capacity — the threshold for "is this group full?". Uses
+   *  App's `maxGroupSize` (NOT `maxOpen`, which is squeezed to 1 on mobile). */
+  maxGroupSize: number
   /** Optional success-feedback callback (e.g. after clipboard copy). */
   onShowSuccess?: (msg: string) => void
   /** Trigger a custom confirmation dialog instead of window.confirm.
@@ -84,7 +85,7 @@ export function SessionContextMenu({
   accentLocked,
   groups,
   onAddToGroup,
-  maxOpen,
+  maxGroupSize,
   onShowSuccess,
   onAskConfirm,
 }: SessionContextMenuProps) {
@@ -115,7 +116,31 @@ export function SessionContextMenu({
     {
       label: 'New session like this',
       icon: <IconCopy size={14} />,
-      onClick: () => onNewLikeThis(anchor.id),
+      onClick: () => {
+        // If the source is in a group that's already full, the copy can't
+        // join it and will be created ungrouped. Warn + confirm first so the
+        // user isn't surprised by an orphaned session.
+        const sessionGroup = groups.find((g) => g.sessionIds.includes(anchor.id))
+        if (
+          sessionGroup &&
+          sessionGroup.sessionIds.length >= maxGroupSize &&
+          onAskConfirm
+        ) {
+          onAskConfirm({
+            title: 'Group is full',
+            message: (
+              <p>
+                Group &ldquo;{sessionGroup.name}&rdquo; is full ({maxGroupSize} sessions).
+                The new session will be created without a group. Continue?
+              </p>
+            ),
+            confirmLabel: 'Create ungrouped',
+            onConfirm: () => onNewLikeThis(anchor.id),
+          })
+          return
+        }
+        onNewLikeThis(anchor.id)
+      },
     },
     {
       label: 'Restart',
@@ -161,7 +186,7 @@ export function SessionContextMenu({
       const sessionGroup = groups.find((g) => g.sessionIds.includes(anchor.id))
       // Only show groups with space (and not the current group)
       const availableGroups = groups.filter(
-        (g) => g.id !== sessionGroup?.id && g.sessionIds.length < maxOpen,
+        (g) => g.id !== sessionGroup?.id && g.sessionIds.length < maxGroupSize,
       )
       const items: ContextMenuItem[] = []
       // "Remove from group" — only if session is currently in a group
@@ -176,7 +201,7 @@ export function SessionContextMenu({
         items.push({ label: 'Move to group ▸', icon: '→', disabled: true })
         for (const g of availableGroups) {
           items.push({
-            label: `  ${g.name} (${g.sessionIds.length}/${maxOpen})`,
+            label: `  ${g.name} (${g.sessionIds.length}/${maxGroupSize})`,
             icon: ' ',
             onClick: () => onAddToGroup(anchor.id, g.id),
           })

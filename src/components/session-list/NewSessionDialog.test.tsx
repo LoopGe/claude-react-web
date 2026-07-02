@@ -13,7 +13,7 @@ vi.mock('../../hooks/useApi', () => ({
 import { api } from '../../hooks/useApi'
 
 // Supply minimal required props matching NewSessionDialogProps:
-//   defaults (required), onSubmit, onCancel, groups, maxOpen
+//   defaults (required), onSubmit, onCancel, groups, maxGroupSize
 const baseProps = {
   open: true,
   defaults: { cwd: '/tmp', model: 'claude-sonnet-4-20250514' },
@@ -21,7 +21,7 @@ const baseProps = {
   onCancel: vi.fn(),
   groups: [],
   serverModels: [],
-  maxOpen: 10,
+  maxGroupSize: 10,
 }
 
 describe('NewSessionDialog plugin picker', () => {
