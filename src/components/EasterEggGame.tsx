@@ -6,6 +6,7 @@ import {
   readHi, writeHi, readMuted, writeMuted,
   type Status, type GameState, type ThemeColors,
 } from './easter-egg-game/engine'
+import { IconVolume2, IconVolumeX, IconX } from './icons/ToolIcons'
 
 // Hidden easter-egg mini-game: a Chrome-offline-dino-style endless runner
 // themed after this app. The player is the same sparkle glyph used in the
@@ -219,8 +220,8 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
         onTouchStart={(e) => { e.preventDefault(); jumpRef.current() }}
       />
       <div className="easter-egg-game-toolbar">
-        <button className="easter-egg-game-btn" aria-label="Toggle sound" onClick={() => setMutedAll(!mutedRef.current)}>{muted ? '🔇' : '🔊'}</button>
-        <button className="easter-egg-game-btn" aria-label="Exit game" onClick={onExit}>✕ Exit</button>
+        <button className="easter-egg-game-btn" aria-label={muted ? 'Unmute sound' : 'Mute sound'} onClick={() => setMutedAll(!mutedRef.current)}>{muted ? <IconVolumeX size={14} /> : <IconVolume2 size={14} />}</button>
+        <button className="easter-egg-game-btn" aria-label="Exit game" onClick={onExit}><IconX size={14} /> Exit</button>
       </div>
     </div>
   )

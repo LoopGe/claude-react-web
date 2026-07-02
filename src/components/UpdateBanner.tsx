@@ -17,7 +17,7 @@ import { useState } from 'react'
 import type { UpdateActionResult, UpdateInfo } from '../../shared/update-info'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
 import { useToast } from '../hooks/useToast'
-import { IconX, IconCheck } from './icons/ToolIcons'
+import { IconX, IconCheck, IconAlertTriangle } from './icons/ToolIcons'
 
 const DISMISS_KEY = 'claude-react-web:update-banner-dismissed-version'
 
@@ -139,7 +139,7 @@ function DeprecatedBannerInner({
 
   return (
     <div className="update-banner update-banner-deprecated" role="alert" aria-live="assertive">
-      <span className="update-banner-icon" aria-hidden="true">⚠</span>
+      <span className="update-banner-icon" aria-hidden="true"><IconAlertTriangle size={13} /></span>
       <span className="update-banner-text">
         Version <strong>{current}</strong> is deprecated
         {latest && latest !== current && <> — update to <strong>{latest}</strong></>}

@@ -456,6 +456,26 @@ export function IconBellOff(props: IconProps) {
   )
 }
 
+export function IconVolume2(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M11 5 6 9H2v6h4l5 4V5Z" />
+      <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+      <path d="M19 5a10 10 0 0 1 0 14" />
+    </Icon>
+  )
+}
+
+export function IconVolumeX(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M11 5 6 9H2v6h4l5 4V5Z" />
+      <path d="m16 9 6 6" />
+      <path d="m22 9-6 6" />
+    </Icon>
+  )
+}
+
 export function IconFolder(props: IconProps) {
   return (
     <Icon {...props}>

@@ -22,7 +22,7 @@ import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { getBlocks, getEnterPlanToolUseIds } from '../session-store/normalize'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
-import { IconArrowDown, IconZap, IconUser, IconExternalLink, IconSquare } from './icons/ToolIcons'
+import { IconArrowDown, IconZap, IconUser, IconExternalLink, IconSquare, IconClock } from './icons/ToolIcons'
 import { countMatches, extractPlainText, extractMessagePlainText } from '../search'
 import { BlockView, ToolResultBlock } from './message-list/blocks'
 import { OlderHistoryHeader, StreamingFooter } from './message-list/transcript-chrome'
@@ -2266,7 +2266,7 @@ function ApiRetryView({ msg }: { msg: SdkMessage }) {
     maxRetries > 0 ? `attempt ${attempt}/${maxRetries}` : `attempt ${attempt}`
   return (
     <div className="msg result retry" aria-label="api retry">
-      <span className="result-mark" aria-hidden="true">⏳ {label}</span>
+      <span className="result-mark" aria-hidden="true"><IconClock size={12} /> {label}</span>
       <span className="result-meta">{phase} · {attemptText}</span>
     </div>
   )
