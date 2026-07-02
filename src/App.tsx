@@ -5,6 +5,7 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { SessionList } from './components/SessionList'
 import { ChatPanel } from './components/ChatPanel'
+import { PanelSlot } from './components/PanelSlot'
 import { api } from './hooks/useApi'
 import { isInAppDrag, readDragPayload } from './hooks/useDragPayload'
 import { useIsMobile } from './hooks/useIsMobile'
@@ -33,6 +34,7 @@ import { IconSettings, IconBellToggle, IconMenu } from './components/icons/ToolI
 import { UpdateBanner } from './components/UpdateBanner'
 import { useUpdateInfo } from './hooks/useUpdateInfo'
 import { useUiState } from './hooks/useUiState'
+import { useClearAnimation } from './hooks/useClearAnimation'
 import { sessionStoreRegistry } from './session-store/registry'
 import { useAppOverlays } from './app/useAppOverlays'
 import { useExitPresence, usePresenceValue } from './hooks/useExitPresence'
@@ -1707,15 +1709,28 @@ export function App() {
   // handlePanelAnimEnd then forces a re-render so React's virtual DOM
   // reconciles and removes the class via its normal className commit.
   const enteringSetRef = useRef<Set<string>>(new Set())
+  /** Panel session ids that should be skipped by the render-phase entering
+   *  diff — used by `/clear` so the new session Y doesn't play its mount
+   *  animation under the fade-out veil (would look like double-animation).
+   *  Entries are cleared in a useLayoutEffect after the render that
+   *  handled the swap. */
+  const suppressEnteringRef = useRef<Set<string>>(new Set())
   /* eslint-disable react-hooks/refs -- intentional: render-phase diff for entering-panel detection */
   if (prevOpenIdsRef.current !== openIds) {
     const prevSet = new Set(prevOpenIdsRef.current)
     for (const id of openIds) {
-      if (!prevSet.has(id)) enteringSetRef.current.add(id)
+      if (!prevSet.has(id) && !suppressEnteringRef.current.has(id)) {
+        enteringSetRef.current.add(id)
+      }
     }
     prevOpenIdsRef.current = openIds
   }
   /* eslint-enable react-hooks/refs */
+  useLayoutEffect(() => {
+    if (suppressEnteringRef.current.size > 0) {
+      suppressEnteringRef.current.clear()
+    }
+  })
   // State nudge: incremented by handlePanelAnimEnd to force a re-render
   // after the animation completes, so React reconciles className.
   const [, setAnimEpoch] = useState(0)
@@ -2299,20 +2314,42 @@ export function App() {
     setResumeDialogOpen(true)
   }, [])
 
-  /** `/clear` a panel: the server detaches the pre-clear conversation X as a
-   *  dormant resumable session and spawns a fresh session Y under a new id.
-   *  Swap the panel slot X→Y at the same position (mirrors handleRestart's
-   *  in-place id swap). X stays in the sidebar as dormant (the server's
-   *  session-update broadcast dims it); Y takes X's group slot so the active
-   *  group view stays consistent, and X leaves the group — it's now a
-   *  standalone resumable past session, recoverable via the resume picker. */
+  /** Manages the veil phase state for local `/clear` fade-in → swap → fade-out.
+   *  Keyed by panel session id (which changes X→Y during the swap; the hook's
+   *  `swapAndEnd` atomically moves state from X to Y). See PanelSlot.tsx and
+   *  `docs/superpowers/specs/2026-07-01-clear-animation-survives-id-swap-design.md`. */
+  const clearAnim = useClearAnimation()
+
+  /** `/clear` a panel: fade-in on X in parallel with the POST, then swap
+   *  X→Y under the fully-opaque veil, then fade-out to reveal Y's fresh
+   *  empty state. The server detaches X as a dormant resumable session and
+   *  returns a fresh session Y under a new id; App swaps the panel slot
+   *  X→Y at the same position (mirrors handleRestart's in-place id swap).
+   *  X stays in the sidebar as dormant (the server's session-update broadcast
+   *  dims it); Y takes X's group slot so the active group view stays
+   *  consistent, and X leaves the group — it's now a standalone resumable
+   *  past session, recoverable via the resume picker. */
   const handleClear = useCallback(
     async (id: string) => {
       const sourceGroup = groups.find((g) => g.sessionIds.includes(id))
       const wasOpen = openIds.includes(id)
       try {
-        const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/clear`, {})
+        // Fade-in on X and the POST run in parallel. Promise.all gates the
+        // swap on BOTH: the fade-in Promise resolves after --motion-duration-base
+        // (180 ms — veil is fully opaque), the POST resolves whenever the
+        // server responds. In the common case (POST < 200 ms) we're waiting
+        // on the animation; under slow POST we wait on the network. Either
+        // way, the swap happens only under an opaque veil, so Y never
+        // flashes into view.
+        const [res] = await Promise.all([
+          api.post<{ session: SessionInfo }>(`/sessions/${id}/clear`, {}),
+          clearAnim.beginClear(id),
+        ])
         const newId = res.session.id
+        // Suppress Y's mount animation — the veil fade-out is the visual
+        // transition here; playing the panel-enter animation on top would
+        // look like a double-animation under the receding veil.
+        suppressEnteringRef.current.add(newId)
         if (wasOpen) {
           setOpenIds((prev) => {
             const idx = prev.indexOf(id)
@@ -2336,11 +2373,16 @@ export function App() {
             }),
           )
         }
+        // Atomically move veil state from X to Y, transition to fade-out.
+        // The hook schedules cleanup at fadeOutMs (180 ms).
+        clearAnim.swapAndEnd(id, newId)
       } catch (e) {
+        // Drop the veil immediately — X is untouched (server didn't act).
+        clearAnim.cancelClear(id)
         toast.error(`Couldn't clear session: ${(e as Error).message}`)
       }
     },
-    [groups, openIds, toast, setLastSeenTurn, setGroups],
+    [groups, openIds, toast, setLastSeenTurn, setGroups, clearAnim],
   )
 
   const refreshConfigResponse = useCallback(async () => {
@@ -2653,68 +2695,72 @@ export function App() {
             openSessions.flatMap((s, i) => {
               const entering = enteringSetRef.current.has(s.id)
               const owningGroup = groups.find((g) => g.sessionIds.includes(s.id))
+              const clearingPhase = clearAnim.clearingByPanel.get(s.id)
               const node = (
                 // Per-panel ErrorBoundary: if one panel's render throws
                 // (e.g. a malformed assistant message), the other open
                 // panels and the sidebar keep working. children identity
                 // changes on prop updates, so a recovered render auto-clears.
-                <ErrorBoundary key={s.id}>
-                  <ChatPanel
-                    session={s}
-                    focused={s.id === focusedId}
-                    hasUnread={!!unread[s.id]}
-                    slot={i + 1}
-                    entering={entering}
-                    onAnimEnd={entering ? handlePanelAnimEnd : undefined}
-                    accentStyle={sessionAccentMap.get(s.id)}
-                    onFocus={focusPanel}
-                    onClose={closeSession}
-                    groupLabel={owningGroup?.name}
-                    onCloseGroupPanels={
-                      owningGroup ? () => closeGroupPanels(owningGroup.id) : undefined
-                    }
-                    onDelete={handleDelete}
-                    onSessionUpdate={updateSession}
-                    settingsOpen={settingsOpenFor === s.id}
-                    messageJumpTarget={messageJumpTarget?.sessionId === s.id ? messageJumpTarget : null}
-                    onOpenSettings={handleOpenSettings}
-                    onCloseSettings={handleCloseSettings}
-                    gitPanelOpen={gitPanelOpenFor === s.id}
-                    onOpenGitPanel={handleOpenGitPanel}
-                    onCloseGitPanel={handleCloseGitPanel}
-                    onSwap={swapPanels}
-                    onRegisterInterrupt={registerInterrupt}
-                    onRegisterRecap={registerRecap}
-                    onRegisterInjectInput={registerInjectInput}
-                    onAcceptSidebarDrop={handleAcceptSidebarDrop}
-                    onRequestResumeForPanel={requestResumeForPanel}
-                    onClearSession={handleClear}
-                    onOpenSettingsTab={openSettingsTab}
-                    onShowHelp={showHelpWithCommands}
-                    sideChatSession={sideChat?.parentId === s.id ? sideChat.session : undefined}
-                    sideChatCollapsed={sideChat?.parentId === s.id ? sideChat.collapsed : undefined}
-                    sideChatUnread={
-                      sideChat?.parentId === s.id && sideChat.collapsed
-                        ? Math.max(0, sideChat.session.messageCount - sideChat.initialMessageCount)
-                        : 0
-                    }
-                    onToggleCollapseSideChat={
-                      sideChat?.parentId === s.id ? handleToggleCollapseSideChat : undefined
-                    }
-                    onCloseSideChat={sideChat?.parentId === s.id ? handleCloseSideChat : undefined}
-                    onSideChat={handleSideChat}
-                    settingsTabRequest={
-                      settingsTabRequest?.sessionId === s.id
-                        ? stableSettingsTabRequest
-                        : null
-                    }
-                    isResuming={resuming.has(s.id)}
-                    snippets={snippets}
-                    onOpenSnippetsManager={openSnippetsManager}
-                    onSaveCurrentAsSnippet={saveCurrentAsSnippet}
-                    skin={skin}
-                  />
-                </ErrorBoundary>
+                <PanelSlot key={i} clearingPhase={clearingPhase}>
+                  <ErrorBoundary key={s.id}>
+                    <ChatPanel
+                      session={s}
+                      focused={s.id === focusedId}
+                      clearing={clearingPhase === 'fading-in'}
+                      hasUnread={!!unread[s.id]}
+                      slot={i + 1}
+                      entering={entering}
+                      onAnimEnd={entering ? handlePanelAnimEnd : undefined}
+                      accentStyle={sessionAccentMap.get(s.id)}
+                      onFocus={focusPanel}
+                      onClose={closeSession}
+                      groupLabel={owningGroup?.name}
+                      onCloseGroupPanels={
+                        owningGroup ? () => closeGroupPanels(owningGroup.id) : undefined
+                      }
+                      onDelete={handleDelete}
+                      onSessionUpdate={updateSession}
+                      settingsOpen={settingsOpenFor === s.id}
+                      messageJumpTarget={messageJumpTarget?.sessionId === s.id ? messageJumpTarget : null}
+                      onOpenSettings={handleOpenSettings}
+                      onCloseSettings={handleCloseSettings}
+                      gitPanelOpen={gitPanelOpenFor === s.id}
+                      onOpenGitPanel={handleOpenGitPanel}
+                      onCloseGitPanel={handleCloseGitPanel}
+                      onSwap={swapPanels}
+                      onRegisterInterrupt={registerInterrupt}
+                      onRegisterRecap={registerRecap}
+                      onRegisterInjectInput={registerInjectInput}
+                      onAcceptSidebarDrop={handleAcceptSidebarDrop}
+                      onRequestResumeForPanel={requestResumeForPanel}
+                      onClearSession={handleClear}
+                      onOpenSettingsTab={openSettingsTab}
+                      onShowHelp={showHelpWithCommands}
+                      sideChatSession={sideChat?.parentId === s.id ? sideChat.session : undefined}
+                      sideChatCollapsed={sideChat?.parentId === s.id ? sideChat.collapsed : undefined}
+                      sideChatUnread={
+                        sideChat?.parentId === s.id && sideChat.collapsed
+                          ? Math.max(0, sideChat.session.messageCount - sideChat.initialMessageCount)
+                          : 0
+                      }
+                      onToggleCollapseSideChat={
+                        sideChat?.parentId === s.id ? handleToggleCollapseSideChat : undefined
+                      }
+                      onCloseSideChat={sideChat?.parentId === s.id ? handleCloseSideChat : undefined}
+                      onSideChat={handleSideChat}
+                      settingsTabRequest={
+                        settingsTabRequest?.sessionId === s.id
+                          ? stableSettingsTabRequest
+                          : null
+                      }
+                      isResuming={resuming.has(s.id)}
+                      snippets={snippets}
+                      onOpenSnippetsManager={openSnippetsManager}
+                      onSaveCurrentAsSnippet={saveCurrentAsSnippet}
+                      skin={skin}
+                    />
+                  </ErrorBoundary>
+                </PanelSlot>
               )
               if (i === openSessions.length - 1) return [node]
               return [

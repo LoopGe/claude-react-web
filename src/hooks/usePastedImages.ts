@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { formatBytes } from '../utils/format'
 import { randomId } from '../utils/uuid'
 import { getMaxUploadBytes } from './config-store'
@@ -98,7 +98,18 @@ export function usePastedImages(): UsePastedImages {
     }
   }, [])
 
-  return { images, error, addImage, removeImage, clear }
+  // Memoized so the returned object's identity is stable across renders
+  // when nothing changed. Callers commonly list this hook's return in a
+  // `useCallback` dep array (Composer's `send`, drag-drop handlers); a
+  // fresh object literal per render would defeat that memo and cascade
+  // into `handleSend` → Composer's `React.memo`. `images`/`error` come
+  // from `useState` (only mutate on real changes); the three action
+  // callbacks are `useCallback([])`-stable — so the memo returns the
+  // same reference until the user pastes / removes / clears.
+  return useMemo(
+    () => ({ images, error, addImage, removeImage, clear }),
+    [images, error, addImage, removeImage, clear],
+  )
 }
 
 function getImageDimensions(url: string): Promise<{ width: number; height: number }> {

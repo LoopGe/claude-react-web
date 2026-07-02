@@ -136,9 +136,32 @@
   100% { opacity: 0; filter: blur(10px); transform: scale(0.96); }
 }
 
-/* "Clearing…" veil — centered over the transcript. Fades in shortly after
-   the blur-fade starts, fades out to reveal the post-clear empty state. */
-.chat-clearing-veil {
+@media (prefers-reduced-motion: reduce) {
+  .chat-messages.chat-messages-clearing {
+    animation: none;
+    opacity: 0;
+  }
+}
+/* Slot-level clearing veil — survives the X→Y id-swap that `/clear`
+   performs, so the fade-in → swap-under-veil → fade-out animation can
+   play across a ChatPanel remount. See PanelSlot.tsx. */
+.panel-slot {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+/* .chat-panel was previously a direct grid child of .main-body (grid rows
+   stretch items). Now .panel-slot is the grid child, and .chat-panel sits
+   in a flex column without a flex-grow of its own — so under strict flex
+   it would be content-sized on the main axis, collapsing chat-panel-body
+   (`flex: 1`) at empty sessions. Force it to fill the slot. */
+.panel-slot > .chat-panel {
+  flex: 1;
+  min-height: 0;
+}
+.panel-clearing-veil {
   position: absolute;
   inset: 0;
   z-index: 3;
@@ -149,42 +172,31 @@
   color: var(--fg-muted);
   font-size: var(--fs-sm);
   pointer-events: none;
-  animation: clear-veil-in var(--motion-duration-base) var(--motion-ease-enter) both;
-  animation-delay: var(--motion-duration-fast);
+  background: transparent;
+  animation: panel-clear-veil-in var(--motion-duration-base) var(--motion-ease-enter) both;
 }
-.chat-clearing-veil.exiting {
-  animation: clear-veil-out var(--motion-duration-base) var(--motion-ease-exit) both;
-  animation-delay: 0s;
+.panel-clearing-veil[data-phase='fading-out'] {
+  animation: panel-clear-veil-out var(--motion-duration-base) var(--motion-ease-exit) both;
 }
-.chat-clearing-spinner {
+.panel-clearing-spinner {
   width: 14px;
   height: 14px;
   border-radius: 50%;
   border: 2px solid var(--border);
   border-top-color: var(--accent);
-  animation: clear-spinner 0.7s linear infinite;
+  animation: panel-clear-spinner 0.7s linear infinite;
 }
-@keyframes clear-veil-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-@keyframes clear-veil-out {
-  from { opacity: 1; }
-  to   { opacity: 0; }
-}
-@keyframes clear-spinner {
-  to { transform: rotate(360deg); }
-}
+@keyframes panel-clear-veil-in  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes panel-clear-veil-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes panel-clear-spinner  { to { transform: rotate(360deg); } }
+
 @media (prefers-reduced-motion: reduce) {
-  .chat-messages.chat-messages-clearing {
+  .panel-clearing-veil,
+  .panel-clearing-veil[data-phase='fading-out'] {
     animation: none;
-    opacity: 0;
+    opacity: 1;
   }
-  .chat-clearing-veil,
-  .chat-clearing-veil.exiting {
-    animation: none;
-  }
-  .chat-clearing-spinner {
+  .panel-clearing-spinner {
     animation: none;
   }
 }
@@ -245,14 +257,16 @@
   flex-direction: column;
   padding-left: var(--chat-reading-inset);
   padding-right: var(--chat-reading-inset);
-  /* Vertical padding doubles as breathing room for the streaming bubble's
-     accent halo (streaming-breathe): .chat-streaming-region has
-     overflow:hidden (the entrance/exit max-height wipe needs it), so the
-     glow is clipped at the region's padding box. The top/bottom padding
-     here is what gives the glow space to render — especially at the
-     bottom, which used to read as "no glow" because the halo had no room
-     below the bubble. Keep both ≥ the halo's outer blur. */
-  padding-top: 12px;
+  /* Top padding is 0 so the streaming bubble's visible top edge sits at the
+     same 14px rhythm below the previous message as any two settled messages
+     (the last settled item carries padding-bottom:14px). Adding top padding
+     here pushed the live bubble ~30px down, reading as a visual "step" the
+     moment streaming began. The top outer glow is therefore clipped by
+     .chat-streaming-region's overflow:hidden, but the inset rim still carries
+     the breath on the bubble's top edge. Bottom padding stays to give the
+     halo room below the bubble (where it used to read as "no glow"); keep it
+     ≥ the halo's outer blur. */
+  padding-top: 0;
   padding-bottom: 18px;
   pointer-events: none;
 }
@@ -1009,7 +1023,7 @@
   border-bottom-left-radius: 3px;
   background: color-mix(in srgb, var(--bg) 75%, transparent);
   backdrop-filter: var(--glass-blur);
-  margin: 4px 0;
+  margin: 0 0 4px;
   /* Dynamic breathing glow: a slow accent halo + inset rim that pulses to
      signal the live turn. box-shadow is animated (not layout), so this is
      cheap on the streaming hot path — no reflow, just a composited shadow

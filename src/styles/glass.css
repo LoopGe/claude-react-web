@@ -200,7 +200,6 @@ html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .appearan
 }
 
 /* Restore circular spinners (rotation on a square is illegible). */
-[data-skin="hc"] .chat-clearing-spinner,
 [data-skin="hc"] .composer-send-spinner,
 [data-skin="hc"] .msg-sending-spinner,
 [data-skin="hc"] .app-loading-spinner,

@@ -45,6 +45,7 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "verify": "npm run typecheck && npm run lint && npm test && npm run build",
     "prepublishOnly": "npm run build",
     "analyze:bundle": "npm run build:client && node scripts/analyze-bundle.mjs"
   },

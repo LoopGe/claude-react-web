@@ -52,12 +52,20 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   const pastedImages = usePastedImages()
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // Destructure the stable callbacks off `stream` so `handleSend`'s dep
+  // list can name them directly. Depending on bare `stream` would rebuild
+  // the callback every time the hook's return identity churns (e.g. on
+  // each `streamingContent` token), which defeats Composer memoization
+  // downstream. These three are `useCallback([store])`-stable so listing
+  // them individually keeps `handleSend` stable for a session's lifetime.
+  const { insertUserMessage, ackUserMessage, rollbackUserMessage } = stream
+
   const handleSend = useCallback(async () => {
     const text = input.trim()
     if ((!text && pastedImages.images.length === 0) || sending) return
     setSending(true)
     // Optimistic insert — message appears immediately in the transcript.
-    const pendingId = stream.insertUserMessage(text || '(image)')
+    const pendingId = insertUserMessage(text || '(image)')
     try {
       let res: SendMessageResponse
       if (pastedImages.images.length > 0) {
@@ -70,16 +78,16 @@ export const SideChatDrawer = memo(function SideChatDrawer({
       } else {
         res = await api.post<SendMessageResponse>(`/sessions/${session.id}/messages`, { text })
       }
-      stream.ackUserMessage(pendingId, res.message?.uuid ?? '', res.message?.receivedAt)
+      ackUserMessage(pendingId, res.message?.uuid ?? '', res.message?.receivedAt)
       setInput('')
       pastedImages.clear()
     } catch (e) {
       console.warn('Side Chat send failed:', (e as Error).message)
-      stream.rollbackUserMessage(pendingId)
+      rollbackUserMessage(pendingId)
     } finally {
       setSending(false)
     }
-  }, [input, sending, session.id, stream, pastedImages])
+  }, [input, sending, session.id, insertUserMessage, ackUserMessage, rollbackUserMessage, pastedImages])
 
   const handleInterrupt = useCallback(async () => {
     try { await api.post(`/sessions/${session.id}/interrupt`, {}) } catch { /* */ }
