@@ -663,6 +663,60 @@ describe('MessageList', () => {
     })
   })
 
+  it('plays the msg-enter entrance animation on a live tail arrival', () => {
+    // Reproduction for the "new-message pop-in animation is gone" regression.
+    // The gate arms only for a small batch of previously-unseen ids appended
+    // at the tail of a non-empty list, each stamped with a recent receivedAt.
+    const first = makeMsg('assistant', {
+      uuid: 'u-1',
+      message: { content: [{ type: 'text', text: 'first' }] },
+      receivedAt: Date.now(),
+    })
+    const items = (msgs: SdkMessage[]): TranscriptItem[] =>
+      msgs.map((msg, i) => ({
+        id: typeof msg.uuid === 'string' ? msg.uuid : `item-${i}`,
+        msg,
+        plainText: null,
+        isCompactSummary: false,
+        hiddenByDefault: false,
+        receivedAt: typeof msg.receivedAt === 'number' ? msg.receivedAt : undefined,
+      }))
+
+    const { container, rerender } = render(
+      <MessageList items={items([first] as SdkMessage[])} replayReady />,
+    )
+    // Sanity: the initial single-message render has no entrance class on the
+    // first item (it was armed+consumed on the very first render, then the
+    // class stays until animationend; we only care about the tail-append).
+    const second = makeMsg('assistant', {
+      uuid: 'u-2',
+      message: { content: [{ type: 'text', text: 'second' }] },
+      receivedAt: Date.now(),
+    })
+    rerender(
+      <MessageList items={items([first, second] as SdkMessage[])} replayReady />,
+    )
+
+    // The newly-appended tail row must carry the entrance-animation class.
+    let wrappers = container.querySelectorAll('.virtuoso-item-wrapper')
+    const tail = wrappers[wrappers.length - 1]
+    expect(tail?.classList.contains('msg-enter')).toBe(true)
+
+    // Regression guard: a live turn re-renders the row within milliseconds of
+    // arrival (streaming state, `working` flip, sibling appends). The entrance
+    // class must SURVIVE that re-render so the 240ms CSS animation can play —
+    // the previous "delete the armed flag on first render" logic stripped the
+    // class on the very next render, cancelling the animation before it was
+    // ever visible. Re-render with an unchanged item list (mirroring a
+    // streaming-token re-render that doesn't grow the data array) and assert
+    // the class is still present.
+    rerender(
+      <MessageList items={items([first, second] as SdkMessage[])} replayReady />,
+    )
+    wrappers = container.querySelectorAll('.virtuoso-item-wrapper')
+    expect(wrappers[wrappers.length - 1]?.classList.contains('msg-enter')).toBe(true)
+  })
+
   it('animates streaming content out before unmounting it', () => {
     vi.useFakeTimers()
     const msgs = [

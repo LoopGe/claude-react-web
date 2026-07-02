@@ -639,6 +639,9 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   // from a replayed single-message session (history timestamp is stale).
   const knownIdsRef = useRef<Set<string>>(new Set())
   const enterIdsRef = useRef<Set<string>>(new Set())
+  // ids for which the post-animation cleanup timeout has already been
+  // scheduled, so we schedule exactly one per armed row (see enterNodeRef).
+  const enterCleanupScheduledRef = useRef<Set<string>>(new Set())
   const prevLenRef = useRef(0)
   // Tracks the id of the last renderable item so the gate can detect an
   // in-place echo replacement (optimistic id → server uuid at the same
@@ -725,13 +728,39 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   }
   /* eslint-enable react-hooks/refs */
 
-  // Consume an entrance flag exactly once: clear it from the set when the
-  // animation ends and strip the class off the DOM node directly, so a
-  // scroll-driven re-mount of the same row can't replay it.
+  // Consume an entrance flag when the animation ends and strip the class off
+  // the DOM node directly, so the next render and any later scroll-driven
+  // re-mount of the same row can't replay it.
   const handleEnterAnimationEnd = useCallback((e: React.AnimationEvent<HTMLDivElement>) => {
     const id = e.currentTarget.dataset.enterId
-    if (id) enterIdsRef.current.delete(id)
+    if (id) {
+      enterIdsRef.current.delete(id)
+      enterCleanupScheduledRef.current.delete(id)
+    }
     e.currentTarget.classList.remove('msg-enter')
+  }, [])
+
+  // Ref callback attached to the entering row's wrapper on mount. Schedules a
+  // single fallback timeout that clears the armed flag after the animation
+  // duration (+ buffer). This is the safety net for the case the original
+  // "delete on first render" logic was trying to plug: if Virtuoso unmounts
+  // the row before `animationend` fires (the user scrolled it out of the
+  // viewport mid-animation), the event never fires and the flag would linger
+  // in `enterIdsRef` — so a later scroll-back remount would replay the
+  // entrance. The timeout clears the flag so that remount renders without the
+  // class. (The common path — row stays mounted — clears via animationend,
+  // which fires within ~240ms, well under the timeout.)
+  const ENTER_CLEANUP_MS = 400
+  const enterNodeRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node) return
+    const id = node.dataset.enterId
+    if (!id) return
+    if (enterCleanupScheduledRef.current.has(id)) return
+    enterCleanupScheduledRef.current.add(id)
+    setTimeout(() => {
+      enterIdsRef.current.delete(id)
+      enterCleanupScheduledRef.current.delete(id)
+    }, ENTER_CLEANUP_MS)
   }, [])
 
   const handleTranscriptRevealEnd = useCallback((e: React.AnimationEvent<HTMLDivElement>) => {
@@ -1191,19 +1220,19 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
       item.itemIndex === searchActiveMsgIdx
     const activeMatchInItem = isActiveItem ? searchActiveMatchInItem : undefined
     // One-shot entrance animation for genuinely-new arrivals. The flag is
-    // armed in the gate block above. Consume it HERE — delete from the ref
-    // the moment we read it — so the class is applied to exactly one render
-    // of this row. Relying solely on `animationend` to clear the flag (the
-    // old approach) leaked: if Virtuoso unmounted the item before the
-    // animation finished (user scrolled it out of the viewport), the event
-    // never fired, the id stayed in the ref, and scrolling back remounted
-    // the row with `msg-enter` still set — replaying the blur+rise entrance
-    // every time the row re-entered the viewport. Deleting on first render
-    // guarantees a re-mount renders without the class regardless of whether
-    // `animationend` ever ran. `onAnimationEnd` below is kept only to strip
-    // the DOM class promptly (a no-op on the ref after this point).
-    const isEntering = enterIdsRef.current.delete(item.id) || enterIdsRef.current.has(item.id)
-    if (isEntering) enterIdsRef.current.delete(item.id)
+    // armed in the gate block above. Unlike the previous "delete on first
+    // render" approach, we KEEP the flag (and thus the `msg-enter` class)
+    // applied across re-renders until the CSS animation ends. A live turn
+    // re-renders the row within milliseconds of arrival; deleting the flag on
+    // the first render stripped the class on the very next render, cancelling
+    // the 240ms animation before it was ever visible (animationend never
+    // fired). Keeping the class on the same DOM node lets the CSS animation
+    // play exactly once — React reconciling an identical className string
+    // doesn't touch the DOM, so the running animation is uninterrupted. The
+    // flag is cleared in handleEnterAnimationEnd (animationend) and, as a
+    // fallback for rows that unmount before animationend fires, by a timeout
+    // scheduled on mount — so a scroll-driven remount later can't replay it.
+    const isEntering = enterIdsRef.current.has(item.id)
     const className = [
       'virtuoso-item-wrapper',
       item.id === firstItemId ? 'transcript-first-item' : '',
@@ -1214,6 +1243,7 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
       <div
         className={className}
         data-enter-id={isEntering ? item.id : undefined}
+        ref={isEntering ? enterNodeRef : undefined}
         onAnimationEnd={isEntering ? handleEnterAnimationEnd : undefined}
       >
         <MessageView
@@ -1230,7 +1260,7 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
         />
       </div>
     )
-  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, handleEnterAnimationEnd, working, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash])
+  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, handleEnterAnimationEnd, enterNodeRef, working, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash])
 
   /* eslint-disable react-hooks/refs -- the pending reveal flag must commit in
      the same render as the ready transcript so the first visible frame can be
