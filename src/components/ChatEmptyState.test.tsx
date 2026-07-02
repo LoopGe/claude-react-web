@@ -47,13 +47,14 @@ describe('ChatEmptyState easter-egg trigger', () => {
   })
 
   it('applies the bounce class on click and re-triggers on a rapid second click', () => {
-    // NOTE: jsdom in this project has no AnimationEvent constructor, so
-    // React's onAnimationEnd (which clears the bounce class in the real
-    // browser) cannot be exercised through fireEvent.animationEnd here.
-    // We assert the testable half: a click applies the bounce class, and a
-    // second rapid click re-triggers it (the class stays present so the
-    // CSS animation restarts). The animationEnd → clear path is exercised
-    // manually in the browser.
+    // The bounce class is managed imperatively (remove → forced reflow →
+    // re-add) so each click reliably restarts the CSS animation in a real
+    // browser. NOTE: jsdom in this project has no AnimationEvent constructor,
+    // so React's onAnimationEnd (which clears the bounce class) cannot be
+    // exercised through fireEvent.animationEnd here — that clear path is
+    // verified manually in the browser. We assert the testable half: a click
+    // applies the bounce class, and a second rapid click keeps it present
+    // (the imperative remove/reflow/add cycle re-triggers the animation).
     render(<ChatEmptyState onUnlockEasterEgg={vi.fn()} />)
     const icon = document.querySelector('.chat-empty-icon') as HTMLElement
     fireEvent.click(icon)
