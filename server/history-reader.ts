@@ -27,9 +27,14 @@
 //             the live shape: a user line containing a tool_result block
 //             gets parent_tool_use_id = that tool_use_id; real prompts and
 //             assistant messages get null.
-//   - receivedAt: intentionally omitte?. The frontend treats absent
-//             receivedAt as "disk-restored" and hides the timestamp header
-//             (see src/session-store/normalize.ts).
+//   - receivedAt: carried from the SDK's on-disk `timestamp` (ISO) as epoch
+//             ms, so disk-restored history shows its original wall-clock time
+//             instead of a blank timestamp header. A top-level user prompt on
+//             disk was already consumed by the SDK (it's part of the persisted
+//             transcript), so we also stamp `consumedAt` — otherwise
+//             deriveDeliveryStatus would flag every historical prompt as
+//             'queued'. tool_result-bearing user frames are never queued
+//             (parent != null), so they only get receivedAt.
 
 import { readFile, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -182,6 +187,13 @@ function isRenderable(o: RawLine): boolean {
 /** Normalize a raw JSONL line into the live SDKMessage wire shape. */
 function normalize(o: RawLine, sessionId: string): unknown {
   const parent = o.type === 'user' ? toolResultParentId(o.message?.content) : null
+  // The SDK writes an ISO `timestamp` on every persisted line. Carry it as
+  // receivedAt (epoch ms) so disk-restored history (resume historySeed +
+  // scroll-up loadOlder) shows its original wall-clock time. NaN for
+  // corrupt/old lines that lack it — those keep the old "no timestamp"
+  // rendering via toTranscriptItem's undefined fallback.
+  const ts = typeof o.timestamp === 'string' ? Date.parse(o.timestamp) : NaN
+  const hasTs = Number.isFinite(ts)
   return {
     type: o.type,
     ...(typeof o.subtype === 'string' ? { subtype: o.subtype } : {}),
@@ -189,6 +201,10 @@ function normalize(o: RawLine, sessionId: string): unknown {
     session_id: o.session_id ?? sessionId,
     message: o.message,
     parent_tool_use_id: parent,
+    ...(hasTs ? { receivedAt: ts } : {}),
+    // A top-level prompt on disk was already consumed by the SDK; stamp
+    // consumedAt so it isn't mislabelled 'queued' by deriveDeliveryStatus.
+    ...(hasTs && parent == null && o.type === 'user' ? { consumedAt: ts } : {}),
   }
 }
 

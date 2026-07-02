@@ -117,7 +117,22 @@ describe('paginateJsonl — normalization', () => {
     expect((page.messages[0] as { session_id: string }).session_id).toBe(SID)
   })
 
-  it('does NOT include receivedAt (disk-restored history hides the timestamp)', () => {
+  it('carries receivedAt from the on-disk timestamp so history shows its time', () => {
+    const raw = jsonl([
+      { type: 'user', uuid: 'u1', timestamp: '2026-06-24T08:34:19.057Z', message: { role: 'user', content: 'x' } },
+      { type: 'assistant', uuid: 'a1', timestamp: '2026-06-24T08:34:23.548Z', message: { role: 'assistant', content: [] } },
+    ])
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    const [u, a] = page.messages as Array<{ receivedAt?: number; consumedAt?: number }>
+    expect(u.receivedAt).toBe(Date.parse('2026-06-24T08:34:19.057Z'))
+    // A top-level prompt on disk was already consumed by the SDK — stamp
+    // consumedAt so it isn't mislabelled 'queued'.
+    expect(u.consumedAt).toBe(u.receivedAt)
+    expect(a.receivedAt).toBe(Date.parse('2026-06-24T08:34:23.548Z'))
+    expect(a.consumedAt).toBeUndefined()
+  })
+
+  it('omits receivedAt when the disk line has no timestamp', () => {
     const raw = jsonl([{ type: 'user', uuid: 'u1', message: { role: 'user', content: 'x' } }])
     const page = paginateJsonl(raw, SID, { limit: 100 })
     expect('receivedAt' in (page.messages[0] as object)).toBe(false)
