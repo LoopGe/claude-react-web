@@ -80,7 +80,7 @@ function mixRgb(a: string, b: string, t: number): string {
   return `rgb(${Math.round(lerp(r1, r2, t))},${Math.round(lerp(g1, g2, t))},${Math.round(lerp(b1, b2, t))})`
 }
 
-// --- WebAudio (crash sound only; jump beep is added in Task 6 with input) ---
+// --- WebAudio (crash sound + jump beep) ---
 type AudioRef = { current: AudioContext | null }
 
 function ensureAudioContext(audioRef: AudioRef): AudioContext | null {
@@ -430,7 +430,7 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
   // keyboard: Space/Up to jump, Escape to exit
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.code === 'Space' || e.code === 'ArrowUp' || e.key === 'ArrowUp') {
+      if (e.code === 'Space' || e.code === 'ArrowUp' || e.key === 'ArrowUp' || e.key === ' ') {
         e.preventDefault()
         jumpRef.current()
       } else if (e.key === 'Escape') {
@@ -445,7 +445,7 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
   // auto-pause when the user clicks outside this panel or the window loses focus
   useEffect(() => {
     const root = canvasRef.current
-    const panel = root?.closest('.chat-panel') as Element | null
+    const panel = root?.closest('.chat-panel')
     const onMouseDown = (e: MouseEvent) => {
       if (stateRef.current.status !== 'running') return
       if (panel && !panel.contains(e.target as Node)) {
