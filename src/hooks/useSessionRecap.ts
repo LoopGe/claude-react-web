@@ -65,8 +65,12 @@ export interface UseSessionRecapApi {
  * cleared and a new one scheduled. So a user starting to type
  * cancels the pending recap before it fires; a generation result
  * landing flips the recap status to 'ready' and clears the timer.
+ *
+ * `autoRecapEnabled` (default true) gates ONLY the automatic idle-fired
+ * fetch above. Manual `refresh()` is never gated, so Alt+R still works
+ * when the user has turned auto-recap off via Preferences.
  */
-export function useSessionRecap(session: SessionInfo): UseSessionRecapApi {
+export function useSessionRecap(session: SessionInfo, autoRecapEnabled = true): UseSessionRecapApi {
   const fetchAbortRef = useRef<AbortController | null>(null)
 
   const doFetch = useCallback(() => {
@@ -94,6 +98,10 @@ export function useSessionRecap(session: SessionInfo): UseSessionRecapApi {
   // (schedule a timer) sits at the bottom and reads top-to-bottom:
   // requirements first, then the action.
   useEffect(() => {
+    // Auto-recap disabled by the user (Preferences toggle). Only the
+    // automatic idle-triggered fetch is gated — manual refresh (Alt+R)
+    // still works regardless.
+    if (!autoRecapEnabled) return
     // Primary gate: only the 'idle' phase is a safe moment to
     // summarise. The server enforces this too (returns 409 otherwise),
     // but gating here avoids a wasted round-trip and a transient
@@ -118,7 +126,7 @@ export function useSessionRecap(session: SessionInfo): UseSessionRecapApi {
       doFetch()
     }, remaining)
     return () => clearTimeout(timer)
-  }, [session.phase, session.lastTurnAt, session.messageCount, session.recap, doFetch])
+  }, [session.phase, session.lastTurnAt, session.messageCount, session.recap, doFetch, autoRecapEnabled])
 
   // Cancel any in-flight fetch on unmount so a stale response doesn't
   // race against the next mounted hook.

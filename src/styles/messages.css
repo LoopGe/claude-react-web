@@ -443,6 +443,72 @@
 .settings-field label { font-size: 12px; color: var(--fg-muted); }
 .settings-field .hint { font-size: 12px; color: var(--fg-muted); }
 
+/* Boolean preference toggle row (Preferences section). A custom checkbox
+   paired with a label, sitting on its own line above an optional .hint. */
+.settings-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--fg);
+  cursor: pointer;
+  user-select: none;
+}
+.settings-toggle input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 2px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-elev-1);
+  cursor: pointer;
+  flex-shrink: 0;
+  position: relative;
+  transition: border-color var(--motion-duration-fast) var(--motion-ease-standard),
+              background var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.settings-toggle input[type="checkbox"]:hover {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+.settings-toggle input[type="checkbox"]:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.settings-toggle input[type="checkbox"]:checked::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(45deg);
+  width: 4px;
+  height: 8px;
+  border: solid var(--bg);
+  border-width: 0 2px 2px 0;
+}
+.settings-toggle input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* "Reset (inherit global)" link inside a Preferences .hint — clears the
+   per-session override so the session re-inherits the global default. */
+.settings-reset-link {
+  background: none;
+  border: none;
+  padding: 0 0 0 4px;
+  margin: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.settings-reset-link:hover { opacity: 0.8; }
+.settings-reset-link:disabled { opacity: 0.5; cursor: default; text-decoration: none; }
+
 /* Flag settings editor tabs */
 .fse-tabs {
   display: flex;

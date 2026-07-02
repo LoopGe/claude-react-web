@@ -263,6 +263,15 @@ export interface Session {
    *     and the global policy is re-applied. Pin-and-forget is not the
    *     intended UX — overrides are scoped to "the current run". */
   skillOverride?: SessionSkillOverride
+  /** Per-session override for the pinned "current question" header.
+   *  Undefined = inherit the global config default; a boolean pins it.
+   *  Persisted via SessionMeta and mirrored into SessionInfo. Pure UI
+   *  pref — no SDK applyFlagSettings call. */
+  showPinnedUserMessage?: boolean
+  /** Per-session override for idle auto-recap. Undefined = inherit the
+   *  global config default; a boolean pins it. Persisted via SessionMeta
+   *  and mirrored into SessionInfo. Pure UI pref — no SDK call. */
+  autoRecap?: boolean
 }
 
 /** End every subscriber in a collection and clear it. Works on both

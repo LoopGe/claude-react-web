@@ -24,6 +24,7 @@ const ResumeSessionDialog = lazy(() =>
   import('./session-list/ResumeSessionDialog').then((m) => ({ default: m.ResumeSessionDialog })),
 )
 import { RecapWindow } from './RecapWindow'
+import { PinnedUserMessage } from './PinnedUserMessage'
 import { api } from '../hooks/useApi'
 import { useAttachments } from '../hooks/useAttachments'
 import { useChatStream } from '../hooks/useChatStream'
@@ -136,6 +137,11 @@ interface Props {
   /** Whether this panel is the currently focused (active) one. Used by
    *  useSessionRecap to track last-viewed timestamps. */
   focused?: boolean
+  /** Global UI-pref defaults (server-backed). Effective values are
+   *  `session.<field> ?? globalPrefs.<field>` — a per-session override
+   *  wins, otherwise the global default applies. Forwarded to
+   *  <SettingsPanel> for the override UI. */
+  globalPrefs: { showPinnedUserMessage: boolean; autoRecap: boolean }
   /** True while App is playing the /clear fade-in on this panel. Combined
    *  with the local `clearing` state (which serves the SDK in-band cleared
    *  path) via `effectiveClearing = clearingProp || localClearing`. */
@@ -220,7 +226,7 @@ export const Chat = memo(function Chat({
   settingsOpen, onCloseSettings,
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
   recapOpen, onCloseRecap,
-  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, onRegisterInjectInput,
+  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, globalPrefs, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, onRegisterInjectInput,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
 }: Props) {
@@ -241,6 +247,28 @@ export const Chat = memo(function Chat({
   const settingsPresence = useExitPresence(!!settingsOpen)
   const gitPresence = useExitPresence(!!gitPanelOpen)
   const recapPresence = useExitPresence(!!recapOpen)
+  // Effective UI prefs: a per-session override (session.<field>) wins,
+  // otherwise the global default (globalPrefs.<field>, server-backed) applies.
+  // Computed inline so a SettingsPanel override or a global-settings save
+  // re-renders this panel with the new effective value immediately.
+  const effectiveShowPinned = session.showPinnedUserMessage ?? globalPrefs.showPinnedUserMessage
+  const effectiveAutoRecap = session.autoRecap ?? globalPrefs.autoRecap
+  // Pinned "current question" header — the user message of the turn in view,
+  // shown when it has scrolled above the viewport. `pinnedUserMsg` drives
+  // presence (open/exit); `pinnedText` retains the last text through the exit
+  // animation so the bar can fade out instead of snapping. Presence is also
+  // gated by the effective `showPinnedUserMessage` pref so disabling it fades
+  // the bar out.
+  const [pinnedUserMsg, setPinnedUserMsg] = useState<{ id: string; text: string } | null>(null)
+  const [pinnedText, setPinnedText] = useState('')
+  const pinnedPresence = useExitPresence(effectiveShowPinned && !!pinnedUserMsg)
+  const handlePinnedUserMessageChange = useCallback(
+    (info: { id: string; text: string } | null) => {
+      if (info) setPinnedText(info.text)
+      setPinnedUserMsg(info)
+    },
+    [],
+  )
   // In-panel resume picker (variant="panel"). Only renders when this panel
   // is the resume target; the global / empty-state flow uses the App-root
   // modal instead. Mounted conditionally like the git overlay, so the
@@ -866,7 +894,7 @@ export const Chat = memo(function Chat({
   // covering it. The recap object lives on session.recap (broadcast via
   // session-recap-update / session-update); we render it as a floating
   // window at the top of the chat area (see <RecapWindow> below).
-  const recap = useSessionRecap(session)
+  const recap = useSessionRecap(session, effectiveAutoRecap)
 
   // Composer snippets are a single GLOBAL instance owned by App and passed
   // down via props (`snippets`, `onOpenSnippetsManager`,
@@ -1362,6 +1390,7 @@ export const Chat = memo(function Chat({
           onSwitchModel={handleSwitchModel}
           onAbortBash={abortBashCommand}
           onVisibleRangeChange={handleVisibleRangeChange}
+          onPinnedUserMessageChange={handlePinnedUserMessageChange}
           cwd={session.cwd}
         />
         </div>
@@ -1492,6 +1521,7 @@ export const Chat = memo(function Chat({
             <SettingsPanel
               key={session.id}
               session={session}
+              globalPrefs={globalPrefs}
               onClose={() => onCloseSettings?.()}
               onSessionUpdate={onSessionUpdate}
               commands={commands}
@@ -1551,18 +1581,36 @@ export const Chat = memo(function Chat({
         </Suspense>
       )}
 
-      {/* Floating recap window — non-modal, top-anchored, dismissible.
-          `recapPresence` keeps it mounted through the exit animation. Only
-          render when a recap exists; the open/closed state is owned by
-          ChatPanel (recapOpen) so the header reopen button stays in sync. */}
-      {recapPresence.shouldRender && session.recap && (
-        <RecapWindow
-          recap={session.recap}
-          isExiting={recapPresence.isExiting}
-          clearing={effectiveClearing}
-          onClose={() => onCloseRecap?.()}
-        />
-      )}
+      {/* Top-anchored overlay stack — non-modal, dismissible. Holds the
+          session recap (when open) and the pinned "current question" header
+          (when the user message of the turn in view has scrolled out of the
+          viewport), stacked vertically: recap on top, pinned question
+          beneath. The stack carries the absolute positioning + a 45%
+          max-height cap (resolves against .chat's definite height), so
+          RecapWindow drops its own absolute positioning and becomes a flex
+          child; its body already scrolls, so the cap distributes gracefully
+          when both children are present. `pointer-events:none` on the stack
+          lets clicks fall through to the transcript where neither child is;
+          each child re-enables pointer-events. */}
+      {(recapPresence.shouldRender && session.recap) || pinnedPresence.shouldRender ? (
+        <div className="chat-top-stack">
+          {recapPresence.shouldRender && session.recap && (
+            <RecapWindow
+              recap={session.recap}
+              isExiting={recapPresence.isExiting}
+              clearing={effectiveClearing}
+              onClose={() => onCloseRecap?.()}
+            />
+          )}
+          {pinnedPresence.shouldRender && (
+            <PinnedUserMessage
+              text={pinnedText}
+              isExiting={pinnedPresence.isExiting}
+              onClick={() => scrollNavRef.current?.('prev')}
+            />
+          )}
+        </div>
+      ) : null}
 
       {subagentStack.length > 0 && (
         <SubagentProvider value={subagentCtxValue}>

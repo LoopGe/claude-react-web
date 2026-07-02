@@ -161,6 +161,14 @@ export function App() {
   )
   const [defaults, setDefaults] = useState<Defaults>({})
   const [serverModels, setServerModels] = useState<string[]>([])
+  /** Global UI-pref defaults (server-backed, config.json). Sessions without
+   *  an explicit per-session override inherit these. Refreshed live whenever
+   *  the global settings modal saves (handleGlobalSettingsSaved →
+   *  refreshConfigResponse). Defaults to ON so the features are visible
+   *  before the first /config fetch lands. */
+  const [globalPrefs, setGlobalPrefs] = useState<{ showPinnedUserMessage: boolean; autoRecap: boolean }>(
+    { showPinnedUserMessage: true, autoRecap: true },
+  )
   const {
     settingsOpenFor,
     setSettingsOpenFor,
@@ -360,6 +368,10 @@ export function App() {
         if (r.models?.length) setServerModels(r.models)
         if (r.maxOpenPanels != null) setServerMaxOpen(r.maxOpenPanels)
         if (r.maxUploadBytes != null) setMaxUploadBytes(r.maxUploadBytes)
+        setGlobalPrefs({
+          showPinnedUserMessage: r.showPinnedUserMessage ?? true,
+          autoRecap: r.autoRecap ?? true,
+        })
       })
       .catch(() => setIsConfigured(true))
   }, [])
@@ -2668,6 +2680,10 @@ export function App() {
     setDefaults(r.defaults)
     if (r.models?.length) setServerModels(r.models)
     if (r.maxOpenPanels != null) setServerMaxOpen(r.maxOpenPanels)
+    setGlobalPrefs({
+      showPinnedUserMessage: r.showPinnedUserMessage ?? true,
+      autoRecap: r.autoRecap ?? true,
+    })
   }, [])
 
   const handleConfigured = useCallback(
@@ -2984,6 +3000,7 @@ export function App() {
                     <ChatPanel
                       session={s}
                       focused={s.id === focusedId}
+                      globalPrefs={globalPrefs}
                       clearing={clearingPhase === 'fading-in'}
                       hasUnread={!!unread[s.id]}
                       slot={i + 1}

@@ -64,6 +64,14 @@ interface ConfigFile {
   enabledSkills: string[]
   autoClassifierModel: string
   autoClassifierTimeout: number
+  /** Global default for the pinned "current question" header. Per-session
+   *  overrides (SessionMeta.showPinnedUserMessage) take priority; sessions
+   *  without an override inherit this value. */
+  showPinnedUserMessage: boolean
+  /** Global default for auto-generating a session recap when idle. Per-session
+   *  overrides (SessionMeta.autoRecap) take priority; sessions without an
+   *  override inherit this value. Manual recap (Alt+R) is never gated. */
+  autoRecap: boolean
 }
 
 export interface ServerConfig {
@@ -95,6 +103,12 @@ export interface ServerConfig {
   readonly autoClassifierModel: string
   /** Timeout (ms) for classifier API calls. */
   readonly autoClassifierTimeout: number
+  /** Global default for the pinned "current question" header. Sessions
+   *  without an explicit override inherit this. */
+  readonly showPinnedUserMessage: boolean
+  /** Global default for idle auto-recap. Sessions without an explicit
+   *  override inherit this. */
+  readonly autoRecap: boolean
 }
 
 /** Hardcoded defaults. Captured as its own constant so applyParsedConfig
@@ -124,6 +138,8 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   enabledSkills: Object.freeze([]),
   autoClassifierModel: 'claude-haiku-4-5-20251001',
   autoClassifierTimeout: 5000,
+  showPinnedUserMessage: true,
+  autoRecap: true,
 })
 
 /** Current server config. Frozen after loadConfig() dreads are safe,
@@ -306,6 +322,14 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): v
     ;(merged as { autoClassifierTimeout: number }).autoClassifierTimeout = Math.round(file_.autoClassifierTimeout)
   }
 
+  if (typeof file_.showPinnedUserMessage === 'boolean') {
+    ;(merged as { showPinnedUserMessage: boolean }).showPinnedUserMessage = file_.showPinnedUserMessage
+  }
+
+  if (typeof file_.autoRecap === 'boolean') {
+    ;(merged as { autoRecap: boolean }).autoRecap = file_.autoRecap
+  }
+
   config = Object.freeze(merged)
 
   // Enable or disable file logging based on the loaded config.
@@ -354,6 +378,8 @@ export const WRITABLE_CONFIG_KEYS = [
   'enabledSkills',
   'autoClassifierModel',
   'autoClassifierTimeout',
+  'showPinnedUserMessage',
+  'autoRecap',
 ] as const
 
 /**

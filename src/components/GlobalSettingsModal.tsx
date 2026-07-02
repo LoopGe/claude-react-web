@@ -143,6 +143,11 @@ export function GlobalSettingsModal({
   const [maxOpenPanels, setMaxOpenPanels] = useState(3)
   const [workingStuckMs, setWorkingStuckMs] = useState(0)
   const [defaultCwd, setDefaultCwd] = useState('')
+  // Global UI-pref defaults (Server tab). Sessions without an explicit
+  // per-session override inherit these. Sent as literal booleans — never
+  // `|| null`, which PUT /config would treat as "delete key".
+  const [showPinnedUserMessage, setShowPinnedUserMessage] = useState(true)
+  const [autoRecap, setAutoRecap] = useState(true)
 
   // Skills tab state
   const [skillLoadMode, setSkillLoadMode] = useState<SkillLoadMode>('default')
@@ -194,6 +199,8 @@ export function GlobalSettingsModal({
         setDefaultCwd(cfg.defaults?.cwd ?? '')
         setSkillLoadMode(cfg.skillLoadMode ?? 'default')
         setEnabledSkills(cfg.enabledSkills ?? [])
+        setShowPinnedUserMessage(cfg.showPinnedUserMessage ?? true)
+        setAutoRecap(cfg.autoRecap ?? true)
       } catch (e) {
         if ((e as Error).name !== 'AbortError') setErr((e as Error).message)
       } finally {
@@ -256,6 +263,10 @@ export function GlobalSettingsModal({
         updateCheckRegistry: updateCheckRegistry.trim() || null,
         skillLoadMode,
         enabledSkills: enabledSkills.length > 0 ? enabledSkills : null,
+        // Literal booleans — PUT /config treats null/'' as "delete key",
+        // so `false` must be sent explicitly to persist a real OFF default.
+        showPinnedUserMessage,
+        autoRecap,
       }
       if (authTokenDirty && authToken.trim()) {
         updates.authToken = authToken.trim()
@@ -468,10 +479,14 @@ export function GlobalSettingsModal({
                   historyCap={historyCap}
                   maxOpenPanels={maxOpenPanels}
                   workingStuckMs={workingStuckMs}
+                  showPinnedUserMessage={showPinnedUserMessage}
+                  autoRecap={autoRecap}
                   onMaxUploadBytesChange={setMaxUploadBytes}
                   onHistoryCapChange={setHistoryCap}
                   onMaxOpenPanelsChange={setMaxOpenPanels}
                   onWorkingStuckMsChange={setWorkingStuckMs}
+                  onShowPinnedUserMessageChange={setShowPinnedUserMessage}
+                  onAutoRecapChange={setAutoRecap}
                 />
               )}
               {tab === 'skills' && (
@@ -737,17 +752,23 @@ function ModelsTab({
 
 function ServerTab({
   maxUploadBytes, historyCap, maxOpenPanels, workingStuckMs,
+  showPinnedUserMessage, autoRecap,
   onMaxUploadBytesChange, onHistoryCapChange, onMaxOpenPanelsChange,
   onWorkingStuckMsChange,
+  onShowPinnedUserMessageChange, onAutoRecapChange,
 }: {
   maxUploadBytes: number
   historyCap: number
   maxOpenPanels: number
   workingStuckMs: number
+  showPinnedUserMessage: boolean
+  autoRecap: boolean
   onMaxUploadBytesChange: (v: number) => void
   onHistoryCapChange: (v: number) => void
   onMaxOpenPanelsChange: (v: number) => void
   onWorkingStuckMsChange: (v: number) => void
+  onShowPinnedUserMessageChange: (v: boolean) => void
+  onAutoRecapChange: (v: boolean) => void
 }) {
   return (
     <>
@@ -780,6 +801,41 @@ function ServerTab({
         onChange={onWorkingStuckMsChange}
         min={0}
       />
+      <div className="settings-section">
+        <h4>Preferences (global defaults)</h4>
+        <span className="hint" style={{ display: 'block', marginBottom: 8 }}>
+          Defaults for every session. Individual sessions can override these in
+          their own Settings panel.
+        </span>
+        <div className="settings-field">
+          <label className="settings-toggle">
+            <input
+              type="checkbox"
+              checked={showPinnedUserMessage}
+              onChange={(e) => onShowPinnedUserMessageChange(e.target.checked)}
+            />
+            <span>Show pinned "current question" header</span>
+          </label>
+          <span className="hint">
+            Pins the user message of the turn in view at the top of the chat
+            when it scrolls out of sight.
+          </span>
+        </div>
+        <div className="settings-field">
+          <label className="settings-toggle">
+            <input
+              type="checkbox"
+              checked={autoRecap}
+              onChange={(e) => onAutoRecapChange(e.target.checked)}
+            />
+            <span>Auto-generate session recap</span>
+          </label>
+          <span className="hint">
+            Automatically produces a session summary after the conversation has
+            been idle. Manual recap (Alt+R) still works when this is off.
+          </span>
+        </div>
+      </div>
     </>
   )
 }

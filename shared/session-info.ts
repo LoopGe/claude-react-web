@@ -132,4 +132,14 @@ export interface SessionInfoBase<PM = string> {
    *  skill policies per chat without losing them on the same Query, but
    *  also without surprising state surviving a server restart. */
   skillOverride?: SessionSkillOverride
+  /** Per-session override for the pinned "current question" header.
+   *  Undefined = inherit the global default (config.showPinnedUserMessage);
+   *  a boolean pins this session to that value. Persisted so it survives
+   *  resume / fork / reload. */
+  showPinnedUserMessage?: boolean
+  /** Per-session override for idle auto-recap. Undefined = inherit the
+   *  global default (config.autoRecap); a boolean pins this session to
+   *  that value. Manual recap (Alt+R) is never gated by this. Persisted
+   *  so it survives resume / fork / reload. */
+  autoRecap?: boolean
 }

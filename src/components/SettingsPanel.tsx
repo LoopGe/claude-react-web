@@ -35,6 +35,10 @@ type SettingsTab = 'general' | 'context' | 'hooks' | 'plugins' | 'mcp'
 
 interface Props {
   session: SessionInfo
+  /** Global UI-pref defaults (server-backed). Used to compute the effective
+   *  value shown by each pref checkbox (`session.<field> ?? global`) and to
+   *  label the "Inheriting global (ON/OFF)" hint when no override is set. */
+  globalPrefs: { showPinnedUserMessage: boolean; autoRecap: boolean }
   onClose: () => void
   onSessionUpdate: (s: SessionInfo) => void
   commands?: SlashCommand[]
@@ -53,7 +57,7 @@ interface Props {
   onSkillsReloaded?: () => void
 }
 
-export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onSessionUpdate, commands = [], agents = [], contextUsage, tabRequest, onPluginsReloaded, onSkillsReloaded }: Props) {
+export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs, onClose, onSessionUpdate, commands = [], agents = [], contextUsage, tabRequest, onPluginsReloaded, onSkillsReloaded }: Props) {
   const [models, setModels] = useState<ModelInfo[]>([])
   const [settingsText, setSettingsText] = useState('{}')
   // Full context-usage breakdown from the (blocking) REST endpoint. Null
@@ -86,6 +90,26 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
   // session panel reads as one long scroll no more — each concern is its
   // own tab (General controls, Context usage, Plugins, MCP servers).
   const [tab, setTab] = useState<SettingsTab>('general')
+
+  // Effective UI prefs: a per-session override wins, else the global default.
+  const effShowPinned = session.showPinnedUserMessage ?? globalPrefs.showPinnedUserMessage
+  const effAutoRecap = session.autoRecap ?? globalPrefs.autoRecap
+  /** POST a per-session pref override. A boolean pins it; `null` clears the
+   *  override so the session re-inherits the global default. No success toast
+   *  — checkbox toggles are too frequent to toast on every change; only
+   *  failures surface. The response carries the updated SessionInfo, which
+   *  onSessionUpdate propagates optimistically (the server's follow-up
+   *  session-update frame confirms). */
+  const changePref = async (
+    partial: { showPinnedUserMessage?: boolean | null; autoRecap?: boolean | null },
+  ) => {
+    try {
+      const r = await api.post<{ session: SessionInfo }>(`/sessions/${session.id}/prefs`, partial)
+      onSessionUpdate(r.session)
+    } catch (e) {
+      toast.error(`Couldn't update preference: ${(e as Error).message}`)
+    }
+  }
 
   // Apply an external deep-link tab request (e.g. the `/mcp` local command).
   // Uses React's "adjust state during render" pattern
@@ -576,6 +600,73 @@ export const SettingsPanel = memo(function SettingsPanel({ session, onClose, onS
         <button className="btn btn-primary settings-apply-btn" onClick={applySettings} disabled={busy || session.terminated}>
           Apply settings
         </button>
+      </div>
+
+      <div className="settings-section">
+        <h4>Preferences</h4>
+        {/* Per-session overrides on top of the global defaults (set in the
+            Global Settings modal). The checkbox reflects the EFFECTIVE value
+            (session override ?? global); toggling writes a per-session
+            override. "Reset" clears the override so the session re-inherits
+            the global default live. */}
+        <div className="settings-field">
+          <label className="settings-toggle">
+            <input
+              type="checkbox"
+              checked={effShowPinned}
+              disabled={busy || session.terminated}
+              onChange={() => void changePref({ showPinnedUserMessage: !effShowPinned })}
+            />
+            <span>Show pinned "current question" header</span>
+          </label>
+          <span className="hint">
+            Pins the user message of the turn in view at the top of the chat
+            when it scrolls out of sight, so you keep context while reading a
+            long reply.{' '}
+            {session.showPinnedUserMessage === undefined
+              ? `Inheriting global (${globalPrefs.showPinnedUserMessage ? 'ON' : 'OFF'}).`
+              : 'Session override.'}
+            {session.showPinnedUserMessage !== undefined && (
+              <button
+                type="button"
+                className="settings-reset-link"
+                disabled={busy || session.terminated}
+                onClick={() => void changePref({ showPinnedUserMessage: null })}
+              >
+                Reset (inherit global)
+              </button>
+            )}
+          </span>
+        </div>
+
+        <div className="settings-field">
+          <label className="settings-toggle">
+            <input
+              type="checkbox"
+              checked={effAutoRecap}
+              disabled={busy || session.terminated}
+              onChange={() => void changePref({ autoRecap: !effAutoRecap })}
+            />
+            <span>Auto-generate session recap</span>
+          </label>
+          <span className="hint">
+            Automatically produces a session summary after the conversation has
+            been idle. Manual recap (Alt+R) still works when this is off.{' '}
+            {session.autoRecap === undefined
+              ? `Inheriting global (${globalPrefs.autoRecap ? 'ON' : 'OFF'}).`
+              : 'Session override.'}
+            {session.autoRecap !== undefined && (
+              <button
+                type="button"
+                className="settings-reset-link"
+                disabled={busy || session.terminated}
+                onClick={() => void changePref({ autoRecap: null })}
+              >
+                Reset (inherit global)
+              </button>
+            )}
+          </span>
+        </div>
       </div>
       </>
       )}

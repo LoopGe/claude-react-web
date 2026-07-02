@@ -304,6 +304,34 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     return c.json({ session: info })
   })
 
+  // Per-session UI prefs (pinned-header + auto-recap overrides). Pure UI
+  // prefs — no SDK round-trip. Body keys are optional; a `null` value for a
+  // key clears the override so the session re-inherits the global default,
+  // while an explicit boolean pins it. Mirrors the /sessions/:id/model shape.
+  app.post('/sessions/:id/prefs', async (c) => {
+    const body = await safeJson<{
+      showPinnedUserMessage?: boolean | null
+      autoRecap?: boolean | null
+    }>(c.req)
+    const partial: { showPinnedUserMessage?: boolean | undefined; autoRecap?: boolean | undefined } = {}
+    if (body && Object.prototype.hasOwnProperty.call(body, 'showPinnedUserMessage')) {
+      const v = body.showPinnedUserMessage
+      if (v !== null && typeof v !== 'boolean') {
+        return c.json({ error: 'showPinnedUserMessage must be a boolean or null' }, 400)
+      }
+      partial.showPinnedUserMessage = v ?? undefined
+    }
+    if (body && Object.prototype.hasOwnProperty.call(body, 'autoRecap')) {
+      const v = body.autoRecap
+      if (v !== null && typeof v !== 'boolean') {
+        return c.json({ error: 'autoRecap must be a boolean or null' }, 400)
+      }
+      partial.autoRecap = v ?? undefined
+    }
+    const info = await sm.setPrefs(c.req.param('id'), partial)
+    return c.json({ session: info })
+  })
+
   // Context usage
   app.get('/sessions/:id/context-usage', async (c) => {
     const usage = await sm.contextUsage(c.req.param('id'))

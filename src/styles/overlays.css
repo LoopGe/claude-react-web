@@ -240,15 +240,14 @@
    Non-modal card anchored to the top of the chat area. Frosted-glass
    backdrop (var(--glass-blur)) matches SettingsPanel/GitPanel. Sits
    above the transcript (z-index 4) but below the full-screen settings/git
-   overlays (z-index 5) so opening settings covers it. Max-height 45%
-   keeps the chat visible and scrollable beneath. */
+   overlays (z-index 5) so opening settings covers it. Rendered as a flex
+   child of .chat-top-stack (which owns the absolute positioning + 45%
+   max-height cap), so it can shrink when the pinned-question header is
+   also open; its body scrolls to absorb the overflow. */
 .recap-window {
-  position: absolute;
-  top: 8px;
-  left: var(--chat-reading-inset);
-  right: var(--chat-reading-inset);
-  max-height: 45%;
-  z-index: 4;
+  flex: 0 1 auto;
+  min-height: 0;
+  pointer-events: auto;
   display: flex;
   flex-direction: column;
   border-radius: 12px;
@@ -259,6 +258,89 @@
   box-shadow: var(--drawer-shadow);
   overflow: hidden;
   animation: recap-window-in var(--motion-duration-base) var(--motion-ease-enter) both;
+  /* Height is tweened via JS (RecapWindow useLayoutEffect) between explicit
+     px values on content change; transition the property so the swap reads
+     as a smooth grow/shrink instead of a snap. */
+  transition: height var(--motion-duration-base) var(--motion-ease-standard);
+}
+/* Top-anchored overlay stack hosting the recap window and the pinned
+   "current question" header. Absolute positioning + the 45% max-height cap
+   (which resolves against .chat — the positioned, definite-height ancestor)
+   live here so both children can be flow flex items. pointer-events:none lets
+   clicks pass through the stack's own empty area to the transcript beneath;
+   each child re-enables pointer-events. */
+.chat-top-stack {
+  position: absolute;
+  top: 8px;
+  left: var(--chat-reading-inset);
+  right: var(--chat-reading-inset);
+  max-height: 45%;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+/* Pinned "current question" header — single-line, click-to-jump-back. Sits
+   beneath the recap when both are open (flex order = DOM order). */
+.pinned-user-message {
+  flex: 0 0 auto;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--drawer-shadow);
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  animation: pinned-user-message-in var(--motion-duration-base) var(--motion-ease-enter) both;
+  transition: border-color var(--motion-duration-fast) var(--motion-ease-standard),
+              background var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.pinned-user-message:hover {
+  border-color: var(--msg-user-border);
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+}
+.pinned-user-message[data-state="closing"] {
+  animation: pinned-user-message-out var(--motion-duration-fast) var(--motion-ease-exit) both;
+  pointer-events: none;
+}
+.pinned-user-message-label {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--msg-user-header-fg);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.pinned-user-message-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-muted);
+}
+@keyframes pinned-user-message-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes pinned-user-message-out {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(-6px); }
 }
 .recap-window[data-state="closing"] {
   animation: recap-window-out var(--motion-duration-fast) var(--motion-ease-exit) both;
@@ -339,9 +421,11 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .recap-window,
-  .recap-window-body-inner { animation: none; }
+  .recap-window-body-inner,
+  .pinned-user-message { animation: none; }
   /* Mirror the transcript's reduced-motion clear: no animation, just hidden. */
   .recap-window.recap-window-clearing { animation: none; opacity: 0; }
+  .pinned-user-message[data-state="closing"] { opacity: 0; }
 }
 
 /* ── `!` bash-mode message ───────────────────────────────────────────

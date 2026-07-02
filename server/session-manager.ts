@@ -406,6 +406,8 @@ export class SessionManager {
       parentId: s.parentId,
       mcpServerNames: s.mcpServerNames,
       enabledPlugins: s.enabledPlugins,
+      showPinnedUserMessage: s.showPinnedUserMessage,
+      autoRecap: s.autoRecap,
     })
   }
 
@@ -876,7 +878,18 @@ export class SessionManager {
     // below can re-pin the same map at the flag layer if the parent had
     // moved away from `inherit`.
     const parentOverride = live?.skillOverride
-    const forkInfo = this.spawn(randomUUID(), forkOpts, undefined, undefined, parentOverride)
+    const forkInfo = this.spawn(
+      randomUUID(),
+      forkOpts,
+      undefined,
+      undefined,
+      parentOverride,
+      // Carry the source's pure-UI pref overrides onto the fork so a
+      // pinned header / auto-recap override survives forking. No-op when
+      // the source inherits global (both undefined) — the fork then
+      // inherits global too.
+      { showPinnedUserMessage: meta.showPinnedUserMessage, autoRecap: meta.autoRecap },
+    )
     if (parentOverride && parentOverride.kind !== 'inherit') {
       // Best-effort — the dynamic flag-layer pin matters mostly when the
       // override switches between sets the SDK loads at boot vs. at flag
@@ -995,6 +1008,7 @@ export class SessionManager {
     customEnv?: Record<string, string>,
     historySeed?: SDKMessage[],
     skillOverride?: SessionSkillOverride,
+    prefs?: { showPinnedUserMessage?: boolean; autoRecap?: boolean },
   ): SessionInfo {
     const providerName = opts.provider ?? this.defaultProvider
     const provider = this.providers.get(providerName)
@@ -1058,6 +1072,14 @@ export class SessionManager {
       // server restarts. New sessions get a fresh capture below.
       gitStartSha: existingMeta?.gitStartSha,
       fastMode: existingMeta?.fastMode,
+      // Pure-UI pref overrides. An explicit `prefs` arg (fork / clear
+      // carrying the source's overrides onto a new id) wins; otherwise
+      // restore from the persisted meta so a resumed session keeps its
+      // override instead of silently reverting to the global default
+      // (and then having writeStore() clobber the persisted value).
+      // `??` (not `||`) so an explicit `false` override survives.
+      showPinnedUserMessage: prefs?.showPinnedUserMessage ?? existingMeta?.showPinnedUserMessage,
+      autoRecap: prefs?.autoRecap ?? existingMeta?.autoRecap,
       hooks: existingMeta?.hooks ?? metaSnapshot.hooks,
       // Carry lastTurnAt forward from the persisted meta on resume. The
       // pump only stamps `lastTurnAt` when a real `result` lands
@@ -1679,6 +1701,27 @@ export class SessionManager {
       'supportsFastMode',
     )({ fastMode: enabled })
     s.fastMode = enabled
+    s.lastActivityAt = Date.now()
+    this.persist(s)
+    return this.info(s)
+  }
+
+  /** Set per-session UI prefs (pinned-header + auto-recap overrides).
+   *  Unlike setFastMode / setEffortLevel these are PURE UI prefs — no
+   *  applyFlagSettings round-trip to the SDK. A value of `undefined`
+   *  clears the override so the session re-inherits the global default;
+   *  a boolean pins it. Persisted so it survives resume / fork / reload. */
+  async setPrefs(
+    id: string,
+    partial: { showPinnedUserMessage?: boolean | undefined; autoRecap?: boolean | undefined },
+  ): Promise<SessionInfo> {
+    const s = this.requireLive(id)
+    if ('showPinnedUserMessage' in partial) {
+      s.showPinnedUserMessage = partial.showPinnedUserMessage
+    }
+    if ('autoRecap' in partial) {
+      s.autoRecap = partial.autoRecap
+    }
     s.lastActivityAt = Date.now()
     this.persist(s)
     return this.info(s)
@@ -2752,6 +2795,8 @@ export class SessionManager {
       mcpServerNames: s.mcpServerNames,
       enabledPlugins: s.enabledPlugins,
       skillOverride: s.skillOverride,
+      showPinnedUserMessage: s.showPinnedUserMessage,
+      autoRecap: s.autoRecap,
     }
   }
 
@@ -2812,6 +2857,8 @@ export class SessionManager {
       parentId: meta.parentId,
       mcpServerNames: meta.mcpServerNames,
       enabledPlugins: meta.enabledPlugins,
+      showPinnedUserMessage: meta.showPinnedUserMessage,
+      autoRecap: meta.autoRecap,
     }
   }
 

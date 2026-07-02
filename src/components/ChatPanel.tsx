@@ -86,6 +86,10 @@ function commitWithRollback(
 export interface ChatPanelProps {
   session: SessionInfo
   focused: boolean
+  /** Global UI-pref defaults (server-backed). Sessions without an explicit
+   *  per-session override inherit these. Forwarded to <Chat> (effective-value
+   *  resolution) and <SettingsPanel> (override UI hints). */
+  globalPrefs: { showPinnedUserMessage: boolean; autoRecap: boolean }
   /** True when a turn has completed on this session since the user last
    *  looked at it. Rendered as a small dot next to the slot pill on
    *  non-focused open panels — so in a 2-up/3-up layout the user notices
@@ -205,6 +209,7 @@ export interface ChatPanelProps {
 export const ChatPanel = memo(function ChatPanel({
   session,
   focused,
+  globalPrefs,
   hasUnread,
   entering,
   onAnimEnd,
@@ -776,6 +781,7 @@ export const ChatPanel = memo(function ChatPanel({
             key={session.id}
             session={session}
             focused={focused}
+            globalPrefs={globalPrefs}
             clearing={clearing}
             onSessionUpdate={onSessionUpdate}
             onRequestResumeForPanel={onRequestResumeForPanel}

@@ -226,6 +226,8 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
       updateCheckRegistry: serverConfig.updateCheckRegistry,
       skillLoadMode: serverConfig.skillLoadMode,
       enabledSkills: serverConfig.enabledSkills,
+      showPinnedUserMessage: serverConfig.showPinnedUserMessage,
+      autoRecap: serverConfig.autoRecap,
       defaults: {
         cwd: process.cwd(),
         model: serverConfig.defaultModel,

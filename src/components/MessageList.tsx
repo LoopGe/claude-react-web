@@ -125,6 +125,16 @@ interface Props {
    *  top-most visible item index (in data-array space). Used by the
    *  search system to find the nearest match to the viewport. */
   onVisibleRangeChange?: (topIdx: number) => void
+  /** Reports the real user message that should be pinned at the top of the
+   *  panel as a "current question" header — the last top-level user message
+   *  whose index is strictly above the viewport top (i.e. it has scrolled out
+   *  of view). null when the topmost visible region is at or above the most
+   *  recent user message (nothing to pin). Fires ONLY when the pinned message
+   *  identity changes, so callers don't re-render on every scroll tick. The
+   *  chosen message is exactly what `navigate('prev')` scrolls to, so a
+   *  parent-rendered pin header can jump back to it via the registered
+   *  navigator. */
+  onPinnedUserMessageChange?: (info: { id: string; text: string } | null) => void
   /** Force-stop the current in-flight `!`/`!!` command. Wired to the "stop"
    *  button on a pending bash card. Undefined when no abort surface is
    *  available (e.g. Side Chat drawer renders its own MessageList without it). */
@@ -249,7 +259,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, clearing, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, emptyStateContent, onSwitchModel, onAbortBash, onVisibleRangeChange, cwd }: Props) {
+export const MessageList = memo(function MessageList({ items, working, clearing, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, emptyStateContent, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -1209,11 +1219,60 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   useEffect(() => {
     firstItemIndexValRef.current = firstItemIndex
   }, [firstItemIndex])
-  const handleRangeChanged = useCallback((range: { startIndex: number; endIndex: number }) => {
-    const idx = range.startIndex - firstItemIndexValRef.current
-    topVisibleIdxRef.current = idx
-    onVisibleRangeChange?.(idx)
-  }, [onVisibleRangeChange])
+
+  // --- Pinned "current question" header --------------------------------
+  // The user message pinned at the panel top = the last real user message
+  // whose index is strictly above the viewport top (scrolled out of view).
+  // Lifted to the parent via onPinnedUserMessageChange; deduped by id so a
+  // scroll that doesn't cross a user-message boundary fires nothing. Uses the
+  // same `userMsgIndices` discriminator as `navigate('prev')`, so the pin and
+  // the "scroll to previous user message" action always agree on a target.
+  const renderableItemsRef = useRef(renderableItems)
+  useEffect(() => {
+    renderableItemsRef.current = renderableItems
+  }, [renderableItems])
+  const lastPinnedIdRef = useRef<string | null>(null)
+  const emitPinned = useCallback(
+    (topIdx: number) => {
+      const indices = userMsgIndicesRef.current
+      let pinnedIdx = -1
+      for (let i = indices.length - 1; i >= 0; i--) {
+        if (indices[i] < topIdx) {
+          pinnedIdx = indices[i]
+          break
+        }
+      }
+      const items = renderableItemsRef.current
+      const item = pinnedIdx >= 0 && pinnedIdx < items.length ? items[pinnedIdx] : undefined
+      const id = item?.id ?? null
+      if (id !== lastPinnedIdRef.current) {
+        lastPinnedIdRef.current = id
+        onPinnedUserMessageChange?.(id ? { id, text: extractUserText(item!.msg) ?? '' } : null)
+      }
+    },
+    [onPinnedUserMessageChange],
+  )
+  const handleRangeChanged = useCallback(
+    (range: { startIndex: number; endIndex: number }) => {
+      const idx = range.startIndex - firstItemIndexValRef.current
+      topVisibleIdxRef.current = idx
+      onVisibleRangeChange?.(idx)
+      emitPinned(idx)
+    },
+    [onVisibleRangeChange, emitPinned],
+  )
+  // Recompute when the rendered list changes without a range event (e.g. a
+  // new turn arrives while parked at a scroll offset) so the pin tracks the
+  // live transcript, not just scroll position.
+  useEffect(() => {
+    emitPinned(topVisibleIdxRef.current)
+  }, [renderableItems, emitPinned])
+  // Reset dedup state on session switch so a coincidentally-matching id from
+  // the previous session can't suppress a fresh emit.
+  useEffect(() => {
+    lastPinnedIdRef.current = null
+    emitPinned(topVisibleIdxRef.current)
+  }, [transcriptRevealKey, emitPinned])
 
   const navigate = useCallback((dir: 'prev' | 'next') => {
     const indices = userMsgIndicesRef.current

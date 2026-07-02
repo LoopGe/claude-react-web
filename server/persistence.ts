@@ -75,6 +75,13 @@ export interface SessionMeta {
    *  session was spawned with. `undefined` = all enabled (default); `[]` =
    *  none. Persisted so resume/fork re-inject the same subset. */
   enabledPlugins?: string[]
+  /** Per-session override for the pinned "current question" header.
+   *  Undefined = inherit the global config default. Persisted so the
+   *  override survives reload. */
+  showPinnedUserMessage?: boolean
+  /** Per-session override for idle auto-recap. Undefined = inherit the
+   *  global config default. Persisted so the override survives reload. */
+  autoRecap?: boolean
 }
 
 const FILE_NAME = 'sessions.json'
@@ -182,6 +189,8 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     enabledPlugins: Array.isArray(r.enabledPlugins) && r.enabledPlugins.every((n: unknown) => typeof n === 'string')
       ? (r.enabledPlugins as string[])
       : undefined,
+    showPinnedUserMessage: typeof r.showPinnedUserMessage === 'boolean' ? r.showPinnedUserMessage : undefined,
+    autoRecap: typeof r.autoRecap === 'boolean' ? r.autoRecap : undefined,
   }
 }
 
