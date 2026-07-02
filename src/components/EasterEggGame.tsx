@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 // Hidden easter-egg mini-game: a Chrome-offline-dino-style endless runner
 // themed after this app. The player is the same sparkle glyph used in the
@@ -46,6 +46,69 @@ const PLAYER_W = 22
 const PLAYER_X = 48
 const GRAVITY = 0.9
 // JUMP_V is added in Task 6 when jump input is wired (noUnusedLocals flags it otherwise).
+
+// --- Persisted high score + mute preference ---------------------------------
+const HI_KEY = 'crw_easter_egg_hi'
+const MUTE_KEY = 'crw_easter_egg_muted'
+
+function readHi(): number {
+  try { return parseInt(localStorage.getItem(HI_KEY) || '0', 10) || 0 } catch { return 0 }
+}
+function writeHi(v: number) {
+  try { localStorage.setItem(HI_KEY, String(v)) } catch { /* ignore */ }
+}
+function readMuted(): boolean {
+  try { return localStorage.getItem(MUTE_KEY) === '1' } catch { return false }
+}
+function writeMuted(v: boolean) {
+  try { localStorage.setItem(MUTE_KEY, v ? '1' : '0') } catch { /* ignore */ }
+}
+
+// --- Color mixing (for day/night background blend) --------------------------
+function lerp(a: number, b: number, t: number) { return a + (b - a) * t }
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace('#', '')
+  const n = parseInt(h.length === 3 ? h.split('').map(x => x + x).join('') : h, 16)
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+}
+// mixRgb blends hex color `a` toward hex color `b` by `t`. If either input is
+// not a hex string (e.g. theme resolved to `rgb(...)`), returns `a` unchanged
+// so canvas fillStyle stays valid (no `rgb(NaN,...)`).
+function mixRgb(a: string, b: string, t: number): string {
+  if (!a.startsWith('#') || !b.startsWith('#')) return a
+  const [r1, g1, b1] = hexToRgb(a); const [r2, g2, b2] = hexToRgb(b)
+  return `rgb(${Math.round(lerp(r1, r2, t))},${Math.round(lerp(g1, g2, t))},${Math.round(lerp(b1, b2, t))})`
+}
+
+// --- WebAudio (crash sound only; jump beep is added in Task 6 with input) ---
+type AudioRef = { current: AudioContext | null }
+
+function ensureAudioContext(audioRef: AudioRef): AudioContext | null {
+  if (audioRef.current) return audioRef.current
+  try {
+    const Ctor =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    if (!Ctor) return null
+    audioRef.current = new Ctor()
+    return audioRef.current
+  } catch { return null }
+}
+
+function playCrashSound(audioRef: AudioRef, muted: boolean) {
+  if (muted) return
+  const ac = ensureAudioContext(audioRef)
+  if (!ac) return
+  try {
+    const buf = ac.createBuffer(1, ac.sampleRate * 0.25, ac.sampleRate)
+    const data = buf.getChannelData(0)
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length)
+    const src = ac.createBufferSource(); src.buffer = buf
+    const gain = ac.createGain(); gain.gain.value = 0.12
+    src.connect(gain); gain.connect(ac.destination)
+    src.start()
+  } catch { /* ignore */ }
+}
 
 function makeInitialState(): GameState {
   return {
@@ -118,11 +181,16 @@ function updateRunning(s: GameState) {
     const oyHit = py + ph > GROUND_Y - o.h // py < GROUND_Y always true
     if (oxHit && oyHit) {
       s.status = 'gameOver'
-      // (high-score persistence + sound are added in Task 5)
+      // (high-score persistence + sound are handled in the rAF loop where
+      // component refs are in scope; kept out of this pure physics fn.)
       break
     }
   }
   s.obstacles = s.obstacles.filter(o => o.x + o.w > -20)
+  // day/night blend — smooth lerp toward the tier-parity target. The loop
+  // snaps this instantly when prefers-reduced-motion is set.
+  const nightTarget = tier % 2 === 1 ? 1 : 0
+  s.nightBlend = lerp(s.nightBlend, nightTarget, 0.02)
 }
 
 function drawObstacle(ctx: CanvasRenderingContext2D, o: Obstacle, c: { fg: string; muted: string; accent: string }) {
@@ -205,9 +273,19 @@ interface ThemeColors {
   accent: string
 }
 
-function renderFrame(ctx: CanvasRenderingContext2D, s: GameState, c: ThemeColors) {
+function renderFrame(
+  ctx: CanvasRenderingContext2D,
+  s: GameState,
+  c: ThemeColors,
+  hi: number,
+  newBest: boolean,
+) {
   ctx.clearRect(0, 0, W, H)
-  ctx.fillStyle = c.bg
+  // Day/night background. `#0b0e14` is an intentional fixed darkening target
+  // (not a theme token — no night-specific var exists); spec exception like
+  // the obstacle red/amber literals. One-step blend: bg toward #0b0e14 by
+  // (nightBlend * 0.6), so full night is a 60% darken. mixRgb guards non-hex.
+  ctx.fillStyle = s.nightBlend > 0.01 ? mixRgb(c.bg, '#0b0e14', s.nightBlend * 0.6) : c.bg
   ctx.fillRect(0, 0, W, H)
   drawGround(ctx, s.groundOffset, c.muted)
   for (const o of s.obstacles) drawObstacle(ctx, o, c)
@@ -216,6 +294,8 @@ function renderFrame(ctx: CanvasRenderingContext2D, s: GameState, c: ThemeColors
   ctx.font = '12px system-ui, sans-serif'
   ctx.textAlign = 'left'
   ctx.fillText('Score ' + s.score, 12, 20)
+  ctx.textAlign = 'right'
+  ctx.fillText('Best ' + hi, W - 12, 20)
   ctx.textAlign = 'center'
   if (s.status === 'ready') {
     ctx.fillText('Press Space / Click to start', W / 2, 40)
@@ -225,7 +305,8 @@ function renderFrame(ctx: CanvasRenderingContext2D, s: GameState, c: ThemeColors
     ctx.fillText('Game Over', W / 2, 40)
     ctx.fillStyle = c.muted
     ctx.font = '12px system-ui, sans-serif'
-    ctx.fillText('Press Space / Click to restart', W / 2, 60)
+    ctx.fillText(newBest ? 'NEW BEST!' : 'Best ' + hi, W / 2, 58)
+    ctx.fillText('Press Space / Click to restart', W / 2, 76)
   }
 }
 
@@ -233,6 +314,16 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const stateRef = useRef<GameState>(makeInitialState())
   const rafRef = useRef<number | null>(null)
+
+  const audioRef = useRef<AudioContext | null>(null)
+  const [muted, setMuted] = useState(readMuted())
+  const mutedRef = useRef(readMuted())
+  const hiRef = useRef(readHi())
+  const newBestRef = useRef(false)
+  const reducedMotionRef = useRef(
+    typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  )
+  const setMutedAll = (v: boolean) => { mutedRef.current = v; setMuted(v); writeMuted(v) }
 
   const colorsRef = useRef({ fg: '#333', muted: '#888', bg: '#fff', accent: '#0a0' })
   useEffect(() => {
@@ -263,9 +354,26 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
         s.groundOffset = (s.groundOffset + s.speed) % 10000
       }
       if (s.status === 'running') {
+        const before = s.status
         updateRunning(s)
+        const after = s.status as Status
+        // reduced-motion: snap day/night instead of the smooth lerp.
+        if (reducedMotionRef.current) {
+          s.nightBlend = Math.floor(s.score / 100) % 2
+        }
+        // running → gameOver transition: record high score + play crash.
+        if (before === 'running' && after === 'gameOver') {
+          if (s.score > hiRef.current) {
+            hiRef.current = s.score
+            writeHi(s.score)
+            newBestRef.current = true
+          } else {
+            newBestRef.current = false
+          }
+          playCrashSound(audioRef, mutedRef.current)
+        }
       }
-      renderFrame(ctx, s, colorsRef.current)
+      renderFrame(ctx, s, colorsRef.current, hiRef.current, newBestRef.current)
       rafRef.current = requestAnimationFrame(loop)
     }
     rafRef.current = requestAnimationFrame(loop)
@@ -279,6 +387,7 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
         aria-label="Easter egg sparkle dino game"
       />
       <div className="easter-egg-game-toolbar">
+        <button className="easter-egg-game-btn" aria-label="Toggle sound" onClick={() => setMutedAll(!mutedRef.current)}>{muted ? '🔇' : '🔊'}</button>
         <button className="easter-egg-game-btn" aria-label="Exit game" onClick={onExit}>✕ Exit</button>
       </div>
     </div>
