@@ -961,21 +961,24 @@ export function App() {
     // changes, not on every render.
   }, [groups, closeGroupPanels])
 
-  /** When an already-open UNGROUPED session (single-panel ungrouped view,
+  /** When an already-open UNGROUPED session (pure-ungrouped view,
    *  activeGroupId=null) joins a group via drag or "Move to group", activate
    *  that group's view — mirror handleSelect (click a group member → sync the
-   *  whole group into the grid; focus stays on the dragged session). The
-   *  `prevOpen.includes(sessionId)` gate limits this to sessions that are
-   *  ALREADY open, so create/fork (which add-then-open) aren't affected: their
-   *  new id hasn't reached openIdsRef yet when this runs synchronously. Also
-   *  bails when the session came from ANOTHER group (that's a reorganize, not
-   *  "I'm looking at this and grouped it"). Returns true when it activated. */
+   *  whole group into the grid; focus stays on the dragged session). Gates:
+   *  - `prevOpen.includes(sessionId)`: only sessions ALREADY open, so
+   *    create/fork (add-then-open) aren't affected — their new id hasn't
+   *    reached openIdsRef yet when this runs synchronously.
+   *  - no open panel is in any group: only activate from a PURE-ungrouped
+   *    view. In a mixed view (some open panel already belongs to a group)
+   *    activating would evict that grouped panel, which is surprising.
+   *  Returns true when it activated. */
   const activateGroupViewIfOpenUngrouped = useCallback(
     (sessionId: string, groupNewIds: string[], prevGroups: SessionGroup[]): boolean => {
       if (activeGroupIdRef.current !== null) return false
       const prevOpen = openIdsRef.current
       if (!prevOpen.includes(sessionId)) return false
-      if (prevGroups.some((g) => g.sessionIds.includes(sessionId))) return false
+      const inAnyGroup = (id: string) => prevGroups.some((g) => g.sessionIds.includes(id))
+      if (prevOpen.some((id) => inAnyGroup(id))) return false
       const live = new Set(sessionsRef.current.map((s) => s.id))
       const groupIds = groupNewIds.filter((id) => live.has(id))
       // Mobile/single-panel cap: if the group can't all fit, keep just the
