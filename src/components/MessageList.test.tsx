@@ -116,7 +116,7 @@ vi.mock('react-virtuoso', async () => {
               className="virtuoso-streaming-spacer"
               style={{ height: virtuosoMockState.streamingSpacerHeight }}
               aria-hidden
-            />
+ />
           )}
           {components?.Footer && <components.Footer />}
         </div>
@@ -160,7 +160,7 @@ describe('MessageList', () => {
 
   it('shows the default empty state when messages are empty', () => {
     const { container } = render(
-      <MessageList items={[]} replayReady />,
+      <MessageList items={[]} />,
     )
     // Default empty state renders a titled stack (not the old bare string).
     expect(container.textContent).toContain('Start a conversation')
@@ -168,7 +168,7 @@ describe('MessageList', () => {
   })
 
   it('swaps the empty state for the easter-egg game after triple-clicking the icon', () => {
-    const { container } = render(<MessageList items={[]} replayReady />)
+    const { container } = render(<MessageList items={[]} />)
     // game not present initially
     expect(container.querySelector('.easter-egg-game')).toBeNull()
     // triple-click the sparkle icon to unlock
@@ -184,14 +184,14 @@ describe('MessageList', () => {
   })
 
   it('closes the easter-egg game when messages arrive', () => {
-    const { container, rerender } = render(<MessageList items={[]} replayReady />)
+    const { container, rerender } = render(<MessageList items={[]} />)
     const icon = container.querySelector('.chat-empty-icon') as HTMLElement
     fireEvent.click(icon); fireEvent.click(icon); fireEvent.click(icon)
     expect(container.querySelector('.easter-egg-game')).toBeTruthy()
     // messages arrive (non-empty items) → game closes
     rerender(<MessageList items={toItems([
       makeMsg('assistant', { message: { content: [{ type: 'text', text: 'hi' }] } }),
-    ])} replayReady />)
+    ])} />)
     expect(container.querySelector('.easter-egg-game')).toBeNull()
   })
 
@@ -199,7 +199,7 @@ describe('MessageList', () => {
     const items = toItems([
       makeMsg('assistant', { message: { content: [{ type: 'text', text: 'hi' }] } }),
     ])
-    const { container } = render(<MessageList items={items} replayReady clearing />)
+    const { container } = render(<MessageList items={items}  clearing />)
     expect(
       container.querySelector('.chat-messages')?.classList.contains('chat-messages-clearing'),
     ).toBe(true)
@@ -209,9 +209,9 @@ describe('MessageList', () => {
     const items = toItems([
       makeMsg('assistant', { message: { content: [{ type: 'text', text: 'hi' }] } }),
     ])
-    const { container, rerender } = render(<MessageList items={items} replayReady clearing />)
+    const { container, rerender } = render(<MessageList items={items}  clearing />)
     // clearing flips false + store wiped (items empty) in the same transition
-    rerender(<MessageList items={[]} replayReady clearing={false} />)
+    rerender(<MessageList items={[]}  clearing={false} />)
 
     expect(
       container.querySelector('.chat-messages')?.classList.contains('chat-messages-clearing'),
@@ -221,19 +221,11 @@ describe('MessageList', () => {
 
   it('renders a custom emptyStateContent when provided', () => {
     const { container } = render(
-      <MessageList items={[]} replayReady emptyStateContent={<div data-testid="custom-empty">side chat hint</div>} />,
+      <MessageList items={[]}  emptyStateContent={<div data-testid="custom-empty">side chat hint</div>} />,
     )
     expect(container.querySelector('[data-testid="custom-empty"]')).toBeTruthy()
     // Default empty state must NOT also render.
     expect(container.querySelector('.chat-empty')).toBeNull()
-  })
-
-  it('shows loading state when replayReady is false', () => {
-    const { container } = render(
-      <MessageList items={[]} replayReady={false} />,
-    )
-    expect(container.querySelector('.skeleton-group')).toBeTruthy()
-    expect(container.querySelector('[aria-busy="true"]')).toBeTruthy()
   })
 
   it('adds transcript reveal only after keyed messages are ready', async () => {
@@ -245,18 +237,18 @@ describe('MessageList', () => {
     const items = toItems(msgs as SdkMessage[])
 
     const { container, rerender } = render(
-      <MessageList items={items} replayReady={false} transcriptRevealKey="session-a" />,
+      <MessageList items={items} transcriptRevealKey="session-a" />,
     )
     expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal')).toBe(false)
 
-    rerender(<MessageList items={items} replayReady transcriptRevealKey="session-a" />)
+    rerender(<MessageList items={items}  transcriptRevealKey="session-a" />)
     await waitFor(() => {
       expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal')).toBe(true)
       expect(container.querySelector('.virtuoso-item-wrapper')?.classList.contains('transcript-item-reveal')).toBe(true)
     })
 
-    rerender(<MessageList items={[]} replayReady transcriptRevealKey="session-b" />)
-    rerender(<MessageList items={items} replayReady transcriptRevealKey="session-b" />)
+    rerender(<MessageList items={[]}  transcriptRevealKey="session-b" />)
+    rerender(<MessageList items={items}  transcriptRevealKey="session-b" />)
     expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal')).toBe(false)
     expect(container.querySelector('.virtuoso-item-wrapper')?.classList.contains('transcript-item-reveal')).toBe(false)
   })
@@ -270,7 +262,7 @@ describe('MessageList', () => {
     ]
 
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} parentToolUseIdFilter="agent-1" replayReady />,
+      <MessageList items={toItems(msgs as SdkMessage[])} parentToolUseIdFilter="agent-1" />,
     )
 
     const messages = container.querySelector('.chat-messages')
@@ -290,9 +282,8 @@ describe('MessageList', () => {
       <MessageList
         items={toItems(msgs as SdkMessage[])}
         parentToolUseIdFilter="agent-1"
-        replayReady
         transcriptRevealKey="subagent:agent-1"
-      />,
+ />,
     )
 
     await waitFor(() => {
@@ -308,7 +299,7 @@ describe('MessageList', () => {
       makeMsg('assistant', { message: { content: [{ type: 'text', text: 'hello' }] } }),
     ]
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
     // stream_event should not be rendered
     expect(container.textContent).not.toContain('stream_event')
@@ -321,7 +312,7 @@ describe('MessageList', () => {
       }),
     ]
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
     expect(container.textContent).toContain('Hello world')
   })
@@ -336,7 +327,7 @@ describe('MessageList', () => {
     ]
 
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
 
     const rows = Array.from(container.querySelectorAll('.virtuoso-item-wrapper'))
@@ -359,7 +350,7 @@ describe('MessageList', () => {
     items[1].deliveryStatus = 'consumed'
 
     const { container } = render(
-      <MessageList items={items} replayReady working />,
+      <MessageList items={items}  working />,
     )
 
     expect(container.querySelector('.msg-processing-indicator')).toBeNull()
@@ -373,7 +364,7 @@ describe('MessageList', () => {
     ]
 
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} replayReady streamingContent="Live tokens" />,
+      <MessageList items={toItems(msgs as SdkMessage[])}  streamingContent="Live tokens" />,
     )
 
     const streaming = container.querySelector('.streaming-footer-wrapper')
@@ -399,14 +390,14 @@ describe('MessageList', () => {
     ]
 
     const { container, rerender } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} replayReady streamingContent="" />,
+      <MessageList items={toItems(msgs as SdkMessage[])}  streamingContent="" />,
     )
 
     expect(container.querySelector('.streaming-footer-wrapper')).toBeNull()
     expect(container.querySelector('.chat-streaming-region')).toBeNull()
 
     // Once real text flushes, the footer mounts.
-    rerender(<MessageList items={toItems(msgs as SdkMessage[])} replayReady streamingContent="Live tokens" />)
+    rerender(<MessageList items={toItems(msgs as SdkMessage[])}  streamingContent="Live tokens" />)
     expect(container.querySelector('.streaming-footer-wrapper')).not.toBeNull()
     expect(container.querySelector('.streaming-footer-wrapper')?.textContent).toContain('Live tokens')
   })
@@ -425,7 +416,7 @@ describe('MessageList', () => {
     ]
 
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
 
     await waitFor(() => {
@@ -452,8 +443,7 @@ describe('MessageList', () => {
         items={toItems(msgs as SdkMessage[])}
         parentToolUseIdFilter="agent-1"
         transcriptRevealKey="subagent:agent-1"
-        replayReady
-      />,
+ />,
     )
 
     await waitFor(() => {
@@ -476,7 +466,7 @@ describe('MessageList', () => {
     ]
 
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
 
     await waitFor(() => {
@@ -498,7 +488,7 @@ describe('MessageList', () => {
     ]
 
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
 
     await waitFor(() => {
@@ -506,20 +496,16 @@ describe('MessageList', () => {
     })
   })
 
-  it('jumps to bottom with an instant scroll and re-enables follow on click', async () => {
+  it('animates jump-to-bottom and lands at the real bottom when content grows mid-flight', () => {
     // Regression guard for the "click scroll-to-bottom sometimes lands short"
-    // bug. The old code used `behavior: 'smooth'`, which captured
-    // `scrollHeight` at click time and animated toward that pixel target over
-    // hundreds of ms — so any content growth during the animation (streaming
-    // text, Virtuoso row measurement, lazy media) moved the real bottom past
-    // the captured target and the viewport landed short, with no
-    // self-correction (atBottomRef was still false, so the streaming
-    // ResizeObserver re-pin guard skipped).
-    //
-    // Fix: jump uses an instant scroll (no animation window → no stale
-    // target) and optimistically re-enables follow (shouldFollowRef +
-    // atBottomRef) so the existing streaming ResizeObserver re-pin path
-    // tracks further growth. This test pins both halves of the contract.
+    // bug. Native `behavior: 'smooth'` captured scrollHeight once at click
+    // time and animated toward that stale pixel; content growth during the
+    // ~300ms window moved the real bottom past it, so the viewport landed
+    // short. The fix is a rAF easing loop that re-reads scrollHeight EVERY
+    // frame, so the target can never go stale. This test grows scrollHeight
+    // after the click and asserts the animation follows the growth to the
+    // real bottom instead of locking to the click-time target.
+    vi.useFakeTimers()
     virtuosoMockState.atBottomReport = false
     virtuosoMockState.reportBeforeRef = true
     virtuosoMockState.scrollHeight = 200
@@ -533,109 +519,109 @@ describe('MessageList', () => {
     ]
 
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
 
-    const button = await waitFor(() => {
-      const btn = container.querySelector('.chat-jump-to-bottom') as HTMLButtonElement | null
-      expect(btn).not.toBeNull()
-      return btn as HTMLButtonElement
-    })
+    // The jump button appears only after the 150ms follow-disable debounce
+    // fires (anti-flicker delay while atBottomRef was initially true).
+    act(() => { vi.advanceTimersByTime(150) })
+    const button = container.querySelector('.chat-jump-to-bottom') as HTMLButtonElement | null
+    expect(button).not.toBeNull()
 
-    // Only inspect scrollTo calls issued by the click itself.
+    // Isolate scrollTo calls issued by the animation itself.
     vi.mocked(Element.prototype.scrollTo).mockClear()
-    fireEvent.click(button)
 
-    // (1) Instant scroll to the real bottom — `behavior: 'auto'`, NOT
-    // 'smooth'. An instant scroll has no animation window, so the target
-    // can't go stale while content keeps growing.
-    await waitFor(() => {
-      expect(Element.prototype.scrollTo).toHaveBeenCalledWith(
-        expect.objectContaining({ top: 200, behavior: 'auto' }),
-      )
-    })
+    // Click starts the rAF animation. At click time scrollHeight is 200
+    // (a stale-target scroll would lock onto bottom=100). The first rAF
+    // frame is queued, not yet run.
+    fireEvent.click(button as HTMLButtonElement)
 
-    // (2) Follow re-enabled optimistically: the button hides immediately
-    // (atBottom=true, canJumpToBottom=false) without waiting for a scroll
-    // event or debounce, so the streaming ResizeObserver's atBottomRef-guarded
-    // re-pin path is armed for subsequent growth.
-    await waitFor(() => {
-      expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
-    })
-  })
-
-  it('keeps follow armed when the jump scroll event races with streaming growth', async () => {
-    // Regression guard for the one-frame race between the jump's instant
-    // scrollTo and its asynchronous native 'scroll' event.
-    //
-    // jumpToBottom optimistically sets atBottomRef=true to arm the streaming
-    // ResizeObserver re-pin path, then fires an instant scrollTo. The native
-    // 'scroll' event from that scrollTo fires asynchronously. If a streaming
-    // delta grows scrollHeight by >BOTTOM_EPSILON_PX (2) before that event
-    // fires, the scroll handler's `syncBottomGeometry(el, 'preserve')` would
-    // — without the guard — see geometry.atBottom=false, flip atBottomRef
-    // back to false, and re-show the jump button, disarming the re-pin path
-    // the jump just armed. The fix consumes a one-shot guard ref on that
-    // single scroll event so the optimistic atBottomRef=true survives.
-    virtuosoMockState.atBottomReport = false
-    virtuosoMockState.reportBeforeRef = true
-    virtuosoMockState.scrollHeight = 200
-    virtuosoMockState.clientHeight = 100
-    virtuosoMockState.scrollTop = 0
-
-    const msgs = [
-      makeMsg('assistant', {
-        message: { content: [{ type: 'text', text: 'Scrollable message' }] },
-      }),
-    ]
-
-    const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
-    )
-
-    const button = await waitFor(() => {
-      const btn = container.querySelector('.chat-jump-to-bottom') as HTMLButtonElement | null
-      expect(btn).not.toBeNull()
-      return btn as HTMLButtonElement
-    })
-    const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement | null
-    expect(scroller).not.toBeNull()
-
-    // Click arms the guard and fires an instant scrollTo (scrollTop -> 200).
-    fireEvent.click(button)
-
-    // Simulate the race: streaming growth lands in the same frame, growing
-    // scrollHeight past the captured scrollTop before the 'scroll' event
-    // fires. distanceFromBottom = 400 - 0 - 200 - 100 = 100 > BOTTOM_EPSILON_PX.
+    // Content grows mid-flight: real bottom moves from 100 to 300.
     virtuosoMockState.scrollHeight = 400
 
-    // The native 'scroll' event from the instant scrollTo now fires. Without
-    // the guard the handler's 'preserve' path would downgrade atBottomRef
-    // and re-show the jump button.
-    fireEvent.scroll(scroller as HTMLElement)
+    // Run the animation to completion. Each frame re-reads scrollHeight,
+    // so the loop eases toward 300 (not the stale 100) and lands there.
+    act(() => { vi.runAllTimers() })
 
+    // The animation's final scrollTo snaps to the FRESH real bottom (300),
+    // not the click-time target (100) — proving the target can't go stale.
+    expect(Element.prototype.scrollTo).toHaveBeenCalledWith(
+      expect.objectContaining({ top: 300, behavior: 'auto' }),
+    )
+    // Button stays hidden: atBottom restored on landing.
     expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
   })
 
-  it('follows new messages with an instant scroll, not smooth', async () => {
+  it('keeps the jump button hidden while the animated scroll is in flight', () => {
+    // Regression guard for the follow-disable race that the original
+    // instant-scroll fix addressed. During the ~300ms rAF animation the
+    // viewport is intentionally not yet at the bottom; without the
+    // `scrollAnimatingRef` duration guard, scroll events / geometry syncs
+    // fired mid-animation would see dist>0, arm the 150ms follow-disable
+    // debounce, and re-show the jump button — disarming the re-pin path
+    // the animation depends on. The guard short-circuits syncBottomGeometry
+    // and the scroll handler for the whole animation, so the button stays
+    // hidden and atBottom stays armed until the loop lands.
+    vi.useFakeTimers()
+    virtuosoMockState.atBottomReport = false
+    virtuosoMockState.reportBeforeRef = true
+    virtuosoMockState.scrollHeight = 200
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.scrollTop = 0
+
+    const msgs = [
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Scrollable message' }] },
+      }),
+    ]
+
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
+    )
+    act(() => { vi.advanceTimersByTime(150) })
+    const button = container.querySelector('.chat-jump-to-bottom') as HTMLButtonElement | null
+    expect(button).not.toBeNull()
+    const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement | null
+    expect(scroller).not.toBeNull()
+
+    fireEvent.click(button as HTMLButtonElement)
+
+    // Step one animation frame, then fire a native 'scroll' event mid-flight
+    // (mirroring the async scroll events our scrollTo triggers) while content
+    // has grown. Without the duration guard the handler's 'preserve' sync
+    // would downgrade atBottomRef and re-show the button here.
+    act(() => { vi.advanceTimersByTime(20) })
+    virtuosoMockState.scrollHeight = 400
+    fireEvent.scroll(scroller as HTMLElement)
+
+    expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+
+    // Let the animation finish; button stays hidden, lands at real bottom.
+    act(() => { vi.runAllTimers() })
+    expect(Element.prototype.scrollTo).toHaveBeenCalledWith(
+      expect.objectContaining({ top: 300, behavior: 'auto' }),
+    )
+    expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+  })
+
+  it('follows a new tail message with an animated scroll that lands at the real bottom', () => {
     // Regression guard for the "new message doesn't scroll to bottom" bug.
     //
-    // Root cause: followOutput returned 'smooth', so a new settled message
-    // triggered a ~300ms smooth animation to the bottom. During that window
-    // the viewport was momentarily not at bottom, so the scroll handler
-    // effect's `syncBottomGeometry(el, 'confirm-away')` (re-attached on every
-    // renderableItems.length change) armed the 150ms follow-disable debounce.
-    // The debounce fired mid-follow and set shouldFollow=false + atBottomRef
-    // false — disabling BOTH followOutput for subsequent appends AND the
-    // streaming ResizeObserver instant re-pin. The next new message then
-    // wasn't followed, or streaming growth wasn't instant-pinned, and the
-    // view stayed/lagged short.
+    // Root cause (old code): followOutput returned 'smooth', so a new settled
+    // message triggered a ~300ms native smooth animation. During that window
+    // the viewport was momentarily not at bottom, the scroll handler's
+    // confirm-away sync armed the 150ms follow-disable debounce, and it fired
+    // mid-follow — flipping shouldFollow=false + atBottomRef=false, so the
+    // NEXT append wasn't followed and the streaming re-pin disarmed.
     //
-    // Fix: followOutput returns 'auto' (instant) so the viewport reaches the
-    // bottom in the same frame the data changes — no ~300ms window, so
-    // confirm-away sees dist:0 (restore, not arm), and shouldFollow/atBottomRef
-    // stay armed. This test pins that contract: a tail append while at the
-    // bottom must produce followOutput='auto', never 'smooth'.
+    // Fix: followOutput drives the scroll itself via the same rAF easing loop
+    // as the jump (returns false so Virtuoso doesn't double-scroll), and the
+    // `scrollAnimatingRef` duration guard keeps the follow-disable machinery
+    // from arming mid-animation. This test pins both halves: a tail append
+    // while at the bottom (1) triggers our animated scroll and (2) lands at
+    // the real bottom even when content keeps growing, with follow still
+    // armed (button never re-shows).
+    vi.useFakeTimers()
     virtuosoMockState.scrollHeight = 100
     virtuosoMockState.clientHeight = 100
     virtuosoMockState.scrollTop = 0
@@ -643,24 +629,41 @@ describe('MessageList', () => {
     const first = makeMsg('assistant', {
       message: { content: [{ type: 'text', text: 'first' }] },
     })
-    const { rerender } = render(
-      <MessageList items={toItems([first] as SdkMessage[])} replayReady />,
+    const { container, rerender } = render(
+      <MessageList items={toItems([first] as SdkMessage[])} />,
     )
 
-    // Append a new settled message at the tail (the new-message case).
+    // No jump button while we're following at the bottom.
+    expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+
+    // Append a new settled message at the tail; the new content grows the
+    // real bottom from 0 to 100. followOutput fires and kicks off the rAF
+    // animation; it returns false (we drive the scroll, not Virtuoso).
     const second = makeMsg('assistant', {
       message: { content: [{ type: 'text', text: 'second' }] },
     })
     virtuosoMockState.lastFollowOutput = undefined
+    virtuosoMockState.scrollHeight = 200
+    vi.mocked(Element.prototype.scrollTo).mockClear()
     rerender(
-      <MessageList items={toItems([first, second] as SdkMessage[])} replayReady />,
+      <MessageList items={toItems([first, second] as SdkMessage[])} />,
     )
+    expect(virtuosoMockState.lastFollowOutput).toBe(false)
 
-    // followOutput must return 'auto' (instant). 'smooth' recreates the
-    // animation window that lets the confirm-away debounce disable follow.
-    await waitFor(() => {
-      expect(virtuosoMockState.lastFollowOutput).toBe('auto')
-    })
+    // Content keeps growing mid-flight (streaming tail / measurement
+    // settling): real bottom moves from 100 to 200.
+    virtuosoMockState.scrollHeight = 300
+
+    act(() => { vi.runAllTimers() })
+
+    // The animation landed at the FRESH real bottom (200 = 300-100), not
+    // the append-time target (100), so the new message is fully in view.
+    expect(Element.prototype.scrollTo).toHaveBeenCalledWith(
+      expect.objectContaining({ top: 200, behavior: 'auto' }),
+    )
+    // Follow stayed armed for the whole animation — the button never
+    // re-showed (no debounce downgrade mid-flight).
+    expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
   })
 
   it('plays the msg-enter entrance animation on a live tail arrival', () => {
@@ -683,7 +686,7 @@ describe('MessageList', () => {
       }))
 
     const { container, rerender } = render(
-      <MessageList items={items([first] as SdkMessage[])} replayReady />,
+      <MessageList items={items([first] as SdkMessage[])} />,
     )
     // Sanity: the initial single-message render has no entrance class on the
     // first item (it was armed+consumed on the very first render, then the
@@ -694,7 +697,7 @@ describe('MessageList', () => {
       receivedAt: Date.now(),
     })
     rerender(
-      <MessageList items={items([first, second] as SdkMessage[])} replayReady />,
+      <MessageList items={items([first, second] as SdkMessage[])} />,
     )
 
     // The newly-appended tail row must carry the entrance-animation class.
@@ -711,7 +714,7 @@ describe('MessageList', () => {
     // streaming-token re-render that doesn't grow the data array) and assert
     // the class is still present.
     rerender(
-      <MessageList items={items([first, second] as SdkMessage[])} replayReady />,
+      <MessageList items={items([first, second] as SdkMessage[])} />,
     )
     wrappers = container.querySelectorAll('.virtuoso-item-wrapper')
     expect(wrappers[wrappers.length - 1]?.classList.contains('msg-enter')).toBe(true)
@@ -726,10 +729,10 @@ describe('MessageList', () => {
     ]
 
     const { container, rerender } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} replayReady streamingContent="Live tokens" />,
+      <MessageList items={toItems(msgs as SdkMessage[])}  streamingContent="Live tokens" />,
     )
 
-    rerender(<MessageList items={toItems(msgs as SdkMessage[])} replayReady streamingContent={null} />)
+    rerender(<MessageList items={toItems(msgs as SdkMessage[])}  streamingContent={null} />)
 
     expect(container.querySelector('.chat-streaming-region')?.classList.contains('exiting')).toBe(true)
     expect(container.textContent).toContain('Live tokens')
@@ -755,7 +758,7 @@ describe('MessageList', () => {
     ]
 
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
 
     expect(container.querySelector('.result-meta')?.textContent).toBe('3 turns \u00b7 129.1s \u00b7 337k in \u00b7 3.1k out \u00b7 $18.8910')
@@ -777,10 +780,9 @@ describe('MessageList', () => {
       const { container } = render(
         <MessageList
           items={toItems(msgs as SdkMessage[])}
-          replayReady
           toolStatus={new Map([['tu-1', 'success' as const]])}
           toolResults={new Map([['tu-1', { content: 'done', isError: false }]])}
-        />,
+ />,
       )
       // Exactly one rendered item (the assistant tool card).
       const wrapper = container.querySelector('[data-testid="virtuoso-mock"]')
@@ -796,7 +798,7 @@ describe('MessageList', () => {
         }),
       ]
       const { container } = render(
-        <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+        <MessageList items={toItems(msgs as SdkMessage[])} />,
       )
       expect(container.textContent).toContain('tool result')
     })
@@ -813,9 +815,8 @@ describe('MessageList', () => {
       const { container } = render(
         <MessageList
           items={toItems(msgs as SdkMessage[])}
-          replayReady
           planStatus={new Map([['plan-1', 'approved' as const]])}
-        />,
+ />,
       )
       // No orphan "tool result" bubble, and the raw plan body is not duplicated.
       expect(container.textContent).not.toContain('tool result')
@@ -834,9 +835,8 @@ describe('MessageList', () => {
       const { container } = render(
         <MessageList
           items={toItems(msgs as SdkMessage[])}
-          replayReady
           questionAnswers={new Map([['q-1', [{ question: 'Q', answer: 'A' }]]])}
-        />,
+ />,
       )
       expect(container.textContent).not.toContain('tool result')
       expect(container.textContent).not.toContain('answers json')
@@ -855,7 +855,7 @@ describe('MessageList', () => {
         }),
       ]
       const { container } = render(
-        <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+        <MessageList items={toItems(msgs as SdkMessage[])} />,
       )
       // The marker renders, but no standalone "tool result" orphan bubble.
       expect(container.textContent).not.toContain('tool result')
@@ -872,7 +872,7 @@ describe('MessageList', () => {
         }),
       ]
       const { container } = render(
-        <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+        <MessageList items={toItems(msgs as SdkMessage[])} />,
       )
       expect(container.textContent).toContain('tool result')
     })
@@ -898,7 +898,7 @@ describe('MessageList', () => {
       ])
       const { container } = render(
         <SubagentProvider value={{ index, messages: [], open: () => {} }}>
-          <MessageList items={toItems(msgs as SdkMessage[])} replayReady />
+          <MessageList items={toItems(msgs as SdkMessage[])} />
         </SubagentProvider>,
       )
       expect(container.textContent).not.toContain('tool result')
@@ -918,7 +918,7 @@ describe('MessageList', () => {
       ])
       const { container } = render(
         <SubagentProvider value={{ index, messages: [], open: () => {} }}>
-          <MessageList items={toItems(msgs as SdkMessage[])} replayReady />
+          <MessageList items={toItems(msgs as SdkMessage[])} />
         </SubagentProvider>,
       )
       expect(container.textContent).toContain('tool result')
@@ -931,7 +931,7 @@ describe('MessageList', () => {
         }),
       ]
       const { container } = render(
-        <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+        <MessageList items={toItems(msgs as SdkMessage[])} />,
       )
       const wrapper = container.querySelector('[data-testid="virtuoso-mock"]')
       const rows = wrapper ? Array.from(wrapper.children).filter((c) => c.querySelector('.virtuoso-item-wrapper')) : []
@@ -943,7 +943,7 @@ describe('MessageList', () => {
         makeMsg('assistant', { message: { content: [] }, error: 'boom' }),
       ]
       const { container } = render(
-        <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+        <MessageList items={toItems(msgs as SdkMessage[])} />,
       )
       const wrapper = container.querySelector('[data-testid="virtuoso-mock"]')
       const rows = wrapper ? Array.from(wrapper.children).filter((c) => c.querySelector('.virtuoso-item-wrapper')) : []
@@ -955,7 +955,7 @@ describe('MessageList', () => {
         makeMsg('user', { message: { content: [{ type: 'text', text: 'hi there' }] } }),
       ]
       const { container } = render(
-        <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+        <MessageList items={toItems(msgs as SdkMessage[])} />,
       )
       expect(container.textContent).toContain('hi there')
     })
@@ -992,7 +992,7 @@ describe('SendMessage tool card', () => {
       }),
     ]
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
 
     // Structured chrome — not the generic unknown-tool card.
@@ -1030,7 +1030,7 @@ describe('SendMessage tool card', () => {
       }),
     ]
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
     const to = container.querySelector('.sendmessage-tool-to') as HTMLElement
     // Truncated label is shorter than the full id…
@@ -1048,7 +1048,7 @@ describe('SendMessage tool card', () => {
       }),
     ]
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
     // Defensive branch: no structured card, raw JSON rendered instead.
     expect(container.querySelector('.tool-card-sendmessage')).toBeNull()
@@ -1083,7 +1083,7 @@ describe('TaskOutput tool card', () => {
       }),
     ]
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
 
     expect(container.querySelector('.tool-card-taskoutput')).toBeTruthy()
@@ -1117,7 +1117,7 @@ describe('TaskOutput tool card', () => {
       }),
     ]
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
     const chips = Array.from(container.querySelectorAll('.tool-chip')).map((c) => c.textContent)
     // No block field → neither "blocking" nor "non-blocking" chip.
@@ -1136,7 +1136,7 @@ describe('TaskOutput tool card', () => {
       }),
     ]
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
     expect(container.querySelector('.tool-card-taskoutput')).toBeNull()
     expect(container.textContent).toContain('bogus')
@@ -1160,7 +1160,7 @@ describe('ApiRetryView divider', () => {
         error: 'rate_limit_error',
       }),
     ])
-    const { container } = render(<MessageList items={items} replayReady />)
+    const { container } = render(<MessageList items={items} />)
 
     const divider = container.querySelector('.msg.result.retry')
     expect(divider).toBeTruthy()
@@ -1186,7 +1186,7 @@ describe('ApiRetryView divider', () => {
         error: 'overloaded_error',
       }),
     ])
-    const { container } = render(<MessageList items={items} replayReady />)
+    const { container } = render(<MessageList items={items} />)
 
     const mark = container.querySelector('.msg.result.retry .result-mark')
     expect(mark?.textContent).toContain('overloaded')
@@ -1208,7 +1208,7 @@ describe('ApiRetryView divider', () => {
         error: 'rate_limit_error',
       }),
     ])
-    const { container } = render(<MessageList items={items} replayReady />)
+    const { container } = render(<MessageList items={items} />)
 
     // Advance past the 2s deadline.
     act(() => {
@@ -1233,7 +1233,7 @@ describe('system error divider', () => {
         error: '429 rate_limit_error: too many requests',
       }),
     ])
-    const { container } = render(<MessageList items={items} replayReady />)
+    const { container } = render(<MessageList items={items} />)
 
     const divider = container.querySelector('.msg.result.error')
     expect(divider).toBeTruthy()
@@ -1259,7 +1259,7 @@ describe('system error divider', () => {
         message: { content: [{ type: 'text', text: raw }] },
       }),
     ])
-    const { container } = render(<MessageList items={items} replayReady />)
+    const { container } = render(<MessageList items={items} />)
 
     // Uses the interrupted (amber `!`) vocabulary, NOT a normal assistant bubble.
     const divider = container.querySelector('.msg.result.interrupted')
@@ -1290,7 +1290,7 @@ describe('system error divider', () => {
         message: { content: [{ type: 'text', text: raw }] },
       }),
     ])
-    const { container } = render(<MessageList items={items} replayReady />)
+    const { container } = render(<MessageList items={items} />)
 
     const divider = container.querySelector('.msg.result.interrupted')
     expect(divider).toBeTruthy()
@@ -1314,7 +1314,7 @@ describe('system error divider', () => {
         },
       }),
     ])
-    const { container } = render(<MessageList items={items} replayReady />)
+    const { container } = render(<MessageList items={items} />)
 
     expect(container.querySelector('.msg.result.interrupted')).toBeNull()
     const bubble = container.querySelector('.msg.assistant')
@@ -1330,7 +1330,7 @@ describe('system error divider', () => {
         error: raw,
       }),
     ])
-    const { container } = render(<MessageList items={items} replayReady />)
+    const { container } = render(<MessageList items={items} />)
 
     const divider = container.querySelector('.msg.result.error')
     expect(divider).toBeTruthy()
@@ -1350,7 +1350,7 @@ describe('system error divider', () => {
     const items = toItems([
       makeMsg('system', { subtype: 'error' }),
     ])
-    const { container } = render(<MessageList items={items} replayReady />)
+    const { container } = render(<MessageList items={items} />)
 
     const meta = container.querySelector('.msg.result.error .result-meta')
     expect(meta?.textContent).toContain('unknown error')

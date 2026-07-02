@@ -65,6 +65,9 @@
 .chat-messages {
   flex: 1;
   min-height: 0;
+  /* Positioning context for the .chat-messages-empty overlay, which is now
+     absolutely positioned over the always-mounted Virtuoso scroller. */
+  position: relative;
   /* Virtuoso creates its own scroll container inside this wrapper.
      Setting overflow-y: hidden prevents a double-scrollbar. */
   overflow-y: hidden;
@@ -308,10 +311,12 @@
 /* Empty state ?shown when there are zero messages. Needs explicit
    centering since .chat-messages is no longer a flex container. */
 .chat-messages-empty {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 100%;
   color: var(--fg-muted);
   text-align: center;
 }
@@ -457,13 +462,6 @@
   font-size: 12px;
   color: var(--fg-muted);
   line-height: 1.5;
-}
-
-/* Skeleton loading state shown while messages are replaying. Constrained
-   width so the bars read as message placeholders, not a solid block. */
-.chat-messages-skeleton {
-  width: 60%;
-  max-width: 280px;
 }
 
 /* Floating "scroll to bottom" button ?visible only when the user has

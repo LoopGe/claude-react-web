@@ -26,7 +26,6 @@ import { IconArrowDown, IconZap, IconUser, IconExternalLink, IconSquare } from '
 import { countMatches, extractPlainText, extractMessagePlainText } from '../search'
 import { BlockView, ToolResultBlock } from './message-list/blocks'
 import { OlderHistoryHeader, StreamingFooter } from './message-list/transcript-chrome'
-import { Skeleton } from './Skeleton'
 import { ChatEmptyState } from './ChatEmptyState'
 import { EasterEggGame } from './EasterEggGame'
 import { AnsiText } from './AnsiText'
@@ -48,8 +47,12 @@ interface Props {
    *  instead of a frozen screen followed by a hard snap to empty. */
   clearing?: boolean
   /** False while the initial replay from the server is still buffering.
-   *  When false, shows a loading skeleton instead of the empty-state
-   *  message, preventing a flash of "no messages" on session switch. */
+   *  Gates the transcript reveal animation (the one-shot entrance fade on
+   *  keyed messages) so it only fires once the replayed content has landed.
+   *  No longer gates a loading skeleton — an empty transcript shows the
+   *  empty-state immediately (the local /clear X→Y swap mints a fresh,
+   *  history-less session; showing a skeleton there until replay-done
+   *  arrived was a visible glitch under the clearing veil). */
   replayReady?: boolean
   /** Stable key for the owning transcript (session id in the main chat).
    *  When provided, a ready transcript gets one subtle reveal on mount/load. */
@@ -287,20 +290,23 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   // The post-mount bottom-anchor catch-up effect stops snapping once
   // this is true so we never fight a legitimate user scroll.
   const userInitiatedScrollRef = useRef(false)
-  // One-shot guard set by `jumpToBottom` and consumed by the scroll handler
-  // on its very next event. The instant scrollTo in jumpToBottom fires an
-  // asynchronous native 'scroll' event; if streaming growth moves the real
-  // bottom past the captured scrollTop before that event fires, the handler's
-  // 'preserve' geometry sync would otherwise see geometry.atBottom=false,
-  // downgrade atBottomRef back to false, and re-show the jump button —
-  // disarming the streaming ResizeObserver re-pin path the jump just armed.
-  // Consuming the guard makes the optimistic atBottomRef=true survive that
-  // single event. No timer safety-clear: rAF/setTimeout can fire before the
-  // queued scroll-event task and prematurely clear the guard; consume-on-event
-  // is reliable, and the no-event case (scrollTo no-op) is unreachable while
-  // the jump button is visible (only shown when not at bottom → scrollTo
-  // always moves → an event always fires).
-  const jumpScrollRef = useRef(false)
+  // Duration guard held TRUE for the whole of a programmatic smooth
+  // scroll-to-bottom animation (jump-to-bottom click, and a new-message
+  // follow). While true, both the scroll-event handler and
+  // `syncBottomGeometry` short-circuit: they leave atBottomRef=true and
+  // shouldFollowRef=true alone. This is what lets the animation play
+  // without the follow-disable machinery misreading the mid-animation
+  // "not yet at bottom" gap as a user scroll-away and arming the 150ms
+  // follow-disable debounce (which would fire mid-animation, flip
+  // shouldFollow/atBottom false, and re-introduce the "lands short /
+  // doesn't follow the next message" bug). The guard is bounded by the
+  // rAF loop's own completion (reaches the real bottom) or cancellation
+  // (user scrolls up mid-animation), so it can never latch forever.
+  const scrollAnimatingRef = useRef(false)
+  // rAF handle for the in-flight animated scroll, so a new jump (or
+  // unmount) can cancel the previous loop instead of stacking two
+  // animations that fight over scrollTop.
+  const scrollAnimRafRef = useRef<number | null>(null)
   const [followDebounceRaw] = useLocalStorage<number>(
     'claude-react-web:follow-debounce-ms',
     150,
@@ -394,6 +400,15 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
       setCanJumpToBottom(false)
       return null
     }
+    // While a programmatic smooth-scroll animation is in flight, the viewport
+    // is intentionally not yet at the bottom. Don't let that mid-animation
+    // gap arm the follow-disable debounce or flip atBottomRef false (which
+    // would re-show the jump button and disarm the streaming re-pin path the
+    // animation depends on). Treat the viewport as still-at-bottom until the
+    // rAF loop completes and clears the guard. See scrollAnimatingRef.
+    if (scrollAnimatingRef.current) {
+      return getBottomGeometry(el)
+    }
     const geometry = getBottomGeometry(el)
     const delayAway = modeWhenAway === 'confirm-away' && !geometry.atBottom && atBottomRef.current
     setCanJumpToBottom(delayAway ? false : geometry.canJumpToBottom)
@@ -403,6 +418,72 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     )
     return geometry
   }, [syncBottomState])
+
+  // Animated scroll-to-bottom driven by a requestAnimationFrame easing loop.
+  //
+  // Why not native `behavior: 'smooth'`? `el.scrollTo({ top: scrollHeight,
+  // smooth })` captures `scrollHeight` ONCE at call time and animates toward
+  // that stale pixel over ~300ms. While the animation runs, any content
+  // growth (streaming text mirroring into the spacer Footer, Virtuoso
+  // row-height measurement settling, lazy images/code blocks) moves the real
+  // bottom past the captured target, so the animation lands short — and with
+  // atBottomRef momentarily false, the streaming ResizeObserver re-pin guard
+  // skips, so nothing corrects it. That was the intermittent "sometimes
+  // doesn't scroll to bottom" bug.
+  //
+  // Fix: re-read `el.scrollHeight` on EVERY frame and ease scrollTop toward
+  // the fresh target. The target can never go stale because it is refreshed
+  // each frame, so the animation always terminates exactly at the real
+  // bottom no matter how content grows mid-flight. The `scrollAnimatingRef`
+  // duration guard keeps the follow-disable machinery from misreading the
+  // mid-animation gap (see that ref's comment). The loop also cancels itself
+  // if it detects the user scrolled up mid-animation (scrollTop dropped below
+  // the last value we set), so we never fight a legitimate user scroll.
+  const animateScrollToBottom = useCallback(() => {
+    // Cancel any in-flight animation before starting a new one.
+    if (scrollAnimRafRef.current != null) {
+      cancelAnimationFrame(scrollAnimRafRef.current)
+      scrollAnimRafRef.current = null
+    }
+    const el = scrollerRef.current
+    if (!el) {
+      // No scroller yet — fall back to Virtuoso's index API.
+      virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'smooth' })
+      return
+    }
+    scrollAnimatingRef.current = true
+    let lastSetTop = el.scrollTop
+    const step = () => {
+      scrollAnimRafRef.current = null
+      // Re-read the target every frame so it can never go stale.
+      const target = el.scrollHeight - el.clientHeight
+      const current = el.scrollTop
+      // User scrolled up mid-animation — abort and let the normal scroll
+      // handler take over (it will latch user-intent and disable follow).
+      if (current < lastSetTop - BOTTOM_EPSILON_PX) {
+        scrollAnimatingRef.current = false
+        return
+      }
+      const remaining = target - current
+      if (remaining <= BOTTOM_EPSILON_PX) {
+        // Snap the last sub-pixel and finalize.
+        el.scrollTo({ top: target, behavior: 'auto' })
+        scrollAnimatingRef.current = false
+        // Confirm bottom state now that we've truly arrived; the guard is
+        // already false so this sync runs for real.
+        syncBottomGeometry(el, 'confirm-away')
+        return
+      }
+      // Ease toward the target: cover ~25% of the remaining distance per
+      // frame → ~250-350ms for typical chat heights, matching the feel of
+      // native smooth scroll.
+      const next = current + remaining * 0.25
+      el.scrollTo({ top: next, behavior: 'auto' })
+      lastSetTop = next
+      scrollAnimRafRef.current = requestAnimationFrame(step)
+    }
+    scrollAnimRafRef.current = requestAnimationFrame(step)
+  }, [syncBottomGeometry])
 
   // An empty string is the turn's pre-text phase: a `liveTurn` already
   // exists (created on the turn's first stream event) but no text delta
@@ -813,9 +894,12 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   // Fires when the user scrolls to the top. Pull the previous page of
   // history from disk if there's more and we're not already loading.
   const startReached = useCallback(() => {
-    if (!loadOlder || !hasOlder || loadingOlder) return
+    // With Virtuoso always mounted, startReached can fire on the empty-list
+    // mount (scroller at top, no items). Skip the network page in that case —
+    // there is nothing older to load until at least one message is present.
+    if (!loadOlder || !hasOlder || loadingOlder || renderableItems.length === 0) return
     void loadOlder()
-  }, [loadOlder, hasOlder, loadingOlder])
+  }, [loadOlder, hasOlder, loadingOlder, renderableItems.length])
 
   // Reverse map: full items[] index —Virtuoso (renderableItems) index.
   // Needed because search indices reference the full, unfiltered list.
@@ -997,7 +1081,11 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     const updateHeight = () => {
       const height = Math.ceil(el.getBoundingClientRect().height)
       setStreamingOverlayHeight((prev) => (prev === height ? prev : height))
-      if (atBottomRef.current) scrollScrollerToBottom('auto')
+      // Don't yank an instant snap-to-bottom while the animated scroll is
+      // driving scrollTop — the rAF loop already re-targets to the fresh
+      // scrollHeight each frame, so an instant scrollTo here would only
+      // fight it. The guard keeps atBottomRef true for the rAF loop.
+      if (atBottomRef.current && !scrollAnimatingRef.current) scrollScrollerToBottom('auto')
     }
 
     updateHeight()
@@ -1019,15 +1107,15 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     const handler = () => {
       const prevScrollTop = lastScrollTopRef.current
       lastScrollTopRef.current = el.scrollTop
-      // The jump's instant scrollTo fires one async 'scroll' event. Consume
-      // the guard and skip the geometry sync for that single event so the
-      // optimistic atBottomRef=true from jumpToBottom survives a same-frame
-      // streaming growth spurt (which would otherwise make geometry.atBottom
-      // briefly false and downgrade the re-pin path the jump just armed).
-      // The jump is a downward programmatic scroll, so skipping also correctly
-      // bypasses the user-intent latch (which only fires on upward scrolls).
-      if (jumpScrollRef.current) {
-        jumpScrollRef.current = false
+      // While a programmatic smooth-scroll animation (jump-to-bottom or a
+      // new-message follow) is in flight, skip the geometry sync entirely.
+      // Mid-animation the viewport is intentionally not yet at the bottom;
+      // running the sync would see dist>0, arm the 150ms follow-disable
+      // debounce, and fire it mid-animation — flipping shouldFollow/atBottom
+      // false and re-showing the jump button, exactly the race the animation
+      // guard exists to prevent. The rAF loop clears the guard when it lands
+      // (or aborts on user scroll-up), after which normal sync resumes.
+      if (scrollAnimatingRef.current) {
         return
       }
       const isScrollingUp = el.scrollTop < prevScrollTop
@@ -1047,47 +1135,42 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     clearFollowTimer()
   }, [clearFollowTimer])
 
+  // Cancel any in-flight animated scroll on unmount so a pending rAF
+  // callback can't fire after the scroller is gone.
+  useEffect(() => () => {
+    if (scrollAnimRafRef.current != null) {
+      cancelAnimationFrame(scrollAnimRafRef.current)
+      scrollAnimRafRef.current = null
+    }
+    scrollAnimatingRef.current = false
+  }, [])
+
   const jumpToBottom = useCallback(() => {
-    // Jump-to-bottom is a "catch me up" action, not a cinematic pan. Two
-    // reasons it must NOT use `behavior: 'smooth'`:
+    // Jump-to-bottom animates smoothly to the real bottom. The animation is
+    // driven by `animateScrollToBottom` — a rAF easing loop that re-reads
+    // `scrollHeight` every frame, so unlike native `behavior: 'smooth'` it
+    // can never land short when content grows mid-animation (no stale
+    // captured target). See that helper for the full rationale.
     //
-    // 1. Stale target. `el.scrollTo({ top: el.scrollHeight, smooth })`
-    //    captures `scrollHeight` at click time and animates toward that
-    //    pixel over hundreds of ms. While the animation runs, any content
-    //    growth (streaming text mirroring into the spacer Footer, Virtuoso
-    //    row-height measurement settling, lazy images/code blocks) moves
-    //    the real bottom past the captured target. The animation then
-    //    lands short — and nothing corrects it, because atBottomRef is
-    //    still false at that instant, so the streaming ResizeObserver's
-    //    `if (atBottomRef.current) scrollScrollerToBottom('auto')` re-pin
-    //    guard skips. That was the "sometimes doesn't scroll to bottom"
-    //    bug: it failed exactly when content grew during the animation
-    //    window, i.e. during active streaming.
-    //
-    // 2. Follow gap. The user had scrolled up (shouldFollowRef=false,
-    //    latched). The old jump never re-enabled follow, so even when the
-    //    smooth scroll happened to land, a new message arriving before
-    //    atBottomStateChange(true) restored follow left the viewport a
-    //    hair above the new bottom.
-    //
-    // Fix: instant scroll (no animation window → no stale target) plus
-    // optimistic follow re-enable. Setting atBottomRef=true arms the
-    // existing streaming ResizeObserver re-pin path for subsequent growth;
-    // shouldFollowRef=true lets Virtuoso's followOutput track new appends.
-    // clearFollowTimer cancels any pending disable-debounced timer from
-    // the prior scroll-up so it can't flip follow back off mid-jump.
+    // Optimistically re-enable follow BEFORE the animation lands, so the
+    // existing backstops stay armed for the duration of the animation and
+    // beyond:
+    //   - shouldFollowRef = true    -> followOutput tracks new appends
+    //   - setBottomState(true)      -> atBottomRef=true arms the streaming
+    //                                  ResizeObserver re-pin path; also kept
+    //                                  true by scrollAnimatingRef for the
+    //                                  animation's duration
+    //   - setCanJumpToBottom(false) -> hide the button without a flicker
+    //   - clearFollowTimer()        -> cancel any pending disable-debounced
+    //                                  timer from the prior scroll-up so it
+    //                                  cannot flip follow back off mid-jump
     shouldFollowRef.current = true
     setBottomState(true)
     setCanJumpToBottom(false)
     clearFollowTimer()
-    // Arm the one-shot guard so the async 'scroll' event from the instant
-    // scrollTo below doesn't downgrade the optimistic atBottomRef=true via
-    // the scroll handler's 'preserve' geometry sync (see jumpScrollRef). The
-    // guard is consumed on the handler's very next event.
-    jumpScrollRef.current = true
-    scrollScrollerToBottom('auto')
+    animateScrollToBottom()
     clearUnseen()
-  }, [clearFollowTimer, clearUnseen, scrollScrollerToBottom, setBottomState])
+  }, [animateScrollToBottom, clearFollowTimer, clearUnseen, setBottomState])
 
   // --- Scroll to previous / next user message ----------------------------
   // Data-array (0-based, Virtuoso `scrollToIndex` space) indices of every
@@ -1173,22 +1256,33 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     syncBottomGeometry(null)
   }, [syncBottomGeometry])
 
-  // New settled message arrives → Virtuoso calls followOutput → we return
-  // 'auto' (instant), NOT 'smooth'. A smooth follow creates a ~300ms
-  // animation window during which the viewport is momentarily not at
-  // bottom. The scroll handler effect re-attaches on every
-  // renderableItems.length change and calls syncBottomGeometry(el,
-  // 'confirm-away'); during that window it sees dist>0, arms the 150ms
-  // follow-disable debounce, and that debounce fires mid-follow — flipping
-  // shouldFollow=false AND atBottomRef=false. That disables both this
-  // followOutput (for the NEXT append) and the streaming ResizeObserver
-  // instant re-pin, so the view stays/lags short of the new message's
-  // bottom. Instant follow closes the window: dist returns to 0 in the same
-  // frame, confirm-away restores instead of arming, and both backstops stay
-  // armed. (The live typing bubble is pinned separately by the streaming
+  // New settled message arrives → Virtuoso calls followOutput. We drive the
+  // follow-scroll OURSELVES via `animateScrollToBottom` (a rAF easing loop
+  // that re-reads scrollHeight every frame) and return `false` so Virtuoso
+  // doesn't also fire its own scroll and fight ours.
+  //
+  // Why not return 'smooth' (let Virtuoso animate)? Two problems that the
+  // rAF loop fixes:
+  //  1. Stale target. A native smooth scroll captures scrollHeight once at
+  //     call time; content growth during the ~300ms animation moves the real
+  //     bottom past it and the follow lands short. The rAF loop re-targets
+  //     every frame, so it always terminates at the real bottom.
+  //  2. Follow-disable race. During a smooth follow the viewport is
+  //     momentarily not at bottom; the scroll handler / syncBottomGeometry
+  //     would see dist>0, arm the 150ms follow-disable debounce, and fire it
+  //     mid-follow — flipping shouldFollow/atBottom false so the NEXT append
+  //     isn't followed. `animateScrollToBottom` holds `scrollAnimatingRef`
+  //     true for the whole animation, which makes syncBottomGeometry and the
+  //     scroll handler short-circuit (keep atBottom/follow armed) until it
+  //     lands.
+  // (The live typing bubble is pinned separately by the streaming
   // ResizeObserver, so this only affects settled-message appends — the
   // standard chat-UI snap-to-new-message.)
-  const followOutput = useCallback(() => (shouldFollowRef.current ? 'auto' : false), [])
+  const followOutput = useCallback((_atBottom: boolean) => {
+    if (!shouldFollowRef.current) return false
+    animateScrollToBottom()
+    return false
+  }, [animateScrollToBottom])
 
   const atBottomStateChange = useCallback((reportedAtBottom: boolean) => {
     // Prefer direct DOM geometry so the button and follow-mode use the
@@ -1291,7 +1385,11 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   const virtuosoComponents = useMemo(() => {
     // The Header slot shows a "loading older history" affordance pinned to
     // the top. Only relevant for the main transcript (loadOlder provided).
-    const showOlderHeader = loadOlder != null && (loadingOlder || hasOlder)
+    // `renderableItems.length > 0` gate: with Virtuoso always mounted, the
+    // Header slot would otherwise render even over the empty-state overlay
+    // (hasOlder defaults true on every session). There is nothing to "scroll
+    // up" for until at least one message exists.
+    const showOlderHeader = loadOlder != null && (loadingOlder || hasOlder) && renderableItems.length > 0
     const components: Record<string, () => React.ReactElement> = {}
     if (showOlderHeader) {
       components.Header = () => <OlderHistoryHeader loading={loadingOlder} />
@@ -1302,7 +1400,7 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
       )
     }
     return components
-  }, [streamingOverlayHeight, loadOlder, loadingOlder, hasOlder])
+  }, [streamingOverlayHeight, loadOlder, loadingOlder, hasOlder, renderableItems.length])
 
   return (
     <SessionCwdProvider value={cwd}>
@@ -1315,40 +1413,47 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     <div className="chat-messages-wrap">
       <div className="chat-messages-stage">
       <div ref={messagesElRef} key={transcriptRevealKey} className={messagesClassName} onAnimationEnd={handleTranscriptRevealEnd}>
-        {renderableItems.length === 0 ? (
+        {/* Virtuoso is ALWAYS mounted (even with zero items) so its scroller
+            is already measured by the time the first message arrives. If it
+            were mounted fresh on the empty→first-message transition, the first
+            paint would top-align the row (alignToBottom needs one layout pass
+            to detect "content shorter than viewport"), producing a one-frame
+            flash where the message appears at the top before dropping to the
+            bottom. Pre-mounting lets followOutput + alignToBottom pin it to the
+            bottom on the very first frame. The empty state below is an overlay
+            that covers the idle (header-less) scroller while there's nothing
+            to show. */}
+        <Virtuoso
+          ref={virtuosoRef}
+          scrollerRef={scrollerRefCb}
+          data={renderableItems}
+          firstItemIndex={firstItemIndex}
+          initialTopMostItemIndex={renderableItems.length > 0 ? renderableItems.length - 1 : 0}
+          followOutput={followOutput}
+          atBottomStateChange={atBottomStateChange}
+          startReached={startReached}
+          rangeChanged={handleRangeChanged}
+          itemContent={itemContent}
+          components={virtuosoComponents}
+          // Render ~600px of items BELOW the fold before they become the
+          // bottom anchor. Without this, a new tail item (e.g. a tool card
+          // arriving mid-stream) mounts at an estimated height, so totalHeight
+          // is wrong for one frame; the ResizeObserver then corrects it and
+          // `followOutput` re-pins to bottom, yanking scrollTop by
+          // (actual —estimated). That one-frame scroll correction shifts the
+          // streaming footer bubble as a block — the "streaming footer" jitter. By
+          // pre-rendering tail items offscreen they're already measured before
+          // becoming the anchor, so no post-insert scroll correction happens.
+          // Rows are memoized, so the extra offscreen DOM is cheap.
+          increaseViewportBy={{ top: 0, bottom: 600 }}
+          alignToBottom
+        />
+        {renderableItems.length === 0 && (
           <div className="chat-messages-empty">
-            {replayReady
-              ? (emptyStateContent ?? (gameOpen
-                  ? <EasterEggGame onExit={closeEasterEgg} />
-                  : <ChatEmptyState onUnlockEasterEgg={openEasterEgg} />))
-              : <Skeleton rows={3} className="chat-messages-skeleton" />}
+            {emptyStateContent ?? (gameOpen
+                ? <EasterEggGame onExit={closeEasterEgg} />
+                : <ChatEmptyState onUnlockEasterEgg={openEasterEgg} />)}
           </div>
-        ) : (
-          <Virtuoso
-            ref={virtuosoRef}
-            scrollerRef={scrollerRefCb}
-            data={renderableItems}
-            firstItemIndex={firstItemIndex}
-            initialTopMostItemIndex={renderableItems.length > 0 ? renderableItems.length - 1 : 0}
-            followOutput={followOutput}
-            atBottomStateChange={atBottomStateChange}
-            startReached={startReached}
-            rangeChanged={handleRangeChanged}
-            itemContent={itemContent}
-            components={virtuosoComponents}
-            // Render ~600px of items BELOW the fold before they become the
-            // bottom anchor. Without this, a new tail item (e.g. a tool card
-            // arriving mid-stream) mounts at an estimated height, so totalHeight
-            // is wrong for one frame; the ResizeObserver then corrects it and
-            // `followOutput` re-pins to bottom, yanking scrollTop by
-            // (actual —estimated). That one-frame scroll correction shifts the
-            // streaming footer bubble as a block — the "streaming footer" jitter. By
-            // pre-rendering tail items offscreen they're already measured before
-            // becoming the anchor, so no post-insert scroll correction happens.
-            // Rows are memoized, so the extra offscreen DOM is cheap.
-            increaseViewportBy={{ top: 0, bottom: 600 }}
-            alignToBottom
-          />
         )}
       </div>
       {canJumpToBottom && !atBottom && (
