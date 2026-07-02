@@ -1078,7 +1078,6 @@
   max-width: min(var(--chat-reading-max-width), 100%);
   border: 1px solid var(--border);
   border-radius: 8px;
-  border-bottom-left-radius: 3px;
   background: color-mix(in srgb, var(--bg) 75%, transparent);
   backdrop-filter: var(--glass-blur);
   margin: 0 0 4px;
