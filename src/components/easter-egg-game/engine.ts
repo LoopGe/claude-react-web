@@ -216,12 +216,13 @@ function spawnFireworkBurst(s: GameState) {
   for (let i = 0; i < count; i++) {
     const ang = (Math.PI * 2 * i) / count + Math.random() * 0.3
     const sp = 1.5 + Math.random() * 1.5
+    const life = 40 + Math.floor(Math.random() * 20)
     s.fireworks.push({
       x: cx, y: cy,
       vx: Math.cos(ang) * sp,
       vy: Math.sin(ang) * sp,
-      life: 40 + Math.floor(Math.random() * 20),
-      maxLife: 60,
+      life,
+      maxLife: life, // alpha = life/maxLife starts at 1.0 and fades to 0
       color,
     })
   }
