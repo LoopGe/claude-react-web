@@ -45,7 +45,7 @@ const PLAYER_H = 26
 const PLAYER_W = 22
 const PLAYER_X = 48
 const GRAVITY = 0.9
-// JUMP_V is added in Task 6 when jump input is wired (noUnusedLocals flags it otherwise).
+const JUMP_V = -13.5
 
 // --- Persisted high score + mute preference ---------------------------------
 const HI_KEY = 'crw_easter_egg_hi'
@@ -107,6 +107,26 @@ function playCrashSound(audioRef: AudioRef, muted: boolean) {
     const gain = ac.createGain(); gain.gain.value = 0.12
     src.connect(gain); gain.connect(ac.destination)
     src.start()
+  } catch { /* ignore */ }
+}
+
+// Short ~660Hz square-wave blip for jumps. Mirrors playCrashSound's shape
+// (generic AudioRef + muted flag) so it can be called from the component
+// without touching AudioContext directly.
+function playBeep(audioRef: AudioRef, muted: boolean) {
+  if (muted) return
+  const ac = ensureAudioContext(audioRef)
+  if (!ac) return
+  try {
+    const osc = ac.createOscillator()
+    osc.type = 'square'
+    osc.frequency.value = 660
+    const gain = ac.createGain()
+    gain.gain.setValueAtTime(0.08, ac.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + 0.12)
+    osc.connect(gain); gain.connect(ac.destination)
+    osc.start()
+    osc.stop(ac.currentTime + 0.12)
   } catch { /* ignore */ }
 }
 
@@ -299,6 +319,11 @@ function renderFrame(
   ctx.textAlign = 'center'
   if (s.status === 'ready') {
     ctx.fillText('Press Space / Click to start', W / 2, 40)
+  } else if (s.status === 'paused') {
+    ctx.fillStyle = c.fg
+    ctx.fillText('Paused', W / 2, 70)
+    ctx.fillStyle = c.muted
+    ctx.fillText('Click or press Space to resume', W / 2, 90)
   } else if (s.status === 'gameOver') {
     ctx.fillStyle = c.fg
     ctx.font = 'bold 16px system-ui, sans-serif'
@@ -324,6 +349,28 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
     typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
   )
   const setMutedAll = (v: boolean) => { mutedRef.current = v; setMuted(v); writeMuted(v) }
+
+  function resetGame(startRunning: boolean) {
+    const next = makeInitialState()
+    if (startRunning) next.status = 'running'
+    stateRef.current = next
+    newBestRef.current = false
+  }
+
+  function jump() {
+    const s = stateRef.current
+    if (s.status === 'ready') { s.status = 'running'; s.lastScoreTime = performance.now() }
+    if (s.status === 'gameOver') { resetGame(true); return }
+    if (s.status === 'paused') { s.status = 'running'; return } // resume, no jump this press
+    if (s.status === 'running' && s.player.grounded) {
+      s.player.vy = JUMP_V
+      s.player.grounded = false
+      playBeep(audioRef, mutedRef.current)
+    }
+  }
+
+  const jumpRef = useRef(jump)
+  useEffect(() => { jumpRef.current = jump })
 
   const colorsRef = useRef({ fg: '#333', muted: '#888', bg: '#fff', accent: '#0a0' })
   useEffect(() => {
@@ -380,11 +427,52 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
     return () => { if (rafRef.current != null) cancelAnimationFrame(rafRef.current) }
   }, [])
 
+  // keyboard: Space/Up to jump, Escape to exit
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code === 'Space' || e.code === 'ArrowUp' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        jumpRef.current()
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        onExit()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onExit])
+
+  // auto-pause when the user clicks outside this panel or the window loses focus
+  useEffect(() => {
+    const root = canvasRef.current
+    const panel = root?.closest('.chat-panel') as Element | null
+    const onMouseDown = (e: MouseEvent) => {
+      if (stateRef.current.status !== 'running') return
+      if (panel && !panel.contains(e.target as Node)) {
+        stateRef.current.status = 'paused'
+      }
+    }
+    const onBlur = () => {
+      if (stateRef.current.status === 'running') {
+        stateRef.current.status = 'paused'
+      }
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      window.removeEventListener('blur', onBlur)
+    }
+    // refs are stable and the panel is resolved once at mount
+  }, [])
+
   return (
     <div className="easter-egg-game">
       <canvas
         ref={canvasRef}
         aria-label="Easter egg sparkle dino game"
+        onClick={() => jumpRef.current()}
+        onTouchStart={(e) => { e.preventDefault(); jumpRef.current() }}
       />
       <div className="easter-egg-game-toolbar">
         <button className="easter-egg-game-btn" aria-label="Toggle sound" onClick={() => setMutedAll(!mutedRef.current)}>{muted ? '🔇' : '🔊'}</button>
