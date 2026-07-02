@@ -379,27 +379,15 @@
   line-height: 1.55;
 }
 
-/* Easter-egg trigger: bounce the icon tile on each click, and tint it toward
-   the accent color once the user has clicked twice (a subtle "something is
-   happening" cue that is reversible if the chain resets). */
-.chat-empty-icon--bounce {
-  animation: chat-empty-icon-bounce 220ms var(--motion-ease-enter);
-}
+/* Easter-egg trigger: tint the icon toward the accent color once the user has
+   clicked twice (a subtle "something is happening" cue that is reversible if
+   the chain resets). The per-click bounce is driven imperatively via the Web
+   Animations API in ChatEmptyState.tsx — deliberately NOT a CSS class, so it
+   can't collide with the `chat-empty-item-in` entrance on the `animation`
+   shorthand (see the component header for why). */
 .chat-empty-icon--armed {
   color: var(--accent);
   border-color: var(--accent);
-}
-@keyframes chat-empty-icon-bounce {
-  0%   { transform: translateY(0) scale(1); }
-  45%  { transform: translateY(-6px) scale(1.15); }
-  100% { transform: translateY(0) scale(1); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .chat-empty-icon--bounce { animation-duration: 80ms; }
-  @keyframes chat-empty-icon-bounce {
-    0%, 100% { transform: translateY(0); }
-    50% { transform: translateY(-2px); }
-  }
 }
 
 /* Easter-egg game overlay: fills the empty-state flex container (which already

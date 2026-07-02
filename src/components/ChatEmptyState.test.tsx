@@ -46,21 +46,27 @@ describe('ChatEmptyState easter-egg trigger', () => {
     expect(onUnlock).toHaveBeenCalledTimes(1)
   })
 
-  it('applies the bounce class on click and re-triggers on a rapid second click', () => {
-    // The bounce class is managed imperatively (remove → forced reflow →
-    // re-add) so each click reliably restarts the CSS animation in a real
-    // browser. NOTE: jsdom in this project has no AnimationEvent constructor,
-    // so React's onAnimationEnd (which clears the bounce class) cannot be
-    // exercised through fireEvent.animationEnd here — that clear path is
-    // verified manually in the browser. We assert the testable half: a click
-    // applies the bounce class, and a second rapid click keeps it present
-    // (the imperative remove/reflow/add cycle re-triggers the animation).
+  it('drives the bounce via the Web Animations API on each click', () => {
+    // The bounce is played through `el.animate` (WAAPI) rather than a toggled
+    // CSS class, so it lives outside the CSS `animation` cascade and cannot
+    // restart the `chat-empty-item-in` entrance (the old class-toggle approach
+    // played two animations per click: the bounce, then a spurious entrance
+    // replay). jsdom doesn't run animations, so we assert the call itself: each
+    // click invokes animate once, and a rapid re-click cancels the prior run
+    // before starting a fresh one.
     render(<ChatEmptyState onUnlockEasterEgg={vi.fn()} />)
     const icon = document.querySelector('.chat-empty-icon') as HTMLElement
+    const cancel = vi.fn()
+    const animateSpy = vi.fn(() => ({ cancel }) as unknown as Animation)
+    ;(icon as unknown as { animate: typeof animateSpy }).animate = animateSpy
+
     fireEvent.click(icon)
-    expect(icon.classList.contains('chat-empty-icon--bounce')).toBe(true)
-    // A second rapid click re-triggers the bounce (class remains present).
+    expect(animateSpy).toHaveBeenCalledTimes(1)
+    expect(cancel).not.toHaveBeenCalled()
+
+    // A second rapid click cancels the in-flight bounce, then re-triggers.
     fireEvent.click(icon)
-    expect(icon.classList.contains('chat-empty-icon--bounce')).toBe(true)
+    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(animateSpy).toHaveBeenCalledTimes(2)
   })
 })
