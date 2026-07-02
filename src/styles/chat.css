@@ -849,7 +849,9 @@
 }
 .thinking-details {
   color: var(--fg-muted);
-  margin: 4px 0;
+  /* margin-top only (not `4px 0`) to match .tool-result-details, so the
+     bottom gap between a thinking card and the next block is consistent. */
+  margin-top: 4px;
 }
 .thinking-summary {
   cursor: pointer;
@@ -877,8 +879,15 @@
 .thinking-details[data-state="open"] .thinking-preview {
   display: none;
 }
-.thinking-body {
-  margin-top: 6px;
+/* Selector must out-specify `.msg-body pre` (messages.css), which sets
+   `margin: 8px 0` on every <pre> in a message body. `.thinking-body` alone
+   (0,1,0) loses to `.msg-body pre` (0,1,1), so the intended margin never
+   applied. `.msg-body .thinking-body` (0,2,0) wins. We keep only a small top
+   gap below the summary and zero the bottom, so bottom spacing is governed by
+   the `.thinking-details` wrapper — matching `.tool-result-details` — instead
+   of a bottom margin the collapse's flow-root would trap inside the card. */
+.msg-body .thinking-body {
+  margin: 6px 0 0;
   color: var(--code-fg);
 }
 .msg-header {
