@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 
 // Hidden easter-egg mini-game: a Chrome-offline-dino-style endless runner
 // themed after this app. The player is the same sparkle glyph used in the
@@ -44,15 +44,6 @@ interface Obstacle {
 const PLAYER_H = 26
 const PLAYER_W = 22
 const PLAYER_X = 48
-// Physics constants — used in Task 4+ (jump/physics). Kept here so the
-// gameplay module shape is stable; referenced via `void` below to satisfy
-// tsc noUnusedLocals without polluting exports.
-const GRAVITY = 0.9
-const JUMP_V = -13.5
-// Reserved for Task 4+ — prevents noUnusedLocals on constants that later
-// gameplay tasks require.
-void GRAVITY
-void JUMP_V
 
 function makeInitialState(): GameState {
   return {
@@ -133,17 +124,6 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const stateRef = useRef<GameState>(makeInitialState())
   const rafRef = useRef<number | null>(null)
-  // `status` React state is wired but only drives DOM in Task 6 (controls /
-  // overlay UI). The skeleton renders only canvas + exit button, so the
-  // value is intentionally unread for now. `setstatus` mirrors into a ref
-  // so later tasks can switch status synchronously inside the rAF loop.
-  const [status, setStatus] = useState<Status>('ready')
-  const statusRef = useRef<Status>('ready')
-  const setstatus = (s: Status) => { statusRef.current = s; setStatus(s) }
-  // Reserved for Task 6 (controls / overlays). `void` keeps these alive
-  // under tsc noUnusedLocals until then.
-  void status
-  void setstatus
 
   const colorsRef = useRef({ fg: '#333', muted: '#888', bg: '#fff', accent: '#0a0' })
   useEffect(() => {
