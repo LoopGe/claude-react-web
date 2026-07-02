@@ -1606,6 +1606,7 @@ export const Chat = memo(function Chat({
             <PinnedUserMessage
               text={pinnedText}
               isExiting={pinnedPresence.isExiting}
+              clearing={effectiveClearing}
               onClick={() => scrollNavRef.current?.('prev')}
             />
           )}
