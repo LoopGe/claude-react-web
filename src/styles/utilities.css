@@ -517,6 +517,106 @@
   white-space: pre-wrap;
 }
 
+/* SendMessage — inter-agent message card.
+ *   header  : "→ recipient" (mono pill) + optional summary chip
+ *   body    : collapsible <details> — one-line preview → full Markdown
+ * Header padding mirrors the snug websearch/grep cards; the body strips
+ * the default tool-card-body padding so the <details> owns its own chrome. */
+.tool-card-sendmessage .tool-card-header {
+  padding: 6px 10px;
+}
+.tool-card-sendmessage .tool-card-body {
+  padding: 0;
+}
+.sendmessage-tool-to {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sendmessage-tool-arrow {
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+.sendmessage-tool-to code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--fg);
+  background: var(--bg);
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+.sendmessage-tool-body {
+  margin: 0;
+}
+.sendmessage-tool-summary {
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  padding: 4px 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sendmessage-tool-summary:hover {
+  background: var(--bg-elev);
+}
+.sendmessage-tool-body[data-state="open"] > .sendmessage-tool-summary {
+  background: transparent;
+  border-bottom: 1px solid var(--border);
+}
+.sendmessage-tool-content {
+  padding: 6px 10px 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+}
+.sendmessage-tool-content > :first-child {
+  margin-top: 0;
+}
+.sendmessage-tool-content > :last-child {
+  margin-bottom: 0;
+}
+
+/* TaskOutput — body-less header card that polls a background task.
+ *   header  : task_id (mono pill) + block/timeout chips
+ *   body    : none — the retrieved output arrives as the tool_result and
+ *             is rendered by ToolCard's built-in ToolCardResult section.
+ * Header padding mirrors the snug websearch/grep cards. */
+.tool-card-taskoutput .tool-card-header {
+  padding: 6px 10px;
+}
+.taskoutput-tool-to {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.taskoutput-tool-to code {
+  font-family: var(--mono);
+  color: var(--fg);
+  background: var(--bg);
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+
 /* Status chip variant for "danger" — used by NotebookEdit delete chip
  * and other destructive markers. */
 .tool-chip-danger {

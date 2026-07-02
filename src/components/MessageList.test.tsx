@@ -880,6 +880,187 @@ describe('MessageList', () => {
   })
 })
 
+describe('SendMessage tool card', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('renders a structured card with recipient, summary chip, and collapsed preview', () => {
+    // SendMessage is inter-agent messaging — the card must surface the
+    // recipient + summary at a glance and stash the (potentially long)
+    // message body in a collapsed <details>. This replaces the previous
+    // raw-JSON fallback that dumped the whole input as a <pre>.
+    const msgs = [
+      makeMsg('assistant', {
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'sm-1',
+              name: 'SendMessage',
+              input: {
+                to: 'researcher',
+                summary: 'assign task 1',
+                message: 'start on task #1\n\nmore detail here',
+              },
+            },
+          ],
+        },
+      }),
+    ]
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+    )
+
+    // Structured chrome — not the generic unknown-tool card.
+    expect(container.querySelector('.tool-card-sendmessage')).toBeTruthy()
+    expect(container.querySelector('.tool-card-unknown')).toBeNull()
+
+    // Recipient pill shows the teammate name.
+    expect(container.querySelector('.sendmessage-tool-to code')?.textContent).toBe('researcher')
+
+    // Summary chip echoes the sender-provided summary.
+    expect(container.querySelector('.tool-chip')?.textContent).toContain('assign task 1')
+
+    // Collapsed preview is the first line of the message.
+    expect(container.querySelector('.sendmessage-tool-summary')?.textContent).toContain('start on task #1')
+
+    // The full message body lives in the AnimatedDetails body (mounted but
+    // visually collapsed by default), so the second line is reachable in the DOM.
+    expect(container.querySelector('.sendmessage-tool-content')?.textContent).toContain('more detail here')
+  })
+
+  it('truncates a long recipient id in the title but keeps the full value on hover', () => {
+    const longId = 'a9c1a4af43f7f8c1a000000000000000000000000000000'
+    const msgs = [
+      makeMsg('assistant', {
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'sm-2',
+              name: 'SendMessage',
+              input: { to: longId, message: 'hi' },
+            },
+          ],
+        },
+      }),
+    ]
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+    )
+    const to = container.querySelector('.sendmessage-tool-to') as HTMLElement
+    // Truncated label is shorter than the full id…
+    expect(to.querySelector('code')?.textContent!.length).toBeLessThan(longId.length)
+    // …but the full id is preserved on the wrapper's title for hover/tooltip.
+    expect(to.getAttribute('title')).toBe(longId)
+  })
+
+  it('falls back to raw JSON when input lacks both recipient and message', () => {
+    const msgs = [
+      makeMsg('assistant', {
+        message: {
+          content: [{ type: 'tool_use', id: 'sm-3', name: 'SendMessage', input: { bogus: 1 } }],
+        },
+      }),
+    ]
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+    )
+    // Defensive branch: no structured card, raw JSON rendered instead.
+    expect(container.querySelector('.tool-card-sendmessage')).toBeNull()
+    expect(container.textContent).toContain('bogus')
+  })
+})
+
+describe('TaskOutput tool card', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('renders a body-less header card with task_id and block/timeout chips', () => {
+    // TaskOutput polls a background task. The input is just an id + wait
+    // options; the retrieved output arrives as the tool_result, which
+    // ToolCard renders on its own. So the card is a header-only row that
+    // surfaces the task_id (so you can see WHICH task is being polled) plus
+    // block/timeout chips — replacing the raw JSON dump that buried the id.
+    const msgs = [
+      makeMsg('assistant', {
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'to-1',
+              name: 'TaskOutput',
+              input: { task_id: 'bash-7', block: true, timeout: 180000 },
+            },
+          ],
+        },
+      }),
+    ]
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+    )
+
+    expect(container.querySelector('.tool-card-taskoutput')).toBeTruthy()
+    expect(container.querySelector('.tool-card-unknown')).toBeNull()
+
+    // task_id pill.
+    expect(container.querySelector('.taskoutput-tool-to code')?.textContent).toBe('bash-7')
+    // Full id preserved on hover.
+    expect(container.querySelector('.taskoutput-tool-to')?.getAttribute('title')).toBe('bash-7')
+    // blocking chip (accent) + timeout rendered as seconds.
+    const chips = Array.from(container.querySelectorAll('.tool-chip')).map((c) => c.textContent)
+    expect(chips).toContain('blocking')
+    expect(chips.some((c) => c === '180s')).toBe(true)
+    // No body of its own — the result section is rendered separately by ToolCard.
+    expect(container.querySelector('.tool-card-body')).toBeNull()
+  })
+
+  it('renders ms timeout below the 1s threshold and omits the block chip when block is unset', () => {
+    const msgs = [
+      makeMsg('assistant', {
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'to-2',
+              name: 'TaskOutput',
+              input: { task_id: 'agent-3', timeout: 500 },
+            },
+          ],
+        },
+      }),
+    ]
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+    )
+    const chips = Array.from(container.querySelectorAll('.tool-chip')).map((c) => c.textContent)
+    // No block field → neither "blocking" nor "non-blocking" chip.
+    expect(chips).not.toContain('blocking')
+    expect(chips).not.toContain('non-blocking')
+    // Sub-second timeout stays in ms.
+    expect(chips.some((c) => c === '500ms')).toBe(true)
+  })
+
+  it('falls back to raw JSON when input lacks a task_id', () => {
+    const msgs = [
+      makeMsg('assistant', {
+        message: {
+          content: [{ type: 'tool_use', id: 'to-3', name: 'TaskOutput', input: { bogus: 1 } }],
+        },
+      }),
+    ]
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} replayReady />,
+    )
+    expect(container.querySelector('.tool-card-taskoutput')).toBeNull()
+    expect(container.textContent).toContain('bogus')
+  })
+})
+
 describe('ApiRetryView divider', () => {
   beforeEach(() => {
     vi.clearAllMocks()

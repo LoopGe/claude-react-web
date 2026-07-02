@@ -43,6 +43,7 @@ import {
   IconCircle,
   IconCircleDot,
   IconClipboardList,
+  IconDownload,
   IconSquare,
   IconExternalLink,
   IconFileCode,
@@ -50,6 +51,7 @@ import {
   IconFolderSearch,
   IconGlobe,
   IconListTodo,
+  IconMessageCircle,
   IconMessageQuestion,
   IconNotebook,
   IconSearch,
@@ -1565,6 +1567,151 @@ function WebSearchToolView({ input, toolUseId, searchQuery, activeMatchIdx }: To
 }
 
 // ---------------------------------------------------------------------------
+// SendMessage
+// ---------------------------------------------------------------------------
+
+/**
+ * Agent-to-agent / agent-to-main message. Input shape (loosely typed — the
+ * SDK schema drifts, so every field is validated before use):
+ *   { to: string, summary?: string, message: string }
+ *
+ *   - title  : the recipient ("→ name") so message routing is scannable at
+ *              a glance. `to` may be a teammate name, "main", or an agent
+ *              id (e.g. "a9c1a4af…"); long ids are truncated with the full
+ *              value in the hover title.
+ *   - chip   : the sender-provided `summary` (muted, truncated).
+ *   - body   : the `message`, collapsed to a one-line preview by default
+ *              and expanding to a full Markdown render — agents routinely
+ *              embed code blocks / lists in these, and plain <pre> would
+ *              show the backticks literally. Auto-opens when a search
+ *              query is active so matches inside the body are reachable.
+ *
+ * Parallels WebSearch's title+chip header and ToolResultDetails' collapsible
+ * body, so an inter-agent message reads as part of the same tool-card family
+ * instead of falling through to the raw-JSON fallback.
+ */
+function SendMessageToolView({ input, toolUseId, searchQuery, activeMatchIdx }: ToolViewProps) {
+  if (!input || typeof input !== 'object') {
+    return <div className="tool-input">{formatJson(input)}</div>
+  }
+  const to = typeof input.to === 'string' ? input.to : null
+  const summary = typeof input.summary === 'string' ? input.summary : null
+  const message = typeof input.message === 'string' ? input.message : null
+
+  // Without a recipient AND a message there's nothing structured to show —
+  // hand back to the raw-JSON branch so the user still sees something.
+  if (!to && !message) return <div className="tool-input">{formatJson(input)}</div>
+
+  const toLabel = to ? truncate(to, 40) : '(no recipient)'
+  const firstLine = message ? (message.split('\n')[0]?.trim() || message) : ''
+  const preview = firstLine ? truncate(firstLine, 120) : '(empty message)'
+  const hasSearch = Boolean(searchQuery?.trim())
+
+  const chips = summary ? (
+    <span className="tool-chip" title={summary}>{truncate(summary, 80)}</span>
+  ) : null
+
+  return (
+    <ToolCard
+      icon={<IconMessageCircle />}
+      title={
+        <span className="sendmessage-tool-to" title={to ?? undefined}>
+          <span className="sendmessage-tool-arrow" aria-hidden>→</span>
+          <code>{toLabel}</code>
+        </span>
+      }
+      chips={chips}
+      toolUseId={toolUseId}
+      copyValue={message ? () => message : undefined}
+      copyLabel="Copy message"
+      className="tool-card-sendmessage"
+      searchQuery={searchQuery}
+      activeMatchIdx={activeMatchIdx}
+    >
+      <AnimatedDetails
+        className="sendmessage-tool-body"
+        summaryClassName="sendmessage-tool-summary"
+        summary={preview}
+        open={hasSearch ? true : undefined}
+      >
+        <div className="sendmessage-tool-content">
+          {message ? (
+            <Markdown text={message} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />
+          ) : (
+            <div className="tool-input">(empty message)</div>
+          )}
+        </div>
+      </AnimatedDetails>
+    </ToolCard>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// TaskOutput
+// ---------------------------------------------------------------------------
+
+/**
+ * Retrieve output from a background task/agent. Input shape (loosely typed):
+ *   { task_id: string, block?: boolean, timeout?: number }
+ *
+ * Unlike SendMessage, the interesting payload here is NOT the input — it's
+ * the tool_result (the retrieved output stream), which ToolCard already
+ * renders inline via ToolCardResult/ToolResultDetails. So this view is a
+ * body-less header card (like WebSearch): the task_id in a mono pill so
+ * you can see WHICH background task is being polled, plus block/timeout
+ * chips that distinguish a one-shot peek from a blocking wait.
+ *
+ * Without this, the input dumps as raw JSON (`{"task_id":"bash-7",
+ * "block":true,"timeout":180000}`) and the id — the only bit you'd want
+ * to scan for — is buried.
+ */
+function TaskOutputToolView({ input, toolUseId, searchQuery, activeMatchIdx }: ToolViewProps) {
+  if (!input || typeof input !== 'object') {
+    return <div className="tool-input">{formatJson(input)}</div>
+  }
+  const taskId = typeof input.task_id === 'string' ? input.task_id : null
+  const block = typeof input.block === 'boolean' ? input.block : null
+  const timeout = typeof input.timeout === 'number' ? input.timeout : null
+
+  if (!taskId) return <div className="tool-input">{formatJson(input)}</div>
+
+  // Render timeout as a human chip: ms when <1s, seconds otherwise. The
+  // raw ms is preserved in the title for copy/debug.
+  const timeoutChip =
+    timeout != null ? (
+      <span className="tool-chip" title={`${timeout}ms`}>
+        {timeout >= 1000
+          ? `${(timeout / 1000).toFixed(timeout % 1000 === 0 ? 0 : 1)}s`
+          : `${timeout}ms`}
+      </span>
+    ) : null
+
+  const chips = (
+    <>
+      {block === true && <span className="tool-chip tool-chip-accent">blocking</span>}
+      {block === false && <span className="tool-chip">non-blocking</span>}
+      {timeoutChip}
+    </>
+  )
+
+  return (
+    <ToolCard
+      icon={<IconDownload />}
+      title={
+        <span className="taskoutput-tool-to" title={taskId}>
+          <code>{truncate(taskId, 40)}</code>
+        </span>
+      }
+      chips={chips}
+      toolUseId={toolUseId}
+      className="tool-card-taskoutput"
+      searchQuery={searchQuery}
+      activeMatchIdx={activeMatchIdx}
+    />
+  )
+}
+
+// ---------------------------------------------------------------------------
 // NotebookEdit
 // ---------------------------------------------------------------------------
 
@@ -1653,6 +1800,8 @@ const TOOL_VIEWS: Record<string, ToolInputView> = {
   Glob: GlobToolView,
   WebFetch: WebFetchToolView,
   WebSearch: WebSearchToolView,
+  SendMessage: SendMessageToolView,
+  TaskOutput: TaskOutputToolView,
   NotebookEdit: NotebookEditToolView,
   TaskCreate: TaskMutationView,
   TaskUpdate: TaskMutationView,
