@@ -30,13 +30,15 @@ interface GameState {
   spawnIn: number
   nightBlend: number // 0..1
   lastScoreTime: number
+  frame: number
 }
 
 interface Obstacle {
   x: number
   w: number
   h: number
-  kind: 'bug' | 'error' | 'warning'
+  kind: 'bug' | 'error' | 'warning' | 'bird'
+  alt: number   // altitude above ground (0 = sits on ground)
   passed: boolean
 }
 
@@ -140,6 +142,7 @@ function makeInitialState(): GameState {
     spawnIn: 60,
     nightBlend: 0,
     lastScoreTime: 0,
+    frame: 0,
   }
 }
 
@@ -147,13 +150,33 @@ const OBSTACLE_PROFILES = {
   bug:     { w: 26, h: 18 },
   error:   { w: 16, h: 26 },
   warning: { w: 18, h: 22 },
+  bird:    { w: 24, h: 14, alt: 46 },
 } as const
 
+// Deterministic star field (LCG-seeded so positions don't jitter between frames).
+const STARS: { x: number; y: number; r: number }[] = (() => {
+  let seed = 1337
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff
+  const arr: { x: number; y: number; r: number }[] = []
+  for (let i = 0; i < 26; i++) {
+    arr.push({ x: Math.floor(rnd() * W), y: Math.floor(rnd() * (GROUND_Y - 30)) + 6, r: rnd() < 0.25 ? 1.4 : 0.8 })
+  }
+  return arr
+})()
+
 function spawnObstacle(s: GameState) {
+  // Birds only appear after score 50, mixed in ~25% of the time. They fly at
+  // an altitude that intersects the jump arc, so the player must stay grounded.
+  const canBird = s.score > 50 && Math.random() < 0.25
+  if (canBird) {
+    const p = OBSTACLE_PROFILES.bird
+    s.obstacles.push({ x: W + 10, w: p.w, h: p.h, kind: 'bird', alt: p.alt, passed: false })
+    return
+  }
   const kinds: ('bug' | 'error' | 'warning')[] = ['bug', 'error', 'warning']
   const kind = kinds[Math.floor(Math.random() * kinds.length)]
   const p = OBSTACLE_PROFILES[kind]
-  s.obstacles.push({ x: W + 10, w: p.w, h: p.h, kind, passed: false })
+  s.obstacles.push({ x: W + 10, w: p.w, h: p.h, kind, alt: 0, passed: false })
 }
 
 function updateRunning(s: GameState) {
@@ -191,12 +214,12 @@ function updateRunning(s: GameState) {
       o.passed = true
       s.score += 5
     }
-    // hitbox (slightly forgiving). Obstacle sits on the ground, spanning
-    // y in [GROUND_Y - o.h, GROUND_Y]. Player spans y in [py, py + ph].
+    // hitbox (slightly forgiving). Obstacle spans y in
+    // [GROUND_Y - o.alt - o.h, GROUND_Y - o.alt]. Player spans y in [py, py + ph].
     const px = PLAYER_X + 3, py = s.player.y + 3
     const pw = PLAYER_W - 6, ph = PLAYER_H - 6
     const oxHit = px < o.x + o.w && px + pw > o.x
-    const oyHit = py + ph > GROUND_Y - o.h // py < GROUND_Y always true
+    const oyHit = py + ph > GROUND_Y - o.alt - o.h && py < GROUND_Y - o.alt
     if (oxHit && oyHit) {
       s.status = 'gameOver'
       // (high-score persistence + sound are handled in the rAF loop where
@@ -211,9 +234,38 @@ function updateRunning(s: GameState) {
   s.nightBlend = lerp(s.nightBlend, nightTarget, 0.02)
 }
 
-function drawObstacle(ctx: CanvasRenderingContext2D, o: Obstacle, c: { fg: string; muted: string }) {
+function drawObstacle(ctx: CanvasRenderingContext2D, o: Obstacle, c: { fg: string; muted: string }, frame: number) {
   const x = o.x, baseY = GROUND_Y
   ctx.save()
+  if (o.kind === 'bird') {
+    // `#e8e8e8`-ish body via stroke uses theme fg; intentional literal-free
+    // drawing — wings/beak are stroked with c.fg like the bug, so no extra
+    // color literals introduced here.
+    const cy = baseY - o.alt - o.h / 2
+    const flap = Math.sin(frame * 0.3) * 5
+    ctx.strokeStyle = c.fg
+    ctx.lineWidth = 1.6
+    ctx.lineCap = 'round'
+    // body
+    ctx.beginPath()
+    ctx.arc(x + o.w / 2, cy, 4, 0, Math.PI * 2)
+    ctx.stroke()
+    // wings (flap)
+    ctx.beginPath()
+    ctx.moveTo(x + o.w / 2 - 2, cy)
+    ctx.lineTo(x + o.w / 2 - 10, cy - 4 - flap)
+    ctx.moveTo(x + o.w / 2 + 2, cy)
+    ctx.lineTo(x + o.w / 2 + 10, cy - 4 - flap)
+    ctx.stroke()
+    // beak
+    ctx.beginPath()
+    ctx.moveTo(x + o.w / 2 + 4, cy)
+    ctx.lineTo(x + o.w / 2 + 8, cy + 1)
+    ctx.lineTo(x + o.w / 2 + 4, cy + 2)
+    ctx.stroke()
+    ctx.restore()
+    return
+  }
   if (o.kind === 'bug') {
     ctx.strokeStyle = c.fg
     ctx.lineWidth = 1.6
@@ -304,8 +356,38 @@ function renderFrame(
   // (nightBlend * 0.6), so full night is a 60% darken. mixRgb guards non-hex.
   ctx.fillStyle = s.nightBlend > 0.01 ? mixRgb(c.bg, '#0b0e14', s.nightBlend * 0.6) : c.bg
   ctx.fillRect(0, 0, W, H)
+  // Night sky: stars + moon, fading in with nightBlend. The `#e8e8e8` (moon/
+  // stars) and `#0b0e14` (crescent shadow) literals are intentional — they
+  // aren't theme tokens (no night-sky var exists), consistent with the
+  // obstacle red/amber exception noted below.
+  if (s.nightBlend > 0.01) {
+    const a = s.nightBlend
+    // moon (top-right), with a soft crescent shadow carved from the night bg.
+    ctx.save()
+    ctx.globalAlpha = a
+    ctx.fillStyle = '#e8e8e8'
+    ctx.beginPath()
+    ctx.arc(W - 48, 34, 9, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.fillStyle = mixRgb(c.bg, '#0b0e14', s.nightBlend * 0.6)
+    ctx.beginPath()
+    ctx.arc(W - 44, 31, 8, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.restore()
+    // stars (twinkle slightly via frame)
+    ctx.save()
+    ctx.fillStyle = '#e8e8e8'
+    for (const st of STARS) {
+      const tw = 0.6 + 0.4 * Math.sin((s.frame + st.x) * 0.05)
+      ctx.globalAlpha = a * tw
+      ctx.beginPath()
+      ctx.arc(st.x, st.y, st.r, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    ctx.restore()
+  }
   drawGround(ctx, s.groundOffset, c.muted)
-  for (const o of s.obstacles) drawObstacle(ctx, o, c)
+  for (const o of s.obstacles) drawObstacle(ctx, o, c, s.frame)
   drawSparkle(ctx, PLAYER_X + PLAYER_W / 2, s.player.y + PLAYER_H / 2, 9, c.fg)
   ctx.fillStyle = c.muted
   ctx.font = '12px system-ui, sans-serif'
@@ -400,6 +482,7 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
 
     const loop = () => {
       const s = stateRef.current
+      s.frame += 1
       if (s.status === 'ready' || s.status === 'running') {
         s.groundOffset = (s.groundOffset + s.speed) % 10000
       }
