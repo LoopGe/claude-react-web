@@ -1154,7 +1154,18 @@
 @keyframes msg-enter-rise {
   from {
     opacity: 0;
-    transform: translateY(var(--motion-distance-md));
+    /* Enter from slightly ABOVE the final position (negative Y), not below.
+       A CSS transform doesn't change layout height (offsetHeight) but the
+       browser DOES count the transformed position toward the scroll
+       container's scrollable overflow (scrollHeight). The entering row is
+       the bottom-most item, so a downward translate (+Y) pushes scrollHeight
+       past the viewport for the animation's duration — a transient scrollbar
+       that flashes then vanishes when the transform eases back to 0 (most
+       visible on the very first message, where content height exactly equals
+       the viewport). Shifting UP instead keeps the row's rendered box within
+       the content bottom, so scrollHeight never grows and no phantom
+       scrollbar appears. */
+    transform: translateY(calc(-1 * var(--motion-distance-md)));
     filter: blur(6px);
   }
   to {

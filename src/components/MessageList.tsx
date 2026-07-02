@@ -327,6 +327,36 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   const [unseenCount, setUnseenCount] = useState(0)
   const unseenCountRef = useRef(0)
 
+  // Synchronous bottom-pin for freshly-appended trailing items.
+  //
+  // Root cause of the "new message flashes one row too high, then snaps
+  // down" jitter: when `items` grows, Virtuoso has already grown
+  // `scrollHeight` to include the new row by the time React commits (the
+  // sizer is up to date), but `scrollTop` is still at the OLD bottom. The
+  // follow-scroll (`followOutput` → `animateScrollToBottom`) only runs its
+  // first step on the NEXT `requestAnimationFrame`, so the browser paints
+  // one frame with the new row pushed ~1 row below the viewport bottom
+  // (equivalently: the transcript sitting one row too high). That single
+  // stale-`scrollTop` frame is the visible jump.
+  //
+  // Fix: pin `scrollTop` to the bottom right here in `useLayoutEffect` —
+  // after the DOM mutation, BEFORE paint — so the new row is painted at the
+  // bottom in the very frame it mounts. `scrollHeight` is already correct at
+  // this point (proven by instrumentation), so this is an exact pin, not an
+  // estimate. The rAF ease still runs afterward but finds `remaining ≈ 0`
+  // and finalizes immediately, so the two never fight. Gated on
+  // `shouldFollowRef` so we never yank a user who has scrolled up.
+  const prevPinItemsLenRef = useRef(items.length)
+  useLayoutEffect(() => {
+    const prevLen = prevPinItemsLenRef.current
+    prevPinItemsLenRef.current = items.length
+    if (items.length <= prevLen) return
+    if (!shouldFollowRef.current) return
+    const el = scrollerRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+  })
+
   const clearFollowTimer = useCallback(() => {
     if (followTimerRef.current == null) return
     clearTimeout(followTimerRef.current)
