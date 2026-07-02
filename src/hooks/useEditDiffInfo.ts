@@ -37,8 +37,22 @@ export interface EditDiffInfo {
   hunks: EditDiffHunk[] | null
 }
 
+// Results are cached for the tab lifetime by (cwd, path, anchors) and a single
+// in-flight request per key is shared across concurrent callers, so a
+// MultiEdit card and a re-render don't double-fetch. The cache is capped
+// (FIFO by insertion order) so a long-lived tab churning through many distinct
+// edits can't grow it without bound; `inflight` self-clears via .finally.
+const CACHE_CAP = 200
 const cache = new Map<string, EditDiffInfo[]>()
 const inflight = new Map<string, Promise<EditDiffInfo[]>>()
+
+function cacheSet(key: string, value: EditDiffInfo[]) {
+  cache.set(key, value)
+  if (cache.size > CACHE_CAP) {
+    const oldest = cache.keys().next().value
+    if (oldest !== undefined) cache.delete(oldest)
+  }
+}
 
 function cacheKey(
   cwd: string | undefined,
@@ -86,12 +100,12 @@ export function useEditDiffInfo(
                 hunks: Array.isArray(it?.hunks) ? it.hunks.map(normalizeHunk) : null,
               }))
             : emptyResult(anchors)
-          cache.set(key, info)
+          cacheSet(key, info)
           return info
         })
         .catch(() => {
           const fallback = emptyResult(anchors)
-          cache.set(key, fallback)
+          cacheSet(key, fallback)
           return fallback
         })
         .finally(() => {

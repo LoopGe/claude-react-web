@@ -163,10 +163,14 @@ export class ProcessMonitor {
     // steals data. Captured for EVERY spawn (registered or not) so the
     // diagnostic survives even a stray post-unregister spawn.
     const child = process as unknown as ChildProcess
+    // Declared in the outer scope so the `!entry` stray-spawn path below can
+    // detach them; assigned inside `if (child.stderr)`.
+    let stderrDataHandler: ((chunk: string) => void) | null = null
+    let stderrEndHandler: (() => void) | null = null
     if (child.stderr) {
       let buf = ''
       child.stderr.setEncoding('utf8')
-      const stderrDataHandler = (chunk: string) => {
+      stderrDataHandler = (chunk: string) => {
         buf += chunk
         let idx: number
         while ((idx = buf.indexOf('\n')) >= 0) {
@@ -175,7 +179,7 @@ export class ProcessMonitor {
           if (line) log.warn(`[process-monitor] stderr[${sid}]: ${line}`)
         }
       }
-      const stderrEndHandler = () => {
+      stderrEndHandler = () => {
         const tail = buf.trimEnd()
         if (tail) log.warn(`[process-monitor] stderr[${sid}]: ${tail}`)
       }
@@ -193,7 +197,27 @@ export class ProcessMonitor {
     if (!entry) {
       // No registered entry (e.g. a stray spawn after unregister). Fall
       // through to default spawn so we don't break the SDK; we just won't
-      // track its exit or fire onExit for it.
+      // track its exit or fire onExit for it. We still attached stderr
+      // listeners above so the diagnostic survives this stray spawn — but
+      // finalizeEntry never runs for unregistered entries, so detach them
+      // ourselves on child exit/close. Otherwise the `buf` closure (which may
+      // hold a large captured stderr body) stays pinned to the ChildProcess
+      // until it's GC'd — exactly the leak finalizeEntry guards against for
+      // registered entries.
+      if (stderrDataHandler && stderrEndHandler) {
+        const data = stderrDataHandler
+        const end = stderrEndHandler
+        const detachStderr = () => {
+          if (child.stderr) {
+            child.stderr.off('data', data)
+            child.stderr.off('end', end)
+          }
+          child.off('exit', detachStderr)
+          child.off('close', detachStderr)
+        }
+        child.on('exit', detachStderr)
+        child.on('close', detachStderr)
+      }
       log.warn(`[process-monitor] spawn for unregistered session ${sid} — not tracking exit`)
       return process
     }

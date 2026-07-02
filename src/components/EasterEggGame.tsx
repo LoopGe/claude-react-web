@@ -91,32 +91,53 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
     canvas.height = H * dpr
     ctx.scale(dpr, dpr)
 
-    const loop = () => {
+    // Fixed-timestep simulation: updateRunning is a per-frame fixed-delta step
+    // (gravity/obstacle motion/spawn timing all assume ~60fps). Driving it once
+    // per rAF makes the whole sim run 2-2.4x faster on 120/144Hz displays while
+    // score accrues on real time — unplayable on high-refresh screens. Instead
+    // accumulate real elapsed time and step the sim at a fixed 1000/60ms, so
+    // the number of physics steps per second is display-independent. Render
+    // once per rAF. Clamp large gaps (tab was backgrounded) so we don't run a
+    // huge catch-up burst, and cap steps/frame to avoid a spiral of death.
+    const STEP_MS = 1000 / 60
+    let last = performance.now()
+    let acc = 0
+    const loop = (now: number) => {
       const s = stateRef.current
-      s.frame += 1
-      if (s.status === 'ready' || s.status === 'running') {
-        s.groundOffset = (s.groundOffset + s.speed) % 10000
-      }
-      if (s.status === 'running') {
-        const before = s.status
-        updateRunning(s)
-        const after = s.status as Status
-        // reduced-motion: snap day/night instead of the smooth lerp.
-        if (reducedMotionRef.current) {
-          s.nightBlend = Math.floor(s.score / 100) % 2
+      let dt = now - last
+      last = now
+      if (dt > 200) dt = STEP_MS // tab was away — don't catch up a multi-second burst
+      acc += dt
+      let steps = 0
+      while (acc >= STEP_MS && steps < 5) {
+        s.frame += 1
+        if (s.status === 'ready' || s.status === 'running') {
+          s.groundOffset = (s.groundOffset + s.speed) % 10000
         }
-        // running → gameOver transition: record high score + play crash.
-        if (before === 'running' && after === 'gameOver') {
-          if (s.score > hiRef.current) {
-            hiRef.current = s.score
-            writeHi(s.score)
-            newBestRef.current = true
-          } else {
-            newBestRef.current = false
+        if (s.status === 'running') {
+          const before = s.status
+          updateRunning(s)
+          const after = s.status as Status
+          // reduced-motion: snap day/night instead of the smooth lerp.
+          if (reducedMotionRef.current) {
+            s.nightBlend = Math.floor(s.score / 100) % 2
           }
-          playCrashSound(audioRef, mutedRef.current)
+          // running → gameOver transition: record high score + play crash.
+          if (before === 'running' && after === 'gameOver') {
+            if (s.score > hiRef.current) {
+              hiRef.current = s.score
+              writeHi(s.score)
+              newBestRef.current = true
+            } else {
+              newBestRef.current = false
+            }
+            playCrashSound(audioRef, mutedRef.current)
+          }
         }
+        acc -= STEP_MS
+        steps += 1
       }
+      if (steps >= 5) acc = 0 // discard leftover instead of spiraling
       renderFrame(ctx, s, colorsRef.current, hiRef.current, newBestRef.current)
       rafRef.current = requestAnimationFrame(loop)
     }

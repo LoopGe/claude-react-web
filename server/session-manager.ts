@@ -1450,19 +1450,12 @@ export class SessionManager {
         fastMode: s.fastMode,
         enabledPlugins: s.enabledPlugins,
         parentId: s.parentId,
+        // Carry X's session-level skill override onto Y so a pinned restrictive
+        // policy survives /clear. fork() forwards this via its 5th spawn() arg;
+        // clear() must do the same or Y silently falls back to the global
+        // (possibly permissive) policy.
+        skillOverride: s.skillOverride,
       }
-
-      // Detach X as dormant. unload() destroys the live Query (the subprocess
-      // exits asynchronously, releasing the transcript file handle), marks the
-      // session not-running, persists its meta, broadcasts a dormant `update`,
-      // and removes it from the live map — so a later resume(X) re-spawns from
-      // disk via the normal resume path. The transcript file and sessions.json
-      // entry are NOT touched: P1 survives as a resumable session. There is no
-      // need to await process exit here: the old reason for waiting was Windows
-      // holding the .jsonl open before `deleteTranscriptFile`, and that step is
-      // gone — the dying subprocess writes to X.jsonl while Y writes to Y.jsonl,
-      // so they never collide.
-      await this.unload(id)
 
       // Spawn a fresh session Y under a new id, same settings, no `resume:`.
       // spawn() persists Y, broadcasts `created`, and starts its pump. Side
@@ -1495,7 +1488,22 @@ export class SessionManager {
       // spawn() builds a fresh canUseTool for Y (permBroker.buildCanUseTool),
       // so we do NOT reuse X's canUseTool closure — Y gets its own permission
       // tracker. spawn() also applies the skill policy to sdkOptions.
-      const newY = this.spawn(randomUUID(), freshOpts)
+      //
+      // Spawn Y BEFORE unloading X: if spawn() throws (invalid resolved
+      // options, provider createSession rejecting, mpStore path resolution
+      // throwing), X is still live and runnable — the finally resets
+      // s.clearing and the tab keeps its session. Unloading X first would
+      // orphan the tab (X gone from the map, Y never registered). This also
+      // keeps the `s.clearing` idempotency guard effective for the whole
+      // spawn+fastMode window: a concurrent second clear(id) returns X's info
+      // instead of racing into a 404 once X is removed.
+      const newY = this.spawn(
+        randomUUID(),
+        freshOpts,
+        undefined,
+        undefined,
+        settings.skillOverride,
+      )
       const newYId = newY.id
 
       // fastMode is runtime state re-applied via applyFlagSettings, not an
@@ -1513,6 +1521,18 @@ export class SessionManager {
           }
         }
       }
+
+      // Detach X as dormant NOW that Y is live. unload() destroys the live
+      // Query (the subprocess exits asynchronously, releasing the transcript
+      // file handle), marks the session not-running, persists its meta,
+      // broadcasts a dormant `update`, and removes it from the live map — so a
+      // later resume(X) re-spawns from disk via the normal resume path. The
+      // transcript file and sessions.json entry are NOT touched: P1 survives
+      // as a resumable session. There is no need to await process exit here:
+      // the old reason for waiting was Windows holding the .jsonl open before
+      // `deleteTranscriptFile`, and that step is gone — the dying subprocess
+      // writes to X.jsonl while Y writes to Y.jsonl, so they never collide.
+      await this.unload(id)
 
       log.info(`[session ${id}] clear: detached as dormant, fresh session=${newYId}`)
       return newY

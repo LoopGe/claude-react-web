@@ -114,14 +114,26 @@ export function mixRgb(a: string, b: string, t: number): string {
 export type AudioRef = { current: AudioContext | null }
 
 export function ensureAudioContext(audioRef: AudioRef): AudioContext | null {
-  if (audioRef.current) return audioRef.current
+  if (audioRef.current) {
+    // Browsers auto-suspend the AudioContext when the tab is backgrounded; if
+    // we never resume() it, every subsequent beep/crash is silent. Resume on
+    // each use (a no-op when already running) so SFX come back after the user
+    // returns to the tab. Fire-and-forget — the call needs a user gesture,
+    // which playBeep/playCrashSound always run inside.
+    if (audioRef.current.state === 'suspended') {
+      void audioRef.current.resume().catch(() => {})
+    }
+    return audioRef.current
+  }
   try {
     const Ctor =
       window.AudioContext ||
       (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
     if (!Ctor) return null
-    audioRef.current = new Ctor()
-    return audioRef.current
+    const ac = new Ctor()
+    audioRef.current = ac
+    if (ac.state === 'suspended') void ac.resume().catch(() => {})
+    return ac
   } catch { return null }
 }
 

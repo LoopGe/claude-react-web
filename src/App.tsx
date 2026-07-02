@@ -878,6 +878,23 @@ export function App() {
     [],
   )
 
+  /** Stable per-group "close all panels" handlers. Passing an inline arrow
+   *  `() => closeGroupPanels(owningGroup.id)` in the panel render loop would
+   *  mint a fresh function identity on every App render (every WS frame) and
+   *  bust memo(ChatPanel) for every grouped panel. This map hands out a stable
+   *  identity per group, rebuilding only when the group set itself changes. */
+  const closeGroupPanelsHandlers = useMemo(() => {
+    const map = new Map<string, () => void>()
+    /* eslint-disable react-hooks/refs -- closeGroupPanels only reads refs when
+       INVOKED (on click), not here during render; the arrow is a deferred
+       closure, not a call, which the rule can't see through. */
+    for (const g of groups) map.set(g.id, () => closeGroupPanels(g.id))
+    /* eslint-enable react-hooks/refs */
+    return map
+    // closeGroupPanels is stable ([] deps); rebuild only when the group set
+    // changes, not on every render.
+  }, [groups, closeGroupPanels])
+
   /** Move a session into a group (or out of all groups when groupId is
    *  empty). Capacity is enforced by the callers (the sidebar drag-over
    *  rejects drops onto a full group, the context menu hides full groups
@@ -2775,7 +2792,7 @@ export function App() {
                       onClose={closeSession}
                       groupLabel={owningGroup?.name}
                       onCloseGroupPanels={
-                        owningGroup ? () => closeGroupPanels(owningGroup.id) : undefined
+                        owningGroup ? closeGroupPanelsHandlers.get(owningGroup.id) : undefined
                       }
                       onDelete={handleDelete}
                       onSessionUpdate={updateSession}

@@ -497,6 +497,50 @@ describe('SessionManager', () => {
     expect(sm.subscribeHookRuns(next.id)!.snapshot).toHaveLength(0)
   })
 
+  it('clear() preserves the session skill override on the fresh session', async () => {
+    // Regression: clear() must forward X.skillOverride to spawn() (5th arg,
+    // same as fork()) or Y silently falls back to the global — possibly
+    // permissive — policy, losing a pinned restrictive override.
+    const info = sm.create({})
+    await sm.setSkillOverride(info.id, { kind: 'disabled' })
+    expect(sm.get(info.id).skillOverride).toEqual({ kind: 'disabled' })
+
+    const next = await sm.clear(info.id)
+
+    // Y inherits the pinned override; the SDK also sees it applied via the
+    // spawn-time skill policy (applySkillPolicyToOptions), not just the flag
+    // layer. mockHandles[1] is Y's handle.
+    expect(sm.get(next.id).skillOverride).toEqual({ kind: 'disabled' })
+    // 'disabled' projects to an empty Options.skills (every skill forced off).
+    expect(mockHandles[1].options.skills).toEqual([])
+  })
+
+  it('clear() leaves X runnable when spawn() of Y throws (no orphaned tab)', async () => {
+    // Regression: clear() used to unload X BEFORE spawning Y, so a spawn
+    // throw orphaned the tab (X gone, Y never registered). Now Y is spawned
+    // first; on throw X stays live and runnable, clearing is reset.
+    const info = sm.create({})
+    // Stub the first spawn() call (Y) to throw synchronously. spawn is private
+    // but the internal this.spawn dispatches through the instance method, so a
+    // spy intercepts it. X must survive untouched.
+    const spawnSpy = vi
+      .spyOn(sm as unknown as { spawn: (...a: unknown[]) => unknown }, 'spawn')
+      .mockImplementationOnce(() => {
+        throw new Error('spawn boom')
+      })
+    await expect(sm.clear(info.id)).rejects.toThrow('spawn boom')
+    spawnSpy.mockRestore()
+    // X is still live, still runnable, no longer mid-clear.
+    const x = sm.get(info.id)
+    expect(x.id).toBe(info.id)
+    expect((x as { clearing?: boolean }).clearing).toBeFalsy()
+    // No fresh session was registered.
+    expect(mockHandles).toHaveLength(1)
+    // A new turn still works on X.
+    sm.send(info.id, 'still here')
+    expect(sm.get(info.id).working).toBe(true)
+  })
+
   it('clear() does not leave lastTurnAt on the fresh session (no spurious "No messages yet" recap)', async () => {
     // Regression: the recap auto-hook gates on `lastTurnAt`. If clear()
     // left lastTurnAt set on the fresh Y while Y's history ring is empty,
