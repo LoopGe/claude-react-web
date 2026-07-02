@@ -131,6 +131,16 @@ export interface ChatPanelProps {
   /** Open the resume picker scope to this panel — the chosen session
    *  replaces this panel's slot. Triggered by the `/resume` local command. */
   onRequestResumeForPanel: (panelSessionId: string) => void
+  /** When true, the resume picker renders as an in-panel overlay on top of
+   *  this chat panel (column-scoped, mirroring the Settings/Git overlays).
+   *  The chosen session replaces THIS panel's slot. Null-target / global
+   *  resume still uses the App-root modal, not this prop. */
+  resumeOpen?: boolean
+  /** Resume the picked session INTO the panel whose id is `panelSessionId`.
+   *  Passed the hosting panel's id so <Chat> doesn't need to know it. */
+  onResumeIntoPanel?: (pickedId: string, panelSessionId: string) => void
+  /** Close the in-panel resume overlay (Esc / backdrop click). */
+  onCloseResume?: () => void
   /** `/clear` this panel — the server detaches the pre-clear conversation
    *  as dormant and returns a fresh session; App swaps the panel id. Triggered
    *  by the `/clear` local command. */
@@ -172,12 +182,12 @@ export interface ChatPanelProps {
   /** Forwarded to <Chat> so it can register its interrupt callback with
    *  the parent App. Enables ESC shortcut to trigger the same code-path
    *  as the Composer's interrupt button. */
-  onRegisterInterrupt?: (sessionId: string, fn: () => void) => void
+  onRegisterInterrupt?: (sessionId: string, fn: () => void) => () => void
   /** Forwarded to <Chat> so it can register its recap-refresh callback. */
-  onRegisterRecap?: (sessionId: string, fn: () => void) => void
+  onRegisterRecap?: (sessionId: string, fn: () => void) => () => void
   /** Forwarded to <Chat> so it can register its composer input-injection
    *  callback (used by the Mod+Shift+H input-history panel). */
-  onRegisterInjectInput?: (sessionId: string, fn: (text: string) => void) => void
+  onRegisterInjectInput?: (sessionId: string, fn: (text: string) => void) => () => void
   /** True while the session is being resumed from dormancy. */
   isResuming?: boolean
   /** Global composer-snippets api (single shared instance owned by App).
@@ -209,6 +219,9 @@ export const ChatPanel = memo(function ChatPanel({
   onSwap,
   onAcceptSidebarDrop,
   onRequestResumeForPanel,
+  resumeOpen,
+  onResumeIntoPanel,
+  onCloseResume,
   onClearSession,
   onOpenSettingsTab,
   onShowHelp,
@@ -766,6 +779,9 @@ export const ChatPanel = memo(function ChatPanel({
             clearing={clearing}
             onSessionUpdate={onSessionUpdate}
             onRequestResumeForPanel={onRequestResumeForPanel}
+            resumeOpen={resumeOpen}
+            onResumeIntoPanel={onResumeIntoPanel}
+            onCloseResume={onCloseResume}
             onClearSession={onClearSession}
             onOpenSettingsTab={onOpenSettingsTab}
             onShowHelp={onShowHelp}

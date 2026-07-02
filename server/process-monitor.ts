@@ -73,6 +73,11 @@ interface Entry {
   resolveExit: (info: ProcessExitInfo) => void
   exitHandler: ((code: number | null, signal: NodeJS.Signals | null) => void) | null
   errorHandler: ((err: Error) => void) | null
+  /** Diagnostic stderr listeners attached in spawnFor. Detached in
+   *  finalizeEntry so a dead ChildProcess reference can't keep the `buf`
+   *  closure (and potentially large captured stderr) alive. */
+  stderrDataHandler: ((chunk: string) => void) | null
+  stderrEndHandler: (() => void) | null
   safetyTimer: NodeJS.Timeout | null
   resolved: boolean
 }
@@ -126,6 +131,8 @@ export class ProcessMonitor {
       resolveExit,
       exitHandler: null,
       errorHandler: null,
+      stderrDataHandler: null,
+      stderrEndHandler: null,
       safetyTimer: null,
       resolved: false,
     })
@@ -159,7 +166,7 @@ export class ProcessMonitor {
     if (child.stderr) {
       let buf = ''
       child.stderr.setEncoding('utf8')
-      child.stderr.on('data', (chunk: string) => {
+      const stderrDataHandler = (chunk: string) => {
         buf += chunk
         let idx: number
         while ((idx = buf.indexOf('\n')) >= 0) {
@@ -167,11 +174,20 @@ export class ProcessMonitor {
           buf = buf.slice(idx + 1)
           if (line) log.warn(`[process-monitor] stderr[${sid}]: ${line}`)
         }
-      })
-      child.stderr.on('end', () => {
+      }
+      const stderrEndHandler = () => {
         const tail = buf.trimEnd()
         if (tail) log.warn(`[process-monitor] stderr[${sid}]: ${tail}`)
-      })
+      }
+      child.stderr.on('data', stderrDataHandler)
+      child.stderr.on('end', stderrEndHandler)
+      // Stash on the entry so finalizeEntry can detach them — otherwise the
+      // handlers (and the `buf` closure they share) stay attached to the
+      // ChildProcess until it's GC'd, retaining captured stderr.
+      if (entry) {
+        entry.stderrDataHandler = stderrDataHandler
+        entry.stderrEndHandler = stderrEndHandler
+      }
     }
 
     if (!entry) {
@@ -259,6 +275,13 @@ export class ProcessMonitor {
     // Detach listeners so a lingering ChildProcess reference can't re-fire.
     if (entry.process && entry.exitHandler) entry.process.off('exit', entry.exitHandler)
     if (entry.process && entry.errorHandler) entry.process.off('error', entry.errorHandler)
+    // Detach the diagnostic stderr listeners too — otherwise the `buf`
+    // closure they share (which may hold a large captured stderr body)
+    // stays pinned to the ChildProcess until it's GC'd.
+    if (entry.process?.stderr) {
+      if (entry.stderrDataHandler) entry.process.stderr.off('data', entry.stderrDataHandler)
+      if (entry.stderrEndHandler) entry.process.stderr.off('end', entry.stderrEndHandler)
+    }
     entry.resolveExit(info)
     this.entries.delete(reg)
     // Only surface to SessionManager when the exit was NOT an intentional

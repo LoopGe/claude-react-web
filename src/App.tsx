@@ -38,6 +38,7 @@ import { useClearAnimation } from './hooks/useClearAnimation'
 import { sessionStoreRegistry } from './session-store/registry'
 import { useAppOverlays } from './app/useAppOverlays'
 import { useExitPresence, usePresenceValue } from './hooks/useExitPresence'
+import { createCallbackRegistry, type CallbackRegistry } from './utils/callbackRegistry'
 
 // Lazy-load heavy modal/overlay components that are only shown on demand.
 // This keeps the initial bundle lean — the user pays the download cost
@@ -235,7 +236,11 @@ export function App() {
    *  composer. Holds the textarea snapshot so later edits don't mutate the
    *  captured content before the label is confirmed. */
   const [pendingSnippetSave, setPendingSnippetSave] = useState<{ content: string } | null>(null)
-  const resumeDialogPresence = useExitPresence(resumeDialogOpen)
+  // The App-root modal only renders for the global / empty-state flow
+  // (resumeTargetPanelId === null). When a panel is targeted the picker
+  // renders inside that panel's <Chat> as a column-scoped overlay instead,
+  // so the global modal's presence is gated off here.
+  const resumeDialogPresence = useExitPresence(resumeDialogOpen && resumeTargetPanelId === null)
   const globalSettingsPresence = useExitPresence(globalSettingsOpen)
   const snippetSavePresence = usePresenceValue(pendingSnippetSave)
   const snippetsManagerPresence = useExitPresence(showSnippetsManager)
@@ -386,22 +391,28 @@ export function App() {
   // Per-session interrupt callbacks registered by <Chat> components.
   // The ESC shortcut in the keyboard handler uses this to trigger the
   // same code-path as the Composer's interrupt button.
-  const interruptFnsRef = useRef<Map<string, () => void>>(new Map())
+  //
+  // Each registry returns a stale-guarded unregister so a <Chat> unmount
+  // (panel close / session switch / delete) drops its entry. The previous
+  // `useRef<Map>` only ever `.set()` and never `.delete()`, so closed
+  // sessions leaked their callback closures — and the component scope each
+  // captured — for the lifetime of the tab.
+  const interruptFnsRef = useRef<CallbackRegistry<() => void>>(createCallbackRegistry())
   const registerInterrupt = useCallback((sessionId: string, fn: () => void) => {
-    interruptFnsRef.current.set(sessionId, fn)
+    return interruptFnsRef.current.register(sessionId, fn)
   }, [])
   // Per-session recap-refresh callbacks registered by <Chat> components.
   // Enables the Alt+R shortcut to trigger a recap fetch for the focused session.
-  const recapFnsRef = useRef<Map<string, () => void>>(new Map())
+  const recapFnsRef = useRef<CallbackRegistry<() => void>>(createCallbackRegistry())
   const registerRecap = useCallback((sessionId: string, fn: () => void) => {
-    recapFnsRef.current.set(sessionId, fn)
+    return recapFnsRef.current.register(sessionId, fn)
   }, [])
   // Per-session input-injection callbacks registered by <Chat> components.
   // The Mod+Shift+H input-history panel uses this to drop a selected past
   // message into the focused session's composer.
-  const injectInputFnsRef = useRef<Map<string, (text: string) => void>>(new Map())
+  const injectInputFnsRef = useRef<CallbackRegistry<(text: string) => void>>(createCallbackRegistry())
   const registerInjectInput = useCallback((sessionId: string, fn: (text: string) => void) => {
-    injectInputFnsRef.current.set(sessionId, fn)
+    return injectInputFnsRef.current.register(sessionId, fn)
   }, [])
   // Keep refs in sync with the latest state values. Assigned directly
   // in the render body (before return) so callbacks that capture these
@@ -658,6 +669,14 @@ export function App() {
           // tabs that watch many short sessions over hours otherwise
           // grow that Map without bound.
           pruneSession(frame.id)
+          // Drop the per-session callback registries too. <Chat> unmount
+          // already unregisters via the registry's stale-guarded cleanup,
+          // but this covers the cross-tab-delete case where this tab's
+          // <Chat> for the deleted session is still mounted (its unmount
+          // runs later) and any sessions this tab never had a panel for.
+          interruptFnsRef.current.delete(frame.id)
+          recapFnsRef.current.delete(frame.id)
+          injectInputFnsRef.current.delete(frame.id)
           // Prune the deleted id from persisted sidebar order and group
           // membership. This is the authoritative real-time delete signal
           // (also fires for cross-tab deletes), so it's safe to remove here
@@ -1790,9 +1809,23 @@ export function App() {
           // Windows/Linux, and the dispatcher preventDefault()s every
           // bound combo — which would silently kill hard-reload. mod+shift+o
           // ("Open" a past session) has no browser default.
+          //
+          // Session-scoped: when a panel is focused this mirrors the `/resume`
+          // local command — the picked session REPLACES the focused panel's
+          // slot (and the list is scoped to that session's cwd), instead of
+          // popping a global picker that opens into a new panel. No focused
+          // panel → falls back to the global flow.
           combo: 'mod+shift+o',
-          handler: () => setResumeDialogOpen(true),
-          description: 'Resume session...',
+          handler: () => {
+            const fid = focusedIdRef.current
+            // Close any open settings/git overlay on this panel first —
+            // same mutual-exclusion as requestResumeForPanel (focus traps).
+            setSettingsOpenFor(null)
+            setGitPanelOpenFor(null)
+            setResumeTargetPanelId(fid ?? null)
+            setResumeDialogOpen(true)
+          },
+          description: 'Resume session into focused panel...',
         },
         {
           combo: 'mod+k',
@@ -2307,12 +2340,38 @@ export function App() {
     [resumeSession, openAtSlot],
   )
 
-  // Opened from a panel's `/resume`: remember which slot to replace, then pop
-  // the picker. onResume (below) branches on resumeTargetPanelI?.
+  // Opened from a panel's `/resume` or Ctrl+Shift+O with a focused panel:
+  // remember which slot to replace, then pop the picker. The picker renders
+  // as an in-panel overlay (variant="panel") inside that panel's <Chat>, and
+  // onResume calls handlePanelResume → resumeIntoPanel to swap the slot.
   const requestResumeForPanel = useCallback((panelSessionId: string) => {
+    // Joins the settings/git mutual-exclusion group: each overlay has its
+    // own focus trap, and two mounted at once would fight over focus.
+    setSettingsOpenFor(null)
+    setGitPanelOpenFor(null)
     setResumeTargetPanelId(panelSessionId)
     setResumeDialogOpen(true)
   }, [])
+
+  // Close the resume picker (shared by both variants). Clears both the open
+  // flag and the panel target so neither the App-root modal nor any in-panel
+  // overlay lingers in a stale state.
+  const closeResume = useCallback(() => {
+    setResumeDialogOpen(false)
+    setResumeTargetPanelId(null)
+  }, [])
+
+  // Resume picked from an in-panel overlay: swap the hosting panel's slot.
+  // The Chat hosting the overlay unmounts on the slot swap (its key changes),
+  // so we don't rely on the exit animation here — the swap itself replaces
+  // the tree. State is cleared so a subsequent open starts clean.
+  const handlePanelResume = useCallback(
+    (pickedId: string, panelSessionId: string) => {
+      closeResume()
+      resumeIntoPanel(pickedId, panelSessionId)
+    },
+    [closeResume, resumeIntoPanel],
+  )
 
   /** Manages the veil phase state for local `/clear` fade-in → swap → fade-out.
    *  Keyed by panel session id (which changes X→Y during the swap; the hook's
@@ -2733,6 +2792,9 @@ export function App() {
                       onRegisterInjectInput={registerInjectInput}
                       onAcceptSidebarDrop={handleAcceptSidebarDrop}
                       onRequestResumeForPanel={requestResumeForPanel}
+                      resumeOpen={resumeDialogOpen && resumeTargetPanelId === s.id}
+                      onResumeIntoPanel={handlePanelResume}
+                      onCloseResume={closeResume}
                       onClearSession={handleClear}
                       onOpenSettingsTab={openSettingsTab}
                       onShowHelp={showHelpWithCommands}
@@ -2838,19 +2900,15 @@ export function App() {
 
       {resumeDialogPresence.shouldRender && (
         <Suspense fallback={null}>
+          {/* Global / empty-state resume picker. Only renders when no panel
+              is targeted (resumeTargetPanelId === null) — the panel-targeted
+              case renders as an in-panel overlay inside <Chat> instead. */}
           <ResumeSessionDialog
+            variant="modal"
             open={resumeDialogOpen}
             defaultCwd={defaults.cwd}
             onResume={(id) => {
-              setResumeDialogOpen(false)
-              // Panel-scope `/resume`: replace that panel's slot with the
-              // picked session instead of opening a new panel.
-              if (resumeTargetPanelId) {
-                const target = resumeTargetPanelId
-                setResumeTargetPanelId(null)
-                resumeIntoPanel(id, target)
-                return
-              }
+              closeResume()
               if (openIds.includes(id)) {
                 setFocusedId(id)
                 return
@@ -2868,7 +2926,7 @@ export function App() {
                 void resumeSession(id, (res) => openSession(id, res.session.lastTurnAt))
               }
             }}
-            onCancel={() => { setResumeDialogOpen(false); setResumeTargetPanelId(null) }}
+            onCancel={closeResume}
           />
         </Suspense>
       )}

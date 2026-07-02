@@ -160,6 +160,39 @@ describe('ProcessMonitor', () => {
     expect(onExit).toHaveBeenCalledTimes(1)
   })
 
+  // Regression: spawnFor attaches 'data'/'end' listeners to child.stderr for
+  // diagnostic logging, but finalizeEntry only detached the 'exit'/'error'
+  // handlers. The stderr listeners (and the `buf` closure they capture) stayed
+  // attached to the ChildProcess until it was GC'd, retaining potentially
+  // large stderr strings and the monitor's closures. finalizeEntry must detach
+  // them so a dead ChildProcess reference can't keep the monitor alive.
+  //
+  // Node's Readable adds its own internal 'end' listener once the stream
+  // enters flowing mode (via our 'data' listener), so we assert the monitor's
+  // handlers were removed by checking the count drops by exactly one for each
+  // event — robust to however many internal listeners Node keeps.
+  it('detaches stderr listeners after the process exits (no closure leak)', async () => {
+    const onExit = vi.fn()
+    const mon = new ProcessMonitor(onExit)
+    const reg = mon.register('s-stderr-leak')
+
+    const proc = mon.spawnFor(reg, spawnOpts(0))
+    const stderr = (proc as unknown as { stderr: NodeJS.EventEmitter }).stderr
+    const dataBefore = stderr.listenerCount('data')
+    const endBefore = stderr.listenerCount('end')
+    expect(dataBefore).toBeGreaterThanOrEqual(1)
+    expect(endBefore).toBeGreaterThanOrEqual(1)
+
+    // Wait for exit + finalizeEntry (reg.exited resolves inside finalize).
+    await expectExitSoon(reg)
+
+    // The monitor's own 'data' and 'end' handlers must be gone. 'data' has no
+    // internal listener, so it reaches 0; 'end' keeps Node's internal one, so
+    // it drops by exactly 1.
+    expect(stderr.listenerCount('data')).toBe(0)
+    expect(stderr.listenerCount('end')).toBe(endBefore - 1)
+  })
+
   it('safety timer armed at unregister resolves exited when the child never emits exit (no onExit)', async () => {
     const onExit = vi.fn()
     const mon = new ProcessMonitor(onExit, { safetyMs: 50 })

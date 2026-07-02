@@ -17,6 +17,12 @@ import { useDebouncedValue } from '../hooks/useDebouncedValue'
 // gate its first mount on `settingsEverOpened` rather than `settingsOpen`.
 const SettingsPanel = lazy(() => import('./SettingsPanel').then((m) => ({ default: m.SettingsPanel })))
 const GitPanel = lazy(() => import('./GitPanel').then((m) => ({ default: m.GitPanel })))
+// ResumeSessionDialog is also a per-panel overlay (its 'panel' variant,
+// rendered here) — lazy so the picker code stays out of the main bundle for
+// sessions that never resume via the keyboard shortcut / `/resume`.
+const ResumeSessionDialog = lazy(() =>
+  import('./session-list/ResumeSessionDialog').then((m) => ({ default: m.ResumeSessionDialog })),
+)
 import { RecapWindow } from './RecapWindow'
 import { api } from '../hooks/useApi'
 import { useAttachments } from '../hooks/useAttachments'
@@ -86,6 +92,15 @@ interface Props {
   /** Open the resume picker scope to this panel — the chosen session
    *  replaces this panel's slot. Invoked by the `/resume` local command. */
   onRequestResumeForPanel: (panelSessionId: string) => void
+  /** When true, render the resume picker as an in-panel overlay (column-
+   *  scoped, mirroring Settings/Git) instead of the App-root modal. The
+   *  chosen session replaces THIS panel's slot. */
+  resumeOpen?: boolean
+  /** Resume the picked session INTO this panel. Passed this panel's session
+   *  id so the callback in App knows which slot to replace. */
+  onResumeIntoPanel?: (pickedId: string, panelSessionId: string) => void
+  /** Close the in-panel resume overlay (Esc / backdrop / cancel). */
+  onCloseResume?: () => void
   /** Open this panel's settings overlay on a specific tab. Invoked by the
    *  `/mcp` local command. */
   onOpenSettingsTab: (panelSessionId: string, tab: SettingsTabName) => void
@@ -132,14 +147,14 @@ interface Props {
   /** Called once on mount so the parent can store a reference to this
    *  panel's interrupt() function. Enables the ESC shortcut in App to
    *  trigger the same code-path as the Composer's interrupt button. */
-  onRegisterInterrupt?: (sessionId: string, fn: () => void) => void
+  onRegisterInterrupt?: (sessionId: string, fn: () => void) => () => void
   /** Called once on mount so the parent can store a reference to this
    *  panel's recap.refresh() function. Enables the Alt+R shortcut in App. */
-  onRegisterRecap?: (sessionId: string, fn: () => void) => void
+  onRegisterRecap?: (sessionId: string, fn: () => void) => () => void
   /** Called on mount so the parent can store a reference to this panel's
    *  composer input-injection function. Enables the Mod+Shift+H input-history
    *  panel to drop a selected past message into the focused composer. */
-  onRegisterInjectInput?: (sessionId: string, fn: (text: string) => void) => void
+  onRegisterInjectInput?: (sessionId: string, fn: (text: string) => void) => () => void
   /** Global composer-snippets api (single shared instance owned by App).
    *  Passed straight to <Composer>; the manager + save dialogs live in App. */
   snippets: ComposerSnippetsApi
@@ -205,7 +220,7 @@ export const Chat = memo(function Chat({
   settingsOpen, onCloseSettings,
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
   recapOpen, onCloseRecap,
-  onSessionUpdate, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, onRegisterInjectInput,
+  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, onRegisterInjectInput,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
 }: Props) {
@@ -226,6 +241,11 @@ export const Chat = memo(function Chat({
   const settingsPresence = useExitPresence(!!settingsOpen)
   const gitPresence = useExitPresence(!!gitPanelOpen)
   const recapPresence = useExitPresence(!!recapOpen)
+  // In-panel resume picker (variant="panel"). Only renders when this panel
+  // is the resume target; the global / empty-state flow uses the App-root
+  // modal instead. Mounted conditionally like the git overlay, so the
+  // entrance animation fires on mount.
+  const resumePresence = useExitPresence(!!resumeOpen)
   // Synchronous reentrancy guard. setSending is async ?between two
   // rapid keypresses (e.g. Enter pressed twice within one frame), React
   // hasn't committed the state update yet, so the closure inside send()
@@ -1111,20 +1131,23 @@ export const Chat = memo(function Chat({
   // label is now derived from the SDK result message's `terminal_reason`,
   // not from any client-side interrupt flag.
   useEffect(() => {
-    onRegisterInterrupt?.(session.id, interrupt)
+    // register returns a stale-guarded unregister; returning it from the
+    // effect ensures the entry is dropped on unmount (panel close / session
+    // switch / delete) instead of leaking the closure for the tab's lifetime.
+    return onRegisterInterrupt?.(session.id, interrupt)
   }, [session.id, interrupt, onRegisterInterrupt])
 
   // Expose the recap.refresh callback to the parent so the Alt+R shortcut
   // can trigger a recap fetch for the focused session.
   useEffect(() => {
-    onRegisterRecap?.(session.id, recap.refresh)
+    return onRegisterRecap?.(session.id, recap.refresh)
   }, [session.id, recap.refresh, onRegisterRecap])
 
   // Expose a composer input-injection callback so the Mod+Shift+H input-history
   // panel can drop a selected past message into this panel's composer. setInput
   // also write-throughs to the per-session draft, so the recalled text persists.
   useEffect(() => {
-    onRegisterInjectInput?.(session.id, (text: string) => {
+    return onRegisterInjectInput?.(session.id, (text: string) => {
       setInput(text)
       history.reset()
     })
@@ -1498,6 +1521,24 @@ export const Chat = memo(function Chat({
             />
           </Suspense>
         </div>
+      )}
+
+      {/* In-panel resume picker (variant="panel"). Column-scoped overlay
+          mirroring the Settings/Git overlays: only covers this chat panel,
+          not the whole app. The chosen session replaces THIS panel's slot
+          via onResumeIntoPanel. The global / empty-state flow (no focused
+          panel) uses the App-root modal instead, so this only mounts when
+          this panel is the explicit target. */}
+      {resumePresence.shouldRender && (
+        <Suspense fallback={null}>
+          <ResumeSessionDialog
+            variant="panel"
+            open={!!resumeOpen}
+            defaultCwd={session.cwd}
+            onResume={(id) => onResumeIntoPanel?.(id, session.id)}
+            onCancel={() => onCloseResume?.()}
+          />
+        </Suspense>
       )}
 
       {/* Floating recap window — non-modal, top-anchored, dismissible.
