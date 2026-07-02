@@ -404,6 +404,7 @@ export class SessionManager {
       lastTurnAt: s.lastTurnAt,
       gitStartSha: s.gitStartSha,
       parentId: s.parentId,
+      forkBoundaryUuid: s.forkBoundaryUuid,
       mcpServerNames: s.mcpServerNames,
       enabledPlugins: s.enabledPlugins,
       showPinnedUserMessage: s.showPinnedUserMessage,
@@ -597,6 +598,9 @@ export class SessionManager {
     try {
       const page = await this.readProviderHistoryPage(provider, id, {
         limit: this.historyCap,
+        // Side Chat: exclude the inherited parent prefix (fork boundary) so
+        // re-seeding the ring on resume doesn't paint the parent's history.
+        ...(meta.forkBoundaryUuid ? { afterUuid: meta.forkBoundaryUuid } : {}),
       })
       if (page.messages.length > 0) historySeed = page.messages as SDKMessage[]
     } catch {
@@ -954,7 +958,27 @@ export class SessionManager {
     }
     const title = meta.title ? `${meta.title} — Side Chat` : 'Side Chat'
     const sourceProvider = meta.provider ?? this.defaultProvider
-    const sideChatOpts: Options & { provider?: string; parentId?: string; enabledPlugins?: string[] } = {
+    // Capture the fork boundary: the parent's newest renderable message uuid
+    // at fork time. The fork copies the parent's transcript verbatim into the
+    // Side Chat's on-disk file, so this uuid is the last inherited line;
+    // everything after it is the Side Chat's own conversation. History reads
+    // (getHistoryPage / resume seed / search) pass it as `afterUuid` to keep
+    // the inherited parent prefix out of the Side Chat UI (it's reference-only
+    // context for the model). A failed read falls back to no boundary
+    // (pre-fix behaviour) rather than blocking Side-Chat creation.
+    let forkBoundaryUuid: string | undefined
+    try {
+      const tail = await this.readProviderHistoryPage(sourceProvider, parentId, { limit: 1 })
+      forkBoundaryUuid = messageUuid(tail.messages[0])
+    } catch {
+      /* disk read failed — fall back to no boundary (pre-fix behaviour) */
+    }
+    const sideChatOpts: Options & {
+      provider?: string
+      parentId?: string
+      forkBoundaryUuid?: string
+      enabledPlugins?: string[]
+    } = {
       provider: sourceProvider,
       resume: parentId,
       forkSession: true,
@@ -967,6 +991,7 @@ export class SessionManager {
       enabledPlugins: meta.enabledPlugins,
       settings: meta.hooks ? ({ hooks: toSdkHooksSettings(meta.hooks) } as Settings) : undefined,
       parentId,
+      forkBoundaryUuid,
       // Inject side-chat instructions via the system prompt so the model
       // knows it's in a side conversation from the very first turn — without
       // triggering a boundary turn (which enqueueUserMessage would do).
@@ -1096,6 +1121,9 @@ export class SessionManager {
       // Side Chat parentId — set here so the `created` broadcast already
       // carries the field, avoiding a sidebar flash of the session without it.
       parentId: (opts as Record<string, unknown>).parentId as string | undefined,
+      // Side Chat fork boundary uuid — captured by createSideChat so history
+      // reads can exclude the inherited parent prefix via `afterUuid`.
+      forkBoundaryUuid: (opts as Record<string, unknown>).forkBoundaryUuid as string | undefined,
       // Seed the session-level skill override. RAM-only — fork() passes
       // the parent's value through; create()/resume() pass undefined and
       // fall back to the global config via the spawn-time projection
@@ -2597,8 +2625,13 @@ export class SessionManager {
     if (!live && !meta) {
       throw new HttpError(404, 'session not found')
     }
+    // Side Chat: exclude the inherited parent prefix via the fork boundary so
+    // paging (the client's loadOlder scroll-up) never surfaces the parent's
+    // history inside the Side Chat UI. Undefined for non-Side-Chat sessions.
+    const afterUuid = live?.forkBoundaryUuid ?? meta?.forkBoundaryUuid
     return this.readProviderHistoryPage(live?.provider ?? meta?.provider ?? this.defaultProvider, id, {
       ...opts,
+      ...(afterUuid ? { afterUuid } : {}),
     })
   }
 
@@ -2622,7 +2655,10 @@ export class SessionManager {
 
       let entries: HistoryEntry[]
       try {
-        entries = await provider.readHistoryEntries(info.id, {})
+        // Side Chat: exclude the inherited parent prefix via the fork boundary
+        // so parent content doesn't surface as a hit under the Side Chat title.
+        const afterUuid = live?.forkBoundaryUuid ?? meta?.forkBoundaryUuid
+        entries = await provider.readHistoryEntries(info.id, afterUuid ? { afterUuid } : {})
       } catch (err) {
         log.warn(`[session-manager] searchMessages(${info.id}) history read failed:`, err)
         return

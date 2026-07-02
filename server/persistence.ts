@@ -67,6 +67,15 @@ export interface SessionMeta {
   /** When present, this session is a Side Chat forked from the
    *  indicated parent session. Undefined for normal sessions. */
   parentId?: string
+  /** For a Side Chat (parentId set): the uuid of the parent's last
+   *  renderable message at fork time. The fork copies the parent's
+   *  transcript verbatim into this session's on-disk file, then appends
+   *  this session's own messages; this uuid is the boundary between them.
+   *  History reads (getHistoryPage / resume seed / search) pass it as
+   *  `afterUuid` so the inherited parent prefix is never surfaced in the
+   *  Side Chat UI (it's reference-only context for the model). Undefined
+   *  for non-Side-Chat sessions. */
+  forkBoundaryUuid?: string
   /** Names of MCP servers the session was spawned with. Survives
    *  restarts so the client can compute "available" without relying
    *  on the flaky mcp-status SDK control request. */
@@ -183,6 +192,7 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     lastTurnAt: typeof r.lastTurnAt === 'number' ? r.lastTurnAt : undefined,
     gitStartSha: typeof r.gitStartSha === 'string' ? r.gitStartSha : undefined,
     parentId: typeof r.parentId === 'string' ? r.parentId : undefined,
+    forkBoundaryUuid: typeof r.forkBoundaryUuid === 'string' ? r.forkBoundaryUuid : undefined,
     mcpServerNames: Array.isArray(r.mcpServerNames) && r.mcpServerNames.every((n: unknown) => typeof n === 'string')
       ? (r.mcpServerNames as string[])
       : undefined,

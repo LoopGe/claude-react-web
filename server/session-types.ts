@@ -190,6 +190,15 @@ export interface Session {
    *  indicated parent session. Set by createSideChat(), persisted via
    *  SessionMeta, and mirrored into SessionInfo. */
   parentId?: string
+  /** uuid of the parent's last renderable message at Side-Chat fork time.
+   *  The fork copies the parent's transcript verbatim into this session's
+   *  on-disk file, then appends the side chat's own turns — so everything
+   *  up to AND including this uuid is inherited parent context that the UI
+   *  must never display (it's reference-only, per SIDE_DEVELOPER_INSTRUCTIONS).
+   *  Used as the `afterUuid` boundary for history reads (getHistoryPage /
+   *  resume seed / search) so paging and resume-seeding surface only the
+   *  side chat's own messages. Undefined for non-Side-Chat sessions. */
+  forkBoundaryUuid?: string
   /** Names of MCP servers the session was spawned with. Derived from
    *  the resolved mcpServers config at create / resume / fork. Persisted
    *  via SessionMeta and mirrored into SessionInfo so the client can

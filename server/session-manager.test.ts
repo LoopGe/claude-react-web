@@ -1070,6 +1070,93 @@ describe('SessionManager', () => {
     expect(store.get(info.id)?.terminatedReason).toBe('transcript_missing')
   })
 
+  describe('createSideChat (fork-boundary history filtering)', () => {
+    // The fork copies the parent's transcript verbatim into the Side Chat's
+    // on-disk jsonl, then appends the Side Chat's own messages. Without a
+    // boundary, loadOlder / resume-seed / search would page the inherited
+    // parent prefix back into the Side Chat UI. createSideChat captures the
+    // parent's newest renderable message uuid as `forkBoundaryUuid` and every
+    // history read passes it as `afterUuid` so only the Side Chat's own
+    // messages surface.
+    it('captures the parent tail uuid as forkBoundaryUuid and excludes the inherited prefix from getHistoryPage', async () => {
+      const parent = sm.create({ cwd: '/tmp', title: 'parent' })
+      // Complete a turn so the parent has a transcript (hasSdkTranscript probe
+      // — mocked getSessionInfo returns truthy by default).
+      sm.send(parent.id, 'hi')
+      mockHandles[0].emit({ type: 'result' })
+      await tick()
+
+      // Simulated on-disk transcripts. The parent's file holds its own two
+      // messages; the Side Chat's file (fork copy + own turns) holds all four.
+      const uParent = { uuid: 'u-parent' }
+      const aParent = { uuid: 'a-parent' }
+      const uSide = { uuid: 'u-side' }
+      const aSide = { uuid: 'a-side' }
+      const parentTranscript = [uParent, aParent]
+      const sideTranscript = [uParent, aParent, uSide, aSide]
+
+      const readPage = vi.spyOn(
+        sm as unknown as { readProviderHistoryPage: (...a: unknown[]) => Promise<unknown> },
+        'readProviderHistoryPage',
+      ).mockImplementation(async (_provider: unknown, id: string, opts: { limit: number; afterUuid?: string }) => {
+        if (id === parent.id) {
+          // createSideChat asks for the parent's newest renderable message.
+          const tail = parentTranscript[parentTranscript.length - 1]
+          return { messages: [tail], totalCount: parentTranscript.length, startIndex: parentTranscript.length - 1, hasMore: false }
+        }
+        // Side Chat read. Without the boundary the full inherited prefix would
+        // surface; with afterUuid === 'a-parent' only the Side Chat's own
+        // messages (those strictly after the boundary) should remain.
+        if (opts.afterUuid === 'a-parent') {
+          return { messages: [uSide, aSide], totalCount: 2, startIndex: 0, hasMore: false }
+        }
+        return { messages: sideTranscript, totalCount: sideTranscript.length, startIndex: 0, hasMore: false }
+      })
+
+      const side = await sm.createSideChat(parent.id)
+      expect(side.parentId).toBe(parent.id)
+      // The boundary was captured from the parent's newest message.
+      expect(readPage).toHaveBeenCalledWith(expect.anything(), parent.id, { limit: 1 })
+      const liveSide = (sm as unknown as { sessions: Map<string, { forkBoundaryUuid?: string }> }).sessions.get(side.id)
+      expect(liveSide?.forkBoundaryUuid).toBe('a-parent')
+
+      // getHistoryPage must forward afterUuid so the inherited prefix stays
+      // out of the Side Chat UI.
+      const page = await sm.getHistoryPage(side.id, { limit: 200 })
+      expect((page.messages as Array<{ uuid?: string }>).map((m) => m.uuid)).toEqual(['u-side', 'a-side'])
+      expect(readPage).toHaveBeenCalledWith(expect.anything(), side.id, expect.objectContaining({ afterUuid: 'a-parent' }))
+
+      readPage.mockRestore()
+    })
+
+    it('persists forkBoundaryUuid so a dormant Side Chat still filters after resume', async () => {
+      const parent = sm.create({ cwd: '/tmp', title: 'parent' })
+      sm.send(parent.id, 'hi')
+      mockHandles[0].emit({ type: 'result' })
+      await tick()
+
+      const aParent = { uuid: 'a-parent' }
+      const uSide = { uuid: 'u-side' }
+      const aSide = { uuid: 'a-side' }
+      const readPage = vi.spyOn(
+        sm as unknown as { readProviderHistoryPage: (...a: unknown[]) => Promise<unknown> },
+        'readProviderHistoryPage',
+      ).mockImplementation(async (_provider: unknown, id: string, opts: { limit: number; afterUuid?: string }) => {
+        if (id === parent.id) return { messages: [aParent], totalCount: 1, startIndex: 0, hasMore: false }
+        // Any read of the Side Chat (resume seed included) must carry the boundary.
+        if (opts.afterUuid === 'a-parent') return { messages: [uSide, aSide], totalCount: 2, startIndex: 0, hasMore: false }
+        return { messages: [aParent, uSide, aSide], totalCount: 3, startIndex: 0, hasMore: false }
+      })
+
+      const side = await sm.createSideChat(parent.id)
+      await sm.unload(side.id)
+      // Persisted meta carries the boundary across the dormancy boundary.
+      await store.flush()
+      expect(store.get(side.id)?.forkBoundaryUuid).toBe('a-parent')
+      readPage.mockRestore()
+    })
+  })
+
   it('canUseTool short-circuits when permissionMode is bypassPermissions', async () => {
     const info = sm.create({})
     await sm.setPermissionMode(info.id, 'bypassPermissions')
