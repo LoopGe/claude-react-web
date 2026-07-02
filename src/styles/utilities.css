@@ -1875,7 +1875,10 @@
 .settings-skill-mode-card:hover,
 .settings-skill-mode-card.active {
   border-color: var(--accent);
-  background: var(--btn-hover-bg);
+  /* Light accent tint instead of the shared --btn-hover-bg, which reads as
+     too dark in the light theme (#d8dbe2 vs an unselected #fafafa). The tint
+     stays light in both themes and pairs with the accent border. */
+  background: color-mix(in srgb, var(--accent) 12%, var(--code-bg));
 }
 .settings-skill-mode-card input[type="radio"] {
   /* Hide native radio but keep it accessible for screen readers and keyboard */
