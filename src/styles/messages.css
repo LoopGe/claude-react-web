@@ -349,6 +349,14 @@
   user-select: none;
   font-variant-numeric: tabular-nums;
   opacity: 0.7;
+  /* The inline `min-width: Nch` (N = digit count of the max line number)
+     sizes the CONTENT box — the digits. The padding-right / border-right on
+     the old/new variants must then add on top *identically* for every row,
+     or a numbered cell (content = Nch) ends up ~7–8px wider than a blank
+     cell (content = 0, floored up to Nch) and the old/new divider + code
+     text jog between ctx and del/add rows. content-box makes the floor
+     apply to content, so numbered and blank cells share one total width. */
+  box-sizing: content-box;
 }
 .diff-line-gutter-old {
   padding-right: 6px;
@@ -356,6 +364,11 @@
   border-right: 1px solid var(--border);
 }
 .diff-line-gutter-new {
+  /* padding-left mirrors old's padding-right so the new-line number has the
+     same 6px breathing room from the divider — without it the right-aligned
+     digit (content = Mch = the min-width) fills the content box and sits
+     flush against the divider line. */
+  padding-left: 6px;
   padding-right: 8px;
 }
 .diff-line-text { flex: 1; }
