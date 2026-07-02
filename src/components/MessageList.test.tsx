@@ -183,6 +183,18 @@ describe('MessageList', () => {
     expect(container.querySelector('.chat-empty')).toBeTruthy()
   })
 
+  it('closes the easter-egg game when messages arrive', () => {
+    const { container, rerender } = render(<MessageList items={[]} replayReady />)
+    const icon = container.querySelector('.chat-empty-icon') as HTMLElement
+    fireEvent.click(icon); fireEvent.click(icon); fireEvent.click(icon)
+    expect(container.querySelector('.easter-egg-game')).toBeTruthy()
+    // messages arrive (non-empty items) → game closes
+    rerender(<MessageList items={toItems([
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'hi' }] } }),
+    ])} replayReady />)
+    expect(container.querySelector('.easter-egg-game')).toBeNull()
+  })
+
   it('applies clearing class while clearing', () => {
     const items = toItems([
       makeMsg('assistant', { message: { content: [{ type: 'text', text: 'hi' }] } }),

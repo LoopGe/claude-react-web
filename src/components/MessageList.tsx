@@ -261,6 +261,10 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   // Easter-egg: triple-clicking the empty-state sparkle swaps in a hidden
   // dino-style game. Local UI state only — no session/persistence concerns.
   const [gameOpen, setGameOpen] = useState(false)
+  // Stable identities so EasterEggGame's [onExit]-keyed keydown effect
+  // doesn't tear down/re-register on every parent re-render.
+  const openEasterEgg = useCallback(() => setGameOpen(true), [])
+  const closeEasterEgg = useCallback(() => setGameOpen(false), [])
   // `atBottom` is state (not a ref) because the jump-to-bottom button's
   // visibility needs to re-render when it changes. The ref-mirror keeps
   // callbacks readable without a stale-closure dance.
@@ -571,6 +575,12 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   const firstItemIndexRef = useRef(INITIAL_FIRST_ITEM_INDEX)
   const prevFirstMsgRef = useRef<SdkMessage | null>(null)
   const first = renderableItems.length > 0 ? renderableItems[0].msg : null
+  // The easter-egg game is a fresh-invocation easter egg: once real messages
+  // arrive, close it so it doesn't reappear when the conversation is later
+  // cleared back to empty.
+  useEffect(() => {
+    if (renderableItems.length > 0) setGameOpen(false)
+  }, [renderableItems.length])
   // Reading and mutating these refs DURING render is deliberate and required:
   // Virtuoso needs `firstItemIndex` to commit in the SAME render that grows
   // `data` at the front, which a post-render effect can't guarantee (the
@@ -1270,8 +1280,8 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
           <div className="chat-messages-empty">
             {replayReady
               ? (emptyStateContent ?? (gameOpen
-                  ? <EasterEggGame onExit={() => setGameOpen(false)} />
-                  : <ChatEmptyState onUnlockEasterEgg={() => setGameOpen(true)} />))
+                  ? <EasterEggGame onExit={closeEasterEgg} />
+                  : <ChatEmptyState onUnlockEasterEgg={openEasterEgg} />))
               : <Skeleton rows={3} className="chat-messages-skeleton" />}
           </div>
         ) : (
