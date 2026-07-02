@@ -590,6 +590,15 @@
   box-shadow: 0 1px 0 color-mix(in srgb, #fff 22%, transparent) inset,
               0 2px 10px color-mix(in srgb, var(--accent) 35%, transparent);
 }
+/* Scroll-to-bottom FAB: the floating accent pill is its own class (not a
+   .btn), so it misses the raised sheen above. Give it the same glassy
+   treatment (sheen + inset rim) on top of its accent --fab-shadow so it
+   reads as part of the glow skin, not a flat default-skin button. */
+[data-skin="glow"] .chat-jump-to-bottom {
+  background-image: linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent), transparent);
+  box-shadow: 0 1px 0 color-mix(in srgb, #fff 22%, transparent) inset,
+              var(--fab-shadow);
+}
 
 /* Focused session card / panel: glow halo instead of a flat ring. */
 [data-skin="glow"] .session-item.focused {
@@ -701,6 +710,11 @@
 [data-skin="glow"] .chat-panel-mode-badge.mode-acceptEdits,
 [data-skin="glow"] .chat-panel-mode-badge.mode-auto {
   box-shadow: 0 0 10px color-mix(in srgb, var(--mode-color, var(--accent)) 28%, transparent);
+}
+/* Fast-mode badge: glow in --fast when on, mirroring the active mode-badge
+   treatment so an enabled speed state reads with the same glow language. */
+[data-skin="glow"] .chat-panel-fast-badge.fast-on {
+  box-shadow: 0 0 10px color-mix(in srgb, var(--fast) 28%, transparent);
 }
 
 /* Context-usage fill bar gets a glowing leading edge. */
