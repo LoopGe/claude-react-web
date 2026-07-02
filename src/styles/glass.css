@@ -39,6 +39,7 @@
 .palette,
 .settings-overlay > .settings-panel,
 .git-overlay > .git-panel,
+.resume-overlay > .resume-overlay-panel,
 .perm-overlay > .perm-card,
 .ctx-menu,
 .model-picker,
@@ -60,6 +61,7 @@
 .palette           { box-shadow: var(--glass-edge-highlight), var(--modal-shadow); }
 .settings-overlay > .settings-panel,
 .git-overlay > .git-panel,
+.resume-overlay > .resume-overlay-panel,
 .perm-overlay > .perm-card {
   box-shadow: var(--glass-edge-highlight), var(--overlay-shadow);
 }
@@ -91,6 +93,7 @@
   .palette,
   .settings-overlay > .settings-panel,
   .git-overlay > .git-panel,
+  .resume-overlay > .resume-overlay-panel,
   .perm-overlay > .perm-card,
   .ctx-menu,
   .model-picker,
@@ -116,6 +119,8 @@
    ════════════════════════════════════════════════════════════════════ */
 .modal .modal-header,
 .modal .modal-footer,
+.resume-overlay-panel .modal-header,
+.resume-overlay-panel .modal-footer,
 .perm-card .modal-header,
 .perm-card .modal-footer,
 .palette .palette-input,
@@ -146,6 +151,7 @@ html:not([data-skin="glow"]):not([data-skin="hc"]) .modal,
 html:not([data-skin="glow"]):not([data-skin="hc"]) .palette,
 html:not([data-skin="glow"]):not([data-skin="hc"]) .settings-overlay > .settings-panel,
 html:not([data-skin="glow"]):not([data-skin="hc"]) .git-overlay > .git-panel,
+html:not([data-skin="glow"]):not([data-skin="hc"]) .resume-overlay > .resume-overlay-panel,
 html:not([data-skin="glow"]):not([data-skin="hc"]) .perm-overlay > .perm-card,
 html:not([data-skin="glow"]):not([data-skin="hc"]) .ctx-menu,
 html:not([data-skin="glow"]):not([data-skin="hc"]) .model-picker,
@@ -164,6 +170,7 @@ html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .modal,
 html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .palette,
 html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .settings-overlay > .settings-panel,
 html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .git-overlay > .git-panel,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .resume-overlay > .resume-overlay-panel,
 html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .perm-overlay > .perm-card,
 html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .ctx-menu,
 html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .model-picker,

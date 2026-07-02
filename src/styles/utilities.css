@@ -587,6 +587,10 @@
   .git-overlay[data-state="closing"],
   .git-overlay[data-state="open"] > .git-panel,
   .git-overlay[data-state="closing"] > .git-panel,
+  .resume-overlay[data-state="open"],
+  .resume-overlay[data-state="closing"],
+  .resume-overlay[data-state="open"] > .resume-overlay-panel,
+  .resume-overlay[data-state="closing"] > .resume-overlay-panel,
   .subagent-overlay,
   .subagent-overlay-panel,
   .subagent-overlay-body-forward,
@@ -1477,16 +1481,19 @@
     max-width: calc(100vw - 24px);
   }
 
-  /* Settings & Git overlays: turn the centered card into a bottom sheet
-     that rises from the panel's lower edge — easier to reach one-handed.
-     safe-area padding keeps the sheet clear of the home-indicator. */
+  /* Settings, Git & Resume overlays: turn the centered card into a bottom
+     sheet that rises from the panel's lower edge — easier to reach
+     one-handed. safe-area padding keeps the sheet clear of the
+     home-indicator. */
   .settings-overlay,
-  .git-overlay {
+  .git-overlay,
+  .resume-overlay {
     align-items: flex-end;
     padding: 8px 8px max(8px, env(safe-area-inset-bottom));
   }
   .settings-overlay > .settings-panel,
-  .git-overlay > .git-panel {
+  .git-overlay > .git-panel,
+  .resume-overlay > .resume-overlay-panel {
     width: 100%;
     max-height: 100%;
     border-radius: 12px 12px 0 0;

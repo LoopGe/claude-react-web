@@ -24,6 +24,15 @@ export interface ResumeSessionDialogProps {
    *  (App.resumeSession) which also handles the unknown-session adoption. */
   onResume: (sessionId: string) => void
   onCancel: () => void
+  /** Visual form.
+   *  - 'modal' (default): full-app centered modal (`.modal-backdrop`). Used
+   *    for the global / empty-state resume flow where no panel is targeted.
+   *  - 'panel': column-scoped overlay (`.resume-overlay`) rendered inside a
+   *    single chat panel, mirroring `.settings-overlay` / `.git-overlay`.
+   *    Used when the picker targets a specific panel (Ctrl+Shift+O with a
+   *    focused panel, or the `/resume` local command). Content is identical;
+   *    only the wrapper chrome differs. */
+  variant?: 'modal' | 'panel'
 }
 
 /** Relative-time formatter ("3m ago", "2h ago", "5d ago"). Falls back to a
@@ -42,7 +51,7 @@ function timeAgo(ms: number): string {
   return new Date(ms).toLocaleDateString()
 }
 
-export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCancel }: ResumeSessionDialogProps) {
+export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCancel, variant = 'modal' }: ResumeSessionDialogProps) {
   const [query, setQuery] = useState('')
   const [allProjects, setAllProjects] = useState(!defaultCwd)
   const [sessions, setSessions] = useState<ResumableSession[]>([])
@@ -85,9 +94,14 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
   }, [allProjects, defaultCwd])
   /* eslint-enable react-hooks/set-state-in-effect */
 
+  // Refocus the search input whenever the dialog (re)opens. useExitPresence
+  // keeps the component mounted through the ~180ms exit animation, so a rapid
+  // close→reopen (Esc then Ctrl+Shift+O within the exit window) would otherwise
+  // leave the input unfocused — the mount-only effect wouldn't re-run. Gating
+  // on `open` re-fires on each true transition.
   useEffect(() => {
-    inputRef.current?.focus()
-  }, [])
+    if (open) inputRef.current?.focus()
+  }, [open])
 
   const filtered = useMemo(() => {
     if (!query.trim()) return sessions
@@ -132,16 +146,23 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
     }
   }
 
+  // Variant only swaps the wrapper chrome. The 'panel' variant mirrors the
+  // per-column overlay pattern (.settings-overlay / .git-overlay): absolute,
+  // inset:0, scoped to the hosting chat panel instead of the whole app.
+  const backdropClass = variant === 'panel' ? 'resume-overlay' : 'modal-backdrop'
+  const panelClass =
+    variant === 'panel' ? 'resume-overlay-panel' : 'modal modal-resume-session'
+
   return (
     <div
-      className="modal-backdrop"
+      className={backdropClass}
       data-state={open ? 'open' : 'closing'}
       role="dialog"
       aria-modal={open ? 'true' : 'false'}
       aria-hidden={!open}
       onMouseDown={(e) => open && e.target === e.currentTarget && onCancel()}
     >
-      <div className="modal modal-resume-session" ref={dialogRef} onKeyDown={handleKeyDown}>
+      <div className={panelClass} ref={dialogRef} onKeyDown={handleKeyDown}>
         <div className="modal-header">
           <h3>Resume session</h3>
           <button className="btn btn-icon-sm" onClick={onCancel} aria-label="Close dialog">

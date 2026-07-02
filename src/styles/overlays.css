@@ -132,6 +132,44 @@
   border-color: color-mix(in srgb, var(--ok) 50%, transparent);
 }
 
+/* ── Resume-session picker: panel variant ──────────────────────────
+   The 'panel' variant of ResumeSessionDialog renders as a per-column
+   overlay (mirrors .settings-overlay / .git-overlay) instead of a full-app
+   modal. Only covers the one chat panel it targets; the rest of the app
+   stays visible. Same entrance/exit keyframes as the other in-panel
+   overlays so motion stays consistent. */
+.resume-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--bg) 65%, transparent);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  z-index: 5;
+  overflow-y: auto;
+}
+.resume-overlay[data-state="open"] { animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both; }
+.resume-overlay[data-state="closing"] {
+  pointer-events: none;
+  animation: overlay-backdrop-out var(--motion-duration-fast) var(--motion-ease-exit) both;
+}
+.resume-overlay > .resume-overlay-panel {
+  width: min(560px, 100%);
+  max-height: 100%;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--overlay-shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.resume-overlay[data-state="open"] > .resume-overlay-panel { animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both; }
+.resume-overlay[data-state="closing"] > .resume-overlay-panel { animation: overlay-panel-out var(--motion-duration-base) var(--motion-ease-exit) both; }
+
 /* ── Inline session recap message ──────────────────────────────────
    Rendered inside the transcript by RecapMessageView, reusing the .msg
    chrome so it lines up with surrounding messages. The accent-tinted

@@ -1820,8 +1820,8 @@ export function App() {
             const fid = focusedIdRef.current
             // Close any open settings/git overlay on this panel first —
             // same mutual-exclusion as requestResumeForPanel (focus traps).
-            setSettingsOpenFor(null)
-            setGitPanelOpenFor(null)
+            handleCloseSettings()
+            handleCloseGitPanel()
             setResumeTargetPanelId(fid ?? null)
             setResumeDialogOpen(true)
           },
@@ -1909,7 +1909,7 @@ export function App() {
           description: 'Close overlay / Interrupt',
         },
       ],
-      [closeSession, setGitPanelOpenFor, setHelpOpen, setSettingsOpenFor, toggleShortcutHelp],
+      [closeSession, setGitPanelOpenFor, setHelpOpen, setSettingsOpenFor, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel],
     )
   useKeyboardShortcuts(shortcuts)
 
@@ -2347,11 +2347,11 @@ export function App() {
   const requestResumeForPanel = useCallback((panelSessionId: string) => {
     // Joins the settings/git mutual-exclusion group: each overlay has its
     // own focus trap, and two mounted at once would fight over focus.
-    setSettingsOpenFor(null)
-    setGitPanelOpenFor(null)
+    handleCloseSettings()
+    handleCloseGitPanel()
     setResumeTargetPanelId(panelSessionId)
     setResumeDialogOpen(true)
-  }, [])
+  }, [handleCloseSettings, handleCloseGitPanel])
 
   // Close the resume picker (shared by both variants). Clears both the open
   // flag and the panel target so neither the App-root modal nor any in-panel
