@@ -169,6 +169,21 @@ export const SubagentOverlay = memo(function SubagentOverlay({
             planContent={planContent}
             questionAnswers={questionAnswers}
             replayReady
+            // Subagents are not interactive — you can't type into them.
+            // The default ChatEmptyState ("Type a message below, or paste
+            // an image to begin") would be misleading here, so override
+            // with copy that explains why the body is empty. Reuses the
+            // Side Chat two-line empty-state shape (.chat-messages-empty-side).
+            emptyStateContent={(
+              <div className="chat-messages-empty-side">
+                <div className="chat-messages-empty-title">
+                  {current.status === 'running' ? 'This subagent is working' : 'No subagent output'}
+                </div>
+                <div className="chat-messages-empty-hint">
+                  Subagents run autonomously — you can follow its progress here, but can't send messages to it.
+                </div>
+              </div>
+            )}
           />
         </div>
       </div>
