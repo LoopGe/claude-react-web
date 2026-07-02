@@ -119,6 +119,7 @@ function updateRunning(s: GameState) {
     if (oxHit && oyHit) {
       s.status = 'gameOver'
       // (high-score persistence + sound are added in Task 5)
+      break
     }
   }
   s.obstacles = s.obstacles.filter(o => o.x + o.w > -20)
