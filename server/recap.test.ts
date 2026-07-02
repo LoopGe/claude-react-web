@@ -450,7 +450,7 @@ describe('recap', () => {
       expect(body.messages[0].role).toBe('user')
       expect(body.messages[0].content).toContain('[1] User: hello')
       expect(body.model).toBeDefined()
-      expect(body.max_tokens).toBe(300)
+      expect(body.max_tokens).toBe(1000)
     })
 
     it('uses temperature 0 (deterministic recap)', async () => {
