@@ -387,6 +387,7 @@ export function App() {
   const settingsOpenForRef = useRef(settingsOpenFor)
   const gitPanelOpenForRef = useRef(gitPanelOpenFor)
   const handleSelectRef = useRef<(id: string) => void>(() => {})
+  const handleDeleteRef = useRef<(id: string) => void>(() => {})
   const jumpNonceRef = useRef(0)
   // Per-session interrupt callbacks registered by <Chat> components.
   // The ESC shortcut in the keyboard handler uses this to trigger the
@@ -432,6 +433,52 @@ export function App() {
   newSessionDialogOpenRef.current = newSessionDialogOpen
   resumeDialogOpenRef.current = resumeDialogOpen
   /* eslint-enable react-hooks/refs */
+
+  // DEBUG: expose a runtime group-state dump on window for console use.
+  // Mounted once (empty deps); the function reads live refs at call time, so
+  // it always reflects current state with zero ongoing cost — no subscriptions,
+  // no polling, no extra renders. Gated on `import.meta.env.DEV` so vite
+  // tree-shakes it out of the production bundle — available in `npm run dev`,
+  // absent from the shipped `npx` binary. Call `window.__dumpGroupState()`
+  // from DevTools.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return
+    type Dump = () => unknown
+    const dump: Dump = () => {
+      const groups = groupsRef.current
+      const openIds = openIdsRef.current
+      const active = activeGroupIdRef.current
+      const sessions = sessionsRef.current
+      const title = (id: string) => sessions.find((s) => s.id === id)?.title ?? '(untitled)'
+      console.log('%c=== GROUP STATE (runtime) ===', 'font-weight:bold;color:#6cf')
+      for (const g of groups) {
+        console.group(`[${g.name}]  ${g.sessionIds.length} members  id=${g.id}`)
+        g.sessionIds.forEach((id, i) => console.log(`${i}: ${id}  ->  ${title(id)}`))
+        console.groupEnd()
+      }
+      const activeGroup = groups.find((g) => g.id === active)
+      console.log(
+        `activeGroupId: ${active ?? '(null)'}${activeGroup ? ` (${activeGroup.name})` : ''}`,
+      )
+      console.log(
+        'openIds:',
+        openIds.map((id) => `${id} -> ${title(id)}`),
+      )
+      const raw = {
+        groups,
+        openIds,
+        activeGroupId: active,
+        sessions: sessions.map((s) => ({ id: s.id, title: s.title })),
+      }
+      console.log('raw ->', raw)
+      return raw
+    }
+    const w = window as unknown as { __dumpGroupState?: Dump }
+    w.__dumpGroupState = dump
+    return () => {
+      delete w.__dumpGroupState
+    }
+  }, [])
 
   // When the panel capacity shrinks (e.g. desktop — mobile resize/rotation
   // drops maxOpen to 1), `openSession`'s eviction only gates NEW opens — it
@@ -647,6 +694,16 @@ export function App() {
             }
             return [frame.session, ...prev]
           })
+          // A (re-)created session is not pending-delete. Clear any stale
+          // pendingDeleteIds/deletingSessionIds entry left by a prior delete
+          // of the same id (e.g. a session deleted via /resume-replace, then
+          // re-resumed from the picker) — without this, orderedSessions
+          // filters the re-resumed session out of the sidebar until a reload.
+          // The updaters are no-ops when the id isn't present, so no state
+          // read is needed (keeps this WS handler free of stale closures).
+          const sid = frame.session.id
+          setPendingDeleteIds((prev) => (prev.has(sid) ? new Set([...prev].filter((x) => x !== sid)) : prev))
+          setDeletingSessionIds((prev) => (prev.has(sid) ? new Set([...prev].filter((x) => x !== sid)) : prev))
           // Seed the edge-detector so a session that spawns already
           // working doesn't fire a notification on its first true→ false
           // transition when the user is still watching it.
@@ -669,6 +726,15 @@ export function App() {
           // tabs that watch many short sessions over hours otherwise
           // grow that Map without bound.
           pruneSession(frame.id)
+          // Clear any pending-delete state for this id. The delete has
+          // committed server-side (that's why we got `removed`), so a
+          // stale pendingDeleteIds/deletingSessionIds entry must not
+          // linger — it would hide the session if it's later re-resumed
+          // (re-adopted) under the same id. Also covers cross-tab deletes
+          // arriving during this tab's Undo window. Updaters are no-ops
+          // when the id isn't present.
+          setPendingDeleteIds((prev) => (prev.has(frame.id) ? new Set([...prev].filter((x) => x !== frame.id)) : prev))
+          setDeletingSessionIds((prev) => (prev.has(frame.id) ? new Set([...prev].filter((x) => x !== frame.id)) : prev))
           // Drop the per-session callback registries too. <Chat> unmount
           // already unregisters via the registry's stale-guarded cleanup,
           // but this covers the cross-tab-delete case where this tab's
@@ -895,6 +961,37 @@ export function App() {
     // changes, not on every render.
   }, [groups, closeGroupPanels])
 
+  /** When an already-open UNGROUPED session (single-panel ungrouped view,
+   *  activeGroupId=null) joins a group via drag or "Move to group", activate
+   *  that group's view — mirror handleSelect (click a group member → sync the
+   *  whole group into the grid; focus stays on the dragged session). The
+   *  `prevOpen.includes(sessionId)` gate limits this to sessions that are
+   *  ALREADY open, so create/fork (which add-then-open) aren't affected: their
+   *  new id hasn't reached openIdsRef yet when this runs synchronously. Also
+   *  bails when the session came from ANOTHER group (that's a reorganize, not
+   *  "I'm looking at this and grouped it"). Returns true when it activated. */
+  const activateGroupViewIfOpenUngrouped = useCallback(
+    (sessionId: string, groupNewIds: string[], prevGroups: SessionGroup[]): boolean => {
+      if (activeGroupIdRef.current !== null) return false
+      const prevOpen = openIdsRef.current
+      if (!prevOpen.includes(sessionId)) return false
+      if (prevGroups.some((g) => g.sessionIds.includes(sessionId))) return false
+      const live = new Set(sessionsRef.current.map((s) => s.id))
+      const groupIds = groupNewIds.filter((id) => live.has(id))
+      // Mobile/single-panel cap: if the group can't all fit, keep just the
+      // dragged session rather than arbitrarily picking siblings.
+      const desired = groupIds.length <= maxOpenRef.current ? groupIds : [sessionId]
+      if (desired.length === prevOpen.length && desired.every((id, i) => id === prevOpen[i])) {
+        return false
+      }
+      const survivors = prevOpen.filter((id) => desired.includes(id))
+      if (survivors.length > 0) animatePanelsRef.current?.(...survivors)
+      setOpenIds(desired)
+      return true
+    },
+    [setOpenIds],
+  )
+
   /** Move a session into a group (or out of all groups when groupId is
    *  empty). Capacity is enforced by the callers (the sidebar drag-over
    *  rejects drops onto a full group, the context menu hides full groups
@@ -938,7 +1035,17 @@ export function App() {
       // add the newly-joined session (or drop the one that just left) so the
       // view follows the group without requiring a manual re-activate.
       const active = activeGroupIdRef.current
-      if (!active) return
+      if (!active) {
+        // No active group view. If the added session is already open and was
+        // ungrouped (e.g. focus is on a single ungrouped panel and the user
+        // dragged / moved it into a group), activate that group's view. No-op
+        // for create/fork — see activateGroupViewIfOpenUngrouped.
+        if (groupId) {
+          const target = nextGroups.find((g) => g.id === groupId)
+          if (target) activateGroupViewIfOpenUngrouped(sessionId, target.sessionIds, prevGroups)
+        }
+        return
+      }
       const updated = nextGroups.find((g) => g.id === active)
       if (!updated) return
       const prevOpen = openIdsRef.current
@@ -970,7 +1077,7 @@ export function App() {
       if (survivors.length > 0) animatePanelsRef.current?.(...survivors)
       setOpenIds(final)
     },
-    [setGroups, maxGroupSize, toast, setOpenIds],
+    [setGroups, maxGroupSize, toast, setOpenIds, activateGroupViewIfOpenUngrouped],
   )
 
   /** The group whose sessions are currently open in the main grid.
@@ -1253,6 +1360,11 @@ export function App() {
     },
     [sessions, performDelete, cancelPendingDelete, toast],
   )
+  // Stable ref so resumeIntoPanel can call the latest handleDelete (which
+  // depends on `sessions` for its label) without itself depending on it —
+  // keeps resumeIntoPanel's identity stable. Same pattern as handleSelectRef.
+  // eslint-disable-next-line react-hooks/refs -- intentional render-time ref sync
+  handleDeleteRef.current = handleDelete
 
   // Clear any queued delete timers on unmount so a pending timer can't fire
   // after the component is gone. Note this ABANDONS the queued delete (the
@@ -1651,19 +1763,30 @@ export function App() {
     const bodyEl = bodyRef.current
     if (!bodyEl) return
     const bodyR = bodyEl.getBoundingClientRect()
-    const snapshots: { el: HTMLElement; x: number; y: number; w: number; h: number }[] = []
+    // Capture OLD positions (the "First" of FLIP) keyed by id — NOT by DOM
+    // element reference. A panel swap remounts the ChatPanel subtree: the
+    // slot-stable `<PanelSlot key={i}>` wrapper keeps its DOM, but the inner
+    // `<ErrorBoundary key={session.id}>` (and the `<section data-panel-id>`
+    // carrying the id) is destroyed and recreated at the target slot. Holding
+    // the captured `el` into the rAF callback would point at a detached node —
+    // getBoundingClientRect returns zeros and el.animate runs on a node no
+    // longer in the document, so the swap animation was silently invisible.
+    // Re-querying by id in the rAF resolves the freshly-mounted live element.
+    const snapshots: { id: string; x: number; y: number; w: number; h: number }[] = []
     for (const id of ids) {
       const el = bodyEl.querySelector<HTMLElement>(`[data-panel-id="${id}"]`)
       if (!el) continue
       const r = el.getBoundingClientRect()
-      snapshots.push({ el, x: r.left - bodyR.left, y: r.top - bodyR.top, w: r.width, h: r.height })
+      snapshots.push({ id, x: r.left - bodyR.left, y: r.top - bodyR.top, w: r.width, h: r.height })
     }
     if (snapshots.length === 0) return
     // Wait for the grid to repaint with the new order, then animate.
     requestAnimationFrame(() => {
       const opts: KeyframeAnimationOptions = { duration: 180, easing: 'cubic-bezier(.2,.8,.2,1)' }
       const bodyR2 = bodyEl.getBoundingClientRect()
-      for (const { el, x, y, w, h } of snapshots) {
+      for (const { id, x, y, w, h } of snapshots) {
+        const el = bodyEl.querySelector<HTMLElement>(`[data-panel-id="${id}"]`)
+        if (!el) continue
         const r = el.getBoundingClientRect()
         const dx = x - (r.left - bodyR2.left)
         const dy = y - (r.top - bodyR2.top)
@@ -2171,7 +2294,14 @@ export function App() {
       //    group sessions to match the new group order.
       const active = activeGroupIdRef.current
       const prevOpen = openIdsRef.current
-      if (wasInOtherGroup && active === groupId) {
+      if (
+        wasInOtherGroup &&
+        activateGroupViewIfOpenUngrouped(draggedId, newIds, prevGroups)
+      ) {
+        // Ungrouped focused session dragged into this group → group view
+        // activated. Skip the add/reorder branches below (they only apply
+        // when a group is already active).
+      } else if (wasInOtherGroup && active === groupId) {
         // Cross-group drop into the active group. Check isGroupView against
         // the PRE-change group (prevGroups), since prevOpen reflects the
         // state before the dragged session joined.
@@ -2181,13 +2311,43 @@ export function App() {
           prevOpen.length > 0 &&
           prevOpen.every((id) => prevActiveGroup.sessionIds.includes(id))
         if (isGroupView) {
-          const desired = newIds.slice(0, maxOpenRef.current)
-          const ordered = prevOpen.filter((id) => desired.includes(id))
-          for (const id of desired) if (!ordered.includes(id)) ordered.push(id)
-          const final = ordered.filter((id) => desired.includes(id)).slice(0, maxOpenRef.current)
+          // Mirror the new group order: take the already-open members plus
+          // the dragged session, in newIds (group) order, capped at maxOpen.
+          // The active-group view mirrors group order (handleSelect), so the
+          // dragged session's panel must land at its dropped position — NOT
+          // appended at the end, which desynced panel order from the sidebar
+          // order. If the group now exceeds maxOpen the trailing member falls
+          // off; the dragged session is kept (the user just added it).
+          const kept = new Set(prevOpen)
+          kept.add(draggedId)
+          const final = newIds.filter((id) => kept.has(id)).slice(0, maxOpenRef.current)
           if (!(final.length === prevOpen.length && final.every((id, i) => id === prevOpen[i]))) {
             snapshotPanelScrolls()
             setOpenIds(final)
+          }
+        }
+      } else if (wasInOtherGroup) {
+        // Cross-group drop into a NON-active group. If the dragged session
+        // just LEFT the active group, drop it from the open panel set so the
+        // view follows — mirrors handleReorderSidebar. Without this, dragging
+        // a card from the active group into another group moves the sidebar
+        // membership (G1 → G2) but leaves the stale panel open, and
+        // activeGroupId silently goes null because openIds now spans two
+        // groups. isGroupView is checked against the PRE-change source group
+        // (still contains draggedId), since prevOpen still reflects it.
+        const sourceGroup = prevGroups.find(
+          (g) => g.id !== groupId && g.sessionIds.includes(draggedId),
+        )
+        if (sourceGroup && active === sourceGroup.id) {
+          const isGroupView =
+            prevOpen.length > 0 && prevOpen.every((id) => sourceGroup.sessionIds.includes(id))
+          if (isGroupView) {
+            const next = prevOpen.filter((id) => id !== draggedId)
+            if (next.length !== prevOpen.length) {
+              snapshotPanelScrolls()
+              if (next.length > 0) animatePanels(...next)
+              setOpenIds(next)
+            }
           }
         }
       } else {
@@ -2214,7 +2374,7 @@ export function App() {
       const openGroup = openIdsRef.current.filter((id) => newIds.includes(id))
       if (openGroup.length >= 2) animatePanels(...openGroup)
     },
-    [setGroups, setOpenIds, animatePanels, snapshotPanelScrolls],
+    [setGroups, setOpenIds, animatePanels, snapshotPanelScrolls, activateGroupViewIfOpenUngrouped],
   )
 
   const toggleGroupCollapse = useCallback(
@@ -2291,22 +2451,46 @@ export function App() {
         next[j] = id
         return next
       })
-      // Sync group order when both sessions share a group (true swap of
-      // the two ids, same pattern as swapPanels).
+      // Sync group state to match the panel-slot change above. A group is a
+      // synced workspace (openIds === group.sessionIds when active), so a
+      // slot swap must update membership too — otherwise the replaced
+      // member lingers in the group (alive in the sidebar) while the new
+      // occupant sits in the group's panel slot from outside the group.
       setGroups((prev) => {
-        const groupId = prev.find(
+        // Same-group swap: both sessions are members of the same group →
+        // swap their positions in the group to mirror the panel swap.
+        const sameGroupId = prev.find(
           (g) => g.sessionIds.includes(id) && g.sessionIds.includes(targetId),
         )?.id
-        if (!groupId) return prev
-        return prev.map((g) => {
-          if (g.id !== groupId) return g
-          const i = g.sessionIds.indexOf(id)
-          const j = g.sessionIds.indexOf(targetId)
-          if (i < 0 || j < 0) return g
-          const ids = g.sessionIds.slice()
-          ;[ids[i], ids[j]] = [ids[j], ids[i]]
-          return { ...g, sessionIds: ids }
-        })
+        if (sameGroupId) {
+          return prev.map((g) => {
+            if (g.id !== sameGroupId) return g
+            const i = g.sessionIds.indexOf(id)
+            const j = g.sessionIds.indexOf(targetId)
+            if (i < 0 || j < 0) return g
+            const ids = g.sessionIds.slice()
+            ;[ids[i], ids[j]] = [ids[j], ids[i]]
+            return { ...g, sessionIds: ids }
+          })
+        }
+        // Replace membership: targetId is in a group but id is not (id is
+        // the newly-resumed/dragged session taking targetId's panel slot).
+        // Swap group membership — targetId leaves the group, id joins at
+        // the same position. Guarded on `id` not already being in any group
+        // so a cross-group panel drag-swap doesn't yank membership around.
+        const idInAnyGroup = prev.some((g) => g.sessionIds.includes(id))
+        const targetGroupId = prev.find((g) => g.sessionIds.includes(targetId))?.id
+        if (targetGroupId && !idInAnyGroup) {
+          return prev.map((g) => {
+            if (g.id !== targetGroupId) return g
+            const idx = g.sessionIds.indexOf(targetId)
+            if (idx < 0) return g
+            const ids = g.sessionIds.slice()
+            ids[idx] = id
+            return { ...g, sessionIds: ids }
+          })
+        }
+        return prev
       })
       setFocusedId(id)
       setLastSeenTurn((prev) => ({ ...prev, [id]: lastTurnAt ?? Date.now() }))
@@ -2345,13 +2529,28 @@ export function App() {
   // command flow). Mirrors handleAcceptSidebarDrop's dormant handling, but
   // also covers unknown CLI-created sessions (not in `sessions`): those fall
   // through to resumeSession, which adopts them server-side before swapping.
+  //
+  // "Replaces the current one" is literal: the picked session takes the old
+  // session's panel slot AND group membership (openAtSlot syncs both), and
+  // the old session is deleted — same path as a normal sidebar delete, incl.
+  // the Undo grace window — so it doesn't linger in the sidebar. Without the
+  // delete, the replaced session would just drop to the sidebar (still alive,
+  // still in the way), which is "removed" not "replaced".
   const resumeIntoPanel = useCallback(
     (pickedId: string, targetPanelId: string) => {
       const known = sessionsRef.current.find((s) => s.id === pickedId)
+      const finish = (lastTurnAt: number | undefined) => {
+        openAtSlot(pickedId, targetPanelId, lastTurnAt)
+        // Delete the replaced session — but only when it's actually a
+        // different session. Picking the same session that already owns the
+        // panel is a no-op swap (openAtSlot bails on i===j), so deleting
+        // targetPanelId here would nuke the session the user just resumed.
+        if (pickedId !== targetPanelId) handleDeleteRef.current(targetPanelId)
+      }
       if (known?.running) {
-        openAtSlot(pickedId, targetPanelId, known.lastTurnAt)
+        finish(known.lastTurnAt)
       } else {
-        void resumeSession(pickedId, (res) => openAtSlot(pickedId, targetPanelId, res.session.lastTurnAt))
+        void resumeSession(pickedId, (res) => finish(res.session.lastTurnAt))
       }
     },
     [resumeSession, openAtSlot],
