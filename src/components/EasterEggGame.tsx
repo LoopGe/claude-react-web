@@ -28,7 +28,6 @@ interface GameState {
   score: number
   obstacles: Obstacle[]
   spawnIn: number
-  night: boolean
   nightBlend: number // 0..1
   lastScoreTime: number
 }
@@ -139,7 +138,6 @@ function makeInitialState(): GameState {
     score: 0,
     obstacles: [],
     spawnIn: 60,
-    night: false,
     nightBlend: 0,
     lastScoreTime: 0,
   }
@@ -213,7 +211,7 @@ function updateRunning(s: GameState) {
   s.nightBlend = lerp(s.nightBlend, nightTarget, 0.02)
 }
 
-function drawObstacle(ctx: CanvasRenderingContext2D, o: Obstacle, c: { fg: string; muted: string; accent: string }) {
+function drawObstacle(ctx: CanvasRenderingContext2D, o: Obstacle, c: { fg: string; muted: string }) {
   const x = o.x, baseY = GROUND_Y
   ctx.save()
   if (o.kind === 'bug') {
@@ -290,7 +288,6 @@ interface ThemeColors {
   fg: string
   muted: string
   bg: string
-  accent: string
 }
 
 function renderFrame(
@@ -352,7 +349,10 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
 
   function resetGame(startRunning: boolean) {
     const next = makeInitialState()
-    if (startRunning) next.status = 'running'
+    if (startRunning) {
+      next.status = 'running'
+      next.lastScoreTime = performance.now()
+    }
     stateRef.current = next
     newBestRef.current = false
   }
@@ -372,7 +372,7 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
   const jumpRef = useRef(jump)
   useEffect(() => { jumpRef.current = jump })
 
-  const colorsRef = useRef({ fg: '#333', muted: '#888', bg: '#fff', accent: '#0a0' })
+  const colorsRef = useRef({ fg: '#333', muted: '#888', bg: '#fff' })
   useEffect(() => {
     const el = document.documentElement
     const cs = getComputedStyle(el)
@@ -380,9 +380,12 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
       fg: cs.getPropertyValue('--fg').trim() || '#333',
       muted: cs.getPropertyValue('--fg-muted').trim() || '#888',
       bg: cs.getPropertyValue('--bg').trim() || '#fff',
-      accent: cs.getPropertyValue('--accent').trim() || '#0a0',
     }
   }, [])
+
+  // Close the AudioContext on unmount so repeated open/close of the game
+  // doesn't leak contexts (browsers cap concurrent instances).
+  useEffect(() => () => { void audioRef.current?.close().catch(() => {}) }, [])
 
   // main loop
   useEffect(() => {
@@ -430,6 +433,8 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
   // keyboard: Space/Up to jump, Escape to exit
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
       if (e.code === 'Space' || e.code === 'ArrowUp' || e.key === 'ArrowUp' || e.key === ' ') {
         e.preventDefault()
         jumpRef.current()

@@ -419,7 +419,6 @@
   background: var(--bg);
   display: block;
   cursor: pointer;
-  image-rendering: pixelated;
 }
 .easter-egg-game-toolbar {
   display: flex;
