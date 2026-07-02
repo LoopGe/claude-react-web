@@ -49,7 +49,7 @@ import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
 import { ContextMenu } from './ContextMenu'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
-import { IconSearch, IconFileText, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconMessageCircle, IconArrowLeft, IconTrash } from './icons/ToolIcons'
+import { IconSearch, IconFileText, IconFileCode, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconMessageCircle, IconArrowLeft, IconTrash } from './icons/ToolIcons'
 import { PLAN_TOOL_NAMES } from '../constants/toolNames'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
@@ -1258,7 +1258,7 @@ export const Chat = memo(function Chat({
             },
             {
               label: 'Export as JSON',
-              icon: '{}',
+              icon: <IconFileCode size={14} />,
               onClick: () => {
                 exportConversationJson(stream.messages, session.title ?? session.id.slice(0, 8))
                 toast.success('Exported as JSON')

@@ -9,6 +9,10 @@ import {
   IconX,
   IconCircle,
   IconCircleDot,
+  IconGitFork,
+  IconCopy,
+  IconRefresh,
+  IconClipboard,
 } from '../icons/ToolIcons'
 
 export interface SessionContextMenuProps {
@@ -94,7 +98,7 @@ export function SessionContextMenu({
     },
     {
       label: 'Fork from this point',
-      icon: '⑂',
+      icon: <IconGitFork size={14} />,
       // Disabled until the SDK has flushed at least one completed turn to
       // ~/.claude/projects/<cwd>/<id>.jsonl — the CLI otherwise errors with
       // "No conversation found with session ID" when we hand it resume:id.
@@ -110,12 +114,12 @@ export function SessionContextMenu({
     },
     {
       label: 'New session like this',
-      icon: '⧉',
+      icon: <IconCopy size={14} />,
       onClick: () => onNewLikeThis(anchor.id),
     },
     {
       label: 'Restart',
-      icon: '↻',
+      icon: <IconRefresh size={14} />,
       onClick: () => {
         if (session.messageCount > 0) {
           const title = session.title ?? session.id.slice(0, 8)
@@ -182,7 +186,7 @@ export function SessionContextMenu({
     })(),
     {
       label: 'Copy session ID',
-      icon: '#',
+      icon: <IconClipboard size={14} />,
       onClick: () => {
         void navigator.clipboard?.writeText(session.id)
           .then(() => onShowSuccess?.('Session ID copied'))

@@ -517,6 +517,20 @@ export function IconGitBranch(props: IconProps) {
   )
 }
 
+// Git fork glyph — two parent nodes joined to a child below. Traced from
+// Lucide `git-fork` so it sits in the same optical family as IconGitBranch.
+export function IconGitFork(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="6" cy="6" r="3" />
+      <circle cx="18" cy="6" r="3" />
+      <circle cx="12" cy="18" r="3" />
+      <path d="M18 9v1.5a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9" />
+      <path d="M12 12.5V15" />
+    </Icon>
+  )
+}
+
 export function IconChevronRight(props: IconProps) {
   return (
     <Icon {...props}>

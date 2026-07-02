@@ -790,7 +790,7 @@ function UntrackedRow({ file, writeOps, onError, askConfirm }: UntrackedRowProps
                 'Delete',
               )
             }
-          >×</button>
+          ><IconX size={14} /></button>
           </Tooltip>
         </div>
       </div>
