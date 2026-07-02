@@ -167,6 +167,22 @@ describe('MessageList', () => {
     expect(container.querySelector('.chat-empty')).toBeTruthy()
   })
 
+  it('swaps the empty state for the easter-egg game after triple-clicking the icon', () => {
+    const { container } = render(<MessageList items={[]} replayReady />)
+    // game not present initially
+    expect(container.querySelector('.easter-egg-game')).toBeNull()
+    // triple-click the sparkle icon to unlock
+    const icon = container.querySelector('.chat-empty-icon') as HTMLElement
+    fireEvent.click(icon)
+    fireEvent.click(icon)
+    fireEvent.click(icon)
+    expect(container.querySelector('.easter-egg-game')).toBeTruthy()
+    // exit returns to the empty state
+    fireEvent.click(container.querySelector('[aria-label="Exit game"]') as HTMLElement)
+    expect(container.querySelector('.easter-egg-game')).toBeNull()
+    expect(container.querySelector('.chat-empty')).toBeTruthy()
+  })
+
   it('applies clearing class while clearing', () => {
     const items = toItems([
       makeMsg('assistant', { message: { content: [{ type: 'text', text: 'hi' }] } }),

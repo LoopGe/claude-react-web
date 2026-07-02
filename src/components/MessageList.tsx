@@ -28,6 +28,7 @@ import { BlockView, ToolResultBlock } from './message-list/blocks'
 import { OlderHistoryHeader, StreamingFooter } from './message-list/transcript-chrome'
 import { Skeleton } from './Skeleton'
 import { ChatEmptyState } from './ChatEmptyState'
+import { EasterEggGame } from './EasterEggGame'
 import { AnsiText } from './AnsiText'
 import { ResultConsumedCtx, useResultConsumed } from './message-list/result-consumed-context'
 import { extractUserText, makeResultConsumed, willRenderEmpty } from './message-list/rendering'
@@ -257,6 +258,9 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   // applies `.chat-messages-clearing` (see messagesClassName below) so
   // content stays blurred/dimmed under the veil while `clearing` is true.
   const [streamingOverlayHeight, setStreamingOverlayHeight] = useState(0)
+  // Easter-egg: triple-clicking the empty-state sparkle swaps in a hidden
+  // dino-style game. Local UI state only — no session/persistence concerns.
+  const [gameOpen, setGameOpen] = useState(false)
   // `atBottom` is state (not a ref) because the jump-to-bottom button's
   // visibility needs to re-render when it changes. The ref-mirror keeps
   // callbacks readable without a stale-closure dance.
@@ -1265,7 +1269,9 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
         {renderableItems.length === 0 ? (
           <div className="chat-messages-empty">
             {replayReady
-              ? (emptyStateContent ?? <ChatEmptyState />)
+              ? (emptyStateContent ?? (gameOpen
+                  ? <EasterEggGame onExit={() => setGameOpen(false)} />
+                  : <ChatEmptyState onUnlockEasterEgg={() => setGameOpen(true)} />))
               : <Skeleton rows={3} className="chat-messages-skeleton" />}
           </div>
         ) : (
