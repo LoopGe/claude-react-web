@@ -40,6 +40,7 @@ interface Obstacle {
   kind: 'bug' | 'error' | 'warning' | 'bird'
   alt: number   // altitude above ground (0 = sits on ground)
   passed: boolean
+  jumpedOver: boolean  // birds: true if the player cleared it while airborne
 }
 
 const PLAYER_H = 26
@@ -166,17 +167,18 @@ const STARS: { x: number; y: number; r: number }[] = (() => {
 
 function spawnObstacle(s: GameState) {
   // Birds only appear after score 50, mixed in ~25% of the time. They fly at
-  // an altitude that intersects the jump arc, so the player must stay grounded.
+  // an altitude the player can either pass under (grounded, no bonus) or jump
+  // over (risky, +10). See the pass-scoring in updateRunning.
   const canBird = s.score > 50 && Math.random() < 0.25
   if (canBird) {
     const p = OBSTACLE_PROFILES.bird
-    s.obstacles.push({ x: W + 10, w: p.w, h: p.h, kind: 'bird', alt: p.alt, passed: false })
+    s.obstacles.push({ x: W + 10, w: p.w, h: p.h, kind: 'bird', alt: p.alt, passed: false, jumpedOver: false })
     return
   }
   const kinds: ('bug' | 'error' | 'warning')[] = ['bug', 'error', 'warning']
   const kind = kinds[Math.floor(Math.random() * kinds.length)]
   const p = OBSTACLE_PROFILES[kind]
-  s.obstacles.push({ x: W + 10, w: p.w, h: p.h, kind, alt: 0, passed: false })
+  s.obstacles.push({ x: W + 10, w: p.w, h: p.h, kind, alt: 0, passed: false, jumpedOver: false })
 }
 
 function updateRunning(s: GameState) {
@@ -210,17 +212,22 @@ function updateRunning(s: GameState) {
   // move obstacles + collision + pass scoring
   for (const o of s.obstacles) o.x -= s.speed
   for (const o of s.obstacles) {
+    const px = PLAYER_X + 3, py = s.player.y + 3
+    const pw = PLAYER_W - 6, ph = PLAYER_H - 6
+    const oxOverlap = px < o.x + o.w && px + pw > o.x
+    // Track bird jump-over: airborne while x-overlapping. If no collision
+    // follows, the player was above the bird (cleared it) → qualifies for +10.
+    if (o.kind === 'bird' && !o.jumpedOver && oxOverlap && !s.player.grounded) {
+      o.jumpedOver = true
+    }
     if (!o.passed && o.x + o.w < PLAYER_X) {
       o.passed = true
-      s.score += 5
+      s.score += o.kind === 'bird' ? (o.jumpedOver ? 10 : 0) : 5
     }
     // hitbox (slightly forgiving). Obstacle spans y in
     // [GROUND_Y - o.alt - o.h, GROUND_Y - o.alt]. Player spans y in [py, py + ph].
-    const px = PLAYER_X + 3, py = s.player.y + 3
-    const pw = PLAYER_W - 6, ph = PLAYER_H - 6
-    const oxHit = px < o.x + o.w && px + pw > o.x
     const oyHit = py + ph > GROUND_Y - o.alt - o.h && py < GROUND_Y - o.alt
-    if (oxHit && oyHit) {
+    if (oxOverlap && oyHit) {
       s.status = 'gameOver'
       // (high-score persistence + sound are handled in the rAF loop where
       // component refs are in scope; kept out of this pure physics fn.)
@@ -353,10 +360,10 @@ function renderFrame(
   // Day/night background. `#0b0e14` is an intentional fixed darkening target
   // (not a theme token — no night-specific var exists); spec exception like
   // the obstacle red/amber literals. One-step blend: bg toward #0b0e14 by
-  // (nightBlend * 0.6), so full night is a 60% darken. mixRgb guards non-hex.
-  ctx.fillStyle = s.nightBlend > 0.01 ? mixRgb(c.bg, '#0b0e14', s.nightBlend * 0.6) : c.bg
+  // (nightBlend * 0.85), so full night is an 85% darken. mixRgb guards non-hex.
+  ctx.fillStyle = s.nightBlend > 0.01 ? mixRgb(c.bg, '#0b0e14', s.nightBlend * 0.85) : c.bg
   ctx.fillRect(0, 0, W, H)
-  // Night sky: stars + moon, fading in with nightBlend. The `#e8e8e8` (moon/
+  // Night sky: stars + moon, fading in with nightBlend. The `#f4f4f5` (moon/
   // stars) and `#0b0e14` (crescent shadow) literals are intentional — they
   // aren't theme tokens (no night-sky var exists), consistent with the
   // obstacle red/amber exception noted below.
@@ -365,18 +372,18 @@ function renderFrame(
     // moon (top-right), with a soft crescent shadow carved from the night bg.
     ctx.save()
     ctx.globalAlpha = a
-    ctx.fillStyle = '#e8e8e8'
+    ctx.fillStyle = '#f4f4f5'
     ctx.beginPath()
     ctx.arc(W - 48, 34, 9, 0, Math.PI * 2)
     ctx.fill()
-    ctx.fillStyle = mixRgb(c.bg, '#0b0e14', s.nightBlend * 0.6)
+    ctx.fillStyle = mixRgb(c.bg, '#0b0e14', s.nightBlend * 0.85)
     ctx.beginPath()
     ctx.arc(W - 44, 31, 8, 0, Math.PI * 2)
     ctx.fill()
     ctx.restore()
     // stars (twinkle slightly via frame)
     ctx.save()
-    ctx.fillStyle = '#e8e8e8'
+    ctx.fillStyle = '#f4f4f5'
     for (const st of STARS) {
       const tw = 0.6 + 0.4 * Math.sin((s.frame + st.x) * 0.05)
       ctx.globalAlpha = a * tw
