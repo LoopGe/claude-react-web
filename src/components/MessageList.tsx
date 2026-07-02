@@ -577,10 +577,19 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   const first = renderableItems.length > 0 ? renderableItems[0].msg : null
   // The easter-egg game is a fresh-invocation easter egg: once real messages
   // arrive, close it so it doesn't reappear when the conversation is later
-  // cleared back to empty.
-  useEffect(() => {
-    if (renderableItems.length > 0) setGameOpen(false)
-  }, [renderableItems.length])
+  // cleared back to empty. Render-time adjustment (prev-value ref) is the
+  // React-recommended pattern for "reset state when a value changes" — it
+  // avoids the set-state-in-effect cascade. The ref access here trips the
+  // `react-hooks/refs` rule, but the read+mutation is idempotent w.r.t. the
+  // current render and mirrors the established disable pattern used for the
+  // Virtuoso first-item anchor block immediately below.
+  /* eslint-disable react-hooks/refs */
+  const prevItemsLenRef = useRef(renderableItems.length)
+  if (prevItemsLenRef.current !== renderableItems.length) {
+    prevItemsLenRef.current = renderableItems.length
+    if (renderableItems.length > 0 && gameOpen) setGameOpen(false)
+  }
+  /* eslint-enable react-hooks/refs */
   // Reading and mutating these refs DURING render is deliberate and required:
   // Virtuoso needs `firstItemIndex` to commit in the SAME render that grows
   // `data` at the front, which a post-render effect can't guarantee (the
