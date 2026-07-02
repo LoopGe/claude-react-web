@@ -10,7 +10,8 @@ import { useEffect, useRef, useState } from 'react'
 
 const W = 600
 const H = 200
-const GROUND_Y = 168
+// exported for unit tests
+export const GROUND_Y = 168
 
 type Status = 'ready' | 'running' | 'paused' | 'gameOver'
 
@@ -43,9 +44,11 @@ interface Obstacle {
   jumpedOver: boolean  // birds: true if the player cleared it while airborne
 }
 
-const PLAYER_H = 26
+// exported for unit tests
+export const PLAYER_H = 26
 const PLAYER_W = 22
-const PLAYER_X = 48
+// exported for unit tests
+export const PLAYER_X = 48
 const GRAVITY = 0.9
 const JUMP_V = -13.5
 
@@ -132,7 +135,8 @@ function playBeep(audioRef: AudioRef, muted: boolean) {
   } catch { /* ignore */ }
 }
 
-function makeInitialState(): GameState {
+// exported for unit tests
+export function makeInitialState(): GameState {
   return {
     status: 'ready',
     player: { y: GROUND_Y - PLAYER_H, vy: 0, grounded: true },
@@ -147,7 +151,8 @@ function makeInitialState(): GameState {
   }
 }
 
-const OBSTACLE_PROFILES = {
+// exported for unit tests
+export const OBSTACLE_PROFILES = {
   bug:     { w: 26, h: 18 },
   error:   { w: 16, h: 26 },
   warning: { w: 18, h: 22 },
@@ -181,7 +186,8 @@ function spawnObstacle(s: GameState) {
   s.obstacles.push({ x: W + 10, w: p.w, h: p.h, kind, alt: 0, passed: false, jumpedOver: false })
 }
 
-function updateRunning(s: GameState) {
+// exported for unit tests
+export function updateRunning(s: GameState) {
   // physics
   s.player.vy += GRAVITY
   s.player.y += s.player.vy
@@ -245,9 +251,8 @@ function drawObstacle(ctx: CanvasRenderingContext2D, o: Obstacle, c: { fg: strin
   const x = o.x, baseY = GROUND_Y
   ctx.save()
   if (o.kind === 'bird') {
-    // `#e8e8e8`-ish body via stroke uses theme fg; intentional literal-free
-    // drawing — wings/beak are stroked with c.fg like the bug, so no extra
-    // color literals introduced here.
+    // Body/wings/beak are stroked with c.fg like the bug, so no extra color
+    // literals are introduced here.
     const cy = baseY - o.alt - o.h / 2
     const flap = Math.sin(frame * 0.3) * 5
     ctx.strokeStyle = c.fg
