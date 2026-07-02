@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  W, H, JUMP_V,
+  W, H, JUMP_V_MIN,
   makeInitialState, updateRunning, renderFrame,
   playBeep, playCrashSound,
   readHi, writeHi, readMuted, writeMuted,
@@ -45,16 +45,25 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
     const s = stateRef.current
     if (s.status === 'ready') { s.status = 'running'; s.lastScoreTime = performance.now() }
     if (s.status === 'gameOver') { resetGame(true); return }
-    if (s.status === 'paused') { s.status = 'running'; return } // resume, no jump this press
+    if (s.status === 'paused') { s.status = 'running'; return }
     if (s.status === 'running' && s.player.grounded) {
-      s.player.vy = JUMP_V
+      s.player.vy = JUMP_V_MIN
       s.player.grounded = false
+      s.player.holding = true
+      s.player.holdFrames = 0
       playBeep(audioRef, mutedRef.current)
     }
   }
 
+  function releaseJump() {
+    const s = stateRef.current
+    if (s.status === 'running') s.player.holding = false
+  }
+
   const jumpRef = useRef(jump)
   useEffect(() => { jumpRef.current = jump })
+  const releaseJumpRef = useRef(releaseJump)
+  useEffect(() => { releaseJumpRef.current = releaseJump })
 
   const colorsRef = useRef<ThemeColors>({ fg: '#333', muted: '#888', bg: '#fff' })
   useEffect(() => {
@@ -121,6 +130,7 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
       if (e.code === 'Space' || e.code === 'ArrowUp' || e.key === 'ArrowUp' || e.key === ' ') {
+        if (e.repeat) return
         e.preventDefault()
         jumpRef.current()
       } else if (e.key === 'Escape') {
@@ -128,9 +138,32 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
         onExit()
       }
     }
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space' || e.code === 'ArrowUp' || e.key === 'ArrowUp' || e.key === ' ') {
+        releaseJumpRef.current()
+      }
+    }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('keyup', onKeyUp)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keyup', onKeyUp)
+    }
   }, [onExit])
+
+  // Release the variable-jump hold on pointer up anywhere (not just on the
+  // canvas), so the jump cuts correctly even if the pointer drags off-canvas.
+  useEffect(() => {
+    const onUp = () => releaseJumpRef.current()
+    window.addEventListener('mouseup', onUp)
+    window.addEventListener('touchend', onUp)
+    window.addEventListener('touchcancel', onUp)
+    return () => {
+      window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('touchend', onUp)
+      window.removeEventListener('touchcancel', onUp)
+    }
+  }, [])
 
   // auto-pause when the user clicks outside this panel or the window loses focus
   useEffect(() => {
@@ -161,7 +194,7 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
       <canvas
         ref={canvasRef}
         aria-label="Easter egg sparkle dino game"
-        onClick={() => jumpRef.current()}
+        onMouseDown={() => jumpRef.current()}
         onTouchStart={(e) => { e.preventDefault(); jumpRef.current() }}
       />
       <div className="easter-egg-game-toolbar">

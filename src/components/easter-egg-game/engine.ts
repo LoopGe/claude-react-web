@@ -15,6 +15,18 @@ export interface Player {
   y: number // top of sprite; ground = GROUND_Y - PLAYER_H
   vy: number
   grounded: boolean
+  holding: boolean     // variable jump: button held while ascending
+  holdFrames: number   // frames of boost applied so far (caps at MAX_HOLD_FRAMES)
+}
+
+export interface Particle {
+  x: number
+  y: number
+  vx: number
+  vy: number
+  life: number
+  maxLife: number
+  color: string
 }
 
 export interface GameState {
@@ -28,6 +40,10 @@ export interface GameState {
   nightBlend: number // 0..1
   lastScoreTime: number
   frame: number
+  fireworks: Particle[]
+  prevTier: number
+  fireworkBurstsLeft: number
+  fireworkCooldown: number
 }
 
 export interface Obstacle {
@@ -47,6 +63,9 @@ export const PLAYER_W = 22
 export const PLAYER_X = 48
 export const GRAVITY = 0.9
 export const JUMP_V = -13.5
+export const JUMP_V_MIN = -9.5       // tap (short hop)
+export const MAX_HOLD_FRAMES = 10    // frames of boost to reach full jump
+export const JUMP_BOOST_PER_FRAME = (JUMP_V - JUMP_V_MIN) / MAX_HOLD_FRAMES
 
 // --- Persisted high score + mute preference ---------------------------------
 export const HI_KEY = 'crw_easter_egg_hi'
@@ -135,7 +154,7 @@ export function playBeep(audioRef: AudioRef, muted: boolean) {
 export function makeInitialState(): GameState {
   return {
     status: 'ready',
-    player: { y: GROUND_Y - PLAYER_H, vy: 0, grounded: true },
+    player: { y: GROUND_Y - PLAYER_H, vy: 0, grounded: true, holding: false, holdFrames: 0 },
     speed: 4.5,
     groundOffset: 0,
     score: 0,
@@ -144,6 +163,10 @@ export function makeInitialState(): GameState {
     nightBlend: 0,
     lastScoreTime: 0,
     frame: 0,
+    fireworks: [],
+    prevTier: 0,
+    fireworkBurstsLeft: 0,
+    fireworkCooldown: 0,
   }
 }
 
@@ -182,16 +205,46 @@ export function spawnObstacle(s: GameState) {
   s.obstacles.push({ x: W + 10, w: p.w, h: p.h, kind, alt: 0, passed: false, jumpedOver: false })
 }
 
+// Firework burst colors. Intentional festive literals, not theme tokens (no
+// celebration-sky var exists) — spec exception like the obstacle red/amber set.
+const FIREWORK_COLORS = ['#ff5a5a', '#ffd166', '#06d6a0', '#4cc9f0', '#f4f4f5']
+function spawnFireworkBurst(s: GameState) {
+  const cx = 80 + Math.random() * (W - 160)
+  const cy = 20 + Math.random() * 70
+  const color = FIREWORK_COLORS[Math.floor(Math.random() * FIREWORK_COLORS.length)]
+  const count = 26
+  for (let i = 0; i < count; i++) {
+    const ang = (Math.PI * 2 * i) / count + Math.random() * 0.3
+    const sp = 1.5 + Math.random() * 1.5
+    s.fireworks.push({
+      x: cx, y: cy,
+      vx: Math.cos(ang) * sp,
+      vy: Math.sin(ang) * sp,
+      life: 40 + Math.floor(Math.random() * 20),
+      maxLife: 60,
+      color,
+    })
+  }
+}
+
 // exported for unit tests
 export function updateRunning(s: GameState) {
   // physics
   s.player.vy += GRAVITY
+  // Variable jump: while the jump button is held and the player is still
+  // ascending, add lift up to MAX_HOLD_FRAMES (tap = JUMP_V_MIN, hold = JUMP_V).
+  if (s.player.holding && s.player.vy < 0 && s.player.holdFrames < MAX_HOLD_FRAMES) {
+    s.player.vy += JUMP_BOOST_PER_FRAME
+    s.player.holdFrames += 1
+  }
   s.player.y += s.player.vy
   const floor = GROUND_Y - PLAYER_H
   if (s.player.y >= floor) {
     s.player.y = floor
     s.player.vy = 0
     s.player.grounded = true
+    s.player.holding = false
+    s.player.holdFrames = 0
   } else {
     s.player.grounded = false
   }
@@ -237,6 +290,29 @@ export function updateRunning(s: GameState) {
     }
   }
   s.obstacles = s.obstacles.filter(o => o.x + o.w > -20)
+  // Fireworks: trigger when entering the first night of each 1000-point block
+  // (tier 1, 11, 21, … = tier % 10 === 1). Stagger 5 bursts over ~2s.
+  if (tier !== s.prevTier && tier % 10 === 1) {
+    s.fireworkBurstsLeft = 5
+    s.fireworkCooldown = 0
+  }
+  s.prevTier = tier
+  if (s.fireworkBurstsLeft > 0) {
+    s.fireworkCooldown -= 1
+    if (s.fireworkCooldown <= 0) {
+      spawnFireworkBurst(s)
+      s.fireworkBurstsLeft -= 1
+      s.fireworkCooldown = 22
+    }
+  }
+  // update firework particles
+  for (const p of s.fireworks) {
+    p.vy += 0.08
+    p.x += p.vx
+    p.y += p.vy
+    p.life -= 1
+  }
+  s.fireworks = s.fireworks.filter(p => p.life > 0 && p.y < GROUND_Y)
   // day/night blend — smooth lerp toward the tier-parity target. The loop
   // snaps this instantly when prefers-reduced-motion is set.
   const nightTarget = tier % 2 === 1 ? 1 : 0
@@ -390,6 +466,18 @@ export function renderFrame(
       ctx.globalAlpha = a * tw
       ctx.beginPath()
       ctx.arc(st.x, st.y, st.r, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    ctx.restore()
+  }
+  // Fireworks (celebration on the first night of each 1000-point block).
+  if (s.fireworks.length > 0) {
+    ctx.save()
+    for (const p of s.fireworks) {
+      ctx.globalAlpha = Math.max(0, p.life / p.maxLife)
+      ctx.fillStyle = p.color
+      ctx.beginPath()
+      ctx.arc(p.x, p.y, 2, 0, Math.PI * 2)
       ctx.fill()
     }
     ctx.restore()
