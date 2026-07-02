@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import { EasterEggGame, updateRunning, makeInitialState, GROUND_Y, OBSTACLE_PROFILES } from './EasterEggGame'
+import { EasterEggGame } from './EasterEggGame'
+import { updateRunning, makeInitialState, GROUND_Y, OBSTACLE_PROFILES } from './easter-egg-game/engine'
 
 describe('EasterEggGame', () => {
   it('renders the canvas and a close button that calls onExit', () => {
