@@ -232,6 +232,7 @@ export function App() {
     setSidebarOrder,
     collapsedGroups,
     setCollapsedGroups,
+    loading: uiStateLoading,
   } = useUiState()
 
   // Composer snippets — a SINGLE global instance shared by every panel
@@ -1685,6 +1686,7 @@ export function App() {
   /* eslint-disable react-hooks/refs -- intentional render-time ref read; useSessionUrl stores the value in its own ref on mount */
   useSessionUrl({
     sessionsLoaded,
+    groupsLoaded: !uiStateLoading,
     openIds,
     focusedId,
     maxOpen,

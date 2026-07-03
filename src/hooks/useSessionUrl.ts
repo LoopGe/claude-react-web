@@ -53,6 +53,13 @@ function writeHash(openIds: string[], focusedId: string | null): void {
 interface UseSessionUrlOptions {
   /** The full session list from the server (empty until the first snapshot). */
   sessionsLoaded: boolean
+  /** Whether session groups have finished loading from /api/ui-state.
+   *  Hash-init must wait for this: `handleSelect` (the open-from-URL path)
+   *  reads `groups` to decide whether a hash id is a group member (open the
+   *  whole group) or ungrouped (open a single panel). If init runs before
+   *  groups arrive, every hash id is treated as ungrouped and the panels
+   *  clobber each other down to one — losing the group layout on refresh. */
+  groupsLoaded: boolean
   /** Current open panel IDs. */
   openIds: string[]
   /** Currently focused panel ID. */
@@ -68,6 +75,7 @@ interface UseSessionUrlOptions {
 
 export function useSessionUrl({
   sessionsLoaded,
+  groupsLoaded,
   openIds,
   focusedId,
   maxOpen,
@@ -78,8 +86,11 @@ export function useSessionUrl({
   const hashInitRef = useRef(false)
 
   // ── Read direction: hash → open session panels ──
+  // Waits for BOTH the session snapshot and the group list. See the
+  // `groupsLoaded` prop doc for why gating on sessions alone loses the
+  // group layout when the snapshot wins the race.
   useEffect(() => {
-    if (!sessionsLoaded) return
+    if (!sessionsLoaded || !groupsLoaded) return
     if (hashInitRef.current) return
     hashInitRef.current = true
 
@@ -96,11 +107,16 @@ export function useSessionUrl({
       onFocusPanel(hashFocused)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionsLoaded])
+  }, [sessionsLoaded, groupsLoaded])
 
   // ── Write direction: openIds/focusedId → hash ──
+  // Skipped until hash-init has run. Until init consumes the incoming URL,
+  // `openIds` is still [] and writeHash would clear the deep-link hash from
+  // the URL before init ever reads it — which matters now that init may be
+  // deferred waiting for `groupsLoaded`.
   useEffect(() => {
     if (!sessionsLoaded) return
+    if (!hashInitRef.current) return
     writeHash(openIds, focusedId)
   }, [openIds, focusedId, sessionsLoaded])
 }
