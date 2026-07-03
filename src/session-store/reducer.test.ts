@@ -232,6 +232,28 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     },
   } as unknown as SdkMessage
 
+  it('captures the full input.prompt on the subagent record', () => {
+    // The SDK doesn't echo a subagent's input prompt back as a child user
+    // frame, so the overlay (which filters by parent_tool_use_id) would
+    // have no trace of what was asked. The record carries the full prompt
+    // so the overlay can render it as a "you" bubble.
+    const longPrompt = 'Investigate the message-list scroll structure. '.repeat(5)
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-prompt',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'tu_prompt', name: 'Agent', input: { description: 'short', prompt: longPrompt } },
+        ],
+      },
+    } as unknown as SdkMessage
+    const state = reduceSessionState(createInitialSessionState('s1'), { type: 'MESSAGE', message: toolUse })
+    const record = state.mirror.activeSubagents.get('tu_prompt')
+    expect(record?.label).toBe('short') // description wins as the label
+    expect(record?.prompt).toBe(longPrompt) // full prompt preserved, untruncated
+  })
+
   const agentResult: SdkMessage = {
     type: 'user',
     uuid: 'u-1',
@@ -277,6 +299,195 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     const after = state.mirror.activeSubagents.get('tu_agent')
     expect(after).toBeDefined()
     expect(after?.status).toBe('interrupted')
+  })
+
+  it('advances endedAt to the last child frame for an async-ack subagent', () => {
+    // Async/background subagent: the Agent tool_result is a launch ack that
+    // arrives within ms of the tool_use, well before the subagent's real
+    // output streams as child frames (parent_tool_use_id === subagent id).
+    // endedAt must track the last child frame, not the ack — otherwise the
+    // card shows ~0s elapsed for a subagent that ran for seconds.
+    const ackAt = 1_000
+    const childAt = 6_000 // 5s later — the subagent's real run time
+    const childFrame: SdkMessage = {
+      type: 'assistant',
+      uuid: 'c-1',
+      parent_tool_use_id: 'tu_agent',
+      receivedAt: childAt,
+      message: { role: 'assistant', content: [{ type: 'text', text: 'worker output' }] },
+    } as unknown as SdkMessage
+    const ackResult: SdkMessage = {
+      type: 'user',
+      uuid: 'u-1',
+      parent_tool_use_id: null,
+      receivedAt: ackAt,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_agent', content: 'Async agent launched successfully' }],
+      },
+    } as unknown as SdkMessage
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-1',
+      receivedAt: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_agent', name: 'Agent', input: { description: 'do work' } }],
+      },
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: ackResult })
+    // Ack has landed — endedAt is the ack's receivedAt (would be ~0s elapsed).
+    expect(state.mirror.activeSubagents.get('tu_agent')?.endedAt).toBe(ackAt)
+
+    // The subagent's real output arrives 5s later as a child frame.
+    state = reduceSessionState(state, { type: 'MESSAGE', message: childFrame })
+    const record = state.mirror.activeSubagents.get('tu_agent')
+    expect(record?.endedAt).toBe(childAt)
+    expect(record?.status).toBe('done')
+    // The child text frame overrides the ack as the card's result — the
+    // ack is internal metadata, the real output is the subagent's text.
+    expect(record?.result?.content).toEqual([{ type: 'text', text: 'worker output' }])
+    expect(record?.result?.isError).toBe(false)
+  })
+
+  it('keeps the sync tool_result as result when it lands after child text', () => {
+    // Synchronous subagent: child text frames stream first, then the Agent
+    // tool_result (the canonical output) lands last. The merge branch must
+    // re-override `result` so the child's intermediate text doesn't replace
+    // the tool_result — guards the sync path against the async-ack override.
+    const syncToolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-sync',
+      receivedAt: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_sync', name: 'Agent', input: { description: 'do work', run_in_background: false } }],
+      },
+    } as unknown as SdkMessage
+    const childFrame: SdkMessage = {
+      type: 'assistant',
+      uuid: 'c-1',
+      parent_tool_use_id: 'tu_sync',
+      receivedAt: 1_000,
+      message: { role: 'assistant', content: [{ type: 'text', text: 'intermediate musing' }] },
+    } as unknown as SdkMessage
+    const agentResult: SdkMessage = {
+      type: 'user',
+      uuid: 'u-1',
+      parent_tool_use_id: null,
+      receivedAt: 2_000,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_sync', content: 'final summary' }],
+      },
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: syncToolUse })
+    // Seeded false from the explicit run_in_background: false flag.
+    expect(state.mirror.activeSubagents.get('tu_sync')?.isAsync).toBe(false)
+    state = reduceSessionState(state, { type: 'MESSAGE', message: childFrame })
+    // Child text captured mid-flight.
+    expect(state.mirror.activeSubagents.get('tu_sync')?.result?.content)
+      .toEqual([{ type: 'text', text: 'intermediate musing' }])
+
+    // Tool_result lands last and wins.
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentResult })
+    expect(state.mirror.activeSubagents.get('tu_sync')?.result?.content).toBe('final summary')
+    expect(state.mirror.activeSubagents.get('tu_sync')?.status).toBe('done')
+    // Sync: no child frame arrived after the tool_result, so isAsync stays
+    // false (frame timing never flips it for a synchronous subagent).
+    expect(state.mirror.activeSubagents.get('tu_sync')?.isAsync).toBe(false)
+  })
+
+  it('detects async via frame timing (child arrives after the ack result)', () => {
+    // No run_in_background flag on the input — isAsync starts undefined.
+    // The ack (tool_result) lands first, then a child frame arrives. A
+    // child-after-result is the async signature, so isAsync flips to true.
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-async',
+      receivedAt: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_async', name: 'Agent', input: { description: 'do work' } }],
+      },
+    } as unknown as SdkMessage
+    const ack: SdkMessage = {
+      type: 'user',
+      uuid: 'u-async',
+      parent_tool_use_id: null,
+      receivedAt: 10,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_async', content: 'Async agent launched successfully' }],
+      },
+    } as unknown as SdkMessage
+    const child: SdkMessage = {
+      type: 'assistant',
+      uuid: 'c-async',
+      parent_tool_use_id: 'tu_async',
+      receivedAt: 5_000,
+      message: { role: 'assistant', content: [{ type: 'text', text: 'real output' }] },
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
+    expect(state.mirror.activeSubagents.get('tu_async')?.isAsync).toBeUndefined()
+    state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    // Ack landed but no child yet — still unknown.
+    expect(state.mirror.activeSubagents.get('tu_async')?.isAsync).toBeUndefined()
+    state = reduceSessionState(state, { type: 'MESSAGE', message: child })
+    // Child after ack → async.
+    expect(state.mirror.activeSubagents.get('tu_async')?.isAsync).toBe(true)
+  })
+
+  it('does not mislabel a sync subagent as async when child text sets result', () => {
+    // Regression guard: the toolCount branch writes `result` from child
+    // text (the #2 fix), so a naive `result != null` check for "ack
+    // landed" would flip isAsync on the SECOND child of a sync subagent.
+    // The detector uses `status === 'done'` instead (only the result-merge
+    // branch sets done), so a sync subagent with multiple text-bearing
+    // children stays sync throughout.
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-sync2',
+      receivedAt: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_sync2', name: 'Agent', input: { description: 'do work' } }],
+      },
+    } as unknown as SdkMessage
+    const childA: SdkMessage = {
+      type: 'assistant',
+      uuid: 'c-a',
+      parent_tool_use_id: 'tu_sync2',
+      receivedAt: 1_000,
+      message: { role: 'assistant', content: [{ type: 'text', text: 'first musing' }] },
+    } as unknown as SdkMessage
+    const childB: SdkMessage = {
+      type: 'assistant',
+      uuid: 'c-b',
+      parent_tool_use_id: 'tu_sync2',
+      receivedAt: 2_000,
+      message: { role: 'assistant', content: [{ type: 'text', text: 'second musing' }] },
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: childA })
+    // First child set `result` (text capture) but isAsync must NOT flip.
+    expect(state.mirror.activeSubagents.get('tu_sync2')?.result?.content)
+      .toEqual([{ type: 'text', text: 'first musing' }])
+    expect(state.mirror.activeSubagents.get('tu_sync2')?.isAsync).toBeUndefined()
+    state = reduceSessionState(state, { type: 'MESSAGE', message: childB })
+    // Second child — still no ack, still not async. This is the regression
+    // point: `result` is non-null from childA, but status is still running.
+    expect(state.mirror.activeSubagents.get('tu_sync2')?.isAsync).toBeUndefined()
+    expect(state.mirror.activeSubagents.get('tu_sync2')?.status).toBe('running')
   })
 })
 

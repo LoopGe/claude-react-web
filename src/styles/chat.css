@@ -1586,6 +1586,18 @@
 .subagent-card-done    .subagent-card-status { color: var(--ok); }
 .subagent-card-rejected .subagent-card-status,
 .subagent-card-interrupted .subagent-card-status { color: var(--warn); }
+/* async/sync mode chip — distinguishes background (returns immediately,
+   runs independently) from synchronous (parent waits) subagents. */
+.subagent-card-mode {
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  text-transform: lowercase;
+}
+.subagent-card-mode-async { color: var(--accent); border-color: var(--accent-soft, var(--border)); }
+.subagent-card-mode-sync  { color: var(--fg-muted); }
 .subagent-card-open {
   color: var(--fg-muted);
   font-size: 12px;

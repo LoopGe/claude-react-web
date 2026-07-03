@@ -30,6 +30,7 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
   const startedAt = record?.startedAt
   const endedAt = record?.endedAt
   const result = record?.result
+  const isAsync = record?.isAsync
   const isRunning = status === 'running'
 
   // Tick once a second while running so the elapsed display stays fresh.
@@ -74,6 +75,14 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
           <span className="subagent-card-status" aria-label={status}>
             {statusIcon}
           </span>
+          {isAsync != null && (
+            <span
+              className={`subagent-card-mode subagent-card-mode-${isAsync ? 'async' : 'sync'}`}
+              title={isAsync ? 'Background/async — the subagent runs independently and the result returns immediately' : 'Synchronous — the parent agent waits for this subagent to finish'}
+            >
+              {isAsync ? 'async' : 'sync'}
+            </span>
+          )}
           {elapsedMs != null && (
             <span className="subagent-card-elapsed">{formatElapsed(elapsedMs)}</span>
           )}

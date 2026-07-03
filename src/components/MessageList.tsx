@@ -97,6 +97,23 @@ interface Props {
    *  - string: only show messages whose parent_tool_use_id matches.
    *    Used by SubagentOverlay to render one subagent's inner conversation. */
   parentToolUseIdFilter?: string | null
+  /** Items prepended to the rendered list BEFORE the parent-filtered
+   *  children, bypassing the parent_tool_use_id filter. Used by
+   *  SubagentOverlay to surface a subagent's input prompt as a synthetic
+   *  leading bubble at the top of the inner conversation (the SDK doesn't
+   *  echo an async subagent's prompt as a child frame). The caller picks
+   *  the item's own parent_tool_use_id to control how MessageView labels
+   *  it — SubagentOverlay uses the subagent id so it renders via the
+   *  subagent-internal branch, matching the sync echo. */
+  leadingItems?: TranscriptItem[]
+  /** Items appended to the rendered list AFTER the parent-filtered
+   *  children, bypassing the parent_tool_use_id filter. Used by
+   *  SubagentOverlay to surface a synchronous subagent's result as a
+   *  final bubble at the bottom (the Agent tool_result lands on the MAIN
+   *  thread with parent_tool_use_id = null, so the filter would otherwise
+   *  hide it). Skipped for async subagents, whose reply already streams as
+   *  a child assistant frame. */
+  trailingItems?: TranscriptItem[]
   /** Lazy-load the previous page of history from disk and prepend it.
    *  Only wired for the main transcript (not subagent overlays). When
    *  provided AND `hasOlder` is true, scrolling to the top triggers it. */
@@ -259,7 +276,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, clearing, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, emptyStateContent, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd }: Props) {
+export const MessageList = memo(function MessageList({ items, working, clearing, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, leadingItems, trailingItems, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, emptyStateContent, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -599,6 +616,26 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
 
   const { renderableItems, firstItemId, lastItemId, nextItemTypeMap } = useMemo(() => {
     const out: RenderableItem[] = []
+    // leadingItems bypass the parent_tool_use_id filter — they're prepended
+    // as-is (e.g. the subagent's input prompt, which has no parent frame).
+    // See the prop comment for why this exists.
+    if (leadingItems) {
+      for (let li = 0; li < leadingItems.length; li++) {
+        const item = leadingItems[li]
+        if (item.hiddenByDefault) continue
+        if (willRenderEmpty(item.msg, item.isCompactSummary, isResultConsumed)) continue
+        out.push({
+          id: item.id,
+          msg: item.msg,
+          isCompactSummary: item.isCompactSummary,
+          renderableIndex: out.length,
+          itemIndex: -1 - li,
+          sending: item.sending,
+          deliveryStatus: item.deliveryStatus,
+          receivedAt: item.receivedAt,
+        })
+      }
+    }
     for (let i = 0; i < items.length; i++) {
       const item = items[i]
       const parent = item.msg.parent_tool_use_id
@@ -636,6 +673,26 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
         })
       }
     }
+    // trailingItems bypass the parent_tool_use_id filter — appended after
+    // the filtered children (e.g. a sync subagent's result, which lands on
+    // the main thread with parent = null). Mirrors the leadingItems prepend.
+    if (trailingItems) {
+      for (let ti = 0; ti < trailingItems.length; ti++) {
+        const item = trailingItems[ti]
+        if (item.hiddenByDefault) continue
+        if (willRenderEmpty(item.msg, item.isCompactSummary, isResultConsumed)) continue
+        out.push({
+          id: item.id,
+          msg: item.msg,
+          isCompactSummary: item.isCompactSummary,
+          renderableIndex: out.length,
+          itemIndex: -1000 - ti,
+          sending: item.sending,
+          deliveryStatus: item.deliveryStatus,
+          receivedAt: item.receivedAt,
+        })
+      }
+    }
     // Pre-compute stable lookups so itemContent doesn't depend on the
     // renderableItems array reference (which changes on every message append
     // and would defeat Virtuoso's row-level memo).
@@ -649,7 +706,7 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
       lastItemId: out[out.length - 1]?.id,
       nextItemTypeMap: nextMap,
     }
-  }, [items, parentToolUseIdFilter, isResultConsumed])
+  }, [items, parentToolUseIdFilter, isResultConsumed, leadingItems, trailingItems])
 
   // --- Reverse infinite scroll: keep the viewport anchored on prepend ----
   // Virtuoso requires `firstItemIndex` to decrease by exactly the number of

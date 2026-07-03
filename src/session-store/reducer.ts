@@ -1117,6 +1117,9 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
         endedAt: existing?.endedAt,
         status: existing?.status ?? 'running',
         toolCount: existing?.toolCount ?? 0,
+        // Frame-timing detection (child after result) overrides the input
+        // flag, so preserve an existing value across replay re-encounters.
+        isAsync: existing?.isAsync ?? subagent.isAsync,
       })
     }
     changed = true
@@ -1160,9 +1163,63 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
     changed = changed || touched
   }
 
+  // Extend a subagent's endedAt to the latest child frame's receivedAt.
+  //
+  // For an async/background subagent the Agent tool_result is just a launch
+  // ack ("Async agent launched successfully … agentId") that arrives within
+  // ms of the tool_use — well before the subagent's real work streams as
+  // child frames (parent_tool_use_id === subagent id). The result-merge
+  // branch above pins endedAt to that ack's receivedAt, so without this
+  // extension the card shows ~0s elapsed for a subagent that actually ran
+  // for seconds/minutes. The subagent emits no dedicated end frame, so the
+  // last child frame IS the completion signal — keep advancing endedAt to
+  // it. For a synchronous subagent the tool_result already lands last, so
+  // this is a no-op (stamp ≤ existing.endedAt). Fires for any child frame
+  // (assistant text, tool_use, internal tool_result) — the latest wins.
+  if (activeSubagents.size > 0) {
+    const parentId = typeof message.parent_tool_use_id === 'string' ? message.parent_tool_use_id : ''
+    if (parentId) {
+      const existing = activeSubagents.get(parentId)
+      if (existing) {
+        const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
+        // A child frame arriving AFTER the Agent tool_result is the
+        // signature of an async/background subagent: the tool_result was a
+        // launch ack, not the completion (sync subagents' tool_result lands
+        // LAST). Flip isAsync on the first such frame — it stays true after.
+        // Use `status === 'done'` (set ONLY by the result-merge branch when
+        // the Agent tool_result lands) rather than `result != null`: the
+        // toolCount branch below also writes `result` from child text, so a
+        // sync subagent with 2+ text-bearing child frames would otherwise
+        // mislabel as async on the second frame.
+        const nowAsync = existing.isAsync === true ? true : existing.status === 'done'
+        const endedAtChanged = existing.endedAt == null || stamp > existing.endedAt
+        const asyncChanged = existing.isAsync !== nowAsync && nowAsync
+        if (endedAtChanged || asyncChanged) {
+          if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
+          activeSubagents.set(parentId, {
+            ...existing,
+            ...(endedAtChanged ? { endedAt: stamp } : {}),
+            ...(asyncChanged ? { isAsync: true } : {}),
+          })
+          changed = true
+        }
+      }
+    }
+  }
+
   // Count tool_use blocks in assistant messages that belong to a subagent
   // (identified by parent_tool_use_id). This pre-computes the value that
   // SubagentCard previously scanned the full message list to compute.
+  //
+  // Also capture the subagent's own text output into `result`. For an
+  // async/background subagent the Agent tool_result is just a launch ack
+  // (internal metadata — "Async agent launched successfully … agentId"),
+  // not the real output; the real output streams as text blocks in these
+  // child assistant frames. The last text-bearing child frame wins, which
+  // is the subagent's final response. Processing order makes this safe for
+  // both shapes: sync subagent → tool_result lands LAST and re-overrides
+  // `result` via the merge branch above; async subagent → ack lands first,
+  // child text overrides it here.
   if (message.type === 'assistant' && activeSubagents.size > 0) {
     const parentId = message.parent_tool_use_id
     if (typeof parentId === 'string') {
@@ -1171,12 +1228,22 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
         const content = message.message?.content
         if (Array.isArray(content)) {
           let newTools = 0
-          for (const b of content as Array<{ type?: string }>) {
+          const textBlocks: Array<{ type: 'text'; text: string }> = []
+          for (const b of content as Array<{ type?: string; text?: unknown }>) {
             if (b.type === 'tool_use') newTools++
+            else if (b.type === 'text' && typeof b.text === 'string') {
+              textBlocks.push({ type: 'text', text: b.text })
+            }
           }
-          if (newTools > 0) {
+          if (newTools > 0 || textBlocks.length > 0) {
             if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
-            activeSubagents.set(parentId, { ...existing, toolCount: existing.toolCount + newTools })
+            activeSubagents.set(parentId, {
+              ...existing,
+              toolCount: existing.toolCount + newTools,
+              ...(textBlocks.length > 0
+                ? { result: { content: textBlocks, isError: false } }
+                : {}),
+            })
             changed = true
           }
         }

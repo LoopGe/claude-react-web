@@ -270,6 +270,77 @@ describe('MessageList', () => {
     expect(messages?.classList.contains('chat-messages-reveal-pending')).toBe(false)
   })
 
+  it('renders leadingItems above the filtered children (bypasses parent filter)', () => {
+    // SubagentOverlay passes the subagent's input prompt via leadingItems
+    // so it shows even though the SDK doesn't echo it as a child frame.
+    // The leading item carries parent_tool_use_id = the subagent id (so it
+    // labels "subagent", matching the sync echo) — but it must still render
+    // even though it's not in the filtered `items` list.
+    const promptItem: TranscriptItem = {
+      id: 'agent-1:prompt',
+      msg: makeMsg('user', {
+        parent_tool_use_id: 'agent-1',
+        message: { content: [{ type: 'text', text: 'Investigate the scroll structure' }] },
+      }) as SdkMessage,
+      plainText: 'Investigate the scroll structure',
+      isCompactSummary: false,
+      hiddenByDefault: false,
+    }
+    const msgs = [
+      makeMsg('assistant', {
+        parent_tool_use_id: 'agent-1',
+        message: { content: [{ type: 'text', text: 'Subagent reply' }] },
+      }),
+    ]
+
+    const { container } = render(
+      <MessageList
+        items={toItems(msgs as SdkMessage[])}
+        parentToolUseIdFilter="agent-1"
+        leadingItems={[promptItem]}
+      />,
+    )
+
+    // Both the prompt and the child reply are visible — the leading item
+    // bypassed the parent_tool_use_id filter.
+    expect(container.textContent).toContain('Investigate the scroll structure')
+    expect(container.textContent).toContain('Subagent reply')
+  })
+
+  it('renders trailingItems below the filtered children (bypasses parent filter)', () => {
+    // A synchronous subagent's reply lands as the Agent tool_result on the
+    // main thread (parent_tool_use_id = null), so the overlay's parent
+    // filter hides it. SubagentOverlay appends it via trailingItems so the
+    // subagent's output is visible at the bottom of the inner conversation.
+    const resultItem: TranscriptItem = {
+      id: 'agent-1:result',
+      msg: makeMsg('assistant', {
+        parent_tool_use_id: 'agent-1',
+        message: { content: [{ type: 'text', text: 'Subagent final output' }] },
+      }) as SdkMessage,
+      plainText: 'Subagent final output',
+      isCompactSummary: false,
+      hiddenByDefault: false,
+    }
+    const msgs = [
+      makeMsg('user', {
+        parent_tool_use_id: 'agent-1',
+        message: { content: [{ type: 'text', text: 'Prompt echo' }] },
+      }),
+    ]
+
+    const { container } = render(
+      <MessageList
+        items={toItems(msgs as SdkMessage[])}
+        parentToolUseIdFilter="agent-1"
+        trailingItems={[resultItem]}
+      />,
+    )
+
+    expect(container.textContent).toContain('Prompt echo')
+    expect(container.textContent).toContain('Subagent final output')
+  })
+
   it('reveals filtered subagent transcripts when keyed', async () => {
     const msgs = [
       makeMsg('assistant', {

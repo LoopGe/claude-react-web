@@ -52,6 +52,22 @@ export interface ActiveSubagent {
    *  Incremented during updateIndexes so SubagentCard doesn't need to scan
    *  the full message list on every render. */
   toolCount: number
+  /** The full `prompt` passed to the subagent (Agent/Task/Explore tool_use
+   *  input.prompt). The SDK doesn't echo an async subagent's input prompt
+   *  back as a child frame on the main stream, so SubagentOverlay — which
+   *  filters by parent_tool_use_id — would otherwise have no trace of what
+   *  was asked. The overlay injects this as a synthetic leading "subagent"
+   *  bubble at the top of the inner conversation (skipped for sync, where
+   *  the SDK already echoes the prompt as a child user frame). */
+  prompt?: string
+  /** Whether this subagent runs async/background (true) or synchronous
+   *  (false). Seeded from the tool_use input's `run_in_background` flag
+   *  when present, and confirmed/overridden by frame timing: if a child
+   *  frame arrives AFTER the Agent tool_result, the result was an async
+   *  launch ack (not the subagent's completion), so this flips to true.
+   *  Undefined only when neither signal has fired yet (just spawned, no
+   *  ack and no children). SubagentCard surfaces it as an async/sync chip. */
+  isAsync?: boolean
   /** Captured tool_result payload of the subagent call itself (the Agent/
    *  Task/Explore result that lands on the MAIN thread). Set when the
    *  matching tool_result arrives. Lets SubagentCard render the subagent's

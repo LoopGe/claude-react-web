@@ -204,7 +204,14 @@ export function getSubagentStarts(msg: SdkMessage): ActiveSubagent[] {
       (typeof input?.description === 'string' && input.description) ||
       (typeof input?.prompt === 'string' && truncate(input.prompt, 80)) ||
       'Subagent'
-    out.push({ toolUseId: id, label, status: 'running', toolCount: 0 })
+    const prompt = typeof input?.prompt === 'string' ? input.prompt : undefined
+    // Seed sync/async from the explicit flag if the SDK sent one. Frame
+    // timing in the reducer confirms/overrides this once messages flow.
+    const isAsync =
+      input?.run_in_background === true ? true
+      : input?.run_in_background === false ? false
+      : undefined
+    out.push({ toolUseId: id, label, prompt, isAsync, status: 'running', toolCount: 0 })
   }
   return out
 }
