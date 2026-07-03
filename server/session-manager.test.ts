@@ -1096,7 +1096,7 @@ describe('SessionManager', () => {
       const sideTranscript = [uParent, aParent, uSide, aSide]
 
       const readPage = vi.spyOn(
-        sm as unknown as { readProviderHistoryPage: (...a: unknown[]) => Promise<unknown> },
+        sm as unknown as { readProviderHistoryPage: (provider: unknown, id: string, opts: { limit: number; afterUuid?: string }) => Promise<unknown> },
         'readProviderHistoryPage',
       ).mockImplementation(async (_provider: unknown, id: string, opts: { limit: number; afterUuid?: string }) => {
         if (id === parent.id) {
@@ -1139,7 +1139,7 @@ describe('SessionManager', () => {
       const uSide = { uuid: 'u-side' }
       const aSide = { uuid: 'a-side' }
       const readPage = vi.spyOn(
-        sm as unknown as { readProviderHistoryPage: (...a: unknown[]) => Promise<unknown> },
+        sm as unknown as { readProviderHistoryPage: (provider: unknown, id: string, opts: { limit: number; afterUuid?: string }) => Promise<unknown> },
         'readProviderHistoryPage',
       ).mockImplementation(async (_provider: unknown, id: string, opts: { limit: number; afterUuid?: string }) => {
         if (id === parent.id) return { messages: [aParent], totalCount: 1, startIndex: 0, hasMore: false }

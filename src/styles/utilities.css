@@ -481,6 +481,41 @@
   flex-shrink: 0;
 }
 
+/* Skill — namespaced skill name as a mono pill in the title, optional args
+ * as a muted body line. Mirrors the WebFetch prompt layout so the
+ * "tool + argument" pattern reads consistently. */
+.tool-card-skill .tool-card-header {
+  padding: 6px 10px;
+}
+.tool-card-skill .skill-tool-name {
+  font-family: var(--mono);
+  color: var(--fg);
+  background: var(--bg);
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  font-size: 12.5px;
+  word-break: break-word;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-card-skill .skill-tool-args {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.45;
+}
+.tool-card-skill .skill-tool-args-marker {
+  color: var(--fg-muted);
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
 /* Todo card body — inline checklist sits flush against the header. */
 .tool-card-todo .tool-card-body {
   padding: 6px 10px 8px;
