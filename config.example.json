@@ -10,5 +10,6 @@
   "commitMessageModel": "claude-haiku-4-5-20251001",
   "maxUploadBytes": 26214400,
   "historyCap": 500,
-  "maxOpenPanels": 3
+  "maxOpenPanels": 3,
+  "allowSensitivePathEdits": false
 }

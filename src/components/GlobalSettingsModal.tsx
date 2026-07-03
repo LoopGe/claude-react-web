@@ -148,6 +148,7 @@ export function GlobalSettingsModal({
   // `|| null`, which PUT /config would treat as "delete key".
   const [showPinnedUserMessage, setShowPinnedUserMessage] = useState(true)
   const [autoRecap, setAutoRecap] = useState(true)
+  const [allowSensitivePathEdits, setAllowSensitivePathEdits] = useState(false)
 
   // Skills tab state
   const [skillLoadMode, setSkillLoadMode] = useState<SkillLoadMode>('default')
@@ -201,6 +202,7 @@ export function GlobalSettingsModal({
         setEnabledSkills(cfg.enabledSkills ?? [])
         setShowPinnedUserMessage(cfg.showPinnedUserMessage ?? true)
         setAutoRecap(cfg.autoRecap ?? true)
+        setAllowSensitivePathEdits(cfg.allowSensitivePathEdits ?? false)
       } catch (e) {
         if ((e as Error).name !== 'AbortError') setErr((e as Error).message)
       } finally {
@@ -267,6 +269,7 @@ export function GlobalSettingsModal({
         // so `false` must be sent explicitly to persist a real OFF default.
         showPinnedUserMessage,
         autoRecap,
+        allowSensitivePathEdits,
       }
       if (authTokenDirty && authToken.trim()) {
         updates.authToken = authToken.trim()
@@ -481,12 +484,14 @@ export function GlobalSettingsModal({
                   workingStuckMs={workingStuckMs}
                   showPinnedUserMessage={showPinnedUserMessage}
                   autoRecap={autoRecap}
+                  allowSensitivePathEdits={allowSensitivePathEdits}
                   onMaxUploadBytesChange={setMaxUploadBytes}
                   onHistoryCapChange={setHistoryCap}
                   onMaxOpenPanelsChange={setMaxOpenPanels}
                   onWorkingStuckMsChange={setWorkingStuckMs}
                   onShowPinnedUserMessageChange={setShowPinnedUserMessage}
                   onAutoRecapChange={setAutoRecap}
+                  onAllowSensitivePathEditsChange={setAllowSensitivePathEdits}
                 />
               )}
               {tab === 'skills' && (
@@ -752,10 +757,11 @@ function ModelsTab({
 
 function ServerTab({
   maxUploadBytes, historyCap, maxOpenPanels, workingStuckMs,
-  showPinnedUserMessage, autoRecap,
+  showPinnedUserMessage, autoRecap, allowSensitivePathEdits,
   onMaxUploadBytesChange, onHistoryCapChange, onMaxOpenPanelsChange,
   onWorkingStuckMsChange,
   onShowPinnedUserMessageChange, onAutoRecapChange,
+  onAllowSensitivePathEditsChange,
 }: {
   maxUploadBytes: number
   historyCap: number
@@ -763,12 +769,14 @@ function ServerTab({
   workingStuckMs: number
   showPinnedUserMessage: boolean
   autoRecap: boolean
+  allowSensitivePathEdits: boolean
   onMaxUploadBytesChange: (v: number) => void
   onHistoryCapChange: (v: number) => void
   onMaxOpenPanelsChange: (v: number) => void
   onWorkingStuckMsChange: (v: number) => void
   onShowPinnedUserMessageChange: (v: boolean) => void
   onAutoRecapChange: (v: boolean) => void
+  onAllowSensitivePathEditsChange: (v: boolean) => void
 }) {
   return (
     <>
@@ -833,6 +841,31 @@ function ServerTab({
           <span className="hint">
             Automatically produces a session summary after the conversation has
             been idle. Manual recap (Alt+R) still works when this is off.
+          </span>
+        </div>
+      </div>
+      <div className="settings-section">
+        <h4>Permissions (global)</h4>
+        <span className="hint" style={{ display: 'block', marginBottom: 8 }}>
+          Relaxes the sensitive-path safety check that still prompts in
+          acceptEdits and bypassPermissions modes.
+        </span>
+        <div className="settings-field">
+          <label className="settings-toggle">
+            <input
+              type="checkbox"
+              checked={allowSensitivePathEdits}
+              onChange={(e) => onAllowSensitivePathEditsChange(e.target.checked)}
+            />
+            <span>Allow editing sensitive paths in auto-approve modes</span>
+          </label>
+          <span className="hint">
+            When on, acceptEdits and bypassPermissions also auto-approve edits
+            and commands targeting <code>.git/</code>, <code>.claude/</code>,{' '}
+            <code>.vscode/</code>, <code>.idea/</code>, and shell/git config
+            files instead of prompting. Off (default) keeps the safe behavior.
+            Plan review (ExitPlanMode) and questions (AskUserQuestion) still
+            prompt regardless.
           </span>
         </div>
       </div>

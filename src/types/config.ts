@@ -42,5 +42,8 @@ export interface FullServerConfig {
   showPinnedUserMessage: boolean
   /** Global default for idle auto-recap. */
   autoRecap: boolean
+  /** When true, acceptEdits/bypassPermissions also auto-approve edits/commands
+   *  targeting sensitive config paths (.git/, .claude/, shell configs, …). */
+  allowSensitivePathEdits: boolean
   defaults: Defaults
 }

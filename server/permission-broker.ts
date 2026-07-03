@@ -29,6 +29,7 @@ import { createAsyncSubscription } from './async-subscription.js'
 import { createLogger } from './log.js'
 import { isAutoApprovableEditBash, isInScopeEditTool, isSensitiveAutoEditPath, EDIT_TOOL_PATH_FIELD } from './accept-edits-bash.js'
 import { isAutoApprovableEditPowerShell } from './accept-edits-powershell.js'
+import { config as serverConfig } from './config.js'
 import { isReadOnlyBash } from './readonly-bash.js'
 import { classifyToolAction, sanitizeToolInput } from './auto-classifier.js'
 import { ClassifierLimiter } from './auto-classifier-limiter.js'
@@ -273,12 +274,17 @@ export class PermissionBroker {
       // fires. Placed AFTER the ExitPlanMode check so plan review is never
       // skippe?.
       if (session.permissionMode === 'acceptEdits') {
+        // When the global `allowSensitivePathEdits` opt-in is on, the
+        // sensitive-path exclusion (.git/, .claude/, shell configs, …) is
+        // relaxed — edits/commands still must target paths inside cwd, but
+        // sensitive config paths no longer force a prompt.
+        const allowSensitive = serverConfig.allowSensitivePathEdits === true
         // File-editing tools: auto-approve ONLY when the target path is inside
         // the working directory (official semantics — edits outside cwd still
         // prompt). isInScopeEditTool is the single source of truth for "which
         // tools are editing tools" (it returns false for any non-edit tool),
         // so no separate name-set guard is needed. Fail-closed.
-        const isInScopeEdit = isInScopeEditTool(toolName, toolInput, session.cwd)
+        const isInScopeEdit = isInScopeEditTool(toolName, toolInput, session.cwd, allowSensitive)
         // Bash: auto-approve ONLY the whitelisted filesystem commands operating
         // on in-scope paths (mkdir/touch/rm/rmdir/mv/cp). The check is strictly
         // fail-closed — anything unprovable (shell metacharacters, paths
@@ -288,10 +294,10 @@ export class PermissionBroker {
         const commandText = typeof command === 'string' ? command : undefined
         const isSafeBash =
           toolName === 'Bash' &&
-          isAutoApprovableEditBash(commandText, session.cwd)
+          isAutoApprovableEditBash(commandText, session.cwd, allowSensitive)
         const isSafePowerShell =
           toolName === 'PowerShell' &&
-          isAutoApprovableEditPowerShell(commandText, session.cwd)
+          isAutoApprovableEditPowerShell(commandText, session.cwd, allowSensitive)
         if (isInScopeEdit || isSafeBash || isSafePowerShell) {
           return {
             behavior: 'allow',
@@ -309,6 +315,18 @@ export class PermissionBroker {
       // (`permissionMode`) is the single source of truth, no CLI-side
       // --dangerously-skip-permissions plumbing required.
       if (session.permissionMode === 'bypassPermissions') {
+        // Global opt-in: when `allowSensitivePathEdits` is on, the
+        // bypass-immune sensitive-path checks below are skipped entirely —
+        // bypass mode auto-approves everything (including .git/, .claude/,
+        // shell configs). ExitPlanMode / AskUserQuestion above are already
+        // handled and are NOT affected by this toggle.
+        if (serverConfig.allowSensitivePathEdits) {
+          return {
+            behavior: 'allow',
+            updatedInput: toolInput,
+            toolUseID: ctx.toolUseID,
+          } satisfies PermissionResult
+        }
         // Bypass-immune safety checks — aligned with SDK's
         // checkPathSafetyForAutoEdit. Edits to .git/, .claude/, .vscode/,
         // .idea/, shell configs, and git config files still prompt even in

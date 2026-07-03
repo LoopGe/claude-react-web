@@ -228,6 +228,7 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
       enabledSkills: serverConfig.enabledSkills,
       showPinnedUserMessage: serverConfig.showPinnedUserMessage,
       autoRecap: serverConfig.autoRecap,
+      allowSensitivePathEdits: serverConfig.allowSensitivePathEdits,
       defaults: {
         cwd: process.cwd(),
         model: serverConfig.defaultModel,

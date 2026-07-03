@@ -232,6 +232,22 @@ describe('sensitive acceptEdits paths', () => {
     expect(isAutoApprovableEditPath(join(cwd, '.gitignore'), cwd)).toBe(true)
     expect(isAutoApprovableEditPath(join(cwd, '.claude-plugin/manifest.json'), cwd)).toBe(true)
   })
+
+  it('allowSensitive=true relaxes the sensitive-path exclusion but still requires in-scope', () => {
+    // Sensitive in-cwd paths become auto-approvable.
+    expect(isAutoApprovableEditPath(join(cwd, '.claude/settings.json'), cwd, true)).toBe(true)
+    expect(isAutoApprovableEditPath(join(cwd, '.git/config'), cwd, true)).toBe(true)
+    // Out-of-cwd paths still rejected even with the opt-in.
+    expect(isAutoApprovableEditPath('/etc/passwd', cwd, true)).toBe(false)
+    // Without the opt-in, sensitive paths still prompt (default behavior).
+    expect(isAutoApprovableEditPath(join(cwd, '.claude/settings.json'), cwd)).toBe(false)
+  })
+
+  it('isInScopeEditTool threads allowSensitive through', () => {
+    const fwd = (p: string) => p.replace(/\\/g, '/')
+    expect(isInScopeEditTool('Write', { file_path: fwd(join(cwd, '.claude/settings.json')) }, cwd)).toBe(false)
+    expect(isInScopeEditTool('Write', { file_path: fwd(join(cwd, '.claude/settings.json')) }, cwd, true)).toBe(true)
+  })
 })
 
 describe('isAutoApprovableEditBash with cwd', () => {

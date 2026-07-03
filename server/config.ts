@@ -72,6 +72,13 @@ interface ConfigFile {
    *  overrides (SessionMeta.autoRecap) take priority; sessions without an
    *  override inherit this value. Manual recap (Alt+R) is never gated. */
   autoRecap: boolean
+  /** When true, acceptEdits and bypassPermissions modes also auto-approve
+   *  edits/commands targeting "sensitive" config paths (.git/, .claude/,
+   *  .vscode/, .idea/, shell & git config files) that otherwise still prompt
+   *  even in those modes. Default false preserves the safe behavior. Does NOT
+   *  affect ExitPlanMode / AskUserQuestion (interactive review is never
+   *  bypassed) or the dontAsk lockdown mode. */
+  allowSensitivePathEdits: boolean
 }
 
 export interface ServerConfig {
@@ -109,6 +116,9 @@ export interface ServerConfig {
   /** Global default for idle auto-recap. Sessions without an explicit
    *  override inherit this. */
   readonly autoRecap: boolean
+  /** When true, acceptEdits/bypassPermissions also bypass the sensitive-path
+   *  safety checks. See ConfigFile.allowSensitivePathEdits. */
+  readonly allowSensitivePathEdits: boolean
 }
 
 /** Hardcoded defaults. Captured as its own constant so applyParsedConfig
@@ -140,6 +150,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   autoClassifierTimeout: 5000,
   showPinnedUserMessage: true,
   autoRecap: true,
+  allowSensitivePathEdits: false,
 })
 
 /** Current server config. Frozen after loadConfig() dreads are safe,
@@ -330,6 +341,10 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): v
     ;(merged as { autoRecap: boolean }).autoRecap = file_.autoRecap
   }
 
+  if (typeof file_.allowSensitivePathEdits === 'boolean') {
+    ;(merged as { allowSensitivePathEdits: boolean }).allowSensitivePathEdits = file_.allowSensitivePathEdits
+  }
+
   config = Object.freeze(merged)
 
   // Enable or disable file logging based on the loaded config.
@@ -380,6 +395,7 @@ export const WRITABLE_CONFIG_KEYS = [
   'autoClassifierTimeout',
   'showPinnedUserMessage',
   'autoRecap',
+  'allowSensitivePathEdits',
 ] as const
 
 /**

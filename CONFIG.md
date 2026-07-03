@@ -233,6 +233,30 @@ npm registry URL the update checker probes for new releases. Set to an empty str
 
 ---
 
+### `allowSensitivePathEdits`
+
+| | |
+|---|---|
+| Type | `boolean` |
+| Default | `false` |
+
+When `true`, `acceptEdits` and `bypassPermissions` modes also auto-approve edits and commands targeting "sensitive" config paths (`.git/`, `.claude/`, `.vscode/`, `.idea/`, and shell/git config files such as `.bashrc`, `.gitconfig`) that otherwise still prompt even in those modes. Off (default) preserves the safe behavior.
+
+This only relaxes the sensitive-path safety check — it does **not** affect:
+
+- `ExitPlanMode` (plan review) or `AskUserQuestion` — these always prompt regardless of mode.
+- The `dontAsk` lockdown mode.
+- The `auto` mode classifier path (sensitive paths there still go to the classifier).
+- The "path must be inside the session cwd" requirement in `acceptEdits` — out-of-cwd edits still prompt.
+
+```json
+{
+  "allowSensitivePathEdits": true
+}
+```
+
+---
+
 ## Priority order
 
 Configuration values are resolved in this order (highest priority first):

@@ -21,7 +21,7 @@ const PATH_PARAMETERS: ReadonlySet<string> = new Set([
 
 const POWERSHELL_METACHARACTERS = /[|&;<>()$`"'*?[\]{}#~\n\r\t]/
 
-export function isAutoApprovableEditPowerShell(command: unknown, cwd?: string): boolean {
+export function isAutoApprovableEditPowerShell(command: unknown, cwd?: string, allowSensitive = false): boolean {
   if (typeof command !== 'string') return false
   const trimmed = command.trim()
   if (!trimmed) return false
@@ -34,7 +34,7 @@ export function isAutoApprovableEditPowerShell(command: unknown, cwd?: string): 
   let awaitingPath = false
   for (const token of tokens.slice(1)) {
     if (awaitingPath) {
-      if (!isAutoApprovableEditPath(token, cwd)) return false
+      if (!isAutoApprovableEditPath(token, cwd, allowSensitive)) return false
       awaitingPath = false
       continue
     }
@@ -44,7 +44,7 @@ export function isAutoApprovableEditPowerShell(command: unknown, cwd?: string): 
       const attached = splitAttachedParameterValue(lower, token)
       if (attached) {
         if (!PATH_PARAMETERS.has(attached.name)) return false
-        if (!isAutoApprovableEditPath(attached.value, cwd)) return false
+        if (!isAutoApprovableEditPath(attached.value, cwd, allowSensitive)) return false
         continue
       }
       if (!isSafeBareParameter(token)) return false
@@ -52,7 +52,7 @@ export function isAutoApprovableEditPowerShell(command: unknown, cwd?: string): 
       continue
     }
 
-    if (!isAutoApprovableEditPath(token, cwd)) return false
+    if (!isAutoApprovableEditPath(token, cwd, allowSensitive)) return false
   }
 
   return !awaitingPath

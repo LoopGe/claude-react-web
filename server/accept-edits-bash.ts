@@ -59,7 +59,7 @@ const SAFE_ENV_PREFIX = /^[A-Z][A-Z0-9_]*=[A-Za-z0-9_.:-]*$/
  *                 official acceptEdits semantics). When omitted, only relative
  *                 in-scope paths are accepted (fail-closed).
  */
-export function isAutoApprovableEditBash(command: unknown, cwd?: string): boolean {
+export function isAutoApprovableEditBash(command: unknown, cwd?: string, allowSensitive = false): boolean {
   if (typeof command !== 'string') return false
   const trimmed = command.trim()
   if (!trimmed) return false
@@ -108,7 +108,7 @@ export function isAutoApprovableEditBash(command: unknown, cwd?: string): boolea
       if (!isSafeBareFlag(arg)) return false
       continue
     }
-    if (!isAutoApprovableEditPath(arg, cwd)) return false
+    if (!isAutoApprovableEditPath(arg, cwd, allowSensitive)) return false
   }
   return true
 }
@@ -208,9 +208,14 @@ function relativePathForInspection(p: string, cwd: string): string | null {
 }
 
 /** Auto-accept path predicate: inside the session cwd and outside sensitive
- *  control/config areas that should still prompt even in acceptEdits mode. */
-export function isAutoApprovableEditPath(p: string, cwd?: string): boolean {
-  return isInScopePath(p, cwd) && !isSensitiveAutoEditPath(p, cwd)
+ *  control/config areas that should still prompt even in acceptEdits mode.
+ *
+ *  When `allowSensitive` is true (user opted in via the global
+ *  `allowSensitivePathEdits` setting), the sensitive-path exclusion is skipped
+ *  — the path still must be inside cwd (out-of-cwd edits always prompt), but
+ *  `.git/`, `.claude/`, shell configs, etc. are no longer forced to prompt. */
+export function isAutoApprovableEditPath(p: string, cwd?: string, allowSensitive = false): boolean {
+  return isInScopePath(p, cwd) && (allowSensitive || !isSensitiveAutoEditPath(p, cwd))
 }
 
 /** Stricter relative-only check (no cwd available): rejects absolute paths,
@@ -252,10 +257,10 @@ export const EDIT_TOOL_PATH_FIELD: Record<string, string> = {
  * @param cwd       the session working directory (required to validate; when
  *                  omitted, falls back to relative-only via isInScopePath)
  */
-export function isInScopeEditTool(toolName: string, input: unknown, cwd?: string): boolean {
+export function isInScopeEditTool(toolName: string, input: unknown, cwd?: string, allowSensitive = false): boolean {
   const field = EDIT_TOOL_PATH_FIELD[toolName]
   if (!field) return false
   const path = (input as Record<string, unknown> | null | undefined)?.[field]
   if (typeof path !== 'string' || !path) return false
-  return isAutoApprovableEditPath(path, cwd)
+  return isAutoApprovableEditPath(path, cwd, allowSensitive)
 }

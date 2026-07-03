@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { PermissionBroker } from './permission-broker.js'
 import type { Session, PendingPermission } from './session-types.js'
+import { __setConfigForTest } from './config.js'
 
 // 鈹€鈹€鈹€ Helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
@@ -122,6 +123,7 @@ describe('PermissionBroker', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+    __setConfigForTest({ allowSensitivePathEdits: false })
   })
 
   // 鈹€鈹€鈹€ buildCanUseTool 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -143,6 +145,41 @@ describe('PermissionBroker', () => {
         updatedInput: { command: 'ls' },
         toolUseID: 'tu-1',
       })
+    })
+
+    it('still prompts for sensitive paths in bypassPermissions mode by default', () => {
+      const session = makeFakeSession({ permissionMode: 'bypassPermissions', cwd: '/work/app' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      canUseTool('Write', { file_path: '/work/app/.claude/settings.json', content: 'x' }, {
+        toolUseID: 'tu-1',
+        signal: new AbortController().signal,
+        title: 'Write file', displayName: 'Write', description: '', suggestions: [],
+      })
+      canUseTool('Bash', { command: 'cat /work/app/.git/config' }, {
+        toolUseID: 'tu-2',
+        signal: new AbortController().signal,
+        title: 'Run bash', displayName: 'Bash', description: '', suggestions: [],
+      })
+      expect(session.pending.size).toBe(2)
+    })
+
+    it('auto-allows sensitive paths in bypassPermissions mode when allowSensitivePathEdits is on', async () => {
+      __setConfigForTest({ allowSensitivePathEdits: true })
+      const session = makeFakeSession({ permissionMode: 'bypassPermissions', cwd: '/work/app' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const editResult = await canUseTool('Write', { file_path: '/work/app/.claude/settings.json', content: 'x' }, {
+        toolUseID: 'tu-1',
+        signal: new AbortController().signal,
+        title: 'Write file', displayName: 'Write', description: '', suggestions: [],
+      })
+      const bashResult = await canUseTool('Bash', { command: 'cat /work/app/.git/config' }, {
+        toolUseID: 'tu-2',
+        signal: new AbortController().signal,
+        title: 'Run bash', displayName: 'Bash', description: '', suggestions: [],
+      })
+      expect(editResult.behavior).toBe('allow')
+      expect(bashResult.behavior).toBe('allow')
+      expect(session.pending.size).toBe(0)
     })
 
     it('auto-allows edit tools targeting paths inside cwd in acceptEdits mode', async () => {
@@ -188,6 +225,32 @@ describe('PermissionBroker', () => {
       })
       expect(session.pending.size).toBe(1)
       expect(Array.from(session.pending.values())[0].toolName).toBe('Write')
+    })
+
+    it('auto-allows sensitive-path edits in acceptEdits mode when allowSensitivePathEdits is on', async () => {
+      __setConfigForTest({ allowSensitivePathEdits: true })
+      const session = makeFakeSession({ permissionMode: 'acceptEdits', cwd: '/work/app' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const input = { file_path: '/work/app/.claude/settings.json', content: 'x' }
+      const result = await canUseTool('Write', input, {
+        toolUseID: 'tu-1',
+        signal: new AbortController().signal,
+        title: 'Write file', displayName: 'Write', description: '', suggestions: [],
+      })
+      expect(result).toEqual({ behavior: 'allow', updatedInput: input, toolUseID: 'tu-1' })
+      expect(session.pending.size).toBe(0)
+    })
+
+    it('still prompts for OUT-of-cwd edits in acceptEdits mode even when allowSensitivePathEdits is on', () => {
+      __setConfigForTest({ allowSensitivePathEdits: true })
+      const session = makeFakeSession({ permissionMode: 'acceptEdits', cwd: '/work/app' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      canUseTool('Write', { file_path: '/etc/passwd', content: 'x' }, {
+        toolUseID: 'tu-1',
+        signal: new AbortController().signal,
+        title: 'Write file', displayName: 'Write', description: '', suggestions: [],
+      })
+      expect(session.pending.size).toBe(1)
     })
 
     it('still prompts for non-edit tools (Bash) in acceptEdits mode', () => {
