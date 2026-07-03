@@ -3,13 +3,38 @@ import { act, fireEvent, render, waitFor } from '@testing-library/react'
 import type { SdkMessage } from '../types'
 import type { TranscriptItem } from '../session-store/types'
 
-// Stub ResizeObserver — not available in jsdom.
+// Stub ResizeObserver — not available in jsdom. Controllable: captures each
+// callback by observed element (in `roObserved`) so a test can fire it on
+// demand via `fireResize(el)`. Never auto-fires, so tests that don't drive it
+// behave exactly as under the old no-op stub (their observer callbacks simply
+// never run).
+const roObserved = new Map<Element, Array<() => void>>()
+function fireResize(el: Element) {
+  for (const cb of roObserved.get(el) ?? []) cb()
+}
 vi.stubGlobal(
   'ResizeObserver',
   class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
+    constructor(private cb: () => void) {}
+    observe(el: Element) {
+      const list = roObserved.get(el) ?? []
+      list.push(this.cb)
+      roObserved.set(el, list)
+    }
+    unobserve(el: Element) {
+      const list = roObserved.get(el)
+      if (!list) return
+      const i = list.indexOf(this.cb)
+      if (i >= 0) list.splice(i, 1)
+      if (list.length === 0) roObserved.delete(el)
+    }
+    disconnect() {
+      for (const [el, list] of Array.from(roObserved)) {
+        const i = list.indexOf(this.cb)
+        if (i >= 0) list.splice(i, 1)
+        if (list.length === 0) roObserved.delete(el)
+      }
+    }
   },
 )
 
@@ -156,6 +181,7 @@ describe('MessageList', () => {
     virtuosoMockState.scrollTop = 0
     virtuosoMockState.streamingSpacerHeight = 0
     virtuosoMockState.lastFollowOutput = undefined
+    roObserved.clear()
   })
 
   it('shows the default empty state when messages are empty', () => {
@@ -735,6 +761,73 @@ describe('MessageList', () => {
     // Follow stayed armed for the whole animation — the button never
     // re-showed (no debounce downgrade mid-flight).
     expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+  })
+
+  it('re-pins to the bottom when settled content grows after the follow animation finalized', () => {
+    // Regression guard for the "a tall (or rapid-burst) message lands partway
+    // down instead of at the bottom" bug.
+    //
+    // Root cause: when a tail message's real height is much larger than
+    // Virtuoso's initial estimate, the useLayoutEffect pin AND the rAF follow
+    // animation both read `scrollHeight` while the new row is still counted at
+    // its ESTIMATED height. The rAF loop sees `remaining ≈ 0` at that estimated
+    // bottom and finalizes (clearing `scrollAnimatingRef`); a frame later
+    // Virtuoso measures the real height, `scrollHeight` grows downward, but
+    // `scrollTop` stays at the stale estimated bottom — so the viewport sits
+    // mid-way through the new content. No `scroll` event fires (scrollTop
+    // didn't move), so the scroll handler can't correct it. A burst of
+    // messages stacks the same race: each append's animation finalizes at a
+    // stale height and the next measurement lands after the loop exits.
+    //
+    // Fix: a ResizeObserver on Virtuoso's content element re-pins scrollTop to
+    // the fresh scrollHeight while still following. This test fires that
+    // observer after scrollHeight grows and asserts the viewport was pulled to
+    // the real bottom instead of being stranded at the stale estimate.
+    vi.useFakeTimers()
+
+    virtuosoMockState.scrollHeight = 200
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.scrollTop = 100 // pinned at the estimated bottom
+
+    const first = makeMsg('assistant', {
+      message: { content: [{ type: 'text', text: 'first' }] },
+    })
+    const { container } = render(
+      <MessageList items={toItems([first] as SdkMessage[])} />,
+    )
+    // Flush the rAF-retry attach of the content-growth observer (and any
+    // post-mount timers).
+    act(() => { vi.runAllTimers() })
+
+    const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
+    expect(scroller).not.toBeNull()
+    // Virtuoso's content viewport is the scroller's first child.
+    const content = scroller.firstElementChild as HTMLElement
+    expect(content).not.toBeNull()
+
+    // Sanity: following at the bottom, no jump button.
+    expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+
+    // Virtuoso measures the just-mounted row's REAL height — scrollHeight
+    // grows far past the estimate the follow animation locked onto.
+    virtuosoMockState.scrollHeight = 1000
+    // Pre-fix state: scrollTop is stranded at the stale estimate (100), well
+    // above the real bottom (900).
+    expect(virtuosoMockState.scrollTop).toBeLessThan(
+      virtuosoMockState.scrollHeight - virtuosoMockState.clientHeight,
+    )
+
+    // Fire the content-growth observer (real Virtuoso fires it after
+    // measuring). Without the fix no observer is registered for `content`, so
+    // `roObserved` has no entry for it and `fireResize` is a no-op — leaving
+    // scrollTop stranded and failing the assertion below.
+    fireResize(content)
+
+    // scrollTop was re-pinned to the fresh bottom (>= 900 = 1000-100): the
+    // tall message is fully in view instead of stranded halfway.
+    expect(virtuosoMockState.scrollTop).toBeGreaterThanOrEqual(
+      virtuosoMockState.scrollHeight - virtuosoMockState.clientHeight,
+    )
   })
 
   it('plays the msg-enter entrance animation on a live tail arrival', () => {

@@ -1192,6 +1192,71 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     return () => ro.disconnect()
   }, [hasVisibleStreamingContent, scrollScrollerToBottom])
 
+  // Re-pin to the bottom when SETTLED content grows AFTER the follow animation
+  // has already finalized. Root cause of the "a tall message (or a rapid burst
+  // of messages) lands partway down instead of at the bottom" bug:
+  //
+  // When `items` grows, the useLayoutEffect pin and the rAF follow animation
+  // both read `scrollHeight` at a moment when Virtuoso is still counting the
+  // freshly-mounted tail row at its ESTIMATED height (Virtuoso measures real
+  // heights asynchronously via its own ResizeObserver, after paint). The rAF
+  // loop sees `remaining ≈ 0` at that estimated bottom and finalizes — clearing
+  // `scrollAnimatingRef`. A frame later Virtuoso measures the row's real (much
+  // larger) height, `scrollHeight` grows downward, but `scrollTop` stays at the
+  // stale estimated bottom — so the viewport sits mid-way through the new
+  // content. No `scroll` event fires (scrollTop didn't move) so the scroll
+  // handler can't correct it, and `atBottomStateChange(false)`'s 150ms debounce
+  // disarms follow before anything re-pins. A burst of messages stacks the same
+  // race: each append's animation finalizes at a stale height and the next
+  // measurement lands after the loop exits.
+  //
+  // The scroller's own ResizeObserver (above) watches the VIEWPORT
+  // (clientHeight) for shrink; the streaming ResizeObserver watches the live
+  // typing bubble. Neither catches settled-content growth. This observer fills
+  // that gap: it watches Virtuoso's content element (the scroller's first
+  // child, whose height tracks total scrollable content — the scroller's own
+  // border-box is the fixed viewport, so observing it would not fire on content
+  // growth) and, while we're still following and no animation is in flight,
+  // snaps scrollTop to the fresh scrollHeight. Gated on `shouldFollowRef` so a
+  // user who has scrolled up is never yanked back (it's false the instant an
+  // upward scroll is detected); `scrollAnimatingRef` is skipped because the rAF
+  // loop already re-targets each frame. Mirrors the streaming re-pin's instant
+  // snap — a measurement correction reads as "settle to bottom", not a jump.
+  useEffect(() => {
+    if (typeof ResizeObserver === 'undefined') return
+    let cancelled = false
+    let raf = 0
+    let lastScrollHeight = 0
+    const ro = new ResizeObserver(() => {
+      if (cancelled) return
+      const scroller = scrollerRef.current
+      if (!scroller) return
+      if (!shouldFollowRef.current || scrollAnimatingRef.current) return
+      const sh = scroller.scrollHeight
+      if (sh <= lastScrollHeight) return
+      lastScrollHeight = sh
+      scroller.scrollTop = scroller.scrollHeight
+    })
+    const attach = () => {
+      if (cancelled) return
+      const scroller = scrollerRef.current
+      if (!scroller) { raf = requestAnimationFrame(attach); return }
+      // Virtuoso's content viewport is the scroller's first child. Its height
+      // tracks total scrollable content; observing it fires on every content
+      // growth (new items mounting, real heights settling, lazy blocks loading).
+      const content = scroller.firstElementChild as HTMLElement | null
+      if (!content) { raf = requestAnimationFrame(attach); return }
+      lastScrollHeight = scroller.scrollHeight
+      ro.observe(content)
+    }
+    attach()
+    return () => {
+      cancelled = true
+      cancelAnimationFrame(raf)
+      ro.disconnect()
+    }
+  }, [])
+
   // Authoritative scroll-state listener. Virtuoso's callback can miss
   // native scroll intent, so direct DOM geometry decides whether the
   // viewport is actually at the bottom. Any upward scroll away from that
