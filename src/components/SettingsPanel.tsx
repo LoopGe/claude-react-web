@@ -12,7 +12,7 @@ import { PERMISSION_MODES } from '../types'
 import type { SkillRecord } from '../../shared/skills'
 import { FlagSettingsEditor } from './FlagSettingsEditor'
 import { ContextBar } from './ContextBar'
-import { IconChevronUp, IconChevronDown } from './icons/ToolIcons'
+import { IconChevronUp, IconChevronDown, IconLoader } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
 import { useExitPresence } from '../hooks/useExitPresence'
 import { AnimatedCollapse, AnimatedDetails } from './AnimatedCollapse'
@@ -82,6 +82,20 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   // been removed in favour of right-bottom toasts.
   const toast = useToast()
   const [reloadedPlugins, setReloadedPlugins] = useState<Plugin[]>([])
+  // Per-server optimistic state for MCP toggle (Disable/Enable). The SDK's
+  // mcp-status control read is flaky and may not reflect a toggle promptly,
+  // so we flip the card status locally on click and reconcile against the
+  // refreshed truth afterwards. `pendingMcp` tracks in-flight names so the
+  // clicked button shows a spinner instead of silently awaiting a round-trip.
+  const [pendingMcp, setPendingMcp] = useState<Set<string>>(new Set())
+  const [mcpOverride, setMcpOverride] = useState<Record<string, Partial<McpServerStatus>>>({})
+  const clearMcpOverride = useCallback((name: string) => {
+    setMcpOverride((o) => {
+      if (!(name in o)) return o
+      const { [name]: _dropped, ...rest } = o
+      return rest
+    })
+  }, [])
   // One-shot guard so opening the Plugins tab auto-loads the plugin list
   // exactly once per mount (the panel remounts per session via key=).
   const pluginsAutoLoadedRef = useRef(false)
@@ -284,15 +298,50 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   }
 
   const toggleMcp = async (name: string, enabled: boolean) => {
+    if (pendingMcp.has(name)) return
+    // Optimistic status shown while the round-trip is in flight. Disable lands
+    // on 'disabled'; Enable passes through 'pending' on its way to connected.
+    const optimisticStatus: McpServerStatus['status'] = enabled ? 'pending' : 'disabled'
+    // Confirm against a direction-aware predicate, not a single expected value:
+    // Disable is done once the SDK reports 'disabled'; Enable is done once it
+    // reports anything *but* 'disabled' (connected / failed / needs-auth …).
+    // Equality against 'pending' would never match a successful Enable that
+    // lands as 'connected', leaving the card stuck on the optimistic state.
+    const isConfirmed = (s: McpServerStatus['status'] | undefined): boolean =>
+      s === undefined ? false : enabled ? s !== 'disabled' : s === 'disabled'
+    setPendingMcp((s) => new Set(s).add(name))
+    // Optimistically flip the card so the dot + button react instantly —
+    // don't make the user wait on the SDK round-trip to see anything happen.
+    setMcpOverride((o) => ({ ...o, [name]: { ...o[name], status: optimisticStatus } }))
     try {
       await api.post(`/sessions/${session.id}/mcp/${encodeURIComponent(name)}/toggle`, { enabled })
-      await refreshMcp()
+      const r = await api.get<{ mcp: McpServerStatus[] }>(`/sessions/${session.id}/mcp-status`)
+      setMcp(r.mcp)
+      // If the SDK now confirms the toggle, the override is redundant. If it
+      // doesn't (flaky read / not yet propagated), KEEP the override so the
+      // card doesn't flicker back to the pre-toggle state — a later refresh
+      // will correct it.
+      if (isConfirmed(r.mcp.find((s) => s.name === name)?.status)) {
+        clearMcpOverride(name)
+      }
     } catch (e) {
       toast.error(`Couldn't toggle MCP: ${(e as Error).message}`)
+      // Revert to the real status — drop the optimistic override and re-sync.
+      clearMcpOverride(name)
+      void refreshMcp()
+    } finally {
+      setPendingMcp((s) => {
+        const n = new Set(s)
+        n.delete(name)
+        return n
+      })
     }
   }
 
+  const [reloadingPlugins, setReloadingPlugins] = useState(false)
   const reloadPlugins = async () => {
+    if (reloadingPlugins) return
+    setReloadingPlugins(true)
     try {
       const res = await api.post<{ result: { plugins?: Plugin[] } }>(`/sessions/${session.id}/plugins/reload`)
       if (res.result?.plugins) setReloadedPlugins(res.result.plugins)
@@ -300,15 +349,22 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
       onPluginsReloaded?.()
     } catch (e) {
       toast.error(`Couldn't reload plugins: ${(e as Error).message}`)
+    } finally {
+      setReloadingPlugins(false)
     }
   }
 
+  const [reloadingSkills, setReloadingSkills] = useState(false)
   const reloadSkills = async () => {
+    if (reloadingSkills) return
+    setReloadingSkills(true)
     try {
       await api.post(`/sessions/${session.id}/skills/reload`)
       onSkillsReloaded?.()
     } catch (e) {
       toast.error(`Couldn't reload skills: ${(e as Error).message}`)
+    } finally {
+      setReloadingSkills(false)
     }
   }
 
@@ -343,6 +399,13 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     }
     return result
   }, [session.mcpServerNames, mcp])
+  // Apply optimistic overrides (toggle in-flight) on top of the resolved list.
+  const effectiveMcpWithOverride = useMemo(() => {
+    if (!mcpOverride || Object.keys(mcpOverride).length === 0) return effectiveMcp
+    return effectiveMcp.map((s) =>
+      mcpOverride[s.name] ? { ...s, ...mcpOverride[s.name] } : s,
+    )
+  }, [effectiveMcp, mcpOverride])
 
   const addMcpServer = async (name: string) => {
     try {
@@ -700,8 +763,8 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
                 ))}
               </div>
             </AnimatedDetails>
-            <button className="btn btn-sm" onClick={reloadSkills} disabled={busy || session.terminated}>
-              Reload skills
+            <button className="btn btn-sm" onClick={reloadSkills} disabled={busy || session.terminated || reloadingSkills}>
+              {reloadingSkills ? <IconLoader size={12} className="settings-card-spin" /> : 'Reload skills'}
             </button>
           </div>
         )}
@@ -755,8 +818,8 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
       <div className="settings-section">
         <div className="settings-section-head">
           <h4>Plugins</h4>
-          <button className="btn btn-sm" onClick={reloadPlugins} disabled={busy || session.terminated}>
-            Reload plugins
+          <button className="btn btn-sm" onClick={reloadPlugins} disabled={busy || session.terminated || reloadingPlugins}>
+            {reloadingPlugins ? <IconLoader size={12} className="settings-card-spin" /> : 'Reload plugins'}
           </button>
         </div>
         {pluginGroups.length === 0 && !commands.length && (
@@ -802,15 +865,16 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
             </button>
           </div>
         </div>
-        {loadingMeta && effectiveMcp.length === 0 && <Skeleton rows={2} />}
-        {!loadingMeta && effectiveMcp.length === 0 && <div className="settings-empty-note">No MCP servers</div>}
-        {effectiveMcp.map((srv) => (
+        {loadingMeta && effectiveMcpWithOverride.length === 0 && <Skeleton rows={2} />}
+        {!loadingMeta && effectiveMcpWithOverride.length === 0 && <div className="settings-empty-note">No MCP servers</div>}
+        {effectiveMcpWithOverride.map((srv) => (
           <McpServerCard
             key={srv.name}
             server={srv}
             isGlobal={globalMcpNames.has(srv.name)}
             onReconnect={reconnectMcp}
             onToggle={toggleMcp}
+            pending={pendingMcp.has(srv.name)}
             disabled={busy || session.terminated}
           />
         ))}
@@ -1100,15 +1164,24 @@ function PluginCard({
   // the session-level override is ephemeral anyway.
   const [enabled, setEnabled] = useState(true)
   const [toggling, setToggling] = useState(false)
+  const toast = useToast()
 
   const toggle = async () => {
-    if (!sessionId || name === 'Built-in') return
+    if (!sessionId || name === 'Built-in' || toggling) return
+    const next = !enabled
+    // Optimistically flip the dot + label so the user sees the change
+    // instantly — the SDK doesn't expose authoritative state to reconcile
+    // against, so local state is the source of truth (ephemeral by design).
+    setEnabled(next)
     setToggling(true)
     try {
-      await api.post(`/sessions/${sessionId}/plugins/${encodeURIComponent(name)}/toggle`, { enabled: !enabled })
-      setEnabled(!enabled)
-    } catch { /* ignore */ }
-    setToggling(false)
+      await api.post(`/sessions/${sessionId}/plugins/${encodeURIComponent(name)}/toggle`, { enabled: next })
+    } catch (e) {
+      setEnabled(!next) // rollback
+      toast.error(`Couldn't toggle plugin: ${(e as Error).message}`)
+    } finally {
+      setToggling(false)
+    }
   }
 
   const isBuiltin = name === 'Built-in'
@@ -1127,13 +1200,19 @@ function PluginCard({
           {agents.length > 0 && `, ${agents.length} agent${agents.length !== 1 ? 's' : ''}`}
         </span>
         {!isBuiltin && sessionId && (
-          <button
-            className="btn btn-xs"
-            onClick={toggle}
-            disabled={disabled || toggling}
-          >
-            {enabled ? 'Disable' : 'Enable'}
-          </button>
+          toggling ? (
+            <span className="settings-card-pending" aria-label="updating">
+              <IconLoader size={12} className="settings-card-spin" />
+            </span>
+          ) : (
+            <button
+              className="btn btn-xs"
+              onClick={toggle}
+              disabled={disabled}
+            >
+              {enabled ? 'Disable' : 'Enable'}
+            </button>
+          )
         )}
         {(commands.length > 0 || agents.length > 0) && (
           <button className="btn btn-xs" onClick={() => setExpanded(!expanded)} aria-label={expanded ? 'Collapse' : 'Expand'} aria-expanded={expanded}>
@@ -1187,12 +1266,14 @@ function McpServerCard({
   onReconnect,
   onToggle,
   disabled,
+  pending,
 }: {
   server: McpServerStatus
   isGlobal: boolean
   onReconnect: (name: string) => void
   onToggle: (name: string, enabled: boolean) => void
   disabled: boolean
+  pending: boolean
 }) {
   const [expanded, setExpanded] = useState(false)
   const color = STATUS_COLORS[server.status] ?? 'var(--fg-muted)'
@@ -1202,6 +1283,7 @@ function McpServerCard({
   const canReconnect = server.status !== 'disabled'
   const canDisable = server.status !== 'disabled'
   const canEnable = server.status === 'disabled'
+  const inert = disabled || pending
 
   return (
     <div className="settings-card">
@@ -1217,19 +1299,31 @@ function McpServerCard({
           <span className="settings-card-meta">{server.tools.length} tool{server.tools.length !== 1 ? 's' : ''}</span>
         )}
         {canReconnect && (
-          <button className="btn btn-xs" onClick={() => onReconnect(server.name)} disabled={disabled}>
+          <button className="btn btn-xs" onClick={() => onReconnect(server.name)} disabled={inert}>
             Reconnect
           </button>
         )}
-        {canDisable && (
-          <button className="btn btn-xs" onClick={() => onToggle(server.name, false)} disabled={disabled}>
-            Disable
-          </button>
-        )}
-        {canEnable && (
-          <button className="btn btn-xs" onClick={() => onToggle(server.name, true)} disabled={disabled}>
-            Enable
-          </button>
+        {pending ? (
+          // While a toggle is in flight, hide both Disable/Enable and show a
+          // spinner. Re-rendering the *other* button (status flips optimistically)
+          // would be confusing — e.g. clicking Disable then seeing a spinning
+          // Enable. A dedicated spinner avoids that ambiguity.
+          <span className="settings-card-pending" aria-label="updating">
+            <IconLoader size={12} className="settings-card-spin" />
+          </span>
+        ) : (
+          <>
+            {canDisable && (
+              <button className="btn btn-xs" onClick={() => onToggle(server.name, false)} disabled={inert}>
+                Disable
+              </button>
+            )}
+            {canEnable && (
+              <button className="btn btn-xs" onClick={() => onToggle(server.name, true)} disabled={inert}>
+                Enable
+              </button>
+            )}
+          </>
         )}
         {server.tools && server.tools.length > 0 && (
           <button className="btn btn-xs" onClick={() => setExpanded(!expanded)} aria-label={expanded ? 'Collapse' : 'Expand'} aria-expanded={expanded}>

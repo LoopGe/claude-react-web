@@ -1030,6 +1030,19 @@
   background: var(--dot, var(--fg-muted));
   flex-shrink: 0;
 }
+.settings-card-pending {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  color: var(--accent);
+}
+.settings-card-spin {
+  animation: tool-status-spin 0.9s linear infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
 .settings-card-name {
   font-weight: 500;
   font-size: 13px;
