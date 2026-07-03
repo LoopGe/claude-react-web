@@ -878,15 +878,33 @@
    creating a scroll container (unlike hidden, which coerces
    overflow-x: visible to auto per CSS spec). This keeps horizontal
    scrollbars on the inner <pre> elements (thinking-body, tool-input)
-   instead of being clipped by the collapse's animated height. */
+   instead of being clipped by the collapse's animated height.
+
+   display: flow-root establishes a block formatting context so the inner
+   content's top/bottom margins can't collapse *through* this container.
+   overflow-y: clip does NOT create a BFC (only hidden/auto/scroll do), so
+   without this a child margin-top (e.g. .tool-input's) would leak out and
+   keep the container taller than its animated height — the margin only
+   disappears when the native <details open> attribute is removed at the end
+   of the collapse, producing an abrupt height jump on close. */
 .animated-collapse {
+  display: flow-root;
   overflow-y: clip;
   min-height: 0;
 }
 .animated-collapse.animating {
   will-change: height, opacity;
 }
+/* The BFC must live on the *measured* element too. AnimatedCollapse animates
+   the outer .animated-collapse height to this element's scrollHeight /
+   getBoundingClientRect height. If child margins (e.g. .thinking-body's
+   margin-top, or a <pre>'s UA margin-bottom) collapse out of this box, they're
+   excluded from the measured height but — thanks to the outer flow-root — stay
+   trapped inside the animated body, shifting content down and clipping the last
+   few px under overflow-y: clip. flow-root here contains those margins so the
+   measured height matches what actually renders. */
 .animated-collapse-content {
+  display: flow-root;
   min-height: 0;
 }
 @media (prefers-reduced-motion: reduce) {

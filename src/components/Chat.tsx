@@ -49,7 +49,7 @@ import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
 import { ContextMenu } from './ContextMenu'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
-import { IconSearch, IconFileText, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconMessageCircle, IconArrowLeft, IconTrash } from './icons/ToolIcons'
+import { IconSearch, IconFileText, IconFileCode, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconMessageCircle, IconArrowLeft, IconTrash } from './icons/ToolIcons'
 import { PLAN_TOOL_NAMES } from '../constants/toolNames'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
@@ -281,6 +281,21 @@ export const Chat = memo(function Chat({
   // synchronously so the second call short-circuits immediately. Same
   // pattern PermissionDialog uses for its busy guard.
   const sendingRef = useRef(false)
+  // Bridges the gap between the optimistic user message (committed
+  // synchronously on send) and the server confirming the turn started
+  // (`session.working` rises over WS, ~1 frame later even on localhost).
+  // Without this bridge the WorkingBubble mounts one frame AFTER the message
+  // is painted, shrinking the message-list viewport by ~28px and triggering a
+  // scroll snap — the "message jumps down / scrollbar flashes on send" jitter.
+  // Holding an optimistic turn flag lets the WorkingBubble mount in the SAME
+  // commit as the message, so the viewport is already at its working-size when
+  // the message first paints. Stored as the start timestamp so the elapsed
+  // timer has something to count from until `workingSince` arrives.
+  const [pendingTurnSince, setPendingTurnSince] = useState<number | null>(null)
+  // Non-stale mirror of session.working: handleSend's useCallback deps don't
+  // include `session.working`, so reading it directly there would be stale.
+  const workingRef = useRef(session.working)
+  workingRef.current = session.working
   const [localError, setLocalError] = useState<string | null>(null)
   /** Local /clear signal. No producer sets this to `true` today — the local
    *  `/clear` command drives the animation via the App-owned `clearingProp`,
@@ -292,6 +307,27 @@ export const Chat = memo(function Chat({
    *  MessageList / MonitorBar. During a local `/clear` fade-in it comes from
    *  App via prop; during an SDK-emitted clear it comes from local state. */
   const effectiveClearing = (clearingProp ?? false) || localClearing
+  // Clear the optimistic turn bridge once the real turn is confirmed
+  // (session.working rose) — otherwise a safety timeout clears it so a send
+  // that never produces a server turn can't leave the WorkingBubble stuck on.
+  useEffect(() => {
+    if (pendingTurnSince == null) return
+    if (session.working) {
+      setPendingTurnSince(null)
+      return
+    }
+    const t = setTimeout(() => setPendingTurnSince(null), 4000)
+    return () => clearTimeout(t)
+  }, [pendingTurnSince, session.working])
+  // Drop any pending bridge when switching the panel to another session.
+  useEffect(() => {
+    setPendingTurnSince(null)
+  }, [session.id])
+  // Turn is "active" for layout purposes the instant the user sends, even
+  // before `session.working` arrives — this is what keeps the WorkingBubble in
+  // the same commit as the optimistic message (see pendingTurnSince comment).
+  const turnActive = session.working || pendingTurnSince != null
+  const turnStartedAt = session.workingSince ?? pendingTurnSince ?? undefined
   /** Increments whenever we want the Composer's textarea refocused.
    *  Bumped after a successful send ?otherwise the click on the Send
    *  button would leave focus on the button, breaking the
@@ -986,6 +1022,9 @@ export const Chat = memo(function Chat({
     const pendingId = insertUserMessage(placeholder)
     sendingRef.current = true
     setSending(true)
+    // Shared bash (`!!`) triggers a real model turn — bridge the WorkingBubble
+    // the same way a normal send does. Local `!` produces no turn, so skip it.
+    if (opts.share && !workingRef.current) setPendingTurnSince(Date.now())
     try {
       const res = await api.post<{
         message: { uuid: string; receivedAt?: number }
@@ -1002,6 +1041,7 @@ export const Chat = memo(function Chat({
     } catch (e) {
       setLocalError((e as Error).message)
       if (pendingId) rollbackUserMessage(pendingId)
+      setPendingTurnSince(null)
     } finally {
       sendingRef.current = false
       setSending(false)
@@ -1055,6 +1095,11 @@ export const Chat = memo(function Chat({
     if (!text && attachmentList.length === 0 && pastedImages.images.length === 0) return
     sendingRef.current = true
     setSending(true)
+    // Optimistically mark the turn active in the SAME commit as the message
+    // insert below, so the WorkingBubble mounts alongside the message instead
+    // of one frame later (which shifted the viewport and caused scroll jitter).
+    // Guard on workingRef so a mid-turn queued send doesn't leave it stuck.
+    if (!workingRef.current) setPendingTurnSince(Date.now())
     clearError()
     const preamble =
       attachmentList.length > 0
@@ -1106,6 +1151,7 @@ export const Chat = memo(function Chat({
       // Roll back the optimistic placeholder so the user sees that the
       // send failed (text stays in the input, transcript stays clean).
       if (pendingId) rollbackUserMessage(pendingId)
+      setPendingTurnSince(null)
     } finally {
       sendingRef.current = false
       setSending(false)
@@ -1258,7 +1304,7 @@ export const Chat = memo(function Chat({
             },
             {
               label: 'Export as JSON',
-              icon: '{}',
+              icon: <IconFileCode size={14} />,
               onClick: () => {
                 exportConversationJson(stream.messages, session.title ?? session.id.slice(0, 8))
                 toast.success('Exported as JSON')
@@ -1370,7 +1416,7 @@ export const Chat = memo(function Chat({
         >
         <MessageList
           items={stream.items}
-          working={session.working}
+          working={turnActive}
           replayReady={stream.replayReady}
           clearing={effectiveClearing}
           transcriptRevealKey={session.id}
@@ -1413,9 +1459,9 @@ export const Chat = memo(function Chat({
       >
         {error ?? ''}
       </div>
-      {session.working && (
+      {turnActive && (
         <WorkingBubble
-          startedAt={session.workingSince}
+          startedAt={turnStartedAt}
           activeSubagents={stream.activeSubagents}
           tokenRate={stream.tokenRate}
           activePhase={stream.activePhase}
@@ -1606,6 +1652,7 @@ export const Chat = memo(function Chat({
             <PinnedUserMessage
               text={pinnedText}
               isExiting={pinnedPresence.isExiting}
+              clearing={effectiveClearing}
               onClick={() => scrollNavRef.current?.('prev')}
             />
           )}

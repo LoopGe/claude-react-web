@@ -111,8 +111,14 @@ interface Props {
    *  grid, or null when no group is active. Used to pre-select the group
    *  in the new-session dialog. */
   activeGroupId?: string | null
-  /** Max sessions per group / max open panels. Shared with App. */
-  maxOpen: number
+  /** Per-group capacity (App's `maxGroupSize`). This is the number of sessions
+   *  allowed in a group — NOT squeezed to 1 on mobile the way panel count is,
+   *  so it's the correct threshold for deciding whether a group is full. */
+  maxGroupSize: number
+  /** On mobile only one panel shows at a time, so "activating" a group (a
+   *  panel-swap affordance) is meaningless. When true, group headers toggle
+   *  collapse instead, and the group-pills quick-switch row is hidden. */
+  isMobile?: boolean
 }
 
 export const SessionList = memo(function SessionList({
@@ -150,7 +156,8 @@ export const SessionList = memo(function SessionList({
   newSessionDialogOpen,
   onNewSessionDialogChange,
   activeGroupId,
-  maxOpen,
+  maxGroupSize,
+  isMobile,
 }: Props) {
   const [uncontrolledShow, setUncontrolledShow] = useState(false)
   const showDialog = newSessionDialogOpen ?? uncontrolledShow
@@ -622,9 +629,13 @@ export const SessionList = memo(function SessionList({
             </button>
           )}
         </div>
-        {/* Group pills — horizontal row of clickable group chips. */}
+        {/* Group pills — horizontal row of clickable group chips. These are a
+            quick "swap the whole panel set to this group" affordance, which is
+            meaningless on mobile (single panel), so the chips are hidden there.
+            The "+ Group" create control stays available on all viewports; the
+            groups themselves remain visible as collapsible sections below. */}
         <div className="group-pills">
-          {groups.map((g) => (
+          {!isMobile && groups.map((g) => (
             <button
               key={g.id}
               type="button"
@@ -727,24 +738,42 @@ export const SessionList = memo(function SessionList({
                     className={`session-group-header ${groupDropHint === sec.group.id ? 'drop-target' : ''}`}
                     role="button"
                     tabIndex={0}
-                    aria-label={`Activate group ${sec.group.name}`}
+                    aria-label={
+                      isMobile
+                        ? `${collapsed ? 'Expand' : 'Collapse'} group ${sec.group.name}`
+                        : `Activate group ${sec.group.name}`
+                    }
                     aria-controls={groupBodyId}
-                    onClick={() => onActivateGroup(sec.group.id)}
+                    // On mobile a single panel is shown, so "activating" a group
+                    // (swapping the whole panel set) is meaningless — the header
+                    // toggles collapse instead, and sessions are opened by tapping
+                    // the cards inside. On desktop it activates the group as usual.
+                    onClick={() =>
+                      isMobile
+                        ? onToggleGroupCollapse(sec.group.id)
+                        : onActivateGroup(sec.group.id)
+                    }
                     onKeyDown={(e) => {
-                      // Native button semantics: Space + Enter activate.
+                      // Native button semantics: Space + Enter activate (or,
+                      // on mobile, toggle collapse — see onClick above).
                       // We don't intercept Tab/Shift+Tab so focus order
                       // stays natural (header → collapse arrow → cards).
                       if (e.target !== e.currentTarget) return
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault()
-                        onActivateGroup(sec.group.id)
+                        if (isMobile) onToggleGroupCollapse(sec.group.id)
+                        else onActivateGroup(sec.group.id)
                       }
                     }}
-                    title={`Activate ${sec.group.name} · ${sec.sessions.length} session${sec.sessions.length === 1 ? '' : 's'}`}
+                    title={
+                      isMobile
+                        ? `${collapsed ? 'Expand' : 'Collapse'} ${sec.group.name} · ${sec.sessions.length} session${sec.sessions.length === 1 ? '' : 's'}`
+                        : `Activate ${sec.group.name} · ${sec.sessions.length} session${sec.sessions.length === 1 ? '' : 's'}`
+                    }
                     onDragOver={(e) => {
                       if (!onDropIntoGroup || !isInAppDrag(e)) return
                       // Don't accept drops if group is full (unless reordering within same group)
-                      if (sec.group.sessionIds.length >= maxOpen && !sec.group.sessionIds.includes(draggingId ?? '')) return
+                      if (sec.group.sessionIds.length >= maxGroupSize && !sec.group.sessionIds.includes(draggingId ?? '')) return
                       e.preventDefault()
                       if (groupDropHint !== sec.group.id) setGroupDropHint(sec.group.id)
                     }}
@@ -812,7 +841,7 @@ export const SessionList = memo(function SessionList({
                           // highlight when the target is the body itself.
                           if (e.target !== e.currentTarget) return
                           // Don't accept drops if group is full (unless reordering within same group)
-                          if (sec.group.sessionIds.length >= maxOpen && !sec.group.sessionIds.includes(draggingId ?? '')) return
+                          if (sec.group.sessionIds.length >= maxGroupSize && !sec.group.sessionIds.includes(draggingId ?? '')) return
                           e.preventDefault()
                           if (groupDropHint !== sec.group.id) setGroupDropHint(sec.group.id)
                         }}
@@ -924,7 +953,7 @@ export const SessionList = memo(function SessionList({
         accentLocked={isAccentLocked(skin)}
         groups={groups}
         onAddToGroup={animatedAddToGroup}
-        maxOpen={maxOpen}
+        maxGroupSize={maxGroupSize}
         onShowSuccess={toast.success}
         onAskConfirm={handleAskConfirm}
       />
@@ -950,7 +979,7 @@ export const SessionList = memo(function SessionList({
           initialCwd={prefilledCwd}
           initialGroupId={activeGroupId ?? undefined}
           groups={groups}
-          maxOpen={maxOpen}
+          maxGroupSize={maxGroupSize}
           accentLocked={isAccentLocked(skin)}
           onCancel={() => {
             setShowDialog(false)

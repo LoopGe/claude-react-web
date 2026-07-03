@@ -315,6 +315,16 @@
   animation: pinned-user-message-out var(--motion-duration-fast) var(--motion-ease-exit) both;
   pointer-events: none;
 }
+/* During a /clear, reuse the transcript's `clear-blur-fade` keyframes
+   (defined in chat.css — @keyframes are global) so the pinned header
+   dissolves in sync with the message list. Ordered AFTER the
+   [data-state="closing"] rule so it wins on the (rare) overlap where the
+   pinned header is dismissing while a clear is already in flight. Matches
+   the `.recap-window-clearing` sibling treatment. */
+.pinned-user-message.pinned-user-message-clearing {
+  animation: clear-blur-fade var(--motion-duration-slow) var(--motion-ease-exit) both;
+  pointer-events: none;
+}
 .pinned-user-message-label {
   flex: 0 0 auto;
   display: inline-flex;
@@ -425,6 +435,7 @@
   .pinned-user-message { animation: none; }
   /* Mirror the transcript's reduced-motion clear: no animation, just hidden. */
   .recap-window.recap-window-clearing { animation: none; opacity: 0; }
+  .pinned-user-message.pinned-user-message-clearing { animation: none; opacity: 0; }
   .pinned-user-message[data-state="closing"] { opacity: 0; }
 }
 

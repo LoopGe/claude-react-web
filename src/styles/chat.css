@@ -379,27 +379,15 @@
   line-height: 1.55;
 }
 
-/* Easter-egg trigger: bounce the icon tile on each click, and tint it toward
-   the accent color once the user has clicked twice (a subtle "something is
-   happening" cue that is reversible if the chain resets). */
-.chat-empty-icon--bounce {
-  animation: chat-empty-icon-bounce 220ms var(--motion-ease-enter);
-}
+/* Easter-egg trigger: tint the icon toward the accent color once the user has
+   clicked twice (a subtle "something is happening" cue that is reversible if
+   the chain resets). The per-click bounce is driven imperatively via the Web
+   Animations API in ChatEmptyState.tsx — deliberately NOT a CSS class, so it
+   can't collide with the `chat-empty-item-in` entrance on the `animation`
+   shorthand (see the component header for why). */
 .chat-empty-icon--armed {
   color: var(--accent);
   border-color: var(--accent);
-}
-@keyframes chat-empty-icon-bounce {
-  0%   { transform: translateY(0) scale(1); }
-  45%  { transform: translateY(-6px) scale(1.15); }
-  100% { transform: translateY(0) scale(1); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .chat-empty-icon--bounce { animation-duration: 80ms; }
-  @keyframes chat-empty-icon-bounce {
-    0%, 100% { transform: translateY(0); }
-    50% { transform: translateY(-2px); }
-  }
 }
 
 /* Easter-egg game overlay: fills the empty-state flex container (which already
@@ -861,7 +849,9 @@
 }
 .thinking-details {
   color: var(--fg-muted);
-  margin: 4px 0;
+  /* margin-top only (not `4px 0`) to match .tool-result-details, so the
+     bottom gap between a thinking card and the next block is consistent. */
+  margin-top: 4px;
 }
 .thinking-summary {
   cursor: pointer;
@@ -889,8 +879,15 @@
 .thinking-details[data-state="open"] .thinking-preview {
   display: none;
 }
-.thinking-body {
-  margin-top: 6px;
+/* Selector must out-specify `.msg-body pre` (messages.css), which sets
+   `margin: 8px 0` on every <pre> in a message body. `.thinking-body` alone
+   (0,1,0) loses to `.msg-body pre` (0,1,1), so the intended margin never
+   applied. `.msg-body .thinking-body` (0,2,0) wins. We keep only a small top
+   gap below the summary and zero the bottom, so bottom spacing is governed by
+   the `.thinking-details` wrapper — matching `.tool-result-details` — instead
+   of a bottom margin the collapse's flow-root would trap inside the card. */
+.msg-body .thinking-body {
+  margin: 6px 0 0;
   color: var(--code-fg);
 }
 .msg-header {
@@ -1157,7 +1154,18 @@
 @keyframes msg-enter-rise {
   from {
     opacity: 0;
-    transform: translateY(var(--motion-distance-md));
+    /* Enter from slightly ABOVE the final position (negative Y), not below.
+       A CSS transform doesn't change layout height (offsetHeight) but the
+       browser DOES count the transformed position toward the scroll
+       container's scrollable overflow (scrollHeight). The entering row is
+       the bottom-most item, so a downward translate (+Y) pushes scrollHeight
+       past the viewport for the animation's duration — a transient scrollbar
+       that flashes then vanishes when the transform eases back to 0 (most
+       visible on the very first message, where content height exactly equals
+       the viewport). Shifting UP instead keeps the row's rendered box within
+       the content bottom, so scrollHeight never grows and no phantom
+       scrollbar appears. */
+    transform: translateY(calc(-1 * var(--motion-distance-md)));
     filter: blur(6px);
   }
   to {

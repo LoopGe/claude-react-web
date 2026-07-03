@@ -456,6 +456,26 @@ export function IconBellOff(props: IconProps) {
   )
 }
 
+export function IconVolume2(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M11 5 6 9H2v6h4l5 4V5Z" />
+      <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+      <path d="M19 5a10 10 0 0 1 0 14" />
+    </Icon>
+  )
+}
+
+export function IconVolumeX(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M11 5 6 9H2v6h4l5 4V5Z" />
+      <path d="m16 9 6 6" />
+      <path d="m22 9-6 6" />
+    </Icon>
+  )
+}
+
 export function IconFolder(props: IconProps) {
   return (
     <Icon {...props}>
@@ -493,6 +513,20 @@ export function IconGitBranch(props: IconProps) {
       <circle cx="18" cy="6" r="3" />
       <circle cx="6" cy="18" r="3" />
       <path d="M18 9a9 9 0 0 1-9 9" />
+    </Icon>
+  )
+}
+
+// Git fork glyph — two parent nodes joined to a child below. Traced from
+// Lucide `git-fork` so it sits in the same optical family as IconGitBranch.
+export function IconGitFork(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="6" cy="6" r="3" />
+      <circle cx="18" cy="6" r="3" />
+      <circle cx="12" cy="18" r="3" />
+      <path d="M18 9v1.5a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9" />
+      <path d="M12 12.5V15" />
     </Icon>
   )
 }

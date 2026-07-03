@@ -13,14 +13,19 @@ interface Props {
   text: string
   /** True while the exit animation is playing; drives data-state="closing". */
   isExiting?: boolean
+  /** True while a /clear is in flight. Reuses the transcript's
+   *  `clear-blur-fade` exit animation so the pinned header dissolves in sync
+   *  with the message list instead of snapping out when the server confirms
+   *  (mirrors RecapWindow, its sibling in `.chat-top-stack`). */
+  clearing?: boolean
   onClick: () => void
 }
 
-export const PinnedUserMessage = memo(function PinnedUserMessage({ text, isExiting, onClick }: Props) {
+export const PinnedUserMessage = memo(function PinnedUserMessage({ text, isExiting, clearing, onClick }: Props) {
   return (
     <button
       type="button"
-      className="pinned-user-message"
+      className={`pinned-user-message${clearing ? ' pinned-user-message-clearing' : ''}`}
       data-state={isExiting ? 'closing' : 'open'}
       onClick={onClick}
       title={text}

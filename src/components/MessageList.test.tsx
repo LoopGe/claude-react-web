@@ -1236,9 +1236,9 @@ describe('ApiRetryView divider', () => {
     const divider = container.querySelector('.msg.result.retry')
     expect(divider).toBeTruthy()
 
-    // Mark: hourglass glyph + lowercase "rate limited" label.
+    // Mark: clock icon + lowercase "rate limited" label.
     const mark = divider?.querySelector('.result-mark')
-    expect(mark?.textContent).toContain('⏳')
+    expect(mark?.querySelector('svg')).toBeTruthy()
     expect(mark?.textContent).toContain('rate limited')
 
     // Meta: phase + attempt, tabular.

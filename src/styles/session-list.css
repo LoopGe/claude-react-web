@@ -409,7 +409,11 @@
   background: color-mix(in srgb, var(--bg) 65%, transparent);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
-  z-index: 4;
+  /* Blocking modal (aria-modal, focus-trapped, covers the whole panel) — it
+     must sit above every panel-level overlay so nothing can hide a pending
+     permission/question prompt: the pinned-message/recap stack (.chat-top-stack,
+     z-index 4), the git overlay (5) and the settings overlay (6). */
+  z-index: 7;
 }
 .perm-overlay[data-state="open"] { animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both; }
 .perm-overlay[data-state="closing"] {
