@@ -12,6 +12,8 @@ import type { FullServerConfig } from '../types/config'
 import type { SkillImportFile, SkillImportResponse, SkillLoadMode, SkillRecord, SkillsListResponse } from '../../shared/skills'
 import type { McpConnectionTestResult, McpServerConfigMeta, McpServerTool } from '../types'
 import { useFocusTrap } from '../hooks/useFocusTrap'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useMergedRef } from '../utils/mergedRef'
 import { useToast } from '../hooks/useToast'
 import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
 import { DirectoryPicker } from './DirectoryPicker'
@@ -116,6 +118,8 @@ export function GlobalSettingsModal({
 }: Props) {
   const [tab, setTab] = useState<Tab>('api')
   const settingsBodyRef = useRef<HTMLDivElement | null>(null)
+  const setSettingsBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const settingsBodyRefMerged = useMergedRef(settingsBodyRef, setSettingsBodyOs)
   const settingsContentRef = useRef<HTMLDivElement | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -442,7 +446,7 @@ export function GlobalSettingsModal({
 
         {err && <div className="modal-error">{err}</div>}
 
-        <div ref={settingsBodyRef} className="global-settings-body">
+        <div ref={settingsBodyRefMerged} className="global-settings-body">
           <div ref={settingsContentRef} className="global-settings-body-content" data-animate={tab}>
           {loading ? (
             <div style={{ padding: 40, textAlign: 'center', color: 'var(--fg-muted)' }}>Loading...</div>

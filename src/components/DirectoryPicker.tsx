@@ -8,6 +8,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../hooks/useApi'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useMergedRef } from '../utils/mergedRef'
 import { buildCrumbs } from '../utils/paths'
 import { IconFolder, IconX } from './icons/ToolIcons'
 import { AnimatedCollapse } from './AnimatedCollapse'
@@ -60,6 +62,8 @@ export function DirectoryPicker({
   const [createName, setCreateName] = useState('')
   const [creating, setCreating] = useState(false)
   const listBoxRef = useRef<HTMLDivElement>(null)
+  const setListBoxOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const listBoxRefMerged = useMergedRef(listBoxRef, setListBoxOs)
   const listContentRef = useRef<HTMLDivElement>(null)
 
   const listAnimationKey = [
@@ -265,7 +269,7 @@ export function DirectoryPicker({
           {error && <div className="modal-error">{error}</div>}
         </AnimatedCollapse>
 
-        <div className="modal-list" ref={listBoxRef}>
+        <div className="modal-list" ref={listBoxRefMerged}>
           {showCreateRow && (
             <div className="modal-create-row">
               <span className="folder-icon"><IconFolder size={14} /></span>

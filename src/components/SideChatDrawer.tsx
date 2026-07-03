@@ -16,6 +16,8 @@ import { IconX, IconArrowLeft, IconSendInterruptToggle, IconLoader, IconPapercli
 import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
 import { usePastedImages } from '../hooks/usePastedImages'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useMergedRef } from '../utils/mergedRef'
 
 interface SendMessageResponse {
   ok: boolean
@@ -46,6 +48,11 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   const [isExiting, setIsExiting] = useState(false)
   const [isCollapsing, setIsCollapsing] = useState(false)
   const bodyRef = useRef<HTMLDivElement>(null)
+  // Fallback overlay scrollbar for the drawer body. When <MessageList> is
+  // present its Virtuoso scroller takes over (and has its own overlay); this
+  // only shows a thumb when the body itself scrolls (e.g. empty drawer).
+  const setBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const bodyRefMerged = useMergedRef(bodyRef, setBodyOs)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
@@ -181,7 +188,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
         </Tooltip>
       </div>
 
-      <div className="side-chat-drawer-body" ref={bodyRef}>
+      <div className="side-chat-drawer-body" ref={bodyRefMerged}>
         <MessageList
           items={stream.items}
           working={session.working}

@@ -12,6 +12,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { IconX } from '../icons/ToolIcons'
 import { useFocusTrap } from '../../hooks/useFocusTrap'
 import { api } from '../../hooks/useApi'
+import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
+import { useMergedRef } from '../../utils/mergedRef'
 import { shortenPath } from '../../utils/paths'
 import type { ResumableSession } from '../../types'
 
@@ -61,6 +63,8 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
   const dialogRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const listRefMerged = useMergedRef(listRef, setListOs)
 
   useFocusTrap(dialogRef, { restoreFocus: true })
 
@@ -207,7 +211,7 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
 
           <div
             className="palette-list"
-            ref={listRef}
+            ref={listRefMerged}
             role="listbox"
             aria-label="Resumable sessions"
             style={{ marginTop: 10, maxHeight: '50vh', overflowY: 'auto' }}

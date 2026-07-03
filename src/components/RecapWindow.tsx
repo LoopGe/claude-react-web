@@ -10,6 +10,7 @@
 
 import { memo, useLayoutEffect, useRef } from 'react'
 import type { SessionRecap } from '../../shared/session-info'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { Markdown } from './Markdown'
 import { IconSparkles, IconAlertTriangle, IconX } from './icons/ToolIcons'
 
@@ -26,6 +27,7 @@ interface Props {
 
 export const RecapWindow = memo(function RecapWindow({ recap, isExiting, clearing, onClose }: Props) {
   const windowRef = useRef<HTMLDivElement>(null)
+  const setBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
   // Natural height captured at the end of the previous render's layout pass.
   // On the NEXT content change this is the "from" value — because
   // useLayoutEffect runs AFTER React has already written the new content to
@@ -108,7 +110,7 @@ export const RecapWindow = memo(function RecapWindow({ recap, isExiting, clearin
           <IconX size={14} />
         </button>
       </div>
-      <div className="recap-window-body">
+      <div className="recap-window-body" ref={setBodyOs}>
         <div key={recap.status} className="recap-window-body-inner">
           {recap.status === 'pending' ? (
             <div className="recap-msg-loading-body">

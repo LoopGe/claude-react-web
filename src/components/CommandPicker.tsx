@@ -121,7 +121,7 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
 
   if (filtered.length === 0) {
     return (
-      <div className="cmd-picker" ref={rootRef} role="listbox">
+      <div className="cmd-picker os-hidden" ref={rootRef} role="listbox">
         <div className="cmd-picker-empty">No matching commands</div>
       </div>
     )
@@ -131,7 +131,7 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
   let flatIdx = 0
 
   return (
-    <div className="cmd-picker" ref={rootRef} role="listbox">
+    <div className="cmd-picker os-hidden" ref={rootRef} role="listbox">
       {groups.map((group) => (
         <div key={group.plugin ?? '__builtin__'}>
           {group.plugin && <div className="cmd-picker-group-header">{group.plugin}</div>}

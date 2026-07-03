@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../hooks/useApi'
 import { useNotifications } from '../hooks/useNotifications'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useUpdateInfo } from '../hooks/useUpdateInfo'
 import { notificationTooltip } from '../utils/notifications'
 import { IconBell, IconBellOff, IconX, IconCheck } from './icons/ToolIcons'
@@ -68,6 +69,7 @@ interface ClaudeHealth {
 const ADVANCE_ON_ENTER_INPUT_IDS = new Set(['auth-token', 'base-url', 'update-registry'])
 
 export function SetupPage({ onConfigured }: Props) {
+  const setPageOs = useOverlayScrollbar({ autoHide: 'leave' })
   // ── Wizard step ──
   const [step, setStep] = useState<Step>(FIRST_STEP)
   const [stepDirection, setStepDirection] = useState<'forward' | 'back'>('forward')
@@ -358,7 +360,7 @@ export function SetupPage({ onConfigured }: Props) {
   }
 
   return (
-    <div className="setup-page">
+    <div className="setup-page" ref={setPageOs}>
       <div className="setup-card">
         <h1 className="setup-title">Welcome to Claude Web</h1>
         <p className="setup-subtitle">

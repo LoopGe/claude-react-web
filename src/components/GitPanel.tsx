@@ -28,6 +28,7 @@ import { Tooltip } from './Tooltip'
 import { IconX, IconSparkles, IconChevronDown, IconChevronRight, IconCheck, IconAlertTriangle, IconRefresh, IconLoader, IconGitBranch, IconArrowUp, IconArrowDown, IconRotateCcw } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
 import { useToast } from '../hooks/useToast'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { usePresenceValue } from '../hooks/useExitPresence'
 import type {
   GitFileEntry,
@@ -83,6 +84,7 @@ interface ConfirmState {
 
 export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading, error, onRefresh, onClose }: Props) {
   const writeOps = useGitWrite(sessionId)
+  const setPanelOs = useOverlayScrollbar({ autoHide: 'leave' })
   // Git op failures used to render an in-panel error strip; they now
   // surface as global toasts so the user sees them even if they've
   // already moved off the Git overlay.
@@ -219,7 +221,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   }
 
   return (
-    <aside className="git-panel" role="region" aria-label="Git">
+    <aside className="git-panel" role="region" aria-label="Git" ref={setPanelOs}>
       <header className="git-panel-header">
         <Tooltip label={status.upstream ? `tracking ${status.upstream}` : 'no upstream'} placement="bottom">
           <span className="git-panel-branch">
@@ -811,8 +813,9 @@ interface DiffViewProps {
 // even though its props are unchanged.
 const DiffView = memo(function DiffView({ text, truncated, totalLines }: DiffViewProps) {
   const lines = text.split('\n')
+  const setDiffOs = useOverlayScrollbar({ orientation: 'both', autoHide: 'leave' })
   return (
-    <pre className="git-file-diff">
+    <pre className="git-file-diff" ref={setDiffOs}>
       {lines.map((line, i) => {
         const cls =
           line.startsWith('+++') || line.startsWith('---') ? 'meta'

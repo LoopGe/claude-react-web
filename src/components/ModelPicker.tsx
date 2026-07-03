@@ -14,6 +14,8 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ModelOptions } from '../hooks/useModelOptions'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useMergedRef } from '../utils/mergedRef'
 import { IconCheck, IconSearch } from './icons/ToolIcons'
 
 interface Props {
@@ -48,6 +50,8 @@ export function ModelPicker({ anchor, current, options, disabled, onSelect, onCl
   const ref = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const listRefMerged = useMergedRef(listRef, setListOs)
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [pos, setPos] = useState<{ x: number; y: number }>(anchor)
@@ -213,7 +217,7 @@ export function ModelPicker({ anchor, current, options, disabled, onSelect, onCl
           aria-autocomplete="list"
         />
       </div>
-      <div className="model-picker-list" ref={listRef} role="listbox">
+      <div className="model-picker-list" ref={listRefMerged} role="listbox">
         {rows.length === 0 && <div className="model-picker-empty">No matches</div>}
         {rows.map((row, i) => (
           <div key={row.key}>

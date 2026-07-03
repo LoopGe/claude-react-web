@@ -12,6 +12,7 @@ import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { Markdown } from './Markdown'
 import { PlanStatusProvider, PlanContentProvider, ToolStatusProvider, ToolResultProvider } from '../hooks/usePlanStatus'
 import { QuestionAnswersProvider } from '../hooks/useQuestionAnswers'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { SessionCwdProvider } from '../hooks/useSessionCwd'
 import type { SdkMessage } from '../types'
 import { formatTokens, formatElapsed, formatClockTime, formatFullTimestamp } from '../utils/format'
@@ -281,6 +282,10 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
   const scrollerRef = useRef<HTMLElement | null>(null)
+  // Overlay scrollbar: hides the native bar and floats a thumb over
+  // .chat-messages (the scroller's parent). DOM-non-invasive, so Virtuoso's
+  // direct scrollTop/scrollHeight measurements on scrollerRef are untouched.
+  const setOsScroller = useOverlayScrollbar({ autoHide: 'leave' })
   const streamingRegionRef = useRef<HTMLDivElement | null>(null)
   // --- /clear veil ----------------------------------------------------
   // The panel-level `.panel-clearing-veil` (rendered by PanelSlot above
@@ -1460,12 +1465,14 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     if (ref && ref instanceof HTMLElement) {
       ref.classList.add('chat-virtuoso-scroller')
       scrollerRef.current = ref
+      setOsScroller(ref)
       syncBottomGeometry(ref, 'confirm-away')
       return
     }
     scrollerRef.current = null
+    setOsScroller(null)
     syncBottomGeometry(null)
-  }, [syncBottomGeometry])
+  }, [syncBottomGeometry, setOsScroller])
 
   // New settled message arrives → Virtuoso calls followOutput. We drive the
   // follow-scroll OURSELVES via `animateScrollToBottom` (a rAF easing loop

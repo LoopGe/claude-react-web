@@ -1,0 +1,155 @@
+/* Self-built overlay scrollbar.
+   See src/utils/overlay-scrollbar.ts. The thumb is appended as a sibling of
+   the scroller inside the scroller's parent (.os-host promotion is done in
+   JS, never via a class — see the comment there about not overriding
+   absolute/relative parents). Colors mirror the legacy ::-webkit-scrollbar
+   thumb in tokens.css so the overlay reads as the same control. */
+
+/* Hide the native scrollbar on instrumented scrollers. Both engines: */
+.os-native-hidden {
+  scrollbar-width: none; /* Firefox */
+}
+.os-native-hidden::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none; /* WebKit / Chromium / Safari */
+}
+
+/* Track: absolute, transparent, pointer-transparent. Only the thumb is
+   interactive. Hidden by default (no overflow or idle); .os-visible reveals. */
+.os-track {
+  position: absolute;
+  pointer-events: none;
+  z-index: 1;
+}
+.os-track-vertical {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+}
+.os-track-horizontal {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 6px;
+}
+.os-track.os-track-hidden {
+  display: none;
+}
+
+/* Thumb: transparent 1px border + background-clip:padding-box gives a 6px
+   colored core inside an 8px track — narrow footprint, still legible. Hidden
+   and non-interactive unless the track is .os-visible. */
+.os-thumb {
+  pointer-events: none;
+  opacity: 0;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg-muted) 35%, transparent);
+  transition: opacity 160ms ease;
+  /* touch-action none so a thumb drag doesn't also trigger native scroll. */
+  touch-action: none;
+}
+.os-track.os-visible .os-thumb {
+  pointer-events: auto;
+  opacity: 1;
+}
+.os-thumb:hover {
+  background: color-mix(in srgb, var(--fg-muted) 70%, transparent);
+}
+.os-thumb:active {
+  background: var(--fg-muted);
+}
+
+/* Per-session accent: .chat-panel sets --accent via accentStyle, so all
+   descendants pick up the session color. Mirrors tokens.css:857-871. */
+.chat-panel .os-thumb {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.chat-panel .os-thumb:hover {
+  background: color-mix(in srgb, var(--accent) 70%, transparent);
+}
+.chat-panel .os-thumb:active {
+  background: var(--accent);
+}
+
+/* Sidebar: session-agnostic, so it doesn't carry any one session's accent,
+   but uses the global default --accent (defined on :root) so its scrollbar
+   still reads as part of the accent system rather than neutral grey. */
+.sidebar .os-thumb {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.sidebar .os-thumb:hover {
+  background: color-mix(in srgb, var(--accent) 70%, transparent);
+}
+.sidebar .os-thumb:active {
+  background: var(--accent);
+}
+
+/* glow skin: faint accent halo on the thumb. Mirrors tokens.css:725-728. */
+[data-skin="glow"] .chat-panel .os-thumb,
+[data-skin="glow"] .sidebar .os-thumb {
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+/* High-contrast skin: opaque, always visible, hard-edged fill that meets the
+   track. Mirrors glass.css:229-235 — including dropping the transparent
+   border + padding-box clip so HC is a solid rectangle, not a floating pill. */
+[data-skin="hc"] .os-thumb,
+[data-skin="hc"] .os-thumb:hover,
+[data-skin="hc"] .os-thumb:active {
+  background: var(--fg);
+  border: 0;
+  background-clip: border-box;
+  opacity: 1;
+}
+[data-skin="hc"] .os-track .os-thumb {
+  pointer-events: auto;
+}
+[data-skin="hc"] .os-track:not(.os-track-hidden) {
+  /* keep the track eligible for visibility even without .os-visible */
+  display: block;
+}
+[data-skin="hc"] .os-track:not(.os-track-hidden) .os-thumb {
+  opacity: 1;
+}
+
+/* Reduced motion: skip the fade — show the thumb while visible, no transition.
+   Keeps the affordance for users who disable motion, without animating. */
+@media (prefers-reduced-motion: reduce) {
+  .os-thumb {
+    transition: none;
+  }
+}
+
+/* Pure-CSS hide for scrollers that don't get an overlay thumb — the .os-hidden
+   utility class (applied in JSX) plus minor horizontal scrollers (code blocks,
+   tables, tool inputs, diffs, command output, raw JSON, question previews)
+   where a thumb is more noise than value. Wheel/trackpad swipe still scrolls.
+   Same pattern as the existing .global-settings-tabs rule (utilities.css).
+   `.msg-body pre` also covers .thinking-body, which is a <pre> matched by that
+   selector. */
+.os-hidden,
+.msg-body pre,
+.md table,
+.tool-input,
+.diff-block,
+.bash-msg-pre,
+.perm-raw,
+.question-option-preview {
+  scrollbar-width: none;
+}
+.os-hidden::-webkit-scrollbar,
+.msg-body pre::-webkit-scrollbar,
+.md table::-webkit-scrollbar,
+.tool-input::-webkit-scrollbar,
+.diff-block::-webkit-scrollbar,
+.bash-msg-pre::-webkit-scrollbar,
+.perm-raw::-webkit-scrollbar,
+.question-option-preview::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}

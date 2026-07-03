@@ -52,6 +52,8 @@ import { exportConversation, exportConversationJson } from '../utils/exportConve
 import { IconSearch, IconFileText, IconFileCode, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconMessageCircle, IconArrowLeft, IconTrash } from './icons/ToolIcons'
 import { PLAN_TOOL_NAMES } from '../constants/toolNames'
 import { useFocusTrap } from '../hooks/useFocusTrap'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useMergedRef } from '../utils/mergedRef'
 import { useToast } from '../hooks/useToast'
 import { useWsHub } from '../hooks/useWsHub'
 import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
@@ -1164,6 +1166,12 @@ export const Chat = memo(function Chat({
   // arms/disarms the trap and restores focus to the trigger on close.
   const settingsOverlayRef = useRef<HTMLDivElement>(null)
   const gitOverlayRef = useRef<HTMLDivElement>(null)
+  // Overlay scrollbars on the settings + git overlay backdrops (these scroll
+  // when the panel card exceeds the viewport). Merged with the focus-trap refs.
+  const setSettingsOverlayOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const setGitOverlayOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const settingsOverlayRefMerged = useMergedRef(settingsOverlayRef, setSettingsOverlayOs)
+  const gitOverlayRefMerged = useMergedRef(gitOverlayRef, setGitOverlayOs)
   useFocusTrap(settingsOverlayRef, { restoreFocus: true, active: !!settingsOpen, escapeSelector: '.chat-panel' })
   // `active` is gated on `gitPresence.shouldRender` (not just `gitPanelOpen`)
   // because the git overlay is conditionally rendered via useExitPresence, which
@@ -1551,7 +1559,7 @@ export const Chat = memo(function Chat({
       })()}
 
       <div
-        ref={settingsOverlayRef}
+        ref={settingsOverlayRefMerged}
         className={`settings-overlay${settingsPresence.shouldRender ? '' : ' hidden'}`}
         data-state={settingsOpen ? 'open' : settingsPresence.isExiting ? 'closing' : 'closed'}
         role="dialog"
@@ -1583,7 +1591,7 @@ export const Chat = memo(function Chat({
 
       {gitPresence.shouldRender && (
         <div
-          ref={gitOverlayRef}
+          ref={gitOverlayRefMerged}
           className="git-overlay"
           data-state={gitPanelOpen ? 'open' : 'closing'}
           role="dialog"

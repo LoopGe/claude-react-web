@@ -78,9 +78,12 @@
      first message off the header and the last off the composer, while the
      between-message gap stays 14px (7px + 7px). */
 }
-.chat-virtuoso-scroller {
-  scrollbar-gutter: stable both-edges;
-}
+/* The native scrollbar on .chat-virtuoso-scroller is hidden by the overlay
+   scrollbar (useOverlayScrollbar in MessageList), so scrollbar-gutter is no
+   longer needed. Reading-column alignment (see --chat-reading-inset math
+   above) previously relied on the gutter to shift row content; with the
+   gutter gone both the row path and the streaming-footer path resolve
+   --chat-reading-inset against the full width, so they align naturally. */
 /* Session-level transcript reveal. This is intentionally separate from
    `.msg-enter`: switching sessions is a whole-transcript transition, not a
    batch of live message arrivals. */

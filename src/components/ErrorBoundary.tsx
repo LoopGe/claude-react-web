@@ -58,7 +58,7 @@ export class ErrorBoundary extends Component<Props, State> {
             A rendering error occurred. This is likely a bug. Try switching
             sessions or reloading the page.
           </p>
-          <pre style={{
+          <pre className="os-hidden" style={{
             textAlign: 'left',
             background: 'var(--bg-elev-2)',
             padding: 12,

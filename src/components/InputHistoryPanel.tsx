@@ -17,6 +17,8 @@ import { INPUT_HISTORY_KEY } from './Chat'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import { normalizeEntries } from '../hooks/useInputHistory'
 import { useExitPresence } from '../hooks/useExitPresence'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useMergedRef } from '../utils/mergedRef'
 
 interface Props {
   open: boolean
@@ -44,6 +46,8 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
   const [selectedIndex, setSelectedIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const listRefMerged = useMergedRef(listRef, setListOs)
   const presence = useExitPresence(open)
 
   // Split into current-session vs. everything-else, each deduped & filtered.
@@ -169,7 +173,7 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
           aria-controls="history-list"
           aria-activedescendant={flat[selectedIndex] != null ? `history-item-${selectedIndex}` : undefined}
         />
-        <div className="palette-list" ref={listRef} id="history-list" role="listbox">
+        <div className="palette-list" ref={listRefMerged} id="history-list" role="listbox">
           {flat.length === 0 && (
             <div className="palette-empty">{totalCount === 0 ? 'No history yet' : 'No matches'}</div>
           )}

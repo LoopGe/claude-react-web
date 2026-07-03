@@ -20,6 +20,7 @@ import { IconX, IconChevronRight, IconChevronDown, IconSquare, IconPencil, IconT
 import { Skeleton } from './Skeleton'
 import { Virtuoso } from 'react-virtuoso'
 import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { AnimatedCollapse } from './AnimatedCollapse'
 
 interface Props {
@@ -227,6 +228,17 @@ export const SessionList = memo(function SessionList({
   const [showNewGroupInput, setShowNewGroupInput] = useState(false)
   const [newGroupName, setNewGroupName] = useState('')
   const newGroupInputRef = useRef<HTMLInputElement>(null)
+  // Overlay scrollbar: covers the grouped view (.session-list scrolls
+  // natively) and the flat view (Virtuoso's internal scroller). Only the
+  // axis that actually overflows shows a thumb, so wiring both is safe.
+  const setListScroller = useOverlayScrollbar({ autoHide: 'leave' })
+  const setVirtuosoScroller = useOverlayScrollbar({ autoHide: 'leave' })
+  // Virtuoso's scrollerRef passes Window | HTMLElement | null; narrow to
+  // HTMLElement for the overlay hook (Virtuoso's internal scroller is always
+  // an element in practice).
+  const virtuosoScrollerRef = useCallback((ref: Window | HTMLElement | null) => {
+    setVirtuosoScroller(ref instanceof HTMLElement ? ref : null)
+  }, [setVirtuosoScroller])
   // Guard against double-creation when Enter triggers both the keyDown
   // handler and the subsequent blur (from DOM removal).
   const groupCreatedViaEnterRef = useRef(false)
@@ -701,7 +713,7 @@ export const SessionList = memo(function SessionList({
           )}
         </div>
       </div>
-      <div className="session-list">
+      <div className="session-list" ref={setListScroller}>
           {sessions.length === 0 ? (
             sessionsLoaded === false ? (
               <Skeleton rows={5} className="sidebar-skeleton" />
@@ -924,6 +936,7 @@ export const SessionList = memo(function SessionList({
             <Virtuoso
               data={visibleSessions}
               style={{ flex: 1 }}
+              scrollerRef={virtuosoScrollerRef}
               itemContent={(_index, s) => renderCard(s)}
             />
           )}

@@ -6,6 +6,8 @@ import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from '../hooks/useApi'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useMergedRef } from '../utils/mergedRef'
 import { useToast } from '../hooks/useToast'
 import type { AgentInfo, McpServerConfigMeta, McpServerStatus, ModelInfo, PermissionMode, Plugin, SessionInfo, SessionSkillOverride, SkillLoadMode, SlashCommand } from '../types'
 import { PERMISSION_MODES } from '../types'
@@ -534,6 +536,8 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   ]
 
   const panelBodyRef = useRef<HTMLDivElement | null>(null)
+  const setPanelBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const panelBodyRefMerged = useMergedRef(panelBodyRef, setPanelBodyOs)
   const panelContentRef = useRef<HTMLDivElement | null>(null)
   const heightAnimationKey = [
     tab,
@@ -598,7 +602,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
 
       {/* Scrollable body — header + tab bar stay pinned above it, mirroring
           the global settings modal (where only .global-settings-body scrolls). */}
-      <div ref={panelBodyRef} className="settings-panel-body">
+      <div ref={panelBodyRefMerged} className="settings-panel-body">
         <div ref={panelContentRef} className="settings-panel-content" data-animate={tab}>
       {tab === 'general' && (
       <>

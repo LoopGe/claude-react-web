@@ -7,6 +7,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from '../hooks/useApi'
 import { useFocusTrap } from '../hooks/useFocusTrap'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import type { McpServerConfigMeta, McpServerInput } from '../types'
 import { IconX } from './icons/ToolIcons'
 
@@ -49,6 +50,7 @@ export function McpInstaller(props: Props) {
 function McpInstallerForm({ open = true, server, onSave, onClose }: Props) {
   const isEdit = !!server
   const dialogRef = useRef<HTMLDivElement>(null)
+  const setBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
   const titleId = useId()
   const nameId = useId()
   const typeId = useId()
@@ -180,7 +182,7 @@ function McpInstallerForm({ open = true, server, onSave, onClose }: Props) {
           <button className="btn" onClick={onClose} style={{ padding: '2px 10px' }} aria-label="Close"><IconX size={14} /></button>
         </div>
 
-        <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 12, maxHeight: '65vh', overflowY: 'auto' }}>
+        <div ref={setBodyOs} style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 12, maxHeight: '65vh', overflowY: 'auto' }}>
           {/* Name */}
           <div className="settings-field">
             <label htmlFor={nameId}>Name</label>

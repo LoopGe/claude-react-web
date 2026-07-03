@@ -6,6 +6,8 @@ import type { Shortcut } from '../hooks/useKeyboardShortcuts'
 import { api } from '../hooks/useApi'
 import { useExitPresence } from '../hooks/useExitPresence'
 import { useFocusTrap } from '../hooks/useFocusTrap'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useMergedRef } from '../utils/mergedRef'
 import type { SessionInfo } from '../types'
 import { formatCombo } from '../utils/format-combo'
 
@@ -41,6 +43,8 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
   const [messageSearchError, setMessageSearchError] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const listRefMerged = useMergedRef(listRef, setListOs)
   const paletteRef = useRef<HTMLDivElement>(null)
   // Focus trap + restore: the palette is opened from the toolbar / Mod+K and
   // closed by Esc / pick / backdrop. Without restore, focus fell to <body>
@@ -215,7 +219,7 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
           aria-controls="palette-list"
           aria-activedescendant={filtered[clampedSelectedIndex] ? `palette-item-${clampedSelectedIndex}` : undefined}
         />
-        <div className="palette-list" ref={listRef} id="palette-list" role="listbox">
+        <div className="palette-list" ref={listRefMerged} id="palette-list" role="listbox">
           {filtered.length === 0 && !showSearching && !showSearchError && (
             <div className="palette-empty">No matches</div>
           )}
