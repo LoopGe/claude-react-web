@@ -402,6 +402,15 @@ export function App() {
   const handleSelectRef = useRef<(id: string) => void>(() => {})
   const handleDeleteRef = useRef<(id: string) => void>(() => {})
   const jumpNonceRef = useRef(0)
+  /** Ids mid-/clear. While a clear is in flight, the server broadcasts
+   *  `session-removed` for X (it drops X from the store so X leaves the
+   *  sidebar, transcript kept for resume). That `removed` frame can land
+   *  BEFORE the /clear POST response that drives the X→Y panel swap — and
+   *  the default `session-removed` handler closes the panel slot / evicts X
+   *  from its group, which would pre-empt the swap. So while an id is in
+   *  this set, the `session-removed` handler skips everything except
+   *  dropping X from the sidebar list; `handleClear`'s swap owns the slot. */
+  const clearingIdsRef = useRef<Set<string>>(new Set())
   // Per-session interrupt callbacks registered by <Chat> components.
   // The ESC shortcut in the keyboard handler uses this to trigger the
   // same code-path as the Composer's interrupt button.
@@ -725,6 +734,22 @@ export function App() {
         }
         case 'session-removed': {
           setSessions((prev) => prev.filter((s) => s.id !== frame.id))
+          // /clear broadcasts `removed` for X (server drops X from the store
+          // so it leaves the sidebar; transcript kept for resume). The `removed`
+          // frame can land BEFORE the /clear POST response that drives the
+          // X→Y panel swap, so while X is mid-clear we `break` here and skip
+          // ALL teardown below — only the sidebar-list removal above runs.
+          // That's safe: openIds/focusedId/groups/side-chat are owned by
+          // handleClear's swap (running them would close the slot or evict X
+          // from its group before Y fills it). The rest — lastSeenTurn,
+          // pruneSession, pendingDelete, callback registries, sidebarOrder —
+          // are non-conflicting but harmless to skip: <Chat> unmount
+          // unregisters its own callbacks, orderedSessions filters stale
+          // sidebarOrder ids, and the lastSeenTurn/pruneSession entries are
+          // bounded orphans cleaned up if X is ever re-resumed.
+          if (clearingIdsRef.current.has(frame.id)) {
+            break
+          }
           setOpenIds((prev) => prev.filter((id) => id !== frame.id))
           setFocusedId((prev) => (prev === frame.id ? null : prev))
           // Drop the session's lastSeenTurn entry — no reason to keep
@@ -2621,17 +2646,21 @@ export function App() {
 
   /** `/clear` a panel: fade-in on X in parallel with the POST, then swap
    *  X→Y under the fully-opaque veil, then fade-out to reveal Y's fresh
-   *  empty state. The server detaches X as a dormant resumable session and
-   *  returns a fresh session Y under a new id; App swaps the panel slot
-   *  X→Y at the same position (mirrors handleRestart's in-place id swap).
-   *  X stays in the sidebar as dormant (the server's session-update broadcast
-   *  dims it); Y takes X's group slot so the active group view stays
-   *  consistent, and X leaves the group — it's now a standalone resumable
-   *  past session, recoverable via the resume picker. */
+   *  empty state. The server spawns a fresh session Y under a new id and
+   *  detaches X (removed from the store, transcript kept for resume); App
+   *  swaps the panel slot X→Y at the same position (mirrors handleRestart's
+   *  in-place id swap). Y takes X's group slot so the active group view stays
+   *  consistent. X's transcript survives on disk, so it's recoverable via the
+   *  resume picker. */
   const handleClear = useCallback(
     async (id: string) => {
       const sourceGroup = groups.find((g) => g.sessionIds.includes(id))
       const wasOpen = openIds.includes(id)
+      // Mark X as mid-clear so the `session-removed` frame the server
+      // broadcasts for X (it drops X from the store) doesn't close the
+      // panel slot / evict X from its group before the X→Y swap below can
+      // fill it. See clearingIdsRef for the race rationale.
+      clearingIdsRef.current.add(id)
       try {
         // Fade-in on X and the POST run in parallel. Promise.all gates the
         // swap on BOTH: the fade-in Promise resolves after --motion-duration-base
@@ -2679,6 +2708,8 @@ export function App() {
         // Drop the veil immediately — X is untouched (server didn't act).
         clearAnim.cancelClear(id)
         toast.error(`Couldn't clear session: ${(e as Error).message}`)
+      } finally {
+        clearingIdsRef.current.delete(id)
       }
     },
     [groups, openIds, toast, setLastSeenTurn, setGroups, clearAnim],

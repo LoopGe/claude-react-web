@@ -1438,16 +1438,16 @@ export class SessionManager {
    *
    *  The headless `claude` binary refuses the `/clear` slash command (it's a
    *  REPL-only feature in non-interactive mode), so we drive the reset
-   *  ourselves. Rather than destroy the pre-clear conversation P1, we detach
-   *  it as a **dormant, resumable session under the same id** and spawn a
-   *  **brand-new fresh conversation under a new id** in this tab. P1's
-   *  on-disk transcript + sessions.json entry are left intact so the resume
-   *  picker lists it; the cleared tab gets a clean slate. Both coexist as
-   *  first-class sessions.
+   *  ourselves. Rather than destroy the pre-clear conversation P1, we spawn a
+   *  **brand-new fresh conversation Y under a new id** in this tab and detach
+   *  X. P1's on-disk transcript is ALWAYS left intact so resume(X) re-adopts
+   *  it and recovers the conversation; the cleared tab gets a clean slate.
    *
-   *  Mental model: "unload X as dormant + create fresh Y with the same
-   *  settings." This mirrors how the `claude` CLI treats /clear (a new
-   *  session) and aligns with the existing fork()/create() spawn paths.
+   *  X is REMOVED from the store + broadcasts `removed` so it leaves the
+   *  sidebar — /clear should not leave a dormant clone cluttering the list.
+   *  Mental model: "spawn fresh Y + unload X (removed, transcript kept)".
+   *  This mirrors how the `claude` CLI treats /clear (a new session) and
+   *  aligns with fork()/create().
    *
    *  No `session-cleared` frame is emitted for this — Y is a fresh session
    *  with no pre-clear content to hide, so the client simply swaps the panel
@@ -1462,7 +1462,7 @@ export class SessionManager {
     if (s.clearing) return this.info(s)
 
     s.clearing = true
-    log.info(`[session ${id}] clear: detaching pre-clear conversation as dormant`)
+    log.info(`[session ${id}] clear: detaching pre-clear conversation`)
     try {
       // Resolve any pending tool-permission requests so SDK awaiters
       // don't hang once we destroy the handle.
@@ -1572,19 +1572,25 @@ export class SessionManager {
         }
       }
 
-      // Detach X as dormant NOW that Y is live. unload() destroys the live
-      // Query (the subprocess exits asynchronously, releasing the transcript
-      // file handle), marks the session not-running, persists its meta,
-      // broadcasts a dormant `update`, and removes it from the live map — so a
-      // later resume(X) re-spawns from disk via the normal resume path. The
-      // transcript file and sessions.json entry are NOT touched: P1 survives
-      // as a resumable session. There is no need to await process exit here:
-      // the old reason for waiting was Windows holding the .jsonl open before
-      // `deleteTranscriptFile`, and that step is gone — the dying subprocess
-      // writes to X.jsonl while Y writes to Y.jsonl, so they never collide.
-      await this.unload(id)
+      // Detach X now that Y is live. unload() destroys the live Query (the
+      // subprocess exits asynchronously, releasing the transcript file
+      // handle), marks the session not-running, and removes it from the live
+      // map. The transcript file is NEVER touched — P1 survives on disk so
+      // resume(X) re-adopts it via adoptDiskSession and recovers the pre-clear
+      // conversation.
+      //
+      // removeFromStore drops X from sessions.json + broadcasts `removed` so it
+      // leaves the sidebar — /clear should not leave a dormant clone cluttering
+      // the list. The trade-off is resume(X) loses app-level config (model/
+      // permissionMode/plugins/hooks/skillOverride), rebuilt from SDK disk
+      // metadata by adoptDiskSession; the conversation content is intact, which
+      // is the valuable part. (Side Chats can't be /clear'd from the UI — their
+      // composer bypasses local-command processing — so the parentId branch is
+      // defensive only; if side-chat /clear is ever wired, Y still inherits
+      // parentId via the freshOpts block above.)
+      await this.unload(id, { removeFromStore: true })
 
-      log.info(`[session ${id}] clear: detached as dormant, fresh session=${newYId}`)
+      log.info(`[session ${id}] clear: detached (fresh session=${newYId})`)
       return newY
     } finally {
       s.clearing = false
@@ -2460,8 +2466,15 @@ export class SessionManager {
    *
    *  `terminated`: when true, the session is marked terminated in the
    *  persistence store (prevents future resume) dused on explicit delete
-   *  and when the Query itself has ended. Default false. */
-  async unload(id: string, opts: { terminated?: boolean; reason?: string } = {}): Promise<void> {
+   *  and when the Query itself has ended. Default false.
+   *
+   *  `removeFromStore`: when true, drop the session's persisted meta AND
+   *  broadcast `removed` (instead of a dormant `update` + writeStore). The
+   *  on-disk transcript is NOT touched, so the session stays resumable via
+   *  `adoptDiskSession` — only the sidebar/sessions.json entry is dropped.
+   *  Used by `clear()` so a cleared session doesn't linger as a dormant
+   *  sidebar entry. Default false. */
+  async unload(id: string, opts: { terminated?: boolean; reason?: string; removeFromStore?: boolean } = {}): Promise<void> {
     const s = this.sessions.get(id)
     if (!s) return
     if (opts.terminated) {
@@ -2497,7 +2510,10 @@ export class SessionManager {
     // `running: true` dhandleSelect then skips resume, and the user
     // hits a 409 on their next send. The session is still in the live
     // map at this point so info(s) works correctly.
-    if (!opts.terminated) {
+    // `removeFromStore` suppresses the dormant `update` — `removed` is
+    // broadcast at the tail instead (after the map delete), so the
+    // client drops X from the sidebar rather than dimming it dormant.
+    if (!opts.terminated && !opts.removeFromStore) {
       this.broadcastGlobal({ kind: 'update', session: this.info(s) })
     }
     this.sessions.delete(id)
@@ -2509,7 +2525,18 @@ export class SessionManager {
     this.recapManager.invalidate(id)
     this.recapManager.cleanup(id)
     this.permBroker.removeDenialTracker(id)
-    this.writeStore(s)
+    if (opts.removeFromStore) {
+      // clear(): drop X from sessions.json so it leaves the sidebar, but
+      // LEAVE the transcript file on disk — resume(X) re-adopts it via
+      // adoptDiskSession and recovers the pre-clear conversation. Broadcast
+      // `removed` (not dormant `update`) so the sidebar drops X entirely.
+      // Not terminated, no pump await — X is a normal resumable session,
+      // just hidden from the sidebar.
+      this.store?.remove(id)
+      this.broadcastGlobal({ kind: 'removed', id })
+    } else {
+      this.writeStore(s)
+    }
   }
 
   /** List sessions: everything currently live + everything in the store

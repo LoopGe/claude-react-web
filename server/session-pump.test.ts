@@ -83,8 +83,9 @@ describe('toolResultIds', () => {
 
 // ---------------------------------------------------------------------------
 // /clear is driven by SessionManager.clear() — it unloads the pre-clear
-// session X as dormant (transcript + meta preserved, so it stays resumable)
-// and spawns a brand-new fresh session Y under a new id (no `resume:`). The
+// session X (transcript preserved on disk so it stays resumable; meta removed
+// from the store so X leaves the sidebar) and spawns a brand-new fresh
+// session Y under a new id (no `resume:`). The
 // pump no longer captures a `clearBoundaryUuid` (separate ids mean there is
 // no boundary to anchor), and clear() no longer broadcasts `session-cleared`
 // (Y has no pre-clear content to hide; that frame's only remaining producer

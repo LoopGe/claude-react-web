@@ -146,8 +146,8 @@ export interface ChatPanelProps {
   /** Close the in-panel resume overlay (Esc / backdrop click). */
   onCloseResume?: () => void
   /** `/clear` this panel — the server detaches the pre-clear conversation
-   *  as dormant and returns a fresh session; App swaps the panel id. Triggered
-   *  by the `/clear` local command. */
+   *  and returns a fresh session; App swaps the panel id. Triggered by the
+   *  `/clear` local command. */
   onClearSession: (panelSessionId: string) => void
   /** Open this panel's settings overlay on a specific tab. Triggered by the
    *  `/mcp` local command. */

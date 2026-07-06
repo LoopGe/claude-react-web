@@ -403,7 +403,7 @@ describe('SessionManager', () => {
     sub.unsubscribe()
   })
 
-  it('clear() detaches the pre-clear session as dormant and returns a fresh session under a new id', async () => {
+  it('clear() removes the pre-clear session from the sidebar and returns a fresh session under a new id', async () => {
     const info = sm.create({})
     expect(mockHandles).toHaveLength(1)
     mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
@@ -419,6 +419,10 @@ describe('SessionManager', () => {
     expect(mockHandles).toHaveLength(2)
     expect(mockHandles[1].options.resume).toBeUndefined()
     expect(mockHandles[1].options.sessionId).toBe(next.id)
+    // X is removed from the sidebar/store (not left dormant) — but the
+    // transcript file survives on disk for resume (see the next test).
+    expect(sm.list().find((s) => s.id === info.id)).toBeUndefined()
+    expect(store.get(info.id)).toBeUndefined()
     // We never push a `/clear` slash command into either Query's input
     // queue (the headless binary rejects it; the unload+spawn IS the clear).
     for (const h of mockHandles) {
@@ -429,7 +433,7 @@ describe('SessionManager', () => {
     }
   })
 
-  it('clear() preserves the pre-clear session as resumable and leaves Y empty', async () => {
+  it('clear() removes X from the store but keeps it resumable via the on-disk transcript; Y is empty', async () => {
     const info = sm.create({})
     mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
     await tick()
@@ -437,12 +441,19 @@ describe('SessionManager', () => {
 
     const next = await sm.clear(info.id)
 
-    // X is no longer live (unloaded) so its in-memory ring is gone, but its
-    // persisted meta survives so the resume picker can list it.
+    // X is no longer live (unloaded) and removed from the store/sidebar, but
+    // the transcript file survives on disk — resume(X) re-adopts it via
+    // adoptDiskSession and recovers the pre-clear conversation.
     expect(sm.getHistory(info.id)).toBeNull()
-    expect(store.get(info.id)).toBeDefined()
+    expect(store.get(info.id)).toBeUndefined()
+    expect(sm.list().find((s) => s.id === info.id)).toBeUndefined()
     // Y is a fresh empty session (no history seeded).
     expect(sm.getHistory(next.id)!).toHaveLength(0)
+    // P1 is still recoverable: resume(X) re-adopts the on-disk transcript
+    // (store.get is undefined, so resume falls through to adoptDiskSession).
+    const resumed = await sm.resume(info.id)
+    expect(resumed.id).toBe(info.id)
+    expect(store.get(info.id)).toBeDefined()
   })
 
   it('clear() does not broadcast session-cleared (Y has no pre-clear content to hide)', async () => {
@@ -466,8 +477,8 @@ describe('SessionManager', () => {
 
     const next = await sm.clear(info.id)
 
-    // X is dormant (working false); Y is a fresh idle session.
-    expect(sm.get(info.id).working).toBe(false)
+    // X is removed from the sidebar (not dormant); Y is a fresh idle session.
+    expect(sm.list().find((s) => s.id === info.id)).toBeUndefined()
     expect(sm.get(next.id).working).toBe(false)
     expect(sm.get(next.id).phase).toBe('idle')
   })
@@ -558,6 +569,26 @@ describe('SessionManager', () => {
     // Y is fresh: lastTurnAt MUST be undefined, and no recap synthesized.
     expect(sm.get(next.id).lastTurnAt).toBeUndefined()
     expect(sm.get(next.id).recap).toBeUndefined()
+  })
+
+  it('clear() on a Side Chat still produces a Side Chat Y (parentId inherited); X is removed', async () => {
+    // Side Chats can't be /clear'd from the UI (their composer bypasses
+    // local-command processing), so this path is defensive — but clear()
+    // still handles parentId sessions: Y inherits parentId + the Side Chat
+    // boundary prompt, and X is removed from the store just like a regular
+    // session (transcript kept for resume).
+    const parent = sm.create({ cwd: '/tmp' })
+    const side = await sm.createSideChat(parent.id)
+    expect(side.parentId).toBe(parent.id)
+
+    const next = await sm.clear(side.id)
+
+    // Y is a fresh session under a new id, still a Side Chat (parentId carried).
+    expect(next.id).not.toBe(side.id)
+    expect(next.parentId).toBe(parent.id)
+    // X is removed from the store (unified with regular sessions).
+    expect(store.get(side.id)).toBeUndefined()
+    expect(sm.list().find((s) => s.id === side.id)).toBeUndefined()
   })
 
   it('subscribeContextUsage() hands a fresh subscriber the last cached snapshot', async () => {

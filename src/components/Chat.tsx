@@ -111,8 +111,8 @@ interface Props {
    *  the `/help` local command. */
   onShowHelp: (commands: SlashCommand[]) => void
   /** `/clear` this panel. App owns the POST + panel id-swap (the server
-   *  detaches the pre-clear conversation as dormant and returns a fresh
-   *  session under a new id). Invoked by the `/clear` local command. */
+   *  detaches the pre-clear conversation and returns a fresh session under a
+   *  new id). Invoked by the `/clear` local command. */
   onClearSession: (panelSessionId: string) => void
   /** Nonce-stamped request to switch the settings tab ?forwarded to
    *  SettingsPanel, which applies it when the nonce changes. */
