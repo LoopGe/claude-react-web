@@ -114,9 +114,18 @@ export function useSessionUrl({
   // `openIds` is still [] and writeHash would clear the deep-link hash from
   // the URL before init ever reads it — which matters now that init may be
   // deferred waiting for `groupsLoaded`.
+  //
+  // `groupsLoaded` is in the deps so this effect re-runs in the same commit
+  // that init runs (the read effect above is declared first, so it has
+  // already flipped `hashInitRef.current` to true by the time this runs).
+  // Without it, a session opened between sessionsLoaded and groupsLoaded
+  // (openIds changed while hashInitRef was still false → write skipped) would
+  // never be flushed: init runs with no deep-link hash, returns without
+  // touching openIds, and — openIds keeping its reference — this effect's
+  // deps never change again, so the hash stays empty until the next click.
   useEffect(() => {
     if (!sessionsLoaded) return
     if (!hashInitRef.current) return
     writeHash(openIds, focusedId)
-  }, [openIds, focusedId, sessionsLoaded])
+  }, [openIds, focusedId, sessionsLoaded, groupsLoaded])
 }
