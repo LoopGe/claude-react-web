@@ -27,8 +27,9 @@
 
 import { memo, useMemo, type ComponentType, type ReactNode } from 'react'
 import { Markdown } from './Markdown'
-import { usePlanStatus, usePlanContent } from '../hooks/usePlanStatus'
+import { usePlanStatus, usePlanContent, useToolResult } from '../hooks/usePlanStatus'
 import { useQuestionAnswers } from '../hooks/useQuestionAnswers'
+import { useTaskInfo } from '../hooks/useTaskInfo'
 import { useReopenQuestion } from '../hooks/useReopenQuestion'
 import { useSessionCwd } from '../hooks/useSessionCwd'
 import { useEditDiffInfo, type EditAnchor, type EditDiffInfo } from '../hooks/useEditDiffInfo'
@@ -63,6 +64,7 @@ import {
 import { formatJson } from '../utils/format'
 import { SUBAGENT_TOOL_NAMES, PLAN_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME, WORKFLOW_TOOL_NAME } from '../constants/toolNames'
 import { QUESTION_TOOL_NAME, type QuestionAnswerEntry } from '../utils/question-answers'
+import { parseTaskId, resultText } from '../utils/task-events'
 import { truncate } from '../utils/text'
 import { splitFilePath, shortenDir, detectLanguage } from '../utils/file-display'
 import { highlightLineHast } from '../utils/diff-highlight'
@@ -1349,30 +1351,62 @@ const GrepToolView = memo(function GrepToolView({ input, toolUseId, searchQuery,
  * TaskUpdate calls only set the fields being changed, so we surface only
  * what's present — nothing in the input means "this field is unchanged"
  * and we don't render a blank line for it.
+ *
+ * Subject resolution: a TaskUpdate input usually omits `subject` (it was
+ * set at TaskCreate time). We look the task up via `useTaskInfo` — which
+ * reads the folded TaskCreate/TaskUpdate stream from context — so the
+ * update card shows the actual task content instead of just `#N`. The
+ * `#N` itself comes from the TaskCreate's tool_result text, so for a
+ * TaskCreate we parse it from the captured result (`useToolResult`) once
+ * it lands; for a TaskUpdate it's in the input directly.
  */
 function TaskMutationView({ input, toolUseId, searchQuery, activeMatchIdx }: ToolViewProps) {
+  // Hooks first (before any early return) — resolve the create-time state
+  // for an update, and the #N for a create.
+  const taskIdRaw = typeof (input as Record<string, unknown> | undefined)?.taskId === 'string'
+    ? (input as Record<string, unknown>).taskId as string
+    : null
+  const taskInfo = useTaskInfo(taskIdRaw ?? undefined)
+  const resultEntry = useToolResult(toolUseId)
+
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
   // TaskCreate has no taskId; TaskUpdate always has one.
-  const taskId = typeof input.taskId === 'string' ? input.taskId : null
+  const taskId = taskIdRaw
   const verb: 'create' | 'update' = taskId ? 'update' : 'create'
 
-  const subject = typeof input.subject === 'string' ? input.subject : null
+  // Create: learn #N from the tool_result text once it lands.
+  const createdId = verb === 'create' && resultEntry
+    ? parseTaskId(resultText(resultEntry.content))
+    : null
+  const idLabel = taskId ?? createdId
+
+  const subject =
+    (typeof input.subject === 'string' && input.subject) ||
+    taskInfo?.subject ||
+    null
   const description = typeof input.description === 'string' ? input.description : null
   const status = typeof input.status === 'string' ? input.status : null
   const owner = typeof input.owner === 'string' ? input.owner : null
   const addBlocks = Array.isArray(input.addBlocks) ? (input.addBlocks as string[]) : null
   const addBlockedBy = Array.isArray(input.addBlockedBy) ? (input.addBlockedBy as string[]) : null
 
-  // Heading: subject for both, falling back so the card always anchors on
-  // something readable rather than collapsing to chip-only.
-  const heading = subject ?? (verb === 'create' ? '(no subject)' : taskId ? `Update #${taskId}` : '(no subject)')
+  // Heading: the resolved subject. Falls back to `Task #N` only when the
+  // create is out of the retained history window (so `useTaskInfo` couldn't
+  // resolve it) — never duplicates `#N` (that lives only in the chip row).
+  const heading =
+    subject ??
+    (verb === 'create'
+      ? '(no subject)'
+      : idLabel
+        ? `Task #${idLabel}`
+        : '(no subject)')
 
   const chips = (
     <>
       <span className={`task-mutation-verb verb-${verb}`}>{verb}</span>
-      {taskId && <span className="task-mutation-id">#{taskId}</span>}
+      {idLabel && <span className="task-mutation-id">#{idLabel}</span>}
       {status && (
         <span className={`task-mutation-status status-${status}`} title={`Status: ${status}`}>
           {status}

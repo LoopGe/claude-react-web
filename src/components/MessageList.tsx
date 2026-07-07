@@ -12,10 +12,12 @@ import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { Markdown } from './Markdown'
 import { PlanStatusProvider, PlanContentProvider, ToolStatusProvider, ToolResultProvider } from '../hooks/usePlanStatus'
 import { QuestionAnswersProvider } from '../hooks/useQuestionAnswers'
+import { TaskInfoProvider } from '../hooks/useTaskInfo'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { SessionCwdProvider } from '../hooks/useSessionCwd'
 import type { SdkMessage } from '../types'
 import { formatTokens, formatElapsed, formatClockTime, formatFullTimestamp } from '../utils/format'
+import { buildTaskStateMap } from '../utils/task-events'
 import { Tooltip } from './Tooltip'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
@@ -35,6 +37,11 @@ import { extractUserText, makeResultConsumed, willRenderEmpty } from './message-
 
 /** Re-export type for backward compatibility (types don't affect Fast Refresh). */
 export type { ActiveSubagent } from '../session-store/types'
+
+/** Stable empty sentinel for the TaskInfoProvider value when the session
+ *  has no TaskCreate/TaskUpdate events, so the provider value stays
+ *  referential across renders (consumers' useContext equality check). */
+const EMPTY_TASK_MAP = new Map<string, never>()
 
 interface Props {
   items: TranscriptItem[]
@@ -1620,6 +1627,18 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     return components
   }, [streamingOverlayHeight, loadOlder, loadingOlder, hasOlder, renderableItems.length])
 
+  // Fold the TaskCreate/TaskUpdate stream into a Map<taskId, TaskState> so
+  // the inline TaskMutationView card can resolve a TaskUpdate's subject
+  // (set at create time, not repeated in the update input). `items[i].msg`
+  // is lockstep-equal to the session's message log (reducer.applyMessage
+  // appends both arrays in tandem), so folding from items mirrors what
+  // TodoChecklist does with stream.messages. Stable empty sentinel keeps
+  // the provider value referential when there are no task events.
+  const taskInfoMap = useMemo(
+    () => buildTaskStateMap(items.map((it) => it.msg)) ?? EMPTY_TASK_MAP,
+    [items],
+  )
+
   return (
     <SessionCwdProvider value={cwd}>
     <PlanStatusProvider value={planStatus}>
@@ -1627,6 +1646,7 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     <QuestionAnswersProvider value={questionAnswers}>
     <ToolStatusProvider value={toolStatus}>
     <ToolResultProvider value={toolResults}>
+    <TaskInfoProvider value={taskInfoMap}>
     <ResultConsumedCtx.Provider value={isResultConsumed}>
     <div className="chat-messages-wrap">
       <div className="chat-messages-stage">
@@ -1697,6 +1717,7 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
       </div>
     </div>
     </ResultConsumedCtx.Provider>
+    </TaskInfoProvider>
     </ToolResultProvider>
     </ToolStatusProvider>
     </QuestionAnswersProvider>
