@@ -1,6 +1,8 @@
 import { memo, useEffect, useRef } from 'react'
 import { IconZap } from '../icons/ToolIcons'
 import { useLiquidGlass } from '../../hooks/useLiquidGlass'
+import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
+import { useMergedRef } from '../../utils/mergedRef'
 
 /** Top-of-transcript affordance for reverse infinite scroll. Renders a
  *  spinner while a page is loading, or a thin idle marker when older
@@ -27,6 +29,12 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
   // syntax highlighting over the accumulated text on every flush is costly.
   const bodyRef = useRef<HTMLDivElement>(null)
   const followRef = useRef(true)
+  // Reuse the project's self-built overlay scrollbar (the same one MessageList
+  // uses on the Virtuoso scroller) instead of the native scrollbar on the
+  // capped streaming bubble. Merged onto bodyRef so the scroll-follow effects
+  // below still read .current off the same node the overlay is attached to.
+  const setOsScroller = useOverlayScrollbar({ autoHide: 'leave' })
+  const setBodyRef = useMergedRef(bodyRef, setOsScroller)
 
   useEffect(() => {
     const el = bodyRef.current
@@ -107,7 +115,7 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
             style={{ backdropFilter: glassFilter, WebkitBackdropFilter: glassFilter }}
           />
         )}
-        <div ref={bodyRef} className="msg-body assistant-body streaming-plain" aria-live="polite" aria-atomic="false">
+        <div ref={setBodyRef} className="msg-body assistant-body streaming-plain" aria-live="polite" aria-atomic="false">
           {content}
           <span className="streaming-cursor" />
         </div>
