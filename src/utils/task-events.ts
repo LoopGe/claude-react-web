@@ -20,6 +20,7 @@
 //      tool_use id to its tool_result to learn the `#N`.
 
 import type { SdkMessage } from '../types'
+import { isHumanUserMessage } from '../session-store/normalize'
 
 /** Internal accumulator — superset of Todo with the server-assigned id and
  *  the raw status (which has more states than the 3 the UI renders).
@@ -151,12 +152,16 @@ export function buildTaskStateMap(
   return tasks
 }
 
-/** Index of the most recent genuine user-INPUT message (text/image the user
- *  typed — NOT a tool_result, which the SDK also wraps in a `user` frame).
- *  Exposed for TodoChecklist's cleanup boundary. */
+/** Index of the most recent genuine HUMAN-typed message — the cleanup
+ *  boundary for stale completed tasks. Must use isHumanUserMessage (not the
+ *  looser isUserInputMessage) so synthetic user-role injections the pump
+ *  forwards — `<task-notification>` background-subagent results, peer /
+ *  auto-continuation frames — do NOT become the boundary. Otherwise a
+ *  background subagent completing mid-turn would mark every prior completed
+ *  task as stale and drop its checkmark from the panel. */
 export function lastUserInputIndex(messages: readonly SdkMessage[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (isUserInputMessage(messages[i])) return i
+    if (isHumanUserMessage(messages[i])) return i
   }
   return -1
 }

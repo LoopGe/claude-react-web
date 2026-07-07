@@ -71,8 +71,15 @@ describe('isTaskNotificationUserMessage', () => {
     expect(isTaskNotificationUserMessage(notification())).toBe(true)
   })
 
-  it('is true for a string-content user message starting with <task-notification>', () => {
-    expect(isTaskNotificationUserMessage(userMsg('  <task-notification>...'))).toBe(true)
+  it('is true for a string-content user message that is a full <task-notification> block', () => {
+    expect(isTaskNotificationUserMessage(userMsg('  <task-notification>\n<task-id>t1</task-id>\n</task-notification>'))).toBe(true)
+  })
+
+  it('is false for a string-content user message that merely starts with <task-notification> (no closing tag)', () => {
+    // A human typing "<task-notification>..." (e.g. asking about the format)
+    // must NOT be mistaken for a harness injection — the detector requires a
+    // well-formed block with a closing tag.
+    expect(isTaskNotificationUserMessage(userMsg('  <task-notification>...'))).toBe(false)
   })
 
   it('is false for a genuine human text input (no injection marker)', () => {

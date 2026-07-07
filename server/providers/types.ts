@@ -39,6 +39,14 @@ export interface ProviderSessionHandle {
   sendControlMessage(message: AgentUserMessage): void
   /** Drop queued user turns that have not yet been consumed by the provider. */
   clearQueuedInput(): number
+  /** Remove and return queued user turns that have not yet been consumed by
+   *  the provider — used by crash recovery to carry a pending user turn
+   *  across a re-resume (otherwise the turn is silently lost: the UI already
+   *  painted the bubble, but the SDK never wrote it to disk before crashing,
+   *  so --resume loads a transcript without it). Optional: providers whose
+   *  input queue can't be drained can omit it, and crash recovery falls back
+   *  to losing the pending turn. */
+  drainQueuedInput?(): AgentUserMessage[]
   readonly queueDepth: number
   readonly closed: boolean
   readonly abortSignal: AbortSignal

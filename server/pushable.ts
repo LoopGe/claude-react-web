@@ -24,6 +24,11 @@ export interface Pushable<T> {
    *  number of discarded items. Does not affect an item already handed to a
    *  waiting consumer. */
   clearQueue: () => number
+  /** Remove and return items that are queued but not yet consumed by the SDK
+   *  (the mirror of clearQueue that preserves the items for re-enqueue, used
+   *  by crash recovery to carry a pending user turn across a re-resume).
+   *  Does not affect an item already handed to a waiting consumer. */
+  drainQueue: () => T[]
   end: () => void
   closed: boolean
   /** Diagnostic: true when a consumer is blocked on next() waiting for data. */
@@ -91,6 +96,14 @@ export function createPushable<T>(
       }
       return dropped
     },
+    drainQueue() {
+      const items = queue.slice()
+      if (items.length > 0) {
+        queue.length = 0
+        log.debug(`[${id}] drainQueue() recovered ${items.length} queued item(s)`)
+      }
+      return items
+    },
     end() {
       if (ended) return
       ended = true
@@ -153,6 +166,7 @@ export function createPushable<T>(
     iterable,
     push: (item) => state.push(item),
     clearQueue: () => state.clearQueue(),
+    drainQueue: () => state.drainQueue(),
     end: () => state.end(),
     get closed() {
       return state.closed

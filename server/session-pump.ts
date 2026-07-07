@@ -131,7 +131,7 @@ export function isTaskNotificationUserMessage(msg: SDKMessage): boolean {
       }
     }
   }
-  return !!text && /^\s*<task-notification\b/i.test(text)
+  return !!text && /^\s*<task-notification\b[\s\S]*<\/task-notification>/i.test(text)
 }
 
 /** All `tool_use_id`s carried by a user message's tool_result blocks. The

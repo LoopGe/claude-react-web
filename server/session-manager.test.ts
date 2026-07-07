@@ -2070,30 +2070,37 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       expect(forkOpts.resumeSessionAt).toBe('asst-1')
     })
 
-    it('recovery counter resets on user message (fresh ladder after re-engaging)', async () => {
+    it('recovery counter does NOT reset on user message (escalation preserved across re-engagement)', async () => {
       sm = new SessionManager({ store, crashRecovery: true })
       const info = sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
       sm.send(info.id, 'hi')
+      h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
 
-      // Crash → Step 1 resume (counter → 1).
+      // Crash → Step 1 in-place resume (counter 0 → 1).
       fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
       await waitFor(() => mockHandles.length >= 2)
 
-      // User sends a new message on the recovered session → counter resets.
+      // User sends a new message on the recovered session. The counter must
+      // NOT reset here: a poisonous turn that crashes the CLI on the model's
+      // response (but loads fine on resume) would otherwise loop at Step 1
+      // forever, never reaching the Step 2 fork that drops the poisonous
+      // content. The ladder resets only on proven health (a clean idle-
+      // autoResume after recovery).
       sm.send(info.id, 'again')
       await tick()
-      // A fresh crash should route to Step 1 again (counter was reset to 0),
-      // NOT immediately to Step 2 fork. Step 1 = in-place resume on same id,
-      // session stays alive.
-      fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
-      await waitFor(() => mockHandles.length >= 3)
 
-      expect(sm.get(info.id).terminated).toBe(false)
-      expect(mockHandles[2].options.resume).toBe(info.id)
-      expect(mockHandles[2].options.forkSession).toBeUndefined() // Step 1, not fork
+      // A fresh crash escalates to Step 2 fork (counter 1 → 2), NOT back to
+      // Step 1. The original terminates with 'crash_recovered_fork'.
+      fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+      await waitFor(() => mockHandles.length >= 3 && sm.get(info.id).terminated === true)
+
+      expect(sm.get(info.id).terminated).toBe(true)
+      expect(sm.get(info.id).terminatedReason).toBe('crash_recovered_fork')
+      const forkOpts = mockHandles[2].options
+      expect(forkOpts.forkSession).toBe(true) // Step 2 fork, not Step 1 resume
     })
 
     it('Step 1 clears the crash error so the next clean idle-exit auto-resumes (not terminate)', async () => {
@@ -2163,10 +2170,13 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     it('give-up preserves the crash reason (process_exited, not query_error)', async () => {
       sm = new SessionManager({ store, crashRecovery: true })
       const info = sm.create({ cwd: dir })
-      // No result emitted dno completed turn (lastTurnAt undefined). The
-      // ladder gives up immediately. handleProcessExit preserved the crash
-      // reason on terminatedReason; crashRecoveryGiveUp must surface it
-      // instead of the generic 'query_error'.
+      // No result emitted dno completed turn. The ladder probes the disk
+      // for a transcript (hasSdkTranscript); a session with no completed
+      // turn has no jsonl on disk, so mock getSessionInfo to return
+      // undefined → hasSdkTranscript false → give up immediately.
+      // handleProcessExit preserved the crash reason on terminatedReason;
+      // crashRecoveryGiveUp must surface it instead of 'query_error'.
+      mockGetSessionInfo.mockResolvedValueOnce(undefined)
       fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
       await waitFor(() => sm.get(info.id).terminated === true)
 

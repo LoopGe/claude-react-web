@@ -170,7 +170,11 @@ function leadingUserText(msg: SdkMessage): string | null {
   return null
 }
 
-const TASK_NOTIFICATION_RE = /^\s*<task-notification\b/i
+// Requires a closing </task-notification> so a HUMAN message that merely
+// starts with "<task-notification" (e.g. asking about the format) isn't
+// mistaken for a harness injection. Genuine injections are well-formed XML
+// with the closing tag in the leading text block.
+const TASK_NOTIFICATION_RE = /^\s*<task-notification\b[\s\S]*<\/task-notification>/i
 
 /** True when a top-level `user` message's leading text is a
  *  `<task-notification>` XML block — the harness's background-subagent
@@ -223,7 +227,13 @@ export interface ParsedTaskNotification {
 }
 
 function normalizeTaskStatus(raw: string | undefined): TaskNotificationStatus {
-  return raw === 'failed' || raw === 'stopped' ? raw : 'completed'
+  // Known values pass through. Any UNRECOGNIZED status (e.g. 'error',
+  // 'cancelled', a typo, a future status) defaults to 'failed' — NOT
+  // 'completed' — so a genuinely failed/cancelled task is never misshown as
+  // a successful green check. The reducer treats anything != 'completed' as
+  // an error (→ 'interrupted'), so 'failed' is the safe default.
+  if (raw === 'completed' || raw === 'failed' || raw === 'stopped') return raw
+  return 'failed'
 }
 
 /** Parse a task-notification completion signal into a matchable record.

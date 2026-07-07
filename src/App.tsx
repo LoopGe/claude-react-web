@@ -2661,6 +2661,12 @@ export function App() {
       // panel slot / evict X from its group before the X→Y swap below can
       // fill it. See clearingIdsRef for the race rationale.
       clearingIdsRef.current.add(id)
+      // True when the server short-circuited this call (its s.clearing guard
+      // returns X's own info, so newId === id). A short-circuited call must
+      // NOT release the guard in the finally — the in-flight first call still
+      // owns it, and releasing here would let that call's session-removed(X)
+      // frame run full teardown before its X→Y swap, leaving the panel empty.
+      let shortCircuited = false
       try {
         // Fade-in on X and the POST run in parallel. Promise.all gates the
         // swap on BOTH: the fade-in Promise resolves after --motion-duration-base
@@ -2674,6 +2680,7 @@ export function App() {
           clearAnim.beginClear(id),
         ])
         const newId = res.session.id
+        shortCircuited = newId === id
         // Suppress Y's mount animation — the veil fade-out is the visual
         // transition here; playing the panel-enter animation on top would
         // look like a double-animation under the receding veil.
@@ -2709,7 +2716,10 @@ export function App() {
         clearAnim.cancelClear(id)
         toast.error(`Couldn't clear session: ${(e as Error).message}`)
       } finally {
-        clearingIdsRef.current.delete(id)
+        // Release the guard unless this call was short-circuited (a concurrent
+        // double-/clear that the server declined — the first call still owns
+        // the guard). On error or a real swap, this call is done — release.
+        if (!shortCircuited) clearingIdsRef.current.delete(id)
       }
     },
     [groups, openIds, toast, setLastSeenTurn, setGroups, clearAnim],

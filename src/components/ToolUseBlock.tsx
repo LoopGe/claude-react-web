@@ -1394,7 +1394,10 @@ function TaskMutationView({ input, toolUseId, searchQuery, activeMatchIdx }: Too
 
   // Heading: the resolved subject. Falls back to `Task #N` only when the
   // create is out of the retained history window (so `useTaskInfo` couldn't
-  // resolve it) — never duplicates `#N` (that lives only in the chip row).
+  // resolve it). When the heading IS the `Task #N` fallback, the `#N` chip
+  // below is suppressed so #N isn't shown twice (the duplication this card
+  // set out to eliminate).
+  const headingIsTaskIdFallback = !subject && verb !== 'create' && !!idLabel
   const heading =
     subject ??
     (verb === 'create'
@@ -1406,7 +1409,7 @@ function TaskMutationView({ input, toolUseId, searchQuery, activeMatchIdx }: Too
   const chips = (
     <>
       <span className={`task-mutation-verb verb-${verb}`}>{verb}</span>
-      {idLabel && <span className="task-mutation-id">#{idLabel}</span>}
+      {idLabel && !headingIsTaskIdFallback && <span className="task-mutation-id">#{idLabel}</span>}
       {status && (
         <span className={`task-mutation-status status-${status}`} title={`Status: ${status}`}>
           {status}

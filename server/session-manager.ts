@@ -1372,9 +1372,13 @@ export class SessionManager {
     // User is actively interacting dreset the auto-resume counter so a
     // future idle timeout gets fresh attempts.
     this.autoResumeCounts.delete(s)
-    // Same for crash recovery: a fresh crash after user interaction gets a
-    // fresh ladder (Step 1 → Step 2).
-    this.crashRecoveryCounts.delete(s)
+    // NOTE: crash-recovery counts are intentionally NOT reset here. Resetting
+    // on every user message defeated escalation for a poisonous turn that
+    // crashes the CLI on the model's response (but loads fine on resume):
+    // each send reset the counter, so the cycle stayed at Step 1 forever and
+    // never reached the Step 2 fork that drops the poisonous content. The
+    // ladder resets only on proven health (a clean idle-autoResume after
+    // recovery — see autoResume()).
     // Invalidate the stored recap da new message means it's stale.
     // The next idle window triggers a fresh generation.
     this.recapManager.invalidate(s.id)
@@ -3181,6 +3185,15 @@ export class SessionManager {
    *  (autoResume lets it propagate to cleanupPump; crash-recovery catches
    *  and gives up). */
   private respawnInPlace(session: Session, resumeOpts: Options, destroyReason: string): void {
+    // Recover any user turns queued but NOT yet consumed by the crashed CLI.
+    // Without this, a message sent mid-turn that the SDK hadn't read yet is
+    // silently lost on re-resume: the UI already painted the bubble (pushToSession
+    // broadcast it), but the SDK never wrote it to disk, so --resume loads a
+    // transcript without it and the model never sees it. Drain the old queue
+    // before destroying the handle, then re-enqueue to the fresh handle so the
+    // SDK processes it as the next turn. (The SDK's echo of the re-enqueued
+    // turn is dropped by the pump's echo filter — no duplicate bubble.)
+    const pendingInput = session.handle.drainQueuedInput?.() ?? []
     session.handle.destroy(destroyReason)
     const provider = this.providers.get(session.provider)
     session.handle = provider.createSession({
@@ -3200,6 +3213,8 @@ export class SessionManager {
       canUseTool: session.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
       providerExtras: { sdkOptions: applySkillPolicyToOptions(resumeOpts, session.skillOverride) },
     })
+    // Re-enqueue recovered turns onto the fresh handle, oldest first.
+    for (const msg of pendingInput) session.handle.enqueueUserMessage(msg)
     session.running = true
     session.exiting = false
     session.recovering = false
@@ -3252,11 +3267,17 @@ export class SessionManager {
       return this.crashRecoveryGiveUp(session)
     }
 
-    // Both steps need a completed turn: the SDK only writes the transcript
-    // to disk after the first `result`, so resume/fork would fail with
-    // "No conversation found" without one.
-    if (!session.lastTurnAt) {
-      log.warn(`[session ${session.id}] crash-recovery skipped dno completed turns (no disk transcript)`)
+    // Both steps need a completed turn on disk: the SDK only writes the
+    // transcript after the first `result`, so resume/fork would fail with
+    // "No conversation found" without one. Probe the disk AUTHORITATIVELY
+    // (hasSdkTranscript) rather than the `lastTurnAt` in-memory proxy —
+    // mirrorring resume(). lastTurnAt is set only when THIS process observed
+    // a `result`, so a fork (Step 2) that inherits a valid on-disk transcript
+    // but has not yet produced a result of its own has lastTurnAt===undefined
+    // and would be wrongly given up here. The disk probe is the source of
+    // truth (see hasSdkTranscript / resume()).
+    if (!(await this.hasSdkTranscript(session))) {
+      log.warn(`[session ${session.id}] crash-recovery skipped dno on-disk transcript to resume/fork from`)
       return this.crashRecoveryGiveUp(session)
     }
 

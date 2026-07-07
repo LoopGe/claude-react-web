@@ -55,6 +55,10 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     return this.input.clearQueue()
   }
 
+  drainQueuedInput(): AgentUserMessage[] {
+    return this.input.drainQueue()
+  }
+
   abort(): void {
     this.abortController.abort()
   }
