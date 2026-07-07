@@ -20,7 +20,7 @@ import { Tooltip } from './Tooltip'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
-import { getBlocks, getEnterPlanToolUseIds } from '../session-store/normalize'
+import { getBlocks, getEnterPlanToolUseIds, isHumanUserMessage, isTaskNotificationUserMessage, userMessageOriginKind } from '../session-store/normalize'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
 import { IconArrowDown, IconZap, IconUser, IconExternalLink, IconSquare, IconClock } from './icons/ToolIcons'
@@ -1342,9 +1342,11 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   // --- Scroll to previous / next user message ----------------------------
   // Data-array (0-based, Virtuoso `scrollToIndex` space) indices of every
   // *real* user message — the same discriminator MessageView uses to pick
-  // the "msg user" bubble branch: a root frame (no parent_tool_use_id), not
-  // a compact-summary, carrying no tool_result block. Recomputed only when
-  // the rendered list changes.
+  // the "msg user" bubble branch: a genuine human-typed top-level turn
+  // (no parent_tool_use_id, no tool_result, not synthetic). Recomputed only
+  // when the rendered list changes. Synthetic user-role frames (task
+  // notifications, peer messages, …) are excluded so the pin header and
+  // navigate-to-user-message never target an injection.
   const userMsgIndices = useMemo(() => {
     const out: number[] = []
     for (let i = 0; i < renderableItems.length; i++) {
@@ -1352,9 +1354,7 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
       const msg = it.msg
       if (msg.type !== 'user') continue
       if (it.isCompactSummary) continue
-      if (msg.parent_tool_use_id != null) continue
-      const hasToolResult = getBlocks(msg).some((b) => b.type === 'tool_result')
-      if (hasToolResult) continue
+      if (!isHumanUserMessage(msg)) continue
       out.push(i)
     }
     return out
@@ -1917,6 +1917,34 @@ const MessageView = memo(function MessageView({
     if (userContent && userContent.includes('<bash-input>')) {
       return <BashMessage text={userContent} sending={sending} onAbort={onAbortBash} searchQuery={searchQuery} activeMatchInItem={activeMatchInItem} />
     }
+    // Synthetic <task-notification> injection — a background subagent's
+    // result delivered as user-role text by the harness when a background
+    // task settles. NOT human input: render as a neutral result card,
+    // never as a "you" bubble. (The SDK's own task completion is a `system`
+    // / `task_notification` frame, already hidden; this catches the
+    // user-role injection path.)
+    if (isTaskNotificationUserMessage(msg)) {
+      return <TaskNotificationCard text={userContent ?? ''} searchQuery={searchQuery} activeMatchIdx={activeMatchInItem} />
+    }
+    // Other synthetic user-role messages the SDK explicitly marks non-human
+    // via `origin`/`isSynthetic` (peer / channel / coordinator /
+    // auto-continuation). Render as a neutral labelled card so they're
+    // never misrendered as "you". For SDK versions that don't stamp those
+    // fields (0.3.x), isHumanUserMessage falls back to true and this branch
+    // is skipped — preserving the existing "you" rendering for real input.
+    if (!isHumanUserMessage(msg)) {
+      const kind = userMessageOriginKind(msg) ?? 'system'
+      return (
+        <div className="msg tool-result">
+          <div className="msg-header">
+            <span>{kind}</span>
+          </div>
+          <div className="msg-body">
+            {userContent && <Markdown text={userContent} searchQuery={searchQuery} activeMatchIdx={activeMatchInItem} />}
+          </div>
+        </div>
+      )
+    }
     const imageBlocks = blocks.filter((b) => b.type === 'image')
     // Show the "queued" chip only while the turn is genuinely waiting behind
     // an in-flight turn: server-acknowledged (deliveryStatus === 'queued')
@@ -2296,6 +2324,33 @@ function BashMessage({ text, sending, onAbort, searchQuery, activeMatchInItem }:
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+/** Render a synthetic `<task-notification>` user message — the harness's
+ *  background-subagent result injection. Parses the `<status>`, `<summary>`,
+ *  and `<result>` tags and shows the result body as a neutral card so it is
+ *  never mistaken for a human-typed "you" bubble. Reuses the same `msg
+ *  tool-result` styling as an orphan tool-result frame (no new CSS), with a
+ *  header that names the origin and completion status. */
+function TaskNotificationCard({ text, searchQuery, activeMatchIdx }: {
+  text: string
+  searchQuery?: string
+  activeMatchIdx?: number
+}) {
+  const status = extractTag(text, 'status') ?? 'completed'
+  const summary = extractTag(text, 'summary') ?? undefined
+  const result = extractTag(text, 'result') ?? undefined
+  return (
+    <div className="msg tool-result task-notification">
+      <div className="msg-header">
+        <span>background task · {status}</span>
+      </div>
+      <div className="msg-body">
+        {summary && <div style={{ marginBottom: result ? 6 : 0, opacity: 0.85 }}>{summary}</div>}
+        {result && <Markdown text={result} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />}
+      </div>
     </div>
   )
 }

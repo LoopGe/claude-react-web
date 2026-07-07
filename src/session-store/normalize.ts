@@ -143,6 +143,89 @@ export function topLevelUserPromptSignature(msg: SdkMessage): string | null {
   return extractMessagePlainText(msg) ?? ''
 }
 
+/** Client-side mirror of server/session-pump.ts:`userMessageHasToolResult`.
+ *  True when a `user` message carries at least one `tool_result` content
+ *  block — i.e. it's the SDK feeding tool output back to the model, NOT a
+ *  human-typed turn. Used by the "is this real user input?" discriminator. */
+export function userMessageHasToolResult(msg: SdkMessage): boolean {
+  if (msg.type !== 'user') return false
+  for (const block of getBlocks(msg)) {
+    if (block.type === 'tool_result') return true
+  }
+  return false
+}
+
+/** The first text a `user` message carries (string content, or the first
+ *  `text` block). Used to sniff synthetic injections by their leading
+ *  markup without scanning the whole body. Returns null when there's no
+ *  text. */
+function leadingUserText(msg: SdkMessage): string | null {
+  const content = msg.message?.content
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    for (const block of content as Block[]) {
+      if (block && block.type === 'text' && typeof block.text === 'string') return block.text
+    }
+  }
+  return null
+}
+
+const TASK_NOTIFICATION_RE = /^\s*<task-notification\b/i
+
+/** True when a top-level `user` message's leading text is a
+ *  `<task-notification>` XML block — the harness's background-subagent
+ *  result injection. The SDK's own task completion is a `system` /
+ *  `task_notification` frame (already hidden by shouldHideByDefault); this
+ *  catches the *user-role* injection path some harnesses use, so it is
+ *  never misrendered as a human-typed "you" bubble. */
+export function isTaskNotificationUserMessage(msg: SdkMessage): boolean {
+  if (msg.type !== 'user') return false
+  if (msg.parent_tool_use_id != null) return false
+  if (userMessageHasToolResult(msg)) return false
+  const text = leadingUserText(msg)
+  return !!text && TASK_NOTIFICATION_RE.test(text)
+}
+
+/** The SDK `origin.kind` stamped on `SDKUserMessage` (sdk.d.ts:
+ *  SDKMessageOrigin = 'human' | 'task-notification' | 'peer' | 'channel'
+ *  | 'coordinator' | 'auto-continuation'). Returns undefined when the SDK
+ *  didn't stamp origin (notably SDK 0.3.x at runtime), so callers can fall
+ *  back to structural / content sniffing. */
+export function userMessageOriginKind(msg: SdkMessage): string | undefined {
+  if (msg.type !== 'user') return undefined
+  const origin = (msg as { origin?: { kind?: unknown } }).origin
+  if (origin && typeof origin === 'object' && typeof origin.kind === 'string') return origin.kind
+  return undefined
+}
+
+/** True ONLY for a genuine human-typed user message — never for the
+ *  synthetic user-role frames the SDK/harness injects (tool_results,
+ *  subagent-internal hops, `<task-notification>` result deliveries,
+ *  auto-continuations, peer messages). The "you" bubble, delivery badges,
+ *  prompt dedup, and navigate-to-user-message must all gate on this so a
+ *  synthetic injection can't be misrendered as something the human sent.
+ *
+ *  Discriminator ladder (most-explicit first):
+ *    1. parent_tool_use_id != null  → subagent-internal frame, not human.
+ *    2. carries a tool_result block → tool output fed back to the model.
+ *    3. SDK `origin.kind` present    → human iff kind === 'human'.
+ *    4. SDK `isSynthetic: true`      → not human.
+ *    5. content sniff `<task-notification>` → harness result injection.
+ *    6. fallback → human. Preserves behaviour for SDK versions that don't
+ *      stamp origin/isSynthetic on real human input (0.3.x), so the only
+ *      messages redirected away from "you" are ones the SDK explicitly
+ *      marks synthetic or that match a known injection signature. */
+export function isHumanUserMessage(msg: SdkMessage): boolean {
+  if (msg.type !== 'user') return false
+  if (msg.parent_tool_use_id != null) return false
+  if (userMessageHasToolResult(msg)) return false
+  const kind = userMessageOriginKind(msg)
+  if (kind !== undefined) return kind === 'human'
+  if ((msg as { isSynthetic?: unknown }).isSynthetic === true) return false
+  if (isTaskNotificationUserMessage(msg)) return false
+  return true
+}
+
 export function getBlocks(msg: SdkMessage): Block[] {
   const content = msg.message?.content
   if (typeof content === 'string') return [{ type: 'text', text: content }]

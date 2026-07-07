@@ -104,6 +104,36 @@ export function userMessageHasToolResult(msg: SDKMessage): boolean {
   return false
 }
 
+/** True when a top-level `user` message's leading text is a
+ *  `<task-notification>` XML block dthe harness's background-subagent
+ *  result injection (delivered as user-role text for the model to consume
+ *  on its next turn). The pump's echo drop-filter must NOT drop these:
+ *  they aren't echoes of server-broadcast human input, so forwarding them
+ *  lets the client render the result as a task-result card instead of
+ *  silently losing it. Mirrors the client-side check in
+ *  src/session-store/normalize.ts. */
+export function isTaskNotificationUserMessage(msg: SDKMessage): boolean {
+  if (msg.type !== 'user') return false
+  // Subagent-internal user frames (parent_tool_use_id set) are never a
+  // top-level task-notification injection; the pump's drop-filter only
+  // calls this on null-parent frames anyway, but keep the guard so the
+  // helper is correct standalone (mirrors the client check).
+  if (getParentToolUseId(msg) != null) return false
+  const content = (msg as { message?: { content?: unknown } }).message?.content
+  let text: string | undefined
+  if (typeof content === 'string') {
+    text = content
+  } else if (Array.isArray(content)) {
+    for (const block of content) {
+      if (block && typeof block === 'object' && (block as { type?: unknown }).type === 'text') {
+        const t = (block as { text?: unknown }).text
+        if (typeof t === 'string') { text = t; break }
+      }
+    }
+  }
+  return !!text && /^\s*<task-notification\b/i.test(text)
+}
+
 /** All `tool_use_id`s carried by a user message's tool_result blocks. The
  *  originating tool_use id lives on the block, not on the message's
  *  `parent_tool_use_id` (null for main-thread results). */
@@ -307,10 +337,22 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // block, while every tool_result frame (main-thread or subagent)
         // carries at least one. So drop only null-parent user frames that
         // carry NO tool_result block.
+        //
+        // EXCEPTION: a `<task-notification>` user message is also a null-
+        // parent text-only user frame, but it is NOT an echo of something
+        // we broadcast dthe harness injects it as the background
+        // subagent's result delivery for the model to consume on its next
+        // turn. Dropping it would silently lose the result from the
+        // transcript; forwarding it lets the client render it as a
+        // task-result card (see isTaskNotificationUserMessage). SDK 0.3.x
+        // emits task completion as a `system`/`task_notification` frame
+        // (already forwarded), so this guard only matters for harnesses
+        // that use the user-role injection path.
         if (
           msg.type === 'user' &&
           getParentToolUseId(msg) == null &&
-          !userMessageHasToolResult(msg)
+          !userMessageHasToolResult(msg) &&
+          !isTaskNotificationUserMessage(msg)
         ) {
           log.debug(`[session ${session.id}] dropping echoed top-level user message uuid=${(msg as { uuid: string }).uuid}`)
           continue

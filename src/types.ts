@@ -206,6 +206,18 @@ export interface SdkMessage {
    *  and non-null for tool results and subagent-internal frames. The SDK
    *  declares this on both SDKUserMessage and SDKAssistantMessage. */
   parent_tool_use_id?: string | null
+  /** SDK `SDKUserMessage.origin` — the true source of a user-role message.
+   *  `kind: 'human'` is genuine human input; `'task-notification'` /
+   *  `'peer'` / `'channel'` / `'coordinator'` / `'auto-continuation'` are
+   *  synthetic injections. Used to keep synthetic messages from rendering
+   *  as "you" bubbles. SDK 0.3.x declares but doesn't always populate this
+   *  at runtime; absent → fall back to structural/content sniffing. */
+  origin?: { kind: string; senderTaskId?: string; from?: string; name?: string; server?: string }
+  /** SDK `SDKUserMessage.isSynthetic` — true when the message was injected
+   *  (tool result, task notification, …) rather than typed by a human.
+   *  Forward-compat guard alongside `origin`; absent → treat as human
+   *  unless `origin.kind` or content sniffing says otherwise. */
+  isSynthetic?: boolean
   /** The CLI emits a synthetic assistant message with this flag when an
    *  upstream API error breaks the turn mid-response (e.g. "API Error:
    *  Connection closed mid-response"). The text body is the CLI's polished

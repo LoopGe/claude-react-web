@@ -3,6 +3,7 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
   fastModeStateOf,
   hookLifecycleMessage,
+  isTaskNotificationUserMessage,
   liteContextUsageFromAssistant,
   liteContextUsageFromResult,
   toolResultIds,
@@ -54,6 +55,58 @@ describe('userMessageHasToolResult', () => {
     expect(userMessageHasToolResult({ type: 'user' } as unknown as SDKMessage)).toBe(false)
     expect(userMessageHasToolResult(userMsg(null))).toBe(false)
     expect(userMessageHasToolResult(userMsg([null, 42, 'x']))).toBe(false)
+  })
+})
+
+describe('isTaskNotificationUserMessage', () => {
+  // The pump's echo drop-filter must NOT drop a <task-notification> user
+  // message: it isn't an echo of server-broadcast human input, it's the
+  // harness's background-subagent result injection. Forwarding it lets the
+  // client render it as a task-result card instead of silently losing it.
+
+  const notification = (body = '<result>ok</result>') =>
+    userMsg(`<task-notification>\n<task-id>t1</task-id>\n${body}\n</task-notification>`)
+
+  it('is true for a top-level <task-notification> text user message', () => {
+    expect(isTaskNotificationUserMessage(notification())).toBe(true)
+  })
+
+  it('is true for a string-content user message starting with <task-notification>', () => {
+    expect(isTaskNotificationUserMessage(userMsg('  <task-notification>...'))).toBe(true)
+  })
+
+  it('is false for a genuine human text input (no injection marker)', () => {
+    expect(isTaskNotificationUserMessage(userMsg('hello'))).toBe(false)
+    expect(isTaskNotificationUserMessage(userMsg([{ type: 'text', text: 'hi there' }]))).toBe(false)
+  })
+
+  it('is false for a tool_result frame (even if its content text mentions task-notification)', () => {
+    const msg = userMsg([
+      { type: 'tool_result', tool_use_id: 'tu_1', content: '<task-notification>nested</task-notification>' },
+    ])
+    expect(isTaskNotificationUserMessage(msg)).toBe(false)
+  })
+
+  it('is false for a subagent-internal user frame (parent_tool_use_id set)', () => {
+    const msg = {
+      type: 'user',
+      parent_tool_use_id: 'tu_agent',
+      message: { role: 'user', content: '<task-notification>x</task-notification>' },
+    } as unknown as SDKMessage
+    expect(isTaskNotificationUserMessage(msg)).toBe(false)
+  })
+
+  it('only matches at the start of the leading text (not mid-body)', () => {
+    expect(
+      isTaskNotificationUserMessage(userMsg('see result below\n<task-notification>...</task-notification>')),
+    ).toBe(false)
+  })
+
+  it('is defensive against odd shapes', () => {
+    expect(isTaskNotificationUserMessage({ type: 'user' } as unknown as SDKMessage)).toBe(false)
+    expect(isTaskNotificationUserMessage({ type: 'assistant' } as unknown as SDKMessage)).toBe(false)
+    expect(isTaskNotificationUserMessage(userMsg(null))).toBe(false)
+    expect(isTaskNotificationUserMessage(userMsg([null, 42]))).toBe(false)
   })
 })
 

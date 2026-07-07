@@ -1124,6 +1124,73 @@ describe('MessageList', () => {
       expect(container.textContent).toContain('hi there')
     })
   })
+
+  describe('synthetic user-message rendering (task notifications)', () => {
+    it('renders a genuine human user message as a "you" bubble', () => {
+      const { container } = render(
+        <MessageList items={toItems([
+          makeMsg('user', { message: { content: [{ type: 'text', text: 'hello world' }] } }),
+        ])} />,
+      )
+      const youBubble = container.querySelector('.msg.user')
+      expect(youBubble).toBeTruthy()
+      expect(container.textContent).toContain('you')
+      expect(container.textContent).toContain('hello world')
+    })
+
+    it('renders a <task-notification> user message as a result card, NOT a "you" bubble', () => {
+      const notification = [
+        '<task-notification>',
+        '<task-id>abc-123</task-id>',
+        '<tool-use-id>call_xyz</tool-use-id>',
+        '<status>completed</status>',
+        '<summary>Finder A finished</summary>',
+        '<result>{"findings":["a","b"]}</result>',
+        '</task-notification>',
+      ].join('\n')
+      const { container } = render(
+        <MessageList items={toItems([
+          makeMsg('user', { message: { content: [{ type: 'text', text: notification }] } }),
+        ])} />,
+      )
+      // Never a "you" bubble.
+      expect(container.querySelector('.msg.user')).toBeNull()
+      // Rendered as a neutral task-notification card.
+      const card = container.querySelector('.msg.task-notification')
+      expect(card).toBeTruthy()
+      expect(container.textContent).toContain('background task')
+      expect(container.textContent).toContain('completed')
+      expect(container.textContent).toContain('Finder A finished')
+      expect(container.textContent).toContain('{"findings":["a","b"]}')
+    })
+
+    it('renders an isSynthetic user message as a neutral card, NOT a "you" bubble', () => {
+      const { container } = render(
+        <MessageList items={toItems([
+          makeMsg('user', {
+            isSynthetic: true,
+            message: { content: [{ type: 'text', text: 'auto-continuing turn…' }] },
+          }),
+        ])} />,
+      )
+      expect(container.querySelector('.msg.user')).toBeNull()
+      expect(container.textContent).toContain('auto-continuing turn')
+    })
+
+    it('renders an origin.kind="peer" user message as a neutral card, NOT a "you" bubble', () => {
+      const { container } = render(
+        <MessageList items={toItems([
+          makeMsg('user', {
+            origin: { kind: 'peer', from: 'agent-2' },
+            message: { content: [{ type: 'text', text: 'handoff from peer' }] },
+          }),
+        ])} />,
+      )
+      expect(container.querySelector('.msg.user')).toBeNull()
+      expect(container.textContent).toContain('peer')
+      expect(container.textContent).toContain('handoff from peer')
+    })
+  })
 })
 
 describe('SendMessage tool card', () => {
