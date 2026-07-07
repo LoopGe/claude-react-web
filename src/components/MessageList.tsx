@@ -2070,6 +2070,20 @@ const MessageView = memo(function MessageView({
     // The raw text is kept in the title for debugging.
     if (msg.isApiErrorMessage === true || typeof msg.error === 'string') {
       const apiErrText = extractMessagePlainText(msg) ?? ''
+      // Hard account-level 429 (not auto-retried by the SDK — that path
+      // surfaces as a transient `api_retry` system frame). The assistant
+      // `rate_limit` error is fatal: the turn was rejected, so render the
+      // same red `.msg.result.error` divider already used for the
+      // `system/error` 429 case, with the raw SDK text kept in the title for
+      // debugging. A normal reply quoting "rate limit" is never mis-rendered
+      // — this branch is gated on `msg.error === 'rate_limit'`.
+      if (msg.error === 'rate_limit') {
+        // Fall back to the `error` enum value when the SDK omitted a text
+        // body — extractMessagePlainText only falls back to `msg.error` for
+        // `system` frames (not assistant), so an empty body would otherwise
+        // yield an empty tooltip and drop the only debugging clue.
+        return <RateLimitErrorDivider title={apiErrText || msg.error || 'rate limit'} />
+      }
       const isDisconnected =
         msg.isApiErrorMessage === true ||
         /connection closed mid-response/i.test(apiErrText)
@@ -2167,14 +2181,13 @@ const MessageView = memo(function MessageView({
 
   if (type === 'system' && msg.subtype === 'error') {
     const raw = String(msg.error ?? 'unknown error')
-    const isRateLimit = /429|rate.?limit/i.test(raw)
-    const message = isRateLimit
-      ? 'too many requests — message saved, send again'
-      : raw
+    if (/429|rate.?limit/i.test(raw)) {
+      return <RateLimitErrorDivider title="too many requests — message saved, send again" />
+    }
     return (
-      <div className="msg result error" title={message} aria-label={isRateLimit ? 'rate limit error' : 'system error'}>
-        <span className="result-mark" aria-hidden="true">{isRateLimit ? '✕ rate limited' : '✕ error'}</span>
-        <span className="result-meta">{message}</span>
+      <div className="msg result error" title={raw} aria-label="system error">
+        <span className="result-mark" aria-hidden="true">✕ error</span>
+        <span className="result-meta">{raw}</span>
       </div>
     )
   }
@@ -2420,6 +2433,25 @@ function CompactBoundary({ msg }: { msg: SdkMessage }) {
           ? `${formatTokens(pre)} -> ${formatTokens(post)} tokens${savings}${duration}`
           : 'Conversation compacted to fit the context window.'}
       </span>
+    </div>
+  )
+}
+
+/** Fatal rate-limit / 429-rejection divider. Shared by the two paths that
+ *  render a "you were rate limited — resend" cue so the mark, canned meta
+ *  copy, and `.msg.result.error` styling can't drift apart:
+ *    • `system/error` frames whose body matches `/429|rate.?limit/i`
+ *    • assistant messages with `error: 'rate_limit'` (hard account-level 429
+ *      that the SDK did NOT auto-retry — the auto-retry path surfaces as the
+ *      transient `api_retry` amber divider instead).
+ *  `title` carries the raw error text for debugging (hover); each caller
+ *  decides what that should be (the system path uses the canned copy; the
+ *  assistant path uses the extracted body, falling back to the `error` enum). */
+function RateLimitErrorDivider({ title }: { title: string }) {
+  return (
+    <div className="msg result error" title={title} aria-label="rate limit error">
+      <span className="result-mark" aria-hidden="true">✕ rate limited</span>
+      <span className="result-meta">too many requests — message saved, send again</span>
     </div>
   )
 }

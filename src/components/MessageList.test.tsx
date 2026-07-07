@@ -1586,4 +1586,82 @@ describe('system error divider', () => {
     const meta = container.querySelector('.msg.result.error .result-meta')
     expect(meta?.textContent).toContain('unknown error')
   })
+
+  it('renders an assistant error=rate_limit message as a red rate-limit divider', () => {
+    // The SDK emits an assistant message with error='rate_limit' when a hard
+    // account-level 429 rejects the turn (not auto-retried — that path is the
+    // transient `api_retry` system frame). It should render as the same fatal
+    // red `.msg.result.error` divider as the `system/error` 429 case, not a
+    // normal assistant bubble parroting the raw error text.
+    const raw = 'API Error: Request rejected (429) · [1302][您的账户已达到速率限制…]'
+    const items = toItems([
+      makeMsg('assistant', {
+        error: 'rate_limit',
+        message: { content: [{ type: 'text', text: raw }] },
+      }),
+    ])
+    const { container } = render(<MessageList items={items} />)
+
+    const divider = container.querySelector('.msg.result.error')
+    expect(divider).toBeTruthy()
+    // NOT a normal assistant bubble, and the bare `rate_limit` header chip
+    // must not leak through.
+    expect(container.querySelector('.msg.assistant')).toBeNull()
+    expect(container.textContent).not.toContain('rate_limit')
+
+    const mark = divider?.querySelector('.result-mark')
+    expect(mark?.textContent).toContain('✕')
+    expect(mark?.textContent).toContain('rate limited')
+
+    const meta = divider?.querySelector('.result-meta')
+    expect(meta?.textContent).toContain('send again')
+
+    // Raw SDK text preserved in the title tooltip; the raw 429 body must NOT
+    // leak into the visible meta.
+    expect(divider?.getAttribute('title')).toBe(raw)
+    expect(meta?.textContent).not.toContain('Request rejected')
+  })
+
+  it('falls back to the error enum in the title when a rate_limit message has no body text', () => {
+    // extractMessagePlainText only falls back to msg.error for `system` frames,
+    // so an assistant rate_limit message with no text blocks yields an empty
+    // body. The divider must still surface a non-empty title (the `error` enum
+    // value) rather than dropping the only debugging clue.
+    const items = toItems([
+      makeMsg('assistant', {
+        error: 'rate_limit',
+        message: { content: [] },
+      }),
+    ])
+    const { container } = render(<MessageList items={items} />)
+
+    const divider = container.querySelector('.msg.result.error')
+    expect(divider).toBeTruthy()
+    expect(divider?.getAttribute('title')).toBe('rate_limit')
+    // Still the canned resend guidance, not an empty meta.
+    const meta = divider?.querySelector('.result-meta')
+    expect(meta?.textContent).toContain('send again')
+  })
+
+  it('does NOT mis-render a normal assistant reply that merely quotes "rate limit"', () => {
+    // Regression guard: the rate-limit divider must be gated on
+    // msg.error === 'rate_limit' so a normal reply discussing rate limits
+    // (no msg.error set) renders as a regular assistant bubble.
+    const items = toItems([
+      makeMsg('assistant', {
+        message: {
+          content: [
+            { type: 'text', text: 'You may hit a rate limit (429) if you send too many requests.' },
+            { type: 'text', text: 'Here is the rest of my normal explanation.' },
+          ],
+        },
+      }),
+    ])
+    const { container } = render(<MessageList items={items} />)
+
+    expect(container.querySelector('.msg.result.error')).toBeNull()
+    const bubble = container.querySelector('.msg.assistant')
+    expect(bubble).toBeTruthy()
+    expect(bubble?.textContent).toContain('rest of my normal explanation')
+  })
 })
