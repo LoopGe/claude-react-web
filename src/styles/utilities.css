@@ -191,6 +191,35 @@
   gap: 8px;
   min-width: 0;
   flex: 1;
+  /* Now a <button> (click-to-copy the absolute path) — reset to look like
+     the plain inline-flex title it replaced, with a subtle hover wash to
+     signal clickability. Negative margin + matching padding keeps the wash
+     from shifting the title's box. */
+  font: inherit;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0 4px;
+  margin: 0 -4px;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.tool-card-filepath:hover {
+  background: var(--btn-hover-bg);
+}
+.tool-card-filepath:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+.tool-card-filepath.copied .tool-card-filepath-dir {
+  color: var(--ok);
+}
+.tool-card-filepath-copied {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ok);
+  flex-shrink: 0;
 }
 .tool-card-filepath-base {
   font-family: var(--mono);

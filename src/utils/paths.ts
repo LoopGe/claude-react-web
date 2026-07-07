@@ -60,3 +60,46 @@ export function shortenPath(p: string): string {
   if (segs.length <= 3) return p
   return `…${sep}${segs.slice(-2).join(sep)}`
 }
+
+/** True for paths that are already absolute: Unix roots (`/foo`, `\\foo`) and
+ *  Windows drive roots (`C:\foo`, `C:/foo`). Mixed-separator tolerant — the
+ *  model frequently supplies `/`-style paths even on Windows. A bare drive
+ *  letter with no separator (`C:foo`) is treated as RELATIVE (it is, on
+ *  Windows — it resolves against the drive's current dir, not root). */
+export function isAbsolutePath(p: string): boolean {
+  if (!p) return false
+  if (p.startsWith('/') || p.startsWith('\\')) return true
+  return /^[A-Za-z]:[/\\]/.test(p)
+}
+
+/** Resolve a tool-input path against the session cwd into an absolute path
+ *  suitable for copying to the clipboard.
+ *
+ *  - Already-absolute paths are returned VERBATIM. We deliberately do NOT
+ *    rewrite their separators to the cwd's: a `/`-style absolute path is
+ *    valid as-is on both OSes (Windows accepts `/`), and rewriting `/etc/hosts`
+ *    to `\etc\hosts` on a Windows cwd would corrupt it into a UNC network
+ *    path. The model's absolute path is already a valid absolute path.
+ *  - Relative paths are joined under cwd (cwd's trailing separator trimmed),
+ *    with the relative path's separators normalised to the cwd's so the join
+ *    reads consistently (`C:\proj\src\foo.ts`, not `C:\proj\src/foo.ts`).
+ *    This is safe because a relative path on a given session belongs to that
+ *    session's OS.
+ *  - When cwd is missing (e.g. a Side Chat drawer without cwd), the raw
+ *    path is returned unchanged — we can't fabricate a parent we don't know,
+ *    and the displayed path is what the user sees anyway.
+ *
+ *  This is display/copy-side resolution only — it does NOT touch the disk or
+ *  validate that the path exists. Server-side path safety (the cwd-containment
+ *  gate) lives in edit-locate-routes.ts. */
+export function resolveAbsolutePath(cwd: string | undefined, path: string): string {
+  if (!path) return cwd ?? ''
+  if (isAbsolutePath(path)) return path
+  if (!cwd) return path
+  // Windows cwd (has `\`, no `/`) → backslash; otherwise forward slash.
+  const sep = cwd.includes('\\') && !cwd.includes('/') ? '\\' : '/'
+  const norm = sep === '\\' ? (p: string) => p.replace(/\//g, '\\') : (p: string) => p.replace(/\\/g, '/')
+  const base = norm(cwd).replace(/[/\\]$/, '')
+  return `${base}${sep}${norm(path)}`
+}
+

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shortenPath, splitDrive, buildCrumbs } from './paths'
+import { shortenPath, splitDrive, buildCrumbs, isAbsolutePath, resolveAbsolutePath } from './paths'
 
 // ── splitDrive ──────────────────────────────────────────────────────
 
@@ -207,5 +207,73 @@ describe('shortenPath', () => {
     const p = '\\\\fileserver\\dept\\projects\\2025\\alpha\\src\\components'
     expect(p.length).toBeGreaterThan(36)
     expect(shortenPath(p)).toBe('…\\src\\components')
+  })
+})
+
+// ── isAbsolutePath ─────────────────────────────────────────────────
+
+describe('isAbsolutePath', () => {
+  it('treats Unix roots as absolute', () => {
+    expect(isAbsolutePath('/home/me/foo.ts')).toBe(true)
+    expect(isAbsolutePath('/foo')).toBe(true)
+  })
+
+  it('treats Windows drive roots as absolute', () => {
+    expect(isAbsolutePath('C:\\Users\\me\\foo.ts')).toBe(true)
+    expect(isAbsolutePath('C:/Users/me/foo.ts')).toBe(true)
+  })
+
+  it('treats UNC paths as absolute', () => {
+    expect(isAbsolutePath('\\\\fileserver\\share\\foo')).toBe(true)
+  })
+
+  it('treats relative paths and bare drive letters as relative', () => {
+    expect(isAbsolutePath('src/foo.ts')).toBe(false)
+    expect(isAbsolutePath('foo.ts')).toBe(false)
+    expect(isAbsolutePath('C:foo.ts')).toBe(false) // bare drive, no sep → relative on Windows
+    expect(isAbsolutePath('')).toBe(false)
+  })
+})
+
+// ── resolveAbsolutePath ────────────────────────────────────────────
+
+describe('resolveAbsolutePath', () => {
+  it('joins a relative path under a Unix cwd', () => {
+    expect(resolveAbsolutePath('/home/me/proj', 'src/components/Foo.tsx'))
+      .toBe('/home/me/proj/src/components/Foo.tsx')
+  })
+
+  it('joins a relative path under a Windows cwd, normalising to backslash', () => {
+    expect(resolveAbsolutePath('C:\\Users\\me\\proj', 'src/components/Foo.tsx'))
+      .toBe('C:\\Users\\me\\proj\\src\\components\\Foo.tsx')
+  })
+
+  it('returns an already-absolute Unix path unchanged', () => {
+    expect(resolveAbsolutePath('/home/me/proj', '/etc/hosts')).toBe('/etc/hosts')
+  })
+
+  it('returns an already-absolute path VERBATIM (no separator rewrite)', () => {
+    // Absolute paths are returned as-is — rewriting `/` → `\` would corrupt a
+    // Unix path like /etc/hosts into a UNC path (\etc\hosts) on a Windows cwd.
+    // Windows accepts forward slashes, so C:/Users/me/foo.ts stays as-is.
+    expect(resolveAbsolutePath('C:\\proj', 'C:/Users/me/foo.ts'))
+      .toBe('C:/Users/me/foo.ts')
+    expect(resolveAbsolutePath('C:\\proj', '/etc/hosts')).toBe('/etc/hosts')
+    expect(resolveAbsolutePath('/home/me/proj', 'C:\\Windows\\system32'))
+      .toBe('C:\\Windows\\system32')
+  })
+
+  it('trims a trailing separator on cwd before joining', () => {
+    expect(resolveAbsolutePath('/home/me/proj/', 'src/foo.ts'))
+      .toBe('/home/me/proj/src/foo.ts')
+  })
+
+  it('returns the raw path when cwd is missing (cannot fabricate a parent)', () => {
+    expect(resolveAbsolutePath(undefined, 'src/foo.ts')).toBe('src/foo.ts')
+    expect(resolveAbsolutePath(undefined, '/abs/foo.ts')).toBe('/abs/foo.ts')
+  })
+
+  it('returns cwd when path is empty', () => {
+    expect(resolveAbsolutePath('/home/me/proj', '')).toBe('/home/me/proj')
   })
 })

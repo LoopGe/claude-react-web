@@ -1262,6 +1262,26 @@
   border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
   background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev-2));
 }
+/* Copyable path chip (Grep / Glob `in <path>`): a <button> styled as a chip
+   that copies the resolved absolute path on click. Resets button chrome so it
+   reads like the passive chip it replaced, with a hover wash + copied tint. */
+button.tool-chip.tool-chip-copyable {
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+button.tool-chip.tool-chip-copyable:hover {
+  background: var(--btn-hover-bg);
+}
+button.tool-chip.tool-chip-copyable:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+button.tool-chip.tool-chip-copyable.copied {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
+  background: color-mix(in srgb, var(--ok) 10%, var(--bg-elev-2));
+}
 
 /* --- Bash inline view ------------------------------------------------ */
 .bash-tool {

@@ -1665,3 +1665,69 @@ describe('system error divider', () => {
     expect(bubble?.textContent).toContain('rest of my normal explanation')
   })
 })
+
+describe('file-path click-to-copy', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // jsdom has no clipboard by default; stub writeText so useCopy's success
+    // path fires (without it both navigator.clipboard and execCommand are
+    // absent in jsdom and the copy silently no-ops).
+    Object.assign(navigator, {
+      clipboard: { writeText: vi.fn().mockResolvedValue(undefined) },
+    })
+  })
+
+  it('clicking a Read tool filepath title copies the cwd-resolved absolute path', () => {
+    const items = toItems([
+      makeMsg('assistant', {
+        message: { content: [{ type: 'tool_use', id: 'rd-1', name: 'Read', input: { file_path: 'src/components/Foo.tsx' } }] },
+      }),
+    ])
+    const { container } = render(<MessageList items={items} cwd="/home/me/proj" />)
+
+    const filepathBtn = container.querySelector('.tool-card-filepath') as HTMLButtonElement
+    expect(filepathBtn).toBeTruthy()
+    // Hover title previews the absolute path that will be copied.
+    expect(filepathBtn.getAttribute('title')).toContain('/home/me/proj/src/components/Foo.tsx')
+
+    fireEvent.click(filepathBtn)
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('/home/me/proj/src/components/Foo.tsx')
+  })
+
+  it('clicking a Grep `in <path>` chip copies the cwd-resolved absolute path', async () => {
+    const items = toItems([
+      makeMsg('assistant', {
+        message: { content: [{ type: 'tool_use', id: 'gp-1', name: 'Grep', input: { pattern: 'foo', path: 'src/utils' } }] },
+      }),
+    ])
+    const { container } = render(<MessageList items={items} cwd="/home/me/proj" />)
+
+    const chip = container.querySelector('.tool-chip-copyable') as HTMLButtonElement
+    expect(chip).toBeTruthy()
+    expect(chip.textContent).toContain('in src/utils')
+
+    fireEvent.click(chip)
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('/home/me/proj/src/utils')
+    // The path label must stay visible during the copied feedback (it tints
+    // green + flips the tooltip, but the `in src/utils` text is NOT replaced).
+    await waitFor(() => expect(chip.classList.contains('copied')).toBe(true))
+    expect(chip.textContent).toContain('in src/utils')
+  })
+
+  it('returns the raw path when no cwd is in scope', () => {
+    const items = toItems([
+      makeMsg('assistant', {
+        message: { content: [{ type: 'tool_use', id: 'rd-2', name: 'Read', input: { file_path: 'src/Foo.tsx' } }] },
+      }),
+    ])
+    const { container } = render(<MessageList items={items} />)
+
+    const filepathBtn = container.querySelector('.tool-card-filepath') as HTMLButtonElement
+    fireEvent.click(filepathBtn)
+
+    // No cwd → can't fabricate a parent, copy the raw path as-is.
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('src/Foo.tsx')
+  })
+})

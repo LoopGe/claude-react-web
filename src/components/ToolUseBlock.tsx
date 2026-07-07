@@ -25,13 +25,14 @@
 // status badge from running → success/error when the matching tool_result
 // lands. Without it, the badge would be permanently stuck on "running".
 
-import { memo, useMemo, type ComponentType, type ReactNode } from 'react'
+import { memo, useMemo, type ComponentType, type MouseEventHandler, type ReactNode } from 'react'
 import { Markdown } from './Markdown'
 import { usePlanStatus, usePlanContent, useToolResult } from '../hooks/usePlanStatus'
 import { useQuestionAnswers } from '../hooks/useQuestionAnswers'
 import { useTaskInfo } from '../hooks/useTaskInfo'
 import { useReopenQuestion } from '../hooks/useReopenQuestion'
 import { useSessionCwd } from '../hooks/useSessionCwd'
+import { useCopy } from '../hooks/useCopy'
 import { useEditDiffInfo, type EditAnchor, type EditDiffInfo } from '../hooks/useEditDiffInfo'
 import { SubagentCard } from './SubagentCard'
 import { WorkflowCard } from './WorkflowCard'
@@ -67,6 +68,7 @@ import { QUESTION_TOOL_NAME, type QuestionAnswerEntry } from '../utils/question-
 import { parseTaskId, resultText } from '../utils/task-events'
 import { truncate } from '../utils/text'
 import { splitFilePath, shortenDir, detectLanguage } from '../utils/file-display'
+import { resolveAbsolutePath } from '../utils/paths'
 import { highlightLineHast } from '../utils/diff-highlight'
 import { extractToolUseId } from '../session-store/normalize'
 import type { Block, QuestionSpec } from '../types'
@@ -191,6 +193,32 @@ export const ToolUseBlock = memo(function ToolUseBlock({ block, searchQuery, act
 // File-path header (shared)
 // ---------------------------------------------------------------------------
 
+/** Shared click-to-copy-the-absolute-path behaviour for path-bearing tool
+ *  cards. Resolves `path` against the session cwd, wires the clipboard copy
+ *  + 2s "copied" feedback, and returns the hover `title` and a click handler
+ *  that stops propagation (so the click doesn't bubble into card chrome).
+ *
+ *  Used by both FilePathTitle (file tools) and CopyablePathChip (Grep/Glob
+ *  search scope) so the two paths can't drift on tooltip wording, resolution,
+ *  or stopPropagation semantics. */
+function useCopyablePath(path: string): {
+  copied: boolean
+  title: string
+  onClick: MouseEventHandler<HTMLButtonElement>
+} {
+  const cwd = useSessionCwd()
+  const { copied, copy } = useCopy()
+  const absPath = resolveAbsolutePath(cwd, path)
+  return {
+    copied,
+    title: copied ? 'Copied!' : `Click to copy path\n${absPath}`,
+    onClick: (e) => {
+      e.stopPropagation()
+      copy(() => absPath)
+    },
+  }
+}
+
 /** A two-line file-path display used as the *title* of file-touching tool
  *  cards (Edit, Write, Read, NotebookEdit).  Bold filename on top, muted
  *  parent dir below — so the user's eye lands on the actual file name
@@ -198,7 +226,13 @@ export const ToolUseBlock = memo(function ToolUseBlock({ block, searchQuery, act
  *
  *  The directory uses middle-ellipsis truncation (see shortenDir) instead
  *  of CSS right-truncate, because the leaf folder is the most informative
- *  segment and `text-overflow: ellipsis` would clip it first.  */
+ *  segment and `text-overflow: ellipsis` would clip it first.
+ *
+ *  The whole title is a click-to-copy button: one click copies the full
+ *  absolute path (resolved against the session cwd — see useCopyablePath)
+ *  to the clipboard, with a 2s "copied" affordance. The untruncated absolute
+ *  path + the click hint are in the hover `title` so the user can preview
+ *  exactly what they'll get before clicking.  */
 function FilePathTitle({
   path,
   badge,
@@ -206,14 +240,42 @@ function FilePathTitle({
   path: string
   badge?: string
 }) {
+  const { copied, title, onClick } = useCopyablePath(path)
   const { dir, base } = splitFilePath(path)
   const shortDir = dir ? shortenDir(dir, 48) : ''
   return (
-    <span className="tool-card-filepath" title={path}>
+    <button
+      type="button"
+      className={`tool-card-filepath${copied ? ' copied' : ''}`}
+      title={title}
+      onClick={onClick}
+    >
       <span className="tool-card-filepath-base">{base || path}</span>
       {badge && <span className="tool-card-filepath-badge">{badge}</span>}
       {shortDir && <span className="tool-card-filepath-dir">{shortDir}</span>}
-    </span>
+      {copied && <span className="tool-card-filepath-copied">copied</span>}
+    </button>
+  )
+}
+
+/** A `in <path>` chip used by Grep / Glob whose `path` is a search scope
+ *  (not a FilePathTitle). Click copies the resolved absolute path, mirroring
+ *  FilePathTitle's click-to-copy semantics so every path-bearing tool card
+ *  offers the same copy affordance. The path label stays visible during the
+ *  2s "copied" feedback (the chip tints green + the tooltip flips to
+ *  "Copied!") rather than being replaced — losing the path context the user
+ *  is looking at would be worse than the feedback it signals. */
+function CopyablePathChip({ path }: { path: string }) {
+  const { copied, title, onClick } = useCopyablePath(path)
+  return (
+    <button
+      type="button"
+      className={`tool-chip tool-chip-copyable${copied ? ' copied' : ''}`}
+      title={title}
+      onClick={onClick}
+    >
+      {`in ${path}`}
+    </button>
   )
 }
 
@@ -1262,8 +1324,6 @@ const ReadToolView = memo(function ReadToolView({ input, toolUseId, searchQuery,
       title={<FilePathTitle path={filePath} />}
       chips={rangeText ? <span className="tool-chip">{rangeText}</span> : null}
       toolUseId={toolUseId}
-      copyValue={() => filePath}
-      copyLabel="Copy path"
       searchQuery={searchQuery}
       activeMatchIdx={activeMatchIdx}
       className="tool-card-read"
@@ -1305,7 +1365,7 @@ const GrepToolView = memo(function GrepToolView({ input, toolUseId, searchQuery,
           {glob ? `glob:${glob}` : `type:${type}`}
         </span>
       )}
-      {path && <span className="tool-chip">in {path}</span>}
+      {path && <CopyablePathChip path={path} />}
       {outputMode && outputMode !== 'files_with_matches' && (
         <span className="tool-chip">{outputMode}</span>
       )}
@@ -1473,7 +1533,7 @@ function GlobToolView({ input, toolUseId, searchQuery, activeMatchIdx }: ToolVie
     <ToolCard
       icon={<IconFolderSearch />}
       title={<code className="grep-tool-pattern">{pattern}</code>}
-      chips={path ? <span className="tool-chip">in {path}</span> : null}
+      chips={path ? <CopyablePathChip path={path} /> : null}
       toolUseId={toolUseId}
       copyValue={() => pattern}
       copyLabel="Copy pattern"

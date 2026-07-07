@@ -10,7 +10,7 @@
 //   ToolStatusBadge — running/success/error pill, also used standalone
 //                     by some tool views
 
-import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { memo, useEffect, useRef, type ReactNode } from 'react'
 import {
   IconAlertCircle,
   IconCheck,
@@ -20,6 +20,7 @@ import {
 import { AnimatedDetails } from './AnimatedCollapse'
 import { useToolResult, useToolStatus } from '../hooks/usePlanStatus'
 import { useReopenQuestion } from '../hooks/useReopenQuestion'
+import { useCopy } from '../hooks/useCopy'
 import type { ToolResultEntry, ToolStatus } from '../session-store/types'
 import type { Block } from '../types'
 import { formatJson } from '../utils/format'
@@ -52,62 +53,19 @@ export function CopyButton({
   className?: string
   size?: number
 }) {
-  const [copied, setCopied] = useState(false)
-  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
-
-  // Clear any in-flight "Copied!" timer when this button unmounts so a
-  // post-unmount setState (silently swallowed by React in dev mode but
-  // still a leak) can't fire.
-  useEffect(() => () => {
-    if (timerRef.current != null) clearTimeout(timerRef.current)
-  }, [])
-
-  const handle = useCallback(() => {
-    const value = getValue()
-    if (!value) return
-    const onSuccess = () => {
-      setCopied(true)
-      if (timerRef.current != null) clearTimeout(timerRef.current)
-      timerRef.current = setTimeout(() => setCopied(false), 2000)
-    }
-    const writer = navigator.clipboard?.writeText(value)
-    if (writer) {
-      writer.then(onSuccess, () => {
-        // Fallback: hidden textarea + execCommand (Safari without HTTPS,
-        // or browsers blocking clipboard inside an iframe).
-        legacyCopy(value, onSuccess)
-      })
-    } else {
-      legacyCopy(value, onSuccess)
-    }
-  }, [getValue])
+  const { copied, copy } = useCopy()
 
   return (
     <button
       type="button"
       className={`tool-copy-btn${copied ? ' copied' : ''} ${className}`.trim()}
-      onClick={handle}
+      onClick={() => copy(getValue)}
       title={copied ? 'Copied!' : label}
       aria-label={copied ? 'Copied' : label}
     >
       {copied ? <IconCheck size={size} /> : <IconCopy size={size} />}
     </button>
   )
-}
-
-function legacyCopy(text: string, onSuccess: () => void) {
-  try {
-    const ta = document.createElement('textarea')
-    ta.value = text
-    ta.style.cssText = 'position:fixed;opacity:0;left:-9999px'
-    document.body.appendChild(ta)
-    ta.select()
-    document.execCommand('copy')
-    document.body.removeChild(ta)
-    onSuccess()
-  } catch {
-    // Last resort — silent failure.
-  }
 }
 
 // ---------------------------------------------------------------------------
