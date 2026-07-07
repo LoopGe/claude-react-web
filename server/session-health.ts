@@ -82,7 +82,7 @@ export class SessionHealthMonitor {
    *     respond before kicking again. After that escalate to unload. */
   private checkStuck(id: string, s: Session, now: number): void {
     if (this.deps.workingStuckMs <= 0) return
-    if (!s.running || s.terminated || s.exiting) return
+    if (!s.running || s.terminated || s.exiting || s.recovering) return
     // Only check sessions that are actively working (mid-turn).
     // Idle sessions (pendingTurns=0, no pending permissions) are not stuck —
     // they are waiting for user input and should persist indefinitely.

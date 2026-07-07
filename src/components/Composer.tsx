@@ -366,6 +366,7 @@ export const Composer = memo(function Composer({
       : terminatedReason === 'deleted' ? 'Session deleted'
       : terminatedReason === 'transcript_missing' ? 'Transcript file missing'
       : terminatedReason === 'no_data' ? 'No conversation data on disk'
+      : terminatedReason === 'crash_recovered_fork' ? 'Recovered to a fork'
       : null
     return (
       <div className="session-ended">

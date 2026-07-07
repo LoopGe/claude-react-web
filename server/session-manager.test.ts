@@ -1960,4 +1960,219 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     const env = mockHandles[0].options.env as Record<string, string>
     expect(env).toMatchObject({ TOKEN: 'value', EMPTY: '' })
   })
+
+  describe('crash recovery', () => {
+    // Drive the SessionManager's private crash handler directly. In
+    // production ProcessMonitor fires it in real time; the mock SDK never
+    // spawns a real subprocess, so we synthesize the exit event.
+    const fireCrash = (
+      manager: SessionManager,
+      sessionId: string,
+      info: { code: number | null; signal: NodeJS.Signals | null; killed: boolean; spawnError?: { code?: string; message: string } },
+    ) => {
+      ;(manager as unknown as { handleProcessExit: (i: unknown) => void }).handleProcessExit({
+        sessionId,
+        ...info,
+      })
+    }
+    // Poll macrotasks until `cond` is true or we run out of ticks. The pump
+    // + cleanupPump + recovery respawn is a chain of async steps, each
+    // needing a setImmediate tick to advance.
+    const waitFor = async (cond: () => boolean, ticks = 30) => {
+      for (let i = 0; i < ticks; i++) {
+        if (cond()) return true
+        await tick()
+      }
+      return cond()
+    }
+
+    it('Step 1: re-resumes in-place after a crash (keeps same id, no terminate)', async () => {
+      sm = new SessionManager({ store, crashRecovery: true })
+      const info = sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      // Complete one turn so lastTurnAt + lastSafeResumeUuid are set
+      // (recovery needs a disk transcript / completed turn to resume from).
+      sm.send(info.id, 'hi')
+      h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
+      h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+
+      fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+      await waitFor(() => mockHandles.length >= 2)
+
+      // In-place recovery: a new Query was spawned on the SAME session id,
+      // and the session is alive (not terminated).
+      expect(mockHandles.length).toBe(2)
+      expect(mockHandles[1].options.resume).toBe(info.id)
+      expect(sm.get(info.id).terminated).toBe(false)
+    })
+
+    it('crash recovery disabled: terminates immediately (legacy behavior)', async () => {
+      sm = new SessionManager({ store, crashRecovery: false })
+      const info = sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+
+      fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+      await waitFor(() => sm.get(info.id).terminated === true)
+
+      expect(sm.get(info.id).terminated).toBe(true)
+      expect(sm.get(info.id).terminatedReason).toBe('process_exited')
+      expect(mockHandles).toHaveLength(1) // no recovery respawn
+    })
+
+    it('spawn failures bypass the ladder (binary unavailable — retrying cannot help)', async () => {
+      sm = new SessionManager({ store, crashRecovery: true })
+      const info = sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+
+      fireCrash(sm, info.id, { code: null, signal: null, killed: false, spawnError: { code: 'ENOENT', message: 'not found' } })
+      await waitFor(() => sm.get(info.id).terminated === true)
+
+      expect(sm.get(info.id).terminated).toBe(true)
+      expect(sm.get(info.id).terminatedReason).toBe('spawn_failed')
+      expect(mockHandles).toHaveLength(1) // no recovery respawn
+    })
+
+    it('Step 2: a second crash forks from the last completed turn and terminates the original', async () => {
+      sm = new SessionManager({ store, crashRecovery: true })
+      const info = sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
+      h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+
+      // First crash → Step 1 in-place resume (counter 0 → 1).
+      fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+      await waitFor(() => mockHandles.length >= 2)
+
+      // Second crash → Step 2 fork from lastSafeResumeUuid (counter 1 → 2).
+      // The original terminates with 'crash_recovered_fork'; the fork is a
+      // new session.
+      fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+      const forked = await waitFor(() => mockHandles.length >= 3 && sm.get(info.id).terminated === true)
+
+      expect(forked).toBe(true)
+      expect(sm.get(info.id).terminated).toBe(true)
+      expect(sm.get(info.id).terminatedReason).toBe('crash_recovered_fork')
+      expect(mockHandles.length).toBe(3) // original + Step1 resume + Step2 fork
+      // The Step-2 spawn is a fork: resume of the original id + forkSession,
+      // and resumeSessionAt pointing at the last completed assistant uuid.
+      const forkOpts = mockHandles[2].options
+      expect(forkOpts.resume).toBe(info.id)
+      expect(forkOpts.forkSession).toBe(true)
+      expect(forkOpts.resumeSessionAt).toBe('asst-1')
+    })
+
+    it('recovery counter resets on user message (fresh ladder after re-engaging)', async () => {
+      sm = new SessionManager({ store, crashRecovery: true })
+      const info = sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+
+      // Crash → Step 1 resume (counter → 1).
+      fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+      await waitFor(() => mockHandles.length >= 2)
+
+      // User sends a new message on the recovered session → counter resets.
+      sm.send(info.id, 'again')
+      await tick()
+      // A fresh crash should route to Step 1 again (counter was reset to 0),
+      // NOT immediately to Step 2 fork. Step 1 = in-place resume on same id,
+      // session stays alive.
+      fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+      await waitFor(() => mockHandles.length >= 3)
+
+      expect(sm.get(info.id).terminated).toBe(false)
+      expect(mockHandles[2].options.resume).toBe(info.id)
+      expect(mockHandles[2].options.forkSession).toBeUndefined() // Step 1, not fork
+    })
+
+    it('Step 1 clears the crash error so the next clean idle-exit auto-resumes (not terminate)', async () => {
+      sm = new SessionManager({ store, crashRecovery: true, autoResume: true })
+      const info = sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
+      h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+
+      // Crash → Step 1 in-place recovery.
+      fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+      await waitFor(() => mockHandles.length >= 2)
+
+      // F1: the crash error must be cleared on the recovered session,
+      // otherwise the next clean idle-exit trips `!session.error && autoResume`
+      // = false and terminates a healthy session.
+      expect(sm.get(info.id).error).toBeUndefined()
+      expect(sm.get(info.id).terminated).toBe(false)
+
+      // Simulate a clean idle-exit (code=0) on the recovered session. With
+      // the error cleared, autoResume should re-spawn (mockHandles grows)
+      // rather than terminate.
+      ;(sm as unknown as { handleProcessExit: (i: unknown) => void }).handleProcessExit({
+        sessionId: info.id, code: 0, signal: null, killed: false,
+      })
+      await waitFor(() => mockHandles.length >= 3)
+      expect(sm.get(info.id).terminated).toBe(false)
+      expect(mockHandles.length).toBe(3)
+    })
+
+    it('rejects sends during the recovering window (no message loss)', async () => {
+      sm = new SessionManager({ store, crashRecovery: true })
+      const info = sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+
+      // fireCrash is sync: recovering flips true immediately, before the
+      // async ladder runs. A send in that window must be rejected (409)
+      // so it isn't enqueued to the about-to-be-destroyed handle.
+      fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+      expect(() => sm.send(info.id, 'too soon')).toThrow(/recovering/i)
+      await waitFor(() => mockHandles.length >= 2) // let Step 1 finish
+    })
+
+    it('clear() works during the recovering window (reset escape hatch not blocked)', async () => {
+      sm = new SessionManager({ store, crashRecovery: true })
+      const info = sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+
+      fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+      // /clear is the "reset a stuck session" escape hatch — it must NOT be
+      // blocked by the recovering guard (it drives its own fresh respawn and
+      // sets clearing=true, which makes the ladder bail). Sends are blocked,
+      // but clear is allowed.
+      const fresh = await sm.clear(info.id)
+      expect(fresh.id).not.toBe(info.id) // clear spawns a fresh session Y
+      expect(mockHandles.length).toBeGreaterThanOrEqual(2)
+    })
+
+    it('give-up preserves the crash reason (process_exited, not query_error)', async () => {
+      sm = new SessionManager({ store, crashRecovery: true })
+      const info = sm.create({ cwd: dir })
+      // No result emitted dno completed turn (lastTurnAt undefined). The
+      // ladder gives up immediately. handleProcessExit preserved the crash
+      // reason on terminatedReason; crashRecoveryGiveUp must surface it
+      // instead of the generic 'query_error'.
+      fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+      await waitFor(() => sm.get(info.id).terminated === true)
+
+      expect(sm.get(info.id).terminated).toBe(true)
+      expect(sm.get(info.id).terminatedReason).toBe('process_exited')
+      expect(mockHandles).toHaveLength(1) // no respawn on give-up
+    })
+  })
 })

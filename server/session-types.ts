@@ -181,6 +181,34 @@ export interface Session {
   autoInterruptedAt?: number
   /** Timestamp of the last `result` message, used for the unread badge. */
   lastTurnAt?: number
+  /** CLI crash context recorded by handleProcessExit when a subprocess exits
+   *  non-cleanly (non-zero code / signal / killed). Acts as the discriminator
+   *  that routes cleanupPump into the crash-recovery ladder instead of the
+   *  clean-idle autoResume path or immediate termination. Cleared on a
+   *  successful in-place recovery (Step 1) so a subsequent clean idle-exit
+   *  falls back to autoResume; the next crash re-sets it. Runtime-only. */
+  lastCrash?: {
+    code: number | null
+    signal: NodeJS.Signals | null
+    killed: boolean
+    spawnError?: { code?: string; message: string }
+  }
+  /** True while the crash-recovery ladder is mid-flight (between a crash and
+   *  either a successful respawn or give-up). checkStuck() skips recovering
+   *  sessions so the 60s GC can't force-unload one mid-ladder. Runtime-only. */
+  recovering?: boolean
+  /** uuid of the most recent `assistant` message (updated on every assistant
+   *  msg). Used to promote `lastSafeResumeUuid` when a turn completes.
+   *  Runtime-only. */
+  lastAssistantUuid?: string
+  /** uuid of the last assistant message belonging to a *successfully
+   *  completed* turn (promoted from `lastAssistantUuid` when a `result`
+   *  subtype==='success' lands). The anchor for crash-recovery Step 2's
+   *  `--fork-session --resume-session-at`: forking from here drops the
+   *  poisonous/crashed trailing turn while preserving everything before it.
+   *  undefined when no turn has completed (the first-turn-crash floor).
+   *  Runtime-only. */
+  lastSafeResumeUuid?: string
   /** Snapshot of HEAD captured at session spawn. Used by the GitPanel
    *  "This session" view to scope diffs to this conversation. Mirrored
    *  into SessionInfo and persisted via SessionMeta so it survives
@@ -333,6 +361,16 @@ export interface SessionManagerOptions {
   /** When true, sessions automatically re-spawn their Query after a
    *  clean exit (idle timeout). Default true in production, false in tests. */
   autoResume?: boolean
+  /** When true, a CLI subprocess crash (non-zero exit / signal / killed)
+   *  triggers a bounded recovery ladder before marking the session
+   *  terminated: Step 1 re-resumes the same id (handles transient crashes
+   *  and tail corruption — the CLI self-heals partial trailing lines);
+   *  Step 2 forks from the last completed turn (`--fork-session
+   *  --resume-session-at`) to drop a poisonous trailing turn. spawn-failures
+   *  (missing binary) and first-turn crashes (no completed turn to resume
+   *  from) bypass the ladder and terminate. Default true in production,
+   *  false in tests. */
+  crashRecovery?: boolean
 }
 
 /** Global session-list update event. Broadcast whenever a session's

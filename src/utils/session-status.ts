@@ -4,6 +4,7 @@ import type { SessionInfo } from '../types'
  *  the header status dot. Kept separate from the label so colours and
  *  wording can evolve independently. */
 export function statusClass(s: SessionInfo): string {
+  if (s.recovering) return 'working'
   if (s.error) return 'err'
   if (s.terminated) return 'terminated'
   if (s.working) return 'working'
@@ -12,6 +13,7 @@ export function statusClass(s: SessionInfo): string {
 }
 
 export function statusLabel(s: SessionInfo): string {
+  if (s.recovering) return 'Recovering from crash'
   if (s.error) return `Errored: ${s.error}`
   if (s.terminated) {
     const reason = s.terminatedReason
@@ -25,6 +27,7 @@ export function statusLabel(s: SessionInfo): string {
     if (reason === 'deleted') return 'Session deleted'
     if (reason === 'transcript_missing') return 'Session ended: transcript missing'
     if (reason === 'no_data') return 'Session ended: no conversation data on disk'
+    if (reason === 'crash_recovered_fork') return 'Session ended: recovered to a fork'
     return 'Session ended'
   }
   if (s.working) return 'Working on a turn'

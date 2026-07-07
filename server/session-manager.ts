@@ -193,6 +193,7 @@ export class SessionManager {
   private sessions = new Map<string, Session>()
   private historyCap: number
   private autoResumeEnabled: boolean
+  private crashRecoveryEnabled: boolean
   private healthMonitor: SessionHealthMonitor
   private store: SessionStore
   private mcpStore: McpConfigStore
@@ -214,6 +215,7 @@ export class SessionManager {
     this.historyCap = opts.historyCap ?? defaultConfig.historyCap
     this.permBroker = new PermissionBroker()
     this.autoResumeEnabled = opts.autoResume ?? false
+    this.crashRecoveryEnabled = opts.crashRecovery ?? false
     this.store = opts.store ?? new SessionStore()
     this.mcpStore = opts.mcpConfigStore ?? new McpConfigStore()
     this.providers = opts.providers ?? createDefaultProviders({
@@ -258,14 +260,18 @@ export class SessionManager {
   /** Handle a CLI process exit detected by ProcessMonitor.
    *  This fires in real-time (ms) rather than waiting for the 60s GC.
    *
-   *  For clean exits (code=0, not killed), we only abort the controller
-   *  so the pump breaks out of iter.next(). The pump's cleanupPump then
-   *  decides whether to auto-resume or terminate. This avoids a race
-   *  where handleProcessExit sets terminated=true before cleanupPump gets
-   *  a chance to try auto-resume.
-   *
-   *  For unexpected exits (non-zero code or killed), we terminate
-   *  immediately dno auto-resume attempt. */
+   *  - Clean exit (code=0, not killed): abort the controller so the pump
+   *    breaks out of iter.next(); cleanupPump then decides auto-resume vs
+   *    terminate. We do NOT set terminated here — that would race
+   *    cleanupPump's auto-resume attempt.
+   *  - Spawn failure (binary missing / not executable): terminate
+   *    immediately. No recovery — the binary is unavailable, retrying
+   *    spawn will keep failing.
+   *  - Crash (non-zero code / killed): when crashRecovery is enabled,
+   *    record the crash context and defer to cleanupPump's recovery
+   *    ladder (Step 1 in-place resume → Step 2 fork from last completed
+   *    turn → terminate). When disabled, terminate immediately (legacy
+   *    behavior). */
   private handleProcessExit(info: ProcessExitInfo): void {
     const { sessionId, code, signal, killed, spawnError } = info
     const s = this.sessions.get(sessionId)
@@ -334,30 +340,87 @@ export class SessionManager {
 
     log.error(`[session ${sessionId}] ${errorMsg}`)
 
-    // Abort the pump so it breaks out of iter.next()
+    // Spawn failures can't be recovered by retrying (the binary is
+    // unavailable / unusable). Terminate immediately.
+    if (reason === 'spawn_failed') {
+      this.terminateCrashedSession(s, reason, errorMsg)
+      return
+    }
+
+    // Crash (killed / non-zero exit). If recovery is disabled, terminate
+    // immediately (legacy behavior).
+    if (!this.crashRecoveryEnabled) {
+      this.terminateCrashedSession(s, reason, errorMsg)
+      return
+    }
+
+    // Defer to the recovery ladder: record the crash context (the
+    // discriminator cleanupPump dispatches on), abort the pump so it
+    // breaks out of iter.next(), and broadcast a "recovering" notice.
+    // Do NOT set terminated / endSubscribers dthe ladder may re-spawn
+    // in-place (Step 1) keeping message subscribers attached across the
+    // gap, exactly like clear() does. (denyAll IS safe and required: the
+    // crashed turn's pending tool-permission requests can never resolve —
+    // their SDK awaiter is dead — so deny them now to clear s.pending,
+    // dismiss the client's permission dialog, and avoid phaseOf sticking
+    // on 'working'. endAllSubscribers is independent and stays skipped.)
+    s.lastCrash = { code, signal, killed, spawnError: spawnError ? { code: spawnError.code, message: spawnError.message } : undefined }
+    s.error = errorMsg
+    // Preserve the specific crash reason so crashRecoveryGiveUp can surface
+    // it instead of the generic 'query_error' the cleanupPump tail would stamp.
+    s.terminatedReason = reason
+    s.exiting = true
+    s.recovering = true
+    s.pendingTurns = 0
+    s.workingSince = undefined
+    this.permBroker.denyAll(s)
     s.handle.abort()
+
+    this.broadcastSystemNotice(s, `${errorMsg} — 正在尝试自动恢复…`)
+    this.broadcastGlobal({ kind: 'update', session: this.info(s) })
+  }
+
+  /** Push a synthetic system/error notice to a session's live subscribers.
+   *  Ephemeral dNOT entered into the history ring (so it doesn't survive
+   *  replay/refresh); used for transient lifecycle notices (recovering,
+   *  recovered, forked) and the terminal crash error. Centralized so the
+   *  frame shape can't drift across the half-dozen call sites. */
+  private broadcastSystemNotice(session: Session, text: string): void {
+    const msg: SDKMessage = {
+      type: 'system',
+      subtype: 'error',
+      error: text,
+      uuid: randomUUID(),
+      session_id: session.id,
+      receivedAt: Date.now(),
+    } as unknown as SDKMessage
+    for (const sub of session.subscribers.values()) {
+      try { sub.push(msg) } catch { /* subscriber dead dskip */ }
+    }
+  }
+
+  /** Terminate a crashed session immediately: the legacy non-recovery path
+   *  for spawn failures and for crashes when crashRecovery is disabled.
+   *  Also the final state written when the recovery ladder gives up (called
+   *  from cleanupPump's termination tail). Kept as a helper so the immediate
+   *  and give-up paths stay identical. */
+  private terminateCrashedSession(
+    s: Session,
+    reason: string,
+    errorMsg: string,
+  ): void {
     s.running = false
+    s.recovering = false
+    s.exiting = false
     s.terminated = true
     s.terminatedReason = reason
     s.error = errorMsg
+    s.lastCrash = undefined
     s.pendingTurns = 0
     s.workingSince = undefined
-
-    // Deny all pending permissions so SDK awaiters don't hang
     this.permBroker.denyAll(s)
-
-    // Broadcast synthetic error to subscribers
-    const synthetic: SDKMessage = {
-      type: 'system',
-      subtype: 'error',
-      error: errorMsg,
-      uuid: randomUUID(),
-      session_id: sessionId,
-      receivedAt: Date.now(),
-    } as unknown as SDKMessage
-    for (const sub of s.subscribers.values()) sub.push(synthetic)
+    this.broadcastSystemNotice(s, errorMsg)
     endAllSubscribers(s)
-
     this.persist(s)
     this.broadcastGlobal({ kind: 'update', session: this.info(s) })
   }
@@ -796,7 +859,7 @@ export class SessionManager {
    *  `result` message, so forking earlier fails with `No conversation
    *  found with session ID: <uuid>` from the CLI. `lastTurnAt` is our
    *  ground-truth signal (set only by the pump on a real `result`). */
-  async fork(id: string): Promise<SessionInfo> {
+  async fork(id: string, opts?: { resumeSessionAt?: string }): Promise<SessionInfo> {
     const live = this.sessions.get(id)
     const meta = live ?? this.store.get(id)
     if (!meta) throw new HttpError(404, `session ${id} not found`)
@@ -806,6 +869,13 @@ export class SessionManager {
         `session ${id} has no completed turns yet dsend at least one message and wait for the reply before forking`,
       )
     }
+    // resumeSessionAt (branch-from-a-point) only takes effect with
+    // forkSession (empirically verified: --resume-session-at without
+    // --fork-session is a no-op, because truncating the persisted history
+    // is destructive on a same-id resume but safe on a fork copy). fork()
+    // always sets forkSession, so passing resumeSessionAt here is honored.
+    // Used by crash-recovery Step 2 to fork from the last completed turn,
+    // dropping a poisonous trailing turn.
     // Side Chats are ephemeral, scoped to their parent's conversation, and
     // carry a non-mutating boundary prompt. Forking one would manufacture a
     // sibling-of-Side-Chat session whose `parentId` is dropped (forkOpts does
@@ -860,6 +930,10 @@ export class SessionManager {
       model: meta.model,
       permissionMode: meta.permissionMode,
       title,
+      // When branching from a specific point (crash-recovery Step 2),
+      // truncate the fork's loaded history to this assistant uuid. Only
+      // honored because forkSession is set (see method-header note).
+      resumeSessionAt: opts?.resumeSessionAt,
       // Carry effort + beta flags forward so the fork matches the source.
       effort: meta.effortLevel,
       // Same as resume: preserve `context-1m-...` etc. so the fork has
@@ -1214,7 +1288,7 @@ export class SessionManager {
 
   /** Send a user turn into an existing session. */
   send(id: string, text: string): SDKUserMessage {
-    const s = this.requireRunnable(id)
+    const s = this.requireSendable(id)
     // Note: the `/clear` slash command is intercepted client-side by
     // src/local-commands.ts, which POSTs /sessions/:id/clear instead of
     // routing through this method (the headless `claude` binary refuses
@@ -1238,7 +1312,7 @@ export class SessionManager {
 
   /** Send a user turn with a content array (text + image blocks). */
   sendContent(id: string, content: Array<{ type: string; [k: string]: unknown }>): SDKUserMessage {
-    const s = this.requireRunnable(id)
+    const s = this.requireSendable(id)
     const userMsg: SDKUserMessage = {
       type: 'user',
       message: { role: 'user', content } as unknown as SDKUserMessage['message'],
@@ -1298,6 +1372,9 @@ export class SessionManager {
     // User is actively interacting dreset the auto-resume counter so a
     // future idle timeout gets fresh attempts.
     this.autoResumeCounts.delete(s)
+    // Same for crash recovery: a fresh crash after user interaction gets a
+    // fresh ladder (Step 1 → Step 2).
+    this.crashRecoveryCounts.delete(s)
     // Invalidate the stored recap da new message means it's stale.
     // The next idle window triggers a fresh generation.
     this.recapManager.invalidate(s.id)
@@ -2786,14 +2863,34 @@ export class SessionManager {
     return s
   }
 
+  /** Reject user-input turns during the crash-recovery window: the old
+   *  handle is aborted and about to be destroyed, so a send would be
+   *  enqueued to a dead Pushable (message lost) and bump pendingTurns on
+   *  the fresh handle with no queued input (stuck 'working'). Applied to
+   *  send()/sendContent() only dNOT clear() (the reset escape hatch must
+   *  stay usable during recovery) or execInSession (local !bash, doesn't
+   *  touch the SDK handle). */
+  private requireSendable(id: string): Session {
+    const s = this.requireRunnable(id)
+    if (s.recovering) {
+      throw new HttpError(409, `session ${id} is recovering from a crash; retry shortly`)
+    }
+    return s
+  }
+
   /** Like require(), but additionally insists the Query is still live.
    *  Use for any method that forwards a control request to the SDK dthe
    *  subprocess's stdin is closed once `running` flips to false, so a
    *  subsequent `supportedModels` / `getContextUsage` / etc. would otherwise
    *  throw `ProcessTransport is not ready for writing` from deep in the
-   *  SDK and end up as an unhandled error in the Hono router. */
+   *  SDK and end up as an unhandled error in the Hono router. Also blocks
+   *  during crash recovery: control ops (interrupt / setModel / etc.)
+   *  would route into the aborted handle and throw opaque errors. */
   private requireLive(id: string): Session {
     const s = this.require(id)
+    if (s.recovering) {
+      throw new HttpError(409, `session ${id} is recovering from a crash; retry shortly`)
+    }
     if (!s.running) {
       throw new HttpError(410, `session ${id} is not running`)
     }
@@ -2844,6 +2941,7 @@ export class SessionManager {
       effortLevel: s.effortLevel,
       effortLevels: s.effortLevels,
       running: s.running,
+      recovering: s.recovering,
       terminated: s.terminated,
       terminatedReason: s.terminatedReason,
       error: s.error,
@@ -2936,6 +3034,8 @@ export class SessionManager {
         denyPendingPermissions: (s) => this.permBroker.denyAll(s),
         isLive: (id) => this.sessions.has(id),
         autoResume: this.autoResumeEnabled ? (s) => this.autoResume(s) : undefined,
+        crashRecovery: this.crashRecoveryEnabled,
+        attemptCrashRecovery: (s) => this.attemptCrashRecovery(s),
         // The pump's mutating-tool detector calls broadcaster.broadcastGitStatusChanged
         // through the debounce helper. `this` satisfies the SessionBroadcaster
         // interface (subscribeContextUsage, subscribeGitStatus, etc.).
@@ -2972,6 +3072,15 @@ export class SessionManager {
   /** Tracks consecutive auto-resume attempts per session. */
   private autoResumeCounts = new WeakMap<Session, number>()
 
+  /** Max crash-recovery attempts before giving up. Step 1 (plain in-place
+   *  resume) + Step 2 (fork from last completed turn) = 2. Tighter than
+   *  autoResume's 20 because each attempt spawns a CLI that may crash again,
+   *  and only the rare deterministic-crash case reaches Step 2. */
+  private static MAX_CRASH_RECOVERY = 2
+  /** Tracks consecutive crash-recovery attempts per session. Resets to 0 on
+   *  every user message (pushToSession) so a fresh crash gets a fresh ladder. */
+  private crashRecoveryCounts = new WeakMap<Session, number>()
+
   /** Re-spawn a session's Query after a clean exit (idle timeout).
    *  Returns true if the session was successfully re-spawned. */
   private async autoResume(session: Session): Promise<boolean> {
@@ -3004,8 +3113,27 @@ export class SessionManager {
 
     log.info(`[session ${session.id}] auto-resuming (attempt ${resumeCount + 1}/${SessionManager.MAX_AUTO_RESUME})`)
 
+    // Destroy the old handle BEFORE the async buildResumeOpts: if the MCP
+    // OAuth refresh throws, the handle is already cleaned up (no
+    // ProcessMonitor/Pushable leak). respawnInPlace's destroy is a no-op
+    // (isClosed) when it runs.
     session.handle.destroy('auto-resume')
+    const resumeOpts = await this.buildResumeOpts(session)
+    this.respawnInPlace(session, resumeOpts, 'auto-resume')
+    this.autoResumeCounts.set(session, resumeCount + 1)
+    // A clean idle-autoResume means the session was healthy (the prior
+    // crash recovery, if any, succeeded) dreset the crash ladder so a
+    // future crash starts fresh at Step 1 instead of escalating to Step 2.
+    this.crashRecoveryCounts.delete(session)
+    return true
+  }
 
+  /** Build the SDK resume Options shared by autoResume (clean idle-exit)
+   *  and crash-recovery Step 1 (in-place resume after a crash). Centralized
+   *  so the two re-spawn paths can't drift on resume semantics — MCP
+   *  re-apply, Side Chat systemPrompt re-injection, skill policy, beta
+   *  flags, canUseTool. Async because MCP OAuth tokens may need refreshing. */
+  private async buildResumeOpts(session: Session): Promise<Options> {
     const resumeOpts: Options = {
       resume: session.id,
       cwd: session.cwd,
@@ -3035,9 +3163,25 @@ export class SessionManager {
       await this.mcpStore.refreshOAuthTokens(allGlobalMcpNames)
       resumeOpts.mcpServers = this.mcpStore.toSdkConfig()
     }
-    if (session.canUseTool) {
-      resumeOpts.canUseTool = session.canUseTool
-    }
+    if (session.canUseTool) resumeOpts.canUseTool = session.canUseTool
+    return resumeOpts
+  }
+
+  /** Re-spawn a session's Query in-place on the SAME id (resume). Shared by
+   *  autoResume and crash-recovery Step 1. Destroys the old handle, creates a
+   *  fresh one, resets the runtime state, and starts a new pump.
+   *
+   *  Clears `error` / `terminatedReason` / `lastCrash` so the recovered
+   *  session is indistinguishable from a healthy one: a stale crash error
+   *  would otherwise make the NEXT clean idle-exit trip `!session.error &&
+   *  autoResume` = false and terminate the recovered session, and info()
+   *  would show a stale error badge.
+   *
+   *  Throws if createSession fails — callers wrap per their semantics
+   *  (autoResume lets it propagate to cleanupPump; crash-recovery catches
+   *  and gives up). */
+  private respawnInPlace(session: Session, resumeOpts: Options, destroyReason: string): void {
+    session.handle.destroy(destroyReason)
     const provider = this.providers.get(session.provider)
     session.handle = provider.createSession({
       id: session.id,
@@ -3058,17 +3202,177 @@ export class SessionManager {
     })
     session.running = true
     session.exiting = false
-    // Clear any auto-interrupt flag from the previous pump so the GC
-    // doesn't immediately escalate the freshly-resumed session to unload.
+    session.recovering = false
+    session.lastCrash = undefined
+    session.error = undefined
+    session.terminatedReason = undefined
     session.autoInterruptedAt = undefined
-    this.autoResumeCounts.set(session, resumeCount + 1)
-
-    // Broadcast the session update so clients know it's alive again
     this.broadcastGlobal({ kind: 'update', session: this.info(session) })
-
-    // Start new pump dreturns immediately, runs in background
     session.pumpTask = this.pump(session)
+  }
 
+  /** Crash-recovery ladder. Called from cleanupPump when `session.lastCrash`
+   *  is set (a CLI subprocess crashed: non-zero exit / signal / killed).
+   *
+   *  Returns true if the session was re-spawned (Step 1, in-place) or
+   *  forked-and-terminated (Step 2) dcleanupPump then skips its termination
+   *  tail. Returns false on give-up (counter exhausted / no anchor / fork
+   *  failed) dfall through to terminate.
+   *
+   *  - Step 1 (attempt 0): plain `--resume <id>` in-place. Handles the
+   *    common cases: transient crashes (OOM, network) and tail corruption
+   *    (the CLI self-heals partial trailing lines dverified). Same id, no
+   *    sidebar corpse, subscribers stay attached.
+   *  - Step 2 (attempt 1): `--fork-session --resume-session-at
+   *    <lastSafeResumeUuid>`. For the rare deterministic crash where the
+   *    last turn's content poisons the CLI: fork from the last *completed*
+   *    turn, dropping the poisonous trailing turn. Creates a new session
+   *    id; the original terminates with its transcript preserved as an
+   *    artifact. resumeSessionAt only truncates under forkSession
+   *    (empirically verified dnon-fork resume-session-at is a no-op because
+   *    truncating persisted history is destructive on a same-id resume).
+   *
+   *  Floor cases terminate via crashRecoveryGiveUp (terminateCrashedSession,
+   *  which broadcasts + pushes a terminal error + denies pending + persists)
+   *  and return true so cleanupPump skips its generic tail:
+   *    - counter >= MAX_CRASH_RECOVERY (ladder exhausted)
+   *    - no completed turn (no transcript to resume, no anchor to fork from)
+   *    - provider doesn't support resume
+   *    - Step 1 spawn throws / Step 2 fork throws (e.g. Side Chat) */
+  private async attemptCrashRecovery(session: Session): Promise<boolean> {
+    // Guard: session must still be live and not explicitly stopped.
+    if (!this.sessions.has(session.id)) return false
+    if (session.terminated || session.clearing) return false
+    const caps = this.providers.get(session.provider)?.capabilities
+    if (!caps?.supportsResume) return this.crashRecoveryGiveUp(session)
+
+    const attempt = this.crashRecoveryCounts.get(session) ?? 0
+    if (attempt >= SessionManager.MAX_CRASH_RECOVERY) {
+      log.warn(`[session ${session.id}] crash-recovery exhausted (${attempt}/${SessionManager.MAX_CRASH_RECOVERY}), terminating`)
+      return this.crashRecoveryGiveUp(session)
+    }
+
+    // Both steps need a completed turn: the SDK only writes the transcript
+    // to disk after the first `result`, so resume/fork would fail with
+    // "No conversation found" without one.
+    if (!session.lastTurnAt) {
+      log.warn(`[session ${session.id}] crash-recovery skipped dno completed turns (no disk transcript)`)
+      return this.crashRecoveryGiveUp(session)
+    }
+
+    if (attempt === 0) {
+      return this.crashRecoveryStep1(session)
+    }
+    return this.crashRecoveryStep2(session)
+  }
+
+  /** Give up the recovery ladder: terminate via terminateCrashedSession
+   *  (broadcasts the terminated update, pushes a terminal error to
+   *  subscribers, denies pending perms, persists) and return true so
+   *  cleanupPump skips its generic termination tail — which lacks the
+   *  broadcast, the terminal synthetic message, and the specific crash
+   *  reason. `reason` defaults to the crash reason handleProcessExit
+   *  preserved on session.terminatedReason. */
+  private crashRecoveryGiveUp(session: Session, reason?: string): boolean {
+    this.terminateCrashedSession(
+      session,
+      reason ?? session.terminatedReason ?? 'process_exited',
+      session.error ?? 'CLI process crashed',
+    )
+    return true
+  }
+
+  /** Step 1: re-resume the same id in-place. Reuses the shared
+   *  buildResumeOpts + respawnInPlace so it can't drift from autoResume.
+   *  respawnInPlace clears the crash error/reason/lastCrash, so a
+   *  subsequent clean idle-exit routes to autoResume (not termination). */
+  private async crashRecoveryStep1(session: Session): Promise<boolean> {
+    const attempt = this.crashRecoveryCounts.get(session) ?? 0
+    log.info(`[session ${session.id}] crash-recovery Step 1: in-place resume (attempt ${attempt + 1}/${SessionManager.MAX_CRASH_RECOVERY})`)
+
+    // Destroy the (already-aborted) old handle BEFORE the async
+    // buildResumeOpts: if the MCP refresh throws, the handle is already
+    // cleaned up (no ProcessMonitor/Pushable leak).
+    session.handle.destroy('crash-recovery')
+    let resumeOpts: Options
+    try {
+      resumeOpts = await this.buildResumeOpts(session)
+    } catch (err) {
+      // Preserve the original crash error in session.error (the root
+      // cause) dlog the recovery-failure detail separately. The user
+      // sees the crash reason on reload, not a generic "recovery failed".
+      log.error(`[session ${session.id}] crash-recovery Step 1 buildResumeOpts failed:`, err)
+      return this.crashRecoveryGiveUp(session)
+    }
+    // Re-check liveness after the async MCP refresh da concurrent unload()
+    // (Delete / shutdown) may have removed the session, and clear() may
+    // have set `clearing` to drive its own respawn. Returning true makes
+    // cleanupPump skip its termination tail in both cases (the session is
+    // either gone or being taken over by clear()).
+    if (!this.sessions.has(session.id) || session.terminated || session.clearing) return true
+    try {
+      this.respawnInPlace(session, resumeOpts, 'crash-recovery')
+    } catch (err) {
+      log.error(`[session ${session.id}] crash-recovery Step 1 spawn failed:`, err)
+      return this.crashRecoveryGiveUp(session)
+    }
+    this.crashRecoveryCounts.set(session, attempt + 1)
+    // Follow the ephemeral "recovering" notice (pushed by handleProcessExit
+    // to subscribers, not history) with a "recovered" notice so the live
+    // transcript reflects that the in-place resume succeeded — otherwise
+    // the "recovering" bubble lingers with no confirmation.
+    this.broadcastSystemNotice(session, '已从崩溃恢复，继续对话。')
+    return true
+  }
+
+  /** Step 2: fork from the last completed turn, dropping the poisonous
+   *  trailing turn that crashed the CLI. The fork is a new session id; the
+   *  original terminates with its transcript preserved. Returns true
+   *  (original handled dfork is the recovered continuation). */
+  private async crashRecoveryStep2(session: Session): Promise<boolean> {
+    const attempt = this.crashRecoveryCounts.get(session) ?? 0
+    const anchor = session.lastSafeResumeUuid
+    // lastTurnAt is set on ANY result (success or error), but
+    // lastSafeResumeUuid is promoted only on a SUCCESS result (a known-good
+    // fork point). A session whose only turns ended in error_max_turns /
+    // error_max_budget has lastTurnAt but no anchor dforking would include
+    // the poisonous error turn, so give up rather than fork into a re-crash.
+    if (!anchor) {
+      log.warn(`[session ${session.id}] crash-recovery Step 2 skipped dno lastSafeResumeUuid anchor (no successfully completed turn)`)
+      return this.crashRecoveryGiveUp(session)
+    }
+    // Re-check liveness before the async fork (disk probe + MCP refresh).
+    // `clearing` → clear() is taking over (return true so cleanupPump skips
+    // its termination tail); missing/unloaded → session is gone.
+    if (!this.sessions.has(session.id) || session.terminated) return false
+    if (session.clearing) return true
+    log.info(`[session ${session.id}] crash-recovery Step 2: fork from anchor ${anchor} (attempt ${attempt + 1}/${SessionManager.MAX_CRASH_RECOVERY})`)
+
+    let forkInfo: SessionInfo
+    try {
+      forkInfo = await this.fork(session.id, { resumeSessionAt: anchor })
+    } catch (err) {
+      // Side Chats can't fork (parentId), and a missing transcript would
+      // trip here too. Either way, can't recover via fork dgive up.
+      // Preserve the original crash error (root cause) for the terminal
+      // state; log the fork-failure detail separately.
+      log.error(`[session ${session.id}] crash-recovery Step 2 fork failed:`, err)
+      return this.crashRecoveryGiveUp(session)
+    }
+    this.crashRecoveryCounts.set(session, attempt + 1)
+
+    // The original session's state is poisonous (its last turn crashed the
+    // CLI), so it can't be kept alive on the same id. Terminate it with a
+    // SINGLE synthetic notice pointing the user at the recovered fork —
+    // terminateCrashedSession pushes that notice (don't push a separate one
+    // too, which would double-broadcast and make a successful recovery look
+    // like a failure). The fork is an independent live session (fork()
+    // already spawned + pumped it).
+    this.terminateCrashedSession(
+      session,
+      'crash_recovered_fork',
+      `已从上一个完整 turn 处 fork 恢复到新会话 ${forkInfo.id}（崩溃的那一轮被丢弃）。`,
+    )
     return true
   }
 

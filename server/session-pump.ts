@@ -178,6 +178,18 @@ export interface PumpDeps {
    *  terminated, don't end subscribers). If it returns false or throws,
    *  fall through to normal termination. */
   autoResume?: (session: Session) => Promise<boolean>
+  /** When true, a session whose CLI crashed (session.lastCrash set by
+   *  handleProcessExit) is routed to `attemptCrashRecovery` instead of
+   *  immediate termination. The ladder re-resumes in-place (Step 1) or
+   *  forks from the last completed turn (Step 2). */
+  crashRecovery?: boolean
+  /** Crash-recovery ladder. Called from cleanupPump when `session.lastCrash`
+   *  is set and `crashRecovery` is enabled. Returns true if the session was
+   *  re-spawned in-place (Step 1) or forked-and-terminated (Step 2) d
+   *  cleanupPump then skips its termination tail. Returns false on give-up
+   *  (counter exhausted / no anchor / fork failed) dfall through to
+   *  terminate. */
+  attemptCrashRecovery?: (session: Session) => Promise<boolean>
   /** Reference to the broadcaster dneeded by the mutating-tool detector
    *  to schedule a debounced `git-status-changed` frame after Claude
    *  runs Edit/Write/NotebookEdit/Bash. Optional so test fixtures that
@@ -386,6 +398,15 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
               if (id) pendingMutatingToolUses.add(id)
             }
           }
+          // Track the most recent assistant uuid so it can be promoted to
+          // lastSafeResumeUuid when the turn completes dthe crash-recovery
+          // ladder's Step 2 forks from this anchor to drop a poisonous
+          // trailing turn. Subagent assistant frames (parent_tool_use_id set)
+          // are NOT main-thread turns, so don't promote from them.
+          if (getParentToolUseId(msg) == null) {
+            const aUuid = (msg as { uuid?: string }).uuid
+            if (aUuid) session.lastAssistantUuid = aUuid
+          }
         }
         // tool_result for a mutating tool — schedule a debounced
         // git-status-changed broadcast. The SDK wraps tool_results in a
@@ -506,6 +527,15 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // `result` BEFORE calling iter.next() for the next turn, so the
         // queued item is still in our Pushable when we observe `result`.
         if (msg.type === 'result') {
+          // Promote the most recent main-thread assistant uuid to the
+          // safe-resume anchor: this turn completed successfully, so forking
+          // from here (Step 2 of crash recovery) would drop a *later* crashed
+          // turn while preserving this one. Only success counts — error_max_turns
+          // / error_max_budget leave the turn in an indeterminate state, so we
+          // keep the previous anchor rather than trusting a failed turn.
+          if ((msg as { subtype?: string }).subtype === 'success' && session.lastAssistantUuid) {
+            session.lastSafeResumeUuid = session.lastAssistantUuid
+          }
           const moreQueued = session.handle.queueDepth > 0
           log.debug(
             `[session ${session.id}] result received dtotal msgs: ${msgCount}, ` +
@@ -531,22 +561,30 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
     }
     log.info(`[session ${session.id}] pump ended normally d${msgCount} messages processed`)
   } catch (err) {
-    session.error = err instanceof Error ? err.message : String(err)
-    // Log with full context dthe message alone often omits the stack
-    // frame that points at the real culprit (e.g. missing API key,
-    // model name typo, CLI subprocess failed to spawn).
-    log.error(`[session ${session.id}] pump error after ${msgCount} messages:`, err)
-    // Broadcast a synthetic error message so subscribers know what happene?.
-    const synthetic: SDKMessage = {
-      type: 'system',
-      subtype: 'error',
-      error: session.error,
-      uuid: randomUUID(),
-      session_id: session.id,
-      receivedAt: Date.now(),
-    } as unknown as SDKMessage
-    for (const sub of session.subscribers.values()) {
-      try { sub.push(synthetic) } catch { /* subscriber dead dskip */ }
+    // When the CLI crashed, handleProcessExit already recorded lastCrash,
+    // set session.error, and broadcast a "recovering" notice. Don't overwrite
+    // that with the iterator's abort/exit error or double-broadcast dlet
+    // cleanupPump drive the recovery ladder from the lastCrash marker.
+    if (session.lastCrash) {
+      log.warn(`[session ${session.id}] pump broke after CLI crash — deferring to recovery ladder`)
+    } else {
+      session.error = err instanceof Error ? err.message : String(err)
+      // Log with full context dthe message alone often omits the stack
+      // frame that points at the real culprit (e.g. missing API key,
+      // model name typo, CLI subprocess failed to spawn).
+      log.error(`[session ${session.id}] pump error after ${msgCount} messages:`, err)
+      // Broadcast a synthetic error message so subscribers know what happene?.
+      const synthetic: SDKMessage = {
+        type: 'system',
+        subtype: 'error',
+        error: session.error,
+        uuid: randomUUID(),
+        session_id: session.id,
+        receivedAt: Date.now(),
+      } as unknown as SDKMessage
+      for (const sub of session.subscribers.values()) {
+        try { sub.push(synthetic) } catch { /* subscriber dead dskip */ }
+      }
     }
   } finally {
     await cleanupPump(session, deps)
@@ -575,6 +613,19 @@ async function cleanupPump(session: Session, deps: PumpDeps): Promise<void> {
     // When the Query exits cleanly (no error), try auto-resume first.
     // This keeps the session alive transparently dthe CLI subprocess
     // likely exited due to idle timeout, not user intent.
+    if (session.lastCrash && deps.crashRecovery && deps.attemptCrashRecovery) {
+      // CLI crash (non-clean exit): try the recovery ladder before giving
+      // up. Step 1 re-resumes in-place (transient crashes + tail corruption);
+      // Step 2 forks from the last completed turn (deterministic poisonous
+      // last turn). Returns true if re-spawned/handled dskip termination.
+      try {
+        const recovered = await deps.attemptCrashRecovery(session)
+        if (recovered) return
+      } catch (resumeErr) {
+        log.error(`[session ${session.id}] crash recovery threw, falling back to termination:`, resumeErr)
+      }
+      // Fall through to termination tail (give-up or ladder exhausted).
+    }
     if (!session.error && deps.autoResume) {
       try {
         const resumed = await deps.autoResume(session)
@@ -586,6 +637,8 @@ async function cleanupPump(session: Session, deps: PumpDeps): Promise<void> {
 
     session.running = false
     session.exiting = false
+    session.recovering = false
+    session.lastCrash = undefined
     session.terminated = true
     // Only set terminatedReason if it hasn't already been set by
     // handleProcessExit (which provides more specific values like

@@ -1123,6 +1123,29 @@ export const Chat = memo(function Chat({
     // leaving two "you" bubbles in the transcript.
     const pendingId = full.trim() ? insertUserMessage(full) : null
 
+    // POST with a bounded retry for the crash-recovery window: the server
+    // 409s sends while a session is `recovering` (the old handle is dead).
+    // That window is usually sub-second, so retry instead of rolling the
+    // optimistic bubble back and forcing the user to re-send. Only the
+    // recovering 409 is retried (other 409s, e.g. "not running", won't
+    // resolve and would just waste the backoff). The optimistic placeholder
+    // stays during retry; the outer catch rolls it back on final failure.
+    const postMessage = async (body: unknown): Promise<SendMessageResponse> => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await api.post<SendMessageResponse>(`/sessions/${session.id}/messages`, body)
+        } catch (e) {
+          const recovering = (e as { status?: number }).status === 409
+            && /recovering/i.test((e as Error).message)
+          if (recovering && attempt < 3) {
+            await new Promise((r) => setTimeout(r, 500 * (attempt + 1)))
+            continue
+          }
+          throw e
+        }
+      }
+    }
+
     try {
       let res: SendMessageResponse
       if (pastedImages.images.length > 0) {
@@ -1132,9 +1155,9 @@ export const Chat = memo(function Chat({
         for (const img of pastedImages.images) {
           content.push({ type: 'image', source: { type: 'base64', data: img.data, media_type: img.mediaType } })
         }
-        res = await api.post<SendMessageResponse>(`/sessions/${session.id}/messages`, { content })
+        res = await postMessage({ content })
       } else {
-        res = await api.post<SendMessageResponse>(`/sessions/${session.id}/messages`, { text: full })
+        res = await postMessage({ text: full })
       }
       if (pendingId && typeof res.message?.uuid === 'string') {
         ackUserMessage(pendingId, res.message.uuid, res.message.receivedAt)

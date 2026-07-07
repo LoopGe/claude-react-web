@@ -81,6 +81,12 @@ export interface SessionInfoBase<PM = string> {
    *  chip; [subset] = UI offers only these. Not persisted. */
   effortLevels?: ('low' | 'medium' | 'high' | 'xhigh' | 'max')[]
   running: boolean
+  /** True while the crash-recovery ladder is mid-flight (between a CLI
+   *  crash and a successful in-place respawn or give-up). Lets the client
+   *  show a 'recovering' badge and reject interaction during the window
+   *  (the server's requireRunnable also blocks sends). Always false for
+   *  non-claude providers and when crashRecovery is disabled. */
+  recovering?: boolean
   terminated: boolean
   terminatedReason?: string
   error?: string
