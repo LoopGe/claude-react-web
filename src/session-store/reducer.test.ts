@@ -540,11 +540,14 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     expect(record?.result?.content).toBe('I found that the async agent launched at 14:32 and completed.')
   })
 
-  it('does not sweep a background subagent at turn end (result frame)', () => {
-    // The turn-end sweep flips still-'running' subagents to 'interrupted'
-    // (their tool_result never arrived). A 'background' subagent is NOT
-    // stale — it's an async agent still working in the background — so it
-    // must survive the sweep and stay 'background' for the next turn.
+  it('sweeps a still-background subagent to interrupted at turn end (no completion signal)', () => {
+    // The SDK's background-task completion signal (task_notification) is not
+    // reliably emitted for Agent-launched background subagents in all
+    // environments. A 'background' record that never received its flip to
+    // 'done' must be swept at the parent's result frame so it leaves the
+    // running set — otherwise its WorkingBubble chip reappears on every
+    // subsequent turn. The chip shows during the dispatch turn (bubble is
+    // mounted) and clears at turn end (bubble unmounts + record swept).
     const toolUse: SdkMessage = {
       type: 'assistant',
       uuid: 'a-1',
@@ -574,8 +577,60 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     let state = createInitialSessionState('s1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
     state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
-    state = reduceSessionState(state, { type: 'MESSAGE', message: result })
     expect(state.mirror.activeSubagents.get('tu_bg')?.status).toBe('background')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: result })
+    // Swept out of the running set so the chip doesn't reappear next turn.
+    expect(state.mirror.activeSubagents.get('tu_bg')?.status).toBe('interrupted')
+  })
+
+  it('does NOT sweep a background subagent that already completed via task_notification', () => {
+    // If the completion signal DID arrive during the turn, the record is
+    // already 'done' (with its result captured). The turn-end sweep must
+    // not downgrade it to 'interrupted'.
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-1',
+      receivedAt: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_done', name: 'Agent', input: { description: 'do work' } }],
+      },
+    } as unknown as SdkMessage
+    const ack: SdkMessage = {
+      type: 'user',
+      uuid: 'u-1',
+      parent_tool_use_id: null,
+      receivedAt: 1_000,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_done', content: 'Async agent launched successfully' }],
+      },
+    } as unknown as SdkMessage
+    const notification: SdkMessage = {
+      type: 'system',
+      subtype: 'task_notification',
+      uuid: 'sys-1',
+      task_id: 't-1',
+      tool_use_id: 'tu_done',
+      status: 'completed',
+      summary: 'done',
+      output_file: '/tmp/x',
+      receivedAt: 1_500,
+    } as unknown as SdkMessage
+    const result: SdkMessage = {
+      type: 'result',
+      subtype: 'success',
+      uuid: 'r-1',
+      receivedAt: 2_000,
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: notification })
+    expect(state.mirror.activeSubagents.get('tu_done')?.status).toBe('done')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: result })
+    expect(state.mirror.activeSubagents.get('tu_done')?.status).toBe('done')
   })
 
   it('keeps the sync tool_result as result when it lands after child text', () => {

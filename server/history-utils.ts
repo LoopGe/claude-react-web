@@ -61,8 +61,19 @@ export function stampConsumedAt(msg: unknown): number {
  *  history. Other system frames (init, status, …) are kept in history for
  *  fastModeState extraction and /clear signaling, but skipped in broadcasts
  *  to save bandwidth and client memory. Matches history-reader.ts
- *  KEEP_SYSTEM_SUBTYPES. */
-export const BROADCAST_SYSTEM_SUBTYPES = new Set(['error', 'compact_boundary', 'api_retry'])
+ *  KEEP_SYSTEM_SUBTYPES.
+ *
+ *  `task_notification` MUST be broadcast: it is the SDK's background-task
+ *  completion signal. The client reducer's async-subagent completion branch
+ *  fires on it to flip a `background` subagent to `done` (clearing its
+ *  WorkingBubble chip); without the broadcast the frame never reaches the
+ *  reducer and the chip stays forever. */
+export const BROADCAST_SYSTEM_SUBTYPES = new Set([
+  'error',
+  'compact_boundary',
+  'api_retry',
+  'task_notification',
+])
 
 /** Check if a message should be broadcast to frontend clients.
  *  Returns true for all non-system messages, and for system messages with

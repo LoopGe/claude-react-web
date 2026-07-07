@@ -818,10 +818,22 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
     // placeholder and the orphan bubble reappeared below it. A still-running
     // entry at result time is genuinely stale (its tool_result never matched),
     // so flip it to 'interrupted' rather than drop it, mirroring the
-    // toolStatus sweep above. Identity-stable when nothing is running.
+    // toolStatus sweep above.
+    //
+    // A 'background' (async) subagent is ALSO swept here. The SDK's
+    // background-task completion signal (system/task_notification) is not
+    // reliably emitted for Agent-launched background subagents in all
+    // environments, so a 'background' record may never receive its flip to
+    // 'done'. Without this sweep it would stay in the running set forever
+    // and its chip would reappear in the WorkingBubble on every subsequent
+    // turn. Sweeping at the parent's result frame matches the bubble's own
+    // lifecycle (it unmounts at turn end): the chip shows during the
+    // dispatch turn and clears at turn end. If a task_notification DID
+    // arrive earlier in the turn, the record is already 'done' and the
+    // sweep is a no-op for it. Identity-stable when nothing is running.
     let prunedSubagents = working.mirror.activeSubagents
     for (const [id, sub] of working.mirror.activeSubagents) {
-      if (sub.status !== 'running') continue
+      if (sub.status !== 'running' && sub.status !== 'background') continue
       if (prunedSubagents === working.mirror.activeSubagents) prunedSubagents = new Map(working.mirror.activeSubagents)
       prunedSubagents.set(id, { ...sub, status: 'interrupted', endedAt: sub.endedAt ?? sub.startedAt })
     }

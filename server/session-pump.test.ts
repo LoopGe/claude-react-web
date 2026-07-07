@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
+  backgroundSubagentLaunches,
   fastModeStateOf,
   hookLifecycleMessage,
   isTaskNotificationUserMessage,
@@ -11,6 +12,7 @@ import {
   userMessageHasToolResult,
 } from './session-pump.js'
 import type { LiteContextUsage } from './session-pump.js'
+import { shouldBroadcastMessage } from './history-utils.js'
 
 // ---------------------------------------------------------------------------
 // Drop-filter discriminators
@@ -26,6 +28,72 @@ import type { LiteContextUsage } from './session-pump.js'
 function userMsg(content: unknown): SDKMessage {
   return { type: 'user', message: { role: 'user', content } } as unknown as SDKMessage
 }
+
+// ---------------------------------------------------------------------------
+// shouldBroadcastMessage — which system frames reach the client.
+//
+// The client reducer's async-subagent completion branch fires on a
+// `system`/`task_notification` frame (the SDK's background-task completion
+// signal). If that frame is filtered out of the broadcast the reducer never
+// sees it, the subagent stays on `background` forever, and its chip never
+// leaves the WorkingBubble. Regression coverage for that bug.
+// ---------------------------------------------------------------------------
+describe('shouldBroadcastMessage', () => {
+  it('broadcasts system/task_notification so the reducer can flip a background subagent to done', () => {
+    const frame = { type: 'system', subtype: 'task_notification', task_id: 't1', status: 'completed' } as unknown as {
+      type?: string
+      subtype?: string
+    }
+    expect(shouldBroadcastMessage(frame)).toBe(true)
+  })
+
+  it('still filters unrelated system frames (init, status, task_progress)', () => {
+    expect(shouldBroadcastMessage({ type: 'system', subtype: 'init' })).toBe(false)
+    expect(shouldBroadcastMessage({ type: 'system', subtype: 'status' })).toBe(false)
+    expect(shouldBroadcastMessage({ type: 'system', subtype: 'task_progress' })).toBe(false)
+  })
+
+  it('still broadcasts non-system messages and the kept error subtypes', () => {
+    expect(shouldBroadcastMessage({ type: 'assistant' })).toBe(true)
+    expect(shouldBroadcastMessage({ type: 'system', subtype: 'error' })).toBe(true)
+    expect(shouldBroadcastMessage({ type: 'system', subtype: 'api_retry' })).toBe(true)
+  })
+})
+
+describe('backgroundSubagentLaunches', () => {
+  const ackContent =
+    'Async agent launched successfully. (internal metadata.)\nagentId: ace1f1c484c82bcdf\nThe agent is working in the background.'
+
+  it('detects an async launch ack tool_result and parses its agentId + tool_use_id', () => {
+    const msg = userMsg([
+      { type: 'tool_result', tool_use_id: 'tu_agent', content: ackContent },
+    ]) as unknown as SDKMessage
+    const launches = backgroundSubagentLaunches(msg)
+    expect(launches).toEqual([{ toolUseId: 'tu_agent', agentId: 'ace1f1c484c82bcdf' }])
+  })
+
+  it('ignores a synchronous subagent real tool_result (no ack signature)', () => {
+    const msg = userMsg([
+      { type: 'tool_result', tool_use_id: 'tu_sync', content: 'I found that the async agent launched at 14:32.' },
+    ]) as unknown as SDKMessage
+    expect(backgroundSubagentLaunches(msg)).toEqual([])
+  })
+
+  it('ignores non-user messages and tool_results without an agentId', () => {
+    expect(backgroundSubagentLaunches({ type: 'assistant' } as unknown as SDKMessage)).toEqual([])
+    const msg = userMsg([
+      { type: 'tool_result', tool_use_id: 'tu_x', content: 'Async agent launched successfully but no id here' },
+    ]) as unknown as SDKMessage
+    expect(backgroundSubagentLaunches(msg)).toEqual([])
+  })
+
+  it('handles array-content acks (text blocks)', () => {
+    const msg = userMsg([
+      { type: 'tool_result', tool_use_id: 'tu_arr', content: [{ type: 'text', text: ackContent }] },
+    ]) as unknown as SDKMessage
+    expect(backgroundSubagentLaunches(msg)).toEqual([{ toolUseId: 'tu_arr', agentId: 'ace1f1c484c82bcdf' }])
+  })
+})
 
 describe('userMessageHasToolResult', () => {
   it('is true for a main-thread tool_result frame (parent_tool_use_id null)', () => {

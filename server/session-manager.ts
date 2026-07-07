@@ -52,6 +52,7 @@ import { effortLevelsForModel } from './effort-capability.js'
 import { PermissionBroker } from './permission-broker.js'
 import { SessionHealthMonitor } from './session-health.js'
 import { pushBounded, stampReceivedAt, stampConsumedAt } from './history-utils.js'
+import { watchBackgroundSubagent, type SubagentCompletion } from './subagent-watcher.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
 import { createPushable, type Pushable } from './pushable.js'
@@ -397,6 +398,87 @@ export class SessionManager {
     for (const sub of session.subscribers.values()) {
       try { sub.push(msg) } catch { /* subscriber dead dskip */ }
     }
+  }
+
+  /** Begin polling a background subagent's own transcript for completion.
+   *  Called by the pump when it sees an async launch ack. On completion,
+   *  synthesizes a `system`/`task_notification` frame (the CLI doesn't emit
+   *  one reliably) and feeds it back through the normal broadcast path so
+   *  the client reducer's completion branch flips the `background` record to
+   *  `done` with the subagent's real output. */
+  private startBackgroundSubagentWatcher(sessionId: string, toolUseId: string, agentId: string): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) return
+    // One watcher per (session, toolUseId). A duplicate launch ack (replay,
+    // re-broadcast) must not stack a second poller on the same transcript.
+    let perSession = this.backgroundWatchers.get(sessionId)
+    if (!perSession) {
+      perSession = new Map()
+      this.backgroundWatchers.set(sessionId, perSession)
+    }
+    if (perSession.has(toolUseId)) return
+    if (!session.cwd) return // without a cwd the subagent transcript path can't be computed
+    const stop = watchBackgroundSubagent({
+      cwd: session.cwd,
+      sessionId,
+      agentId,
+      toolUseId,
+      onCompleted: (completion) => {
+        // Remove the watcher entry before broadcasting so the unload guard
+        // can't race a concurrent stop.
+        perSession!.delete(toolUseId)
+        this.broadcastSynthesizedTaskNotification(session, toolUseId, agentId, completion)
+      },
+    })
+    perSession.set(toolUseId, stop)
+  }
+
+  /** Synthesize a `system`/`task_notification` frame for a completed
+   *  background subagent and feed it through the SAME path real messages
+   *  take (history ring + live subscribers), so it survives replay and
+   *  reaches the client reducer's completion branch. The reducer matches by
+   *  `tool_use_id` and flips the `background` record to `done` (or
+   *  `interrupted` for a non-completed status), capturing the subagent's
+   *  final text as the merged result. */
+  private broadcastSynthesizedTaskNotification(
+    session: Session,
+    toolUseId: string,
+    agentId: string,
+    completion: SubagentCompletion,
+  ): void {
+    // Drop the watcher if the session was unloaded between dispatch and
+    // completion dno subscribers to push to, and persisting would race
+    // unload's terminal write.
+    if (!this.sessions.has(session.id)) return
+    const msg: SDKMessage = {
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: agentId,
+      tool_use_id: toolUseId,
+      status: completion.status,
+      summary: completion.summary,
+      output_file: '',
+      uuid: randomUUID(),
+      session_id: session.id,
+      receivedAt: Date.now(),
+    } as unknown as SDKMessage
+    stampReceivedAt(msg)
+    pushBounded(session.history, msg, this.historyCap)
+    for (const sub of session.subscribers.values()) {
+      try { sub.push(msg) } catch { /* subscriber dead dskip */ }
+    }
+  }
+
+  /** Stop all background-subagent watchers for a session (called on unload
+   *  so a late completion can't broadcast into a dead session). */
+  private stopBackgroundSubagentWatchers(sessionId: string): void {
+    const perSession = this.backgroundWatchers.get(sessionId)
+    if (!perSession) return
+    for (const stop of perSession.values()) {
+      try { stop() } catch { /* ignore */ }
+    }
+    perSession.clear()
+    this.backgroundWatchers.delete(sessionId)
   }
 
   /** Terminate a crashed session immediately: the legacy non-recovery path
@@ -2568,6 +2650,9 @@ export class SessionManager {
     // fires the SIGKILL promptly rather than letting the orphan run to its
     // timeout / natural completion.
     s.execAbort?.abort()
+    // Stop polling any background subagents' transcripts da late completion
+    // must not broadcast into a session being torn down.
+    this.stopBackgroundSubagentWatchers(id)
     s.handle.destroy(opts.reason ?? 'unload')
     // When terminating (explicit delete or graceful shutdown), await the
     // pump so the SDK subprocess has time to exit cleanly.
@@ -3054,6 +3139,8 @@ export class SessionManager {
         },
         broadcastCommandsChanged: (id, commands) => this.broadcastCommandsChanged(id, commands),
         recordHookRun: (id, event) => this.recordHookRun(id, event),
+        onBackgroundSubagentLaunched: (sessionId, toolUseId, agentId) =>
+          this.startBackgroundSubagentWatcher(sessionId, toolUseId, agentId),
       }
     }
     return this.cachedPumpDeps
@@ -3084,6 +3171,14 @@ export class SessionManager {
   /** Tracks consecutive crash-recovery attempts per session. Resets to 0 on
    *  every user message (pushToSession) so a fresh crash gets a fresh ladder. */
   private crashRecoveryCounts = new WeakMap<Session, number>()
+
+  /** Active background-subagent transcript watchers, keyed by session id →
+   *  tool_use_id → stop(). The watcher polls the subagent's own transcript
+   *  for completion (the CLI doesn't reliably emit task_notification for
+   *  Agent-launched background subagents) and synthesizes a
+   *  system/task_notification frame when it settles. Stopped on unload so a
+   *  watcher can't fire into a dead session. */
+  private backgroundWatchers = new Map<string, Map<string, () => void>>()
 
   /** Re-spawn a session's Query after a clean exit (idle timeout).
    *  Returns true if the session was successfully re-spawned. */

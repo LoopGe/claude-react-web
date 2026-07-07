@@ -12,6 +12,14 @@ import type { Session, SessionBroadcaster } from './session-types.js'
 import { endAllSubscribers } from './session-types.js'
 import { pushBounded, stampReceivedAt, shouldBroadcastMessage } from './history-utils.js'
 import { mutatingToolUseId, scheduleGitBroadcast } from './git-broadcast.js'
+import { parseAckAgentId } from './subagent-watcher.js'
+
+/** Anchored signature of an async/background subagent launch ack (the
+ *  tool_result content the CLI returns immediately for a run_in_background
+ *  Agent call). Anchored so a synchronous subagent's real result that merely
+ *  mentions the phrase is never mistaken for an ack. Mirrors the reducer's
+ *  client-side ack detector. */
+const LAUNCH_ACK_RE = /^async agent launched successfully/i
 import { createLogger } from './log.js'
 import type { HookRunRecord, HookRuntimeEvent, HookRunStatus } from '../shared/hooks.js'
 
@@ -149,6 +157,39 @@ export function toolResultIds(msg: SDKMessage): string[] {
   return ids
 }
 
+/** Detect async/background subagent LAUNCH acks in a user message. An ack is
+ *  a tool_result block whose content starts with "Async agent launched
+ *  successfully" and carries an `agentId: <id>` line. Returns the
+ *  originating Agent tool_use id + the parsed agentId for each, so the
+ *  SessionManager can poll the subagent's own transcript and synthesize a
+ *  completion signal (the CLI doesn't reliably emit task_notification for
+ *  Agent-launched background subagents — see server/subagent-watcher.ts). */
+export function backgroundSubagentLaunches(
+  msg: SDKMessage,
+): Array<{ toolUseId: string; agentId: string }> {
+  if (msg.type !== 'user') return []
+  const content = (msg as { message: { content: unknown } }).message?.content
+  if (!Array.isArray(content)) return []
+  const out: Array<{ toolUseId: string; agentId: string }> = []
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue
+    const b = block as { type: unknown; tool_use_id?: unknown; content?: unknown }
+    if (b.type !== 'tool_result' || typeof b.tool_use_id !== 'string') continue
+    const text = typeof b.content === 'string'
+      ? b.content
+      : Array.isArray(b.content)
+        ? (b.content as Array<{ type?: string; text?: unknown }>)
+            .filter((x) => x?.type === 'text' && typeof x.text === 'string')
+            .map((x) => x.text as string)
+            .join('\n')
+        : ''
+    if (!text || !LAUNCH_ACK_RE.test(text)) continue
+    const agentId = parseAckAgentId(text)
+    if (agentId) out.push({ toolUseId: b.tool_use_id, agentId })
+  }
+  return out
+}
+
 /** Extract the SDK-reported `fast_mode_state` from a message, if present.
  *  The field rides on `system/init` and `result` (success + error) messages
  *  (see sdk.?.ts: SDKSystemMessage, SDKResultSuccess, SDKResultError). We
@@ -202,6 +243,13 @@ export interface PumpDeps {
   broadcastInfo?: (session: Session) => void
   broadcastCommandsChanged: (sessionId: string, commands: SlashCommand[]) => void
   recordHookRun?: (sessionId: string, event: HookRuntimeEvent) => void
+  /** Called when the pump sees an async/background subagent launch ack (a
+   *  tool_result whose content starts with "Async agent launched
+   *  successfully" and carries an agentId). The SessionManager uses it to
+   *  poll the subagent's own transcript and synthesize a completion signal —
+   *  the CLI doesn't reliably emit task_notification for Agent-launched
+   *  background subagents. Optional so test fixtures can omit it. */
+  onBackgroundSubagentLaunched?: (sessionId: string, toolUseId: string, agentId: string) => void
 }
 
 export function hookLifecycleMessage(msg: SDKMessage): HookRuntimeEvent | null {
@@ -420,6 +468,17 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             if (pendingMutatingToolUses.has(id)) {
               pendingMutatingToolUses.delete(id)
               if (deps.broadcaster) scheduleGitBroadcast(deps.broadcaster, session.id)
+            }
+          }
+          // Async/background subagent launch acks: hand the agentId to the
+          // manager so it can poll the subagent's transcript for completion.
+          if (deps.onBackgroundSubagentLaunched) {
+            for (const { toolUseId, agentId } of backgroundSubagentLaunches(msg)) {
+              try {
+                deps.onBackgroundSubagentLaunched(session.id, toolUseId, agentId)
+              } catch (err) {
+                log.warn(`[session ${session.id}] onBackgroundSubagentLaunched threw for agentId=${agentId}:`, err)
+              }
             }
           }
         }
