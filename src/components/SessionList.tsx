@@ -2,7 +2,7 @@
 // The new-session form lives inside a modal (<NewSessionDialog />) so the
 // sidebar can dedicate its vertical space to listing sessions.
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { isInAppDrag, readDragPayload } from '../hooks/useDragPayload'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
@@ -14,7 +14,12 @@ import { SessionContextMenu } from './session-list/SessionContextMenu'
 import { AccentPickerPanel } from './AccentPicker'
 import { SessionCard } from './session-list/SessionCard'
 import { ConfirmDialog } from './ConfirmDialog'
-import { PromptDialog } from './PromptDialog'
+// Lazy-loaded: PromptDialog is only used when the user renames a group.
+// Mirrors App.tsx's lazy declaration — keeping the static import here would
+// pull PromptDialog into the main bundle and defeat the code-split (Vite
+// emits a "dynamic import will not move module into another chunk" warning
+// if a static import coexists with the lazy one in App.tsx).
+const PromptDialog = lazy(() => import('./PromptDialog').then((m) => ({ default: m.PromptDialog })))
 import { ContextMenu } from './ContextMenu'
 import { IconX, IconChevronRight, IconChevronDown, IconSquare, IconPencil, IconTrash, IconSearch } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
@@ -1078,27 +1083,29 @@ export const SessionList = memo(function SessionList({
       {/* Prompt dialog (replaces window.prompt for group rename) */}
       <AnimatePresence>
         {promptState && (
-          <PromptDialog
-            key="prompt"
-            title={promptState.title}
-            message={promptState.message}
-            defaultValue={promptState.defaultValue}
-            confirmLabel={promptState.confirmLabel}
-            placeholder={promptState.placeholder}
-            busy={promptBusy}
-            onConfirm={(value) => {
-              void (async () => {
-                setPromptBusy(true)
-                try {
-                  await promptState.onConfirm(value)
-                } finally {
-                  setPromptBusy(false)
-                  setPromptState(null)
-                }
-              })()
-            }}
-            onCancel={() => { if (!promptBusy) setPromptState(null) }}
-          />
+          <Suspense fallback={null}>
+            <PromptDialog
+              key="prompt"
+              title={promptState.title}
+              message={promptState.message}
+              defaultValue={promptState.defaultValue}
+              confirmLabel={promptState.confirmLabel}
+              placeholder={promptState.placeholder}
+              busy={promptBusy}
+              onConfirm={(value) => {
+                void (async () => {
+                  setPromptBusy(true)
+                  try {
+                    await promptState.onConfirm(value)
+                  } finally {
+                    setPromptBusy(false)
+                    setPromptState(null)
+                  }
+                })()
+              }}
+              onCancel={() => { if (!promptBusy) setPromptState(null) }}
+            />
+          </Suspense>
         )}
       </AnimatePresence>
     </>
