@@ -1022,11 +1022,12 @@
      the two read as one synchronized "working" rhythm. */
   animation: todo-icon-pulse 2s ease-in-out infinite;
 }
-.todo-panel-working .todo-in_progress .todo-text {
-  /* Text shimmer: an accent highlight sweeps across the label so the
-     active task visibly "moves". Reuses the project's shimmer vocabulary
-     (recap bar, skeleton rows). background-clip:text paints the gradient
-     onto the glyphs; coexists with the existing nowrap+ellipsis. */
+.todo-panel-working .todo-in_progress .todo-text-shimmer {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   background: linear-gradient(90deg,
     var(--fg) 0%, var(--fg) 35%, var(--accent) 50%, var(--fg) 65%, var(--fg) 100%);
   background-size: 200% 100%;
@@ -1221,7 +1222,7 @@
     animation: none;
     transform: translateY(-0.5px);
   }
-  .todo-panel-working .todo-in_progress .todo-text,
+  .todo-panel-working .todo-in_progress .todo-text-shimmer,
   .inline-todo-in_progress .inline-todo-text {
     animation: none;
     background: none;

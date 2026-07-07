@@ -116,7 +116,9 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
               )}
             </span>
             <span className="todo-text">
-              {t.status === 'in_progress' && t.activeForm ? t.activeForm : t.content}
+              <span className="todo-text-shimmer">
+                {t.status === 'in_progress' && t.activeForm ? t.activeForm : t.content}
+              </span>
             </span>
           </li>
         ))}
