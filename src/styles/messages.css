@@ -1117,9 +1117,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  /* Text shimmer: accent highlight sweeps across the label so a live
-     monitor visibly "moves". Same mechanism as .todo-in_progress .todo-text
-     but uses --warn to match the Monitor bar's accent. */
+}
+.monitor-text-shimmer {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   background: linear-gradient(90deg,
     var(--fg) 0%, var(--fg) 35%, var(--warn) 50%, var(--fg) 65%, var(--fg) 100%);
   background-size: 200% 100%;
@@ -1233,7 +1237,7 @@
   /* Mirror the transcript's reduced-motion clear: no animation, just hidden. */
   .todo-panel.todo-panel-clearing { animation: none; opacity: 0; }
   .monitor-bar.monitor-bar-clearing { animation: none; opacity: 0; }
-  .monitor-text {
+  .monitor-text-shimmer {
     animation: none;
     background: none;
     -webkit-text-fill-color: var(--fg);

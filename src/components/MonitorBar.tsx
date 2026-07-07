@@ -95,7 +95,9 @@ export const MonitorBar = memo(function MonitorBar({ messages, clearing }: Props
             <span className="monitor-icon" aria-hidden>
               <IconCircleDot size={12} />
             </span>
-            <span className="monitor-text">{m.description}</span>
+            <span className="monitor-text">
+              <span className="monitor-text-shimmer">{m.description}</span>
+            </span>
             {m.persistent && <span className="tool-chip tool-chip-accent">persistent</span>}
           </li>
         ))}
