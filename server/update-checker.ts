@@ -101,17 +101,50 @@ export function getAgentSdkVersion(): string | null {
   return agentSdkVersionCache
 }
 
+/** Overlay the live on-disk `installed` version and the derived
+ *  `updateAppliedToDisk` flag onto a snapshot. `installed` changes the
+ *  moment an in-app update rewrites the package on disk, so this is done
+ *  per-request (not cached). `updateAppliedToDisk` is the authoritative
+ *  SSOT for suppressing update/deprecation nags — computed here so every
+ *  consumer (banner, About tab, any future nag surface) reads one value
+ *  instead of each re-deriving it client-side.
+ *
+ *  `updateAppliedToDisk` requires `installed` to be a parseable STABLE
+ *  version that is `>= latest` AND strictly newer than the running
+ *  `current` (an update was actually applied and is pending restart):
+ *  - a corrupted package.json `version` or a manually-installed prerelease
+ *    must NOT falsely suppress the nag (isVersionNewer alone returns false
+ *    for those, which would hide a real update);
+ *  - the `installed > current` guard stops the field firing in the normal
+ *    up-to-date state (installed === current === latest), where it would
+ *    otherwise suppress the deprecation banner when the running/latest
+ *    version itself is deprecated with no newer release available. The
+ *    update nag is unaffected (it's already false via `hasUpdate` when
+ *    current === latest, and whenever `hasUpdate` is true the guard is
+ *    implied: installed >= latest > current ⇒ installed > current).
+ *  When `installed` can't be read, the snapshot is returned unchanged. */
+export function withInstalledOverlay(info: UpdateInfo): UpdateInfo {
+  const installed = readInstalledVersion(info.packageName)
+  if (!installed) return info
+  const updateAppliedToDisk =
+    !!info.latest &&
+    isStableVersion(installed) &&
+    compareSemver(installed, info.latest) >= 0 &&
+    compareSemver(installed, info.current) > 0
+  return { ...info, installed, updateAppliedToDisk }
+}
+
 /** Return the latest cached UpdateInfo without triggering a network probe.
  *  Used by the GET /api/update-info route as the "fast path" — if the
  *  cache is fresh, no fetch is performed.
  *
- *  The `installed` (on-disk) version is overlaid fresh on every call rather
- *  than served from the cached snapshot: it changes the instant an in-app
- *  update rewrites the package on disk, and we want the UI to reflect that
- *  without waiting out the 6h registry-probe TTL. */
+ *  The `installed` (on-disk) version + `updateAppliedToDisk` are overlaid
+ *  fresh on every call (via `withInstalledOverlay`) rather than served from
+ *  the cached snapshot: `installed` changes the instant an in-app update
+ *  rewrites the package on disk, and we want the UI to reflect that without
+ *  waiting out the 6h registry-probe TTL. */
 export function getCachedUpdateInfo(): UpdateInfo {
-  const installed = readInstalledVersion(PACKAGE_NAME)
-  return installed ? { ...cached, installed } : cached
+  return withInstalledOverlay(cached)
 }
 
 // `isVersionNewer` (and the sibling semver helpers) now live in

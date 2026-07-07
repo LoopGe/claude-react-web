@@ -42,8 +42,31 @@ export interface UpdateInfo {
   /** True iff `latest` is strictly newer than `current` under the
    *  three-segment numeric comparison in `isVersionNewer()`.
    *  Pre-release tags on `latest` are ignored — a pre-release never
-   *  triggers an update prompt. */
+   *  triggers an update prompt.
+   *
+   *  NOTE: this is the *running build* vs `latest`. It does NOT account for
+   *  an in-app update already applied to disk (which bumps `installed` but
+   *  leaves `current` stale until restart). For NAG surfaces (banner,
+   *  "Update now" button) use `isUpdateNagNeeded` / gate on
+   *  `!updateAppliedToDisk` — reading `hasUpdate` directly re-pops the nag
+   *  in every new tab after an in-app update. `upToDate` and the factual
+   *  "deprecated" badge legitimately want this vs-running meaning. */
   hasUpdate: boolean
+  /** True iff the on-disk `installed` version already satisfies `latest` —
+   *  i.e. an in-app `npm i -g @latest` has rewritten the package on disk and
+   *  the update is pending a restart. Authoritative SSOT, computed server-side
+   *  in `withInstalledOverlay` (server/update-checker.ts) where `installed` is
+   *  overlaid per-request.
+   *
+   *  Any "you should update" nag surface MUST gate on `!updateAppliedToDisk`
+   *  (use `isUpdateNagNeeded` / `isUpdateAppliedToDisk`) — without it the nag
+   *  re-pops in every new tab after an in-app update, because `hasUpdate` and
+   *  `deprecated` reflect the stale running build until restart.
+   *
+   *  Undefined when `installed`/`latest` are unknown, or `installed` is
+   *  malformed/prerelease (those don't reliably mean "already have it", so
+   *  the helpers treat undefined as "not applied" → fall back to nagging). */
+  updateAppliedToDisk?: boolean
   /** ms epoch when the registry was successfully queried. Undefined
    *  before the first successful probe. */
   checkedAt?: number
@@ -196,6 +219,35 @@ export function isVersionNewer(current: string, latest: string): boolean {
 export function isStableVersion(v: string): boolean {
   const p = parseSemver(v)
   return !!p && !p.prerelease
+}
+
+/** True iff the on-disk `installed` version already satisfies `latest` —
+ *  i.e. an in-app `npm i -g @latest` has rewritten the package on disk and
+ *  the update is pending a restart. Thin reader over the authoritative
+ *  server-computed `info.updateAppliedToDisk` field (see
+ *  `withInstalledOverlay` in server/update-checker.ts); the client no longer
+ *  re-derives it so there is one SSOT. Returns false when the field is
+ *  absent (installed/latest unknown, or installed malformed/prerelease) →
+ *  callers fall back to nagging. */
+export function isUpdateAppliedToDisk(info: UpdateInfo | null | undefined): boolean {
+  return !!info?.updateAppliedToDisk
+}
+
+/** Whether the UI should NAG the user about a new version. Equivalent to
+ *  `info.hasUpdate` (the running build is behind `latest`) BUT suppressed
+ *  once the update is already on disk pending restart
+ *  (`isUpdateAppliedToDisk`). Reading `hasUpdate` directly for a nag surface
+ *  re-pops the banner in every new tab after an in-app update, because
+ *  `hasUpdate` is computed against the stale running `current` until the
+ *  server restarts; this helper centralises the suppression so every nag
+ *  surface stays in sync.
+ *
+ *  Returns false for null/undefined info or when `hasUpdate`/`latest` are
+ *  absent. */
+export function isUpdateNagNeeded(info: UpdateInfo | null | undefined): boolean {
+  if (!info || !info.hasUpdate || !info.latest) return false
+  if (isUpdateAppliedToDisk(info)) return false
+  return true
 }
 
 /** Numeric major.minor.patch comparison. Returns <0 / 0 / >0 like a normal

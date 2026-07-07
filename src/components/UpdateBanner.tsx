@@ -15,6 +15,7 @@
 
 import { useState } from 'react'
 import type { UpdateActionResult, UpdateInfo } from '../../shared/update-info'
+import { isUpdateAppliedToDisk, isUpdateNagNeeded } from '../../shared/update-info'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
 import { useToast } from '../hooks/useToast'
 import { IconX, IconCheck, IconAlertTriangle } from './icons/ToolIcons'
@@ -34,8 +35,19 @@ interface Props {
 export function UpdateBanner({ info, updating, onUpdate }: Props) {
   if (!info) return null
 
-  const hasDeprecation = !!info.deprecated
-  const hasUpdate = !!(info.hasUpdate && info.latest)
+  // Suppress the deprecation nag once the escape-to-latest is already on
+  // disk pending restart — `info.deprecated` reflects the RUNNING version
+  // (fetched for CURRENT_VERSION), so without this the deprecation banner
+  // re-pops in every new tab after an in-app update until the server is
+  // restarted, with an "Update now" button that runs as a no-op. Same
+  // suppression condition as the update nag below.
+  const hasDeprecation = !!info.deprecated && !isUpdateAppliedToDisk(info)
+  // Suppress the "New version available" nag once the on-disk `installed`
+  // version already satisfies `latest` — i.e. an in-app update has been
+  // applied and is pending a restart. Without this, a new tab re-pops the
+  // banner (hasUpdate stays true vs the stale running `current`, and the
+  // dismiss is sessionStorage-scoped per tab) until the server is restarted.
+  const hasUpdate = isUpdateNagNeeded(info)
 
   if (!hasDeprecation && !hasUpdate) return null
 

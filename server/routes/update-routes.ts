@@ -29,6 +29,7 @@ import {
   isPublishedVersion,
   isVersionNewer,
   probeRegistry,
+  withInstalledOverlay,
 } from '../update-checker.js'
 import { detectInstallMethod } from '../install-method.js'
 import { readInstalledVersion } from '../installed-version.js'
@@ -80,8 +81,10 @@ export function buildUpdateRouter(claudeBinary?: string): Hono {
     const registryOverride = c.req.query('registry')
     if (registryOverride !== undefined) {
       const info = await probeRegistry(registryOverride)
-      const installed = readInstalledVersion(info.packageName)
-      const withInstalled = installed ? { ...info, installed } : info
+      // Overlay the live on-disk `installed` + the authoritative
+      // `updateAppliedToDisk` suppression flag (single SSOT — see
+      // update-checker.ts withInstalledOverlay).
+      const withInstalled = withInstalledOverlay(info)
       // A user-typed registry override is an explicit "Check now" gesture —
       // pair it with a forced CLI re-probe so failures show up immediately.
       return c.json(await withVersionOverlays(withInstalled, claudeBinary, true))
@@ -89,11 +92,10 @@ export function buildUpdateRouter(claudeBinary?: string): Hono {
     const force = c.req.query('force') === '1'
     if (force) {
       const info = await checkForUpdates(true)
-      // Overlay the fresh on-disk version — checkForUpdates() builds its
-      // snapshot from the build-time `current`, but the route contract is to
-      // always report the live on-disk `installed` too.
-      const installed = readInstalledVersion(info.packageName)
-      const withInstalled = installed ? { ...info, installed } : info
+      // Overlay the live on-disk `installed` + `updateAppliedToDisk` —
+      // checkForUpdates() builds its snapshot from the build-time `current`,
+      // but the route contract is to always report the live on-disk state too.
+      const withInstalled = withInstalledOverlay(info)
       return c.json(await withVersionOverlays(withInstalled, claudeBinary, true))
     }
     const cached = getCachedUpdateInfo()

@@ -18,7 +18,7 @@ import { useToast } from '../hooks/useToast'
 import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
 import { DirectoryPicker } from './DirectoryPicker'
 import type { PublishedVersions, UpdateActionResult, UpdateInfo } from '../../shared/update-info'
-import { isVersionNewer } from '../../shared/update-info'
+import { isUpdateNagNeeded, isVersionNewer } from '../../shared/update-info'
 
 // MarketplaceTab pulls in catalog-rendering UI; McpInstaller is a heavy
 // modal-within-modal. Both are only opened on demand from inside the
@@ -1730,7 +1730,11 @@ function AboutTab({
   // reached. Only fall back to the local fetch error (`error`) when
   // the server itself was unreachable.
   const displayError = info?.error ?? error
-  const hasUpdate = !!(info?.hasUpdate && info.latest)
+  // Suppress the "Update now" nag once the on-disk `installed` version
+  // already satisfies `latest` (in-app update applied, restart pending) —
+  // mirrors UpdateBanner. `restartPending` below then carries the
+  // "restart to apply" message, so the two states don't contradict.
+  const hasUpdate = isUpdateNagNeeded(info)
   const disabled = !!info?.disabled
   // The on-disk package was upgraded but the running process is still the old
   // build (in-app update applied, restart pending). Uses the same version

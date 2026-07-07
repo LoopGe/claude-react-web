@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   compareSemver,
   isStableVersion,
+  isUpdateAppliedToDisk,
+  isUpdateNagNeeded,
   isVersionNewer,
   parseSemver,
 } from './update-info.js'
@@ -76,5 +78,69 @@ describe('isVersionNewer (regression guard)', () => {
 
   it('never treats a prerelease as newer', () => {
     expect(isVersionNewer('0.5.8', '0.5.9-rc.1')).toBe(false)
+  })
+})
+
+describe('isUpdateNagNeeded', () => {
+  // The client helper is a thin reader over the server-computed
+  // `updateAppliedToDisk` field (the SSOT lives in update-checker.ts
+  // withInstalledOverlay, exercised by server tests). These tests cover the
+  // combination logic only.
+  const info = (over: Partial<{ hasUpdate: boolean; latest: string; updateAppliedToDisk: boolean }> = {}) => ({
+    hasUpdate: true,
+    latest: '0.6.0',
+    ...over,
+  }) as import('./update-info.js').UpdateInfo
+
+  it('nags when hasUpdate is true and the update is not yet on disk', () => {
+    expect(isUpdateNagNeeded(info({ updateAppliedToDisk: false }))).toBe(true)
+  })
+
+  it('nags when updateAppliedToDisk is absent (field not overlaid → fall back to nagging)', () => {
+    expect(isUpdateNagNeeded(info({ updateAppliedToDisk: undefined }))).toBe(true)
+  })
+
+  it('does NOT nag when the update is already applied to disk (restart pending)', () => {
+    // The reported bug: hasUpdate stays true vs the stale running `current`,
+    // but the on-disk version already satisfies latest. The server sets
+    // updateAppliedToDisk=true, which suppresses the nag in every tab.
+    expect(isUpdateNagNeeded(info({ updateAppliedToDisk: true }))).toBe(false)
+  })
+
+  it('never nags when hasUpdate is already false', () => {
+    expect(isUpdateNagNeeded(info({ hasUpdate: false, updateAppliedToDisk: true }))).toBe(false)
+  })
+
+  it('never nags when latest is missing', () => {
+    expect(isUpdateNagNeeded(info({ latest: undefined as unknown as string }))).toBe(false)
+  })
+
+  it('handles null/undefined info', () => {
+    expect(isUpdateNagNeeded(null)).toBe(false)
+    expect(isUpdateNagNeeded(undefined)).toBe(false)
+  })
+})
+
+describe('isUpdateAppliedToDisk', () => {
+  // Thin reader over the server field — the malformed/prerelease/behind
+  // logic is covered by the server-side withInstalledOverlay tests.
+  const info = (over: Partial<{ updateAppliedToDisk: boolean }> = {}) =>
+    ({ updateAppliedToDisk: false, ...over }) as import('./update-info.js').UpdateInfo
+
+  it('reads the field true', () => {
+    expect(isUpdateAppliedToDisk(info({ updateAppliedToDisk: true }))).toBe(true)
+  })
+
+  it('reads the field false', () => {
+    expect(isUpdateAppliedToDisk(info({ updateAppliedToDisk: false }))).toBe(false)
+  })
+
+  it('false when the field is absent (not overlaid)', () => {
+    expect(isUpdateAppliedToDisk(info({ updateAppliedToDisk: undefined }))).toBe(false)
+  })
+
+  it('handles null/undefined info', () => {
+    expect(isUpdateAppliedToDisk(null)).toBe(false)
+    expect(isUpdateAppliedToDisk(undefined)).toBe(false)
   })
 })
