@@ -1594,6 +1594,7 @@
   align-items: center;
 }
 .subagent-card-running .subagent-card-status { color: var(--accent); }
+.subagent-card-background .subagent-card-status { color: var(--accent); }
 .subagent-card-done    .subagent-card-status { color: var(--ok); }
 .subagent-card-rejected .subagent-card-status,
 .subagent-card-interrupted .subagent-card-status { color: var(--warn); }
@@ -1724,6 +1725,7 @@
   color: var(--fg-muted);
 }
 .subagent-overlay-status.status-running { color: var(--accent); }
+.subagent-overlay-status.status-background { color: var(--accent); }
 .subagent-overlay-status.status-done { color: var(--ok); }
 .subagent-overlay-status.status-rejected,
 .subagent-overlay-status.status-interrupted { color: var(--warn); }

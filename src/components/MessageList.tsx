@@ -624,7 +624,13 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     const set = new Set<string>()
     if (subagentCtx) {
       for (const [id, record] of subagentCtx.index) {
-        if (record.result) set.add(id)
+        // A record with a captured result is merged into SubagentCard →
+        // suppress its standalone orphan. A 'background' record has had its
+        // launch-ack tool_result land (the ack IS the tool_result for this
+        // id), so the ack orphan must also be suppressed even though the ack
+        // text is deliberately NOT stored as `result` — the SubagentCard
+        // represents the subagent, and the ack is internal launch metadata.
+        if (record.result || record.status === 'background') set.add(id)
       }
     }
     return set
@@ -1944,7 +1950,19 @@ const MessageView = memo(function MessageView({
     // never as a "you" bubble. (The SDK's own task completion is a `system`
     // / `task_notification` frame, already hidden; this catches the
     // user-role injection path.)
+    //
+    // Dedup: when the notification's <tool-use-id> matches a subagent whose
+    // result has already been merged into its SubagentCard (the reducer's
+    // task-notification completion branch flipped it background→done and
+    // captured the result), suppress the standalone card — the result is
+    // already shown inline on the subagent card, mirroring how synchronous
+    // subagent results are merged. Falls through to the standalone card
+    // when there's no matching merged record (a background task not spawned
+    // via the Agent tool, or a record that never captured a result) so the
+    // result is never silently lost.
     if (isTaskNotificationUserMessage(msg)) {
+      const tuId = extractTag(userContent ?? '', 'tool-use-id')
+      if (tuId && isResultConsumed(tuId)) return null
       return <TaskNotificationCard text={userContent ?? ''} searchQuery={searchQuery} activeMatchIdx={activeMatchInItem} />
     }
     // Other synthetic user-role messages the SDK explicitly marks non-human

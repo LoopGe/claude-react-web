@@ -195,6 +195,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
 
   const statusText =
     current.status === 'running' ? 'running'
+    : current.status === 'background' ? 'background'
     : current.status === 'done' ? 'done'
     : current.status === 'rejected' ? 'rejected'
     : 'interrupted'
@@ -281,7 +282,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
             emptyStateContent={(
               <div className="chat-messages-empty-side">
                 <div className="chat-messages-empty-title">
-                  {current.status === 'running' ? 'This subagent is working' : 'No subagent output'}
+                  {current.status === 'running' || current.status === 'background' ? 'This subagent is working' : 'No subagent output'}
                 </div>
                 <div className="chat-messages-empty-hint">
                   Subagents run autonomously — you can follow its progress here, but can't send messages to it.

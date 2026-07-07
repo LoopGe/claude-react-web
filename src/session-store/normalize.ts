@@ -186,6 +186,85 @@ export function isTaskNotificationUserMessage(msg: SdkMessage): boolean {
   return !!text && TASK_NOTIFICATION_RE.test(text)
 }
 
+/** Extract the inner text of the first `<tag>…</tag>` in `s`, with basic XML
+ *  entity unescaping. Local to the task-notification parser — MessageList has
+ *  its own copy for bash tags; this one lives in shared territory so the
+ *  reducer can parse completion signals without importing from a component. */
+function extractXmlTag(s: string, tag: string): string | null {
+  const open = `<${tag}>`
+  const close = `</${tag}>`
+  const start = s.indexOf(open)
+  if (start < 0) return null
+  const end = s.indexOf(close, start + open.length)
+  if (end < 0) return null
+  return s.slice(start + open.length, end)
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+}
+
+export type TaskNotificationStatus = 'completed' | 'failed' | 'stopped'
+
+/** A parsed task-notification completion signal, matchable back to the
+ *  originating Agent subagent via `toolUseId`.
+ *
+ *  `result` is the subagent's returned output (only the harness XML path
+ *  carries it inline; the SDK system frame keeps the body in `output_file`).
+ *  `summary` is the human-readable one-liner both paths carry. Callers that
+ *  merge the completion into a SubagentCard should prefer `result` and fall
+ *  back to `summary` so the SDK-frame path still surfaces something. */
+export interface ParsedTaskNotification {
+  toolUseId: string
+  status: TaskNotificationStatus
+  summary?: string
+  result?: string
+}
+
+function normalizeTaskStatus(raw: string | undefined): TaskNotificationStatus {
+  return raw === 'failed' || raw === 'stopped' ? raw : 'completed'
+}
+
+/** Parse a task-notification completion signal into a matchable record.
+ *
+ *  Two wire shapes, both carrying the originating Agent `tool_use_id`:
+ *    - harness user-role XML: a top-level `user` message whose leading text
+ *      is `<task-notification>…</task-notification>` with `<tool-use-id>`,
+ *      `<status>`, `<summary>`, `<result>` child elements (tool-use-id always
+ *      present on this path).
+ *    - SDK system frame: `system` + `subtype: 'task_notification'` with
+ *      structured `tool_use_id?` (OPTIONAL), `status`, `summary` fields.
+ *
+ *  Returns null when there is no matchable `tool_use_id` — notably the SDK
+ *  system frame when its optional `tool_use_id` field is absent (only the
+ *  opaque `task_id` is available then, which can't route to a record). The
+ *  XML path always carries `<tool-use-id>`, so it is the reliable completion
+ *  signal; the system frame is a best-effort supplement. */
+export function parseTaskNotification(msg: SdkMessage): ParsedTaskNotification | null {
+  if (msg.type === 'system' && (msg as { subtype?: unknown }).subtype === 'task_notification') {
+    const m = msg as { tool_use_id?: unknown; status?: unknown; summary?: unknown }
+    if (typeof m.tool_use_id !== 'string') return null
+    return {
+      toolUseId: m.tool_use_id,
+      status: normalizeTaskStatus(typeof m.status === 'string' ? m.status : undefined),
+      summary: typeof m.summary === 'string' ? m.summary : undefined,
+    }
+  }
+  if (isTaskNotificationUserMessage(msg)) {
+    const text = leadingUserText(msg) ?? ''
+    const toolUseId = extractXmlTag(text, 'tool-use-id')
+    if (!toolUseId) return null
+    return {
+      toolUseId,
+      status: normalizeTaskStatus(extractXmlTag(text, 'status') ?? undefined),
+      summary: extractXmlTag(text, 'summary') ?? undefined,
+      result: extractXmlTag(text, 'result') ?? undefined,
+    }
+  }
+  return null
+}
+
 /** The SDK `origin.kind` stamped on `SDKUserMessage` (sdk.d.ts:
  *  SDKMessageOrigin = 'human' | 'task-notification' | 'peer' | 'channel'
  *  | 'coordinator' | 'auto-continuation'). Returns undefined when the SDK

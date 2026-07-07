@@ -1,7 +1,7 @@
 import type { SdkMessage, Block } from '../../types'
 import type { PlanStatus, ToolResultEntry } from '../../session-store/types'
 import type { QuestionAnswerEntry } from '../../utils/question-answers'
-import { getBlocks } from '../../session-store/normalize'
+import { getBlocks, isTaskNotificationUserMessage, parseTaskNotification } from '../../session-store/normalize'
 
 export function extractUserText(msg: SdkMessage): string | null {
   const content = msg.message?.content
@@ -67,6 +67,14 @@ export function willRenderEmpty(
       // Mirror of MessageView's user-branch null check: empty iff there is
       // neither an orphan result to draw nor any stray user text.
       return !hasOrphanResults && !userContent
+    }
+    // A <task-notification> whose result merged into a SubagentCard is
+    // suppressed in MessageView's user branch — drop it here too so it
+    // doesn't leave a blank Virtuoso row. An unmatched notification (no
+    // merged record to dedup against) still renders its standalone card.
+    if (isTaskNotificationUserMessage(msg)) {
+      const parsed = parseTaskNotification(msg)
+      return !!(parsed && isResultConsumed(parsed.toolUseId))
     }
     // Real user message: always rendered.
     return false

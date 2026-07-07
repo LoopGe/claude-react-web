@@ -23,6 +23,7 @@ import {
   getWorkflowChildStarts,
   getWorkflowStarts,
   isTrimBoundary,
+  parseTaskNotification,
   toTranscriptItem,
   topLevelUserPromptSignature,
 } from './normalize'
@@ -1133,9 +1134,14 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
     // subagent doesn't show a green check) and stamp endedAt. Also
     // capture the result payload so SubagentCard can merge the
     // subagent's returned output inline at the bottom of the card —
-    // mirrors the generic ToolCard merge. The "running" filter
-    // elsewhere drops completed subagents from the WorkingBubble chip
-    // row automatically.
+    // mirrors the generic ToolCard merge. The "running"/"background"
+    // filter elsewhere drops completed subagents from the WorkingBubble
+    // chip row automatically.
+    //
+    // EXCEPTION — async/background launch ack: an async subagent's Agent
+    // tool_result is a launch acknowledgement, not completion. Flip to
+    // 'background' instead (no endedAt/result) and let the
+    // task-notification completion branch below finish the lifecycle.
     //
     // Most turns include tool_results unrelated to subagents, so defer
     // the Map clone until we actually have a matching id — otherwise
@@ -1153,12 +1159,36 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
         if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
         touched = true
       }
-      activeSubagents.set(toolUseId, {
-        ...existing,
-        status: isError ? 'interrupted' : 'done',
-        endedAt: stamp,
-        result: { content, isError },
-      })
+      // Async/background launch ack: the Agent tool_result is just a launch
+      // acknowledgement ("Async agent launched successfully … agentId"),
+      // NOT the subagent's completion — the real output streams later as
+      // child frames and the completion lands as a <task-notification>.
+      // Flip to 'background' (still shown in the WorkingBubble chip row) and
+      // deliberately DO NOT set endedAt/result: the ack time isn't the real
+      // completion time and the ack text isn't the real output. Detected via
+      // the run_in_background input flag (most reliable, when the SDK stamped
+      // one) or, when absent, by sniffing the ack text — a synchronous
+      // subagent's real tool_result never matches the ack signature.
+      const ackText = typeof content === 'string' ? content : resultContentToText(content)
+      // An explicit `run_in_background: false` opts out of ack-sniffing
+      // entirely (a synchronous subagent's real tool_result must not be
+      // mistaken for a launch ack even if its text happens to contain the
+      // signature). Sniff only when isAsync is true (definitive) or
+      // undefined (no flag — fall back to the ack signature).
+      const isAck = !isError && existing.isAsync !== false && (
+        existing.isAsync === true ||
+        (typeof ackText === 'string' && /^async agent launched successfully/i.test(ackText))
+      )
+      if (isAck) {
+        activeSubagents.set(toolUseId, { ...existing, status: 'background' })
+      } else {
+        activeSubagents.set(toolUseId, {
+          ...existing,
+          status: isError ? 'interrupted' : 'done',
+          endedAt: stamp,
+          result: { content, isError },
+        })
+      }
     }
     changed = changed || touched
   }
@@ -1169,11 +1199,13 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
   // ack ("Async agent launched successfully … agentId") that arrives within
   // ms of the tool_use — well before the subagent's real work streams as
   // child frames (parent_tool_use_id === subagent id). The result-merge
-  // branch above pins endedAt to that ack's receivedAt, so without this
-  // extension the card shows ~0s elapsed for a subagent that actually ran
-  // for seconds/minutes. The subagent emits no dedicated end frame, so the
-  // last child frame IS the completion signal — keep advancing endedAt to
-  // it. For a synchronous subagent the tool_result already lands last, so
+  // branch above flips the record to 'background' WITHOUT setting endedAt
+  // (the ack time isn't the real run time), so without this extension the
+  // card shows no elapsed at all until completion. Keep advancing endedAt to
+  // each child frame so the chip/card timer reflects real work. The subagent
+  // emits no dedicated end frame of its own, so the last child frame before
+  // the <task-notification> is the de-facto completion signal. For a
+  // synchronous subagent the tool_result already lands last, so
   // this is a no-op (stamp ≤ existing.endedAt). Fires for any child frame
   // (assistant text, tool_use, internal tool_result) — the latest wins.
   if (activeSubagents.size > 0) {
@@ -1186,12 +1218,16 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
         // signature of an async/background subagent: the tool_result was a
         // launch ack, not the completion (sync subagents' tool_result lands
         // LAST). Flip isAsync on the first such frame — it stays true after.
-        // Use `status === 'done'` (set ONLY by the result-merge branch when
-        // the Agent tool_result lands) rather than `result != null`: the
-        // toolCount branch below also writes `result` from child text, so a
-        // sync subagent with 2+ text-bearing child frames would otherwise
-        // mislabel as async on the second frame.
-        const nowAsync = existing.isAsync === true ? true : existing.status === 'done'
+        // Use `status === 'background' || 'done'` (set ONLY by the result-
+        // merge branch when the Agent tool_result lands — 'background' for an
+        // ack, 'done' for a synchronous completion) rather than `result !=
+        // null`: the toolCount branch below also writes `result` from child
+        // text, so a sync subagent with 2+ text-bearing child frames would
+        // otherwise mislabel as async on the second frame. Status itself is
+        // NOT touched here — a 'background' record stays 'background' (still
+        // working) and just gets its endedAt advanced.
+        const nowAsync = existing.isAsync === true ? true
+          : existing.status === 'background' || existing.status === 'done'
         const endedAtChanged = existing.endedAt == null || stamp > existing.endedAt
         const asyncChanged = existing.isAsync !== nowAsync && nowAsync
         if (endedAtChanged || asyncChanged) {
@@ -1248,6 +1284,59 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
           }
         }
       }
+    }
+  }
+
+  // Task-notification completion for async/background subagents. The Agent
+  // tool_result was a launch ack (status flipped to 'background' above); the
+  // real completion arrives as EITHER a harness `<task-notification>` user-
+  // role XML injection OR an SDK `system`/`task_notification` frame — both
+  // carry the originating Agent tool_use_id (the XML path always, the system
+  // frame optionally). Match it back to the background record and flip to
+  // 'done' ('interrupted' on failed/stopped), stamping endedAt to the
+  // notification's receivedAt (the true completion moment, ≥ the last child
+  // frame the async-detector branch advanced endedAt to). Mirrors the
+  // synchronous result-merge so SubagentCard merges the output inline.
+  //
+  // `result` is only filled when no child text frame already captured it:
+  // the async subagent's real output streamed as child assistant text
+  // (authoritative), and the notification's <result> is the same content
+  // repackaged — don't clobber. The SDK system-frame path carries no inline
+  // result body (it lives in output_file), so fall back to summary.
+  // parseTaskNotification returns null for shapes without a matchable
+  // tool_use_id (notably the system frame when its optional tool_use_id is
+  // absent) — the XML path then carries completion.
+  // Parsed lazily: only when at least one subagent is active can a
+  // completion signal possibly match, so skip the parse entirely for the
+  // common no-subagents session (every assistant text frame, every Bash
+  // tool_result, etc.). parseTaskNotification itself short-circuits on
+  // message type, but avoiding the call is cheaper still on this hot path.
+  const taskNotification = activeSubagents.size > 0 ? parseTaskNotification(message) : null
+  if (taskNotification) {
+    const existing = activeSubagents.get(taskNotification.toolUseId)
+    // Accept 'background' (normal: ack seen) AND 'running' (the launch-ack
+    // tool_result was lost — a WS gap / replay hole — so the record never
+    // flipped to 'background'; the completion signal is still authoritative
+    // and must flip it to 'done'). 'interrupted' is deliberately excluded:
+    // a prior interrupt is ambiguous and a late notification shouldn't
+    // override it. A synchronous subagent never receives a task-notification,
+    // so accepting 'running' can't mis-flip a sync record.
+    if (existing && (existing.status === 'background' || existing.status === 'running')) {
+      if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
+      const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
+      const isError = taskNotification.status !== 'completed'
+      const resultContent = taskNotification.result ?? taskNotification.summary ?? ''
+      activeSubagents.set(taskNotification.toolUseId, {
+        ...existing,
+        status: isError ? 'interrupted' : 'done',
+        endedAt: stamp,
+        // A task-notification only ever targets an async subagent, so stamp
+        // isAsync definitively (the ack may have been lost, leaving isAsync
+        // unset if no child frame arrived to trip the async-detector).
+        isAsync: true,
+        ...(existing.result ? {} : { result: { content: resultContent, isError } }),
+      })
+      changed = true
     }
   }
 
@@ -1558,4 +1647,18 @@ function updateLiveTurnMirror(mirror: ServerMirror, message: SdkMessage): Server
   }
 
   return { ...mirror, liveTurn }
+}
+
+/** Flatten a tool_result `content` payload to a plain string for signature
+ *  sniffing (used by the async-ack detector). Accepts a string directly or
+ *  an array of content blocks (joining the `text` blocks). Returns '' for
+ *  anything else — the ack signature regex simply won't match. Local to the
+ *  reducer so it doesn't depend on normalize.ts's private textOfContent. */
+function resultContentToText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return (content as Array<{ type?: string; text?: unknown }>)
+    .filter((b) => b.type === 'text' && typeof b.text === 'string')
+    .map((b) => b.text as string)
+    .join('')
 }

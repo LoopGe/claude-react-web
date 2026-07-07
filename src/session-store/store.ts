@@ -878,11 +878,16 @@ export class SessionStore {
 
   /** Per-instance equivalent of the old module-global running-subagents
    *  cache. The Map reference is compared by identity so the filtered
-   *  array is only reallocated when activeSubagents actually changes. */
+   *  array is only reallocated when activeSubagents actually changes.
+   *
+   *  Includes `background` (async subagents whose launch ack has landed but
+   *  whose real completion hasn't — they're still working in the background
+   *  and must stay in the WorkingBubble chip row) alongside `running`. */
   private getRunningSubagents(map: ServerMirror['activeSubagents']): SessionSnapshot['activeSubagents'] {
     if (map === this.cachedSubagentsMap) return this.cachedRunningSubagents
     this.cachedSubagentsMap = map
-    this.cachedRunningSubagents = Array.from(map.values()).filter((s) => s.status === 'running')
+    this.cachedRunningSubagents = Array.from(map.values())
+      .filter((s) => s.status === 'running' || s.status === 'background')
     return this.cachedRunningSubagents
   }
 
@@ -1265,11 +1270,18 @@ function dumpToolStatus(): ToolStatusDump[] {
                 'is not merged. Classic turn-end wipe: the record was pruned at the result ' +
                 'frame (reducer.ts) before its result could be read.'
             } else if (!subRecord.result) {
-              diagnosis =
-                `REAL ORPHAN — subagent "${toolName}" record exists (status=${subRecord.status}) ` +
-                'but result was never captured, so the card cannot merge it. The merge step ' +
-                'in updateIndexes did not run (record not "running" when the result landed, ' +
-                'or an id mismatch).'
+              if (subRecord.status === 'background') {
+                diagnosis =
+                  `OK (background) — subagent "${toolName}" is an async subagent mid-flight ` +
+                  '(launch ack landed, real completion not yet arrived). Its ack tool_result is ' +
+                  'suppressed via the background consumed-set; no result is captured yet by design.'
+              } else {
+                diagnosis =
+                  `REAL ORPHAN — subagent "${toolName}" record exists (status=${subRecord.status}) ` +
+                  'but result was never captured, so the card cannot merge it. The merge step ' +
+                  'in updateIndexes did not run (record not "running" when the result landed, ' +
+                  'or an id mismatch).'
+              }
             } else {
               // Shouldn't happen — result present means it was consumed above.
               diagnosis =

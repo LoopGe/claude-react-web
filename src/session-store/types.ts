@@ -38,7 +38,7 @@ export interface TranscriptItem {
   deliveryStatus?: 'queued' | 'consumed'
 }
 
-export type SubagentStatus = 'running' | 'done' | 'rejected' | 'interrupted'
+export type SubagentStatus = 'running' | 'background' | 'done' | 'rejected' | 'interrupted'
 
 export interface ActiveSubagent {
   toolUseId: string
@@ -46,7 +46,14 @@ export interface ActiveSubagent {
   startedAt?: number
   /** Set when the matching tool_result lands. Undefined while running. */
   endedAt?: number
-  /** Lifecycle status. Drives chip color and overlay header. */
+  /** Lifecycle status. Drives chip color and overlay header.
+   *
+   *  `background` is exclusive to async/background subagents: their Agent
+   *  tool_result is a launch ack (not completion), so instead of flipping to
+   *  `done` they enter `background` and stay there — still shown in the
+   *  WorkingBubble chip row — until the real completion signal (a
+   *  `<task-notification>` user injection or a `system`/`task_notification`
+   *  frame carrying this record's tool_use_id) flips them to `done`. */
   status: SubagentStatus
   /** Pre-computed count of tool_use blocks within this subagent's messages.
    *  Incremented during updateIndexes so SubagentCard doesn't need to scan

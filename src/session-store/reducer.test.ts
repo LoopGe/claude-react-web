@@ -301,12 +301,13 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     expect(after?.status).toBe('interrupted')
   })
 
-  it('advances endedAt to the last child frame for an async-ack subagent', () => {
+  it('flips an async-ack subagent to background (not done) and advances endedAt to the last child frame', () => {
     // Async/background subagent: the Agent tool_result is a launch ack that
     // arrives within ms of the tool_use, well before the subagent's real
     // output streams as child frames (parent_tool_use_id === subagent id).
-    // endedAt must track the last child frame, not the ack — otherwise the
-    // card shows ~0s elapsed for a subagent that ran for seconds.
+    // The ack must NOT flip status to 'done' — it flips to 'background' so
+    // the chip stays in the WorkingBubble row, with NO endedAt (the ack time
+    // isn't the real run time). endedAt then tracks the last child frame.
     const ackAt = 1_000
     const childAt = 6_000 // 5s later — the subagent's real run time
     const childFrame: SdkMessage = {
@@ -339,18 +340,242 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     let state = createInitialSessionState('s1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
     state = reduceSessionState(state, { type: 'MESSAGE', message: ackResult })
-    // Ack has landed — endedAt is the ack's receivedAt (would be ~0s elapsed).
-    expect(state.mirror.activeSubagents.get('tu_agent')?.endedAt).toBe(ackAt)
+    // Ack landed → 'background' (still working, chip stays visible). No
+    // endedAt, no result — the ack is internal metadata, not completion.
+    const afterAck = state.mirror.activeSubagents.get('tu_agent')
+    expect(afterAck?.status).toBe('background')
+    expect(afterAck?.endedAt).toBeUndefined()
+    expect(afterAck?.result).toBeUndefined()
 
     // The subagent's real output arrives 5s later as a child frame.
     state = reduceSessionState(state, { type: 'MESSAGE', message: childFrame })
     const record = state.mirror.activeSubagents.get('tu_agent')
     expect(record?.endedAt).toBe(childAt)
-    expect(record?.status).toBe('done')
-    // The child text frame overrides the ack as the card's result — the
-    // ack is internal metadata, the real output is the subagent's text.
+    // Still 'background' — child frames don't complete an async subagent.
+    expect(record?.status).toBe('background')
+    // The child text frame is captured as the card's result — the ack is
+    // internal metadata, the real output is the subagent's text.
     expect(record?.result?.content).toEqual([{ type: 'text', text: 'worker output' }])
     expect(record?.result?.isError).toBe(false)
+  })
+
+  it('flips a background subagent to done when the harness <task-notification> arrives', () => {
+    // The real completion signal for an async subagent is a <task-notification>
+    // user-role XML injection carrying the originating Agent tool_use_id.
+    // It must flip 'background' → 'done', stamp endedAt to the notification's
+    // receivedAt, and leave the already-captured child-text result in place
+    // (don't clobber the streamed output with the repackaged notification).
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-1',
+      receivedAt: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_async', name: 'Agent', input: { description: 'do work' } }],
+      },
+    } as unknown as SdkMessage
+    const ack: SdkMessage = {
+      type: 'user',
+      uuid: 'u-1',
+      parent_tool_use_id: null,
+      receivedAt: 1_000,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_async', content: 'Async agent launched successfully' }],
+      },
+    } as unknown as SdkMessage
+    const child: SdkMessage = {
+      type: 'assistant',
+      uuid: 'c-1',
+      parent_tool_use_id: 'tu_async',
+      receivedAt: 5_000,
+      message: { role: 'assistant', content: [{ type: 'text', text: 'real output' }] },
+    } as unknown as SdkMessage
+    const doneAt = 9_000
+    const notification: SdkMessage = {
+      type: 'user',
+      uuid: 'u-done',
+      parent_tool_use_id: null,
+      receivedAt: doneAt,
+      message: {
+        role: 'user',
+        content: '<task-notification>\n<task-id>t-1</task-id>\n<tool-use-id>tu_async</tool-use-id>\n<status>completed</status>\n<summary>done</summary>\n<result>repackaged</result>\n</task-notification>',
+      },
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: child })
+    expect(state.mirror.activeSubagents.get('tu_async')?.status).toBe('background')
+
+    state = reduceSessionState(state, { type: 'MESSAGE', message: notification })
+    const record = state.mirror.activeSubagents.get('tu_async')
+    expect(record?.status).toBe('done')
+    expect(record?.endedAt).toBe(doneAt)
+    // Child-text result is NOT clobbered by the notification's <result>.
+    expect(record?.result?.content).toEqual([{ type: 'text', text: 'real output' }])
+    expect(record?.result?.isError).toBe(false)
+  })
+
+  it('flips a background subagent to done via the SDK system/task_notification frame', () => {
+    // The SDK's own completion path: a `system`/`task_notification` frame
+    // with an optional tool_use_id. When present it must flip 'background'
+    // → 'done'. Without child text, the result falls back to the summary.
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-1',
+      receivedAt: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_sys', name: 'Agent', input: { description: 'do work' } }],
+      },
+    } as unknown as SdkMessage
+    const ack: SdkMessage = {
+      type: 'user',
+      uuid: 'u-1',
+      parent_tool_use_id: null,
+      receivedAt: 1_000,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_sys', content: 'Async agent launched successfully' }],
+      },
+    } as unknown as SdkMessage
+    const doneAt = 8_000
+    const sysFrame: SdkMessage = {
+      type: 'system',
+      subtype: 'task_notification',
+      uuid: 'sys-1',
+      task_id: 't-1',
+      tool_use_id: 'tu_sys',
+      status: 'completed',
+      summary: 'all done',
+      output_file: '/tmp/x',
+      receivedAt: doneAt,
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    expect(state.mirror.activeSubagents.get('tu_sys')?.status).toBe('background')
+
+    state = reduceSessionState(state, { type: 'MESSAGE', message: sysFrame })
+    const record = state.mirror.activeSubagents.get('tu_sys')
+    expect(record?.status).toBe('done')
+    expect(record?.endedAt).toBe(doneAt)
+    // No child text → result falls back to the summary string.
+    expect(record?.result?.content).toBe('all done')
+    expect(record?.result?.isError).toBe(false)
+  })
+
+  it('recovers a lost ack: completion flips a still-running record to done', () => {
+    // If the launch-ack tool_result frame is lost (WS gap / replay hole), the
+    // record never flips to 'background' and stays 'running'. The completion
+    // signal must still flip it to 'done' (the guard accepts 'running') and
+    // stamp isAsync/result so the card doesn't degrade.
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-1',
+      receivedAt: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_lost', name: 'Agent', input: { description: 'do work' } }],
+      },
+    } as unknown as SdkMessage
+    // NOTE: no ack frame — it was lost.
+    const notification: SdkMessage = {
+      type: 'user',
+      uuid: 'u-done',
+      parent_tool_use_id: null,
+      receivedAt: 9_000,
+      message: {
+        role: 'user',
+        content: '<task-notification>\n<task-id>t-1</task-id>\n<tool-use-id>tu_lost</tool-use-id>\n<status>completed</status>\n<summary>recovered</summary>\n</task-notification>',
+      },
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
+    expect(state.mirror.activeSubagents.get('tu_lost')?.status).toBe('running')
+
+    state = reduceSessionState(state, { type: 'MESSAGE', message: notification })
+    const record = state.mirror.activeSubagents.get('tu_lost')
+    expect(record?.status).toBe('done')
+    expect(record?.endedAt).toBe(9_000)
+    expect(record?.isAsync).toBe(true)
+    expect(record?.result?.content).toBe('recovered')
+  })
+
+  it('does not misfire the ack sniff on a sync result that merely mentions the phrase', () => {
+    // The ack regex is anchored to the START of the content and the exact ack
+    // phrase, so a synchronous subagent whose real tool_result text contains
+    // "async agent launched" mid-sentence must NOT be mistaken for a launch
+    // ack (which would strand it on 'background' forever with no result).
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-1',
+      receivedAt: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_sync', name: 'Agent', input: { description: 'investigate' } }],
+      },
+    } as unknown as SdkMessage
+    const realResult: SdkMessage = {
+      type: 'user',
+      uuid: 'u-1',
+      parent_tool_use_id: null,
+      receivedAt: 1_000,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_sync', content: 'I found that the async agent launched at 14:32 and completed.' }],
+      },
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: realResult })
+    const record = state.mirror.activeSubagents.get('tu_sync')
+    // Not mistaken for an ack → real completion, done with the real result.
+    expect(record?.status).toBe('done')
+    expect(record?.result?.content).toBe('I found that the async agent launched at 14:32 and completed.')
+  })
+
+  it('does not sweep a background subagent at turn end (result frame)', () => {
+    // The turn-end sweep flips still-'running' subagents to 'interrupted'
+    // (their tool_result never arrived). A 'background' subagent is NOT
+    // stale — it's an async agent still working in the background — so it
+    // must survive the sweep and stay 'background' for the next turn.
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-1',
+      receivedAt: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_bg', name: 'Agent', input: { description: 'do work' } }],
+      },
+    } as unknown as SdkMessage
+    const ack: SdkMessage = {
+      type: 'user',
+      uuid: 'u-1',
+      parent_tool_use_id: null,
+      receivedAt: 1_000,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_bg', content: 'Async agent launched successfully' }],
+      },
+    } as unknown as SdkMessage
+    const result: SdkMessage = {
+      type: 'result',
+      subtype: 'success',
+      uuid: 'r-1',
+      receivedAt: 2_000,
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: result })
+    expect(state.mirror.activeSubagents.get('tu_bg')?.status).toBe('background')
   })
 
   it('keeps the sync tool_result as result when it lands after child text', () => {
