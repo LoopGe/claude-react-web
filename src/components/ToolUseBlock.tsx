@@ -1166,7 +1166,9 @@ function TodoWriteView({ input, toolUseId, searchQuery, activeMatchIdx }: ToolVi
               <span className="inline-todo-icon" aria-hidden>
                 <Icon size={12} />
               </span>
-              <span className="inline-todo-text">{content}</span>
+              <span className="inline-todo-text">
+                <span className="inline-todo-text-shimmer">{content}</span>
+              </span>
             </li>
           )
         })}

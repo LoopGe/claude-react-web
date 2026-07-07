@@ -1190,7 +1190,9 @@
   color: var(--accent);
   animation: todo-icon-pulse 2s ease-in-out infinite;
 }
-.inline-todo-in_progress .inline-todo-text {
+.inline-todo-in_progress .inline-todo-text-shimmer {
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
   background: linear-gradient(90deg,
     var(--fg) 0%, var(--fg) 35%, var(--accent) 50%, var(--fg) 65%, var(--fg) 100%);
   background-size: 200% 100%;
@@ -1227,7 +1229,7 @@
     transform: translateY(-0.5px);
   }
   .todo-panel-working .todo-in_progress .todo-text-shimmer,
-  .inline-todo-in_progress .inline-todo-text {
+  .inline-todo-in_progress .inline-todo-text-shimmer {
     animation: none;
     background: none;
     -webkit-text-fill-color: var(--accent);
