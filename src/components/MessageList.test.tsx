@@ -1731,3 +1731,53 @@ describe('file-path click-to-copy', () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('src/Foo.tsx')
   })
 })
+
+describe('diff search highlighting', () => {
+  it('counts + highlights the active search match inside an Edit diff body', () => {
+    // Assistant message: text (no "foo") + an Edit whose del/add lines contain
+    // "foo". The active match (index 0) is the del line "foo"; the add line
+    // "foobar" is a non-active yellow match.
+    const items = toItems([
+      makeMsg('assistant', {
+        message: { content: [
+          { type: 'text', text: 'hello world' },
+          { type: 'tool_use', id: 'tu-1', name: 'Edit', input: { file_path: 'a.ts', old_string: 'foo', new_string: 'foobar' } },
+        ] },
+      }),
+    ])
+    const { container } = render(
+      <MessageList
+        items={items}
+        searchQuery="foo"
+        searchActiveMsgIdx={0}
+        searchActiveMatchInItem={0}
+      />,
+    )
+
+    // The del line "foo" holds the active (0th) match.
+    const activeMark = container.querySelector('mark.search-hl-active')
+    expect(activeMark).toBeTruthy()
+    expect(activeMark?.textContent).toContain('foo')
+
+    // Both del ("foo") and add ("foobar") carry a yellow mark.
+    const allMarks = container.querySelectorAll('mark.search-hl')
+    expect(allMarks.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('highlights matches even for files with an unregistered language', () => {
+    // .txt has no registered lowlight language → detectLangSafe returns null.
+    // DiffLine must still reach highlightLineHast's plain-text mark path.
+    const items = toItems([
+      makeMsg('assistant', {
+        message: { content: [
+          { type: 'tool_use', id: 'tu-2', name: 'Edit', input: { file_path: 'notes.txt', old_string: 'foo', new_string: 'foobar' } },
+        ] },
+      }),
+    ])
+    const { container } = render(
+      <MessageList items={items} searchQuery="foo" searchActiveMsgIdx={0} searchActiveMatchInItem={0} />,
+    )
+    expect(container.querySelectorAll('mark.search-hl').length).toBeGreaterThanOrEqual(1)
+    expect(container.querySelector('mark.search-hl-active')).toBeTruthy()
+  })
+})

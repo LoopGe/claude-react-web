@@ -26,7 +26,7 @@ import { getBlocks, getEnterPlanToolUseIds, isHumanUserMessage, isTaskNotificati
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
 import { IconArrowDown, IconZap, IconUser, IconExternalLink, IconSquare, IconClock } from './icons/ToolIcons'
-import { countMatches, extractPlainText, extractMessagePlainText } from '../search'
+import { countMatches, extractPlainText, extractMessagePlainText, extractToolUseDiffText } from '../search'
 import { BlockView, ToolResultBlock } from './message-list/blocks'
 import { OlderHistoryHeader, StreamingFooter } from './message-list/transcript-chrome'
 import { ChatEmptyState } from './ChatEmptyState'
@@ -1712,15 +1712,17 @@ const MessageView = memo(function MessageView({
   // Stable `msg` reference (the store hands us immutable items) —  // stable `blocks` —stable `block` props —memos hit.
   const blocks = useMemo(() => getBlocks(msg), [msg])
 
-  // Active-match plumbing for multi-text-block assistant messages.
-  // Each text block runs its OWN rehype highlighter, so we have to
-  // rebase the message-local match index into per-block coordinates:
-  // figure out how many matches each text block contributes and pass
-  // the correct sub-index to the one containing the active hit. Other
-  // blocks get `undefined` so their <mark>s render at the default
-  // colour. We compute per-block counts on the same `extractPlainText`
-  // view the highlighter uses, so the sums line up with what the
-  // user can actually navigate to.
+  // Active-match plumbing for multi-block assistant messages.
+  // Each text block AND each tool_use diff runs its OWN highlighter, so we
+  // rebase the message-local match index into per-block coordinates: figure
+  // out how many matches each block contributes (text via extractPlainText,
+  // tool_use diff via extractToolUseDiffText) and pass the correct sub-index
+  // to the one containing the active hit. Other blocks get `undefined` so
+  // their <mark>s render at the default colour. We compute per-block counts
+  // on the same view the highlighter uses, so the sums line up with what the
+  // user can actually navigate to. tool_result blocks are handled separately
+  // by `toolResultActiveMatchIdx` below (they only appear in user frames,
+  // which never carry tool_use, so the two walks don't overlap).
   // NOTE: this hook MUST stay at the top level (before any conditional
   // `return`), even though only the assistant branch consumes it —  // calling it inside `if (type === 'assistant')` changes the hook
   // count between renders of different message types (React error #310).
@@ -1731,8 +1733,12 @@ const MessageView = memo(function MessageView({
     let remaining = activeMatchInItem
     for (let i = 0; i < blocks.length; i++) {
       const b = blocks[i]
-      if (b.type !== 'text' || typeof b.text !== 'string') continue
-      const n = countMatches(extractPlainText(b.text), q)
+      let n = 0
+      if (b.type === 'text' && typeof b.text === 'string') {
+        n = countMatches(extractPlainText(b.text), q)
+      } else if (b.type === 'tool_use') {
+        n = countMatches(extractToolUseDiffText(b.input, b.name), q)
+      }
       if (n === 0) continue
       if (remaining < n) {
         out[i] = remaining

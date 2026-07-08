@@ -18,6 +18,7 @@
 
 import type { ReactNode } from 'react'
 import { lowlight, isRegisteredLanguage } from './lowlight-instance'
+import { rehypeHighlightQuery } from '../search'
 
 /** Loose hast-like node so we can walk lowlight's output without pulling
  *  in the full @types/hast dependency tree. */
@@ -29,23 +30,27 @@ interface HastNode {
   children?: HastNode[]
 }
 
-/** Convert a hast subtree into React children. Only handles the two
- *  node types lowlight emits: `text` (string content) and `element`
- *  (always a <span> with hljs-* classes). Anything else is ignored. */
+/** Convert a hast subtree into React children. Handles the node types lowlight
+ *  emits (`text`, `<span>` with hljs-* classes) plus the `<mark>` elements the
+ *  search-highlight transformer (`rehypeHighlightQuery`) splices in
+ *  (`search-hl` / `search-hl-active`). Anything else is walked into defensively. */
 function renderHast(nodes: HastNode[]): ReactNode[] {
   const out: ReactNode[] = []
   let key = 0
   for (const node of nodes) {
     if (node.type === 'text') {
       out.push(node.value ?? '')
-    } else if (node.type === 'element' && node.tagName === 'span') {
+    } else if (node.type === 'element' && (node.tagName === 'span' || node.tagName === 'mark')) {
       const className = Array.isArray(node.properties?.className)
         ? node.properties!.className.join(' ')
         : undefined
+      // Render <mark> as a real <mark> — the search-hl CSS targets
+      // `mark.search-hl` (element selector), so a <span> wouldn't match.
+      const Tag = node.tagName as 'span' | 'mark'
       out.push(
-        <span key={key++} className={className}>
+        <Tag key={key++} className={className}>
           {node.children ? renderHast(node.children) : null}
-        </span>,
+        </Tag>,
       )
     } else if (node.children) {
       // Defensive: walk into anything else we don't recognise.
@@ -69,33 +74,76 @@ const HIGHLIGHT_CACHE_MAX = 2000
 /** Highlight a single source line with lowlight; return React children or
  *  null when nothing useful to highlight (empty line, unknown language).
  *
+ *  When `query` is given, search matches are additionally wrapped in
+ *  `<mark class="search-hl">` (the `activeMatchIdx`-th one gets
+ *  `search-hl-active`) by running the same `rehypeHighlightQuery` transformer
+ *  the Markdown path uses, on lowlight's hast. The result composes syntax
+ *  colouring with search marks. The (language, line) cache is bypassed while
+ *  searching — the cache key doesn't include query/active, and re-using a
+ *  non-search cached tree would drop the marks.
+ *
  *  Best-effort by design — diff lines often contain partial syntax (a
  *  truncated string, an unbalanced brace) which lowlight tolerates by
  *  walking until end-of-line. We don't need the result to round-trip
  *  through a parser; we just need *some* token colourisation so the eye
  *  can pick out keywords and identifiers. */
-export function highlightLineHast(language: string, line: string): ReactNode | null {
+export function highlightLineHast(
+  language: string | null,
+  line: string,
+  query?: string,
+  activeMatchIdx?: number,
+): ReactNode | null {
   if (!line) return null
-  if (!isRegisteredLanguage(language)) return null
+  const q = query?.trim()
+  // `language && isRegisteredLanguage(language)` narrows language to string
+  // for the lowlight calls below (lowlight.highlight requires a string).
+  const lang = language != null && isRegisteredLanguage(language) ? language : null
 
-  const cacheKey = `${language}\n${line}`
-  const cached = HIGHLIGHT_CACHE.get(cacheKey)
-  if (cached !== undefined) return cached
+  if (!q) {
+    // No search query — syntax-only, cached. No marks for unknown languages.
+    if (!lang) return null
+    const cacheKey = `${lang}\n${line}`
+    const cached = HIGHLIGHT_CACHE.get(cacheKey)
+    if (cached !== undefined) return cached
 
-  let value: ReactNode | null = null
+    let value: ReactNode | null = null
+    try {
+      const result = lowlight.highlight(lang, line)
+      const children = (result.children ?? []) as HastNode[]
+      value = children.length === 0 ? null : <>{renderHast(children)}</>
+    } catch {
+      value = null
+    }
+
+    if (HIGHLIGHT_CACHE.size >= HIGHLIGHT_CACHE_MAX) {
+      const oldest = HIGHLIGHT_CACHE.keys().next().value
+      if (oldest !== undefined) HIGHLIGHT_CACHE.delete(oldest)
+    }
+    HIGHLIGHT_CACHE.set(cacheKey, value)
+    return value
+  }
+
+  // Search active. If the language is registered, compose syntax colouring
+  // with <mark>s by running the search transformer on lowlight's hast tree
+  // (the transformer takes the ROOT node — it walks root.children, so passing
+  // the children array directly would miss). For unregistered languages,
+  // still wrap matches on the plain text so search works on every diff line.
+  if (lang) {
+    try {
+      const result = lowlight.highlight(lang, line)
+      rehypeHighlightQuery(q, activeMatchIdx)(result)
+      const children = (result.children ?? []) as HastNode[]
+      return children.length === 0 ? null : <>{renderHast(children)}</>
+    } catch {
+      return null
+    }
+  }
+  const tree: HastNode = { type: 'root', children: [{ type: 'text', value: line }] }
   try {
-    const result = lowlight.highlight(language, line)
-    const children = (result.children ?? []) as HastNode[]
-    value = children.length === 0 ? null : <>{renderHast(children)}</>
+    rehypeHighlightQuery(q, activeMatchIdx)(tree)
   } catch {
-    value = null
+    return line
   }
-
-  // Evict the oldest entry (Map preserves insertion order) when over cap.
-  if (HIGHLIGHT_CACHE.size >= HIGHLIGHT_CACHE_MAX) {
-    const oldest = HIGHLIGHT_CACHE.keys().next().value
-    if (oldest !== undefined) HIGHLIGHT_CACHE.delete(oldest)
-  }
-  HIGHLIGHT_CACHE.set(cacheKey, value)
-  return value
+  const children = (tree.children ?? []) as HastNode[]
+  return children.length === 0 ? line : <>{renderHast(children)}</>
 }

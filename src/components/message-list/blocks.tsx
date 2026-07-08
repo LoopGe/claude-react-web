@@ -53,7 +53,14 @@ export const BlockView = memo(function BlockView({ block, searchQuery, activeMat
     )
   }
   if (block.type === 'tool_use') {
-    return <ToolUseBlock block={block} searchQuery={searchQuery} activeMatchIdx={toolResultActiveMatchIdx} />
+    return (
+      <ToolUseBlock
+        block={block}
+        searchQuery={searchQuery}
+        activeMatchIdx={toolResultActiveMatchIdx}
+        diffActiveMatchIdx={activeMatchIdx}
+      />
+    )
   }
   return (
     <div className="tool-input">

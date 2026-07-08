@@ -70,6 +70,7 @@ import { truncate } from '../utils/text'
 import { splitFilePath, shortenDir, detectLanguage } from '../utils/file-display'
 import { resolveAbsolutePath } from '../utils/paths'
 import { highlightLineHast } from '../utils/diff-highlight'
+import { lineDiff, countMatches, extractToolUseDiffText } from '../search'
 import { extractToolUseId } from '../session-store/normalize'
 import type { Block, QuestionSpec } from '../types'
 
@@ -84,7 +85,12 @@ type ToolViewProps = {
   toolName?: string
   toolUseId?: string
   searchQuery?: string
+  /** Active match index for the tool_result body (forwarded to ToolCard). */
   activeMatchIdx?: number
+  /** Active match index for the diff body (Edit/Write/NotebookEdit input) —
+   *  the Nth match within this tool_use's indexed diff text. Forwarded to
+   *  DiffChunk/ExpandableDiff, which rebase it per line. */
+  diffActiveMatchIdx?: number
 }
 type ToolInputView = ComponentType<ToolViewProps>
 
@@ -113,7 +119,7 @@ function isSafeUrl(url: string): boolean {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-export const ToolUseBlock = memo(function ToolUseBlock({ block, searchQuery, activeMatchIdx }: { block: Block; searchQuery?: string; activeMatchIdx?: number }) {
+export const ToolUseBlock = memo(function ToolUseBlock({ block, searchQuery, activeMatchIdx, diffActiveMatchIdx }: { block: Block; searchQuery?: string; activeMatchIdx?: number; diffActiveMatchIdx?: number }) {
   const name = block.name
   const input = block.input as Record<string, unknown> | undefined
   const id = extractToolUseId(block)
@@ -162,7 +168,7 @@ export const ToolUseBlock = memo(function ToolUseBlock({ block, searchQuery, act
 
   const View = name ? TOOL_VIEWS[name] : undefined
   if (View) {
-    return <View input={input} toolName={name} toolUseId={id} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />
+    return <View input={input} toolName={name} toolUseId={id} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} diffActiveMatchIdx={diffActiveMatchIdx} />
   }
   // Unknown tool — fall back to raw JSON inside a generic ToolCard so the
   // status badge is still visible and the row aligns with the rest of the
@@ -613,7 +619,7 @@ function QuestionItemView({
 // Edit / MultiEdit
 // ---------------------------------------------------------------------------
 
-const EditToolView = memo(function EditToolView({ input, toolUseId, searchQuery, activeMatchIdx }: ToolViewProps) {
+const EditToolView = memo(function EditToolView({ input, toolUseId, searchQuery, activeMatchIdx, diffActiveMatchIdx }: ToolViewProps) {
   // Hooks must run before the early return below, so derive editList /
   // filePath via useMemo and resolve start lines unconditionally.
   const cwd = useSessionCwd()
@@ -656,6 +662,24 @@ const EditToolView = memo(function EditToolView({ input, toolUseId, searchQuery,
   // gutter and no context rather than misleading numbers.
   const anchors = useMemo<EditAnchor[]>(() => editList.map((e) => ({ old: e.old, new: e.new })), [editList])
   const diffInfos = useEditDiffInfo(cwd, filePath ?? undefined, anchors)
+
+  // Per-edit active match. The diff-local index covers ALL edits' del+add text
+  // concatenated (see extractToolUseDiffText for MultiEdit), so locate which
+  // edit holds it + its local sub-index. Memoized (and before the early return
+  // — hooks can't be conditional): extractToolUseDiffText runs a lineDiff
+  // (O(M·N) DP) per edit, so avoid re-running it on unrelated re-renders.
+  const qq = searchQuery?.trim()
+  const activeEdit = useMemo(
+    () =>
+      qq && diffActiveMatchIdx != null && diffActiveMatchIdx >= 0
+        ? locateActiveSegment(
+            editList.map((e) => extractToolUseDiffText({ old_string: e.old, new_string: e.new }, 'Edit')),
+            qq,
+            diffActiveMatchIdx,
+          )
+        : null,
+    [editList, qq, diffActiveMatchIdx],
+  )
 
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
@@ -705,6 +729,8 @@ const EditToolView = memo(function EditToolView({ input, toolUseId, searchQuery,
             filePath={filePath ?? undefined}
             label={editList.length > 1 ? `edit ${i + 1}` : undefined}
             info={diffInfos[i]}
+            searchQuery={searchQuery}
+            activeMatchIdx={i === activeEdit?.segment ? activeEdit.local : undefined}
           />
         ))}
       </div>
@@ -716,7 +742,7 @@ const EditToolView = memo(function EditToolView({ input, toolUseId, searchQuery,
 // Write
 // ---------------------------------------------------------------------------
 
-const WriteToolView = memo(function WriteToolView({ input, toolUseId, searchQuery, activeMatchIdx }: ToolViewProps) {
+const WriteToolView = memo(function WriteToolView({ input, toolUseId, searchQuery, activeMatchIdx, diffActiveMatchIdx }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -742,6 +768,8 @@ const WriteToolView = memo(function WriteToolView({ input, toolUseId, searchQuer
         <ExpandableDiff
           lines={lines}
           filePath={filePath ?? undefined}
+          searchQuery={searchQuery}
+          activeMatchIdx={diffActiveMatchIdx}
         />
       </div>
     </ToolCard>
@@ -752,59 +780,35 @@ const WriteToolView = memo(function WriteToolView({ input, toolUseId, searchQuer
 // Shared sub-components (diff rendering)
 // ---------------------------------------------------------------------------
 
-/** Line-level LCS diff of two strings → interleaved op sequence
- *  (equal / delete / add) with 0-based oldIdx / newIdx per op. Used by
- *  DiffChunk to render a unified-style interleaved diff (claude-code /
- *  `git diff` reading order) instead of a before/after split.
- *
- *  O(M·N) DP is fine here: old_string / new_string are edit fragments, not
- *  whole files, so M and N are small (typically <100 lines). */
-type LineDiffOp =
-  | { type: 'eq'; oldIdx: number; newIdx: number; text: string }
-  | { type: 'del'; oldIdx: number; newIdx: number; text: string }
-  | { type: 'add'; oldIdx: number; newIdx: number; text: string }
+// `lineDiff` (line-level LCS) is imported from ../search — it's shared with the
+// search indexer (extract.ts) so the del/add lines counted as "the modifications"
+// are exactly the ones rendered here.
 
-function lineDiff(oldLines: readonly string[], newLines: readonly string[]): LineDiffOp[] {
-  const m = oldLines.length
-  const n = newLines.length
-  if (m === 0) return newLines.map((text, j) => ({ type: 'add' as const, oldIdx: 0, newIdx: j, text }))
-  if (n === 0) return oldLines.map((text, i) => ({ type: 'del' as const, oldIdx: i, newIdx: 0, text }))
+/** Pure helpers that locate the active search match within a diff. Given a
+ *  sequence of text segments (del/add lines, or per-edit chunks) in render
+ *  order and a target match index (0-based across all segments), return which
+ *  segment holds that match + its local sub-index, or null. The accumulator is
+ *  function-local (not component scope), so these don't trip the
+ *  react-hooks/immutability rule, and they need no useMemo (the compiler
+ *  auto-memoizes). Mirrors the rebasing walk MessageView.blockActiveIdx does
+ *  across message content blocks. */
+function locateActiveSegment(texts: string[], q: string, activeIdx: number): { segment: number; local: number } | null {
+  let remaining = activeIdx
+  for (let i = 0; i < texts.length; i++) {
+    const n = countMatches(texts[i], q)
+    if (n === 0) continue
+    if (remaining < n) return { segment: i, local: remaining }
+    remaining -= n
+  }
+  return null
+}
 
-  // LCS length DP, built from the bottom-right so we can walk forward.
-  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0))
-  for (let i = m - 1; i >= 0; i--) {
-    const row = dp[i]
-    const next = dp[i + 1]
-    const oi = oldLines[i]
-    for (let j = n - 1; j >= 0; j--) {
-      row[j] = oi === newLines[j] ? next[j + 1] + 1 : Math.max(next[j], row[j + 1])
-    }
-  }
-
-  const ops: LineDiffOp[] = []
-  let i = 0
-  let j = 0
-  while (i < m && j < n) {
-    if (oldLines[i] === newLines[j]) {
-      ops.push({ type: 'eq', oldIdx: i, newIdx: j, text: oldLines[i] })
-      i++; j++
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      ops.push({ type: 'del', oldIdx: i, newIdx: j, text: oldLines[i] })
-      i++
-    } else {
-      ops.push({ type: 'add', oldIdx: i, newIdx: j, text: newLines[j] })
-      j++
-    }
-  }
-  while (i < m) {
-    ops.push({ type: 'del', oldIdx: i, newIdx: j, text: oldLines[i] })
-    i++
-  }
-  while (j < n) {
-    ops.push({ type: 'add', oldIdx: i, newIdx: j, text: newLines[j] })
-    j++
-  }
-  return ops
+/** Keyed variant: locate the active segment among {key, text} items, returning
+ *  the containing item's key + local index. Thin wrapper over
+ *  locateActiveSegment so the rebasing loop lives in one place. */
+function locateActiveKeyed(items: { key: string; text: string }[], q: string, activeIdx: number): { key: string; local: number } | null {
+  const r = locateActiveSegment(items.map((it) => it.text), q, activeIdx)
+  return r ? { key: items[r.segment].key, local: r.local } : null
 }
 
 /** Render a single diff line with optional syntax highlighting via the
@@ -821,6 +825,8 @@ const DiffLine = memo(function DiffLine({
   newLine,
   gutterOldWidth,
   gutterNewWidth,
+  searchQuery,
+  activeMatchIdx,
 }: {
   line: string
   marker: '+' | '-' | ' '
@@ -835,9 +841,18 @@ const DiffLine = memo(function DiffLine({
   gutterOldWidth?: number
   /** New gutter column width in ch (0 / undefined → don't render the cell). */
   gutterNewWidth?: number
+  /** When set, wrap query matches in <mark> (activeMatchIdx-th gets
+   *  search-hl-active). Only del/add lines receive this — ctx lines are not
+   *  indexed, so they must not render marks the counter doesn't know about. */
+  searchQuery?: string
+  /** Index of the active match within THIS line's own match list (0-based). */
+  activeMatchIdx?: number
 }) {
-  // Empty lines: skip highlighting for a tiny perf win.
-  const hast = line && language ? highlightLineHast(language, line) : null
+  // Empty lines: skip highlighting for a tiny perf win. highlightLineHast now
+  // accepts a null language (renders plain-text search marks via the
+  // unregistered-language path), so the guard is `line` only — a null language
+  // must still reach it so files with undetectable extensions get <mark>s.
+  const hast = line ? highlightLineHast(language, line, searchQuery, activeMatchIdx) : null
   const showOld = (gutterOldWidth ?? 0) > 0
   const showNew = (gutterNewWidth ?? 0) > 0
   return (
@@ -866,6 +881,8 @@ const DiffChunk = memo(function DiffChunk({
   filePath,
   label,
   info,
+  searchQuery,
+  activeMatchIdx,
 }: {
   oldText: string
   newText: string
@@ -874,6 +891,14 @@ const DiffChunk = memo(function DiffChunk({
   /** Server-resolved unified-diff hunks for this edit. null / undefined → no
    *  gutter and no context; the bare interleaved +/- fragment still renders. */
   info?: EditDiffInfo | null
+  /** When set, del/add lines wrap query matches in <mark>. ctx lines do NOT
+   *  receive it — context isn't indexed, so highlighting it would create
+   *  visible marks the counter doesn't know about (breaking the invariant). */
+  searchQuery?: string
+  /** Index of the active match within this chunk's del+add text (0-based,
+   *  across all del/add lines in order). The containing line gets the local
+   *  sub-index; others get undefined. */
+  activeMatchIdx?: number
 }) {
   const language = filePath ? detectLangSafe(filePath) : null
   // '' → 0 lines (pure insertion / deletion); '\n' → ['', ''] (two empty
@@ -890,6 +915,35 @@ const DiffChunk = memo(function DiffChunk({
   const ops = useMemo(() => lineDiff(oldLines, newLines), [oldLines, newLines])
 
   const hunks = info?.hunks ?? null
+  const q = searchQuery?.trim()
+
+  // Resolve which del/add line holds the active match and its local sub-index,
+  // keyed by the same key the render loop uses (`${hi}-${li}` for hunks,
+  // `String(idx)` for the fallback). Walks the indexed lines in render order,
+  // subtracting per-line match counts — same rebasing idea as MessageView's
+  // blockActiveIdx. Pure (locateActiveKeyed's accumulator is function-local),
+  // so no useMemo and no render-body mutation.
+  const activeMatch = (() => {
+    if (!q || activeMatchIdx == null || activeMatchIdx < 0) return null
+    const items: { key: string; text: string }[] = []
+    if (hunks && hunks.length > 0) {
+      for (let hi = 0; hi < hunks.length; hi++) {
+        const h = hunks[hi]
+        for (let li = 0; li < h.lines.length; li++) {
+          const prefix = h.lines[li][0]
+          if (prefix === '-' || prefix === '+') {
+            items.push({ key: `${hi}-${li}`, text: h.lines[li].slice(1) })
+          }
+        }
+      }
+    } else {
+      for (let idx = 0; idx < ops.length; idx++) {
+        const op = ops[idx]
+        if (op.type !== 'eq') items.push({ key: String(idx), text: op.text })
+      }
+    }
+    return locateActiveKeyed(items, q, activeMatchIdx)
+  })()
 
   if (hunks && hunks.length > 0) {
     // Width each column to its widest visible number so ctx / del / add rows
@@ -916,6 +970,7 @@ const DiffChunk = memo(function DiffChunk({
         const prefix = raw[0]
         const text = raw.slice(1)
         if (prefix === ' ') {
+          // ctx — not indexed, no search highlight.
           rows.push(
             <DiffLine
               key={`${hi}-${li}`}
@@ -932,9 +987,10 @@ const DiffChunk = memo(function DiffChunk({
           oldLine++
           newLine++
         } else if (prefix === '-') {
+          const lineKey = `${hi}-${li}`
           rows.push(
             <DiffLine
-              key={`${hi}-${li}`}
+              key={lineKey}
               line={text}
               marker="-"
               variant="del"
@@ -942,13 +998,16 @@ const DiffChunk = memo(function DiffChunk({
               oldLine={oldLine}
               gutterOldWidth={gutterOldWidth}
               gutterNewWidth={gutterNewWidth}
+              searchQuery={q || undefined}
+              activeMatchIdx={activeMatch?.key === lineKey ? activeMatch.local : undefined}
             />,
           )
           oldLine++
         } else if (prefix === '+') {
+          const lineKey = `${hi}-${li}`
           rows.push(
             <DiffLine
-              key={`${hi}-${li}`}
+              key={lineKey}
               line={text}
               marker="+"
               variant="add"
@@ -956,6 +1015,8 @@ const DiffChunk = memo(function DiffChunk({
               newLine={newLine}
               gutterOldWidth={gutterOldWidth}
               gutterNewWidth={gutterNewWidth}
+              searchQuery={q || undefined}
+              activeMatchIdx={activeMatch?.key === lineKey ? activeMatch.local : undefined}
             />,
           )
           newLine++
@@ -982,6 +1043,8 @@ const DiffChunk = memo(function DiffChunk({
         {ops.map((op, idx) => {
           const variant = op.type === 'eq' ? 'ctx' : op.type === 'del' ? 'del' : 'add'
           const marker = op.type === 'eq' ? ' ' : op.type === 'del' ? '-' : '+'
+          const indexed = op.type !== 'eq'
+          const lineKey = String(idx)
           return (
             <DiffLine
               key={idx}
@@ -989,6 +1052,8 @@ const DiffChunk = memo(function DiffChunk({
               marker={marker}
               variant={variant}
               language={language}
+              searchQuery={indexed ? (q || undefined) : undefined}
+              activeMatchIdx={indexed && activeMatch?.key === lineKey ? activeMatch.local : undefined}
             />
           )
         })}
@@ -1008,15 +1073,30 @@ const DiffChunk = memo(function DiffChunk({
 const ExpandableDiff = memo(function ExpandableDiff({
   lines,
   filePath,
+  searchQuery,
+  activeMatchIdx,
 }: {
   lines: string[]
   filePath?: string
+  searchQuery?: string
+  /** Index of the active match within this block's full text (0-based, across
+   *  all lines in order). The containing line gets the local sub-index. */
+  activeMatchIdx?: number
 }) {
   const language = filePath ? detectLangSafe(filePath) : null
   const total = lines.length
   // Pure additions (Write / NotebookEdit) → single new-file line-number
   // column, no old column.
   const gutterNewWidth = String(total).length
+
+  const q = searchQuery?.trim()
+  // Resolve which line holds the active match and its local sub-index, by
+  // 0-based line index (visible + hidden walked in order). Pure helper — no
+  // useMemo, no render-body mutation.
+  const activeMatch = q && activeMatchIdx != null && activeMatchIdx >= 0
+    ? locateActiveSegment(lines, q, activeMatchIdx)
+    : null
+
   if (total <= MAX_PREVIEW_LINES) {
     return (
       <div className="diff-lines">
@@ -1029,6 +1109,8 @@ const ExpandableDiff = memo(function ExpandableDiff({
             language={language}
             newLine={i + 1}
             gutterNewWidth={gutterNewWidth}
+            searchQuery={q || undefined}
+            activeMatchIdx={activeMatch?.segment === i ? activeMatch.local : undefined}
           />
         ))}
       </div>
@@ -1048,11 +1130,16 @@ const ExpandableDiff = memo(function ExpandableDiff({
             language={language}
             newLine={i + 1}
             gutterNewWidth={gutterNewWidth}
+            searchQuery={q || undefined}
+            activeMatchIdx={activeMatch?.segment === i ? activeMatch.local : undefined}
           />
         ))}
       </div>
       <AnimatedDetails
         className="diff-truncation-details"
+        // Auto-expand while searching so matches in the truncated tail are
+        // reachable (mirrors ToolResultDetails' search auto-open).
+        open={q ? true : undefined}
         summary={(
           <span className="diff-truncation-summary">
             ... show {total - MAX_PREVIEW_LINES} more line{total - MAX_PREVIEW_LINES === 1 ? '' : 's'} ({total} total)
@@ -1060,17 +1147,22 @@ const ExpandableDiff = memo(function ExpandableDiff({
         )}
       >
         <div className="diff-lines">
-          {hidden.map((line, i) => (
-            <DiffLine
-              key={i}
-              line={line}
-              marker="+"
-              variant="add"
-              language={language}
-              newLine={MAX_PREVIEW_LINES + i + 1}
-              gutterNewWidth={gutterNewWidth}
-            />
-          ))}
+          {hidden.map((line, i) => {
+            const lineIdx = MAX_PREVIEW_LINES + i
+            return (
+              <DiffLine
+                key={i}
+                line={line}
+                marker="+"
+                variant="add"
+                language={language}
+                newLine={lineIdx + 1}
+                gutterNewWidth={gutterNewWidth}
+                searchQuery={q || undefined}
+                activeMatchIdx={activeMatch?.segment === lineIdx ? activeMatch.local : undefined}
+              />
+            )
+          })}
         </div>
       </AnimatedDetails>
     </>
@@ -1881,7 +1973,7 @@ function TaskOutputToolView({ input, toolUseId, searchQuery, activeMatchIdx }: T
  *   - 'delete'            : cell removed — show an empty body with
  *                           "(cell deleted)" instead of a diff.
  */
-function NotebookEditToolView({ input, toolUseId, searchQuery, activeMatchIdx }: ToolViewProps) {
+function NotebookEditToolView({ input, toolUseId, searchQuery, activeMatchIdx, diffActiveMatchIdx }: ToolViewProps) {
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -1929,6 +2021,8 @@ function NotebookEditToolView({ input, toolUseId, searchQuery, activeMatchIdx }:
           <ExpandableDiff
             lines={lines}
             filePath={filePath}
+            searchQuery={searchQuery}
+            activeMatchIdx={diffActiveMatchIdx}
           />
         </div>
       )}

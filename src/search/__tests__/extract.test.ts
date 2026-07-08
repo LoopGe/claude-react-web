@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { extractPlainText, extractMessagePlainText } from '../extract'
+import { extractPlainText, extractMessagePlainText, extractToolUseDiffText } from '../extract'
 import type { SdkMessage } from '../../types'
 
 describe('extractPlainText', () => {
@@ -122,5 +122,76 @@ describe('extractMessagePlainText', () => {
   it('falls back to msg.error for system error frames', () => {
     const msg = { type: 'system', subtype: 'error', error: 'boom' } as unknown as SdkMessage
     expect(extractMessagePlainText(msg)).toBe('boom')
+  })
+})
+
+// ── tool_use diff extraction ───────────────────────────────────────
+
+describe('extractToolUseDiffText', () => {
+  it('Edit: del+add lines only (eq excluded), in unified order', () => {
+    // old="a\nb\nc", new="a\nB\nc" → eq a, del b, add B, eq c → "b\nB"
+    expect(extractToolUseDiffText(
+      { old_string: 'a\nb\nc', new_string: 'a\nB\nc' },
+      'Edit',
+    )).toBe('b\nB')
+  })
+
+  it('MultiEdit: concatenates each edit del+add with blank-line separator', () => {
+    expect(extractToolUseDiffText(
+      { edits: [
+        { old_string: 'x', new_string: 'y' },
+        { old_string: 'p\nq', new_string: 'p\nQ' },
+      ] },
+      'MultiEdit',
+    )).toBe('x\ny\n\nq\nQ')
+  })
+
+  it('Write: full content', () => {
+    expect(extractToolUseDiffText({ content: 'line1\nline2' }, 'Write')).toBe('line1\nline2')
+  })
+
+  it('NotebookEdit: new_source (replace/insert)', () => {
+    expect(extractToolUseDiffText({ new_source: 'cell code', edit_mode: 'replace' }, 'NotebookEdit')).toBe('cell code')
+  })
+
+  it('NotebookEdit delete mode: nothing indexed', () => {
+    expect(extractToolUseDiffText({ new_source: 'cell code', edit_mode: 'delete' }, 'NotebookEdit')).toBe('')
+  })
+
+  it('non-diff tools (Bash/Read/Grep) contribute nothing', () => {
+    expect(extractToolUseDiffText({ command: 'ls', file_path: 'a' }, 'Bash')).toBe('')
+    expect(extractToolUseDiffText({ file_path: 'a' }, 'Read')).toBe('')
+    expect(extractToolUseDiffText({ pattern: 'x' }, 'Grep')).toBe('')
+  })
+
+  it('defensive: missing/malformed fields → empty', () => {
+    expect(extractToolUseDiffText({}, 'Edit')).toBe('')
+    expect(extractToolUseDiffText({ old_string: 5 }, 'Edit')).toBe('')
+    expect(extractToolUseDiffText(null, 'Edit')).toBe('')
+  })
+})
+
+describe('extractMessagePlainText tool_use integration', () => {
+  it('Edit tool_use contributes its del+add text between text blocks', () => {
+    const msg = {
+      type: 'assistant',
+      message: { content: [
+        { type: 'text', text: 'editing now' },
+        { type: 'tool_use', name: 'Edit', input: { old_string: 'foo\nbar', new_string: 'foo\nBAR' } },
+        { type: 'text', text: 'done' },
+      ] },
+    } as unknown as SdkMessage
+    // text "editing now" + Edit del+add "bar\nBAR" + text "done", \n\n joined.
+    expect(extractMessagePlainText(msg)).toBe('editing now\n\nbar\nBAR\n\ndone')
+  })
+
+  it('Write tool_use contributes its content', () => {
+    const msg = {
+      type: 'assistant',
+      message: { content: [
+        { type: 'tool_use', name: 'Write', input: { file_path: 'a.ts', content: 'export const x = 1' } },
+      ] },
+    } as unknown as SdkMessage
+    expect(extractMessagePlainText(msg)).toBe('export const x = 1')
   })
 })

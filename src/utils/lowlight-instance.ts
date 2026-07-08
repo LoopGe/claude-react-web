@@ -111,6 +111,6 @@ const REGISTERED = new Set<string>([
   'properties',
 ])
 
-export function isRegisteredLanguage(lang: string): boolean {
-  return REGISTERED.has(lang)
+export function isRegisteredLanguage(lang: string | null | undefined): boolean {
+  return lang != null && REGISTERED.has(lang)
 }
