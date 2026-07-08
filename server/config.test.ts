@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { config, loadConfig, updateConfigFile } from './config.js'
+import { clearCredentials, config, loadConfig, readConfigFile, updateConfigFile } from './config.js'
 import { tempDir } from './__test-utils__/index.js'
 
 describe('config', () => {
@@ -216,5 +216,21 @@ describe('config', () => {
 
     const written = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'))
     expect(written.recapModel).toBe('after-fail')
+  })
+
+  describe('clearCredentials', () => {
+    it('clears authToken, baseUrl, and accessToken from config.json', async () => {
+      writeFileSync(join(dir, 'config.json'), JSON.stringify({
+        authToken: 'sk-xxx', baseUrl: 'https://custom.example', accessToken: 'webtok',
+      }))
+      await clearCredentials(dir)
+      const raw = await readConfigFile(dir)
+      expect(raw.authToken).toBeUndefined()
+      expect(raw.baseUrl).toBeUndefined()
+      expect(raw.accessToken).toBeUndefined()
+      // clearCredentials already reloads config internally
+      expect(config.baseUrl).toBe('https://api.anthropic.com')
+      expect(config.authToken).toBeUndefined()
+    })
   })
 })
