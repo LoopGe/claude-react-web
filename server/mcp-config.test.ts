@@ -432,3 +432,33 @@ describe('validateMcpServer', () => {
     expect(validateMcpServer({ name: 'x', command: 'node', args: [] })).toEqual([])
   })
 })
+
+describe('McpConfigStore.clearAll', () => {
+  let dir: string
+
+  beforeEach(() => { dir = tempDir('mcp-clearall') })
+  afterEach(() => { rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }) })
+
+  it('removes all servers and flushes to disk', async () => {
+    const store = new McpConfigStore({ stateDir: dir })
+    await store.load()
+    store.upsert(makeServer({ name: 'a', command: 'node' }))
+    store.upsert(makeServer({ name: 'b', command: 'python' }))
+    await store.flush()
+    expect(store.list()).toHaveLength(2)
+
+    await store.clearAll()
+    expect(Array.from(store.list())).toHaveLength(0)
+
+    // Re-read from disk to confirm flush
+    const store2 = new McpConfigStore({ stateDir: dir })
+    expect(await store2.load()).toHaveLength(0)
+  })
+
+  it('is a no-op when store is already empty', async () => {
+    const store = new McpConfigStore({ stateDir: dir })
+    await store.load()
+    await store.clearAll()
+    expect(store.list()).toHaveLength(0)
+  })
+})

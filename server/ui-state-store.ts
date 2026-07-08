@@ -101,6 +101,12 @@ export class UiStateStore {
     return this.state
   }
 
+  /** Reset to the empty state and flush to disk. */
+  async clearAll(): Promise<void> {
+    this.state = { ...EMPTY_STATE }
+    await this.flush()
+  }
+
   /** Merge a partial update into the in-memory state and schedule a
    *  debounced flush. Callers use functional updaters on the frontend;
    *  the backend receives the full merged object. */

@@ -88,6 +88,13 @@ export abstract class JsonFileStore<T> {
     if (this.index.delete(key)) this.schedule()
   }
 
+  /** Remove every entry and flush to disk. */
+  async clearAll(): Promise<void> {
+    this.index.clear()
+    this.dirty = true
+    await this.flush()
+  }
+
   /** Reorder the index to match `orderedKeys`. Entries whose key appears in
    *  `orderedKeys` are placed first, in that order; any remaining entries
    *  (keys not mentioned) are appended in their current relative order so

@@ -146,3 +146,37 @@ describe('coerceStoredSnippet', () => {
     expect(typeof s!.updatedAt).toBe('number')
   })
 })
+
+describe('SnippetStore.clearAll', () => {
+  let dir: string
+  let store: SnippetStore
+
+  beforeEach(() => {
+    dir = tempDir('snippet-clearall')
+    store = new SnippetStore({ stateDir: dir })
+  })
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+  })
+
+  it('removes all snippets and flushes to disk', async () => {
+    await store.load()
+    store.upsert(makeSnippet({ id: 'a', label: 'A' }))
+    store.upsert(makeSnippet({ id: 'b', label: 'B' }))
+    await store.flush()
+    expect(store.list()).toHaveLength(2)
+
+    await store.clearAll()
+    expect(store.list()).toHaveLength(0)
+
+    // Re-read from disk to confirm flush
+    const store2 = new SnippetStore({ stateDir: dir })
+    expect(await store2.load()).toHaveLength(0)
+  })
+
+  it('is a no-op when store is already empty', async () => {
+    await store.load()
+    await store.clearAll()
+    expect(store.list()).toHaveLength(0)
+  })
+})
