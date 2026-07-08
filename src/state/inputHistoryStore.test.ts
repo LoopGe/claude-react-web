@@ -159,6 +159,18 @@ describe('inputHistoryStore', () => {
     store.reset()
     expect(store.getSession('s1')).toEqual(['external'])
   })
+
+  it('clear() wipes entries from memory and localStorage', () => {
+    const store = createInputHistoryStore('clear-test')
+    store.add('a', 's1')
+    store.add('b', 's1')
+    expect(store.getAll()).toHaveLength(2)
+    store.clear()
+    expect(store.getAll()).toEqual([])
+    // localStorage also empty
+    const raw = JSON.parse(localStorage.getItem('clear-test')!)
+    expect(raw).toEqual([])
+  })
 })
 
 describe('default singleton', () => {
