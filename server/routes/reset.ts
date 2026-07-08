@@ -83,10 +83,19 @@ export function buildResetRouter(deps: ResetRouterDeps): Hono {
         case 'sessions':
           await run(item, async () => {
             const sessions = deps.sm.list()
+            let failed = 0
             for (const s of sessions) {
-              deletedSessionIds.push(s.id)
-              await deps.sm.delete(s.id)
+              // Best-effort per session: a stuck/unloadable session must not
+              // abort the rest. Only record ids we actually removed.
+              try {
+                await deps.sm.delete(s.id)
+                deletedSessionIds.push(s.id)
+              } catch (e) {
+                failed++
+                log.warn(`[sessions] failed to delete ${s.id}: ${(e as Error).message}`)
+              }
             }
+            if (failed > 0) throw new Error(`${failed} session(s) could not be deleted`)
           })
           break
       }

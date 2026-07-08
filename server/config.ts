@@ -16,7 +16,6 @@ import {
   createLogger,
 } from './log.js'
 import { setWebAuth } from './auth.js'
-import { writeAtomic } from './json-file-store.js'
 
 const log = createLogger('config')
 
@@ -471,17 +470,46 @@ async function doUpdateConfigFile(
   applyParsedConfig(existing as unknown as ConfigFile, stateDir, file)
 }
 
+/** Enqueue an arbitrary read-modify-write on the same serialized
+ *  `configWriteQueue` as `updateConfigFile`, for fields that aren't in
+ *  `WRITABLE_CONFIG_KEYS` (e.g. `accessToken`). The mutate fn operates on the
+ *  raw parsed config object in place; the helper persists + re-applies it.
+ *  This MUST be used for any direct config.json edit so a concurrent
+ *  `updateConfigFile` can't interleave and clobber (or be clobbered by) it. */
+export function queueConfigWrite(
+  stateDir: string,
+  mutate: (existing: Record<string, unknown>) => Promise<void> | void,
+): Promise<void> {
+  const thisWrite = configWriteQueue.then(() => doRawConfigUpdate(stateDir, mutate))
+  configWriteQueue = thisWrite.catch(() => {
+    // Don't poison the queue — same rationale as updateConfigFile.
+  })
+  return thisWrite
+}
+
+async function doRawConfigUpdate(
+  stateDir: string,
+  mutate: (existing: Record<string, unknown>) => Promise<void> | void,
+): Promise<void> {
+  const existing = await readConfigFile(stateDir)
+  await mutate(existing)
+  const file = join(stateDir, 'config.json')
+  await fs.writeFile(file, JSON.stringify(existing, null, 2), 'utf8')
+  applyParsedConfig(existing as unknown as ConfigFile, stateDir, file)
+}
+
 /** Clear connection credentials: authToken + baseUrl (→ defaults) and the web
  *  access token (accessToken, which bypasses WRITABLE_CONFIG_KEYS). Reloads
- *  config and clears live web-auth state. */
+ *  config and clears live web-auth state. All three deletes run as one
+ *  atomic read-modify-write on the config write queue, so a concurrent
+ *  PUT /config cannot interleave and silently undo the clear or be clobbered. */
 export async function clearCredentials(stateDir: string): Promise<void> {
-  // authToken + baseUrl go through the normal path (null → delete → default).
-  await updateConfigFile(stateDir, { authToken: null, baseUrl: null })
-  // accessToken must be written directly (not in WRITABLE_CONFIG_KEYS).
-  const existing = await readConfigFile(stateDir)
-  delete existing.accessToken
-  const filePath = join(stateDir, 'config.json')
-  await writeAtomic(stateDir, filePath, existing)
+  await queueConfigWrite(stateDir, (existing) => {
+    delete existing.authToken
+    delete existing.baseUrl
+    delete existing.accessToken
+  })
   await loadConfig(stateDir)
   setWebAuth('', false)
 }
+

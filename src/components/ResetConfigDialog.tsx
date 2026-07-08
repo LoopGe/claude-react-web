@@ -71,12 +71,20 @@ export function ResetConfigDialog({ open, onClose }: Props) {
   const doClear = async () => {
     if (hasDanger && !confirmGate) { setConfirmGate(true); return }
     if (hasDanger && confirmText !== 'reset') return
-    const res = await reset({ server: [...server], browser: [...browser] })
-    const okCount = Object.values(res.results).filter((r) => r?.ok).length
-    const failCount = Object.values(res.results).filter((r) => r && !r.ok).length
-    toast.success(`Cleared ${okCount} item(s)${failCount ? `; ${failCount} failed` : ''}`)
-    onClose()
-    setTimeout(() => location.reload(), 400)
+    try {
+      const res = await reset({ server: [...server], browser: [...browser] })
+      const okCount = Object.values(res.results).filter((r) => r?.ok).length
+      const failCount = Object.values(res.results).filter((r) => r && !r.ok).length
+      toast.success(`Cleared ${okCount} item(s)${failCount ? `; ${failCount} failed` : ''}`)
+      onClose()
+      setTimeout(() => location.reload(), 400)
+    } catch (e) {
+      // Server POST failed (network/5xx/abort). useResetConfig's finally has
+      // already reset `clearing`; browser-side items were NOT cleared (they
+      // run only after a successful POST). Keep the dialog open so the user
+      // can retry/adjust — do not reload, since server state is uncertain.
+      toast.error(`Reset failed: ${(e as Error).message}`)
+    }
   }
 
   const renderServer = (it: ServerResetItem) => (

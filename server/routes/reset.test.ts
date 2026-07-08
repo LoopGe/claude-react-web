@@ -78,6 +78,31 @@ describe('POST /config/reset', () => {
     expect(deps.sm.delete).toHaveBeenCalledWith('b')
   })
 
+  it('sessions clear is best-effort: a failing delete does not abort the rest', async () => {
+    // 'b' fails (stuck subprocess); 'a' and 'c' still attempted + recorded.
+    const deleteFn = vi.fn(async (id: string) => {
+      if (id === 'b') throw new Error('stuck')
+    })
+    const deps = makeDeps({
+      sm: { list: vi.fn(() => [{ id: 'a' }, { id: 'b' }, { id: 'c' }]), delete: deleteFn },
+    })
+    const app = buildResetRouter(deps as any)
+    const res = await app.request('/config/reset', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ items: ['sessions'] }),
+    })
+    const body = (await res.json()) as any
+    // All three attempted (b's failure didn't skip c).
+    expect(deleteFn).toHaveBeenCalledWith('a')
+    expect(deleteFn).toHaveBeenCalledWith('b')
+    expect(deleteFn).toHaveBeenCalledWith('c')
+    // Only the actually-deleted ids are returned (b is absent).
+    expect(body.deletedSessionIds).toEqual(['a', 'c'])
+    // The item is marked failed with a count, but the request still 200s.
+    expect(body.results.sessions).toEqual({ ok: false, error: '1 session(s) could not be deleted' })
+  })
+
   it('rejects unknown items with 400', async () => {
     const app = buildResetRouter(makeDeps() as any)
     const res = await app.request('/config/reset', {

@@ -61,4 +61,19 @@ describe('ResetConfigDialog', () => {
     fireEvent.click(inputHistory)
     expect(parent.indeterminate).toBe(true)
   })
+
+  it('keeps the dialog open when the server POST fails', async () => {
+    // useApi throws on a network failure; simulate by rejecting fetch.
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Network down'))
+    const onClose = vi.fn()
+    render(<ResetConfigDialog open onClose={onClose} />)
+    fireEvent.click(screen.getByLabelText(/snippets/i))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /clear selected/i }))
+    })
+    // The POST was attempted...
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/config/reset'), expect.anything())
+    // ...but the dialog stayed open (no close, no reload) so the user can retry.
+    expect(onClose).not.toHaveBeenCalled()
+  })
 })
