@@ -150,6 +150,7 @@ export function setLogConfig(update: { level?: LogLevel; scopes?: string[] | nul
 // ── File logging ──────────────────────────────────────────────────
 
 import { createWriteStream, mkdirSync, readdirSync, unlinkSync, type WriteStream } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { join as joinPath } from 'node:path'
 
 let fileStream: WriteStream | null = null
@@ -213,14 +214,29 @@ export function enableFileLogging(stateDir: string): void {
   openStream(stateDir)
 }
 
-/** Disable file logging and close the stream. */
+/** Disable file logging and close the stream. Uses `destroy()` rather than
+ *  `end()` so the file descriptor is released immediately — important on
+ *  Windows where you can't delete an open file, and avoids ENOENT errors
+ *  from a deferred flush hitting a removed log directory. */
 export function disableFileLogging(): void {
   if (fileStream) {
-    fileStream.end()
+    // Suppress ENOENT / EBADF from deferred flush after the directory is gone.
+    fileStream.on('error', () => {})
+    fileStream.destroy()
     fileStream = null
   }
   fileLoggingDir = null
   fileStreamDate = ''
+}
+
+/** Wipe the logs directory. Ends the live stream first (Windows can't delete
+ *  an open file), removes the whole dir, and optionally re-enables file logging
+ *  (re-creating the dir + today's file). */
+export async function clearLogFile(stateDir: string, reEnable: boolean): Promise<void> {
+  disableFileLogging()
+  const logDir = joinPath(stateDir, 'logs')
+  await rm(logDir, { recursive: true, force: true, maxRetries: 5 }).catch(() => {})
+  if (reEnable) enableFileLogging(stateDir)
 }
 
 /** Whether file logging is currently active. */

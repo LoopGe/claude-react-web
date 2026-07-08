@@ -74,6 +74,8 @@ export interface InputHistoryStore {
   /** Drop the in-memory cache and re-read from localStorage on next access.
    *  Tests use this after mutating localStorage directly. */
   reset: () => void
+  /** Wipe all entries from memory and localStorage. */
+  clear: () => void
 }
 
 export function createInputHistoryStore(key: string): InputHistoryStore {
@@ -187,6 +189,9 @@ export function createInputHistoryStore(key: string): InputHistoryStore {
     reset() {
       cache = null
       emit()
+    },
+    clear() {
+      commit([])
     },
   }
 }

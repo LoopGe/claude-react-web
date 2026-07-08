@@ -5,7 +5,7 @@
 // about persistence semantics.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { rmSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { rmSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { MANIFEST_REL_PATH } from './marketplace-parser.js'
 import { MpStore, type MpEntry } from './mp-store.js'
@@ -375,5 +375,64 @@ describe('MpStore', () => {
     s.setEnabled('c', 'mkt2', true)
     expect(s.enabledMapFor('mkt1')).toEqual({ a: true })
     expect(s.enabledMapFor('mkt2')).toEqual({ c: true })
+  })
+})
+
+describe('MpStore.clearAll', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = tempDir('mp-store-clear')
+  })
+  afterEach(() => {
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    } catch { /* swallow */ }
+  })
+
+  it('clears entries, enabled plugins, and clone dirs', async () => {
+    const s = new MpStore({ stateDir: dir })
+    await s.load()
+
+    // Seed two entries with cloneDirs under cacheDir.
+    const cloneDir1 = join(dir, 'marketplace-cache', 'mkt1')
+    const cloneDir2 = join(dir, 'marketplace-cache', 'mkt2')
+    mkdirSync(cloneDir1, { recursive: true })
+    mkdirSync(cloneDir2, { recursive: true })
+    s.upsert(fakeEntry('mkt1', { cloneDir: cloneDir1, manifest: fakeManifest(['plugA']) }))
+    s.upsert(fakeEntry('mkt2', { cloneDir: cloneDir2, manifest: fakeManifest(['plugB']) }))
+
+    // Enable plugins.
+    s.setEnabled('plugA', 'mkt1', true)
+    s.setEnabled('plugB', 'mkt2', true)
+    await s.flush()
+
+    // Create externalCacheDir so we can verify it gets removed.
+    const extDir = join(dir, 'external-cache')
+    mkdirSync(extDir, { recursive: true })
+
+    // Verify preconditions.
+    expect(Array.from(s.list())).toHaveLength(2)
+    expect(s.isEnabled('plugA', 'mkt1')).toBe(true)
+    expect(existsSync(s.cacheDir)).toBe(true)
+    expect(existsSync(s.externalCacheDir)).toBe(true)
+
+    await s.clearAll()
+
+    // Index and enabled map are empty.
+    expect(Array.from(s.list())).toHaveLength(0)
+    expect(s.isEnabled('plugA', 'mkt1')).toBe(false)
+    expect(s.isEnabled('plugB', 'mkt2')).toBe(false)
+
+    // Clone dirs and cache dirs are gone.
+    expect(existsSync(cloneDir1)).toBe(false)
+    expect(existsSync(cloneDir2)).toBe(false)
+    expect(existsSync(s.cacheDir)).toBe(false)
+    expect(existsSync(s.externalCacheDir)).toBe(false)
+
+    // Verify a fresh store reloads as empty.
+    const s2 = new MpStore({ stateDir: dir })
+    await s2.load()
+    expect(Array.from(s2.list())).toHaveLength(0)
   })
 })

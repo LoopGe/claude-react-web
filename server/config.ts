@@ -15,6 +15,8 @@ import {
   LOG_LEVELS, LOG_LEVEL_FROM_ENV, LOG_SCOPES_FROM_ENV, type LogLevel,
   createLogger,
 } from './log.js'
+import { setWebAuth } from './auth.js'
+import { writeAtomic } from './json-file-store.js'
 
 const log = createLogger('config')
 
@@ -467,4 +469,19 @@ async function doUpdateConfigFile(
   await fs.writeFile(file, JSON.stringify(existing, null, 2), 'utf8')
   // Apply the merged result directly instead of re-reading from disk.
   applyParsedConfig(existing as unknown as ConfigFile, stateDir, file)
+}
+
+/** Clear connection credentials: authToken + baseUrl (→ defaults) and the web
+ *  access token (accessToken, which bypasses WRITABLE_CONFIG_KEYS). Reloads
+ *  config and clears live web-auth state. */
+export async function clearCredentials(stateDir: string): Promise<void> {
+  // authToken + baseUrl go through the normal path (null → delete → default).
+  await updateConfigFile(stateDir, { authToken: null, baseUrl: null })
+  // accessToken must be written directly (not in WRITABLE_CONFIG_KEYS).
+  const existing = await readConfigFile(stateDir)
+  delete existing.accessToken
+  const filePath = join(stateDir, 'config.json')
+  await writeAtomic(stateDir, filePath, existing)
+  await loadConfig(stateDir)
+  setWebAuth('', false)
 }

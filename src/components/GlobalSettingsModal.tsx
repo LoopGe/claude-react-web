@@ -27,6 +27,9 @@ import { isUpdateNagNeeded, isVersionNewer } from '../../shared/update-info'
 const McpInstaller = lazy(() =>
   import('./McpInstaller').then((m) => ({ default: m.McpInstaller })),
 )
+const ResetConfigDialog = lazy(() =>
+  import('./ResetConfigDialog').then((m) => ({ default: m.ResetConfigDialog })),
+)
 const MarketplaceTab = lazy(() =>
   import('./MarketplaceTab').then((m) => ({ default: m.MarketplaceTab })),
 )
@@ -170,6 +173,8 @@ export function GlobalSettingsModal({
   const [showMcpInstaller, setShowMcpInstaller] = useState(false)
   const [mcpInstallerEdit, setMcpInstallerEdit] = useState<McpServerConfigMeta | undefined>()
   const mcpInstallerPresence = useExitPresence(showMcpInstaller)
+  const [showResetConfig, setShowResetConfig] = useState(false)
+  const resetConfigPresence = useExitPresence(showResetConfig)
 
   const dialogRef = useRef<HTMLDivElement>(null)
 
@@ -542,6 +547,7 @@ export function GlobalSettingsModal({
                   versionsLoading={!!versionsLoading}
                   versionsError={versionsError ?? null}
                   onFetchVersions={onFetchVersions}
+                  onOpenResetConfig={() => setShowResetConfig(true)}
                 />
               )}
             </>
@@ -567,6 +573,12 @@ export function GlobalSettingsModal({
               onSave={() => { setShowMcpInstaller(false); setMcpInstallerEdit(undefined); void refreshMcp() }}
               onClose={() => { setShowMcpInstaller(false); setMcpInstallerEdit(undefined) }}
             />
+          </Suspense>
+        )}
+
+        {resetConfigPresence.shouldRender && (
+          <Suspense fallback={null}>
+            <ResetConfigDialog open={showResetConfig} onClose={() => setShowResetConfig(false)} />
           </Suspense>
         )}
       </div>
@@ -1694,6 +1706,7 @@ function AboutTab({
   versionsLoading,
   versionsError,
   onFetchVersions,
+  onOpenResetConfig,
 }: {
   info: UpdateInfo | null
   refreshing: boolean
@@ -1714,6 +1727,7 @@ function AboutTab({
   versionsLoading: boolean
   versionsError: string | null
   onFetchVersions?: (force?: boolean) => void
+  onOpenResetConfig?: () => void
 }) {
   const toast = useToast()
   // Error from the most recent in-app update attempt (POST /api/update),
@@ -2049,6 +2063,15 @@ function AboutTab({
             title="Run `npm i -g <package>@latest` on the server, then restart to apply."
           >
             {updating ? 'Updating...' : 'Update now'}
+          </button>
+        )}
+        {onOpenResetConfig && (
+          <button
+            className="btn btn-danger"
+            onClick={onOpenResetConfig}
+            style={{ marginLeft: 'auto' }}
+          >
+            Clear configuration &amp; data
           </button>
         )}
       </div>
