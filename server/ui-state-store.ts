@@ -104,6 +104,7 @@ export class UiStateStore {
   /** Reset to the empty state and flush to disk. */
   async clearAll(): Promise<void> {
     this.state = { ...EMPTY_STATE }
+    this.dirty = true
     await this.flush()
   }
 
