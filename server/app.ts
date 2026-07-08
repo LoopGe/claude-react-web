@@ -18,6 +18,7 @@ import { buildEditLocateRouter } from './edit-locate-routes.js'
 import { buildMcpConfigRouter } from './mcp-routes.js'
 import { buildSnippetRouter } from './snippet-routes.js'
 import { buildUiStateRouter } from './routes/ui-state-routes.js'
+import { buildResetRouter } from './routes/reset.js'
 import { config as serverConfig } from './config.js'
 import { createLogger } from './log.js'
 import type { SessionStore } from './persistence.js'
@@ -239,6 +240,9 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
   }
   if (opts.uiStateStore) {
     app.route('/api/ui-state', buildUiStateRouter(opts.uiStateStore))
+  }
+  if (opts.mcpConfigStore && opts.mpStore && opts.snippetStore && opts.uiStateStore) {
+    app.route('/api', buildResetRouter({ sm: sessionManager, configDir: opts.configDir ?? '', mcpStore: opts.mcpConfigStore, mpStore: opts.mpStore, snippetStore: opts.snippetStore, uiStateStore: opts.uiStateStore }))
   }
 
   const clientDir = resolveClientDir(opts.clientDir)
