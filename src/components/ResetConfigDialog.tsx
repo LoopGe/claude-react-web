@@ -13,7 +13,7 @@ const SERVER_LABELS: Record<ServerResetItem, string> = {
   'marketplaces': 'Marketplaces & enabled plugins',
   'snippets': 'Composer snippets',
   'ui-state': 'Session groups & sidebar order',
-  'logs': 'Persisted log files (skips today)',
+  'logs': 'Persisted log files (clears all; today reopens empty)',
   'credentials': 'Connection credentials (authToken, baseUrl, access token)',
   'sessions': 'All sessions & transcript caches',
 }
