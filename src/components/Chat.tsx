@@ -23,6 +23,12 @@ const GitPanel = lazy(() => import('./GitPanel').then((m) => ({ default: m.GitPa
 const ResumeSessionDialog = lazy(() =>
   import('./session-list/ResumeSessionDialog').then((m) => ({ default: m.ResumeSessionDialog })),
 )
+// InputHistoryPanel is a per-panel overlay (Mod+Shift+H) — lazy so the
+// history browser code stays out of the main bundle for sessions that never
+// open it.
+const InputHistoryPanel = lazy(() =>
+  import('./InputHistoryPanel').then((m) => ({ default: m.InputHistoryPanel })),
+)
 import { RecapWindow } from './RecapWindow'
 import { PinnedUserMessage } from './PinnedUserMessage'
 import { api } from '../hooks/useApi'
@@ -65,7 +71,6 @@ import { LOCAL_COMMANDS, matchLocalCommand } from '../local-commands'
 import type { SettingsTabName } from '../local-commands'
 
 
-export const INPUT_HISTORY_KEY = 'claude-react-web:input-history'
 const DRAFT_KEY_PREFIX = 'claude-react-web:draft:'
 
 /** Read a session's saved draft from sessionStorage. Non-throwing. */
@@ -159,10 +164,12 @@ interface Props {
   /** Called once on mount so the parent can store a reference to this
    *  panel's recap.refresh() function. Enables the Alt+R shortcut in App. */
   onRegisterRecap?: (sessionId: string, fn: () => void) => () => void
-  /** Called on mount so the parent can store a reference to this panel's
-   *  composer input-injection function. Enables the Mod+Shift+H input-history
-   *  panel to drop a selected past message into the focused composer. */
-  onRegisterInjectInput?: (sessionId: string, fn: (text: string) => void) => () => void
+  /** When true, render the input-history browser as an in-panel overlay
+   *  (Mod+Shift+H), scoped to this panel. App gates this on the focused panel
+   *  so only one panel shows it at a time. */
+  historyOpen?: boolean
+  /** Close the in-panel input-history overlay (Esc / backdrop / select). */
+  onCloseHistory?: () => void
   /** Global composer-snippets api (single shared instance owned by App).
    *  Passed straight to <Composer>; the manager + save dialogs live in App. */
   snippets: ComposerSnippetsApi
@@ -228,7 +235,7 @@ export const Chat = memo(function Chat({
   settingsOpen, onCloseSettings,
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
   recapOpen, onCloseRecap,
-  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, globalPrefs, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, onRegisterInjectInput,
+  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, globalPrefs, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, historyOpen, onCloseHistory,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
 }: Props) {
@@ -276,6 +283,9 @@ export const Chat = memo(function Chat({
   // modal instead. Mounted conditionally like the git overlay, so the
   // entrance animation fires on mount.
   const resumePresence = useExitPresence(!!resumeOpen)
+  // Mirrors resumePresence: keeps InputHistoryPanel mounted through
+  // PanelOverlay's exit animation after historyOpen flips false.
+  const historyPresence = useExitPresence(!!historyOpen)
   // Synchronous reentrancy guard. setSending is async ?between two
   // rapid keypresses (e.g. Enter pressed twice within one frame), React
   // hasn't committed the state update yet, so the closure inside send()
@@ -474,7 +484,7 @@ export const Chat = memo(function Chat({
     () => (bashMode ? (s: string) => s.startsWith('!') : (s: string) => !s.startsWith('!')),
     [bashMode],
   )
-  const history = useInputHistory(INPUT_HISTORY_KEY, session.id, historyFilter)
+  const history = useInputHistory(session.id, historyFilter)
 
   // Permissions first ?its onRequest/onResolved are passed into the
   // stream hook so SDK messages and permission events share one WebSocket.
@@ -1248,15 +1258,15 @@ export const Chat = memo(function Chat({
     return onRegisterRecap?.(session.id, recap.refresh)
   }, [session.id, recap.refresh, onRegisterRecap])
 
-  // Expose a composer input-injection callback so the Mod+Shift+H input-history
-  // panel can drop a selected past message into this panel's composer. setInput
-  // also write-throughs to the per-session draft, so the recalled text persists.
-  useEffect(() => {
-    return onRegisterInjectInput?.(session.id, (text: string) => {
-      setInput(text)
-      history.reset()
-    })
-  }, [session.id, setInput, history, onRegisterInjectInput])
+  // Inject a selected history entry into this panel's composer. Now that the
+  // history panel is rendered in-panel (not at App root), this is a direct
+  // local call — no registry indirection. setInput also write-throughs to the
+  // per-session draft, so the recalled text persists.
+  const handleHistorySelect = useCallback((text: string) => {
+    setInput(text)
+    history.reset()
+    setComposerFocusSignal((n) => n + 1)
+  }, [setInput, history, setComposerFocusSignal])
 
   // MessageList registers its prev/next-user-message navigator here so the
   // chat-area right-click menu ("Scroll to previous/next user message") can
@@ -1654,6 +1664,23 @@ export const Chat = memo(function Chat({
             defaultCwd={session.cwd}
             onResume={(id) => onResumeIntoPanel?.(id, session.id)}
             onCancel={() => onCloseResume?.()}
+          />
+        </Suspense>
+      )}
+
+      {/* In-panel input-history browser (Mod+Shift+H). Column-scoped overlay:
+          only covers this chat panel, not the whole app. App gates `historyOpen`
+          on the focused panel, so only one panel mounts it at a time. A selected
+          entry is injected into THIS panel's composer via handleHistorySelect.
+          Gated on historyPresence (not historyOpen directly) so the panel stays
+          mounted through PanelOverlay's exit animation. */}
+      {historyPresence.shouldRender && (
+        <Suspense fallback={null}>
+          <InputHistoryPanel
+            open={!!historyOpen}
+            currentSessionId={session.id}
+            onSelect={handleHistorySelect}
+            onClose={() => onCloseHistory?.()}
           />
         </Suspense>
       )}

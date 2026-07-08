@@ -16,6 +16,7 @@ import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../../utils/mergedRef'
 import { shortenPath } from '../../utils/paths'
 import type { ResumableSession } from '../../types'
+import { PanelOverlay } from '../PanelOverlay'
 
 export interface ResumeSessionDialogProps {
   open?: boolean
@@ -66,7 +67,11 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
   const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
   const listRefMerged = useMergedRef(listRef, setListOs)
 
-  useFocusTrap(dialogRef, { restoreFocus: true })
+  // The panel variant delegates its chrome (backdrop, Esc, focus trap, exit
+  // animation) to <PanelOverlay>, so this trap is active only for the modal
+  // variant. dialogRef attaches to the modal card; for the panel variant it
+  // attaches to nothing and the trap stays inert.
+  useFocusTrap(dialogRef, { restoreFocus: true, active: variant === 'modal' && open })
 
   // Fetch the resumable list whenever the scope toggles. Aborts in-flight
   // requests so a fast toggle doesn't race a stale response onto the list.
@@ -150,134 +155,152 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
     }
   }
 
-  // Variant only swaps the wrapper chrome. The 'panel' variant mirrors the
-  // per-column overlay pattern (.settings-overlay / .git-overlay): absolute,
-  // inset:0, scoped to the hosting chat panel instead of the whole app.
-  const backdropClass = variant === 'panel' ? 'resume-overlay' : 'modal-backdrop'
-  const panelClass =
-    variant === 'panel' ? 'resume-overlay-panel' : 'modal modal-resume-session'
+  // The inner content is identical across variants; only the wrapper chrome
+  // differs. The 'panel' variant delegates backdrop/Esc/focus-trap/exit
+  // animation to <PanelOverlay> (column-scoped to the hosting chat panel);
+  // the 'modal' variant is the full-app centered modal for the global /
+  // empty-state flow.
+  const content = (
+    <>
+      <div className="modal-header">
+        <h3>Resume session</h3>
+        <button className="btn btn-icon-sm" onClick={onCancel} aria-label="Close dialog">
+          <IconX size={14} />
+        </button>
+      </div>
+
+      <div className="modal-section">
+        <input
+          ref={inputRef}
+          className="input"
+          type="text"
+          placeholder="Search sessions by title, prompt, or path..."
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value)
+            setSelectedIndex(0)
+          }}
+          aria-label="Search resumable sessions"
+        />
+
+        {defaultCwd && (
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              marginTop: 8,
+              fontSize: 13,
+              color: 'var(--fg-muted)',
+              cursor: 'pointer',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={allProjects}
+              onChange={(e) => setAllProjects(e.target.checked)}
+            />
+            All projects {allProjects ? '' : `(showing ${shortenPath(defaultCwd)})`}
+          </label>
+        )}
+
+        <div
+          className="palette-list"
+          ref={listRefMerged}
+          role="listbox"
+          aria-label="Resumable sessions"
+          style={{ marginTop: 10, maxHeight: '50vh', overflowY: 'auto' }}
+        >
+          {loading && <div className="palette-empty">Loading...</div>}
+          {!loading && error && (
+            <div className="palette-empty">Couldn't load sessions: {error}</div>
+          )}
+          {!loading && !error && filtered.length === 0 && (
+            <div className="palette-empty">No resumable sessions found</div>
+          )}
+          {!loading &&
+            !error &&
+            filtered.map((s, i) => {
+              const label = s.title || s.firstPrompt || s.sessionId.slice(0, 12)
+              return (
+                <button
+                  key={s.sessionId}
+                  className={`palette-item${i === selectedIndex ? ' selected' : ''}`}
+                  role="option"
+                  aria-selected={i === selectedIndex}
+                  disabled={s.terminated}
+                  onMouseEnter={() => setSelectedIndex(i)}
+                  onClick={() => choose(s)}
+                  style={{
+                    flexDirection: 'column',
+                    alignItems: 'flex-start',
+                    gap: 2,
+                    opacity: s.terminated ? 0.5 : 1,
+                  }}
+                >
+                  <span
+                    className="palette-item-label"
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%' }}
+                  >
+                    <span
+                      style={{
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        flex: 1,
+                      }}
+                    >
+                      {label}
+                    </span>
+                    {s.running && <span className="resume-badge resume-badge-running">running</span>}
+                    {s.terminated && <span className="resume-badge">ended</span>}
+                    {!s.known && !s.terminated && <span className="resume-badge">CLI</span>}
+                  </span>
+                  <span
+                    className="palette-item-hint"
+                    style={{ display: 'flex', gap: 8, fontSize: 11 }}
+                  >
+                    {s.cwd && <span title={s.cwd}>{shortenPath(s.cwd)}</span>}
+                    <span>· {timeAgo(s.lastModified)}</span>
+                    {s.gitBranch && <span>· {s.gitBranch}</span>}
+                  </span>
+                </button>
+              )
+            })}
+        </div>
+      </div>
+
+      <div className="modal-footer">
+        <span className="hint">↑↓ to navigate · Enter to resume · Esc to close</span>
+      </div>
+    </>
+  )
+
+  if (variant === 'panel') {
+    return (
+      <PanelOverlay
+        open={open}
+        onClose={onCancel}
+        ariaLabel="Resume session"
+        panelClassName="resume-overlay-panel"
+        onKeyDown={handleKeyDown}
+      >
+        {content}
+      </PanelOverlay>
+    )
+  }
 
   return (
     <div
-      className={backdropClass}
+      className="modal-backdrop"
       data-state={open ? 'open' : 'closing'}
       role="dialog"
       aria-modal={open ? 'true' : 'false'}
       aria-hidden={!open}
       onMouseDown={(e) => open && e.target === e.currentTarget && onCancel()}
     >
-      <div className={panelClass} ref={dialogRef} onKeyDown={handleKeyDown}>
-        <div className="modal-header">
-          <h3>Resume session</h3>
-          <button className="btn btn-icon-sm" onClick={onCancel} aria-label="Close dialog">
-            <IconX size={14} />
-          </button>
-        </div>
-
-        <div className="modal-section">
-          <input
-            ref={inputRef}
-            className="input"
-            type="text"
-            placeholder="Search sessions by title, prompt, or path..."
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value)
-              setSelectedIndex(0)
-            }}
-            aria-label="Search resumable sessions"
-          />
-
-          {defaultCwd && (
-            <label
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                marginTop: 8,
-                fontSize: 13,
-                color: 'var(--fg-muted)',
-                cursor: 'pointer',
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={allProjects}
-                onChange={(e) => setAllProjects(e.target.checked)}
-              />
-              All projects {allProjects ? '' : `(showing ${shortenPath(defaultCwd)})`}
-            </label>
-          )}
-
-          <div
-            className="palette-list"
-            ref={listRefMerged}
-            role="listbox"
-            aria-label="Resumable sessions"
-            style={{ marginTop: 10, maxHeight: '50vh', overflowY: 'auto' }}
-          >
-            {loading && <div className="palette-empty">Loading...</div>}
-            {!loading && error && (
-              <div className="palette-empty">Couldn't load sessions: {error}</div>
-            )}
-            {!loading && !error && filtered.length === 0 && (
-              <div className="palette-empty">No resumable sessions found</div>
-            )}
-            {!loading &&
-              !error &&
-              filtered.map((s, i) => {
-                const label = s.title || s.firstPrompt || s.sessionId.slice(0, 12)
-                return (
-                  <button
-                    key={s.sessionId}
-                    className={`palette-item${i === selectedIndex ? ' selected' : ''}`}
-                    role="option"
-                    aria-selected={i === selectedIndex}
-                    disabled={s.terminated}
-                    onMouseEnter={() => setSelectedIndex(i)}
-                    onClick={() => choose(s)}
-                    style={{
-                      flexDirection: 'column',
-                      alignItems: 'flex-start',
-                      gap: 2,
-                      opacity: s.terminated ? 0.5 : 1,
-                    }}
-                  >
-                    <span
-                      className="palette-item-label"
-                      style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%' }}
-                    >
-                      <span
-                        style={{
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                          flex: 1,
-                        }}
-                      >
-                        {label}
-                      </span>
-                      {s.running && <span className="resume-badge resume-badge-running">running</span>}
-                      {s.terminated && <span className="resume-badge">ended</span>}
-                      {!s.known && !s.terminated && <span className="resume-badge">CLI</span>}
-                    </span>
-                    <span
-                      className="palette-item-hint"
-                      style={{ display: 'flex', gap: 8, fontSize: 11 }}
-                    >
-                      {s.cwd && <span title={s.cwd}>{shortenPath(s.cwd)}</span>}
-                      <span>· {timeAgo(s.lastModified)}</span>
-                      {s.gitBranch && <span>· {s.gitBranch}</span>}
-                    </span>
-                  </button>
-                )
-              })}
-          </div>
-        </div>
-
-        <div className="modal-footer">
-          <span className="hint">↑↓ to navigate · Enter to resume · Esc to close</span>
-        </div>
+      <div className="modal modal-resume-session" ref={dialogRef} onKeyDown={handleKeyDown}>
+        {content}
       </div>
     </div>
   )

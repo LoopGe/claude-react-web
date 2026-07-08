@@ -1,24 +1,26 @@
 // Input history browser — searchable list of previously sent messages.
 //
-// Triggered globally via Mod+Shift+H. Mirrors CommandPalette's UX: a search
-// input at the top and a scrollable list below, navigable with arrow keys,
-// confirmed with Enter, dismissed with Escape or a backdrop click.
+// Triggered via Mod+Shift+H (App routes the open state to the focused panel).
+// Mirrors CommandPalette's UX: a search input at the top and a scrollable list
+// below, navigable with arrow keys, confirmed with Enter, dismissed with
+// Escape or a backdrop click.
 //
-// The data is the shell-style send history persisted by useInputHistory under
-// INPUT_HISTORY_KEY (a single localStorage key spanning all sessions). Entries
-// carry the session they were sent from; this panel splits them into two
-// sections — the currently-focused session first ("This session"), then
-// everything else ("All sessions"), including legacy unattributed entries.
-// Selecting an entry calls onSelect(text), which the App routes into the
-// focused panel's composer.
+// Rendered as an in-panel overlay (PanelOverlay) — column-scoped to the chat
+// panel whose session is focused, not a full-app modal. The selected entry is
+// injected into THAT panel's composer via onSelect (Chat wires it to
+// setInput + history.reset()).
+//
+// The data is the shell-style send history owned by `inputHistoryStore` (a
+// single localStorage key spanning all sessions). This panel splits it into
+// two sections — the currently-focused session first ("This session"), then
+// everything else ("All sessions" / "Other sessions"), including legacy
+// unattributed entries.
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { INPUT_HISTORY_KEY } from './Chat'
-import { useLocalStorage } from '../hooks/useLocalStorage'
-import { normalizeEntries } from '../hooks/useInputHistory'
-import { useExitPresence } from '../hooks/useExitPresence'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useInputHistoryPanel } from '../hooks/useInputHistoryPanel'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
+import { PanelOverlay } from './PanelOverlay'
 
 interface Props {
   open: boolean
@@ -28,59 +30,23 @@ interface Props {
   currentSessionId: string | null
 }
 
-/** Dedup texts preserving first-seen order. */
-function dedup(texts: string[]): string[] {
-  const seen = new Set<string>()
-  const out: string[] = []
-  for (const t of texts) {
-    if (seen.has(t)) continue
-    seen.add(t)
-    out.push(t)
-  }
-  return out
-}
-
 export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }: Props) {
-  const [rawHistory] = useLocalStorage<unknown[]>(INPUT_HISTORY_KEY, [])
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
   const listRefMerged = useMergedRef(listRef, setListOs)
-  const presence = useExitPresence(open)
 
-  // Split into current-session vs. everything-else, each deduped & filtered.
-  const { sessionItems, otherItems, flat } = useMemo(() => {
-    const entries = normalizeEntries(rawHistory)
-    const q = query.trim().toLowerCase()
-    const match = (t: string) => !q || t.toLowerCase().includes(q)
+  const { sessionItems, otherItems, flat, totalCount } = useInputHistoryPanel(
+    currentSessionId,
+    query,
+  )
 
-    // With no focused session, there's nothing to promote — show one flat
-    // "All sessions" list rather than floating legacy (null-session) entries
-    // to the top under no header.
-    const sessionTexts =
-      currentSessionId == null
-        ? []
-        : dedup(
-            entries.filter((e) => e.sessionId === currentSessionId).map((e) => e.text),
-          ).filter(match)
-    const otherTexts = dedup(
-      entries
-        .filter((e) => currentSessionId == null || e.sessionId !== currentSessionId)
-        .map((e) => e.text),
-    ).filter(match)
-
-    return {
-      sessionItems: sessionTexts,
-      otherItems: otherTexts,
-      // Flat selectable list: session entries first, then the rest. Keyboard
-      // navigation indexes into this; section headers are not selectable.
-      flat: [...sessionTexts, ...otherTexts],
-    }
-  }, [rawHistory, currentSessionId, query])
-
-  const totalCount = useMemo(() => normalizeEntries(rawHistory).length, [rawHistory])
+  // Defensive clamp for display: a cross-tab store update could shrink `flat`
+  // below the cursor. Query changes reset to 0 in onChange, and Enter checks
+  // `entry != null`, so this only affects which row is highlighted.
+  const safeIndex = flat.length === 0 ? 0 : Math.min(selectedIndex, flat.length - 1)
 
   // Reset state when opening, synchronously before first paint so the user
   // never sees stale content from a previous invocation.
@@ -93,7 +59,9 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
   }, [open])
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  // Auto-focus the input on mount / open.
+  // Auto-focus the input on mount / open. Runs in commit, before PanelOverlay's
+  // trap effect — but we opt out of the trap (trapFocus=false) so the input
+  // keeps focus and Tab is contained by refocusing it.
   useLayoutEffect(() => {
     if (open) inputRef.current?.focus()
   }, [open])
@@ -104,35 +72,29 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
     el?.scrollIntoView({ block: 'nearest' })
   }, [selectedIndex])
 
-  // Capture-phase Escape so it fires even if a child is focused.
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        onClose()
-      }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [open, onClose])
-
-  if (!presence.shouldRender) return null
-
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
+      // Guard empty list: Math.min(i + 1, -1) would set selectedIndex to -1,
+      // which safeIndex masks while flat stays empty but would surface as
+      // "no highlight, Enter no-op" if a cross-tab store update later made
+      // flat non-empty without resetting the cursor.
+      if (flat.length === 0) return
       setSelectedIndex((i) => Math.min(i + 1, flat.length - 1))
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
       setSelectedIndex((i) => Math.max(i - 1, 0))
     } else if (e.key === 'Enter' && flat.length > 0) {
       e.preventDefault()
-      const entry = flat[selectedIndex]
-      if (entry != null) onSelect(entry)
-      onClose()
+      const entry = flat[safeIndex]
+      if (entry != null) {
+        onSelect(entry)
+        onClose()
+      }
     } else if (e.key === 'Tab') {
-      // Focus trap: keep Tab inside the panel.
+      // Contain Tab inside the panel by keeping the search input focused —
+      // palettes don't wrap onto result buttons (you type to filter, arrow to
+      // select, Enter to confirm).
       e.preventDefault()
       inputRef.current?.focus()
     }
@@ -144,9 +106,9 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
       key={`${flatIndex}:${entry}`}
       id={`history-item-${flatIndex}`}
       data-entry-index={flatIndex}
-      className={`palette-item${flatIndex === selectedIndex ? ' selected' : ''}`}
+      className={`palette-item${flatIndex === safeIndex ? ' selected' : ''}`}
       role="option"
-      aria-selected={flatIndex === selectedIndex}
+      aria-selected={flatIndex === safeIndex}
       onMouseEnter={() => setSelectedIndex(flatIndex)}
       onClick={() => { onSelect(entry); onClose() }}
     >
@@ -155,41 +117,42 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
   )
 
   return (
-    <div
-      className="palette-backdrop"
-      data-state={open ? 'open' : 'closing'}
-      onMouseDown={(e) => { if (open && e.target === e.currentTarget) onClose() }}
+    <PanelOverlay
+      open={open}
+      onClose={onClose}
+      ariaLabel="Input history"
+      trapFocus={false}
+      panelClassName="input-history-card"
+      onKeyDown={handleKeyDown}
     >
-      <div className="palette" role="dialog" aria-modal={open ? 'true' : 'false'} aria-label="Input history" onKeyDown={handleKeyDown}>
-        <input
-          ref={inputRef}
-          className="palette-input"
-          type="text"
-          placeholder="Search input history…"
-          value={query}
-          onChange={(e) => { setQuery(e.target.value); setSelectedIndex(0) }}
-          aria-label="Search input history"
-          aria-autocomplete="list"
-          aria-controls="history-list"
-          aria-activedescendant={flat[selectedIndex] != null ? `history-item-${selectedIndex}` : undefined}
-        />
-        <div className="palette-list" ref={listRefMerged} id="history-list" role="listbox">
-          {flat.length === 0 && (
-            <div className="palette-empty">{totalCount === 0 ? 'No history yet' : 'No matches'}</div>
-          )}
-          {sessionItems.length > 0 && currentSessionId != null && (
-            <div className="palette-section-label">This session</div>
-          )}
-          {sessionItems.map((entry, i) => renderItem(entry, i))}
-          {otherItems.length > 0 && (
-            <div className="palette-section-label">
-              {currentSessionId != null ? 'Other sessions' : 'All sessions'}
-            </div>
-          )}
-          {otherItems.map((entry, i) => renderItem(entry, sessionItems.length + i))}
-        </div>
+      <input
+        ref={inputRef}
+        className="palette-input"
+        type="text"
+        placeholder="Search input history…"
+        value={query}
+        onChange={(e) => { setQuery(e.target.value); setSelectedIndex(0) }}
+        aria-label="Search input history"
+        aria-autocomplete="list"
+        aria-controls="history-list"
+        aria-activedescendant={flat[safeIndex] != null ? `history-item-${safeIndex}` : undefined}
+      />
+      <div className="palette-list" ref={listRefMerged} id="history-list" role="listbox">
+        {flat.length === 0 && (
+          <div className="palette-empty">{totalCount === 0 ? 'No history yet' : 'No matches'}</div>
+        )}
+        {sessionItems.length > 0 && currentSessionId != null && (
+          <div className="palette-section-label">This session</div>
+        )}
+        {sessionItems.map((entry, i) => renderItem(entry, i))}
+        {otherItems.length > 0 && (
+          <div className="palette-section-label">
+            {currentSessionId != null ? 'Other sessions' : 'All sessions'}
+          </div>
+        )}
+        {otherItems.map((entry, i) => renderItem(entry, sessionItems.length + i))}
       </div>
-    </div>
+    </PanelOverlay>
   )
 }
 

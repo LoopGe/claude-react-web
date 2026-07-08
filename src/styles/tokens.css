@@ -137,6 +137,13 @@
      to before this refactor. The light theme overrides the alphas. */
   --card-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);      /* small floating popovers/menus */
   --modal-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);    /* large centred modals */
+  /* Stacking: in-panel overlays (Settings/Subagent/Workflow + the
+     PanelOverlay primitive, which ResumeSessionDialog's panel variant and
+     InputHistoryPanel use) sit at z-index 6. .git-overlay is z-index 5
+     (deliberately a step below, so a settings-style overlay can cover it).
+     DOM order in Chat.tsx decides which wins when more than one z-index-6
+     overlay is open. Global app modals sit at 1000. */
+  --z-panel-overlay: 6;
   --drawer-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);  /* side drawers */
   --toast-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
   --tooltip-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);

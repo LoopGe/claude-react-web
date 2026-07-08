@@ -47,7 +47,6 @@ import { createCallbackRegistry, type CallbackRegistry } from './utils/callbackR
 // SetupPage is also lazy: only first-time / unconfigured users hit it,
 // and it pulls in ~1150 lines of UI that returning users never see.
 const CommandPalette = lazy(() => import('./components/CommandPalette').then((m) => ({ default: m.CommandPalette })))
-const InputHistoryPanel = lazy(() => import('./components/InputHistoryPanel').then((m) => ({ default: m.InputHistoryPanel })))
 const ResumeSessionDialog = lazy(() => import('./components/session-list/ResumeSessionDialog').then((m) => ({ default: m.ResumeSessionDialog })))
 const ShortcutHelp = lazy(() => import('./components/ShortcutHelp').then((m) => ({ default: m.ShortcutHelp })))
 const GlobalSettingsModal = lazy(() => import('./components/GlobalSettingsModal').then((m) => ({ default: m.GlobalSettingsModal })))
@@ -431,12 +430,6 @@ export function App() {
     return recapFnsRef.current.register(sessionId, fn)
   }, [])
   // Per-session input-injection callbacks registered by <Chat> components.
-  // The Mod+Shift+H input-history panel uses this to drop a selected past
-  // message into the focused session's composer.
-  const injectInputFnsRef = useRef<CallbackRegistry<(text: string) => void>>(createCallbackRegistry())
-  const registerInjectInput = useCallback((sessionId: string, fn: (text: string) => void) => {
-    return injectInputFnsRef.current.register(sessionId, fn)
-  }, [])
   // Keep refs in sync with the latest state values. Assigned directly
   // in the render body (before return) so callbacks that capture these
   // refs always read the current values — no useEffect needed.
@@ -450,6 +443,17 @@ export function App() {
   paletteOpenRef.current = paletteOpen
   helpOpenRef.current = helpOpen
   historyPanelOpenRef.current = historyPanelOpen
+
+  // Close the in-panel history overlay when its host panel goes away (no
+  // focused panel can render it). Without this, closing the focused panel
+  // while the overlay is open would leave historyPanelOpen=true — invisible
+  // (no panel mounts it) — and then pop over the next panel that gets focused.
+  /* eslint-disable react-hooks/set-state-in-effect -- mirrors the focus-driven
+     close pattern; only fires when focusedId transitions to null */
+  useEffect(() => {
+    if (focusedId == null) setHistoryPanelOpen(false)
+  }, [focusedId])
+  /* eslint-enable react-hooks/set-state-in-effect */
   settingsOpenForRef.current = settingsOpenFor
   gitPanelOpenForRef.current = gitPanelOpenFor
   newSessionDialogOpenRef.current = newSessionDialogOpen
@@ -780,7 +784,6 @@ export function App() {
           // runs later) and any sessions this tab never had a panel for.
           interruptFnsRef.current.delete(frame.id)
           recapFnsRef.current.delete(frame.id)
-          injectInputFnsRef.current.delete(frame.id)
           // Prune the deleted id from persisted sidebar order and group
           // membership. This is the authoritative real-time delete signal
           // (also fires for cross-tab deletes), so it's safe to remove here
@@ -2023,7 +2026,15 @@ export function App() {
         },
         {
           combo: 'mod+shift+h',
-          handler: () => setHistoryPanelOpen((v) => !v),
+          handler: () => {
+            // No-op when no panel is focused — the overlay is per-panel
+            // (historyOpen={historyPanelOpen && focusedId===s.id}), so
+            // opening it with no host would leave historyPanelOpen=true with
+            // nothing visible, then pop over the next panel that gets
+            // focused. mod+shift+o above guards the same way.
+            if (!focusedIdRef.current) return
+            setHistoryPanelOpen((v) => !v)
+          },
           allowInInput: true,
           description: 'Browse input history',
         },
@@ -3076,12 +3087,13 @@ export function App() {
                       onSwap={swapPanels}
                       onRegisterInterrupt={registerInterrupt}
                       onRegisterRecap={registerRecap}
-                      onRegisterInjectInput={registerInjectInput}
                       onAcceptSidebarDrop={handleAcceptSidebarDrop}
                       onRequestResumeForPanel={requestResumeForPanel}
                       resumeOpen={resumeDialogOpen && resumeTargetPanelId === s.id}
                       onResumeIntoPanel={handlePanelResume}
                       onCloseResume={closeResume}
+                      historyOpen={historyPanelOpen && focusedId === s.id}
+                      onCloseHistory={() => setHistoryPanelOpen(false)}
                       onClearSession={handleClear}
                       onOpenSettingsTab={openSettingsTab}
                       onShowHelp={showHelpWithCommands}
@@ -3169,18 +3181,6 @@ export function App() {
               openSession(id, s?.lastTurnAt)
             }
             setPaletteOpen(false)
-          }}
-        />
-      </Suspense>
-
-      <Suspense fallback={null}>
-        <InputHistoryPanel
-          open={historyPanelOpen}
-          onClose={() => setHistoryPanelOpen(false)}
-          currentSessionId={focusedId}
-          onSelect={(text) => {
-            const fid = focusedIdRef.current
-            if (fid) injectInputFnsRef.current.get(fid)?.(text)
           }}
         />
       </Suspense>

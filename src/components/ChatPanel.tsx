@@ -145,6 +145,12 @@ export interface ChatPanelProps {
   onResumeIntoPanel?: (pickedId: string, panelSessionId: string) => void
   /** Close the in-panel resume overlay (Esc / backdrop click). */
   onCloseResume?: () => void
+  /** When true, render the input-history browser as an in-panel overlay
+   *  (Mod+Shift+H), scoped to this panel. App gates this on the focused
+   *  panel so only one panel shows it at a time. */
+  historyOpen?: boolean
+  /** Close the in-panel input-history overlay (Esc / backdrop / select). */
+  onCloseHistory?: () => void
   /** `/clear` this panel — the server detaches the pre-clear conversation
    *  and returns a fresh session; App swaps the panel id. Triggered by the
    *  `/clear` local command. */
@@ -189,9 +195,6 @@ export interface ChatPanelProps {
   onRegisterInterrupt?: (sessionId: string, fn: () => void) => () => void
   /** Forwarded to <Chat> so it can register its recap-refresh callback. */
   onRegisterRecap?: (sessionId: string, fn: () => void) => () => void
-  /** Forwarded to <Chat> so it can register its composer input-injection
-   *  callback (used by the Mod+Shift+H input-history panel). */
-  onRegisterInjectInput?: (sessionId: string, fn: (text: string) => void) => () => void
   /** True while the session is being resumed from dormancy. */
   isResuming?: boolean
   /** Global composer-snippets api (single shared instance owned by App).
@@ -227,6 +230,8 @@ export const ChatPanel = memo(function ChatPanel({
   resumeOpen,
   onResumeIntoPanel,
   onCloseResume,
+  historyOpen,
+  onCloseHistory,
   onClearSession,
   onOpenSettingsTab,
   onShowHelp,
@@ -247,7 +252,6 @@ export const ChatPanel = memo(function ChatPanel({
   onCloseGitPanel,
   onRegisterInterrupt,
   onRegisterRecap,
-  onRegisterInjectInput,
   isResuming,
   snippets,
   onOpenSnippetsManager,
@@ -788,6 +792,8 @@ export const ChatPanel = memo(function ChatPanel({
             resumeOpen={resumeOpen}
             onResumeIntoPanel={onResumeIntoPanel}
             onCloseResume={onCloseResume}
+            historyOpen={historyOpen}
+            onCloseHistory={onCloseHistory}
             onClearSession={onClearSession}
             onOpenSettingsTab={onOpenSettingsTab}
             onShowHelp={onShowHelp}
@@ -806,7 +812,6 @@ export const ChatPanel = memo(function ChatPanel({
             onLiveMessageCount={setLiveMessageCount}
             onRegisterInterrupt={onRegisterInterrupt}
             onRegisterRecap={onRegisterRecap}
-            onRegisterInjectInput={onRegisterInjectInput}
             onOpenSettingsPanel={onOpenSettings}
             snippets={snippets}
             onOpenSnippetsManager={onOpenSnippetsManager}
