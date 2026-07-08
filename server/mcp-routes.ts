@@ -6,9 +6,13 @@
 // key names are exposed via the maskSecrets helper.
 
 import { Hono } from 'hono'
+import { readFile, stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import {
   McpConfigStore,
   clearMcpOAuth,
+  coerceStoredMcpServer,
   finishMcpOAuth,
   maskSecrets,
   startMcpOAuth,
@@ -16,11 +20,83 @@ import {
   validateMcpServer,
   type StoredMcpServer,
   type McpServerInput,
+  type MaskedMcpServer,
 } from './mcp-config.js'
 import { HttpError, createErrorHandler } from './errors.js'
 import { safeJson } from './routes/index.js'
 
 const OAUTH_CALLBACK_PATH = '/api/mcp-config/oauth/callback'
+
+/** Path to the Claude CLI's own user config, which holds its global
+ *  `mcpServers` map. We only read this file — never write it. */
+function claudeUserConfigPath(): string {
+  return join(homedir(), '.claude.json')
+}
+
+/** mtime-keyed cache of the parsed `mcpServers` object. ~/.claude.json can
+ *  be tens of MB (Claude Code stores project history under `projects`), and
+ *  JSON.parse is synchronous — without this, a user importing servers
+ *  one-checkbox-at-a-time would re-read + re-parse the whole file per POST.
+ *  The file is mutated by the Claude CLI, not by us, so an mtime check is
+ *  sufficient invalidation; a stale cache survives only until the CLI
+ *  touches the file. `null` = no cached read yet. */
+let claudeMcpCache: { mtimeMs: number; data: Record<string, unknown> } | null = null
+
+/** Read the top-level `mcpServers` object from ~/.claude.json. Returns an
+ *  empty record when the file is missing, malformed, or lacks the key —
+ *  never throws for those cases, so the setup wizard isn't blocked by a
+ *  corrupt foreign file. A real I/O error (permissions, etc.) still throws
+ *  HttpError(500) so it surfaces rather than silently looking empty. */
+async function readClaudeMcpServers(): Promise<Record<string, unknown>> {
+  const file = claudeUserConfigPath()
+  let st
+  try {
+    st = await stat(file)
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException
+    if (e.code === 'ENOENT') return {}
+    throw new HttpError(500, `Could not stat ~/.claude.json: ${e.message}`)
+  }
+  // Cache hit: the file hasn't changed since the last read.
+  if (claudeMcpCache && claudeMcpCache.mtimeMs === st.mtimeMs) return claudeMcpCache.data
+
+  let raw: string
+  try {
+    raw = await readFile(file, 'utf8')
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException
+    if (e.code === 'ENOENT') return {}
+    throw new HttpError(500, `Could not read ~/.claude.json: ${e.message}`)
+  }
+  // Strip a leading UTF-8 BOM — some Windows editors save ~/.claude.json
+  // with one, and JSON.parse throws on the BOM (U+FEFF) prefix. Claude Code
+  // itself never writes a BOM, but the file is hand-editable.
+  if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1)
+
+  const empty: Record<string, unknown> = {}
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    // Malformed JSON — honor the "returns empty" contract instead of 500-ing
+    // the setup wizard. Cache the empty result against this mtime so a retry
+    // doesn't re-attempt the parse until the file changes.
+    claudeMcpCache = { mtimeMs: st.mtimeMs, data: empty }
+    return empty
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    claudeMcpCache = { mtimeMs: st.mtimeMs, data: empty }
+    return empty
+  }
+  const mcpServers = (parsed as { mcpServers?: unknown }).mcpServers
+  if (!mcpServers || typeof mcpServers !== 'object' || Array.isArray(mcpServers)) {
+    claudeMcpCache = { mtimeMs: st.mtimeMs, data: empty }
+    return empty
+  }
+  const data = mcpServers as Record<string, unknown>
+  claudeMcpCache = { mtimeMs: st.mtimeMs, data }
+  return data
+}
 
 export function buildMcpConfigRouter(store: McpConfigStore): Hono {
   const app = new Hono()
@@ -31,6 +107,82 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
   app.get('/', (c) => {
     const servers = store.list().map(maskSecrets)
     return c.json({ servers })
+  })
+
+  // ── Import from Claude CLI config (~/.claude.json) ─────────────────
+  // Registered BEFORE `/:name` so the literal `claude-import` segment
+  // isn't captured by the `:name` param route below.
+
+  /** GET /claude-import — surface native MCP servers (secrets masked) plus
+   *  per-server validation errors so the UI can show which entries the
+   *  command allowlist would reject before the user tries to import. */
+  app.get('/claude-import', async (c) => {
+    const mcpServers = await readClaudeMcpServers()
+    const servers: Array<MaskedMcpServer & { importErrors: string[]; exists: boolean }> = []
+    for (const [name, raw] of Object.entries(mcpServers)) {
+      const server = coerceStoredMcpServer(raw, name)
+      if (!server) continue
+      const errors = validateMcpServer(server)
+      servers.push({
+        ...maskSecrets(server),
+        importErrors: errors,
+        exists: !!store.get(server.name),
+      })
+    }
+    return c.json({ servers })
+  })
+
+  /** POST /claude-import — import a subset (by name) into the global store.
+   *  Re-reads ~/.claude.json server-side so secret env/headers values never
+   *  cross the wire. Names that already exist are skipped (not overwritten);
+   *  names that fail validation are reported per-entry. */
+  app.post('/claude-import', async (c) => {
+    const body = await safeJson<{ names?: unknown }>(c.req)
+    if (!body || typeof body !== 'object' || !Array.isArray(body.names)) {
+      throw new HttpError(400, 'names must be an array of strings')
+    }
+    const names = body.names.filter((n): n is string => typeof n === 'string' && n.trim().length > 0)
+    const mcpServers = await readClaudeMcpServers()
+    // Index entries by their COERCED name (the same value GET returned to the
+    // client). An entry's object key and its `name` field can disagree
+    // (coerceStoredMcpServer prefers an explicit `name`), so looking the
+    // client-sent name up directly in `mcpServers` would miss those entries.
+    // Dedupes by coerced name so two keys resolving to the same name don't
+    // produce both an `imported` and a `skipped` for one server.
+    const byName = new Map<string, unknown>()
+    for (const [key, raw] of Object.entries(mcpServers)) {
+      const server = coerceStoredMcpServer(raw, key)
+      if (server && !byName.has(server.name)) byName.set(server.name, raw)
+    }
+    const imported: string[] = []
+    const skipped: string[] = []
+    const failed: { name: string; error: string }[] = []
+    let dirty = false
+    for (const name of names) {
+      const raw = byName.get(name)
+      const server = raw ? coerceStoredMcpServer(raw, name) : null
+      if (!server) {
+        failed.push({ name, error: 'not found in ~/.claude.json mcpServers' })
+        continue
+      }
+      const errors = validateMcpServer(server)
+      if (errors.length > 0) {
+        failed.push({ name, error: errors.join('; ') })
+        continue
+      }
+      if (store.get(server.name)) {
+        skipped.push(server.name)
+        continue
+      }
+      store.upsert({ ...server, enabled: true })
+      imported.push(server.name)
+      dirty = true
+    }
+    // Persist immediately — the debounced flush timer is unref()'d, so an
+    // abrupt exit within the 500ms window would lose the just-imported
+    // servers. Import is a deliberate user action expecting durability.
+    if (dirty) await store.flush()
+    return c.json({ imported, skipped, failed })
   })
 
   // OAuth redirect target. Completes token exchange and shows a tiny close page.

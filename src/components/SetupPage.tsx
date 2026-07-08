@@ -5,6 +5,7 @@ import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useUpdateInfo } from '../hooks/useUpdateInfo'
 import { notificationTooltip } from '../utils/notifications'
 import { IconBell, IconBellOff, IconX, IconCheck } from './icons/ToolIcons'
+import type { McpServerConfigMeta } from '../types'
 
 interface Props {
   /** Called after `/config/setup` has succeeded. `openNewSession` reflects
@@ -39,9 +40,10 @@ const STEPS = [
   { id: 0, short: 'Environment', subtitle: 'Checking the local Claude CLI environment.' },
   { id: 1, short: 'Auth Token', subtitle: 'Configure your Anthropic API credentials to get started.' },
   { id: 2, short: 'Models', subtitle: 'Pick the models you want available in new sessions.' },
-  { id: 3, short: 'Notifications', subtitle: 'Decide how you want to be notified when a turn completes.' },
-  { id: 4, short: 'Updates', subtitle: 'Choose the npm registry used to check for updates.' },
-  { id: 5, short: 'Finish', subtitle: "You're ready — let's open your first session." },
+  { id: 3, short: 'MCP', subtitle: 'Import MCP servers from your Claude CLI config.' },
+  { id: 4, short: 'Notifications', subtitle: 'Decide how you want to be notified when a turn completes.' },
+  { id: 5, short: 'Updates', subtitle: 'Choose the npm registry used to check for updates.' },
+  { id: 6, short: 'Finish', subtitle: "You're ready — let's open your first session." },
 ] as const
 
 type Step = (typeof STEPS)[number]['id']
@@ -60,6 +62,17 @@ interface ClaudeHealth {
   error?: string
   reason?: 'not_found' | 'spawn_failed' | 'exec_failed' | 'unknown'
 }
+
+/** A native MCP server discovered in ~/.claude.json, as returned by
+ *  GET /api/mcp-config/claude-import. Secrets are already masked by the
+ *  server; `importErrors` carries allowlist/schema violations that would
+ *  block import, and `exists` marks servers already in the global store. */
+interface ClaudeMcpCandidate extends McpServerConfigMeta {
+  importErrors: string[]
+  exists: boolean
+}
+
+type McpImportStatus = 'idle' | 'importing' | 'imported' | 'exists' | 'failed'
 
 /** Inputs whose Enter key advances the wizard. Hoisted to module scope
  *  so we don't reallocate per render. New text inputs added later must
@@ -116,6 +129,148 @@ export function SetupPage({ onConfigured }: Props) {
   // the field after a check hides the now-stale result. `null` = no probe
   // yet (or the result was invalidated by an edit).
   const [probedRegistry, setProbedRegistry] = useState<string | null>(null)
+
+  // ── Step 3: MCP import from ~/.claude.json ──
+  // `claudeMcp === undefined` ⇒ probe still in flight (or not yet kicked
+  // off — we probe lazily on first entry of step 3, not on mount, so users
+  // who breeze past MCP don't pay for a read of ~/.claude.json). An empty
+  // array means the file has no top-level `mcpServers` key.
+  const [claudeMcp, setClaudeMcp] = useState<ClaudeMcpCandidate[] | undefined>(undefined)
+  const [claudeMcpError, setClaudeMcpError] = useState<string | null>(null)
+  // Per-server import outcome, keyed by server name. Drives the row badges
+  // and disables re-importing servers that are already imported/exists.
+  // Pre-existing servers (c.exists) are seeded to 'exists' when the probe
+  // lands, so they're treated uniformly by done/rowDisabled and the
+  // Import-all filter — no wasted re-POST on a server the store already has.
+  const [mcpImportStatus, setMcpImportStatus] = useState<Record<string, McpImportStatus>>({})
+  // Mirror of mcpImportStatus for reading the latest value inside async
+  // handlers without re-creating them on every status flip. Updated in an
+  // effect (not during render) per the refs rule.
+  const mcpImportStatusRef = useRef(mcpImportStatus)
+  useEffect(() => { mcpImportStatusRef.current = mcpImportStatus }, [mcpImportStatus])
+
+  /** Cancels the in-flight probe (effect cleanup or a re-probe). Stored in a
+   *  ref rather than returned from the effect so the Retry button can share
+   *  the same fetch path without going through effect-dep indirection. */
+  const probeCancelRef = useRef<(() => void) | null>(null)
+
+  /** Fetch the native MCP server list. Shared by the lazy step-entry effect
+   *  and the Retry button. Clears any prior error up-front (so a successful
+   *  re-probe after a failure doesn't leave the error block visible) and
+   *  seeds 'exists' status for servers the global store already has. */
+  const probeClaudeMcp = useCallback(() => {
+    probeCancelRef.current?.()
+    let cancelled = false
+    probeCancelRef.current = () => { cancelled = true }
+    setClaudeMcpError(null)
+    void api
+      .get<{ servers: ClaudeMcpCandidate[] }>('/mcp-config/claude-import')
+      .then((r) => {
+        if (cancelled) return
+        const servers = r.servers ?? []
+        setClaudeMcp(servers)
+        setMcpImportStatus((prev) => {
+          const next = { ...prev }
+          for (const c of servers) {
+            if (c.exists && next[c.name] === undefined) next[c.name] = 'exists'
+          }
+          return next
+        })
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setClaudeMcpError(err instanceof Error ? err.message : 'Failed to read ~/.claude.json')
+      })
+  }, [])
+
+  /** Lazy-probe ~/.claude.json when the user first lands on step 3. Re-runs
+   *  only while unsettled (claudeMcp undefined) so a completed probe is
+   *  sticky across back/forward navigation. */
+  useEffect(() => {
+    if (step !== 3 || claudeMcp !== undefined) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    probeClaudeMcp()
+    return () => { probeCancelRef.current?.() }
+  }, [step, claudeMcp, probeClaudeMcp])
+
+  /** Import a single native MCP server by name. Re-reads happen server-side
+   *  so secret env/headers never cross the wire. No-ops if the row is already
+   *  importing/imported/exists, so a double-click or an Enter on a done row
+   *  doesn't fire a wasted POST or downgrade a terminal status. */
+  const importMcp = useCallback(async (name: string) => {
+    const cur = mcpImportStatusRef.current[name]
+    if (cur === 'importing' || cur === 'imported' || cur === 'exists') return
+    setMcpImportStatus((prev) => ({ ...prev, [name]: 'importing' }))
+    try {
+      const r = await api.post<{ imported: string[]; skipped: string[]; failed: { name: string; error: string }[] }>(
+        '/mcp-config/claude-import',
+        { names: [name] },
+      )
+      setMcpImportStatus((s) => {
+        // Don't downgrade a newer terminal status set by a concurrent action.
+        const existing = s[name]
+        if (existing === 'imported' || existing === 'exists') return s
+        const next = { ...s }
+        if (r.imported.includes(name)) next[name] = 'imported'
+        else if (r.skipped.includes(name)) next[name] = 'exists'
+        else next[name] = 'failed'
+        return next
+      })
+    } catch {
+      setMcpImportStatus((s) => ({ ...s, [name]: 'failed' }))
+    }
+  }, [])
+
+  /** Import every importable candidate (no validation errors, not already
+   *  imported/exists/importing) in a single batched POST. Rows flip to
+   *  'importing' up-front for immediate feedback, then resolve to the
+   *  server's per-name outcome. */
+  const importAllMcp = useCallback(async () => {
+    const candidates = (claudeMcp ?? []).filter(
+      (c) => c.importErrors.length === 0
+        && mcpImportStatus[c.name] !== 'imported'
+        && mcpImportStatus[c.name] !== 'exists'
+        && mcpImportStatus[c.name] !== 'importing',
+    )
+    if (!candidates.length) return
+    setMcpImportStatus((s) => {
+      const next = { ...s }
+      for (const c of candidates) next[c.name] = 'importing'
+      return next
+    })
+    try {
+      const r = await api.post<{ imported: string[]; skipped: string[]; failed: { name: string; error: string }[] }>(
+        '/mcp-config/claude-import',
+        { names: candidates.map((c) => c.name) },
+      )
+      setMcpImportStatus((s) => {
+        const next = { ...s }
+        for (const name of r.imported) next[name] = 'imported'
+        for (const name of r.skipped) next[name] = 'exists'
+        for (const f of r.failed) next[f.name] = 'failed'
+        return next
+      })
+    } catch {
+      setMcpImportStatus((s) => {
+        const next = { ...s }
+        for (const c of candidates) next[c.name] = 'failed'
+        return next
+      })
+    }
+  }, [claudeMcp, mcpImportStatus])
+
+  /** True while any row is mid-import. Derived (not stored) so single-row
+   *  imports via importMcp also disable the Import-all button — a stored
+   *  flag would only be flipped by importAllMcp and stay stale here. */
+  const importingMcp = Object.values(mcpImportStatus).some((s) => s === 'importing')
+
+  /** Re-probe directly (not via effect-dep reset) so the Retry button
+   *  actually fires a fetch — setClaudeMcp(undefined) alone is a no-op when
+   *  a prior probe already left it undefined, and claudeMcpError isn't in
+   *  the effect's dep array. */
+  const retryClaudeMcp = useCallback(() => {
+    probeClaudeMcp()
+  }, [probeClaudeMcp])
 
   // ── Submit state ──
   // We only POST /config/setup once, when the user clicks the final button
@@ -703,6 +858,146 @@ export function SetupPage({ onConfigured }: Props) {
 
           {step === 3 && (
             <div className="setup-field">
+              <label className="setup-label">MCP Servers</label>
+              <p className="setup-hint">
+                Import MCP servers configured in your Claude CLI{' '}
+                (<code style={styles.code}>~/.claude.json</code>). Imported
+                servers become global and are available to every new session.
+              </p>
+
+              {/* Probing */}
+              {claudeMcp === undefined && !claudeMcpError && (
+                <div className="setup-health-row setup-health-row-checking">
+                  <span
+                    className="setup-spinner"
+                    style={{ ...styles.spinner, borderTopColor: 'var(--accent)' }}
+                    aria-hidden="true"
+                  />
+                  <span className="setup-hint">Reading ~/.claude.json…</span>
+                </div>
+              )}
+
+              {/* Probe error — guarded on claudeMcp === undefined so a stale
+                  error can never co-render with a successfully loaded list. */}
+              {claudeMcpError && claudeMcp === undefined && (
+                <div className="setup-health-row setup-health-row-fail">
+                  <span className="setup-health-icon" aria-hidden="true">!</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ ...styles.hint, color: 'var(--fg)' }}>
+                      Could not read <code style={styles.code}>~/.claude.json</code>.
+                    </p>
+                    <p className="setup-prefilled-hint">{claudeMcpError}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={retryClaudeMcp}
+                    style={styles.secondaryBtn}
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+
+              {/* Empty / no servers */}
+              {claudeMcp !== undefined && claudeMcp.length === 0 && (
+                <p className="setup-hint">
+                  No MCP servers found in your Claude CLI config. You can add
+                  servers later from the global settings panel.
+                </p>
+              )}
+
+              {/* Candidate list */}
+              {claudeMcp && claudeMcp.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {claudeMcp.map((c) => {
+                    const invalid = c.importErrors.length > 0
+                    const status = mcpImportStatus[c.name]
+                    const done = status === 'imported' || status === 'exists'
+                    const rowDisabled = invalid || status === 'importing' || done
+                    return (
+                      <div
+                        key={c.name}
+                        style={{
+                          display: 'flex', gap: 8, alignItems: 'flex-start',
+                          padding: '6px 8px',
+                          background: 'var(--bg-elev-2)',
+                          border: '1px solid var(--border)', borderRadius: 4,
+                          opacity: invalid ? 0.55 : 1,
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={done}
+                          disabled={rowDisabled}
+                          onChange={() => void importMcp(c.name)}
+                          style={{ marginTop: 3, flexShrink: 0 }}
+                          aria-label={`Import ${c.name}`}
+                        />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                            <code style={{ ...styles.code, fontSize: 12 }}>{c.name}</code>
+                            <span className="setup-hint" style={{ fontSize: 11 }}>
+                              {c.type}
+                              {c.command ? ` · ${c.command}` : ''}
+                              {c.url ? ` · ${c.url}` : ''}
+                            </span>
+                          </div>
+                          {c.envKeys && c.envKeys.length > 0 && (
+                            <p className="setup-hint" style={{ fontSize: 11, marginTop: 2 }}>
+                              env: {c.envKeys.join(', ')}
+                            </p>
+                          )}
+                          {invalid && (
+                            <p className="setup-hint" style={{ fontSize: 11, marginTop: 2, color: 'var(--msg-error-fg)' }}>
+                              {c.importErrors.join('; ')}
+                            </p>
+                          )}
+                        </div>
+                        <span className="setup-hint" style={{ fontSize: 11, flexShrink: 0, marginTop: 2 }}>
+                          {status === 'importing' && 'Importing…'}
+                          {status === 'imported' && (
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: 'var(--accent)' }}>
+                              <IconCheck size={12} /> Imported
+                            </span>
+                          )}
+                          {status === 'exists' && 'Already exists'}
+                          {status === 'failed' && (
+                            <span style={{ color: 'var(--msg-error-fg)' }}>Failed</span>
+                          )}
+                        </span>
+                      </div>
+                    )
+                  })}
+                  {/* Import-all affordance — only when there's at least one
+                      importable candidate (no errors, not already done or
+                      mid-import). The predicate mirrors importAllMcp's own
+                      filter so the button never shows as a clickable no-op. */}
+                  {claudeMcp.some(
+                    (c) => c.importErrors.length === 0
+                      && mcpImportStatus[c.name] !== 'imported'
+                      && mcpImportStatus[c.name] !== 'exists'
+                      && mcpImportStatus[c.name] !== 'importing',
+                  ) && (
+                    <button
+                      type="button"
+                      onClick={() => void importAllMcp()}
+                      disabled={importingMcp}
+                      style={{ ...styles.secondaryBtn, alignSelf: 'flex-start', marginTop: 4 }}
+                    >
+                      {importingMcp ? 'Importing…' : 'Import all'}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <p className="setup-hint">
+                You can manage MCP servers anytime from the global settings panel.
+              </p>
+            </div>
+          )}
+
+          {step === 4 && (
+            <div className="setup-field">
               <label className="setup-label">Desktop Notifications</label>
               <p className="setup-hint">
                 Get notified when Claude finishes a turn while this tab is in
@@ -732,7 +1027,7 @@ export function SetupPage({ onConfigured }: Props) {
             </div>
           )}
 
-          {step === 4 && (
+          {step === 5 && (
             <div className="setup-field">
               <label className="setup-label" htmlFor="update-registry">
                 Update registry <span style={styles.optional}>(optional)</span>
@@ -799,7 +1094,7 @@ export function SetupPage({ onConfigured }: Props) {
             </div>
           )}
 
-          {step === 5 && (
+          {step === 6 && (
             <div className="setup-field">
               <label className="setup-label">You're all set</label>
               <p className="setup-hint">
