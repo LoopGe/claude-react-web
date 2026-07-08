@@ -187,6 +187,20 @@ export class MpStore extends JsonFileStore<MpEntry> {
     return join(this.cacheDir, id)
   }
 
+  /** Remove every marketplace, all enabled-plugin flags, and the clone cache dirs. */
+  async clearAll(): Promise<void> {
+    // Capture cloneDirs before wiping the index.
+    const cloneDirs = Array.from(this.index.values()).map((e) => e.cloneDir)
+    // Clear enabled before super.clearAll() so its flush serialises both maps empty.
+    this.enabled.clear()
+    await super.clearAll()
+    await Promise.all([
+      ...cloneDirs.map((d) => rm(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(() => {})),
+      rm(this.cacheDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(() => {}),
+      rm(this.externalCacheDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(() => {}),
+    ])
+  }
+
   /** Hard-remove an entry: drop from index, drop all enabledPlugins
    *  scope to this marketplace, recursively delete the clone dir.
    *  Filesystem errors are swallowed — the store is still updated so a
