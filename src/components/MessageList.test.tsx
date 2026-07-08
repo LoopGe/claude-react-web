@@ -1781,3 +1781,37 @@ describe('diff search highlighting', () => {
     expect(container.querySelector('mark.search-hl-active')).toBeTruthy()
   })
 })
+
+describe('worktree markers', () => {
+  it('renders EnterWorktree as a lightweight marker with the worktree name', () => {
+    const items = toItems([
+      makeMsg('assistant', {
+        message: { content: [
+          { type: 'tool_use', id: 'wt-1', name: 'EnterWorktree', input: { name: 'feature-auth' } },
+        ] },
+      }),
+    ])
+    const { container } = render(<MessageList items={items} />)
+    const marker = container.querySelector('.worktree-marker')
+    expect(marker).toBeTruthy()
+    expect(marker?.textContent).toContain('Entered worktree')
+    expect(marker?.textContent).toContain('feature-auth')
+    // NOT a generic tool card.
+    expect(container.querySelector('.tool-card-unknown')).toBeNull()
+  })
+
+  it('renders ExitWorktree with the action', () => {
+    const items = toItems([
+      makeMsg('assistant', {
+        message: { content: [
+          { type: 'tool_use', id: 'wt-2', name: 'ExitWorktree', input: { action: 'keep' } },
+        ] },
+      }),
+    ])
+    const { container } = render(<MessageList items={items} />)
+    const marker = container.querySelector('.worktree-marker')
+    expect(marker).toBeTruthy()
+    expect(marker?.textContent).toContain('Exited worktree')
+    expect(marker?.textContent).toContain('kept on disk')
+  })
+})

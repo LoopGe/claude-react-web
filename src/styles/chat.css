@@ -811,6 +811,38 @@
   text-overflow: ellipsis;
 }
 
+/* Worktree enter/exit marker — same silhouette as .enter-plan-marker but
+   uses the ok (green) accent to read as a session/workspace transition
+   rather than a plan-mode entry. */
+.worktree-marker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.worktree-marker-icon {
+  display: inline-flex;
+  color: var(--ok, var(--accent));
+}
+.worktree-marker-label {
+  color: var(--ok, var(--accent));
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.worktree-marker-sub {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.worktree-marker-sub code {
+  font-family: var(--mono);
+  color: var(--fg);
+}
+
 /* Compact-summary card — the user-role "summary" frame that the SDK
    injects right after a compact_boundary. Tinted with the recap accent
    but card-shaped (not a divider) so it clearly belongs to the recap

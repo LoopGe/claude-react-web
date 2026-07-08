@@ -35,3 +35,10 @@ export const PLAN_TOOL_NAMES = new Set(['ExitPlanMode'])
  *  empty input and no plan content, so it is auto-allowed server-side and
  *  rendered as a lightweight inline marker (NOT a PlanCard). */
 export const ENTER_PLAN_MODE_TOOL_NAME = 'EnterPlanMode'
+
+/** Worktree entry/exit tools. EnterWorktree creates a new worktree (input.name)
+ *  or switches to an existing one (input.path). ExitWorktree leaves the
+ *  worktree (input.action = 'keep' | 'remove'). Both are lightweight signals,
+ *  rendered as inline markers rather than full tool cards. */
+export const ENTER_WORKTREE_TOOL_NAME = 'EnterWorktree'
+export const EXIT_WORKTREE_TOOL_NAME = 'ExitWorktree'

@@ -51,6 +51,7 @@ import {
   IconFileCode,
   IconFileText,
   IconFolderSearch,
+  IconGitBranch,
   IconGlobe,
   IconListTodo,
   IconMessageCircle,
@@ -63,7 +64,7 @@ import {
   IconWebSearch,
 } from './icons/ToolIcons'
 import { formatJson } from '../utils/format'
-import { SUBAGENT_TOOL_NAMES, PLAN_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME, WORKFLOW_TOOL_NAME } from '../constants/toolNames'
+import { SUBAGENT_TOOL_NAMES, PLAN_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME, ENTER_WORKTREE_TOOL_NAME, EXIT_WORKTREE_TOOL_NAME, WORKFLOW_TOOL_NAME } from '../constants/toolNames'
 import { QUESTION_TOOL_NAME, type QuestionAnswerEntry } from '../utils/question-answers'
 import { parseTaskId, resultText } from '../utils/task-events'
 import { truncate } from '../utils/text'
@@ -129,6 +130,16 @@ export const ToolUseBlock = memo(function ToolUseBlock({ block, searchQuery, act
   // proposal, so it must NOT render a PlanCard. Check before PLAN_TOOL_NAMES.
   if (name === ENTER_PLAN_MODE_TOOL_NAME) {
     return <EnterPlanModeMarker />
+  }
+
+  // EnterWorktree / ExitWorktree → lightweight inline markers (no card, no
+  // status badge). Like EnterPlanMode these are mode-transition signals, not
+  // actionable tool calls with rich input to display.
+  if (name === ENTER_WORKTREE_TOOL_NAME) {
+    return <WorktreeMarker input={input} action="enter" />
+  }
+  if (name === EXIT_WORKTREE_TOOL_NAME) {
+    return <WorktreeMarker input={input} action="exit" />
   }
 
   // ExitPlanMode → bespoke PlanCard (own pending/approved/rejected lifecycle).
@@ -304,6 +315,48 @@ function EnterPlanModeMarker() {
       </span>
       <span className="enter-plan-marker-label">Entered plan mode</span>
       <span className="enter-plan-marker-sub">Claude is planning before acting</span>
+    </div>
+  )
+}
+
+/** Lightweight inline marker for EnterWorktree / ExitWorktree. Like
+ *  EnterPlanModeMarker these are mode-transition signals, not actionable tool
+ *  calls with rich input — a full tool card would be noise.
+ *
+ *  EnterWorktree: shows the worktree name (new) or path basename (switch).
+ *  ExitWorktree: shows the action (kept on disk / removed). */
+function WorktreeMarker({ input, action }: { input?: Record<string, unknown>; action: 'enter' | 'exit' }) {
+  if (action === 'enter') {
+    const name = typeof input?.name === 'string' ? input.name : null
+    const path = typeof input?.path === 'string' ? input.path : null
+    const label = path && !name ? 'Switched to worktree' : 'Entered worktree'
+    const detail = name ?? (path ? path.split(/[/\\]/).filter(Boolean).pop() : null)
+    return (
+      <div className="worktree-marker" role="note" aria-label={label}>
+        <span className="worktree-marker-icon" aria-hidden>
+          <IconGitBranch size={13} />
+        </span>
+        <span className="worktree-marker-label">{label}</span>
+        {detail && (
+          <span className="worktree-marker-sub">
+            <code>{detail}</code>
+          </span>
+        )}
+      </div>
+    )
+  }
+  // exit
+  const act =
+    input?.action === 'remove' ? 'removed'
+    : input?.action === 'keep' ? 'kept on disk'
+    : 'exited'
+  return (
+    <div className="worktree-marker" role="note" aria-label="Exited worktree">
+      <span className="worktree-marker-icon" aria-hidden>
+        <IconGitBranch size={13} />
+      </span>
+      <span className="worktree-marker-label">Exited worktree</span>
+      <span className="worktree-marker-sub">{act}</span>
     </div>
   )
 }
