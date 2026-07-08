@@ -24,6 +24,7 @@ import { memo, useMemo, useRef } from 'react'
 import type { SdkMessage } from '../types'
 import type { Skin } from '../utils/theme'
 import { IconCheck, IconCircleDot, IconCircle, IconCheckboxDot, IconCheckbox } from './icons/ToolIcons'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import {
   buildTaskStateMap,
   lastUserInputIndex,
@@ -56,6 +57,13 @@ interface Props {
 export const TodoChecklist = memo(function TodoChecklist({ messages, working, skin, clearing }: Props) {
   const result = useMemo(() => extractTodos(messages, !!working), [messages, working])
   const hc = skin === 'hc'
+  // Cap the list height so a long checklist doesn't dominate the viewport
+  // (the panel is position:sticky; without a cap a 20-item list fills the
+  // whole chat area). The list scrolls internally via the project's overlay
+  // scrollbar (same as MessageList / RecapWindow), keeping the header + count
+  // visible. Declared here (before the early returns) so the hook order is
+  // stable across renders where the panel is hidden.
+  const setListScroller = useOverlayScrollbar({ autoHide: 'leave' })
 
   // The result that would be shown right now under the normal hide rules
   // (null when the panel should be hidden). Mirrors the old inline early
@@ -103,7 +111,7 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
           {doneCount}/{todos.length}
         </span>
       </div>
-      <ul className="todo-panel-list">
+      <ul ref={setListScroller} className="todo-panel-list">
         {todos.map((t, i) => (
           <li key={i} className={`todo-item todo-${t.status}`}>
             <span className="todo-icon" aria-hidden>

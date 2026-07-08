@@ -971,6 +971,12 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
+  /* Cap so a long checklist doesn't dominate the viewport — the panel is
+     position:sticky, so without a cap a 20-item list fills the whole chat
+     area. The list scrolls internally (overlay scrollbar attached in
+     TodoChecklist); the header + count stay visible above. */
+  max-height: 240px;
+  overflow-y: auto;
 }
 .todo-item {
   display: flex;

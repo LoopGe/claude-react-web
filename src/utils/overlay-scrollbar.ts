@@ -260,6 +260,13 @@ export function attachOverlayScrollbar(
 
   const mo = new MutationObserver(() => {
     if (el.firstElementChild !== contentEl) observeContent(el.firstElementChild)
+    // Refresh thumb geometry on any childList mutation. The content
+    // ResizeObserver only watches firstElementChild, so appending children
+    // at the tail (e.g. a flat <ul> of <li>s growing past the overflow
+    // threshold) wouldn't otherwise update the thumb size/position until the
+    // next scroll. Safe: the thumb track is a child of `parent`, not `el`,
+    // so update()'s style writes don't re-fire this observer (no loop).
+    scheduleUpdate()
   })
   mo.observe(el, { childList: true })
 
