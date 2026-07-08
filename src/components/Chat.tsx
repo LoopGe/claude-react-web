@@ -253,9 +253,13 @@ export const Chat = memo(function Chat({
   // trigger the re-render that reveals the panel on first open.
   const [settingsEverOpened, setSettingsEverOpened] = useState(false)
   if (settingsOpen && !settingsEverOpened) setSettingsEverOpened(true)
+  // In-chat search open state. Declared here (rather than in the search
+  // section below) because it gates the recap/pinned presence hooks, which
+  // hide those overlays while search is open so the search bar isn't covered.
+  const [searchOpen, setSearchOpen] = useState(false)
   const settingsPresence = useExitPresence(!!settingsOpen)
   const gitPresence = useExitPresence(!!gitPanelOpen)
-  const recapPresence = useExitPresence(!!recapOpen)
+  const recapPresence = useExitPresence(!!recapOpen && !searchOpen)
   // Effective UI prefs: a per-session override (session.<field>) wins,
   // otherwise the global default (globalPrefs.<field>, server-backed) applies.
   // Computed inline so a SettingsPanel override or a global-settings save
@@ -270,7 +274,7 @@ export const Chat = memo(function Chat({
   // the bar out.
   const [pinnedUserMsg, setPinnedUserMsg] = useState<{ id: string; text: string } | null>(null)
   const [pinnedText, setPinnedText] = useState('')
-  const pinnedPresence = useExitPresence(effectiveShowPinned && !!pinnedUserMsg)
+  const pinnedPresence = useExitPresence(effectiveShowPinned && !!pinnedUserMsg && !searchOpen)
   const handlePinnedUserMessageChange = useCallback(
     (info: { id: string; text: string } | null) => {
       if (info) setPinnedText(info.text)
@@ -741,7 +745,8 @@ export const Chat = memo(function Chat({
   }, [permissions.pending, questionDrafts])
 
   // ── In-chat search ──────────────────────────────────────────────────
-  const [searchOpen, setSearchOpen] = useState(false)
+  // (searchOpen is declared above with the panel-open states so the
+  // recap/pinned presence hooks can gate on it.)
   // Seed for the search input, captured from the current selection at open time.
   const [searchSeed, setSearchSeed] = useState('')
   const [searchInstance, setSearchInstance] = useState(0)
