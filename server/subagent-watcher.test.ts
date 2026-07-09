@@ -87,6 +87,17 @@ describe('subagent-watcher', () => {
       )
       expect(readSubagentCompletion(f)).toBeNull()
     })
+    it('does NOT false-complete on pause_turn stop_reason (mid-flight pause)', () => {
+      // 'pause_turn' means the subagent paused mid-flight and will resume —
+      // NOT completion. Same class as the tool_use bug: treating it as
+      // terminal false-completes a still-running subagent.
+      const f = path.join(mkdtempSync(path.join(os.tmpdir(), 'sw-')), 'agent.jsonl')
+      writeFileSync(
+        f,
+        JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'paused...' }], stop_reason: 'pause_turn' } }) + '\n',
+      )
+      expect(readSubagentCompletion(f)).toBeNull()
+    })
     it('completes when end_turn follows tool_use intermediate messages', () => {
       const f = path.join(mkdtempSync(path.join(os.tmpdir(), 'sw-')), 'agent.jsonl')
       writeFileSync(
@@ -184,6 +195,29 @@ describe('subagent-watcher', () => {
       stop()
       await new Promise((r) => setTimeout(r, 60))
       expect(called).toBe(false)
+    })
+
+    it('calls onTimeout (not onCompleted) when maxMs elapses with no completion', async () => {
+      const cwd = '/proj'
+      const sessionId = 'sess-timeout'
+      const agentId = 'agent-timeout'
+      // No transcript file — would never complete.
+      let completed = false
+      let timedOut = false
+      watchBackgroundSubagent({
+        cwd,
+        sessionId,
+        agentId,
+        toolUseId: 'tu_to',
+        onCompleted: () => { completed = true },
+        onTimeout: () => { timedOut = true },
+        intervalMs: 5,
+        maxMs: 20,
+      })
+      // Wait beyond maxMs so the timeout branch fires.
+      await new Promise((r) => setTimeout(r, 120))
+      expect(completed).toBe(false)
+      expect(timedOut).toBe(true)
     })
   })
 })
