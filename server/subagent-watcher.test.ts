@@ -18,6 +18,11 @@ describe('subagent-watcher', () => {
       expect(encodeCwd('D:\\codes\\x')).toBe('D--codes-x')
       expect(encodeCwd('/home/u/x')).toBe('-home-u-x')
     })
+    it('strips trailing separators before encoding (matches CLI resolved path)', () => {
+      expect(encodeCwd('D:/codes/x/')).toBe('D--codes-x')
+      expect(encodeCwd('D:\\codes\\x\\')).toBe('D--codes-x')
+      expect(encodeCwd('/home/u/x/')).toBe('-home-u-x')
+    })
   })
 
   describe('parseAckAgentId', () => {
@@ -67,6 +72,34 @@ describe('subagent-watcher', () => {
       const c = readSubagentCompletion(f)
       expect(c?.status).toBe('stopped')
       expect(c?.summary).toBe('hit limit')
+    })
+    it('does NOT false-complete on tool_use stop_reason (intermediate tool-call response)', () => {
+      // A tool-using subagent emits stop_reason:'tool_use' on every intermediate
+      // tool-calling response — this is NOT completion. The watcher must keep
+      // polling (return null) until a terminal stop_reason lands.
+      const f = path.join(mkdtempSync(path.join(os.tmpdir(), 'sw-')), 'agent.jsonl')
+      writeFileSync(
+        f,
+        [
+          JSON.stringify({ type: 'user', message: { role: 'user', content: 'do work' } }),
+          JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', id: 't1', input: { command: 'ls' } }], stop_reason: 'tool_use' } }),
+        ].join('\n'),
+      )
+      expect(readSubagentCompletion(f)).toBeNull()
+    })
+    it('completes when end_turn follows tool_use intermediate messages', () => {
+      const f = path.join(mkdtempSync(path.join(os.tmpdir(), 'sw-')), 'agent.jsonl')
+      writeFileSync(
+        f,
+        [
+          JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', id: 't1', input: { command: 'ls' } }], stop_reason: 'tool_use' } }),
+          JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'file.txt' }] } }),
+          JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'found file.txt' }], stop_reason: 'end_turn' } }),
+        ].join('\n'),
+      )
+      const c = readSubagentCompletion(f)
+      expect(c?.status).toBe('completed')
+      expect(c?.summary).toBe('found file.txt')
     })
     it('skips malformed / partial lines (file mid-write)', () => {
       const f = path.join(mkdtempSync(path.join(os.tmpdir(), 'sw-')), 'agent.jsonl')

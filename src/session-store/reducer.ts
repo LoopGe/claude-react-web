@@ -1267,7 +1267,11 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
     const parentId = message.parent_tool_use_id
     if (typeof parentId === 'string') {
       const existing = activeSubagents.get(parentId)
-      if (existing) {
+      // Same non-live guard as the async-detector above: don't mutate settled
+      // (done/interrupted/dismissed/rejected) records — late child frames
+      // from an async subagent that completed or was dismissed must not
+      // advance toolCount/result or churn the Map identity.
+      if (existing && (existing.status === 'running' || existing.status === 'background' || existing.status === 'pending')) {
         const content = message.message?.content
         if (Array.isArray(content)) {
           let newTools = 0

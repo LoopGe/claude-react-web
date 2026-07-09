@@ -64,12 +64,15 @@ export function useHistoryCursor(
   // index state.
   const [, tick] = useState(0)
 
-  // Reset the browse cursor whenever the navigable slice changes identity
-  // (filter flip or new history). Otherwise an index from the old slice could
-  // point past the new slice's bounds.
+  // Reset the browse cursor whenever the navigable slice CONTENT changes
+  // (filter flip or new history). Deps on a content key (not the array
+  // identity) so a cross-panel store write that churns `entries` identity
+  // without changing THIS session's slice content doesn't null the cursor
+  // and lose the stashed draft.
+  const entriesKey = entries.join('')
   useEffect(() => {
     indexRef.current = null
-  }, [entries])
+  }, [entriesKey])
 
   const prev = useCallback(
     (currentInput: string): string | null => {

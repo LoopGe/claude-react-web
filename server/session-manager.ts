@@ -521,6 +521,14 @@ export class SessionManager {
     this.broadcastGlobal({ kind: 'update', session: this.info(s) })
   }
 
+  /** Flush any pending debounced session-meta writes to disk. Used by the
+   *  reset route to ensure deletions are persisted before responding —
+   *  without this, a crash within the debounce window silently loses the
+   *  reset (sessions reappear on restart). */
+  async flushStore(): Promise<void> {
+    await this.store.flush()
+  }
+
   /** Write a session's metadata to the persistence store without
    *  broadcasting on the global channel. Use from spawn() so the
    *  subsequent `created` event is the only thing the frontend sees for

@@ -96,6 +96,10 @@ export function buildResetRouter(deps: ResetRouterDeps): Hono {
               }
             }
             if (failed > 0) throw new Error(`${failed} session(s) could not be deleted`)
+            // Await the debounced flush so deletions are on disk before we
+            // respond — without this, a crash within the debounce window
+            // silently loses the reset (sessions reappear on restart).
+            await deps.sm.flushStore()
           })
           break
       }

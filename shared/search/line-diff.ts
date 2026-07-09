@@ -16,12 +16,29 @@ export type LineDiffOp =
  *  before/after split.
  *
  *  O(M·N) DP is fine here: old_string / new_string are edit fragments, not
- *  whole files, so M and N are small (typically <100 lines). */
+ *  whole files, so M and N are small (typically <100 lines). When the product
+ *  exceeds the cap, we fall back to a simple all-del + all-add sequence (no
+ *  LCS) — correct but not minimal — to avoid allocating a DP table that
+ *  would freeze or OOM the tab (e.g. a 20k-line file rewrite). */
+const LINE_DIFF_CELL_CAP = 1_000_000 // 1000 × 1000 lines
+
 export function lineDiff(oldLines: readonly string[], newLines: readonly string[]): LineDiffOp[] {
   const m = oldLines.length
   const n = newLines.length
   if (m === 0) return newLines.map((text, j) => ({ type: 'add' as const, oldIdx: 0, newIdx: j, text }))
   if (n === 0) return oldLines.map((text, i) => ({ type: 'del' as const, oldIdx: i, newIdx: 0, text }))
+
+  // Size guard: when M×N exceeds the cap, skip the O(M·N) DP and fall back to
+  // a trivial all-del + all-add sequence. The result is correct (every old
+  // line deleted, every new line added) but not minimal — acceptable for the
+  // rare large-edit case where a minimal diff would freeze the tab.
+  if (m * n > LINE_DIFF_CELL_CAP) {
+    const ops: LineDiffOp[] = oldLines.map((text, i) => ({ type: 'del' as const, oldIdx: i, newIdx: 0, text }))
+    for (let j = 0; j < n; j++) {
+      ops.push({ type: 'add', oldIdx: m, newIdx: j, text: newLines[j] })
+    }
+    return ops
+  }
 
   // LCS length DP, built from the bottom-right so we can walk forward.
   const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0))

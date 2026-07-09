@@ -205,6 +205,19 @@ function normalize(o: RawLine, sessionId: string): unknown {
     // A top-level prompt on disk was already consumed by the SDK; stamp
     // consumedAt so it isn't mislabelled 'queued' by deriveDeliveryStatus.
     ...(hasTs && parent == null && o.type === 'user' ? { consumedAt: ts } : {}),
+    // System task_notification frames carry tool_use_id/status/summary at the
+    // TOP LEVEL (not inside `message`). Without carrying them through, a
+    // disk-loaded frame (resume/scroll-up) reaches the client missing the
+    // fields the reducer's completion branch needs (parseTaskNotification
+    // returns null for missing tool_use_id) — background subagents never
+    // flip to done on resume.
+    ...(o.type === 'system' && o.subtype === 'task_notification' ? {
+      ...(typeof o.tool_use_id === 'string' ? { tool_use_id: o.tool_use_id } : {}),
+      ...(typeof o.status === 'string' ? { status: o.status } : {}),
+      ...(typeof o.summary === 'string' ? { summary: o.summary } : {}),
+      ...(typeof o.task_id === 'string' ? { task_id: o.task_id } : {}),
+      ...(typeof o.output_file === 'string' ? { output_file: o.output_file } : {}),
+    } : {}),
   }
 }
 

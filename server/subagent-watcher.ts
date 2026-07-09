@@ -39,9 +39,15 @@ export function cliHomeDir(): string {
 /** The CLI encodes a cwd into a project-dir segment by replacing drive / path
  *  separators with '-': "D:/codes/x" -> "D--codes-x". Replicated here because
  *  the SDK doesn't expose subagent transcript access — we read the file the
- *  CLI writes, whose path uses this encoding. */
+ *  CLI writes, whose path uses this encoding.
+ *
+ *  Trailing separators are stripped BEFORE encoding so "D:/codes/x/" encodes
+ *  to "D--codes-x" (not "D--codes-x-"), matching the CLI which resolves the
+ *  cwd to a canonical path before encoding. Without this, a trailing separator
+ *  produces a mismatched project-dir segment and the watcher never finds the
+ *  transcript. */
 export function encodeCwd(cwd: string): string {
-  return cwd.replace(/[:\\/]/g, '-')
+  return cwd.replace(/[/\\]+$/, '').replace(/[:\\/]/g, '-')
 }
 
 /** Path of a background subagent's own transcript. */
@@ -81,10 +87,10 @@ function extractTextBlocks(content: unknown): string {
 }
 
 /** Read the subagent's transcript and, if it contains a final assistant
- *  message (one with `message.stop_reason`), return the completion. Returns
- *  null if the transcript doesn't exist yet, is mid-write, or hasn't reached
- *  a terminal assistant message. Never throws — malformed/partial lines are
- *  skipped, read errors return null (treated as "not done yet"). */
+ *  message (one with a terminal `message.stop_reason`), return the completion.
+ *  Returns null if the transcript doesn't exist yet, is mid-write, or hasn't
+ *  reached a terminal assistant message. Never throws — malformed/partial
+ *  lines are skipped, read errors return null (treated as "not done yet"). */
 export function readSubagentCompletion(filePath: string): SubagentCompletion | null {
   let text: string
   try {
@@ -92,6 +98,12 @@ export function readSubagentCompletion(filePath: string): SubagentCompletion | n
   } catch {
     return null
   }
+  // stop_reason values that mean the subagent is STILL RUNNING (will emit more
+  // after the tool result / pause resolves). 'tool_use' is set on every
+  // completed tool-calling assistant response — treating it as completion
+  // false-completes any tool-using subagent within seconds of launch (the
+  // common case). Only a terminal stop_reason is the subagent's final word.
+  const NON_TERMINAL_STOP_REASONS = new Set(['tool_use'])
   let lastStopReason: string | null = null
   let lastText = ''
   for (const line of text.split('\n')) {
@@ -106,8 +118,9 @@ export function readSubagentCompletion(filePath: string): SubagentCompletion | n
     if (obj.type !== 'assistant' || !obj.message) continue
     const sr = obj.message.stop_reason
     if (typeof sr !== 'string') continue
-    // The last assistant message carrying a stop_reason is the subagent's
-    // final response. A later one (if any) overwrites.
+    if (NON_TERMINAL_STOP_REASONS.has(sr)) continue // mid-tool-call — keep polling
+    // The last terminal assistant message is the subagent's final response.
+    // A later one (if any) overwrites.
     lastStopReason = sr
     lastText = extractTextBlocks(obj.message.content)
   }
