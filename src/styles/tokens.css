@@ -618,6 +618,15 @@
 [data-skin="glow"] .session-status-dot.status-working { box-shadow: var(--dot-glow) color-mix(in srgb, var(--accent) 85%, transparent); }
 [data-skin="glow"] .session-status-dot.status-err { box-shadow: var(--dot-glow) color-mix(in srgb, var(--danger) 80%, transparent); }
 
+/* Checked checkboxes glow in the accent — the same halo vocabulary as the
+   status dots above — so a checked box doesn't read as a flat un-adapted
+   square next to the skin's glowing buttons/dots/focus rings. Applies to
+   every checkbox (the element selector beats no other :checked rule, none
+   of which set box-shadow). */
+[data-skin="glow"] input[type="checkbox"]:checked {
+  box-shadow: var(--dot-glow) color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
 /* Floating surfaces lean on the larger glow shadows already set via tokens.
    The focus-visible ring also gains the halo for keyboard users. */
 [data-skin="glow"] :focus-visible {
