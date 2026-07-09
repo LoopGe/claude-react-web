@@ -58,6 +58,12 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   const [sending, setSending] = useState(false)
   const pastedImages = usePastedImages()
   const fileInputRef = useRef<HTMLInputElement>(null)
+  /** Waiting = a background subagent is still in flight after the side-chat
+   *  turn ended. Mirrors Chat.tsx's derivation so the WorkingBubble stays
+   *  mounted in its Waiting state (with dismissible pending chips) instead of
+   *  unmounting and leaving pending chips as dead labels on the next turn.
+   *  Gated on !terminated (a dead session never gets completion). */
+  const waiting = !session.working && !session.terminated && (stream.activeSubagents?.some((a) => a.status === 'pending') ?? false)
 
   // Destructure the stable callbacks off `stream` so `handleSend`'s dep
   // list can name them directly. Depending on bare `stream` would rebuild
@@ -217,12 +223,14 @@ export const SideChatDrawer = memo(function SideChatDrawer({
             </div>
           )}
         />
-        {session.working && (
+        {(session.working || waiting) && (
           <WorkingBubble
             startedAt={session.workingSince}
             activeSubagents={stream.activeSubagents}
             tokenRate={stream.tokenRate}
             activePhase={stream.activePhase}
+            waiting={waiting}
+            onDismissSubagent={stream.dismissSubagent}
           />
         )}
       </div>

@@ -503,6 +503,16 @@ export const Chat = memo(function Chat({
   })
   const attachments = useAttachments(session.id, session.cwd)
   const pastedImages = usePastedImages()
+  /** A background (async) subagent whose parent turn already ended is in the
+   *  `pending` status. The WorkingBubble stays mounted in a `Waiting` state
+   *  while any such subagent is still in flight, so the user sees that
+   *  background work is ongoing after the turn ends — instead of the bubble
+   *  silently unmounting and the only trace being a card buried in the
+   *  transcript. Derived from the chip set (which includes `pending`).
+   *  Gated on `!session.terminated`: a dead session will never receive the
+   *  completion signal, so showing "Waiting..." forever (with only manual
+   *  dismiss as an exit) would be a dead state. */
+  const waiting = !turnActive && !session.terminated && (stream.activeSubagents?.some((a) => a.status === 'pending') ?? false)
 
   // 鈹€鈹€ Subagent overlay state 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // Stack of toolUseIds: empty = closed; otherwise the last entry is the
@@ -1505,13 +1515,15 @@ export const Chat = memo(function Chat({
       >
         {error ?? ''}
       </div>
-      {turnActive && (
+      {(turnActive || waiting) && (
         <WorkingBubble
           startedAt={turnStartedAt}
           activeSubagents={stream.activeSubagents}
           tokenRate={stream.tokenRate}
           activePhase={stream.activePhase}
+          waiting={waiting}
           onOpenSubagent={openSubagent}
+          onDismissSubagent={stream.dismissSubagent}
         />
       )}
 

@@ -165,6 +165,24 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
         },
       })
     }
+    case 'DISMISS_SUBAGENT': {
+      // Flip a `pending` background subagent to `dismissed` so it leaves the
+      // Waiting bubble's chip set. Uses a dedicated `dismissed` status (NOT
+      // `interrupted`) so the inline SubagentCard renders a neutral state
+      // instead of a false error — the subagent may still be running fine;
+      // the user only stopped tracking it. Only acts on `pending` records;
+      // identity-stable otherwise. The completion branch excludes
+      // `dismissed`, so a late task_notification won't override the dismiss.
+      const existing = state.mirror.activeSubagents.get(action.toolUseId)
+      if (!existing || existing.status !== 'pending') return state
+      const activeSubagents = new Map(state.mirror.activeSubagents)
+      activeSubagents.set(action.toolUseId, {
+        ...existing,
+        status: 'dismissed',
+        endedAt: existing.endedAt ?? existing.startedAt,
+      })
+      return withMirror(state, { ...state.mirror, activeSubagents })
+    }
     case 'CLEAR_TRANSCRIPT': {
       // Same full wipe as RESET, but the post-/clear session is live and
       // empty with no pending replay (the WS subscription persists, the
@@ -784,16 +802,14 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   }
 
   if (incomingMessage.type === 'result') {
-    // Reconcile any tool still marked 'running' at turn end. A `result`
-    // frame means the turn is definitively over — within a normal turn
-    // every tool_result lands BEFORE the result, so anything still
-    // 'running' here is orphaned: its tool_result will never arrive
-    // (the user interrupted, or the SDK aborted the turn after emitting
-    // the tool_use). Without this sweep the card's status badge spins on
-    // 'running' forever, since useToolStatus() defaults unknown/lingering
-    // ids to 'running'. Mirror the activeSubagents reset below. Only
-    // clone the Map when there's actually a running entry to flip so
-    // result frames for tool-free turns stay identity-stable.
+    // Turn-end sweep — lives in applyMessage (NOT updateIndexesMirror) so the
+    // prepend/loadOlder path (rebuildIndexesFromMessages) doesn't sweep the
+    // LIVE in-flight turn's tools/subagents via historical result frames.
+    // The fresh-replay path (REPLAY_REPLACE with an empty cache) also uses
+    // applyMessage, so replay re-applies the sweep. (The rare replay-merge
+    // 'older' slice uses prependMessages and so doesn't re-sweep — an
+    // acceptable transient: those records stay 'background' until the next
+    // live result frame, far better than corrupting an active turn.)
     let sweptToolStatus = working.mirror.toolStatus
     const swept = toolDebugEnabled() ? [] as string[] : null
     for (const [id, status] of working.mirror.toolStatus) {
@@ -804,47 +820,12 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
     }
     if (swept && swept.length > 0) {
       toolDebug('SWEEP running→error at turn end (result frame)', { ids: swept })
-    } else {
-      toolDebug('result frame — no running tools to sweep', {})
     }
 
-    // Prune only the STILL-running subagent entries at turn end. Completed
-    // records (status 'done'/'interrupted', with their result payload
-    // captured) MUST survive: SubagentCard reads them from the index to
-    // render the merged result inline, and MessageList derives
-    // subagentResultIds from `record.result` to suppress the standalone
-    // orphan tool_result bubble. Wiping the whole Map here (the old
-    // `new Map()`) stranded both — the card fell back to a bare "running"
-    // placeholder and the orphan bubble reappeared below it. A still-running
-    // entry at result time is genuinely stale (its tool_result never matched),
-    // so flip it to 'interrupted' rather than drop it, mirroring the
-    // toolStatus sweep above.
-    //
-    // A 'background' (async) subagent is ALSO swept here. The SDK's
-    // background-task completion signal (system/task_notification) is not
-    // reliably emitted for Agent-launched background subagents in all
-    // environments, so a 'background' record may never receive its flip to
-    // 'done'. Without this sweep it would stay in the running set forever
-    // and its chip would reappear in the WorkingBubble on every subsequent
-    // turn. Sweeping at the parent's result frame matches the bubble's own
-    // lifecycle (it unmounts at turn end): the chip shows during the
-    // dispatch turn and clears at turn end. If a task_notification DID
-    // arrive earlier in the turn, the record is already 'done' and the
-    // sweep is a no-op for it. Identity-stable when nothing is running.
-    //
-    // A 'background' (async) subagent is swept to 'pending' — NOT
-    // 'interrupted'. The async subagent is still running independently and
-    // its completion signal (task_notification) is expected to arrive LATER,
-    // often after the parent turn ended (that is the whole point of a
-    // background subagent). Flipping to 'interrupted' here would conflate
-    // "turn ended, completion pending" with "user interrupted" and the
-    // completion branch (which excludes 'interrupted') would then silently
-    // drop the real completion — leaving a successfully-finished async
-    // subagent stuck on a wrong 'interrupted' (error) state. 'pending' is
-    // excluded from getRunningSubagents so the chip doesn't reappear next
-    // turn, but the completion branch still accepts it. A 'running' (sync)
-    // subagent still here IS genuinely orphaned (its tool_result never
-    // arrived) → 'interrupted' stays correct.
+    // 'running' (sync orphan) → 'interrupted'; 'background' (async, still
+    // working) → 'pending' (excluded from the chip set so it doesn't reappear
+    // next turn, but the completion branch still accepts it). Completed
+    // records survive. See the pending rationale in types.ts.
     let prunedSubagents = working.mirror.activeSubagents
     for (const [id, sub] of working.mirror.activeSubagents) {
       if (sub.status === 'running') {
@@ -856,14 +837,6 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
       }
     }
 
-    // Mirror the subagent sweep for Workflows: a still-running Workflow at
-    // turn end is orphaned (its tool_result never arrived — interrupt /
-    // abort), so flip it to 'interrupted' rather than drop it. KEEP
-    // completed records (WorkflowCard reads them to render the merged
-    // result + the reopenable overlay). Also flip any still-running child
-    // agents of a completed/running Workflow so the phase tree doesn't
-    // leave a spinner on a branch whose result is gone. Identity-stable
-    // when nothing is running.
     let prunedWorkflows = working.mirror.activeWorkflows
     for (const [id, wf] of working.mirror.activeWorkflows) {
       const runningChildren = wf.childAgents.some((c) => c.status === 'running')
@@ -888,15 +861,11 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
         ...working.mirror,
         toolStatus: sweptToolStatus,
         liveTurn: null,
-        // Prune stale 'running' subagents (see prunedSubagents above) while
-        // KEEPING completed records so their merged card + orphan-bubble
-        // suppression survive across turns and replay.
         activeSubagents: prunedSubagents,
         activeWorkflows: prunedWorkflows,
       },
-      // Clear any lingering optimistic placeholders — the result frame
-      // means the SDK has finished processing, so no server echo for
-      // the user message is expected anymore.
+      // Clear any lingering optimistic placeholders — the result frame means
+      // the SDK has finished processing, so no server echo is expected anymore.
       intent: clearSendingPlaceholders(working.intent),
     }
   }
@@ -1242,26 +1211,30 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
     const parentId = typeof message.parent_tool_use_id === 'string' ? message.parent_tool_use_id : ''
     if (parentId) {
       const existing = activeSubagents.get(parentId)
-      if (existing) {
+      // Only advance endedAt/isAsync for LIVE records (running/background/
+      // pending). A dismissed/interrupted/done/rejected record is settled —
+      // a late child frame (an async subagent still streaming after the user
+      // dismissed it or after completion) must NOT advance its endedAt, or the
+      // card's frozen elapsed display would jump forward.
+      if (existing && (existing.status === 'running' || existing.status === 'background' || existing.status === 'pending')) {
         const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
         // A child frame arriving AFTER the Agent tool_result is the
         // signature of an async/background subagent: the tool_result was a
         // launch ack, not the completion (sync subagents' tool_result lands
         // LAST). Flip isAsync on the first such frame — it stays true after.
-        // Use `status === 'background' || 'pending' || 'done'` (set ONLY by
-        // the result-merge / sweep branches — 'background' for an ack,
-        // 'pending' for an ack whose parent turn then ended, 'done' for a
-        // synchronous completion) rather than `result != null`: the toolCount
-        // branch below also writes `result` from child text, so a sync
-        // subagent with 2+ text-bearing child frames would otherwise mislabel
-        // as async on the second frame. Status itself is NOT touched here —
-        // a 'background'/'pending' record stays as-is (still working) and
-        // just gets its endedAt advanced. 'pending' is included because a
-        // background subagent's child frames can keep streaming after the
-        // parent turn ended (the sweep moved it to 'pending'); they're still
-        // proof of async.
+        // Use `status === 'background' || 'pending'` (set ONLY by the
+        // result-merge / sweep branches — 'background' for an ack, 'pending'
+        // for an ack whose parent turn then ended) rather than `result !=
+        // null`: the toolCount branch below also writes `result` from child
+        // text, so a sync subagent with 2+ text-bearing child frames would
+        // otherwise mislabel as async on the second frame. Status itself is
+        // NOT touched here — a 'background'/'pending' record stays as-is
+        // (still working) and just gets its endedAt advanced. 'pending' is
+        // included because a background subagent's child frames can keep
+        // streaming after the parent turn ended (the sweep moved it to
+        // 'pending'); they're still proof of async.
         const nowAsync = existing.isAsync === true ? true
-          : existing.status === 'background' || existing.status === 'pending' || existing.status === 'done'
+          : existing.status === 'background' || existing.status === 'pending'
         const endedAtChanged = existing.endedAt == null || stamp > existing.endedAt
         const asyncChanged = existing.isAsync !== nowAsync && nowAsync
         if (endedAtChanged || asyncChanged) {

@@ -647,6 +647,150 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     expect(record?.result?.isError).toBe(false)
   })
 
+  it('DISMISS_SUBAGENT flips a pending record to dismissed and ignores late completion', () => {
+    // The Waiting bubble's dismiss affordance lets the user give up on
+    // tracking a pending background subagent. It must flip pending ->
+    // 'dismissed' (a distinct status, NOT 'interrupted', so the inline card
+    // renders neutral instead of a false error) and a later task_notification
+    // must NOT override it (the completion branch excludes 'dismissed') — the
+    // user explicitly stopped tracking.
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-1',
+      receivedAt: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_dis', name: 'Agent', input: { description: 'do work' } }],
+      },
+    } as unknown as SdkMessage
+    const ack: SdkMessage = {
+      type: 'user',
+      uuid: 'u-1',
+      parent_tool_use_id: null,
+      receivedAt: 1_000,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_dis', content: 'Async agent launched successfully' }],
+      },
+    } as unknown as SdkMessage
+    const result: SdkMessage = {
+      type: 'result',
+      subtype: 'success',
+      uuid: 'r-1',
+      receivedAt: 2_000,
+    } as unknown as SdkMessage
+    const lateNotification: SdkMessage = {
+      type: 'system',
+      subtype: 'task_notification',
+      uuid: 'sys-late',
+      task_id: 't-dis',
+      tool_use_id: 'tu_dis',
+      status: 'completed',
+      summary: 'finished after dismiss',
+      output_file: '/tmp/x',
+      receivedAt: 30_000,
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: result })
+    expect(state.mirror.activeSubagents.get('tu_dis')?.status).toBe('pending')
+    // Dismiss -> 'dismissed' (a distinct status, NOT 'interrupted', so the
+    // inline card renders neutral instead of a false error).
+    state = reduceSessionState(state, { type: 'DISMISS_SUBAGENT', toolUseId: 'tu_dis' })
+    expect(state.mirror.activeSubagents.get('tu_dis')?.status).toBe('dismissed')
+    // Late completion is ignored (dismissed is excluded from the completion
+    // branch, like interrupted).
+    state = reduceSessionState(state, { type: 'MESSAGE', message: lateNotification })
+    expect(state.mirror.activeSubagents.get('tu_dis')?.status).toBe('dismissed')
+    // Dismissing a non-pending record is a no-op (identity-stable).
+    const before = state
+    state = reduceSessionState(state, { type: 'DISMISS_SUBAGENT', toolUseId: 'tu_dis' })
+    expect(state).toBe(before)
+    // Dismissing an unknown id is a no-op.
+    state = reduceSessionState(state, { type: 'DISMISS_SUBAGENT', toolUseId: 'nope' })
+    expect(state).toBe(before)
+  })
+
+  it('REPLAY re-applies the turn-end sweep (background -> pending) on hydration', () => {
+    // Regression: rebuildIndexesFromMessages (the replay/hydration path)
+    // must apply the same turn-end sweep as the live path. Otherwise a WS
+    // reconnect re-derives a swept-to-pending background subagent back as
+    // 'background' (the result frame's sweep never re-ran), which breaks the
+    // Waiting bubble across reconnects — waiting is derived from 'pending'.
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-1',
+      receivedAt: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_replay', name: 'Agent', input: { description: 'do work' } }],
+      },
+    } as unknown as SdkMessage
+    const ack: SdkMessage = {
+      type: 'user',
+      uuid: 'u-1',
+      parent_tool_use_id: null,
+      receivedAt: 1_000,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_replay', content: 'Async agent launched successfully' }],
+      },
+    } as unknown as SdkMessage
+    const result: SdkMessage = {
+      type: 'result',
+      subtype: 'success',
+      uuid: 'r-1',
+      receivedAt: 2_000,
+    } as unknown as SdkMessage
+
+    // Hydrate straight from a replay of the full turn (no live applyMessage).
+    const state = reduceSessionState(createInitialSessionState('s1'), {
+      type: 'REPLAY_REPLACE',
+      messages: [toolUse, ack, result],
+      permissions: [],
+    })
+    // The result frame's sweep must have run during rebuild -> 'pending',
+    // NOT 'background' (the old replay-gap bug).
+    expect(state.mirror.activeSubagents.get('tu_replay')?.status).toBe('pending')
+  })
+
+  it('PREPEND_MESSAGES does NOT sweep live in-flight tools via historical result frames', () => {
+    // Regression: the turn-end sweep must NOT run on the prepend/loadOlder
+    // path. prependMessages starts from the LIVE mirror (which holds the
+    // active turn's running tools) and calls rebuildIndexesFromMessages on the
+    // prepended OLDER batch. If a swept result frame there iterated the live
+    // maps, an active turn's running tool would flip to 'error' and a
+    // background subagent to 'pending' mid-turn. The sweep lives in
+    // applyMessage only (which prepend never calls).
+    const liveToolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-live',
+      receivedAt: 5_000,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_live', name: 'Bash', input: { command: 'echo hi' } }],
+      },
+    } as unknown as SdkMessage
+    // An OLDER turn's result frame, prepended via loadOlder.
+    const oldResult: SdkMessage = {
+      type: 'result',
+      subtype: 'success',
+      uuid: 'r-old',
+      receivedAt: 1_000,
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    // Live turn emits a tool_use (seeds toolStatus['tu_live'] = 'running').
+    state = reduceSessionState(state, { type: 'MESSAGE', message: liveToolUse })
+    expect(state.mirror.toolStatus.get('tu_live')).toBe('running')
+    // User scrolls up: an older result frame is prepended.
+    state = reduceSessionState(state, { type: 'PREPEND_MESSAGES', messages: [oldResult] })
+    // The live tool must NOT have been swept to 'error' by the old result frame.
+    expect(state.mirror.toolStatus.get('tu_live')).toBe('running')
+  })
+
   it('does NOT sweep a background subagent that already completed via task_notification', () => {
     // If the completion signal DID arrive during the turn, the record is
     // already 'done' (with its result captured). The turn-end sweep must

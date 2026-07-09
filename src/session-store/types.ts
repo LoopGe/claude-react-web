@@ -38,7 +38,7 @@ export interface TranscriptItem {
   deliveryStatus?: 'queued' | 'consumed'
 }
 
-export type SubagentStatus = 'running' | 'background' | 'pending' | 'done' | 'rejected' | 'interrupted'
+export type SubagentStatus = 'running' | 'background' | 'pending' | 'dismissed' | 'done' | 'rejected' | 'interrupted'
 
 export interface ActiveSubagent {
   toolUseId: string
@@ -59,12 +59,18 @@ export interface ActiveSubagent {
    *  `result` frame swept a still-`background` record to `pending` (NOT
    *  `interrupted`) because the async subagent is still running and its
    *  completion signal is expected to arrive later — possibly well after the
-   *  parent turn ended. `pending` is excluded from `getRunningSubagents` so
-   *  the WorkingBubble chip doesn't reappear on subsequent turns, but the
-   *  completion branch STILL accepts it (unlike `interrupted`, which a
-   *  `pending` would have been conflated with) so a late task_notification
-   *  can flip it to `done`. This is the fix for the race where the sweep
-   *  defeated the very completion detection it was meant to complement. */
+   *  parent turn ended. `pending` is INCLUDED in `getRunningSubagents` so the
+   *  WorkingBubble stays mounted in its `Waiting` state (the chip is
+   *  dismissible); the completion branch STILL accepts it (unlike
+   *  `interrupted`/`dismissed`) so a late task_notification can flip it to
+   *  `done`.
+   *
+   *  `dismissed` is set ONLY by an explicit user action (the Waiting bubble's
+   *  dismiss button on a `pending` chip). It is distinct from `interrupted`
+   *  (which means the subagent was aborted/errored) so the inline
+   *  SubagentCard can render a neutral "tracking dismissed" state instead of
+   *  a false error. The completion branch excludes `dismissed` (the user gave
+   *  up tracking), and `getRunningSubagents` excludes it (the chip is gone). */
   status: SubagentStatus
   /** Pre-computed count of tool_use blocks within this subagent's messages.
    *  Incremented during updateIndexes so SubagentCard doesn't need to scan
@@ -395,6 +401,12 @@ export type SessionAction =
   | { type: 'MESSAGE_CONSUMED'; uuid: string; consumedAt: number }
   | { type: 'ERROR'; message: string | null }
   | { type: 'LIVE_TURN_FLUSH' }
+  /** User dismissed a `pending` background subagent from the Waiting bubble.
+   *  Flips it to `interrupted` so it leaves the chip set (the bubble clears)
+   *  and the inline SubagentCard shows a settled state. The completion branch
+   *  excludes `interrupted`, so a late task_notification for a dismissed
+   *  subagent is ignored — the user explicitly gave up on tracking it. */
+  | { type: 'DISMISS_SUBAGENT'; toolUseId: string }
   /** Wipe BOTH layers (mirror + intent) and leave `replayReady=true`. Used
    *  by the /clear flow (and by store.reset()): the post-wipe state is
    *  "live and empty" with no pending replay, so the MessageList shows the

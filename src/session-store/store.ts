@@ -882,17 +882,16 @@ export class SessionStore {
    *
    *  Includes `background` (async subagents whose launch ack has landed but
    *  whose real completion hasn't — they're still working in the background
-   *  and must stay in the WorkingBubble chip row) alongside `running`.
-   *  Excludes `pending` (the post-turn-end form of `background`): once the
-   *  parent turn ended the WorkingBubble unmounts anyway, and including
-   *  `pending` would make the chip reappear on every subsequent turn until
-   *  completion. The inline SubagentCard still shows `pending`; the
-   *  completion branch still accepts it. */
+   *  and must stay in the WorkingBubble chip row) alongside `running`, AND
+   *  `pending` (the post-turn-end form of `background`): the WorkingBubble
+   *  stays mounted in its `Waiting` state while any `pending` subagent
+   *  remains, so the user sees that background work is still in flight after
+   *  the parent turn ended. `pending` chips are dismissible. */
   private getRunningSubagents(map: ServerMirror['activeSubagents']): SessionSnapshot['activeSubagents'] {
     if (map === this.cachedSubagentsMap) return this.cachedRunningSubagents
     this.cachedSubagentsMap = map
     this.cachedRunningSubagents = Array.from(map.values())
-      .filter((s) => s.status === 'running' || s.status === 'background')
+      .filter((s) => s.status === 'running' || s.status === 'background' || s.status === 'pending')
     return this.cachedRunningSubagents
   }
 

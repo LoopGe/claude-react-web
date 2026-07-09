@@ -9,6 +9,7 @@ import { MessageList } from './MessageList'
 import { formatElapsed } from '../utils/format'
 import { IconX, IconArrowLeft } from './icons/ToolIcons'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
+import { userMessageHasToolResult } from '../session-store/normalize'
 import type { SdkMessage } from '../types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 
@@ -90,6 +91,12 @@ export const SubagentOverlay = memo(function SubagentOverlay({
       (it) =>
         it.msg.parent_tool_use_id === currentId &&
         it.msg.type === 'user' &&
+        // Exclude tool_result-bearing child frames: a subagent's internal
+        // tool_results (e.g. a Read result) are child user frames whose
+        // plainText is the tool output, which would otherwise trip this echo
+        // detector and wrongly suppress the prompt injection — leaving the
+        // overlay with no input bubble for any async subagent that uses tools.
+        !userMessageHasToolResult(it.msg) &&
         typeof it.plainText === 'string' &&
         it.plainText.length > 0 &&
         !it.isCompactSummary,
@@ -197,6 +204,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
     current.status === 'running' ? 'running'
     : current.status === 'background' ? 'background'
     : current.status === 'pending' ? 'pending'
+    : current.status === 'dismissed' ? 'dismissed'
     : current.status === 'done' ? 'done'
     : current.status === 'rejected' ? 'rejected'
     : 'interrupted'

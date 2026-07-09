@@ -102,6 +102,8 @@ export interface ChatStream {
   rollbackUserMessage: (pendingId: string) => void
   reset: () => void
   clearError: () => void
+  /** Dismiss a `pending` background subagent from the Waiting bubble. */
+  dismissSubagent: (toolUseId: string) => void
   /** Lazy-load the previous page of history from disk and prepend it.
    *  No-op while a load is in flight or when there's nothing older.
    *  Resolves to the number of messages prepended (0 when none). */
@@ -368,6 +370,14 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     store.dispatch({ type: 'ERROR', message: null })
   }, [store])
 
+  /** Dismiss a `pending` background subagent from the Waiting bubble. Flips
+   *  it to `interrupted` so it leaves the chip set; a late task_notification
+   *  for a dismissed subagent is then ignored (the completion branch excludes
+   *  `interrupted`). No-op for non-pending records. */
+  const dismissSubagent = useCallback((toolUseId: string) => {
+    store.dispatch({ type: 'DISMISS_SUBAGENT', toolUseId })
+  }, [store])
+
   useEffect(() => {
     // New session: reset paging state. The setState calls are intentional —
     // paging UI state is derived from `sessionId` and must reset when it
@@ -485,10 +495,11 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       rollbackUserMessage,
       reset,
       clearError,
+      dismissSubagent,
       loadOlder,
       hasOlder,
       loadingOlder,
     }),
-    [items, messages, displayedError, contextUsage, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, replayReady, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, loadOlder, hasOlder, loadingOlder],
+    [items, messages, displayedError, contextUsage, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, replayReady, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder],
   )
 }

@@ -61,7 +61,7 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
   const toolCount = record?.toolCount ?? 0
 
   const statusIcon =
-    status === 'running' || status === 'background' || status === 'pending' ? <IconCircleDot size={12} />
+    status === 'running' || status === 'background' || status === 'pending' || status === 'dismissed' ? <IconCircleDot size={12} />
     : status === 'done' ? <IconCheck size={12} />
     : <IconAlertTriangle size={12} />
 
