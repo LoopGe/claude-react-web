@@ -33,15 +33,19 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
   const isAsync = record?.isAsync
   // Both 'running' (synchronous, pre-tool_result) and 'background' (async,
   // ack landed but still working) are live states — the elapsed timer must
-  // keep ticking for either.
+  // keep ticking for either. 'pending' (the post-turn-end form of
+  // 'background') is still in-flight but the parent turn has ended, so the
+  // timer stops and elapsed freezes at the last-known endedAt — the
+  // completion signal will refresh endedAt when it lands.
   const isRunning = status === 'running' || status === 'background'
 
   // Tick once a second while running so the elapsed display stays fresh.
-  // Stops once the record is no longer live (done/interrupted/rejected) —
-  // completed cards don't need re-renders. A 'background' record is still
-  // live (the async subagent is still working) even though the async-detector
-  // advances endedAt to the latest child frame, so the timer must keep
-  // ticking and elapsedMs uses `now` (not endedAt) while isRunning.
+  // Stops once the record is no longer live (pending/done/interrupted/
+  // rejected) — completed/waiting cards don't need re-renders. A 'background'
+  // record is still live (the async subagent is still working) even though
+  // the async-detector advances endedAt to the latest child frame, so the
+  // timer must keep ticking and elapsedMs uses `now` (not endedAt) while
+  // isRunning.
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     if (!isRunning) return
@@ -57,7 +61,7 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
   const toolCount = record?.toolCount ?? 0
 
   const statusIcon =
-    status === 'running' || status === 'background' ? <IconCircleDot size={12} />
+    status === 'running' || status === 'background' || status === 'pending' ? <IconCircleDot size={12} />
     : status === 'done' ? <IconCheck size={12} />
     : <IconAlertTriangle size={12} />
 

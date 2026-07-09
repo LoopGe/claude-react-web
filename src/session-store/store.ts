@@ -882,7 +882,12 @@ export class SessionStore {
    *
    *  Includes `background` (async subagents whose launch ack has landed but
    *  whose real completion hasn't — they're still working in the background
-   *  and must stay in the WorkingBubble chip row) alongside `running`. */
+   *  and must stay in the WorkingBubble chip row) alongside `running`.
+   *  Excludes `pending` (the post-turn-end form of `background`): once the
+   *  parent turn ended the WorkingBubble unmounts anyway, and including
+   *  `pending` would make the chip reappear on every subsequent turn until
+   *  completion. The inline SubagentCard still shows `pending`; the
+   *  completion branch still accepts it. */
   private getRunningSubagents(map: ServerMirror['activeSubagents']): SessionSnapshot['activeSubagents'] {
     if (map === this.cachedSubagentsMap) return this.cachedRunningSubagents
     this.cachedSubagentsMap = map
@@ -1270,11 +1275,13 @@ function dumpToolStatus(): ToolStatusDump[] {
                 'is not merged. Classic turn-end wipe: the record was pruned at the result ' +
                 'frame (reducer.ts) before its result could be read.'
             } else if (!subRecord.result) {
-              if (subRecord.status === 'background') {
+              if (subRecord.status === 'background' || subRecord.status === 'pending') {
                 diagnosis =
-                  `OK (background) — subagent "${toolName}" is an async subagent mid-flight ` +
+                  `OK (${subRecord.status}) — subagent "${toolName}" is an async subagent mid-flight ` +
                   '(launch ack landed, real completion not yet arrived). Its ack tool_result is ' +
-                  'suppressed via the background consumed-set; no result is captured yet by design.'
+                  'suppressed via the background consumed-set; no result is captured yet by design. ' +
+                  "('pending' = the parent turn ended and the sweep moved it out of the running set; " +
+                  'completion is still expected.)'
               } else {
                 diagnosis =
                   `REAL ORPHAN — subagent "${toolName}" record exists (status=${subRecord.status}) ` +

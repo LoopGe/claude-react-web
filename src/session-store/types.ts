@@ -38,7 +38,7 @@ export interface TranscriptItem {
   deliveryStatus?: 'queued' | 'consumed'
 }
 
-export type SubagentStatus = 'running' | 'background' | 'done' | 'rejected' | 'interrupted'
+export type SubagentStatus = 'running' | 'background' | 'pending' | 'done' | 'rejected' | 'interrupted'
 
 export interface ActiveSubagent {
   toolUseId: string
@@ -53,7 +53,18 @@ export interface ActiveSubagent {
    *  `done` they enter `background` and stay there — still shown in the
    *  WorkingBubble chip row — until the real completion signal (a
    *  `<task-notification>` user injection or a `system`/`task_notification`
-   *  frame carrying this record's tool_use_id) flips them to `done`. */
+   *  frame carrying this record's tool_use_id) flips them to `done`.
+   *
+   *  `pending` is the post-turn-end form of `background`: the parent turn's
+   *  `result` frame swept a still-`background` record to `pending` (NOT
+   *  `interrupted`) because the async subagent is still running and its
+   *  completion signal is expected to arrive later — possibly well after the
+   *  parent turn ended. `pending` is excluded from `getRunningSubagents` so
+   *  the WorkingBubble chip doesn't reappear on subsequent turns, but the
+   *  completion branch STILL accepts it (unlike `interrupted`, which a
+   *  `pending` would have been conflated with) so a late task_notification
+   *  can flip it to `done`. This is the fix for the race where the sweep
+   *  defeated the very completion detection it was meant to complement. */
   status: SubagentStatus
   /** Pre-computed count of tool_use blocks within this subagent's messages.
    *  Incremented during updateIndexes so SubagentCard doesn't need to scan

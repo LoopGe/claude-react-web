@@ -540,14 +540,18 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     expect(record?.result?.content).toBe('I found that the async agent launched at 14:32 and completed.')
   })
 
-  it('sweeps a still-background subagent to interrupted at turn end (no completion signal)', () => {
+  it('sweeps a still-background subagent to pending at turn end (not interrupted)', () => {
     // The SDK's background-task completion signal (task_notification) is not
     // reliably emitted for Agent-launched background subagents in all
-    // environments. A 'background' record that never received its flip to
-    // 'done' must be swept at the parent's result frame so it leaves the
-    // running set — otherwise its WorkingBubble chip reappears on every
-    // subsequent turn. The chip shows during the dispatch turn (bubble is
-    // mounted) and clears at turn end (bubble unmounts + record swept).
+    // environments, and even when emitted it often arrives AFTER the parent
+    // turn ended. A 'background' record that is still mid-flight at the
+    // parent's result frame must leave the running set (so its WorkingBubble
+    // chip doesn't reappear on every subsequent turn), but it must NOT be
+    // marked 'interrupted' — that would conflate "turn ended, completion
+    // pending" with "user interrupted" and the completion branch (which
+    // excludes 'interrupted') would silently drop the real completion. It
+    // flips to 'pending', which getRunningSubagents excludes (chip gone) but
+    // the completion branch still accepts.
     const toolUse: SdkMessage = {
       type: 'assistant',
       uuid: 'a-1',
@@ -579,8 +583,68 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
     expect(state.mirror.activeSubagents.get('tu_bg')?.status).toBe('background')
     state = reduceSessionState(state, { type: 'MESSAGE', message: result })
-    // Swept out of the running set so the chip doesn't reappear next turn.
-    expect(state.mirror.activeSubagents.get('tu_bg')?.status).toBe('interrupted')
+    // Swept to 'pending' (out of the running set, but NOT interrupted).
+    expect(state.mirror.activeSubagents.get('tu_bg')?.status).toBe('pending')
+  })
+
+  it('a late task_notification flips a pending (swept) background subagent to done', () => {
+    // The core race this fixes: an async subagent outlives the parent turn,
+    // so the result frame sweeps background -> pending BEFORE the completion
+    // signal arrives. The task_notification lands later (possibly turns
+    // later) and must still flip pending -> done with the real output —
+    // previously the sweep left the record 'interrupted' and the completion
+    // branch dropped the signal, leaving a successfully-finished subagent
+    // stuck on a wrong error state.
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-1',
+      receivedAt: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_late', name: 'Agent', input: { description: 'do work' } }],
+      },
+    } as unknown as SdkMessage
+    const ack: SdkMessage = {
+      type: 'user',
+      uuid: 'u-1',
+      parent_tool_use_id: null,
+      receivedAt: 1_000,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_late', content: 'Async agent launched successfully' }],
+      },
+    } as unknown as SdkMessage
+    const result: SdkMessage = {
+      type: 'result',
+      subtype: 'success',
+      uuid: 'r-1',
+      receivedAt: 2_000,
+    } as unknown as SdkMessage
+    const lateNotification: SdkMessage = {
+      type: 'system',
+      subtype: 'task_notification',
+      uuid: 'sys-late',
+      task_id: 't-late',
+      tool_use_id: 'tu_late',
+      status: 'completed',
+      summary: 'finished in the background',
+      output_file: '/tmp/x',
+      receivedAt: 30_000,
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: result })
+    expect(state.mirror.activeSubagents.get('tu_late')?.status).toBe('pending')
+    // The completion signal arrives well after the parent turn ended.
+    state = reduceSessionState(state, { type: 'MESSAGE', message: lateNotification })
+    const record = state.mirror.activeSubagents.get('tu_late')
+    expect(record?.status).toBe('done')
+    expect(record?.endedAt).toBe(30_000)
+    expect(record?.isAsync).toBe(true)
+    expect(record?.result?.content).toBe('finished in the background')
+    expect(record?.result?.isError).toBe(false)
   })
 
   it('does NOT sweep a background subagent that already completed via task_notification', () => {

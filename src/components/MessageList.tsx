@@ -625,7 +625,10 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
         // id), so the ack orphan must also be suppressed even though the ack
         // text is deliberately NOT stored as `result` — the SubagentCard
         // represents the subagent, and the ack is internal launch metadata.
-        if (record.result || record.status === 'background') set.add(id)
+        // 'pending' (the post-turn-end form of 'background') suppresses the
+        // ack orphan for the same reason — the card is still the subagent's
+        // surfacing, now waiting for completion.
+        if (record.result || record.status === 'background' || record.status === 'pending') set.add(id)
       }
     }
     return set

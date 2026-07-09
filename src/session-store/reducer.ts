@@ -831,11 +831,29 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
     // dispatch turn and clears at turn end. If a task_notification DID
     // arrive earlier in the turn, the record is already 'done' and the
     // sweep is a no-op for it. Identity-stable when nothing is running.
+    //
+    // A 'background' (async) subagent is swept to 'pending' — NOT
+    // 'interrupted'. The async subagent is still running independently and
+    // its completion signal (task_notification) is expected to arrive LATER,
+    // often after the parent turn ended (that is the whole point of a
+    // background subagent). Flipping to 'interrupted' here would conflate
+    // "turn ended, completion pending" with "user interrupted" and the
+    // completion branch (which excludes 'interrupted') would then silently
+    // drop the real completion — leaving a successfully-finished async
+    // subagent stuck on a wrong 'interrupted' (error) state. 'pending' is
+    // excluded from getRunningSubagents so the chip doesn't reappear next
+    // turn, but the completion branch still accepts it. A 'running' (sync)
+    // subagent still here IS genuinely orphaned (its tool_result never
+    // arrived) → 'interrupted' stays correct.
     let prunedSubagents = working.mirror.activeSubagents
     for (const [id, sub] of working.mirror.activeSubagents) {
-      if (sub.status !== 'running' && sub.status !== 'background') continue
-      if (prunedSubagents === working.mirror.activeSubagents) prunedSubagents = new Map(working.mirror.activeSubagents)
-      prunedSubagents.set(id, { ...sub, status: 'interrupted', endedAt: sub.endedAt ?? sub.startedAt })
+      if (sub.status === 'running') {
+        if (prunedSubagents === working.mirror.activeSubagents) prunedSubagents = new Map(working.mirror.activeSubagents)
+        prunedSubagents.set(id, { ...sub, status: 'interrupted', endedAt: sub.endedAt ?? sub.startedAt })
+      } else if (sub.status === 'background') {
+        if (prunedSubagents === working.mirror.activeSubagents) prunedSubagents = new Map(working.mirror.activeSubagents)
+        prunedSubagents.set(id, { ...sub, status: 'pending', endedAt: sub.endedAt ?? sub.startedAt })
+      }
     }
 
     // Mirror the subagent sweep for Workflows: a still-running Workflow at
@@ -1230,16 +1248,20 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
         // signature of an async/background subagent: the tool_result was a
         // launch ack, not the completion (sync subagents' tool_result lands
         // LAST). Flip isAsync on the first such frame — it stays true after.
-        // Use `status === 'background' || 'done'` (set ONLY by the result-
-        // merge branch when the Agent tool_result lands — 'background' for an
-        // ack, 'done' for a synchronous completion) rather than `result !=
-        // null`: the toolCount branch below also writes `result` from child
-        // text, so a sync subagent with 2+ text-bearing child frames would
-        // otherwise mislabel as async on the second frame. Status itself is
-        // NOT touched here — a 'background' record stays 'background' (still
-        // working) and just gets its endedAt advanced.
+        // Use `status === 'background' || 'pending' || 'done'` (set ONLY by
+        // the result-merge / sweep branches — 'background' for an ack,
+        // 'pending' for an ack whose parent turn then ended, 'done' for a
+        // synchronous completion) rather than `result != null`: the toolCount
+        // branch below also writes `result` from child text, so a sync
+        // subagent with 2+ text-bearing child frames would otherwise mislabel
+        // as async on the second frame. Status itself is NOT touched here —
+        // a 'background'/'pending' record stays as-is (still working) and
+        // just gets its endedAt advanced. 'pending' is included because a
+        // background subagent's child frames can keep streaming after the
+        // parent turn ended (the sweep moved it to 'pending'); they're still
+        // proof of async.
         const nowAsync = existing.isAsync === true ? true
-          : existing.status === 'background' || existing.status === 'done'
+          : existing.status === 'background' || existing.status === 'pending' || existing.status === 'done'
         const endedAtChanged = existing.endedAt == null || stamp > existing.endedAt
         const asyncChanged = existing.isAsync !== nowAsync && nowAsync
         if (endedAtChanged || asyncChanged) {
@@ -1326,14 +1348,20 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
   const taskNotification = activeSubagents.size > 0 ? parseTaskNotification(message) : null
   if (taskNotification) {
     const existing = activeSubagents.get(taskNotification.toolUseId)
-    // Accept 'background' (normal: ack seen) AND 'running' (the launch-ack
-    // tool_result was lost — a WS gap / replay hole — so the record never
-    // flipped to 'background'; the completion signal is still authoritative
-    // and must flip it to 'done'). 'interrupted' is deliberately excluded:
-    // a prior interrupt is ambiguous and a late notification shouldn't
-    // override it. A synchronous subagent never receives a task-notification,
-    // so accepting 'running' can't mis-flip a sync record.
-    if (existing && (existing.status === 'background' || existing.status === 'running')) {
+    // Accept 'background' (normal: ack seen, still in the dispatch turn) AND
+    // 'running' (the launch-ack tool_result was lost — a WS gap / replay hole
+    // — so the record never flipped to 'background'; the completion signal is
+    // still authoritative and must flip it to 'done') AND 'pending' (the
+    // parent turn already ended and the turn-end sweep moved a still-
+    // 'background' record to 'pending' — the async subagent kept running and
+    // its completion is arriving now, possibly turns later). 'interrupted' is
+    // deliberately excluded: a prior interrupt is ambiguous and a late
+    // notification shouldn't override it. A synchronous subagent never
+    // receives a task-notification, so accepting 'running' can't mis-flip a
+    // sync record. (Accepting 'pending' is the fix for the race where the
+    // sweep previously defeated late completion by flipping background to
+    // 'interrupted', which this branch excluded.)
+    if (existing && (existing.status === 'background' || existing.status === 'running' || existing.status === 'pending')) {
       if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
       const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
       const isError = taskNotification.status !== 'completed'

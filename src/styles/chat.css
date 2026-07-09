@@ -1627,6 +1627,10 @@
 }
 .subagent-card-running .subagent-card-status { color: var(--accent); }
 .subagent-card-background .subagent-card-status { color: var(--accent); }
+/* 'pending' = async subagent still running after the parent turn ended; the
+   bubble chip is gone but the inline card waits for the completion signal.
+   Muted (not accent) so it reads as waiting, not actively in-this-turn. */
+.subagent-card-pending .subagent-card-status { color: var(--fg-muted); }
 .subagent-card-done    .subagent-card-status { color: var(--ok); }
 .subagent-card-rejected .subagent-card-status,
 .subagent-card-interrupted .subagent-card-status { color: var(--warn); }
@@ -1758,6 +1762,7 @@
 }
 .subagent-overlay-status.status-running { color: var(--accent); }
 .subagent-overlay-status.status-background { color: var(--accent); }
+.subagent-overlay-status.status-pending { color: var(--fg-muted); }
 .subagent-overlay-status.status-done { color: var(--ok); }
 .subagent-overlay-status.status-rejected,
 .subagent-overlay-status.status-interrupted { color: var(--warn); }
