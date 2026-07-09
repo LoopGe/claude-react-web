@@ -503,16 +503,23 @@ export const Chat = memo(function Chat({
   })
   const attachments = useAttachments(session.id, session.cwd)
   const pastedImages = usePastedImages()
-  /** A background (async) subagent whose parent turn already ended is in the
-   *  `pending` status. The WorkingBubble stays mounted in a `Waiting` state
-   *  while any such subagent is still in flight, so the user sees that
-   *  background work is ongoing after the turn ends — instead of the bubble
-   *  silently unmounting and the only trace being a card buried in the
-   *  transcript. Derived from the chip set (which includes `pending`).
+  /** A background (async) subagent still in flight after the parent turn
+   *  ended. The WorkingBubble stays mounted in a `Waiting` state while any
+   *  such subagent exists, so the user sees that background work is ongoing
+   *  — instead of the bubble silently unmounting and the only trace being a
+   *  card buried in the transcript.
+   *
+   *  Checks both `pending` (the normal post-turn-end form: sweep ran) AND
+   *  `background` (the form after a server-restart replay, where the CLI
+   *  transcript has no `result` frame so the sweep never fires and the
+   *  record stays `background`). Without accepting `background`, a page
+   *  refresh after a server restart would lose the Waiting bubble even
+   *  though the subagent is still running.
+   *
    *  Gated on `!session.terminated`: a dead session will never receive the
    *  completion signal, so showing "Waiting..." forever (with only manual
    *  dismiss as an exit) would be a dead state. */
-  const waiting = !turnActive && !session.terminated && (stream.activeSubagents?.some((a) => a.status === 'pending') ?? false)
+  const waiting = !turnActive && !session.terminated && (stream.activeSubagents?.some((a) => a.status === 'pending' || a.status === 'background') ?? false)
 
   // 鈹€鈹€ Subagent overlay state 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // Stack of toolUseIds: empty = closed; otherwise the last entry is the
