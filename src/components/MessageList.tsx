@@ -25,7 +25,7 @@ import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { getBlocks, getEnterPlanToolUseIds, isHumanUserMessage, isTaskNotificationUserMessage, userMessageOriginKind } from '../session-store/normalize'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
-import { IconArrowDown, IconZap, IconUser, IconExternalLink, IconSquare, IconClock } from './icons/ToolIcons'
+import { IconArrowDown, IconZap, IconUser, IconExternalLink, IconSquare, IconClock, IconX } from './icons/ToolIcons'
 import { countMatches, extractPlainText, extractMessagePlainText, extractToolUseDiffText } from '../search'
 import { BlockView, ToolResultBlock } from './message-list/blocks'
 import { OlderHistoryHeader, StreamingFooter } from './message-list/transcript-chrome'
@@ -1053,6 +1053,10 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   const trackedCount = useMemo(() => {
     let count = 0
     for (const item of items) {
+      // Exclude hiddenByDefault (system frames, etc.) — they don't render in
+      // the transcript so they can't be "unseen." Matches the renderableItems
+      // filter and the comment's original intent.
+      if (item.hiddenByDefault) continue
       const parent = item.msg.parent_tool_use_id
       if (parentToolUseIdFilter == null) {
         if (parent != null) continue
@@ -1064,10 +1068,36 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     return count
   }, [items, parentToolUseIdFilter])
   const lastCountRef = useRef(0)
+  // Session switch: the inner scroller remounts (key={transcriptRevealKey}),
+  // but this component instance persists (no key on <MessageList> in
+  // Chat.tsx). Reset all bottom/scroll/unseen REFS so stale values from the
+  // old session don't leak into the new one — a phantom badge, or a stale
+  // atBottomRef=false that makes the new session's first message increment
+  // unseenCount instead of clearing it. MUST run before the tracked-count
+  // effect below so lastCountRef is 0 when that effect computes its delta
+  // (otherwise the delta is the full new-session count, not 0, and the
+  // badge miscounts). The atBottom/canJumpToBottom STATE syncs on the next
+  // geometry event (Virtuoso remounts → scrollerRef → syncBottomGeometry);
+  // resetting only refs avoids set-state-in-effect.
+  useEffect(() => {
+    clearUnseen()
+    clearFollowTimer()
+    atBottomRef.current = true
+    shouldFollowRef.current = true
+    lastCountRef.current = 0
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transcriptRevealKey])
   useEffect(() => {
     const delta = trackedCount - lastCountRef.current
     lastCountRef.current = trackedCount
-    if (delta <= 0) return
+    if (delta <= 0) {
+      // Items shrank (compact_boundary, /clear, upstream trimming) — a
+      // structural reduction isn't "new messages the user missed," so reset
+      // the badge rather than leaving a stale count that overstates how many
+      // messages are below the viewport.
+      if (delta < 0) clearUnseen()
+      return
+    }
     if (atBottomRef.current) {
       clearUnseen()
     } else {
@@ -2565,24 +2595,35 @@ export const WorkingBubble = memo(function WorkingBubble({
   activeSubagents,
   tokenRate,
   activePhase,
+  waiting,
   onOpenSubagent,
+  onDismissSubagent,
 }: {
   startedAt?: number
   activeSubagents?: ActiveSubagent[]
   tokenRate?: number | null
   activePhase?: import('../hooks/useChatStream').ActivePhase
+  /** True when the parent turn has ended but `pending` background subagents
+   *  are still in flight. The bubble stays mounted and shows "Waiting..."
+   *  with calmed visuals instead of unmounting — surfacing that background
+   *  work is ongoing after the turn. */
+  waiting?: boolean
   /** When provided, each subagent chip becomes a button that calls this
    *  with the chip's toolUseId — the host (Chat) opens the overlay
    *  pointed at that subagent. */
   onOpenSubagent?: (toolUseId: string) => void
+  /** When provided, `pending` subagent chips get a dismiss (×) button that
+   *  calls this with the chip's toolUseId — the host flips the record to
+   *  `interrupted` so it leaves the chip set and the bubble can clear. */
+  onDismissSubagent?: (toolUseId: string) => void
 }) {
   const hasSubagents = activeSubagents && activeSubagents.length > 0
 
   return (
     <div
-      className={`working-bar${hasSubagents ? ' working-bar-with-agents' : ''}`}
+      className={`working-bar${hasSubagents ? ' working-bar-with-agents' : ''}${waiting ? ' working-bar-waiting' : ''}`}
       aria-live="polite"
-      aria-label="Assistant is working"
+      aria-label={waiting ? 'Waiting for background subagents' : 'Assistant is working'}
     >
       <div className="working-dots" aria-hidden>
         <span />
@@ -2590,7 +2631,9 @@ export const WorkingBubble = memo(function WorkingBubble({
         <span />
       </div>
       <span className="working-bar-label">
-        {activePhase === 'thinking'
+        {waiting
+          ? 'Waiting...'
+          : activePhase === 'thinking'
           ? 'Thinking...'
           : activePhase === 'writing'
           ? 'Writing...'
@@ -2598,8 +2641,11 @@ export const WorkingBubble = memo(function WorkingBubble({
           ? `Calling ${activePhase.name}...`
           : 'Working'}
       </span>
-      <ElapsedTimer startedAt={startedAt} className="working-timer" />
-      {tokenRate != null && tokenRate > 0 && (
+      {/* The turn timer is only meaningful while the turn is active; hide it
+          in the Waiting state (the parent turn has ended). Per-subagent chip
+          timers below still show how long each background task has run. */}
+      {!waiting && <ElapsedTimer startedAt={startedAt} className="working-timer" />}
+      {!waiting && tokenRate != null && tokenRate > 0 && (
         <span className="working-rate">
           <IconZap size={12} aria-hidden /> {tokenRate} tok/s
         </span>
@@ -2610,9 +2656,45 @@ export const WorkingBubble = memo(function WorkingBubble({
       {/* Show at most MAX_VISIBLE_SUBAGENTS chips to avoid overcrowding;
           a "+N more" badge shows the remainder count. Each chip's elapsed
           self-ticks via its own ElapsedTimer, so the bubble itself doesn't
-          re-render every second. */}
+          re-render every second.
+
+          A `pending` chip (background subagent outliving its parent turn)
+          additionally renders a dismiss (×) button when onDismissSubagent is
+          provided — the chip becomes a non-button container holding an open
+          button + the dismiss button (button-in-button is invalid HTML). */}
       {activeSubagents?.slice(0, MAX_VISIBLE_SUBAGENTS).map((a) => {
         const clickable = !!onOpenSubagent
+        const dismissible = a.status === 'pending' && !!onDismissSubagent
+        if (dismissible) {
+          return (
+            <span key={a.toolUseId} className="subagent-chip subagent-chip-pending" title={a.label}>
+              <button
+                type="button"
+                className="subagent-chip-open-btn"
+                onClick={() => onOpenSubagent?.(a.toolUseId)}
+                aria-label={`Open subagent details - ${a.label}`}
+              >
+                <span className="subagent-chip-dots" aria-hidden>
+                  <span />
+                  <span />
+                </span>
+                <span className="subagent-chip-label">{a.label}</span>
+                {a.startedAt != null && (
+                  <ElapsedTimer startedAt={a.startedAt} className="subagent-chip-timer" />
+                )}
+              </button>
+              <button
+                type="button"
+                className="subagent-chip-dismiss"
+                onClick={() => onDismissSubagent?.(a.toolUseId)}
+                aria-label={`Dismiss background subagent - ${a.label}`}
+                title="Dismiss — stop tracking this background subagent"
+              >
+                <IconX size={12} />
+              </button>
+            </span>
+          )
+        }
         const Tag = clickable ? 'button' : 'span'
         return (
           <Tag
