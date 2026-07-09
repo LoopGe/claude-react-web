@@ -253,6 +253,13 @@ function replayReplace(
         `(replay=${messages.length}, older=${older.length}, newer=${newer.length})`,
       )
     }
+    // Post-replay sweep: the disk transcript has no `result` frames, so the
+    // per-turn sweep (in applyMessage) never fired during replay. One final
+    // sweep catches all unswept running/background records — the same logic
+    // as a single `result` frame, applied once at the end. Identity-stable
+    // when nothing needs sweeping (e.g. the server's in-memory ring DID have
+    // result frames and applyMessage already swept per-turn).
+    state = withMirror(state, sweepAtTurnEnd(state.mirror))
     return state
   }
   // Fresh state path: the prior mirror has no items (cold start, or the cache
@@ -274,7 +281,8 @@ function replayReplace(
   for (const message of messages) {
     working = applyMessage(working, message)
   }
-  return withMirror(prevState, { ...working.mirror, replayReady: true })
+  // Post-replay sweep (same rationale as the merge path above).
+  return withMirror(prevState, { ...sweepAtTurnEnd(working.mirror), replayReady: true })
 }
 
 /** Overlap-anchor key: the message uuid, or null when the frame must NOT
@@ -727,6 +735,69 @@ function trimFront(state: SessionState): SessionState {
   })
 }
 
+/** Turn-end sweep: flip still-running tools to 'error', still-running
+ *  subagents to 'interrupted', still-background subagents to 'pending',
+ *  and still-running workflows to 'interrupted'. Called from applyMessage
+ *  (on each `result` frame — the live path) and from replayReplace (once
+ *  after replay — because the CLI transcript has no `result` frames, so the
+ *  per-turn sweep never fires during disk-loaded replay; this one call
+ *  catches all unswept records at once).
+ *
+ *  Identity-stable: returns the same mirror reference when nothing needed
+ *  sweeping (clone-on-write per Map). */
+function sweepAtTurnEnd(mirror: ServerMirror): ServerMirror {
+  let toolStatus = mirror.toolStatus
+  let activeSubagents = mirror.activeSubagents
+  let activeWorkflows = mirror.activeWorkflows
+
+  // toolStatus: running → error
+  const swept = toolDebugEnabled() ? [] as string[] : null
+  for (const [id, status] of toolStatus) {
+    if (status !== 'running') continue
+    if (toolStatus === mirror.toolStatus) toolStatus = new Map(toolStatus)
+    toolStatus.set(id, 'error')
+    if (swept) swept.push(id)
+  }
+  if (swept && swept.length > 0) {
+    toolDebug('SWEEP running→error at turn end', { ids: swept })
+  }
+
+  // subagents: running (sync orphan) → interrupted; background (async,
+  // still working) → pending. Completed records survive.
+  for (const [id, sub] of activeSubagents) {
+    if (sub.status === 'running') {
+      if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
+      activeSubagents.set(id, { ...sub, status: 'interrupted', endedAt: sub.endedAt ?? sub.startedAt })
+    } else if (sub.status === 'background') {
+      if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
+      activeSubagents.set(id, { ...sub, status: 'pending', endedAt: sub.endedAt ?? sub.startedAt })
+    }
+  }
+
+  // workflows: running → interrupted; flip still-running children too.
+  for (const [id, wf] of activeWorkflows) {
+    const runningChildren = wf.childAgents.some((c) => c.status === 'running')
+    if (wf.status === 'running' || runningChildren) {
+      if (activeWorkflows === mirror.activeWorkflows) activeWorkflows = new Map(activeWorkflows)
+      activeWorkflows.set(id, {
+        ...wf,
+        status: wf.status === 'running' ? 'interrupted' : wf.status,
+        endedAt: wf.endedAt ?? wf.startedAt,
+        childAgents: wf.childAgents.map((c) =>
+          c.status === 'running'
+            ? { ...c, status: 'interrupted' as const, endedAt: c.endedAt ?? c.startedAt }
+            : c,
+        ),
+      })
+    }
+  }
+
+  if (toolStatus === mirror.toolStatus && activeSubagents === mirror.activeSubagents && activeWorkflows === mirror.activeWorkflows) {
+    return mirror
+  }
+  return { ...mirror, toolStatus, activeSubagents, activeWorkflows }
+}
+
 function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   const mirror = state.mirror
   const messageUuid = typeof message.uuid === 'string' ? message.uuid : null
@@ -802,68 +873,11 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   }
 
   if (incomingMessage.type === 'result') {
-    // Turn-end sweep — lives in applyMessage (NOT updateIndexesMirror) so the
-    // prepend/loadOlder path (rebuildIndexesFromMessages) doesn't sweep the
-    // LIVE in-flight turn's tools/subagents via historical result frames.
-    // The fresh-replay path (REPLAY_REPLACE with an empty cache) also uses
-    // applyMessage, so replay re-applies the sweep. (The rare replay-merge
-    // 'older' slice uses prependMessages and so doesn't re-sweep — an
-    // acceptable transient: those records stay 'background' until the next
-    // live result frame, far better than corrupting an active turn.)
-    let sweptToolStatus = working.mirror.toolStatus
-    const swept = toolDebugEnabled() ? [] as string[] : null
-    for (const [id, status] of working.mirror.toolStatus) {
-      if (status !== 'running') continue
-      if (sweptToolStatus === working.mirror.toolStatus) sweptToolStatus = new Map(working.mirror.toolStatus)
-      sweptToolStatus.set(id, 'error')
-      if (swept) swept.push(id)
-    }
-    if (swept && swept.length > 0) {
-      toolDebug('SWEEP running→error at turn end (result frame)', { ids: swept })
-    }
-
-    // 'running' (sync orphan) → 'interrupted'; 'background' (async, still
-    // working) → 'pending' (excluded from the chip set so it doesn't reappear
-    // next turn, but the completion branch still accepts it). Completed
-    // records survive. See the pending rationale in types.ts.
-    let prunedSubagents = working.mirror.activeSubagents
-    for (const [id, sub] of working.mirror.activeSubagents) {
-      if (sub.status === 'running') {
-        if (prunedSubagents === working.mirror.activeSubagents) prunedSubagents = new Map(working.mirror.activeSubagents)
-        prunedSubagents.set(id, { ...sub, status: 'interrupted', endedAt: sub.endedAt ?? sub.startedAt })
-      } else if (sub.status === 'background') {
-        if (prunedSubagents === working.mirror.activeSubagents) prunedSubagents = new Map(working.mirror.activeSubagents)
-        prunedSubagents.set(id, { ...sub, status: 'pending', endedAt: sub.endedAt ?? sub.startedAt })
-      }
-    }
-
-    let prunedWorkflows = working.mirror.activeWorkflows
-    for (const [id, wf] of working.mirror.activeWorkflows) {
-      const runningChildren = wf.childAgents.some((c) => c.status === 'running')
-      if (wf.status === 'running' || runningChildren) {
-        if (prunedWorkflows === working.mirror.activeWorkflows) prunedWorkflows = new Map(working.mirror.activeWorkflows)
-        prunedWorkflows.set(id, {
-          ...wf,
-          status: wf.status === 'running' ? 'interrupted' : wf.status,
-          endedAt: wf.endedAt ?? wf.startedAt,
-          childAgents: wf.childAgents.map((c) =>
-            c.status === 'running'
-              ? { ...c, status: 'interrupted' as const, endedAt: c.endedAt ?? c.startedAt }
-              : c,
-          ),
-        })
-      }
-    }
-
+    // Turn-end sweep via the shared helper. The live-only concerns
+    // (liveTurn=null, clearSendingPlaceholders) are applied on top.
     working = {
       sessionId: working.sessionId,
-      mirror: {
-        ...working.mirror,
-        toolStatus: sweptToolStatus,
-        liveTurn: null,
-        activeSubagents: prunedSubagents,
-        activeWorkflows: prunedWorkflows,
-      },
+      mirror: { ...sweepAtTurnEnd(working.mirror), liveTurn: null },
       // Clear any lingering optimistic placeholders — the result frame means
       // the SDK has finished processing, so no server echo is expected anymore.
       intent: clearSendingPlaceholders(working.intent),

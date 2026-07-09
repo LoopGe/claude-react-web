@@ -756,6 +756,41 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     expect(state.mirror.activeSubagents.get('tu_replay')?.status).toBe('pending')
   })
 
+  it('post-replay sweep flips background→pending even WITHOUT result frames (disk replay)', () => {
+    // The CLI transcript has no `result` frames — the per-turn sweep in
+    // applyMessage never fires during a disk-loaded replay. The post-replay
+    // sweepAtTurnEnd call in replayReplace catches the unswept 'background'
+    // record and flips it to 'pending', so the Waiting bubble shows correctly
+    // after a server restart + client refresh.
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-1',
+      receivedAt: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_nores', name: 'Agent', input: { description: 'do work', run_in_background: true } }],
+      },
+    } as unknown as SdkMessage
+    const ack: SdkMessage = {
+      type: 'user',
+      uuid: 'u-1',
+      parent_tool_use_id: null,
+      receivedAt: 1_000,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_nores', content: 'Async agent launched successfully' }],
+      },
+    } as unknown as SdkMessage
+    // NO result frame — simulates a disk-loaded replay.
+    const state = reduceSessionState(createInitialSessionState('s1'), {
+      type: 'REPLAY_REPLACE',
+      messages: [toolUse, ack],
+      permissions: [],
+    })
+    // Post-replay sweep must have flipped background → pending.
+    expect(state.mirror.activeSubagents.get('tu_nores')?.status).toBe('pending')
+  })
+
   it('PREPEND_MESSAGES does NOT sweep live in-flight tools via historical result frames', () => {
     // Regression: the turn-end sweep must NOT run on the prepend/loadOlder
     // path. prependMessages starts from the LIVE mirror (which holds the

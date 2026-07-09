@@ -102,8 +102,14 @@ export function readSubagentCompletion(filePath: string): SubagentCompletion | n
   // after the tool result / pause resolves). 'tool_use' is set on every
   // completed tool-calling assistant response — treating it as completion
   // false-completes any tool-using subagent within seconds of launch (the
-  // common case). Only a terminal stop_reason is the subagent's final word.
-  const NON_TERMINAL_STOP_REASONS = new Set(['tool_use'])
+  // common case). 'pause_turn' is a mid-flight pause (the subagent will
+  // resume) and must likewise NOT be treated as completion. Any OTHER
+  // stop_reason (end_turn, max_tokens, max_turns, stop_sequence, refusal, …)
+  // means the subagent has stopped producing → terminal. We use a denylist of
+  // the known non-terminal reasons rather than an allowlist so that a
+  // terminal-but-unfamiliar reason (e.g. a CLI-specific 'max_turns') still
+  // completes instead of polling until the maxMs fallback.
+  const NON_TERMINAL_STOP_REASONS = new Set(['tool_use', 'pause_turn'])
   let lastStopReason: string | null = null
   let lastText = ''
   for (const line of text.split('\n')) {
@@ -139,6 +145,12 @@ export interface WatchOptions {
   onCompleted: (completion: SubagentCompletion) => void
   intervalMs?: number
   maxMs?: number
+  /** Called once if the watcher gives up at `maxMs` without a completion.
+   *  Lets the owner drop its per-toolUseId bookkeeping so a later re-arm
+   *  (e.g. an autoResume re-seeing the launch ack) can start a fresh watcher
+   *  instead of being blocked by a stale entry. Never called if `onCompleted`
+   *  fired or `stop()` was invoked first. */
+  onTimeout?: () => void
 }
 
 /** Poll a background subagent's transcript until it reaches completion (a
@@ -173,6 +185,11 @@ export function watchBackgroundSubagent(opts: WatchOptions): () => void {
         `[${opts.sessionId}] background subagent agentId=${opts.agentId} ` +
         `watcher timed out after ${maxMs}ms with no completion; falling back to the turn-end sweep`,
       )
+      // Drop the owner's bookkeeping so a later re-arm isn't blocked by this
+      // stale entry. The subagent may still be running (or may have finished
+      // after the transcript was last polled); a re-arm from a replayed ack
+      // will start a fresh watcher that can find the real completion.
+      opts.onTimeout?.()
     }
   }
   const timer = setInterval(tick, intervalMs)

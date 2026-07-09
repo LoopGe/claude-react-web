@@ -429,6 +429,13 @@ export class SessionManager {
         perSession!.delete(toolUseId)
         this.broadcastSynthesizedTaskNotification(session, toolUseId, agentId, completion)
       },
+      onTimeout: () => {
+        // Drop the entry so a later re-arm (e.g. an autoResume re-seeing the
+        // launch ack) can start a fresh watcher. Without this the stale entry
+        // blocks startBackgroundSubagentWatcher's perSession.has() guard and
+        // the subagent loses its only completion path.
+        perSession!.delete(toolUseId)
+      },
     })
     perSession.set(toolUseId, stop)
   }
@@ -1069,6 +1076,24 @@ export class SessionManager {
         void this.applyDynamicSkillOverrides(forked).catch((err) => {
           log.warn(`[session ${forkInfo.id}] fork: re-applying parent skillOverride failed:`, err)
         })
+      }
+    }
+    // fastMode is runtime state re-applied via applyFlagSettings, not an
+    // Options field spawn() reads (it only carries forward from an existing
+    // persisted meta, which the fork's brand-new UUID lacks). Re-apply it on
+    // the live fork so a fast-mode session stays fast after forking — same
+    // workaround clear() uses. Crash-recovery Step 2 forks automatically, so
+    // without this a double-crash of a fast-mode session silently drops fast
+    // mode. Best-effort: a failure is logged and the fork still completes.
+    const sourceFastMode = live?.fastMode ?? meta.fastMode
+    if (sourceFastMode) {
+      const provider = this.providers.get(sourceProvider)
+      if (provider?.capabilities?.supportsFastMode) {
+        try {
+          await this.setFastMode(forkInfo.id, true)
+        } catch (err) {
+          log.warn(`[session ${forkInfo.id}] fork: re-applying fastMode failed:`, err)
+        }
       }
     }
     return forkInfo
