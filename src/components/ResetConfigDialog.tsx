@@ -74,8 +74,19 @@ export function ResetConfigDialog({ open, onClose }: Props) {
     try {
       const res = await reset({ server: [...server], browser: [...browser] })
       const okCount = Object.values(res.results).filter((r) => r?.ok).length
-      const failCount = Object.values(res.results).filter((r) => r && !r.ok).length
-      toast.success(`Cleared ${okCount} item(s)${failCount ? `; ${failCount} failed` : ''}`)
+      const failed = Object.entries(res.results).filter(([, r]) => r && !r.ok)
+      if (failed.length > 0) {
+        // Partial failure: keep the dialog open so the user can see which
+        // server items failed and retry/adjust. Reloading would destroy this
+        // toast within 400ms — and for `credentials` a silent failure is a
+        // safety gap on shared machines. Browser-side items already ran.
+        const detail = failed
+          .map(([k, r]) => `${SERVER_LABELS[k as ServerResetItem] ?? k}: ${(r as { error?: string }).error ?? 'failed'}`)
+          .join('; ')
+        toast.error(`Cleared ${okCount}; ${failed.length} failed — ${detail}`)
+        return
+      }
+      toast.success(`Cleared ${okCount} item(s)`)
       onClose()
       setTimeout(() => location.reload(), 400)
     } catch (e) {
@@ -97,11 +108,11 @@ export function ResetConfigDialog({ open, onClose }: Props) {
 
   return (
     <div className="modal-backdrop" data-state={open ? 'open' : 'closing'} role="dialog" aria-modal={open ? 'true' : 'false'} aria-hidden={!open}
-      onMouseDown={(e) => open && e.target === e.currentTarget && onClose()}>
+      onMouseDown={(e) => open && !clearing && e.target === e.currentTarget && onClose()}>
       <div className="modal modal-reset-config" ref={dialogRef}>
         <div className="modal-header">
           <h3>Clear configuration &amp; data</h3>
-          <button className="btn btn-icon-sm" onClick={onClose} aria-label="Close"><IconX size={14} /></button>
+          <button className="btn btn-icon-sm" onClick={onClose} disabled={clearing} aria-label="Close"><IconX size={14} /></button>
         </div>
         <div className="modal-section reset-config-body">
           <div className="reset-group">
@@ -128,7 +139,7 @@ export function ResetConfigDialog({ open, onClose }: Props) {
         <div className="modal-footer">
           <span className="hint">{totalSelected ? `Will clear ${totalSelected} item(s)` : 'Select items to clear'}</span>
           <div className="modal-footer-actions">
-            <button className="btn" onClick={onClose}>Cancel</button>
+            <button className="btn" onClick={onClose} disabled={clearing}>Cancel</button>
             {confirmGate ? (
               <>
                 <input className="input" placeholder="type reset to confirm" value={confirmText} onChange={(e) => setConfirmText(e.target.value)} style={{ width: 160 }} />
