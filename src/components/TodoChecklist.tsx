@@ -106,7 +106,7 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
       aria-label="Task checklist"
     >
       <div className="todo-panel-header">
-        <span className="todo-panel-title">Checklist</span>
+        <span className="todo-panel-title">{renderResult.source === 'todowrite' ? 'TodoList' : 'TaskList'}</span>
         <span className="todo-panel-count">
           {doneCount}/{todos.length}
         </span>
@@ -145,23 +145,46 @@ interface ExtractResult {
   source: TodoSource
 }
 
-/** Choose the source shape and reconstruct the current list. TodoWrite wins
- *  when present (it's authoritative and self-contained); otherwise fold the
- *  TaskCreate/TaskUpdate event stream. Returns null when neither is found. */
+/** Choose the source shape and reconstruct the current list. When both
+ *  TodoWrite and Task* events exist in the same transcript (e.g. the CLI
+ *  was upgraded or reconfigured mid-session), prefer whichever was used
+ *  most recently — comparing the message index of the last TodoWrite vs
+ *  the last TaskCreate/TaskUpdate. This prevents a stale TodoWrite snapshot
+ *  from an old turn from shadowing a live Task* stream (and vice versa).
+ *  Returns null when neither source has any items. */
 function extractTodos(messages: SdkMessage[], working: boolean): ExtractResult | null {
-  const fromTodoWrite = extractLatestTodos(messages, working)
-  // Note `[]` is truthy: an empty TodoWrite snapshot (or one whose every
-  // item failed sanitizeTodos) must NOT short-circuit here, or it would
-  // silently shadow a live TaskCreate/TaskUpdate stream. Only a non-empty
-  // TodoWrite list wins; anything else falls through to the Task events.
-  if (fromTodoWrite && fromTodoWrite.length > 0) return { todos: fromTodoWrite, source: 'todowrite' }
-  const fromTasks = extractFromTaskEvents(messages)
-  if (fromTasks && fromTasks.length > 0) return { todos: fromTasks, source: 'task' }
+  const tw = extractLatestTodos(messages, working)
+  const tkTodos = extractFromTaskEvents(messages)
+  // Compare last-message-index: whichever source was used more recently wins.
+  // Check tw directly (not a derived variable) so TypeScript narrows it.
+  if (tw && tw.todos.length > 0 && (!tkTodos || tw.lastIndex > lastTaskEventIndex(messages))) {
+    return { todos: tw.todos, source: 'todowrite' }
+  }
+  if (tkTodos && tkTodos.length > 0) return { todos: tkTodos, source: 'task' }
   return null
 }
 
+/** Find the message index of the most recent TaskCreate/TaskUpdate tool_use,
+ *  or -1 if none. Used by extractTodos to compare recency against TodoWrite. */
+function lastTaskEventIndex(messages: SdkMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg.type !== 'assistant') continue
+    const content = msg.message?.content
+    if (!Array.isArray(content)) continue
+    for (const block of content as Record<string, unknown>[]) {
+      if (block.type === 'tool_use' && (block.name === 'TaskCreate' || block.name === 'TaskUpdate')) {
+        return i
+      }
+    }
+  }
+  return -1
+}
+
 /** Walk the message list in reverse and return the todos from the most
- *  recent `TodoWrite` tool_use block. Returns null when none found.
+ *  recent `TodoWrite` tool_use block, plus the message index where it was
+ *  found (for recency comparison in extractTodos). Returns null when none
+ *  found.
  *
  *  When `working === true`, ignore TodoWrites that appear *before* the
  *  most recent `result` marker — those belong to a previous completed
@@ -171,7 +194,7 @@ function extractTodos(messages: SdkMessage[], working: boolean): ExtractResult |
  *  todos while the new one runs is worse than showing nothing.)
  *  `stream_event` partials are skipped — their content lives on
  *  `event`, not `message.content`. */
-function extractLatestTodos(messages: SdkMessage[], working: boolean): Todo[] | null {
+function extractLatestTodos(messages: SdkMessage[], working: boolean): { todos: Todo[]; lastIndex: number } | null {
   // Find the boundary: when working=true, only TodoWrites after the
   // most recent `result` count as current.
   let floor = -1
@@ -195,7 +218,7 @@ function extractLatestTodos(messages: SdkMessage[], working: boolean): Todo[] | 
       if (block.type !== 'tool_use' || block.name !== 'TodoWrite') continue
       const input = block.input as Record<string, unknown> | undefined
       if (!input || !Array.isArray(input.todos)) continue
-      return sanitizeTodos(input.todos)
+      return { todos: sanitizeTodos(input.todos), lastIndex: i }
     }
   }
   return null
