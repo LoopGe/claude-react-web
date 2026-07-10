@@ -123,6 +123,21 @@ describe('getToolUseStarts', () => {
     expect(getToolUseStarts(msg)).toEqual(['tu_ws'])
   })
 
+  it('keeps ReportFindings IN the set (NOT excluded) — ack suppression relies on it', () => {
+    const msg = assistant([
+      toolUse('ReportFindings', 'tu_findings'),
+      toolUse('Bash', 'tu_bash'),
+    ])
+    // ReportFindings renders via a bespoke FindingsCard, but unlike Plan/
+    // Subagent/Workflow it has NO lifecycle map of its own. It MUST stay in
+    // the generic toolStatus set so getToolResultEntries stores its ack
+    // tool_result in toolResults → makeResultConsumed suppresses the orphan
+    // bubble (FindingsCard shows the tool_use input, not the ack). Adding
+    // ReportFindings to TOOL_STATUS_EXCLUDE would break that suppression and
+    // the ack would leak as a standalone "tool result" card.
+    expect(getToolUseStarts(msg)).toEqual(['tu_findings', 'tu_bash'])
+  })
+
   it('returns empty for non-assistant messages', () => {
     const msg = user([toolResult('tu_bash')])
     expect(getToolUseStarts(msg)).toEqual([])

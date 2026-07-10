@@ -42,3 +42,12 @@ export const ENTER_PLAN_MODE_TOOL_NAME = 'EnterPlanMode'
  *  rendered as inline markers rather than full tool cards. */
 export const ENTER_WORKTREE_TOOL_NAME = 'EnterWorktree'
 export const EXIT_WORKTREE_TOOL_NAME = 'ExitWorktree'
+
+/** Structured code-review findings report. The agent calls this with
+ *  `{ level, findings: [{ file, line, summary, failure_scenario, category,
+ *  verdict?, outcome? }] }`. Rendered by a bespoke FindingsCard (severity /
+ *  verdict chips + expandable failure scenarios) instead of the generic
+ *  ToolCard / raw-JSON fallback. The tool itself is provided out-of-band
+ *  (MCP / plugin / SDK custom tool) — this constant only owns the rendering
+ *  routing, mirroring ExitPlanMode→PlanCard / Agent→SubagentCard. */
+export const REPORT_FINDINGS_TOOL_NAME = 'ReportFindings'

@@ -528,6 +528,14 @@ const TOOL_STATUS_EXCLUDE = new Set<string>([
   // here keeps it out of the generic toolStatus badge map, same rationale as
   // the Subagent/Plan/Question exclusions above.
   WORKFLOW_TOOL_NAME,
+  // NOTE: ReportFindings is deliberately NOT excluded. It renders via a
+  // bespoke FindingsCard (ToolUseBlock dispatch), but unlike Plan/Subagent/
+  // Workflow it has no lifecycle map of its own. Keeping it IN the generic
+  // toolStatus set is load-bearing: it makes getToolResultEntries store the
+  // ack tool_result in toolResults, so makeResultConsumed suppresses the ack
+  // orphan bubble (FindingsCard shows the tool_use input, not the result).
+  // Adding ReportFindings here would break that suppression — see
+  // FindingsCard routing + reducer.test.ts "ReportFindings".
 ])
 
 export function getToolUseStarts(msg: SdkMessage): string[] {

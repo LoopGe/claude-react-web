@@ -36,6 +36,7 @@ import { useCopy } from '../hooks/useCopy'
 import { useEditDiffInfo, type EditAnchor, type EditDiffInfo } from '../hooks/useEditDiffInfo'
 import { SubagentCard } from './SubagentCard'
 import { WorkflowCard } from './WorkflowCard'
+import { FindingsCard } from './FindingsCard'
 import { ToolCard } from './ToolCard'
 import { AnimatedDetails } from './AnimatedCollapse'
 import {
@@ -64,7 +65,7 @@ import {
   IconWebSearch,
 } from './icons/ToolIcons'
 import { formatJson } from '../utils/format'
-import { SUBAGENT_TOOL_NAMES, PLAN_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME, ENTER_WORKTREE_TOOL_NAME, EXIT_WORKTREE_TOOL_NAME, WORKFLOW_TOOL_NAME } from '../constants/toolNames'
+import { SUBAGENT_TOOL_NAMES, PLAN_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME, ENTER_WORKTREE_TOOL_NAME, EXIT_WORKTREE_TOOL_NAME, WORKFLOW_TOOL_NAME, REPORT_FINDINGS_TOOL_NAME } from '../constants/toolNames'
 import { QUESTION_TOOL_NAME, type QuestionAnswerEntry } from '../utils/question-answers'
 import { parseTaskId, resultText } from '../utils/task-events'
 import { truncate } from '../utils/text'
@@ -175,6 +176,16 @@ export const ToolUseBlock = memo(function ToolUseBlock({ block, searchQuery, act
       (typeof input?.prompt === 'string' && truncate(input.prompt as string, 80)) ||
       undefined
     return <WorkflowCard toolUseId={id} fallbackLabel={fallback} />
+  }
+
+  // ReportFindings → bespoke FindingsCard (structured code-review report with
+  // verdict chips + expandable failure scenarios). Must intercept BEFORE the
+  // generic TOOL_VIEWS / raw-JSON fallback so the findings payload isn't
+  // rendered as a dump of JSON. The ack tool_result is auto-suppressed via the
+  // generic toolResults map (FindingsCard renders the tool_use input, not the
+  // result), so no orphan bubble leaks through.
+  if (name === REPORT_FINDINGS_TOOL_NAME) {
+    return <FindingsCard input={input} />
   }
 
   const View = name ? TOOL_VIEWS[name] : undefined
