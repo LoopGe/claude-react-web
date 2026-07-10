@@ -61,6 +61,18 @@ export function AnimatedCollapse({
     body.style.transition = ''
     body.classList.remove('animating')
     animatingRef.current = false
+    // If the content's true height drifted while the open animation played
+    // (ResizeObserver snaps are deferred during the animation so it can play
+    // out — see the observer below), snap to the current true height now so
+    // nothing stays clipped under `overflow-y: clip`.
+    const content = contentRef.current
+    if (content) {
+      const trueHeight = content.getBoundingClientRect().height
+      if (trueHeight > 0 && Math.abs(trueHeight - height) > 1) {
+        lastHeightRef.current = trueHeight
+        body.style.height = `${trueHeight}px`
+      }
+    }
   }, [unmountOnExit])
 
   const finishClosed = useCallback(() => {
@@ -156,7 +168,13 @@ export function AnimatedCollapse({
     previousOpenRef.current = open
 
     if (open) {
-      animateHeight(0, content.scrollHeight, true, true)
+      // Measure the target with getBoundingClientRect, not scrollHeight:
+      // under the body's `overflow-y: clip`, scrollHeight can return the
+      // body's pinned height rather than the content's true height (see the
+      // ResizeObserver note below). The content is laid out by now (the
+      // <details> just opened), so its bounding box is the true height.
+      const target = content.getBoundingClientRect().height || content.scrollHeight
+      animateHeight(0, target, true, true)
       return
     }
 
@@ -197,23 +215,16 @@ export function AnimatedCollapse({
       if (Math.abs(nextHeight - currentHeight) < 1) return
       lastHeightRef.current = nextHeight
       if (animatingRef.current) {
-        // Tear down the in-flight open animation and snap to the fully-open
-        // state. We must mirror finishOpen's full cleanup — clearing only the
-        // transition is not enough:
-        //   - opacity was mid-fade (0 → 1) and would freeze at e.g. 0.5
-        //     forever once the transition is gone. Clear it so the element
-        //     snaps to the CSS default (1).
-        //   - in unmountOnExit mode with initial open=false, setMounted(true)
-        //     normally fires inside finishOpen. Skipping it here would leave
-        //     `mounted` stuck at false, so a later open=false would compute
-        //     rendered=false and unmount with no close animation and no
-        //     onExitComplete callback.
-        cleanupAnimation()
-        body.classList.remove('animating')
-        body.style.transition = ''
-        body.style.opacity = ''
-        animatingRef.current = false
-        if (unmountOnExit) setMounted(true)
+        // The open/close animation is in flight. This event is the open
+        // transition's OWN 0->natural size change -- a <details> doesn't lay
+        // out its content while closed, so opening fires the observer. Let
+        // the animation play to its target instead of tearing it down and
+        // snapping (which made every open instant / animation-less). A
+        // genuine content-size change AFTER the animation settles -- when
+        // animatingRef is false -- is corrected by the snap below, and
+        // finishOpen re-measures at animation end so growth during the
+        // animation is still reconciled.
+        return
       }
       body.style.height = `${nextHeight}px`
     })
