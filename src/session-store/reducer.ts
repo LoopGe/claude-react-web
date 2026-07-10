@@ -166,15 +166,16 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
       })
     }
     case 'DISMISS_SUBAGENT': {
-      // Flip a `pending` background subagent to `dismissed` so it leaves the
-      // Waiting bubble's chip set. Uses a dedicated `dismissed` status (NOT
-      // `interrupted`) so the inline SubagentCard renders a neutral state
-      // instead of a false error — the subagent may still be running fine;
-      // the user only stopped tracking it. Only acts on `pending` records;
-      // identity-stable otherwise. The completion branch excludes
-      // `dismissed`, so a late task_notification won't override the dismiss.
+      // Flip an in-flight subagent (running/background/pending) to `dismissed`
+      // so it leaves the WorkingBubble chip set. Uses a dedicated `dismissed`
+      // status (NOT `interrupted`) so the inline SubagentCard renders a neutral
+      // state instead of a false error. For sync subagents (running) the
+      // tool_result merge later overwrites to done/interrupted (the merge
+      // branch doesn't check status); for async (background/pending) the
+      // completion branch excludes `dismissed` so a late task_notification
+      // won't override the dismiss. No-op for already-settled records.
       const existing = state.mirror.activeSubagents.get(action.toolUseId)
-      if (!existing || existing.status !== 'pending') return state
+      if (!existing || (existing.status !== 'running' && existing.status !== 'background' && existing.status !== 'pending')) return state
       const activeSubagents = new Map(state.mirror.activeSubagents)
       activeSubagents.set(action.toolUseId, {
         ...existing,

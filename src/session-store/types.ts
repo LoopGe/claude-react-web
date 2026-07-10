@@ -401,11 +401,13 @@ export type SessionAction =
   | { type: 'MESSAGE_CONSUMED'; uuid: string; consumedAt: number }
   | { type: 'ERROR'; message: string | null }
   | { type: 'LIVE_TURN_FLUSH' }
-  /** User dismissed a `pending` background subagent from the Waiting bubble.
-   *  Flips it to `interrupted` so it leaves the chip set (the bubble clears)
-   *  and the inline SubagentCard shows a settled state. The completion branch
-   *  excludes `interrupted`, so a late task_notification for a dismissed
-   *  subagent is ignored — the user explicitly gave up on tracking it. */
+  /** User dismissed an in-flight subagent (running/background/pending) from
+   *  the SubagentOverlay's × button. Flips it to `dismissed` so it leaves
+   *  the chip set (the bubble clears) and the inline SubagentCard shows a
+   *  neutral settled state. For sync (running) the tool_result merge later
+   *  overwrites to done/interrupted; for async (background/pending) the
+   *  completion branch excludes `dismissed`, so a late task_notification is
+   *  ignored — the user explicitly gave up on tracking it. */
   | { type: 'DISMISS_SUBAGENT'; toolUseId: string }
   /** Wipe BOTH layers (mirror + intent) and leave `replayReady=true`. Used
    *  by the /clear flow (and by store.reset()): the post-wipe state is

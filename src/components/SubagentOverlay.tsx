@@ -23,11 +23,10 @@ interface Props {
   index: ReadonlyMap<string, ActiveSubagent>
   onClose: () => void
   onPop: () => void
-  /** When provided, the × (close) button dismisses a `pending` subagent
-   *  (flips it to `dismissed` via DISMISS_SUBAGENT) before closing the
-   *  overlay. For non-pending subagents the × just closes (same as before).
-   *  This moves the dismiss affordance out of the WorkingBubble chip (where
-   *  it required button-in-button HTML) into the overlay's existing ×. */
+  /** When provided, the × (close) button dismisses an in-flight subagent
+   *  (running/background/pending — flips to `dismissed` via
+   *  DISMISS_SUBAGENT) before closing the overlay. For already-settled
+   *  subagents (done/interrupted/dismissed/rejected) the × just closes. */
   onDismiss?: (toolUseId: string) => void
   isExiting?: boolean
   transitionDirection?: 'forward' | 'back' | null
@@ -264,14 +263,15 @@ export const SubagentOverlay = memo(function SubagentOverlay({
             type="button"
             className="subagent-overlay-close"
             onClick={() => {
-              if (current?.status === 'pending' && onDismiss) {
+              const st = current?.status
+              if (onDismiss && (st === 'running' || st === 'background' || st === 'pending')) {
                 onDismiss(currentId)
               }
               onClose()
             }}
             disabled={isExiting}
-            title={current?.status === 'pending' && onDismiss ? 'Dismiss and close' : 'Close (Esc)'}
-            aria-label={current?.status === 'pending' && onDismiss ? 'Dismiss and close' : 'Close'}
+            title={current && (current.status === 'running' || current.status === 'background' || current.status === 'pending') && onDismiss ? 'Dismiss and close' : 'Close (Esc)'}
+            aria-label={current && (current.status === 'running' || current.status === 'background' || current.status === 'pending') && onDismiss ? 'Dismiss and close' : 'Close'}
           >
             <IconX size={14} />
           </button>

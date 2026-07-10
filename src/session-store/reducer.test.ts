@@ -713,6 +713,60 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     expect(state).toBe(before)
   })
 
+  it('DISMISS_SUBAGENT also works for running and background subagents', () => {
+    // Dismiss is not limited to `pending` — sync (running) and async
+    // (background) subagents can be dismissed from the overlay's × too.
+    // For sync the tool_result merge later overwrites to done/interrupted;
+    // for async the completion branch excludes dismissed (permanent).
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-1',
+      receivedAt: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_sync', name: 'Agent', input: { description: 'sync work' } }],
+      },
+    } as unknown as SdkMessage
+    const toolUse2: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-2',
+      receivedAt: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_async', name: 'Agent', input: { description: 'async work', run_in_background: true } }],
+      },
+    } as unknown as SdkMessage
+    const ack: SdkMessage = {
+      type: 'user',
+      uuid: 'u-1',
+      parent_tool_use_id: null,
+      receivedAt: 1_000,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_async', content: 'Async agent launched successfully' }],
+      },
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    // Sync subagent: running (no tool_result yet).
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
+    expect(state.mirror.activeSubagents.get('tu_sync')?.status).toBe('running')
+    state = reduceSessionState(state, { type: 'DISMISS_SUBAGENT', toolUseId: 'tu_sync' })
+    expect(state.mirror.activeSubagents.get('tu_sync')?.status).toBe('dismissed')
+
+    // Async subagent: background (ack landed).
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse2 })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    expect(state.mirror.activeSubagents.get('tu_async')?.status).toBe('background')
+    state = reduceSessionState(state, { type: 'DISMISS_SUBAGENT', toolUseId: 'tu_async' })
+    expect(state.mirror.activeSubagents.get('tu_async')?.status).toBe('dismissed')
+
+    // Dismissing an already-settled (done) record is a no-op.
+    const before = state
+    state = reduceSessionState(state, { type: 'DISMISS_SUBAGENT', toolUseId: 'tu_sync' })
+    expect(state).toBe(before)
+  })
+
   it('REPLAY re-applies the turn-end sweep (background -> pending) on hydration', () => {
     // Regression: rebuildIndexesFromMessages (the replay/hydration path)
     // must apply the same turn-end sweep as the live path. Otherwise a WS
