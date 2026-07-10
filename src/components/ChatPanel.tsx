@@ -18,7 +18,6 @@ import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { statusClass, statusLabel, shortenModel } from '../utils/session-status'
 import { useModelOptions } from '../hooks/useModelOptions'
-import { usePresenceValue } from '../hooks/useExitPresence'
 import { AnimatePresence } from 'motion/react'
 import { ModelPicker } from './ModelPicker'
 import { EffortSlider } from './EffortSlider'
@@ -297,7 +296,6 @@ export const ChatPanel = memo(function ChatPanel({
     onConfirm: () => void | Promise<void>
   } | null>(null)
   const [confirmBusy, setConfirmBusy] = useState(false)
-  const confirmPresence = usePresenceValue(confirmState)
   const handleAskConfirm = useCallback((config: {
     title: string
     message: ReactNode
@@ -734,18 +732,20 @@ export const ChatPanel = memo(function ChatPanel({
             />
           )}
         </AnimatePresence>
-        {confirmPresence.value && (
-          <ConfirmDialog
-            open={confirmState != null}
-            title={confirmPresence.value.title}
-            message={confirmPresence.value.message}
-            confirmLabel={confirmPresence.value.confirmLabel}
-            destructive={confirmPresence.value.destructive}
-            busy={confirmBusy}
-            onConfirm={confirmPresence.value.onConfirm}
-            onCancel={() => { if (!confirmBusy) setConfirmState(null) }}
-          />
-        )}
+        <AnimatePresence>
+          {confirmState && (
+            <ConfirmDialog
+              key="confirm"
+              title={confirmState.title}
+              message={confirmState.message}
+              confirmLabel={confirmState.confirmLabel}
+              destructive={confirmState.destructive}
+              busy={confirmBusy}
+              onConfirm={confirmState.onConfirm}
+              onCancel={() => { if (!confirmBusy) setConfirmState(null) }}
+            />
+          )}
+        </AnimatePresence>
         </div>
         {session.error && (
           <Tooltip label={session.error}>

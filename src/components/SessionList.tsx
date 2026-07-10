@@ -19,7 +19,8 @@ import { ContextMenu } from './ContextMenu'
 import { IconX, IconChevronRight, IconChevronDown, IconSquare, IconPencil, IconTrash, IconSearch } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
 import { Virtuoso } from 'react-virtuoso'
-import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
+import { useExitPresence } from '../hooks/useExitPresence'
+import { AnimatePresence } from 'motion/react'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { AnimatedCollapse } from './AnimatedCollapse'
 
@@ -218,8 +219,6 @@ export const SessionList = memo(function SessionList({
   const [confirmBusy, setConfirmBusy] = useState(false)
   const [promptState, setPromptState] = useState<PromptState | null>(null)
   const [promptBusy, setPromptBusy] = useState(false)
-  const confirmPresence = usePresenceValue(confirmState)
-  const promptPresence = usePresenceValue(promptState)
   /** Pending group pill context menu target — the group id whose
    *  right-click context menu should open. Null when menu is closed. */
   const [groupMenuTarget, setGroupMenuTarget] = useState<string | null>(null)
@@ -1061,41 +1060,37 @@ export const SessionList = memo(function SessionList({
       })()}
 
       {/* Confirm dialog (replaces window.confirm) */}
-      {(() => {
-        const confirmDialog = confirmPresence.value
-        if (!confirmDialog) return null
-        return (
+      <AnimatePresence>
+        {confirmState && (
           <ConfirmDialog
-            open={confirmState != null}
-            title={confirmDialog.title}
-            message={confirmDialog.message}
-            confirmLabel={confirmDialog.confirmLabel}
-            destructive={confirmDialog.destructive}
+            key="confirm"
+            title={confirmState.title}
+            message={confirmState.message}
+            confirmLabel={confirmState.confirmLabel}
+            destructive={confirmState.destructive}
             busy={confirmBusy}
-            onConfirm={confirmDialog.onConfirm}
+            onConfirm={confirmState.onConfirm}
             onCancel={() => { if (!confirmBusy) setConfirmState(null) }}
           />
-        )
-      })()}
+        )}
+      </AnimatePresence>
 
       {/* Prompt dialog (replaces window.prompt for group rename) */}
-      {(() => {
-        const promptDialog = promptPresence.value
-        if (!promptDialog) return null
-        return (
+      <AnimatePresence>
+        {promptState && (
           <PromptDialog
-            open={promptState != null}
-            title={promptDialog.title}
-            message={promptDialog.message}
-            defaultValue={promptDialog.defaultValue}
-            confirmLabel={promptDialog.confirmLabel}
-            placeholder={promptDialog.placeholder}
+            key="prompt"
+            title={promptState.title}
+            message={promptState.message}
+            defaultValue={promptState.defaultValue}
+            confirmLabel={promptState.confirmLabel}
+            placeholder={promptState.placeholder}
             busy={promptBusy}
             onConfirm={(value) => {
               void (async () => {
                 setPromptBusy(true)
                 try {
-                  await promptDialog.onConfirm(value)
+                  await promptState.onConfirm(value)
                 } finally {
                   setPromptBusy(false)
                   setPromptState(null)
@@ -1104,8 +1099,8 @@ export const SessionList = memo(function SessionList({
             }}
             onCancel={() => { if (!promptBusy) setPromptState(null) }}
           />
-        )
-      })()}
+        )}
+      </AnimatePresence>
     </>
   )
 })

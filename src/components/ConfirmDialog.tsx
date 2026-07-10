@@ -14,10 +14,11 @@
 //   - The confirm button gains `.btn-danger` styling when destructive
 
 import { useEffect, useRef } from 'react'
+import { motion } from 'motion/react'
 import { useFocusTrap } from '../hooks/useFocusTrap'
+import { useOverlayMotion } from '../utils/transitions'
 
 interface Props {
-  open?: boolean
   title: string
   /** ReactNode so callers can render multi-line text or `<code>file/path</code>`
    *  for clarity, without us trying to parse markdown. */
@@ -38,7 +39,6 @@ interface Props {
 }
 
 export function ConfirmDialog({
-  open = true,
   title,
   message,
   confirmLabel,
@@ -49,6 +49,10 @@ export function ConfirmDialog({
   onCancel,
 }: Props) {
   const dialogRef = useRef<HTMLDivElement>(null)
+  // Open/close motion is driven by motion.div + AnimatePresence (the caller
+  // gates mount on the confirm state). Mirrors the old overlay-backdrop/panel
+  // keyframes via useOverlayMotion; reduced motion snaps both.
+  const m = useOverlayMotion()
   // restoreFocus: true — ConfirmDialog is opened from a real trigger button
   // (a destructive git action, a delete, etc). Without restore the keyboard
   // user's focus lands on <body> after the dialog closes and the next Tab
@@ -64,28 +68,27 @@ export function ConfirmDialog({
       if (e.key === 'Escape') {
         e.preventDefault()
         e.stopPropagation()
-        if (open && !busy) onCancel()
+        if (!busy) onCancel()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [busy, onCancel, open])
+  }, [busy, onCancel])
 
   return (
-    <div
+    <motion.div
       className="perm-overlay"
-      data-state={open ? 'open' : 'closing'}
       role="dialog"
-      aria-modal={open ? 'true' : 'false'}
-      aria-hidden={!open}
+      aria-modal="true"
       aria-label={title}
       // Click on the backdrop dismisses; click on the card itself
       // bubbles back into our own onMouseDown which discards.
       onMouseDown={(e) => {
-        if (open && e.target === e.currentTarget && !busy) onCancel()
+        if (e.target === e.currentTarget && !busy) onCancel()
       }}
+      {...m.backdrop}
     >
-      <div className="perm-card" ref={dialogRef}>
+      <motion.div className="perm-card" ref={dialogRef} {...m.card}>
         <div className="modal-header">
           <h3>{title}</h3>
         </div>
@@ -114,7 +117,7 @@ export function ConfirmDialog({
             {busy ? 'Working...' : confirmLabel}
           </button>
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   )
 }

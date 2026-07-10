@@ -6,10 +6,11 @@
 // Enter in the input submits; Escape cancels.
 
 import { useEffect, useRef, useState } from 'react'
+import { motion } from 'motion/react'
 import { useFocusTrap } from '../hooks/useFocusTrap'
+import { useOverlayMotion } from '../utils/transitions'
 
 interface Props {
-  open?: boolean
   title: string
   message: React.ReactNode
   defaultValue: string
@@ -22,7 +23,6 @@ interface Props {
 }
 
 export function PromptDialog({
-  open = true,
   title,
   message,
   defaultValue,
@@ -36,6 +36,10 @@ export function PromptDialog({
   const dialogRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const [value, setValue] = useState(defaultValue)
+  // Open/close motion is driven by motion.div + AnimatePresence (the caller
+  // gates mount on the prompt state). Mirrors the old overlay-backdrop/panel
+  // keyframes via useOverlayMotion; reduced motion snaps both.
+  const m = useOverlayMotion()
   // restoreFocus so the keyboard user lands back on the trigger button
   // (rename / save-snippet) after the dialog closes, not on <body>.
   useFocusTrap(dialogRef, { restoreFocus: true })
@@ -46,12 +50,12 @@ export function PromptDialog({
       if (e.key === 'Escape') {
         e.preventDefault()
         e.stopPropagation()
-        if (open && !busy) onCancel()
+        if (!busy) onCancel()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [busy, onCancel, open])
+  }, [busy, onCancel])
 
   const trimmed = value.trim()
   const canSubmit = trimmed.length > 0 && trimmed !== defaultValue.trim() && !busy
@@ -61,18 +65,17 @@ export function PromptDialog({
   }
 
   return (
-    <div
+    <motion.div
       className="perm-overlay"
-      data-state={open ? 'open' : 'closing'}
       role="dialog"
-      aria-modal={open ? 'true' : 'false'}
-      aria-hidden={!open}
+      aria-modal="true"
       aria-label={title}
       onMouseDown={(e) => {
-        if (open && e.target === e.currentTarget && !busy) onCancel()
+        if (e.target === e.currentTarget && !busy) onCancel()
       }}
+      {...m.backdrop}
     >
-      <div className="perm-card" ref={dialogRef}>
+      <motion.div className="perm-card" ref={dialogRef} {...m.card}>
         <div className="modal-header">
           <h3>{title}</h3>
         </div>
@@ -113,7 +116,7 @@ export function PromptDialog({
             {busy ? 'Working…' : confirmLabel}
           </button>
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   )
 }

@@ -37,7 +37,8 @@ import { useUiState } from './hooks/useUiState'
 import { useClearAnimation } from './hooks/useClearAnimation'
 import { sessionStoreRegistry } from './session-store/registry'
 import { useAppOverlays } from './app/useAppOverlays'
-import { useExitPresence, usePresenceValue } from './hooks/useExitPresence'
+import { useExitPresence } from './hooks/useExitPresence'
+import { AnimatePresence } from 'motion/react'
 import { createCallbackRegistry, type CallbackRegistry } from './utils/callbackRegistry'
 
 // Lazy-load heavy modal/overlay components that are only shown on demand.
@@ -250,7 +251,6 @@ export function App() {
   // so the global modal's presence is gated off here.
   const resumeDialogPresence = useExitPresence(resumeDialogOpen && resumeTargetPanelId === null)
   const globalSettingsPresence = useExitPresence(globalSettingsOpen)
-  const snippetSavePresence = usePresenceValue(pendingSnippetSave)
   const snippetsManagerPresence = useExitPresence(showSnippetsManager)
   const helpPresence = useExitPresence(helpOpen)
   const snippetsRefresh = snippets.refresh
@@ -3252,32 +3252,30 @@ export function App() {
       {/* Composer snippet dialogs — rendered ONCE at app level (a single
           global instance shared by every panel). Use .perm-overlay which
           covers the viewport and centers the card. */}
-      {(() => {
-        const snippetSave = snippetSavePresence.value
-        if (!snippetSave) return null
-        return (
+      <AnimatePresence>
+        {pendingSnippetSave && (
           <Suspense fallback={null}>
             <PromptDialog
-              open={pendingSnippetSave != null}
+              key="snippet-save"
               title="Save snippet"
               message={
                 <>
                   <p>Pick a label for this snippet. The current composer text will be saved as its content.</p>
-                  <pre className="snippet-save-preview">{snippetSave.content}</pre>
+                  <pre className="snippet-save-preview">{pendingSnippetSave.content}</pre>
                 </>
               }
               defaultValue=""
               confirmLabel="Save"
               placeholder="Snippet label"
               onConfirm={(label) => {
-                snippets.add(label, snippetSave.content)
+                snippets.add(label, pendingSnippetSave.content)
                 setPendingSnippetSave(null)
               }}
               onCancel={() => setPendingSnippetSave(null)}
             />
           </Suspense>
-        )
-      })()}
+        )}
+      </AnimatePresence>
 
       {snippetsManagerPresence.shouldRender && (
         <Suspense fallback={null}>
