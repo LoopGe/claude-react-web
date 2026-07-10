@@ -1,5 +1,6 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
+import { MotionConfig } from 'motion/react'
 import { App } from './App'
 import { ToastHost } from './components/ToastHost'
 import { ToastProvider } from './components/ToastProvider'
@@ -16,11 +17,18 @@ import './styles.css'
 // portal-style render target for the whole app.
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <ToastProvider>
-      <WsHubProvider>
-        <App />
-      </WsHubProvider>
-      <ToastHost />
-    </ToastProvider>
+    {/* reducedMotion="user": every motion.* element snaps (skips
+        transform/opacity/filter animations) when the OS reports
+        prefers-reduced-motion: reduce. Replaces the per-hook
+        prefersReducedMotion() checks for migrated components; unmigrated
+        components keep their own CSS/hook reduced-motion guards. */}
+    <MotionConfig reducedMotion="user">
+      <ToastProvider>
+        <WsHubProvider>
+          <App />
+        </WsHubProvider>
+        <ToastHost />
+      </ToastProvider>
+    </MotionConfig>
   </React.StrictMode>,
 )

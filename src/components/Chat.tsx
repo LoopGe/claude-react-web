@@ -63,6 +63,7 @@ import { useMergedRef } from '../utils/mergedRef'
 import { useToast } from '../hooks/useToast'
 import { useWsHub } from '../hooks/useWsHub'
 import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
+import { AnimatePresence } from 'motion/react'
 import type { AgentInfo, SessionInfo, SlashCommand } from '../types'
 import type { Skin } from '../utils/theme'
 import type { GitStatusResponse } from '../../shared/git-types'
@@ -259,7 +260,6 @@ export const Chat = memo(function Chat({
   const [searchOpen, setSearchOpen] = useState(false)
   const settingsPresence = useExitPresence(!!settingsOpen)
   const gitPresence = useExitPresence(!!gitPanelOpen)
-  const recapPresence = useExitPresence(!!recapOpen && !searchOpen)
   // Effective UI prefs: a per-session override (session.<field>) wins,
   // otherwise the global default (globalPrefs.<field>, server-backed) applies.
   // Computed inline so a SettingsPanel override or a global-settings save
@@ -274,7 +274,6 @@ export const Chat = memo(function Chat({
   // the bar out.
   const [pinnedUserMsg, setPinnedUserMsg] = useState<{ id: string; text: string } | null>(null)
   const [pinnedText, setPinnedText] = useState('')
-  const pinnedPresence = useExitPresence(effectiveShowPinned && !!pinnedUserMsg && !searchOpen)
   const handlePinnedUserMessageChange = useCallback(
     (info: { id: string; text: string } | null) => {
       if (info) setPinnedText(info.text)
@@ -1719,26 +1718,26 @@ export const Chat = memo(function Chat({
           when both children are present. `pointer-events:none` on the stack
           lets clicks fall through to the transcript where neither child is;
           each child re-enables pointer-events. */}
-      {(recapPresence.shouldRender && session.recap) || pinnedPresence.shouldRender ? (
-        <div className="chat-top-stack">
-          {recapPresence.shouldRender && session.recap && (
+      <div className="chat-top-stack">
+        <AnimatePresence>
+          {!!recapOpen && !searchOpen && session.recap && (
             <RecapWindow
+              key="recap"
               recap={session.recap}
-              isExiting={recapPresence.isExiting}
               clearing={effectiveClearing}
               onClose={() => onCloseRecap?.()}
             />
           )}
-          {pinnedPresence.shouldRender && (
+          {effectiveShowPinned && !!pinnedUserMsg && !searchOpen && (
             <PinnedUserMessage
+              key="pinned"
               text={pinnedText}
-              isExiting={pinnedPresence.isExiting}
               clearing={effectiveClearing}
               onClick={() => scrollNavRef.current?.('prev')}
             />
           )}
-        </div>
-      ) : null}
+        </AnimatePresence>
+      </div>
 
       {subagentStack.length > 0 && (
         <SubagentProvider value={subagentCtxValue}>

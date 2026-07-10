@@ -9,15 +9,15 @@
 // old RecapFooter that lived in the Virtuoso footer slot.
 
 import { memo, useLayoutEffect, useRef } from 'react'
+import { motion } from 'motion/react'
 import type { SessionRecap } from '../../shared/session-info'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { ENTER_TRANSITION, EXIT_TRANSITION } from '../utils/transitions'
 import { Markdown } from './Markdown'
 import { IconSparkles, IconAlertTriangle, IconX } from './icons/ToolIcons'
 
 interface Props {
   recap: SessionRecap
-  /** True while the exit animation is playing; drives data-state="closing". */
-  isExiting?: boolean
   /** True while a /clear is in flight. Reuses the transcript's
    *  `clear-blur-fade` exit animation so the recap dissolves in sync with
    *  the message list instead of snapping out when the server confirms. */
@@ -25,7 +25,7 @@ interface Props {
   onClose: () => void
 }
 
-export const RecapWindow = memo(function RecapWindow({ recap, isExiting, clearing, onClose }: Props) {
+export const RecapWindow = memo(function RecapWindow({ recap, clearing, onClose }: Props) {
   const windowRef = useRef<HTMLDivElement>(null)
   const setBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
   // Natural height captured at the end of the previous render's layout pass.
@@ -85,12 +85,20 @@ export const RecapWindow = memo(function RecapWindow({ recap, isExiting, clearin
   }, [recap.status, recap.summary, recap.generatedAt])
 
   return (
-    <div
+    <motion.div
       ref={windowRef}
       className={`recap-window${clearing ? ' recap-window-clearing' : ''}`}
       role="dialog"
       aria-label="Session recap"
-      data-state={isExiting ? 'closing' : 'open'}
+      initial={{ opacity: 0, y: -8, transition: ENTER_TRANSITION }}
+      animate={{ opacity: 1, y: 0, transition: ENTER_TRANSITION }}
+      // Normal close slides up + fades (mirrors the old recap-window-out).
+      // pointerEvents:'none' disables the close button / body scrollbar while
+      // the element fades out — replaces the deleted
+      // [data-state="closing"]{pointer-events:none} CSS rule so the exiting
+      // ghost can't be re-clicked. The /clear dissolve stays CSS-driven
+      // (recap-window-clearing class); motion only owns normal open/close.
+      exit={{ opacity: 0, y: -8, pointerEvents: 'none', transition: EXIT_TRANSITION }}
     >
       <div className="recap-window-header">
         <span className="recap-window-title">
@@ -124,7 +132,7 @@ export const RecapWindow = memo(function RecapWindow({ recap, isExiting, clearin
           )}
         </div>
       </div>
-    </div>
+    </motion.div>
   )
 })
 

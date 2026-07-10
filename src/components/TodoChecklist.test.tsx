@@ -143,7 +143,7 @@ describe('TodoChecklist — /clear blur-fade', () => {
   it('keeps the working class independent of clearing', () => {
     // clearing drives the root blur-fade; working drives the child shimmer.
     // Both can be true at once — the classes are orthogonal, mirroring how
-    // RecapWindow keeps data-state="closing" independent of clearing.
+    // RecapWindow's clearing class is independent of its open/close state.
     const msgs = [
       multiTodoMsg([{ content: 'Task A', status: 'in_progress' }]),
     ]

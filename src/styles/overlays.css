@@ -275,7 +275,6 @@
   -webkit-backdrop-filter: var(--glass-blur);
   box-shadow: var(--drawer-shadow);
   overflow: hidden;
-  animation: recap-window-in var(--motion-duration-base) var(--motion-ease-enter) both;
   /* Height is tweened via JS (RecapWindow useLayoutEffect) between explicit
      px values on content change; transition the property so the swap reads
      as a smooth grow/shrink instead of a snap. */
@@ -321,7 +320,6 @@
   text-align: left;
   cursor: pointer;
   overflow: hidden;
-  animation: pinned-user-message-in var(--motion-duration-base) var(--motion-ease-enter) both;
   transition: border-color var(--motion-duration-fast) var(--motion-ease-standard),
               background var(--motion-duration-fast) var(--motion-ease-standard);
 }
@@ -329,16 +327,12 @@
   border-color: var(--msg-user-border);
   background: color-mix(in srgb, var(--bg) 70%, transparent);
 }
-.pinned-user-message[data-state="closing"] {
-  animation: pinned-user-message-out var(--motion-duration-fast) var(--motion-ease-exit) both;
-  pointer-events: none;
-}
 /* During a /clear, reuse the transcript's `clear-blur-fade` keyframes
    (defined in chat.css — @keyframes are global) so the pinned header
-   dissolves in sync with the message list. Ordered AFTER the
-   [data-state="closing"] rule so it wins on the (rare) overlap where the
-   pinned header is dismissing while a clear is already in flight. Matches
-   the `.recap-window-clearing` sibling treatment. */
+   dissolves in sync with the message list. Normal open/close motion is
+   driven by motion.button (initial/animate/exit) in PinnedUserMessage.tsx;
+   this CSS class only covers the in-place /clear dissolve. Matches the
+   `.recap-window-clearing` sibling treatment. */
 .pinned-user-message.pinned-user-message-clearing {
   animation: clear-blur-fade var(--motion-duration-slow) var(--motion-ease-exit) both;
   pointer-events: none;
@@ -362,34 +356,14 @@
   text-overflow: ellipsis;
   color: var(--fg-muted);
 }
-@keyframes pinned-user-message-in {
-  from { opacity: 0; transform: translateY(-6px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-@keyframes pinned-user-message-out {
-  from { opacity: 1; transform: translateY(0); }
-  to   { opacity: 0; transform: translateY(-6px); }
-}
-.recap-window[data-state="closing"] {
-  animation: recap-window-out var(--motion-duration-fast) var(--motion-ease-exit) both;
-  pointer-events: none;
-}
 /* During a /clear, reuse the transcript's `clear-blur-fade` keyframes
    (defined in chat.css — @keyframes are global) so the recap dissolves
-   in sync with the message list. Ordered AFTER the [data-state="closing"]
-   rule so it wins on the (rare) overlap where the user dismisses the recap
-   while a clear is already in flight. */
+   in sync with the message list. Normal open/close motion is driven by
+   motion.div (initial/animate/exit) in RecapWindow.tsx; this CSS class
+   only covers the in-place /clear dissolve. */
 .recap-window.recap-window-clearing {
   animation: clear-blur-fade var(--motion-duration-slow) var(--motion-ease-exit) both;
   pointer-events: none;
-}
-@keyframes recap-window-in {
-  from { opacity: 0; transform: translateY(-8px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-@keyframes recap-window-out {
-  from { opacity: 1; transform: translateY(0); }
-  to   { opacity: 0; transform: translateY(-8px); }
 }
 .recap-window-header {
   display: flex;
@@ -451,10 +425,16 @@
   .recap-window,
   .recap-window-body-inner,
   .pinned-user-message { animation: none; }
-  /* Mirror the transcript's reduced-motion clear: no animation, just hidden. */
-  .recap-window.recap-window-clearing { animation: none; opacity: 0; }
-  .pinned-user-message.pinned-user-message-clearing { animation: none; opacity: 0; }
-  .pinned-user-message[data-state="closing"] { opacity: 0; }
+  /* Mirror the transcript's reduced-motion clear: no animation, just hidden.
+     Normal open/close is snapped by MotionConfig reducedMotion="user"
+     (motion.div/motion.button), so only the CSS-driven /clear dissolve
+     needs the explicit opacity:0 here. The !important is required because
+     motion writes inline style.opacity:1 (its animate target); an inline
+     style otherwise beats this stylesheet rule, leaving the element
+     visible during /clear under reduced-motion. !important wins over the
+     non-important inline value. */
+  .recap-window.recap-window-clearing { animation: none; opacity: 0 !important; }
+  .pinned-user-message.pinned-user-message-clearing { animation: none; opacity: 0 !important; }
 }
 
 /* ── `!` bash-mode message ───────────────────────────────────────────

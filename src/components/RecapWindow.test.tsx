@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { render, cleanup } from '@testing-library/react'
+import { render, cleanup, waitFor } from '@testing-library/react'
+import { AnimatePresence } from 'motion/react'
 import { RecapWindow } from './RecapWindow'
 import type { SessionRecap } from '../../shared/session-info'
 
@@ -40,13 +41,32 @@ describe('RecapWindow', () => {
     expect(root?.className).toContain('recap-window-clearing')
   })
 
-  it('still drives data-state="closing" from isExiting independently of clearing', () => {
-    const { container } = render(
-      <RecapWindow recap={readyRecap()} clearing isExiting onClose={() => {}} />,
-    )
-    const root = container.querySelector('.recap-window')
-    // clearing drives the blur-fade class; isExiting still marks the closing state.
-    expect(root?.className).toContain('recap-window-clearing')
-    expect(root?.getAttribute('data-state')).toBe('closing')
+  it('keeps the window mounted through the exit animation, then unmounts (AnimatePresence)', async () => {
+    // Open/close motion is now driven by motion.div + AnimatePresence (the
+    // old isExiting/data-state="closing" prop is gone). This is a smoke test
+    // that AnimatePresence retains the node while exiting and removes it
+    // after. motion's rAF JS-animation loop runs under jsdom (no WAAPI), so
+    // we wait on real timers for the 120ms exit to settle.
+    function Harness({ open }: { open: boolean }) {
+      return (
+        <AnimatePresence>
+          {open && <RecapWindow key="recap" recap={readyRecap()} onClose={() => {}} />}
+        </AnimatePresence>
+      )
+    }
+    const { container, rerender } = render(<Harness open={true} />)
+    expect(container.querySelector('.recap-window')).not.toBeNull()
+
+    rerender(<Harness open={false} />)
+
+    // AnimatePresence must RETAIN the node while the exit animation plays —
+    // asserting this (not just the eventual unmount) guards against motion
+    // short-circuiting the exit in jsdom and unmounting instantly, which
+    // would make the waitFor below pass for the wrong reason.
+    expect(container.querySelector('.recap-window')).not.toBeNull()
+
+    await waitFor(() => {
+      expect(container.querySelector('.recap-window')).toBeNull()
+    })
   })
 })
