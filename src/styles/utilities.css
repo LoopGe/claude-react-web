@@ -773,9 +773,6 @@
   .perm-overlay[data-state="closing"],
   .perm-overlay[data-state="open"] > .perm-card,
   .perm-overlay[data-state="closing"] > .perm-card,
-  .ctx-menu,
-  .model-picker,
-  .effort-slider,
   .appearance-panel,
   .chat-jump-to-bottom,
   .chat-panel-header.mode-changing {

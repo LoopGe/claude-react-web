@@ -1,7 +1,12 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from 'vitest'
-import { render, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { render, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { AnimatePresence } from 'motion/react'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
+
+afterEach(() => {
+  cleanup()
+})
 
 // The menu positions itself via useLayoutEffect using real getBoundingClientRect;
 // jsdom returns 0s, which is fine — we only assert on item/separator rendering.
@@ -57,5 +62,30 @@ describe('ContextMenu', () => {
     fireEvent.click(container.querySelector('.ctx-menu-item')!)
     expect(onItem).toHaveBeenCalledOnce()
     expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the menu mounted through the exit animation, then unmounts (AnimatePresence)', async () => {
+    // Open/close motion is now driven by motion.div + AnimatePresence (the
+    // old isExiting/data-state="closing" prop is gone). Smoke test that
+    // AnimatePresence retains the node while exiting and removes it after.
+    // The retention assertion (not just the eventual unmount) guards against
+    // motion short-circuiting the exit in jsdom and unmounting instantly.
+    const items: ContextMenuItem[] = [{ label: 'Run', onClick: () => {} }]
+    function Harness({ open }: { open: boolean }) {
+      return (
+        <AnimatePresence>
+          {open && <ContextMenu key="m" x={0} y={0} items={items} onClose={() => {}} />}
+        </AnimatePresence>
+      )
+    }
+    const { container, rerender } = render(<Harness open={true} />)
+    expect(container.querySelector('.ctx-menu')).not.toBeNull()
+
+    rerender(<Harness open={false} />)
+    expect(container.querySelector('.ctx-menu')).not.toBeNull()
+
+    await waitFor(() => {
+      expect(container.querySelector('.ctx-menu')).toBeNull()
+    })
   })
 })

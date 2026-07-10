@@ -7,7 +7,7 @@
 
 import { memo } from 'react'
 import { motion } from 'motion/react'
-import { ENTER_TRANSITION, EXIT_TRANSITION } from '../utils/transitions'
+import { ENTER_TRANSITION, EXIT_TRANSITION, useMotionTransition } from '../utils/transitions'
 import { IconUser } from './icons/ToolIcons'
 
 interface Props {
@@ -22,21 +22,25 @@ interface Props {
 }
 
 export const PinnedUserMessage = memo(function PinnedUserMessage({ text, clearing, onClick }: Props) {
+  // Under reduced motion, snap (duration:0) instead of fading — see
+  // useMotionTransition.
+  const enterT = useMotionTransition(ENTER_TRANSITION)
+  const exitT = useMotionTransition(EXIT_TRANSITION)
   return (
     <motion.button
       type="button"
       className={`pinned-user-message${clearing ? ' pinned-user-message-clearing' : ''}`}
       onClick={onClick}
       title={text}
-      initial={{ opacity: 0, y: -6, transition: ENTER_TRANSITION }}
-      animate={{ opacity: 1, y: 0, transition: ENTER_TRANSITION }}
+      initial={{ opacity: 0, y: -6, transition: enterT }}
+      animate={{ opacity: 1, y: 0, transition: enterT }}
       // Normal close slides up + fades (mirrors the old
       // pinned-user-message-out). pointerEvents:'none' disables the button
       // while it fades out — replaces the deleted
       // [data-state="closing"]{pointer-events:none} CSS rule so the exiting
       // ghost can't fire onClick (a spurious scroll-nav) mid-fade. The /clear
       // dissolve stays CSS-driven (pinned-user-message-clearing class).
-      exit={{ opacity: 0, y: -6, pointerEvents: 'none', transition: EXIT_TRANSITION }}
+      exit={{ opacity: 0, y: -6, pointerEvents: 'none', transition: exitT }}
     >
       <span className="pinned-user-message-label">
         <IconUser size={12} />

@@ -514,18 +514,13 @@
      unfolding from the click point. */
   transform-origin: top left;
 }
-.ctx-menu[data-state="open"] { animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both; }
-.ctx-menu[data-state="closing"] {
-  pointer-events: none;
-  animation: ctx-menu-out var(--motion-duration-fast) var(--motion-ease-exit) both;
-}
+/* Entrance/exit motion is now driven by motion.div (initial/animate/exit) in
+   ContextMenu.tsx; the ctx-menu-in keyframe below is kept because .accent-popover
+   and .cmd-picker still reuse it. ctx-menu-out had no remaining users and was
+   removed. */
 @keyframes ctx-menu-in {
   from { opacity: 0; transform: scale(var(--motion-scale-enter)) translateY(calc(-1 * var(--motion-distance-sm))); }
   to   { opacity: 1; transform: scale(1) translateY(0); }
-}
-@keyframes ctx-menu-out {
-  from { opacity: 1; transform: scale(1) translateY(0); }
-  to   { opacity: 0; transform: scale(var(--motion-scale-enter)) translateY(calc(-1 * var(--motion-distance-xs))); }
 }
 .ctx-menu-item {
   display: flex;
@@ -579,11 +574,8 @@
   overflow: hidden;
   transform-origin: top left;
 }
-.model-picker[data-state="open"] { animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both; }
-.model-picker[data-state="closing"] {
-  pointer-events: none;
-  animation: ctx-menu-out var(--motion-duration-fast) var(--motion-ease-exit) both;
-}
+/* Entrance/exit motion driven by motion.div (initial/animate/exit) in
+   ModelPicker.tsx — no data-state rules needed. */
 
 /* ── Appearance panel (skin + mode + accent) ── */
 .appearance-panel {

@@ -517,11 +517,8 @@ body.resizing-col * {
   user-select: none;
   transform-origin: top left;
 }
-.effort-slider[data-state="open"] { animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both; }
-.effort-slider[data-state="closing"] {
-  pointer-events: none;
-  animation: ctx-menu-out var(--motion-duration-fast) var(--motion-ease-exit) both;
-}
+/* Entrance/exit motion driven by motion.div (initial/animate/exit) in
+   EffortSlider.tsx — no data-state rules needed. */
 .effort-slider-head {
   display: flex;
   align-items: baseline;

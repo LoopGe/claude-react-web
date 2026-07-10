@@ -17,11 +17,12 @@ import './styles.css'
 // portal-style render target for the whole app.
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    {/* reducedMotion="user": every motion.* element snaps (skips
-        transform/opacity/filter animations) when the OS reports
-        prefers-reduced-motion: reduce. Replaces the per-hook
-        prefersReducedMotion() checks for migrated components; unmigrated
-        components keep their own CSS/hook reduced-motion guards. */}
+    {/* reducedMotion="user" makes motion respect prefers-reduced-motion.
+        Migrated components pair it with the useMotionTransition() helper
+        (src/utils/transitions.ts), which forces duration:0 so opacity
+        snaps too. Unmigrated components keep their own CSS/hook
+        reduced-motion guards. See the helper's docstring for why this is
+        needed. */}
     <MotionConfig reducedMotion="user">
       <ToastProvider>
         <WsHubProvider>

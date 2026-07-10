@@ -11,6 +11,8 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { motion } from 'motion/react'
+import { MENU_ENTER_TRANSITION, EXIT_TRANSITION, useMotionTransition } from '../utils/transitions'
 import type { EffortLevel } from '../types'
 
 interface Props {
@@ -24,12 +26,15 @@ interface Props {
   /** Called with the chosen level when the user moves the slider. */
   onSelect: (level: EffortLevel) => void
   onClose: () => void
-  isExiting?: boolean
 }
 
-export function EffortSlider({ anchor, levels, current, disabled, onSelect, onClose, isExiting = false }: Props) {
+export function EffortSlider({ anchor, levels, current, disabled, onSelect, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<{ x: number; y: number }>(anchor)
+  // Under reduced motion, snap (duration:0) instead of fading — see
+  // useMotionTransition.
+  const enterT = useMotionTransition(MENU_ENTER_TRANSITION)
+  const exitT = useMotionTransition(EXIT_TRANSITION)
 
   const maxIndex = Math.max(0, levels.length - 1)
   const index = Math.max(0, levels.indexOf(current))
@@ -127,14 +132,20 @@ export function EffortSlider({ anchor, levels, current, disabled, onSelect, onCl
   }, [])
 
   return createPortal(
-    <div
+    <motion.div
       ref={ref}
       className="effort-slider"
-      data-state={isExiting ? 'closing' : 'open'}
       style={{ left: pos.x, top: pos.y }}
       role="dialog"
       aria-label="Select effort level"
-      aria-hidden={isExiting}
+      // Pop in/out from the anchor — mirrors ctx-menu-in/ctx-menu-out
+      // (scale 0.98 + small y nudge). pointerEvents:'none' on exit replaces
+      // the old [data-state="closing"]{pointer-events:none} rule. Animate
+      // Presence (in ChatPanel) tracks this React child even though it
+      // renders into document.body via the portal.
+      initial={{ opacity: 0, scale: 0.98, y: -4, transition: enterT }}
+      animate={{ opacity: 1, scale: 1, y: 0, transition: enterT }}
+      exit={{ opacity: 0, scale: 0.98, y: -2, pointerEvents: 'none', transition: exitT }}
       onMouseDown={(e) => e.stopPropagation()}
       // Rendered in a portal on document.body so the popover lives OUTSIDE
       // the ChatPanel header's `draggable` subtree. Otherwise dragging the
@@ -214,7 +225,7 @@ export function EffortSlider({ anchor, levels, current, disabled, onSelect, onCl
           </button>
         ))}
       </div>
-    </div>,
+    </motion.div>,
     document.body,
   )
 }

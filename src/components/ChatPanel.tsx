@@ -19,6 +19,7 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import { statusClass, statusLabel, shortenModel } from '../utils/session-status'
 import { useModelOptions } from '../hooks/useModelOptions'
 import { usePresenceValue } from '../hooks/useExitPresence'
+import { AnimatePresence } from 'motion/react'
 import { ModelPicker } from './ModelPicker'
 import { EffortSlider } from './EffortSlider'
 import { shortenPath } from '../utils/paths'
@@ -285,8 +286,6 @@ export const ChatPanel = memo(function ChatPanel({
   const [permMenu, setPermMenu] = useState<{ x: number; y: number } | null>(null)
   /** Anchor for the effort-level menu. Non-null = menu visible. */
   const [effortMenu, setEffortMenu] = useState<{ x: number; y: number } | null>(null)
-  const permMenuPresence = usePresenceValue(permMenu, 120)
-  const effortMenuPresence = usePresenceValue(effortMenu, 120)
   // Confirmation dialog for destructive panel-menu actions (Delete session).
   // Mirrors SessionList's confirm plumbing so the panel menu's Delete uses
   // the same ConfirmDialog + busy state as the sidebar's.
@@ -322,7 +321,6 @@ export const ChatPanel = memo(function ChatPanel({
       },
     })
   }, [])
-  const modelMenuPresence = usePresenceValue(modelMenu, 120)
   /** Global toast hub. Model/permission failures used to render an
    *  inline panel banner; they now surface as right-bottom toasts. */
   const toast = useToast()
@@ -695,41 +693,47 @@ export const ChatPanel = memo(function ChatPanel({
           {/* Side Chat collapsed badge — removed from header;
               now rendered as a tab on the panel's right edge below. */}
         </div>
-        {permMenuPresence.value && (
-          <ContextMenu
-            x={permMenuPresence.value.x}
-            y={permMenuPresence.value.y}
-            isExiting={permMenuPresence.isExiting}
-            onClose={() => setPermMenu(null)}
-            items={PERMISSION_MODES.map((m) => ({
-              label: m,
-              icon: (session.permissionMode ?? 'default') === m ? <IconCheck size={14} /> : ' ',
-              onClick: () => commitPermissionMode(m),
-            }))}
-          />
-        )}
-        {effortMenuPresence.value && (
-          <EffortSlider
-            anchor={effortMenuPresence.value}
-            levels={effortChoices}
-            current={effortLevel}
-            disabled={chipsDisabled}
-            isExiting={effortMenuPresence.isExiting}
-            onSelect={(l) => commitEffortLevel(l)}
-            onClose={() => setEffortMenu(null)}
-          />
-        )}
-        {modelMenuPresence.value && (
-          <ModelPicker
-            anchor={modelMenuPresence.value}
-            current={session.model}
-            options={modelOptions}
-            disabled={chipsDisabled}
-            isExiting={modelMenuPresence.isExiting}
-            onSelect={(model) => commitModel(model)}
-            onClose={() => setModelMenu(null)}
-          />
-        )}
+        <AnimatePresence>
+          {permMenu && (
+            <ContextMenu
+              key="perm"
+              x={permMenu.x}
+              y={permMenu.y}
+              onClose={() => setPermMenu(null)}
+              items={PERMISSION_MODES.map((m) => ({
+                label: m,
+                icon: (session.permissionMode ?? 'default') === m ? <IconCheck size={14} /> : ' ',
+                onClick: () => commitPermissionMode(m),
+              }))}
+            />
+          )}
+        </AnimatePresence>
+        <AnimatePresence>
+          {effortMenu && (
+            <EffortSlider
+              key="effort"
+              anchor={effortMenu}
+              levels={effortChoices}
+              current={effortLevel}
+              disabled={chipsDisabled}
+              onSelect={(l) => commitEffortLevel(l)}
+              onClose={() => setEffortMenu(null)}
+            />
+          )}
+        </AnimatePresence>
+        <AnimatePresence>
+          {modelMenu && (
+            <ModelPicker
+              key="model"
+              anchor={modelMenu}
+              current={session.model}
+              options={modelOptions}
+              disabled={chipsDisabled}
+              onSelect={(model) => commitModel(model)}
+              onClose={() => setModelMenu(null)}
+            />
+          )}
+        </AnimatePresence>
         {confirmPresence.value && (
           <ConfirmDialog
             open={confirmState != null}

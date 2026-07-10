@@ -13,9 +13,11 @@
 // arbitrary id — important for proxy models the SDK doesn't advertise.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { motion } from 'motion/react'
 import type { ModelOptions } from '../hooks/useModelOptions'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
+import { MENU_ENTER_TRANSITION, EXIT_TRANSITION, useMotionTransition } from '../utils/transitions'
 import { IconCheck, IconSearch } from './icons/ToolIcons'
 
 interface Props {
@@ -30,7 +32,6 @@ interface Props {
   /** Called with the chosen concrete model id. */
   onSelect: (model: string) => void
   onClose: () => void
-  isExiting?: boolean
 }
 
 /** A flattened, selectable row. `kind` drives the value passed to onSelect. */
@@ -46,7 +47,7 @@ interface Row {
   select: () => void
 }
 
-export function ModelPicker({ anchor, current, options, disabled, onSelect, onClose, isExiting = false }: Props) {
+export function ModelPicker({ anchor, current, options, disabled, onSelect, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
@@ -55,6 +56,10 @@ export function ModelPicker({ anchor, current, options, disabled, onSelect, onCl
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [pos, setPos] = useState<{ x: number; y: number }>(anchor)
+  // Under reduced motion, snap (duration:0) instead of fading — see
+  // useMotionTransition.
+  const enterT = useMotionTransition(MENU_ENTER_TRANSITION)
+  const exitT = useMotionTransition(EXIT_TRANSITION)
 
   // Build the flat, grouped, filtered row list.
   const rows: Row[] = useMemo(() => {
@@ -189,14 +194,18 @@ export function ModelPicker({ anchor, current, options, disabled, onSelect, onCl
   }
 
   return (
-    <div
+    <motion.div
       ref={ref}
       className="model-picker"
-      data-state={isExiting ? 'closing' : 'open'}
       style={{ left: pos.x, top: pos.y }}
       role="dialog"
       aria-label="Select model"
-      aria-hidden={isExiting}
+      // Pop in/out from the anchor — mirrors ctx-menu-in/ctx-menu-out
+      // (scale 0.98 + small y nudge). pointerEvents:'none' on exit replaces
+      // the old [data-state="closing"]{pointer-events:none} rule.
+      initial={{ opacity: 0, scale: 0.98, y: -4, transition: enterT }}
+      animate={{ opacity: 1, scale: 1, y: 0, transition: enterT }}
+      exit={{ opacity: 0, scale: 0.98, y: -2, pointerEvents: 'none', transition: exitT }}
       onMouseDown={(e) => e.stopPropagation()}
       onKeyDown={handleKeyDown}
     >
@@ -243,6 +252,6 @@ export function ModelPicker({ anchor, current, options, disabled, onSelect, onCl
           </div>
         ))}
       </div>
-    </div>
+    </motion.div>
   )
 }
