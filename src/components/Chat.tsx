@@ -1530,7 +1530,6 @@ export const Chat = memo(function Chat({
           activePhase={stream.activePhase}
           waiting={waiting}
           onOpenSubagent={openSubagent}
-          onDismissSubagent={stream.dismissSubagent}
         />
       )}
 
@@ -1749,6 +1748,7 @@ export const Chat = memo(function Chat({
             index={stream.subagentIndex}
             onClose={closeSubagent}
             onPop={popSubagent}
+            onDismiss={stream.dismissSubagent}
             isExiting={subagentClosing}
             transitionDirection={subagentTransitionDirection}
             onExited={handleSubagentExited}

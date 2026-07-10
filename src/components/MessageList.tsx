@@ -25,7 +25,7 @@ import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { getBlocks, getEnterPlanToolUseIds, isHumanUserMessage, isTaskNotificationUserMessage, userMessageOriginKind } from '../session-store/normalize'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
-import { IconArrowDown, IconZap, IconUser, IconExternalLink, IconSquare, IconClock, IconX } from './icons/ToolIcons'
+import { IconArrowDown, IconZap, IconUser, IconExternalLink, IconSquare, IconClock } from './icons/ToolIcons'
 import { countMatches, extractPlainText, extractMessagePlainText, extractToolUseDiffText } from '../search'
 import { BlockView, ToolResultBlock } from './message-list/blocks'
 import { OlderHistoryHeader, StreamingFooter } from './message-list/transcript-chrome'
@@ -2597,7 +2597,6 @@ export const WorkingBubble = memo(function WorkingBubble({
   activePhase,
   waiting,
   onOpenSubagent,
-  onDismissSubagent,
 }: {
   startedAt?: number
   activeSubagents?: ActiveSubagent[]
@@ -2612,10 +2611,6 @@ export const WorkingBubble = memo(function WorkingBubble({
    *  with the chip's toolUseId — the host (Chat) opens the overlay
    *  pointed at that subagent. */
   onOpenSubagent?: (toolUseId: string) => void
-  /** When provided, `pending` subagent chips get a dismiss (×) button that
-   *  calls this with the chip's toolUseId — the host flips the record to
-   *  `interrupted` so it leaves the chip set and the bubble can clear. */
-  onDismissSubagent?: (toolUseId: string) => void
 }) {
   const hasSubagents = activeSubagents && activeSubagents.length > 0
 
@@ -2656,51 +2651,17 @@ export const WorkingBubble = memo(function WorkingBubble({
       {/* Show at most MAX_VISIBLE_SUBAGENTS chips to avoid overcrowding;
           a "+N more" badge shows the remainder count. Each chip's elapsed
           self-ticks via its own ElapsedTimer, so the bubble itself doesn't
-          re-render every second.
-
-          A `pending` chip (background subagent outliving its parent turn)
-          additionally renders a dismiss (×) button when onDismissSubagent is
-          provided — the chip becomes a non-button container holding an open
-          button + the dismiss button (button-in-button is invalid HTML). */}
+          re-render every second. Pending chips (background subagent
+          outliving its parent turn) get a muted visual via the
+          subagent-chip-pending class; dismiss is in the overlay, not here. */}
       {activeSubagents?.slice(0, MAX_VISIBLE_SUBAGENTS).map((a) => {
         const clickable = !!onOpenSubagent
-        const dismissible = a.status === 'pending' && !!onDismissSubagent
-        if (dismissible) {
-          return (
-            <span key={a.toolUseId} className="subagent-chip subagent-chip-pending" title={a.label}>
-              <button
-                type="button"
-                className="subagent-chip-open-btn"
-                onClick={() => onOpenSubagent?.(a.toolUseId)}
-                aria-label={`Open subagent details - ${a.label}`}
-              >
-                <span className="subagent-chip-dots" aria-hidden>
-                  <span />
-                  <span />
-                </span>
-                <span className="subagent-chip-label">{a.label}</span>
-                {a.startedAt != null && (
-                  <ElapsedTimer startedAt={a.startedAt} className="subagent-chip-timer" />
-                )}
-              </button>
-              <button
-                type="button"
-                className="subagent-chip-dismiss"
-                onClick={() => onDismissSubagent?.(a.toolUseId)}
-                aria-label={`Dismiss background subagent - ${a.label}`}
-                title="Dismiss — stop tracking this background subagent"
-              >
-                <IconX size={12} />
-              </button>
-            </span>
-          )
-        }
         const Tag = clickable ? 'button' : 'span'
         return (
           <Tag
             key={a.toolUseId}
             type={clickable ? 'button' : undefined}
-            className={`subagent-chip${clickable ? ' subagent-chip-clickable' : ''}`}
+            className={`subagent-chip${clickable ? ' subagent-chip-clickable' : ''}${a.status === 'pending' ? ' subagent-chip-pending' : ''}`}
             title={clickable ? `Open subagent details - ${a.label}` : a.label}
             onClick={clickable ? () => onOpenSubagent(a.toolUseId) : undefined}
           >

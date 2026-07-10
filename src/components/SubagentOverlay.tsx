@@ -23,6 +23,12 @@ interface Props {
   index: ReadonlyMap<string, ActiveSubagent>
   onClose: () => void
   onPop: () => void
+  /** When provided, the × (close) button dismisses a `pending` subagent
+   *  (flips it to `dismissed` via DISMISS_SUBAGENT) before closing the
+   *  overlay. For non-pending subagents the × just closes (same as before).
+   *  This moves the dismiss affordance out of the WorkingBubble chip (where
+   *  it required button-in-button HTML) into the overlay's existing ×. */
+  onDismiss?: (toolUseId: string) => void
   isExiting?: boolean
   transitionDirection?: 'forward' | 'back' | null
   onExited?: () => void
@@ -50,6 +56,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
   index,
   onClose,
   onPop,
+  onDismiss,
   isExiting = false,
   transitionDirection = null,
   onExited,
@@ -256,10 +263,15 @@ export const SubagentOverlay = memo(function SubagentOverlay({
           <button
             type="button"
             className="subagent-overlay-close"
-            onClick={onClose}
+            onClick={() => {
+              if (current?.status === 'pending' && onDismiss) {
+                onDismiss(currentId)
+              }
+              onClose()
+            }}
             disabled={isExiting}
-            title="Close (Esc)"
-            aria-label="Close"
+            title={current?.status === 'pending' && onDismiss ? 'Dismiss and close' : 'Close (Esc)'}
+            aria-label={current?.status === 'pending' && onDismiss ? 'Dismiss and close' : 'Close'}
           >
             <IconX size={14} />
           </button>

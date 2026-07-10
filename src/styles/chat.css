@@ -1555,47 +1555,17 @@
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
-/* A `pending` chip (background subagent outliving its parent turn) renders
-   as a container holding an open button + a dismiss button. Muted accent so
-   it reads as waiting, not actively in-this-turn. */
+/* A `pending` chip (background subagent outliving its parent turn). Muted
+   accent so it reads as waiting, not actively in-this-turn. Dismiss is in
+   the overlay's × button, not on the chip itself. */
 .subagent-chip-pending {
   background: color-mix(in srgb, var(--fg-muted) 8%, var(--bg-elev));
   border-color: color-mix(in srgb, var(--fg-muted) 24%, var(--border));
-  padding: 0;
 }
 .subagent-chip-pending .subagent-chip-label { color: var(--fg); }
 .subagent-chip-pending .subagent-chip-dots > span {
   background: var(--fg-muted);
   animation-duration: 2.4s;
-}
-.subagent-chip-open-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 6px 2px 7px;
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  font: inherit;
-  color: inherit;
-  max-width: 260px;
-}
-.subagent-chip-dismiss {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 6px;
-  background: transparent;
-  border: none;
-  border-left: 1px solid color-mix(in srgb, var(--fg-muted) 24%, var(--border));
-  color: var(--fg-muted);
-  cursor: pointer;
-  font: inherit;
-  flex-shrink: 0;
-}
-.subagent-chip-dismiss:hover {
-  color: var(--warn);
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 /* "+N more" badge when subagents overflow the max-chip limit. */
 .subagent-overflow {
