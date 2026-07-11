@@ -47,6 +47,7 @@ import { SubagentProvider } from '../hooks/useSubagentContext'
 import { WorkflowOverlay } from './WorkflowOverlay'
 import { WorkflowProvider } from '../hooks/useWorkflowContext'
 import { ReopenQuestionProvider } from '../hooks/useReopenQuestion'
+import { useMinimizedSet } from '../hooks/useMinimizedSet'
 import { TodoChecklist } from './TodoChecklist'
 import { MonitorBar } from './MonitorBar'
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
@@ -64,7 +65,7 @@ import { useToast } from '../hooks/useToast'
 import { useWsHub } from '../hooks/useWsHub'
 import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
 import { AnimatePresence } from 'motion/react'
-import type { AgentInfo, SessionInfo, SlashCommand } from '../types'
+import type { AgentInfo, PermissionRequest, SessionInfo, SlashCommand } from '../types'
 import type { Skin } from '../utils/theme'
 import type { GitStatusResponse } from '../../shared/git-types'
 import type { MessageJumpTarget } from '../../shared/message-jump'
@@ -73,6 +74,15 @@ import type { SettingsTabName } from '../local-commands'
 
 
 const DRAFT_KEY_PREFIX = 'claude-react-web:draft:'
+
+// Module-level predicates for the three minimize/reopen sets (questions,
+// plan-permissions, non-plan permissions). Stable identity so useMinimizedSet
+// can take them as deps without re-binding callbacks/memos on every render.
+const isQuestion = (p: PermissionRequest): boolean => p.kind === 'question'
+const isPlanPermission = (p: PermissionRequest): boolean =>
+  p.kind === 'permission' && PLAN_TOOL_NAMES.has(p.toolName)
+const isNonPlanPermission = (p: PermissionRequest): boolean =>
+  p.kind === 'permission' && !PLAN_TOOL_NAMES.has(p.toolName)
 
 /** Read a session's saved draft from sessionStorage. Non-throwing. */
 function readDraft(sessionId: string): string {
@@ -582,7 +592,6 @@ export const Chat = memo(function Chat({
   // A minimized question dialog is hidden (not resolved) so the user can
   // read the conversation behind it; the inline QuestionCard re-opens it.
   // Keyed by the pending request's `id`.
-  const [userMinimizedQ, setUserMinimizedQ] = useState<Set<string>>(() => new Set())
   // Persist in-progress answers across minimize/re-open (the dialog unmounts
   // when minimized). Keyed by request id. Held as stable state (mutable Map
   // from a lazy useState init) rather than a ref: reads/writes still don't
@@ -590,145 +599,26 @@ export const Chat = memo(function Chat({
   // which keeps `react-hooks/refs` quiet.
   const [questionDrafts] = useState<Map<string, QuestionDraft>>(() => new Map())
 
-  const minimizeQuestion = useCallback((id: string) => {
-    setUserMinimizedQ((prev) => {
-      const next = new Set(prev)
-      next.add(id)
-      return next
-    })
-  }, [])
-  // Re-open keyed by tool_use_id (what the inline card knows); resolve to the
-  // pending request id and drop it from the minimized set.
-  const reopenQuestion = useCallback(
-    (toolUseId: string) => {
-      const req = permissions.pending.find(
-        (p) => p.kind === 'question' && p.toolUseID === toolUseId,
-      )
-      if (!req) return
-      setUserMinimizedQ((prev) => {
-        if (!prev.has(req.id)) return prev
-        const next = new Set(prev)
-        next.delete(req.id)
-        return next
-      })
-    },
-    [permissions.pending],
-  )
-  // Derived: user intent ∩ live question ids — see minimizedPlan for the
-  // pattern. Replaces the manual cleanup that used to live in an effect.
-  const minimizedQ = useMemo(() => {
-    if (userMinimizedQ.size === 0) return userMinimizedQ
-    const liveQuestionIds = new Set(
-      permissions.pending.filter((p) => p.kind === 'question').map((p) => p.id),
-    )
-    let allLive = true
-    const out = new Set<string>()
-    for (const id of userMinimizedQ) {
-      if (liveQuestionIds.has(id)) out.add(id)
-      else allLive = false
-    }
-    return allLive ? userMinimizedQ : out
-  }, [permissions.pending, userMinimizedQ])
-  // Map the minimized request ids to tool_use_ids so the inline card (which
-  // only knows its tool_use_id) can tell whether it's currently minimized.
-  const minimizedToolUseIds = useMemo(() => {
-    const out = new Set<string>()
-    for (const p of permissions.pending) {
-      if (p.kind === 'question' && minimizedQ.has(p.id)) out.add(p.toolUseID)
-    }
-    return out
-  }, [permissions.pending, minimizedQ])
 
-  // Plan minimize/re-open — same pattern as questions. `userMinimizedPlan`
-  // holds raw user intent; the live `minimizedPlan` below filters it through
-  // currently-pending plan-permission ids on every render, so resolved plans
-  // drop out automatically without a cleanup effect.
-  const [userMinimizedPlan, setUserMinimizedPlan] = useState<Set<string>>(() => new Set())
-  const minimizePlan = useCallback((id: string) => {
-    setUserMinimizedPlan((prev) => { const next = new Set(prev); next.add(id); return next })
-  }, [])
-  const reopenPlan = useCallback(
-    (toolUseId: string) => {
-      const req = permissions.pending.find((p) => p.kind === 'permission' && p.toolUseID === toolUseId)
-      if (!req) return
-      setUserMinimizedPlan((prev) => {
-        if (!prev.has(req.id)) return prev
-        const next = new Set(prev); next.delete(req.id); return next
-      })
-    },
-    [permissions.pending],
-  )
-  // Derived: user intent ∩ live plan-permission ids. Returns the same
-  // reference when nothing needed filtering so downstream memos stay stable.
-  const minimizedPlan = useMemo(() => {
-    if (userMinimizedPlan.size === 0) return userMinimizedPlan
-    const livePlanIds = new Set(
-      permissions.pending
-        .filter((p) => p.kind === 'permission' && PLAN_TOOL_NAMES.has(p.toolName))
-        .map((p) => p.id),
-    )
-    let allLive = true
-    const out = new Set<string>()
-    for (const id of userMinimizedPlan) {
-      if (livePlanIds.has(id)) out.add(id)
-      else allLive = false
-    }
-    return allLive ? userMinimizedPlan : out
-  }, [permissions.pending, userMinimizedPlan])
-  const minimizedPlanToolUseIds = useMemo(() => {
-    const out = new Set<string>()
-    for (const p of permissions.pending) {
-      if (p.kind === 'permission' && PLAN_TOOL_NAMES.has(p.toolName) && minimizedPlan.has(p.id)) out.add(p.toolUseID)
-    }
-    return out
-  }, [permissions.pending, minimizedPlan])
-
-  // Regular tool-permission minimize/re-open — same pattern as plan, but for
-  // permission requests whose toolName is NOT a plan tool. The inline reopen
-  // chip lives on the generic ToolCard (ToolCard.tsx) via useReopenQuestion.
-  const [userMinimizedPermission, setUserMinimizedPermission] = useState<Set<string>>(() => new Set())
-  const minimizePermission = useCallback((id: string) => {
-    setUserMinimizedPermission((prev) => { const next = new Set(prev); next.add(id); return next })
-  }, [])
-  const reopenPermission = useCallback(
-    (toolUseId: string) => {
-      const req = permissions.pending.find(
-        (p) => p.kind === 'permission' && !PLAN_TOOL_NAMES.has(p.toolName) && p.toolUseID === toolUseId,
-      )
-      if (!req) return
-      setUserMinimizedPermission((prev) => {
-        if (!prev.has(req.id)) return prev
-        const next = new Set(prev); next.delete(req.id); return next
-      })
-    },
-    [permissions.pending],
-  )
-  // Derived: user intent ∩ live non-plan permission ids — see minimizedPlan
-  // above for the pattern. Replaces a manual cleanup effect.
-  const minimizedPermission = useMemo(() => {
-    if (userMinimizedPermission.size === 0) return userMinimizedPermission
-    const livePermIds = new Set(
-      permissions.pending
-        .filter((p) => p.kind === 'permission' && !PLAN_TOOL_NAMES.has(p.toolName))
-        .map((p) => p.id),
-    )
-    let allLive = true
-    const out = new Set<string>()
-    for (const id of userMinimizedPermission) {
-      if (livePermIds.has(id)) out.add(id)
-      else allLive = false
-    }
-    return allLive ? userMinimizedPermission : out
-  }, [permissions.pending, userMinimizedPermission])
-  const minimizedPermissionToolUseIds = useMemo(() => {
-    const out = new Set<string>()
-    for (const p of permissions.pending) {
-      if (p.kind === 'permission' && !PLAN_TOOL_NAMES.has(p.toolName) && minimizedPermission.has(p.id)) {
-        out.add(p.toolUseID)
-      }
-    }
-    return out
-  }, [permissions.pending, minimizedPermission])
+  // Minimize/reopen state for the three pending-request kinds. All three
+  // share the same state machine (raw user intent Set -> derived view
+  // intersected with live pending ids -> tool_use_id set for the inline
+  // card); only the predicate that selects which pending requests belong
+  // to each set differs. See src/hooks/useMinimizedSet.ts for the contract.
+  const { minimized: minimizedQ, minimizedToolUseIds, minimize: minimizeQuestion, reopen: reopenQuestion } =
+    useMinimizedSet(permissions.pending, isQuestion)
+  const {
+    minimized: minimizedPlan,
+    minimizedToolUseIds: minimizedPlanToolUseIds,
+    minimize: minimizePlan,
+    reopen: reopenPlan,
+  } = useMinimizedSet(permissions.pending, isPlanPermission)
+  const {
+    minimized: minimizedPermission,
+    minimizedToolUseIds: minimizedPermissionToolUseIds,
+    minimize: minimizePermission,
+    reopen: reopenPermission,
+  } = useMinimizedSet(permissions.pending, isNonPlanPermission)
 
   const reopenCtxValue = useMemo(
     () => ({
