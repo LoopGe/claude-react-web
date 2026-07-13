@@ -499,6 +499,80 @@ describe('MessageList', () => {
     expect(container.querySelector('.streaming-footer-wrapper')?.textContent).toContain('Live tokens')
   })
 
+  it('re-pins to the bottom when the streaming footer height changes (spacer grows)', () => {
+    // Regression guard for "the scrollbar sits one line short of the bottom
+    // while the streaming bubble's height is changing". The streaming-region
+    // ResizeObserver calls setStreamingOverlayHeight — an async state update;
+    // the Virtuoso Footer spacer that reserves room for the overlay only
+    // commits its new height AFTER that update. Re-pinning synchronously
+    // inside the observer callback (the old code) read a STALE scrollHeight
+    // (pre-commit spacer) and left the viewport short every time the bubble
+    // grew, and the content-growth backstop doesn't cover it (the spacer lives
+    // in the Footer slot, a SIBLING of the item-list the backstop observes, so
+    // an item-list ResizeObserver never fires on spacer growth). The fix
+    // re-pins in a layout effect keyed on the COMMITTED spacer height, so
+    // scrollHeight is fresh when the pin runs.
+    //
+    // This test models the spacer's contribution to scrollHeight (real Virtuoso
+    // includes the Footer spacer in scrollHeight) and asserts the scroller is
+    // pinned to the FRESH bottom after the region grows — a value the
+    // stale-read path cannot reach.
+    virtuosoMockState.atBottomReport = true
+    virtuosoMockState.reportBeforeRef = true
+    virtuosoMockState.scrollHeight = 200
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.scrollTop = 100 // at bottom (200 - 100)
+
+    const msgs = [
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Settled message' }] },
+      }),
+    ]
+
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" />,
+    )
+
+    const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
+    expect(scroller).not.toBeNull()
+    const region = container.querySelector('.chat-streaming-region') as HTMLElement
+    expect(region).not.toBeNull()
+
+    // Model real Virtuoso: scrollHeight includes the Footer spacer's height.
+    // The spacer is re-rendered with `height: streamingOverlayHeight`, so
+    // reading it from the DOM tracks the COMMITTED spacer — the value a
+    // post-commit layout effect sees, but a synchronous observer callback
+    // (which runs before the state update flushes) does NOT.
+    Object.defineProperty(scroller, 'scrollHeight', {
+      configurable: true,
+      get: () => {
+        const spacer = scroller.querySelector<HTMLElement>('.virtuoso-streaming-spacer')
+        const spacerH = spacer ? (Number.parseFloat(spacer.style.height) || 0) : 0
+        return 200 + spacerH
+      },
+    })
+
+    let regionHeight = 0
+    Object.defineProperty(region, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ height: regionHeight, width: 400, top: 0, left: 0, right: 400, bottom: regionHeight, x: 0, y: 0 }),
+    })
+
+    // Grow the streaming bubble 0 -> 40 -> 80. Each growth commits a taller
+    // spacer, so the real bottom moves 200 -> 240 -> 280.
+    regionHeight = 40
+    act(() => { fireResize(region) })
+    regionHeight = 80
+    act(() => { fireResize(region) })
+
+    // Fresh bottom after the 80px spacer commits = 200 + 80 = 280. A
+    // stale-read re-pin latches onto 240 (the bottom BEFORE the 80px spacer
+    // committed) and, with no working backstop, never corrects — leaving
+    // scrollTop at 240. Asserting 280 proves the pin reads the committed
+    // (fresh) scrollHeight.
+    expect(scroller.scrollTop).toBe(280)
+  })
+
   it('hides jump-to-bottom when the scroller cannot scroll down', async () => {
     virtuosoMockState.atBottomReport = false
     virtuosoMockState.reportBeforeRef = true

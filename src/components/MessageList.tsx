@@ -1142,11 +1142,6 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     const updateHeight = () => {
       const height = Math.ceil(el.getBoundingClientRect().height)
       setStreamingOverlayHeight((prev) => (prev === height ? prev : height))
-      // Don't yank an instant snap-to-bottom while the animated scroll is
-      // driving scrollTop — the rAF loop already re-targets to the fresh
-      // scrollHeight each frame, so an instant scrollTo here would only
-      // fight it. The guard keeps atBottomRef true for the rAF loop.
-      if (atBottomRef.current && !scrollAnimatingRef.current) scrollScrollerToBottom('auto')
     }
 
     updateHeight()
@@ -1154,7 +1149,51 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     const ro = new ResizeObserver(updateHeight)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [hasVisibleStreamingContent, scrollScrollerToBottom])
+  }, [hasVisibleStreamingContent])
+
+  // Re-pin to the bottom AFTER the streaming spacer commits its new height.
+  //
+  // Root cause of "the scrollbar sits one line short of the bottom while the
+  // streaming bubble's height is changing": the ResizeObserver above measures
+  // the live overlay and calls setStreamingOverlayHeight, which resizes the
+  // Virtuoso Footer spacer that reserves room for the overlay. That state
+  // update is asynchronous — the spacer's new height only lands once React
+  // commits the re-render, which is AFTER the ResizeObserver callback returns.
+  // Reading scrollHeight inside that callback (as a synchronous
+  // scrollScrollerToBottom previously did) therefore read the STALE bottom and
+  // pinned there; once the spacer then grew, the viewport was left one line
+  // short every time the streaming bubble grew.
+  //
+  // The content-growth backstop further down does not catch this case: it
+  // observes Virtuoso's item-list, which grows on settled-content growth but
+  // NOT on spacer growth — the streaming spacer lives in the Footer slot, a
+  // SIBLING of the item-list, so an item-list ResizeObserver never fires when
+  // the spacer resizes. (It previously observed the fixed-height viewport and
+  // so never re-pinned on content growth — its callback's `sh <=
+  // lastScrollHeight` guard skipped the viewport-resize events that did fire,
+  // since scrollHeight was unchanged; that is fixed now, but it still cannot
+  // cover the spacer for this structural reason, which is why this layout
+  // effect exists.)
+  //
+  // Pinning here — a layout effect keyed on the spacer height — runs AFTER
+  // React has committed the new spacer (so scrollHeight is fresh) but BEFORE
+  // paint, so the viewport is at the real bottom in the very frame the spacer
+  // grows. Gated like the other re-pins so a user who scrolled up
+  // (shouldFollowRef false) or an in-flight follow animation
+  // (scrollAnimatingRef true, whose rAF loop already re-targets each frame)
+  // isn't yanked.
+  useLayoutEffect(() => {
+    // streamingOverlayHeight <= 0 means no spacer is rendered (Footer is
+    // gated on `streamingOverlayHeight > 0`), so there is nothing to re-pin
+    // for — skip to avoid yanking the viewport on mount / after streaming
+    // ends, when a non-bottom position may be intentional (e.g. the user
+    // scrolled up to read history).
+    if (streamingOverlayHeight <= 0) return
+    if (!shouldFollowRef.current || scrollAnimatingRef.current) return
+    const el = scrollerRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+  }, [streamingOverlayHeight])
 
   // Re-pin to the bottom when SETTLED content grows AFTER the follow animation
   // has already finalized. Root cause of the "a tall message (or a rapid burst
@@ -1175,17 +1214,35 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   // measurement lands after the loop exits.
   //
   // The scroller's own ResizeObserver (above) watches the VIEWPORT
-  // (clientHeight) for shrink; the streaming ResizeObserver watches the live
-  // typing bubble. Neither catches settled-content growth. This observer fills
-  // that gap: it watches Virtuoso's content element (the scroller's first
-  // child, whose height tracks total scrollable content — the scroller's own
-  // border-box is the fixed viewport, so observing it would not fire on content
-  // growth) and, while we're still following and no animation is in flight,
-  // snaps scrollTop to the fresh scrollHeight. Gated on `shouldFollowRef` so a
-  // user who has scrolled up is never yanked back (it's false the instant an
-  // upward scroll is detected); `scrollAnimatingRef` is skipped because the rAF
-  // loop already re-targets each frame. Mirrors the streaming re-pin's instant
-  // snap — a measurement correction reads as "settle to bottom", not a jump.
+  // (clientHeight) for shrink; the streamingOverlayHeight layout effect
+  // watches the live typing bubble's spacer. Neither catches settled-content
+  // growth. This observer fills that gap: it watches Virtuoso's ITEM-LIST
+  // ([data-testid="virtuoso-item-list"], whose border-box height tracks the
+  // rendered items) and, while we're still following and no animation is in
+  // flight, snaps scrollTop to the fresh scrollHeight. Gated on
+  // `shouldFollowRef` so a user who has scrolled up is never yanked back
+  // (it's false the instant an upward scroll is detected); `scrollAnimatingRef`
+  // is skipped because the rAF loop already re-targets each frame. Mirrors the
+  // streaming re-pin's instant snap — a measurement correction reads as
+  // "settle to bottom", not a jump.
+  //
+  // Why the item-list and NOT scroller.firstElementChild: that first child is
+  // Virtuoso's viewport, which is height:100% / position:absolute — fixed to
+  // the scroller, so it never resizes on content growth. Observing it (the
+  // previous implementation, whose comment claimed it "tracks total scrollable
+  // content") meant this backstop never fired for its intended purpose, so the
+  // "tall message lands partway" bug stayed latent. The item-list grows when a
+  // freshly-appended tail row is re-measured at its real (larger) height after
+  // the rAF follow animation finalized at Virtuoso's estimate — exactly the
+  // case to re-pin. (The streaming spacer lives in the Footer slot, a SIBLING
+  // of the item-list, so observing the item-list does NOT cover spacer growth;
+  // that is the streamingOverlayHeight layout effect's job. The Header/Footer
+  // slots are irrelevant to settled-content growth.)
+  //
+  // Re-attached on `transcriptRevealKey` because Virtuoso remounts (new
+  // scroller + item-list) on session switch — the long-lived `[]`-deps form
+  // held a stale reference to the previous session's item-list and went dead
+  // after the first switch.
   useEffect(() => {
     if (typeof ResizeObserver === 'undefined') return
     let cancelled = false
@@ -1205,13 +1262,13 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
       if (cancelled) return
       const scroller = scrollerRef.current
       if (!scroller) { raf = requestAnimationFrame(attach); return }
-      // Virtuoso's content viewport is the scroller's first child. Its height
-      // tracks total scrollable content; observing it fires on every content
-      // growth (new items mounting, real heights settling, lazy blocks loading).
-      const content = scroller.firstElementChild as HTMLElement | null
-      if (!content) { raf = requestAnimationFrame(attach); return }
+      // Observe the item-list (rendered items' border-box), NOT the viewport
+      // (scroller.firstElementChild, height:100% — never resizes on content
+      // growth). See the block comment above for why.
+      const itemList = scroller.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')
+      if (!itemList) { raf = requestAnimationFrame(attach); return }
       lastScrollHeight = scroller.scrollHeight
-      ro.observe(content)
+      ro.observe(itemList)
     }
     attach()
     return () => {
@@ -1219,7 +1276,7 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
       cancelAnimationFrame(raf)
       ro.disconnect()
     }
-  }, [])
+  }, [transcriptRevealKey])
 
   // Authoritative scroll-state listener. Virtuoso's callback can miss
   // native scroll intent, so direct DOM geometry decides whether the
