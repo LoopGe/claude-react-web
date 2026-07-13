@@ -410,6 +410,14 @@ export function App() {
    *  this set, the `session-removed` handler skips everything except
    *  dropping X from the sidebar list; `handleClear`'s swap owns the slot. */
   const clearingIdsRef = useRef<Set<string>>(new Set())
+  // Last-known SessionInfo per open-panel id, so `openSessions` can keep a
+  // slot alive across a transient gap in `sessions` (a freshly-created id
+  // whose `session-created` WS frame hasn't landed, or /clear's X→Y swap
+  // window where session-removed(X) drops X ~180ms before the swap). See the
+  // `openSessions` memo for the full rationale. Seeded by every handler that
+  // mints a new id from a POST response (handleCreate/handleFork/handleRestart/
+  // handleClear) so the slot resolves the instant openIds adopts the new id.
+  const openInfoCacheRef = useRef<Map<string, SessionInfo>>(new Map())
   // Per-session interrupt callbacks registered by <Chat> components.
   // The ESC shortcut in the keyboard handler uses this to trigger the
   // same code-path as the Composer's interrupt button.
@@ -1139,6 +1147,9 @@ export function App() {
       const { accent, groupId, ...rest } = form
       try {
         const res = await api.post<{ session: SessionInfo }>('/sessions', rest)
+        // Seed the openSessions cache so the new id resolves the instant
+        // openIds adopts it below, even if the session-created WS frame lags.
+        openInfoCacheRef.current.set(res.session.id, res.session)
         // Don't mutate `sessions` here — the server emits a `created`
         // event on /sessions/events that inserts the row. If we prepend
         // locally too we race with the SSE, end up with two rows, and
@@ -1181,6 +1192,9 @@ export function App() {
     async (id: string) => {
       try {
         const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/fork`, {})
+        // Seed the openSessions cache so the forked id resolves the instant
+        // openIds adopts it below, even if the session-created WS frame lags.
+        openInfoCacheRef.current.set(res.session.id, res.session)
         // Open the forked session right away so the user can see the
         // divergence point. The global `created` event from the server
         // will add the row to the sidebar.
@@ -1455,6 +1469,9 @@ export function App() {
           title: source.title,
         })
         const newId = res.session.id
+        // Seed the openSessions cache so the new id resolves the instant
+        // openIds swaps to it below, even if the session-created WS frame lags.
+        openInfoCacheRef.current.set(newId, res.session)
 
         // Swap the panel slot so the new session takes the old one's
         // position without triggering openSession's eviction logic.
@@ -1741,13 +1758,46 @@ export function App() {
     document.title = count > 0 ? `(${count}) claude-react-web` : 'claude-react-web'
   }, [unread])
 
-  /** Open sessions, rendered in the order they were opene?. Filter by
-   *  what the server currently reports so a deleted-on-server session
-   *  disappears on the next poll. */
-  const openSessions = useMemo(
-    () => openIds.map((id) => sessions.find((s) => s.id === id)).filter((s): s is SessionInfo => !!s),
-    [openIds, sessions],
-  )
+  /** Open sessions, rendered in the order they were opened. Membership
+   *  follows `openIds` (the source of truth for open panels); `sessions`
+   *  supplies the SessionInfo, with a last-known fallback (`openInfoCacheRef`,
+   *  seeded by each create/restart/fork/clear handler) so a transient gap in
+   *  `sessions` — a freshly-minted id whose `session-created` WS frame hasn't
+   *  landed, or /clear's X→Y swap window — doesn't evict the slot (which would
+   *  compact the grid and remount a sibling → WS re-subscribe → transcript
+   *  "reload", and unmount X mid-fade-in breaking the clearing veil). A
+   *  deleted-on-server session is removed from `openIds` by its
+   *  `session-removed` frame and so disappears here. Bounded to openIds. */
+  const openSessions = useMemo(() => {
+    /* eslint-disable react-hooks/refs -- intentional render-time ref sync
+       (same pattern as openIdsRef / enteringSetRef / animatePanelsRef): the
+       cache must be readable AND writable in the same render that `sessions`
+       drops an id, or the slot is lost for a frame and the grid compacts.
+       Idempotent + convergent (StrictMode-safe); bounded to openIds. */
+    const cache = openInfoCacheRef.current
+    const openIdSet = new Set(openIds)
+    const resolved: SessionInfo[] = []
+    for (const id of openIds) {
+      // `.find` (no allocation) over a `byId` Map: `sessions` identity changes
+      // on every session-update metadata churn across ALL sessions, and openIds
+      // is ≤ maxOpenPanels, so ≤maxOpen × N string comparisons is cheaper than
+      // rebuilding an N-entry Map each recompute.
+      const fresh = sessions.find((s) => s.id === id)
+      if (fresh) {
+        cache.set(id, fresh)
+        resolved.push(fresh)
+      } else if (cache.has(id)) {
+        resolved.push(cache.get(id)!)
+      }
+      // else: id never seen yet (first open raced session-created) — no slot
+    }
+    // Prune cache entries no longer open so a real close/delete drops them.
+    for (const id of cache.keys()) {
+      if (!openIdSet.has(id)) cache.delete(id)
+    }
+    /* eslint-enable react-hooks/refs */
+    return resolved
+  }, [openIds, sessions])
 
   const updateSession = useCallback((s: SessionInfo) => {
     setSessions((prev) => prev.map((p) => (p.id === s.id ? s : p)))
@@ -1816,14 +1866,13 @@ export function App() {
     if (!bodyEl) return
     const bodyR = bodyEl.getBoundingClientRect()
     // Capture OLD positions (the "First" of FLIP) keyed by id — NOT by DOM
-    // element reference. A panel swap remounts the ChatPanel subtree: the
-    // slot-stable `<PanelSlot key={i}>` wrapper keeps its DOM, but the inner
-    // `<ErrorBoundary key={session.id}>` (and the `<section data-panel-id>`
-    // carrying the id) is destroyed and recreated at the target slot. Holding
-    // the captured `el` into the rAF callback would point at a detached node —
-    // getBoundingClientRect returns zeros and el.animate runs on a node no
-    // longer in the document, so the swap animation was silently invisible.
-    // Re-querying by id in the rAF resolves the freshly-mounted live element.
+    // element reference. Panels are now keyed by session id (`<PanelSlot
+    // key={s.id}>`), so a swap/reorder moves the same DOM node rather than
+    // remounting it; holding `el` across the rAF would still work. We
+    // re-query by id in the rAF anyway as a defensive measure: it resolves
+    // the live node regardless of how React reconciled the commit, and keeps
+    // the animation correct if the subtree is ever remounted for another
+    // reason (e.g. an ErrorBoundary reset).
     const snapshots: { id: string; x: number; y: number; w: number; h: number }[] = []
     for (const id of ids) {
       const el = bodyEl.querySelector<HTMLElement>(`[data-panel-id="${id}"]`)
@@ -2691,6 +2740,10 @@ export function App() {
           clearAnim.beginClear(id),
         ])
         const newId = res.session.id
+        // Seed Y into the openSessions cache so it's resolvable the instant
+        // openIds swaps X→Y below, even if the session-created(Y) WS frame
+        // lags the POST response. See openInfoCacheRef for the gap rationale.
+        openInfoCacheRef.current.set(newId, res.session)
         shortCircuited = newId === id
         // Suppress Y's mount animation — the veil fade-out is the visual
         // transition here; playing the panel-enter animation on top would
@@ -2723,8 +2776,21 @@ export function App() {
         // The hook schedules cleanup at fadeOutMs (180 ms).
         clearAnim.swapAndEnd(id, newId)
       } catch (e) {
-        // Drop the veil immediately — X is untouched (server didn't act).
+        // Drop the veil immediately.
         clearAnim.cancelClear(id)
+        // If the server already processed the /clear, it broadcast
+        // session-removed(X) (which the clearingIdsRef guard let drop X from
+        // `sessions` while keeping X in openIds) BEFORE the POST response —
+        // now lost — could drive the X→Y swap. X is gone from `sessions` but
+        // still in openIds, and openInfoCacheRef would serve a stale ghost
+        // panel that 404s on use. We don't have Y's id (the response was
+        // lost), so evict X's slot — Y is in the sidebar to reopen. If X is
+        // still in `sessions` the server never acted; leave the live panel.
+        if (!sessionsRef.current.some((s) => s.id === id)) {
+          setOpenIds((prev) => prev.filter((x) => x !== id))
+          setFocusedId((prev) => (prev === id ? null : prev))
+          openInfoCacheRef.current.delete(id)
+        }
         toast.error(`Couldn't clear session: ${(e as Error).message}`)
       } finally {
         // Release the guard unless this call was short-circuited (a concurrent
@@ -3057,7 +3123,7 @@ export function App() {
                 // (e.g. a malformed assistant message), the other open
                 // panels and the sidebar keep working. children identity
                 // changes on prop updates, so a recovered render auto-clears.
-                <PanelSlot key={i} clearingPhase={clearingPhase}>
+                <PanelSlot key={s.id} clearingPhase={clearingPhase}>
                   <ErrorBoundary key={s.id}>
                     <ChatPanel
                       session={s}
@@ -3127,7 +3193,7 @@ export function App() {
               return [
                 node,
                 <div
-                  key={`divider-${i}`}
+                  key={`divider-${s.id}`}
                   className={`panel-divider ${draggingDivider === i ? 'dragging' : ''}`}
                   role="separator"
                   aria-orientation="vertical"

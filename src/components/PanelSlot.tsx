@@ -1,11 +1,20 @@
-/** One column in the App main-body grid. Wraps <ChatPanel> so a veil DOM
- *  can survive the X→Y id-swap that `/clear` performs on this slot: the
- *  parent `<PanelSlot key={slotIdx}>` is keyed by slot index (stable across
- *  in-place id-swap) so React reuses this element; the child
- *  `<ErrorBoundary key={session.id}>` is keyed by session id, so the panel
- *  subtree remounts on swap. The veil rendered here therefore lives across
- *  the swap and can play a full fade-in → swap-under-veil → fade-out
- *  animation. See `2026-07-01-clear-animation-survives-id-swap-design.md`. */
+/** One column in the App main-body grid. Wraps <ChatPanel> and renders the
+ *  `/clear` veil.
+ *
+ *  Keyed by **session id** (not slot index) by the parent, so structural
+ *  changes to the open-panel set (close / reorder / /clear swap) reflow the
+ *  grid without remounting surviving panels — a remount would re-run
+ *  `useChatStream`'s subscribe effect and replay the transcript ("reload").
+ *
+ *  The veil survives the X→Y `/clear` swap *without* DOM continuity: it uses
+ *  CSS animations with `both` fill (`panel-clear-veil-out` starts
+ *  `from { opacity: 1 }`), and the 180ms `beginClear` gate ensures X's veil
+ *  is fully opaque when the swap commits. X's PanelSlot (veil at opacity 1)
+ *  unmounts and Y's (veil fading-out, first frame opacity 1) mounts in the
+ *  same React commit, so no painted frame is ever without an opaque veil.
+ *  See `2026-07-01-clear-animation-survives-id-swap-design.md` for the prior
+ *  slot-index-keyed design; the `openSessions` last-known cache in App.tsx
+ *  keeps X's slot alive across the ~180ms gap so the fade-in completes. */
 
 import { memo } from 'react'
 import type { ReactNode } from 'react'
