@@ -425,16 +425,11 @@
   .recap-window,
   .recap-window-body-inner,
   .pinned-user-message { animation: none; }
-  /* Mirror the transcript's reduced-motion clear: no animation, just hidden.
-     Normal open/close is snapped by MotionConfig reducedMotion="user"
-     (motion.div/motion.button), so only the CSS-driven /clear dissolve
-     needs the explicit opacity:0 here. The !important is required because
-     motion writes inline style.opacity:1 (its animate target); an inline
-     style otherwise beats this stylesheet rule, leaving the element
-     visible during /clear under reduced-motion. !important wins over the
-     non-important inline value. */
-  .recap-window.recap-window-clearing { animation: none; opacity: 0 !important; }
-  .pinned-user-message.pinned-user-message-clearing { animation: none; opacity: 0 !important; }
+  /* Mirror the transcript's reduced-motion clear: no animation; element stays
+     visible (blur-only — no veil hides it now). Normal open/close is snapped
+     by MotionConfig reducedMotion="user" (motion.div/motion.button). */
+  .recap-window.recap-window-clearing { animation: none; }
+  .pinned-user-message.pinned-user-message-clearing { animation: none; }
 }
 
 /* ── `!` bash-mode message ───────────────────────────────────────────

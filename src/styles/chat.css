@@ -129,28 +129,29 @@
     transform: none;
   }
 }
-/* /clear transition: blur-fade the transcript out and veil it with a
-   "Clearing…" affordance while the server tears down + respawns the CLI
-   subprocess (~1.7s). The class is removed only after the session-cleared
-   frame wipes the store, so messages never snap back into view. */
+/* /clear transition: blur the transcript as a view-only "clearing" affordance
+   while the POST is in flight (the local /clear path drives `clearing` from
+   `clearingIds` state and swaps X→Y atomically on POST resolve — no veil).
+   The SDK-emitted `session-cleared` path (in-place wipe) also uses this. */
 .chat-messages.chat-messages-clearing {
   animation: clear-blur-fade var(--motion-duration-slow) var(--motion-ease-exit) both;
 }
 @keyframes clear-blur-fade {
-  0%   { opacity: 1; filter: blur(0); transform: scale(1); }
-  40%  { opacity: 0.9; filter: blur(6px); transform: scale(0.99); }
-  100% { opacity: 0; filter: blur(10px); transform: scale(0.96); }
+  /* Blur-only (no opacity/scale fade): the local /clear path no longer hides X
+   *  under an opaque veil — it blurs X as a view-only "clearing" affordance
+   *  during the POST and swaps to Y when the response lands. Fading to
+   *  opacity 0 would blank a slow POST; blur-only keeps X visible. */
+  from { filter: blur(0); }
+  to   { filter: blur(10px); }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .chat-messages.chat-messages-clearing {
     animation: none;
-    opacity: 0;
   }
 }
-/* Slot-level clearing veil — survives the X→Y id-swap that `/clear`
-   performs, so the fade-in → swap-under-veil → fade-out animation can
-   play across a ChatPanel remount. See PanelSlot.tsx. */
+/* Grid-cell wrapper for a ChatPanel (keyed by session id so close/reorder/
+   /clear-swap reflow without remounting surviving panels). See PanelSlot.tsx. */
 .panel-slot {
   position: relative;
   display: flex;
@@ -166,45 +167,6 @@
 .panel-slot > .chat-panel {
   flex: 1;
   min-height: 0;
-}
-.panel-clearing-veil {
-  position: absolute;
-  inset: 0;
-  z-index: 3;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  color: var(--fg-muted);
-  font-size: var(--fs-sm);
-  pointer-events: none;
-  background: transparent;
-  animation: panel-clear-veil-in var(--motion-duration-base) var(--motion-ease-enter) both;
-}
-.panel-clearing-veil[data-phase='fading-out'] {
-  animation: panel-clear-veil-out var(--motion-duration-base) var(--motion-ease-exit) both;
-}
-.panel-clearing-spinner {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  border: 2px solid var(--border);
-  border-top-color: var(--accent);
-  animation: panel-clear-spinner 0.7s linear infinite;
-}
-@keyframes panel-clear-veil-in  { from { opacity: 0; } to { opacity: 1; } }
-@keyframes panel-clear-veil-out { from { opacity: 1; } to { opacity: 0; } }
-@keyframes panel-clear-spinner  { to { transform: rotate(360deg); } }
-
-@media (prefers-reduced-motion: reduce) {
-  .panel-clearing-veil,
-  .panel-clearing-veil[data-phase='fading-out'] {
-    animation: none;
-    opacity: 1;
-  }
-  .panel-clearing-spinner {
-    animation: none;
-  }
 }
 /* Each virtualised item is wrapped in this div so that .msg.user's
    align-self: flex-end still works (the old flex column on

@@ -1242,9 +1242,10 @@
     color: var(--accent);
     font-weight: 600;
   }
-  /* Mirror the transcript's reduced-motion clear: no animation, just hidden. */
-  .todo-panel.todo-panel-clearing { animation: none; opacity: 0; }
-  .monitor-bar.monitor-bar-clearing { animation: none; opacity: 0; }
+  /* Mirror the transcript's reduced-motion clear: no animation; element stays
+     visible (blur-only — no veil hides it now). */
+  .todo-panel.todo-panel-clearing { animation: none; }
+  .monitor-bar.monitor-bar-clearing { animation: none; }
   .monitor-text-shimmer {
     animation: none;
     background: none;

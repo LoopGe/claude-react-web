@@ -34,7 +34,6 @@ import { IconSettings, IconBellToggle, IconMenu } from './components/icons/ToolI
 import { UpdateBanner } from './components/UpdateBanner'
 import { useUpdateInfo } from './hooks/useUpdateInfo'
 import { useUiState } from './hooks/useUiState'
-import { useClearAnimation } from './hooks/useClearAnimation'
 import { sessionStoreRegistry } from './session-store/registry'
 import { useAppOverlays } from './app/useAppOverlays'
 import { useExitPresence } from './hooks/useExitPresence'
@@ -410,13 +409,39 @@ export function App() {
    *  this set, the `session-removed` handler skips everything except
    *  dropping X from the sidebar list; `handleClear`'s swap owns the slot. */
   const clearingIdsRef = useRef<Set<string>>(new Set())
+  // State mirror of clearingIdsRef so the cleared panel can re-render to show
+  // the clearing blur (view-only — does NOT gate the data swap). The WS guard
+  // reads the ref; the UI reads the state. Same state+ref-mirror pattern as
+  // openIds/openIdsRef.
+  const [clearingIds, setClearingIds] = useState<Set<string>>(new Set())
+  // Set by the guarded `session-removed` handler when the server has confirmed
+  // X's removal during a /clear. Read by handleClear's catch to distinguish
+  // "server processed the clear but the POST response was lost" (X is dead →
+  // evict the stale slot) from "server never acted" (X is live → keep it).
+  const clearingServerRemovedRef = useRef<Set<string>>(new Set())
+  // In-flight /clear count per id (same-tab double-/clear). The `finally`
+  // releases the guard + blur only when the count hits 0 — so a short-circuited
+  // second call (server declined because the first is still in flight) doesn't
+  // tear down state the first call still owns, AND a single-call short-circuit
+  // (stuck server `clearing` flag / cross-tab) still cleans up instead of
+  // leaving the panel blurred forever.
+  const clearingInFlightRef = useRef<Map<string, number>>(new Map())
+  // ids just swapped in by `swapSession` (X→Y). Read+cleared by the
+  // exit-detection layout effect to suppress the closing-ghost ONLY for true
+  // swaps — not for maxOpen eviction / single-panel switch / slot drag-replace,
+  // which are also length-preserving 1-for-1 openIds changes but genuine
+  // closes that should play the ghost.
+  const justSwappedInRef = useRef<Set<string>>(new Set())
+  // Forward-declared ref for `teardownRemovedSession` (declared later, after
+  // its deps). The WS `session-removed` handler (in an effect above) calls it
+  // via this ref to avoid a use-before-declaration; synced at render time
+  // where the callback is defined. Same pattern as `animatePanelsRef`.
+  const teardownRemovedSessionRef = useRef<((id: string) => void) | null>(null)
   // Last-known SessionInfo per open-panel id, so `openSessions` can keep a
-  // slot alive across a transient gap in `sessions` (a freshly-created id
-  // whose `session-created` WS frame hasn't landed, or /clear's X→Y swap
-  // window where session-removed(X) drops X ~180ms before the swap). See the
-  // `openSessions` memo for the full rationale. Seeded by every handler that
-  // mints a new id from a POST response (handleCreate/handleFork/handleRestart/
-  // handleClear) so the slot resolves the instant openIds adopts the new id.
+  // slot alive across a transient gap in `sessions` — a freshly-created id
+  // whose `session-created` WS frame hasn't landed yet. (Phase 1: /clear no
+  // longer needs this — `swapSession` inserts Y into `sessions` directly —
+  // but handleCreate/handleFork/handleRestart still seed it until Phase 2.)
   const openInfoCacheRef = useRef<Map<string, SessionInfo>>(new Map())
   // Per-session interrupt callbacks registered by <Chat> components.
   // The ESC shortcut in the keyboard handler uses this to trigger the
@@ -745,82 +770,23 @@ export function App() {
           break
         }
         case 'session-removed': {
-          setSessions((prev) => prev.filter((s) => s.id !== frame.id))
           // /clear broadcasts `removed` for X (server drops X from the store
-          // so it leaves the sidebar; transcript kept for resume). The `removed`
-          // frame can land BEFORE the /clear POST response that drives the
-          // X→Y panel swap, so while X is mid-clear we `break` here and skip
-          // ALL teardown below — only the sidebar-list removal above runs.
-          // That's safe: openIds/focusedId/groups/side-chat are owned by
-          // handleClear's swap (running them would close the slot or evict X
-          // from its group before Y fills it). The rest — lastSeenTurn,
-          // pruneSession, pendingDelete, callback registries, sidebarOrder —
-          // are non-conflicting but harmless to skip: <Chat> unmount
-          // unregisters its own callbacks, orderedSessions filters stale
-          // sidebarOrder ids, and the lastSeenTurn/pruneSession entries are
-          // bounded orphans cleaned up if X is ever re-resumed.
+          // so the transcript is detached; kept for resume). The `removed`
+          // frame can land before handleClear's atomic X→Y swap (driven by
+          // the POST response). While X is mid-clear, skip ALL teardown —
+          // INCLUDING the `setSessions` removal — so X stays fully alive in
+          // sessions/openIds/groups until handleClear's `swapSession` replaces
+          // it atomically. This keeps the sidebar (group row) and panel grid
+          // stable across the WS-vs-POST race (no shrink, no compaction).
+          // Record that the server confirmed X's removal so handleClear's
+          // error path can tell a dead X (server processed, response lost)
+          // from a live one (server never acted).
           if (clearingIdsRef.current.has(frame.id)) {
+            clearingServerRemovedRef.current.add(frame.id)
             break
           }
-          setOpenIds((prev) => prev.filter((id) => id !== frame.id))
-          setFocusedId((prev) => (prev === frame.id ? null : prev))
-          // Drop the session's lastSeenTurn entry — no reason to keep
-          // it around once the server has deleted the session.
-          setLastSeenTurn((prev) => {
-            if (!(frame.id in prev)) return prev
-            const next = { ...prev }
-            delete next[frame.id]
-            return next
-          })
-          // Drop the notification edge-detector entry too. Long-lived
-          // tabs that watch many short sessions over hours otherwise
-          // grow that Map without bound.
-          pruneSession(frame.id)
-          // Clear any pending-delete state for this id. The delete has
-          // committed server-side (that's why we got `removed`), so a
-          // stale pendingDeleteIds/deletingSessionIds entry must not
-          // linger — it would hide the session if it's later re-resumed
-          // (re-adopted) under the same id. Also covers cross-tab deletes
-          // arriving during this tab's Undo window. Updaters are no-ops
-          // when the id isn't present.
-          setPendingDeleteIds((prev) => (prev.has(frame.id) ? new Set([...prev].filter((x) => x !== frame.id)) : prev))
-          setDeletingSessionIds((prev) => (prev.has(frame.id) ? new Set([...prev].filter((x) => x !== frame.id)) : prev))
-          // Drop the per-session callback registries too. <Chat> unmount
-          // already unregisters via the registry's stale-guarded cleanup,
-          // but this covers the cross-tab-delete case where this tab's
-          // <Chat> for the deleted session is still mounted (its unmount
-          // runs later) and any sessions this tab never had a panel for.
-          interruptFnsRef.current.delete(frame.id)
-          recapFnsRef.current.delete(frame.id)
-          // Prune the deleted id from persisted sidebar order and group
-          // membership. This is the authoritative real-time delete signal
-          // (also fires for cross-tab deletes), so it's safe to remove here
-          // Unlike the snapshot handler, which could fire on an
-          // incomplete session list and drop still-live members.
-          setSidebarOrder((prev) =>
-            prev.includes(frame.id) ? prev.filter((id) => id !== frame.id) : prev,
-          )
-          setGroups((prev) => {
-            let changed = false
-            const next = prev.map((g) => {
-              if (!g.sessionIds.includes(frame.id)) return g
-              changed = true
-              return { ...g, sessionIds: g.sessionIds.filter((sid) => sid !== frame.id) }
-            })
-            return changed ? next : prev
-          })
-          // Clean up side chat if its parent was removed, or if the
-          // side chat session itself was removed.
-          if (
-            sideChatRef.current &&
-            (sideChatRef.current.parentId === frame.id ||
-              sideChatRef.current.session.id === frame.id)
-          ) {
-            const sideId = sideChatRef.current.session.id
-            setSideChat(null)
-            void api.delete(`/sessions/${sideId}`).catch(() => {})
-            sessionStoreRegistry.delete(sideId)
-          }
+          // Full teardown (shared with handleClear's error path).
+          teardownRemovedSessionRef.current?.(frame.id)
           break
         }
         case 'session-recap-update': {
@@ -914,18 +880,141 @@ export function App() {
     [setLastSeenTurn],
   )
 
+  /** Tear down the Side Chat hosted on `parentId` (if any): drop the drawer
+   *  state, DELETE the ephemeral session, purge its transcript cache. Mirrors
+   *  the block that used to live inline in `closeSession`; extracted so
+   *  `handleClear`'s swap path can reuse it (it doesn't go through
+   *  closeSession, and the guarded `session-removed(X)` skips the side-chat
+   *  teardown at App.tsx:814-823 — so without this, /clear on a panel hosting
+   *  a side chat leaked the ephemeral session). */
+  const cleanupSideChat = useCallback((parentId: string) => {
+    if (sideChatRef.current?.parentId === parentId) {
+      const sideId = sideChatRef.current.session.id
+      setSideChat(null)
+      void api.delete(`/sessions/${sideId}`).catch(() => {})
+      sessionStoreRegistry.delete(sideId)
+    }
+  }, [])
+
+  /** Atomic local X→Y session swap. In one batched state update, replaces
+   *  `oldId` with `newId`/`newSession` everywhere a session id is tracked:
+   *  sessions (remove old, upsert new at old's position), openIds, focusedId,
+   *  groups (sessionIds), sidebarOrder, lastSeenTurn. Used by /clear (Phase 2
+   *  will also route restart through it). Driven by the POST response (which
+   *  carries Y), so `sessions` carries Y the instant openIds adopts it — no
+   *  gap for the WS session-created/session-removed frames to race. Those
+   *  frames are idempotent confirmations. Also marks newId in `justSwappedInRef`
+   *  so the exit-detection effect suppresses the closing-ghost for the swap
+   *  (true swaps only — evictions/replaces still animate). openIds and groups
+   *  swap together, so activeGroupId stays consistent (no null-flicker). */
+  const swapSession = useCallback(
+    (oldId: string, newId: string, newSession: SessionInfo) => {
+      if (oldId === newId) return
+      // Mark the swap so the exit-detection effect suppresses X's closing-ghost
+      // (true swap → Y fades in via .entering). Callers pass an OPEN panel's id
+      // (oldId ∈ openIds), so the swap always changes openIds and exit-detection
+      // runs to consume this marker — no stale-entry risk.
+      justSwappedInRef.current.add(newId)
+      setSessions((prev) => {
+        const idx = prev.findIndex((s) => s.id === oldId)
+        const withoutOld = idx === -1 ? prev : prev.filter((s) => s.id !== oldId)
+        const existing = withoutOld.findIndex((s) => s.id === newId)
+        if (existing >= 0) {
+          // session-created(Y) already landed — refresh in place.
+          const next = withoutOld.slice()
+          next[existing] = newSession
+          return next
+        }
+        // Insert Y at X's old position so it inherits X's sidebar slot.
+        const next = withoutOld.slice()
+        next.splice(idx === -1 ? withoutOld.length : idx, 0, newSession)
+        return next
+      })
+      setOpenIds((prev) => prev.map((id) => (id === oldId ? newId : id)))
+      setFocusedId((prev) => (prev === oldId ? newId : prev))
+      setGroups((prev) =>
+        prev.map((g) => {
+          const i = g.sessionIds.indexOf(oldId)
+          if (i === -1) return g
+          const next = g.sessionIds.slice()
+          // Don't duplicate if newId is already a member.
+          if (next.includes(newId)) next.splice(i, 1)
+          else next[i] = newId
+          return { ...g, sessionIds: next }
+        }),
+      )
+      setSidebarOrder((prev) => {
+        if (!prev.includes(oldId)) return prev
+        // If newId is already ordered, just drop oldId (avoid duplicating newId).
+        if (prev.includes(newId)) return prev.filter((id) => id !== oldId)
+        // Otherwise replace oldId → newId in place (Y inherits X's slot).
+        return prev.map((id) => (id === oldId ? newId : id))
+      })
+      setLastSeenTurn((prev) => {
+        const next = { ...prev }
+        delete next[oldId]
+        next[newId] = newSession.lastTurnAt ?? Date.now()
+        return next
+      })
+    },
+    [setGroups, setLastSeenTurn, setSidebarOrder],
+  )
+
+  /** Full teardown for a session that's been removed server-side: drop it from
+   *  sessions/openIds/focusedId/lastSeenTurn/sidebarOrder/groups, prune the
+   *  notification edge-detector + callback registries, clear pending-delete
+   *  state, and clean up a hosted side chat. Shared by the `session-removed`
+   *  WS handler (cross-tab + local deletes) and `handleClear`'s error path
+   *  (server processed the clear but the POST response was lost — X is dead
+   *  and must be fully evicted, not just dropped from the panel). */
+  const teardownRemovedSession = useCallback(
+    (id: string) => {
+      setSessions((prev) => prev.filter((s) => s.id !== id))
+      setOpenIds((prev) => prev.filter((x) => x !== id))
+      setFocusedId((prev) => (prev === id ? null : prev))
+      setLastSeenTurn((prev) => {
+        if (!(id in prev)) return prev
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
+      pruneSession(id)
+      setPendingDeleteIds((prev) => (prev.has(id) ? new Set([...prev].filter((x) => x !== id)) : prev))
+      setDeletingSessionIds((prev) => (prev.has(id) ? new Set([...prev].filter((x) => x !== id)) : prev))
+      interruptFnsRef.current.delete(id)
+      recapFnsRef.current.delete(id)
+      setSidebarOrder((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : prev))
+      setGroups((prev) => {
+        let changed = false
+        const next = prev.map((g) => {
+          if (!g.sessionIds.includes(id)) return g
+          changed = true
+          return { ...g, sessionIds: g.sessionIds.filter((sid) => sid !== id) }
+        })
+        return changed ? next : prev
+      })
+      // Side chat: parent removed (cleanupSideChat) OR the side-chat session
+      // itself was removed (inline — cleanupSideChat only covers the parent).
+      cleanupSideChat(id)
+      if (sideChatRef.current?.session.id === id) {
+        const sideId = sideChatRef.current.session.id
+        setSideChat(null)
+        void api.delete(`/sessions/${sideId}`).catch(() => {})
+        sessionStoreRegistry.delete(sideId)
+      }
+    },
+    [cleanupSideChat, pruneSession, setGroups, setLastSeenTurn, setSidebarOrder],
+  )
+  // eslint-disable-next-line react-hooks/refs -- intentional render-time ref sync (same pattern as animatePanelsRef): the WS session-removed handler (in an effect above) calls teardownRemovedSession via this ref.
+  teardownRemovedSessionRef.current = teardownRemovedSession
+
   const closeSession = useCallback(
     (id: string) => {
       // If the closed panel hosts a Side Chat, clean up the ephemeral session.
       // The drawer's animation-driven close path also DELETEs, but we may
       // never reach it here (the drawer unmounts as soon as its parent panel
       // closes, skipping the animation). Fire-and-forget guarantees cleanup.
-      if (sideChatRef.current?.parentId === id) {
-        const sideId = sideChatRef.current.session.id
-        setSideChat(null)
-        void api.delete(`/sessions/${sideId}`).catch(() => {})
-        sessionStoreRegistry.delete(sideId)
-      }
+      cleanupSideChat(id)
       // A group is a synced workspace, so closing a group member's panel
       // removes it from the group (it drops to the sidebar's "Ungrouped"
       // section) rather than merely hiding it — keeping open panels in
@@ -963,7 +1052,7 @@ export function App() {
         return next
       })
     },
-    [setGroups],
+    [cleanupSideChat, setGroups],
   )
 
   /** Deactivate a group: close every open panel that belongs to it WITHOUT
@@ -1761,11 +1850,11 @@ export function App() {
   /** Open sessions, rendered in the order they were opened. Membership
    *  follows `openIds` (the source of truth for open panels); `sessions`
    *  supplies the SessionInfo, with a last-known fallback (`openInfoCacheRef`,
-   *  seeded by each create/restart/fork/clear handler) so a transient gap in
+   *  seeded by handleCreate/handleFork/handleRestart) so a transient gap in
    *  `sessions` — a freshly-minted id whose `session-created` WS frame hasn't
-   *  landed, or /clear's X→Y swap window — doesn't evict the slot (which would
-   *  compact the grid and remount a sibling → WS re-subscribe → transcript
-   *  "reload", and unmount X mid-fade-in breaking the clearing veil). A
+   *  landed — doesn't evict the slot (which would compact the grid and remount
+   *  a sibling → WS re-subscribe → transcript "reload"). /clear no longer
+   *  needs the cache: `swapSession` inserts Y into `sessions` directly. A
    *  deleted-on-server session is removed from `openIds` by its
    *  `session-removed` frame and so disappears here. Bounded to openIds. */
   const openSessions = useMemo(() => {
@@ -1828,6 +1917,18 @@ export function App() {
       .filter((id) => !nextSet.has(id))
       .map((id) => ({ id }))
     if (gone.length === 0) return
+    // Swap-detection: suppress the closing-ghost ONLY for a true X→Y swap
+    // (driven by `swapSession`, which marks the new id in `justSwappedInRef`).
+    // A structural 1-for-1 check (gone==1 && added==1) would ALSO match
+    // maxOpen eviction, single-panel session switch, and slot drag-replace —
+    // all genuine closes that should play the ghost. Consume the marker here
+    // (a swap with oldId open always produces gone>=1, so we always reach
+    // this point for it).
+    const prevSet = new Set(prevIds)
+    const added = openIds.filter((id) => !prevSet.has(id))
+    const swappedIn = justSwappedInRef.current
+    justSwappedInRef.current = new Set()
+    if (gone.length === 1 && added.length === 1 && swappedIn.has(added[0])) return
     const snapshots = gone
       .map(({ id }) => {
         const session = sessionsRef.current.find((s) => s.id === id)
@@ -1969,28 +2070,17 @@ export function App() {
   // handlePanelAnimEnd then forces a re-render so React's virtual DOM
   // reconciles and removes the class via its normal className commit.
   const enteringSetRef = useRef<Set<string>>(new Set())
-  /** Panel session ids that should be skipped by the render-phase entering
-   *  diff — used by `/clear` so the new session Y doesn't play its mount
-   *  animation under the fade-out veil (would look like double-animation).
-   *  Entries are cleared in a useLayoutEffect after the render that
-   *  handled the swap. */
-  const suppressEnteringRef = useRef<Set<string>>(new Set())
   /* eslint-disable react-hooks/refs -- intentional: render-phase diff for entering-panel detection */
   if (prevOpenIdsRef.current !== openIds) {
     const prevSet = new Set(prevOpenIdsRef.current)
     for (const id of openIds) {
-      if (!prevSet.has(id) && !suppressEnteringRef.current.has(id)) {
+      if (!prevSet.has(id)) {
         enteringSetRef.current.add(id)
       }
     }
     prevOpenIdsRef.current = openIds
   }
   /* eslint-enable react-hooks/refs */
-  useLayoutEffect(() => {
-    if (suppressEnteringRef.current.size > 0) {
-      suppressEnteringRef.current.clear()
-    }
-  })
   // State nudge: incremented by handlePanelAnimEnd to force a re-render
   // after the animation completes, so React reconciles className.
   const [, setAnimEpoch] = useState(0)
@@ -2698,108 +2788,78 @@ export function App() {
     [closeResume, resumeIntoPanel],
   )
 
-  /** Manages the veil phase state for local `/clear` fade-in → swap → fade-out.
-   *  Keyed by panel session id (which changes X→Y during the swap; the hook's
-   *  `swapAndEnd` atomically moves state from X to Y). See PanelSlot.tsx and
-   *  `docs/superpowers/specs/2026-07-01-clear-animation-survives-id-swap-design.md`. */
-  const clearAnim = useClearAnimation()
+  /** `/clear` a panel: POST to the server (which atomically spawns a fresh
+   *  session Y and detaches X), then swap X→Y locally in ONE batched
+   *  `swapSession` transaction (sessions/openIds/groups/sidebarOrder/
+   *  lastSeenTurn). There is no 180 ms veil gate — data swaps the instant Y is
+   *  known, so client state never lags server state. The WS session-created(Y)
+   *  / session-removed(X) frames are idempotent confirmations (the
+   *  clearingIdsRef guard keeps X fully alive until the swap). X's transcript
+   *  survives on disk, recoverable via the resume picker. The cleared panel
+   *  blurs (view-only, via `clearingIds`) during the POST; Y mounts fresh and
+   *  plays `.entering`. */
 
-  /** `/clear` a panel: fade-in on X in parallel with the POST, then swap
-   *  X→Y under the fully-opaque veil, then fade-out to reveal Y's fresh
-   *  empty state. The server spawns a fresh session Y under a new id and
-   *  detaches X (removed from the store, transcript kept for resume); App
-   *  swaps the panel slot X→Y at the same position (mirrors handleRestart's
-   *  in-place id swap). Y takes X's group slot so the active group view stays
-   *  consistent. X's transcript survives on disk, so it's recoverable via the
-   *  resume picker. */
   const handleClear = useCallback(
     async (id: string) => {
-      const sourceGroup = groups.find((g) => g.sessionIds.includes(id))
-      const wasOpen = openIds.includes(id)
-      // Mark X as mid-clear so the `session-removed` frame the server
-      // broadcasts for X (it drops X from the store) doesn't close the
-      // panel slot / evict X from its group before the X→Y swap below can
-      // fill it. See clearingIdsRef for the race rationale.
+      // Guard: the server broadcasts session-removed(X) during clear(); the
+      // guarded handler skips ALL teardown (incl. setSessions) so X stays
+      // fully alive until swapSession replaces it — no sidebar churn, no
+      // panel compaction across the WS-vs-POST race.
       clearingIdsRef.current.add(id)
-      // True when the server short-circuited this call (its s.clearing guard
-      // returns X's own info, so newId === id). A short-circuited call must
-      // NOT release the guard in the finally — the in-flight first call still
-      // owns it, and releasing here would let that call's session-removed(X)
-      // frame run full teardown before its X→Y swap, leaving the panel empty.
-      let shortCircuited = false
+      setClearingIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
+      clearingInFlightRef.current.set(id, (clearingInFlightRef.current.get(id) ?? 0) + 1)
       try {
-        // Fade-in on X and the POST run in parallel. Promise.all gates the
-        // swap on BOTH: the fade-in Promise resolves after --motion-duration-base
-        // (180 ms — veil is fully opaque), the POST resolves whenever the
-        // server responds. In the common case (POST < 200 ms) we're waiting
-        // on the animation; under slow POST we wait on the network. Either
-        // way, the swap happens only under an opaque veil, so Y never
-        // flashes into view.
-        const [res] = await Promise.all([
-          api.post<{ session: SessionInfo }>(`/sessions/${id}/clear`, {}),
-          clearAnim.beginClear(id),
-        ])
+        // POST only — no 180 ms veil gate. Data swaps the instant Y is known.
+        const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/clear`, {})
         const newId = res.session.id
-        // Seed Y into the openSessions cache so it's resolvable the instant
-        // openIds swaps X→Y below, even if the session-created(Y) WS frame
-        // lags the POST response. See openInfoCacheRef for the gap rationale.
-        openInfoCacheRef.current.set(newId, res.session)
-        shortCircuited = newId === id
-        // Suppress Y's mount animation — the veil fade-out is the visual
-        // transition here; playing the panel-enter animation on top would
-        // look like a double-animation under the receding veil.
-        suppressEnteringRef.current.add(newId)
-        if (wasOpen) {
-          setOpenIds((prev) => {
-            const idx = prev.indexOf(id)
-            if (idx === -1) return prev
-            const next = prev.slice()
-            next[idx] = newId
-            return next
-          })
-          setFocusedId((prev) => (prev === id ? newId : prev))
+        if (newId !== id) {
+          // X hosted a Side Chat? Tear it down (the guarded session-removed
+          // skips this; without it the ephemeral session would leak).
+          cleanupSideChat(id)
+          // Atomic X→Y in one batch. Y mounts fresh and plays .entering
+          // (not suppressed — the wipe + empty-panel-fade-in is the clear).
+          swapSession(id, newId, res.session)
+          // X is gone — prune its notification edge-detector entry (the
+          // guarded session-removed skipped pruneSession; swapSession
+          // doesn't touch it; <Chat> unmount has no backstop for it).
+          pruneSession(id)
         }
-        setLastSeenTurn((prev) => ({ ...prev, [newId]: res.session.lastTurnAt ?? Date.now() }))
-        if (sourceGroup) {
-          setGroups((prev) =>
-            prev.map((g) => {
-              if (g.id !== sourceGroup.id) return g
-              const idx = g.sessionIds.indexOf(id)
-              if (idx === -1) return g
-              const next = g.sessionIds.slice()
-              next[idx] = newId
-              return { ...g, sessionIds: next }
-            }),
-          )
-        }
-        // Atomically move veil state from X to Y, transition to fade-out.
-        // The hook schedules cleanup at fadeOutMs (180 ms).
-        clearAnim.swapAndEnd(id, newId)
+        // else: server short-circuited (newId === id — another clear is in
+        // flight, or the server's `clearing` flag is stuck). Do nothing here;
+        // the finally cleans up only if this is the last in-flight call.
       } catch (e) {
-        // Drop the veil immediately.
-        clearAnim.cancelClear(id)
-        // If the server already processed the /clear, it broadcast
-        // session-removed(X) (which the clearingIdsRef guard let drop X from
-        // `sessions` while keeping X in openIds) BEFORE the POST response —
-        // now lost — could drive the X→Y swap. X is gone from `sessions` but
-        // still in openIds, and openInfoCacheRef would serve a stale ghost
-        // panel that 404s on use. We don't have Y's id (the response was
-        // lost), so evict X's slot — Y is in the sidebar to reopen. If X is
-        // still in `sessions` the server never acted; leave the live panel.
-        if (!sessionsRef.current.some((s) => s.id === id)) {
-          setOpenIds((prev) => prev.filter((x) => x !== id))
-          setFocusedId((prev) => (prev === id ? null : prev))
-          openInfoCacheRef.current.delete(id)
+        if (clearingServerRemovedRef.current.has(id)) {
+          // Server processed the clear (session-removed(X) arrived) but the
+          // POST response carrying Y was lost. X is dead — full teardown
+          // (groups/sidebarOrder/lastSeenTurn/registries/side-chat, not just
+          // the panel slot). Y (created server-side) is in the sidebar.
+          teardownRemovedSession(id)
         }
+        // else: server never acted (network error before processing) — X is
+        // still live; leave the panel as-is.
         toast.error(`Couldn't clear session: ${(e as Error).message}`)
       } finally {
-        // Release the guard unless this call was short-circuited (a concurrent
-        // double-/clear that the server declined — the first call still owns
-        // the guard). On error or a real swap, this call is done — release.
-        if (!shortCircuited) clearingIdsRef.current.delete(id)
+        // Release the guard + blur only when this is the last in-flight clear
+        // for id. A short-circuited second call (same-tab double-/clear) leaves
+        // the first call's guard/blur in place; a single-call short-circuit
+        // (stuck flag / cross-tab) cleans up instead of blurring forever.
+        const remaining = (clearingInFlightRef.current.get(id) ?? 1) - 1
+        if (remaining <= 0) {
+          clearingInFlightRef.current.delete(id)
+          clearingIdsRef.current.delete(id)
+          clearingServerRemovedRef.current.delete(id)
+          setClearingIds((prev) => {
+            if (!prev.has(id)) return prev
+            const next = new Set(prev)
+            next.delete(id)
+            return next
+          })
+        } else {
+          clearingInFlightRef.current.set(id, remaining)
+        }
       }
     },
-    [groups, openIds, toast, setLastSeenTurn, setGroups, clearAnim],
+    [toast, cleanupSideChat, swapSession, teardownRemovedSession, pruneSession],
   )
 
   const refreshConfigResponse = useCallback(async () => {
@@ -3117,19 +3177,19 @@ export function App() {
             openSessions.flatMap((s, i) => {
               const entering = enteringSetRef.current.has(s.id)
               const owningGroup = groups.find((g) => g.sessionIds.includes(s.id))
-              const clearingPhase = clearAnim.clearingByPanel.get(s.id)
+              const clearing = clearingIds.has(s.id)
               const node = (
                 // Per-panel ErrorBoundary: if one panel's render throws
                 // (e.g. a malformed assistant message), the other open
                 // panels and the sidebar keep working. children identity
                 // changes on prop updates, so a recovered render auto-clears.
-                <PanelSlot key={s.id} clearingPhase={clearingPhase}>
+                <PanelSlot key={s.id}>
                   <ErrorBoundary key={s.id}>
                     <ChatPanel
                       session={s}
                       focused={s.id === focusedId}
                       globalPrefs={globalPrefs}
-                      clearing={clearingPhase === 'fading-in'}
+                      clearing={clearing}
                       hasUnread={!!unread[s.id]}
                       slot={i + 1}
                       entering={entering}
