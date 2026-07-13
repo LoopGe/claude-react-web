@@ -437,12 +437,6 @@ export function App() {
   // via this ref to avoid a use-before-declaration; synced at render time
   // where the callback is defined. Same pattern as `animatePanelsRef`.
   const teardownRemovedSessionRef = useRef<((id: string) => void) | null>(null)
-  // Last-known SessionInfo per open-panel id, so `openSessions` can keep a
-  // slot alive across a transient gap in `sessions` — a freshly-created id
-  // whose `session-created` WS frame hasn't landed yet. (Phase 1: /clear no
-  // longer needs this — `swapSession` inserts Y into `sessions` directly —
-  // but handleCreate/handleFork/handleRestart still seed it until Phase 2.)
-  const openInfoCacheRef = useRef<Map<string, SessionInfo>>(new Map())
   // Per-session interrupt callbacks registered by <Chat> components.
   // The ESC shortcut in the keyboard handler uses this to trigger the
   // same code-path as the Composer's interrupt button.
@@ -899,8 +893,8 @@ export function App() {
   /** Atomic local X→Y session swap. In one batched state update, replaces
    *  `oldId` with `newId`/`newSession` everywhere a session id is tracked:
    *  sessions (remove old, upsert new at old's position), openIds, focusedId,
-   *  groups (sessionIds), sidebarOrder, lastSeenTurn. Used by /clear (Phase 2
-   *  will also route restart through it). Driven by the POST response (which
+   *  groups (sessionIds), sidebarOrder, lastSeenTurn. Used by /clear and
+   *  restart. Driven by the POST response (which
    *  carries Y), so `sessions` carries Y the instant openIds adopts it — no
    *  gap for the WS session-created/session-removed frames to race. Those
    *  frames are idempotent confirmations. Also marks newId in `justSwappedInRef`
@@ -1236,14 +1230,11 @@ export function App() {
       const { accent, groupId, ...rest } = form
       try {
         const res = await api.post<{ session: SessionInfo }>('/sessions', rest)
-        // Seed the openSessions cache so the new id resolves the instant
+        // Add Y to `sessions` locally so openSessions resolves it the instant
         // openIds adopts it below, even if the session-created WS frame lags.
-        openInfoCacheRef.current.set(res.session.id, res.session)
-        // Don't mutate `sessions` here — the server emits a `created`
-        // event on /sessions/events that inserts the row. If we prepend
-        // locally too we race with the SSE, end up with two rows, and
-        // later state updates (e.g. a subsequent pump error) only hit
-        // one of them — leaving an "err" phantom alongside the real card.
+        // The session-created handler refreshes it in place (idempotent — the
+        // `some` guard prevents a duplicate if that frame already landed).
+        setSessions((prev) => (prev.some((s) => s.id === res.session.id) ? prev : [res.session, ...prev]))
 
         // Assign to group (optional — ungrouped sessions are allowed).
         if (groupId) handleAddToGroup(res.session.id, groupId)
@@ -1281,9 +1272,10 @@ export function App() {
     async (id: string) => {
       try {
         const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/fork`, {})
-        // Seed the openSessions cache so the forked id resolves the instant
-        // openIds adopts it below, even if the session-created WS frame lags.
-        openInfoCacheRef.current.set(res.session.id, res.session)
+        // Add Y to `sessions` locally so openSessions resolves it the instant
+        // openIds adopts it below, even if the session-created WS frame lags
+        // (session-created refreshes it in place — idempotent).
+        setSessions((prev) => (prev.some((s) => s.id === res.session.id) ? prev : [res.session, ...prev]))
         // Open the forked session right away so the user can see the
         // divergence point. The global `created` event from the server
         // will add the row to the sidebar.
@@ -1541,13 +1533,12 @@ export function App() {
     async (id: string) => {
       const source = sessions.find((s) => s.id === id)
       if (!source) return
-      const sourceGroup = groups.find((g) => g.sessionIds.includes(id))
-      const wasOpen = openIds.includes(id)
-
+      let swapped = false
       try {
-        // Create the replacement session directly (no groupId) to avoid
-        // handleAddToGroup's overflow eviction kicking a sibling out of
-        // the group while the old session still occupies its slot.
+        // Create the replacement session (no groupId — swapSession moves the
+        // group slot X→Y atomically, avoiding handleAddToGroup's overflow
+        // eviction kicking a sibling out while the old session still occupies
+        // its slot).
         const res = await api.post<{ session: SessionInfo }>('/sessions', {
           cwd: source.cwd,
           model: source.model,
@@ -1557,58 +1548,30 @@ export function App() {
           betas: source.betas,
           title: source.title,
         })
-        const newId = res.session.id
-        // Seed the openSessions cache so the new id resolves the instant
-        // openIds swaps to it below, even if the session-created WS frame lags.
-        openInfoCacheRef.current.set(newId, res.session)
-
-        // Swap the panel slot so the new session takes the old one's
-        // position without triggering openSession's eviction logic.
-        if (wasOpen) {
-          setOpenIds((prev) => {
-            const idx = prev.indexOf(id)
-            if (idx === -1) return prev
-            const next = prev.slice()
-            next[idx] = newId
-            return next
-          })
-          setFocusedId((prev) => (prev === id ? newId : prev))
-        }
-        setLastSeenTurn((prev) => ({ ...prev, [newId]: res.session.lastTurnAt ?? Date.now() }))
-
-        // Delete the old session.  The WS `session-removed` handler
-        // automatically removes the old id from the group's sessionIds.
+        // Atomic X→Y swap (sessions/openIds/focusedId/groups/sidebarOrder/
+        // lastSeenTurn). Y mounts fresh and plays .entering. swapSession also
+        // inserts Y into `sessions`, so openSessions resolves it with no gap.
+        swapSession(id, res.session.id, res.session)
+        swapped = true
+        // Delete the old session server-side. performDelete→closeSession cleans
+        // up side-chat/registry/accent; its openIds/groups/sessions filters are
+        // no-ops (swapSession already moved X→Y), and the WS session-removed(X)
+        // teardown is likewise a no-op for the swapped state.
         await performDelete(id)
-
-        // Insert the new session into the group at the old session's
-        // position.  Must happen AFTER performDelete, because the WS
-        // handler runs setGroups to remove the old id — doing it before
-        // would be overwritten by the stale-closure-based WS update.
-        if (sourceGroup) {
-          const oldIdx = sourceGroup.sessionIds.indexOf(id)
-          setGroups((prev) =>
-            prev.map((g) => {
-              if (g.id !== sourceGroup.id) return g
-              // If the WS handler already removed `id`, insert at the
-              // recorded position; otherwise replace in-place.
-              const curIdx = g.sessionIds.indexOf(id)
-              if (curIdx !== -1) {
-                const next = g.sessionIds.slice()
-                next[curIdx] = newId
-                return { ...g, sessionIds: next }
-              }
-              // Already removed by WS handler — splice in at old position.
-              const next = g.sessionIds.slice()
-              next.splice(Math.min(oldIdx, next.length), 0, newId)
-              return { ...g, sessionIds: next }
-            }),
-          )
-        }
       } catch (e) {
+        if (swapped) {
+          // performDelete failed (e.g. network) AFTER swapSession already
+          // removed X locally. X is still alive server-side — re-add it to the
+          // sidebar so it isn't orphaned/invisible until a page reload. (If X
+          // was cross-tab-deleted during the POST await, this re-adds a dead
+          // session; clicking it 404s — reload recovers. The network-failure
+          // case dominates, so re-adding is net-positive.)
+          setSessions((prev) => (prev.some((s) => s.id === id) ? prev : [source, ...prev]))
+        }
         toast.error(`Couldn't restart session: ${(e as Error).message}`)
       }
     },
-    [sessions, groups, openIds, performDelete, toast, setLastSeenTurn, setGroups],
+    [sessions, performDelete, toast, swapSession],
   )
 
   /** Activate a group: replace main-area panels with the group's sessions. */
@@ -1847,46 +1810,18 @@ export function App() {
     document.title = count > 0 ? `(${count}) claude-react-web` : 'claude-react-web'
   }, [unread])
 
-  /** Open sessions, rendered in the order they were opened. Membership
-   *  follows `openIds` (the source of truth for open panels); `sessions`
-   *  supplies the SessionInfo, with a last-known fallback (`openInfoCacheRef`,
-   *  seeded by handleCreate/handleFork/handleRestart) so a transient gap in
-   *  `sessions` — a freshly-minted id whose `session-created` WS frame hasn't
-   *  landed — doesn't evict the slot (which would compact the grid and remount
-   *  a sibling → WS re-subscribe → transcript "reload"). /clear no longer
-   *  needs the cache: `swapSession` inserts Y into `sessions` directly. A
-   *  deleted-on-server session is removed from `openIds` by its
-   *  `session-removed` frame and so disappears here. Bounded to openIds. */
-  const openSessions = useMemo(() => {
-    /* eslint-disable react-hooks/refs -- intentional render-time ref sync
-       (same pattern as openIdsRef / enteringSetRef / animatePanelsRef): the
-       cache must be readable AND writable in the same render that `sessions`
-       drops an id, or the slot is lost for a frame and the grid compacts.
-       Idempotent + convergent (StrictMode-safe); bounded to openIds. */
-    const cache = openInfoCacheRef.current
-    const openIdSet = new Set(openIds)
-    const resolved: SessionInfo[] = []
-    for (const id of openIds) {
-      // `.find` (no allocation) over a `byId` Map: `sessions` identity changes
-      // on every session-update metadata churn across ALL sessions, and openIds
-      // is ≤ maxOpenPanels, so ≤maxOpen × N string comparisons is cheaper than
-      // rebuilding an N-entry Map each recompute.
-      const fresh = sessions.find((s) => s.id === id)
-      if (fresh) {
-        cache.set(id, fresh)
-        resolved.push(fresh)
-      } else if (cache.has(id)) {
-        resolved.push(cache.get(id)!)
-      }
-      // else: id never seen yet (first open raced session-created) — no slot
-    }
-    // Prune cache entries no longer open so a real close/delete drops them.
-    for (const id of cache.keys()) {
-      if (!openIdSet.has(id)) cache.delete(id)
-    }
-    /* eslint-enable react-hooks/refs */
-    return resolved
-  }, [openIds, sessions])
+  /** Open sessions, rendered in the order they were opened. Membership follows
+   *  `openIds` (the source of truth for open panels); `sessions` supplies the
+   *  SessionInfo. Every handler that mints a new id (create/fork via local
+   *  setSessions; clear/restart via swapSession) inserts it into `sessions` in
+   *  the same batch openIds adopts it, so there's no gap for the WS
+   *  session-created frame to race — no cache needed. A deleted-on-server
+   *  session is removed from `openIds` by its `session-removed` frame and so
+   *  disappears here. */
+  const openSessions = useMemo(
+    () => openIds.map((id) => sessions.find((s) => s.id === id)).filter((s): s is SessionInfo => !!s),
+    [openIds, sessions],
+  )
 
   const updateSession = useCallback((s: SessionInfo) => {
     setSessions((prev) => prev.map((p) => (p.id === s.id ? s : p)))
@@ -1916,18 +1851,20 @@ export function App() {
     const gone = prevIds
       .filter((id) => !nextSet.has(id))
       .map((id) => ({ id }))
-    if (gone.length === 0) return
     // Swap-detection: suppress the closing-ghost ONLY for a true X→Y swap
     // (driven by `swapSession`, which marks the new id in `justSwappedInRef`).
     // A structural 1-for-1 check (gone==1 && added==1) would ALSO match
     // maxOpen eviction, single-panel session switch, and slot drag-replace —
-    // all genuine closes that should play the ghost. Consume the marker here
-    // (a swap with oldId open always produces gone>=1, so we always reach
-    // this point for it).
+    // all genuine closes that should play the ghost. Consume the marker BEFORE
+    // the gone==0 early return: a swap whose oldId is NOT open (e.g. restart
+    // from the sidebar) leaves openIds unchanged in contents (but new ref), so
+    // gone==0 — the marker must still be cleared or it leaks and later
+    // false-suppresses an unrelated close.
     const prevSet = new Set(prevIds)
     const added = openIds.filter((id) => !prevSet.has(id))
     const swappedIn = justSwappedInRef.current
     justSwappedInRef.current = new Set()
+    if (gone.length === 0) return
     if (gone.length === 1 && added.length === 1 && swappedIn.has(added[0])) return
     const snapshots = gone
       .map(({ id }) => {
