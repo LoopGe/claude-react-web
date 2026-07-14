@@ -1396,5 +1396,54 @@ if (typeof window !== 'undefined') {
     }
     console.groupEnd()
   }
+
+  /** Debug helper: dump the ordered message log the client holds for a
+   *  session (live ring + disk-paged, already merged). This is the
+   *  authoritative client-side view — what MessageList renders from.
+   *  Usage in DevTools console:
+   *    __crwDumpMessages('7a7a1959-...')           // returns an array
+   *    __crwDumpMessages('7a7a1959-...', true)     // also console.log a summary
+   *  With no arg, dumps every active session. */
+  ;(window as unknown as { __crwDumpMessages?: (sessionId?: string, print?: boolean) => unknown }).__crwDumpMessages =
+    (sessionId?: string, print?: boolean) => {
+      const dumpOne = (sid: string, stores: Set<SessionStore>) => {
+        const store = stores.values().next().value
+        if (!store) return null
+        const messages = store.getState().mirror.messages
+        if (print) {
+          console.group(`🔍 Messages for ${sid} (${messages.length})`)
+          messages.forEach((m, i) => {
+            const c = m.message?.content
+            let desc = ''
+            if (typeof c === 'string') desc = c.slice(0, 80).replace(/\n/g, ' ')
+            else if (Array.isArray(c)) desc = c.map((b: Record<string, unknown>) => {
+              if (b.type === 'text') return 'text:"' + String(b.text ?? '').slice(0, 60).replace(/\n/g, ' ') + '"'
+              if (b.type === 'thinking') return '[thinking]'
+              if (b.type === 'tool_use') return '[tool_use:' + b.name + ']'
+              if (b.type === 'tool_result') return '[tool_result:' + (b.is_error ? 'err' : 'ok') + ']'
+              return '[' + b.type + ']'
+            }).join(' ')
+            console.log(
+              String(i + 1).padStart(3),
+              'type=' + (m.type as string).padEnd(12),
+              'parent=' + (m.parent_tool_use_id == null ? 'null' : String(m.parent_tool_use_id).slice(0, 6)),
+              'isMeta=' + (m.isMeta ? 'T' : 'F'),
+              'replay=' + (m.isReplay ? 'T' : 'F'),
+              'uuid=' + String(m.uuid ?? '-').slice(0, 8),
+              desc,
+            )
+          })
+          console.groupEnd()
+        }
+        return { sessionId: sid, count: messages.length, messages }
+      }
+      if (sessionId) {
+        const stores = debugStores.get(sessionId)
+        return stores ? dumpOne(sessionId, stores) : null
+      }
+      const all: unknown[] = []
+      for (const [sid, stores] of debugStores) all.push(dumpOne(sid, stores))
+      return all
+    }
 }
 

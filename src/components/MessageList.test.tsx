@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, fireEvent, render, waitFor } from '@testing-library/react'
 import type { SdkMessage } from '../types'
 import type { TranscriptItem } from '../session-store/types'
+import { shouldHideByDefault } from '../session-store/normalize'
 
 // Stub ResizeObserver — not available in jsdom. Controllable: captures each
 // callback by observed element (in `roObserved`) so a test can fire it on
@@ -166,7 +167,7 @@ function toItems(msgs: SdkMessage[]): TranscriptItem[] {
       msg,
       plainText: null,
       isCompactSummary: false,
-      hiddenByDefault: msg.type === 'system' && msg.subtype !== 'error' && msg.subtype !== 'compact_boundary' && msg.subtype !== 'api_retry',
+      hiddenByDefault: shouldHideByDefault(msg),
     }))
 }
 

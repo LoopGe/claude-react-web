@@ -23,7 +23,9 @@ export const REJECTION_NEEDLES = [
 ]
 
 export function shouldHideByDefault(msg: SdkMessage): boolean {
-  return msg.type === 'system' && msg.subtype !== 'error' && msg.subtype !== 'compact_boundary' && msg.subtype !== 'api_retry'
+  if (msg.type === 'system' && msg.subtype !== 'error' && msg.subtype !== 'compact_boundary' && msg.subtype !== 'api_retry') return true
+  if (msg.type === 'user' && isLocalCommandLogUserMessage(msg)) return true
+  return false
 }
 
 /** True when this message's uuid is identical on disk and in the in-memory
@@ -176,6 +178,18 @@ function leadingUserText(msg: SdkMessage): string | null {
 // with the closing tag in the leading text block.
 const TASK_NOTIFICATION_RE = /^\s*<task-notification\b[\s\S]*<\/task-notification>/i
 
+/** Matches the CLI's local-command log markup: the leading text block of a
+ *  user-role message that is NOT human input but a recorded slash-command
+ *  invocation / output. Claude Code writes these for commands like `/model`
+ *  (which `setModel` triggers under the hood) as:
+ *    <command-name>/model</command-name> <command-message>model</command-message> <command-args>…</command-args>
+ *    <local-command-stdout>Set model to …</local-command-stdout>
+ *    <local-command-caveat>Caveat: …</local-command-caveat>   (isMeta — already dropped server-side)
+ *  The CLI marks `<command-name>`/`<local-command-stdout>` non-isMeta (the
+ *  model may reference them), so they survive disk replay and would otherwise
+ *  render as "you" bubbles. */
+const LOCAL_COMMAND_LOG_RE = /^\s*<(command-name|local-command-stdout|local-command-caveat)\b/i
+
 /** True when a top-level `user` message's leading text is a
  *  `<task-notification>` XML block — the harness's background-subagent
  *  result injection. The SDK's own task completion is a `system` /
@@ -188,6 +202,20 @@ export function isTaskNotificationUserMessage(msg: SdkMessage): boolean {
   if (userMessageHasToolResult(msg)) return false
   const text = leadingUserText(msg)
   return !!text && TASK_NOTIFICATION_RE.test(text)
+}
+
+/** True when a top-level `user` message is a CLI local-command log entry
+ *  (e.g. the `/model` slash command that `setModel` triggers), not real human
+ *  input. The pump already drops these from the live stream (they read as
+ *  top-level user text); this is the single render-side gate that also hides
+ *  the copies that arrive via disk replay, where history-reader keeps them
+ *  because the CLI marks them non-isMeta. One classification, both sources. */
+export function isLocalCommandLogUserMessage(msg: SdkMessage): boolean {
+  if (msg.type !== 'user') return false
+  if (msg.parent_tool_use_id != null) return false
+  if (userMessageHasToolResult(msg)) return false
+  const text = leadingUserText(msg)
+  return !!text && LOCAL_COMMAND_LOG_RE.test(text)
 }
 
 /** Extract the inner text of the first `<tag>…</tag>` in `s`, with basic XML
@@ -300,7 +328,9 @@ export function userMessageOriginKind(msg: SdkMessage): string | undefined {
  *    3. SDK `origin.kind` present    → human iff kind === 'human'.
  *    4. SDK `isSynthetic: true`      → not human.
  *    5. content sniff `<task-notification>` → harness result injection.
- *    6. fallback → human. Preserves behaviour for SDK versions that don't
+ *    6. content sniff `<command-name>`/`<local-command-stdout>` → CLI
+ *      slash-command log (e.g. `/model`), not human input.
+ *    7. fallback → human. Preserves behaviour for SDK versions that don't
  *      stamp origin/isSynthetic on real human input (0.3.x), so the only
  *      messages redirected away from "you" are ones the SDK explicitly
  *      marks synthetic or that match a known injection signature. */
@@ -312,6 +342,7 @@ export function isHumanUserMessage(msg: SdkMessage): boolean {
   if (kind !== undefined) return kind === 'human'
   if ((msg as { isSynthetic?: unknown }).isSynthetic === true) return false
   if (isTaskNotificationUserMessage(msg)) return false
+  if (isLocalCommandLogUserMessage(msg)) return false
   return true
 }
 

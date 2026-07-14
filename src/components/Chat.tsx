@@ -726,7 +726,13 @@ export const Chat = memo(function Chat({
     if (!debouncedQuery) return [] as Array<{ itemIdx: number; matchInItem: number }>
     const out: Array<{ itemIdx: number; matchInItem: number }> = []
     for (let i = 0; i < stream.items.length; i++) {
-      const text = stream.items[i]?.plainText
+      const item = stream.items[i]
+      // Hidden frames (system init/status, /model command logs, …) carry
+      // non-null plainText but aren't in renderableItems, so counting them
+      // would inflate the match counter and strand next/prev on matches that
+      // have no virtual index to scroll to. Skip them.
+      if (!item || item.hiddenByDefault) continue
+      const text = item.plainText
       if (!text) continue
       const n = countMatches(text, debouncedQuery)
       for (let k = 0; k < n; k++) out.push({ itemIdx: i, matchInItem: k })
@@ -800,7 +806,7 @@ export const Chat = memo(function Chat({
     if (itemIdx >= 0) {
       const beforeTarget = streamItems.slice(0, itemIdx)
       let globalIdx = 0
-      for (const item of beforeTarget) globalIdx += countMatches(item.plainText, pendingJump.query)
+      for (const item of beforeTarget) if (!item.hiddenByDefault) globalIdx += countMatches(item.plainText, pendingJump.query)
       setSearchActiveIdx(globalIdx)
       setPendingJump(null)
       return
@@ -808,7 +814,7 @@ export const Chat = memo(function Chat({
 
     if (!streamHasOlder) {
       const visibleMatches = streamItems.reduce(
-        (total, item) => total + countMatches(item.plainText, pendingJump.query),
+        (total, item) => total + (item.hiddenByDefault ? 0 : countMatches(item.plainText, pendingJump.query)),
         0,
       )
       if (pendingJump.matchOrdinal != null && visibleMatches > pendingJump.matchOrdinal) {

@@ -33,6 +33,7 @@ export default defineConfig({
       ['src/search/__tests__/*.test.ts', 'node'],
       // session-store reducers: pure state transitions.
       ['src/session-store/reducer.test.ts', 'node'],
+      ['src/session-store/normalize.test.ts', 'node'],
       ['src/session-store/tool-status.test.ts', 'node'],
       ['src/session-store/extract-plan-content.test.ts', 'node'],
       // top-level pure helpers.
