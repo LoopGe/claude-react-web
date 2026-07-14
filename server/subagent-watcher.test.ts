@@ -179,7 +179,7 @@ describe('subagent-watcher', () => {
       const cwd = '/proj'
       const sessionId = 'sess-3'
       const agentId = 'agent-stop'
-      // No transcript file — would never complete.
+      // No transcript file — would only complete via the maxMs backstop.
       let called = false
       const stop = watchBackgroundSubagent({
         cwd,
@@ -197,27 +197,26 @@ describe('subagent-watcher', () => {
       expect(called).toBe(false)
     })
 
-    it('calls onTimeout (not onCompleted) when maxMs elapses with no completion', async () => {
+    it('synthesizes a stopped completion (via onCompleted) when maxMs elapses with no transcript', async () => {
       const cwd = '/proj'
       const sessionId = 'sess-timeout'
       const agentId = 'agent-timeout'
-      // No transcript file — would never complete.
-      let completed = false
-      let timedOut = false
-      watchBackgroundSubagent({
-        cwd,
-        sessionId,
-        agentId,
-        toolUseId: 'tu_to',
-        onCompleted: () => { completed = true },
-        onTimeout: () => { timedOut = true },
-        intervalMs: 5,
-        maxMs: 20,
+      // No transcript file — would never produce a real completion, so the
+      // maxMs backstop must resolve it via onCompleted (NOT onTimeout, which
+      // no longer exists). The previous design stranded such records forever.
+      const result = await new Promise<SubagentCompletion>((resolve) => {
+        watchBackgroundSubagent({
+          cwd,
+          sessionId,
+          agentId,
+          toolUseId: 'tu_to',
+          onCompleted: resolve,
+          intervalMs: 5,
+          maxMs: 20,
+        })
       })
-      // Wait beyond maxMs so the timeout branch fires.
-      await new Promise((r) => setTimeout(r, 120))
-      expect(completed).toBe(false)
-      expect(timedOut).toBe(true)
+      expect(result.status).toBe('stopped')
+      expect(result.summary).toBe('')
     })
   })
 })

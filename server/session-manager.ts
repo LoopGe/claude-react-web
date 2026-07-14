@@ -425,16 +425,12 @@ export class SessionManager {
       toolUseId,
       onCompleted: (completion) => {
         // Remove the watcher entry before broadcasting so the unload guard
-        // can't race a concurrent stop.
+        // can't race a concurrent stop. onCompleted fires on EVERY resolution
+        // path (real completion / staleness / maxMs backstop), so the entry is
+        // always cleared here — a later re-arm (e.g. an autoResume re-seeing
+        // the launch ack) is never blocked by a stale entry.
         perSession!.delete(toolUseId)
         this.broadcastSynthesizedTaskNotification(session, toolUseId, agentId, completion)
-      },
-      onTimeout: () => {
-        // Drop the entry so a later re-arm (e.g. an autoResume re-seeing the
-        // launch ack) can start a fresh watcher. Without this the stale entry
-        // blocks startBackgroundSubagentWatcher's perSession.has() guard and
-        // the subagent loses its only completion path.
-        perSession!.delete(toolUseId)
       },
     })
     perSession.set(toolUseId, stop)

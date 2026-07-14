@@ -647,6 +647,72 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     expect(record?.result?.isError).toBe(false)
   })
 
+  it('a late real completed overrides a synthesized stopped (interrupted) record', () => {
+    // The server watcher's maxMs backstop can synthesize a 'stopped'
+    // task_notification (status !== 'completed') that flips a still-running
+    // background subagent to 'interrupted'. A later REAL completion must
+    // override that false stop — otherwise the synthesized 'interrupted'
+    // poisons the record permanently (the whole point of accepting
+    // 'interrupted' in the completion branch). 'dismissed' stays excluded
+    // (an explicit user dismiss is a deliberate terminal state).
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-1',
+      receivedAt: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_ovr', name: 'Agent', input: { description: 'do work' } }],
+      },
+    } as unknown as SdkMessage
+    const ack: SdkMessage = {
+      type: 'user',
+      uuid: 'u-1',
+      parent_tool_use_id: null,
+      receivedAt: 1_000,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_ovr', content: 'Async agent launched successfully' }],
+      },
+    } as unknown as SdkMessage
+    const synthesizedStop: SdkMessage = {
+      type: 'system',
+      subtype: 'task_notification',
+      uuid: 'sys-stop',
+      task_id: 't-ovr',
+      tool_use_id: 'tu_ovr',
+      status: 'stopped',
+      summary: '',
+      output_file: '',
+      receivedAt: 20_000,
+    } as unknown as SdkMessage
+    const realCompletion: SdkMessage = {
+      type: 'system',
+      subtype: 'task_notification',
+      uuid: 'sys-real',
+      task_id: 't-ovr',
+      tool_use_id: 'tu_ovr',
+      status: 'completed',
+      summary: 'actually finished',
+      output_file: '',
+      receivedAt: 30_000,
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    // The watcher's backstop synthesizes a stop while the subagent is still
+    // running (background). The record flips to 'interrupted'.
+    state = reduceSessionState(state, { type: 'MESSAGE', message: synthesizedStop })
+    expect(state.mirror.activeSubagents.get('tu_ovr')?.status).toBe('interrupted')
+    // The real completion arrives later — it MUST override the false stop.
+    state = reduceSessionState(state, { type: 'MESSAGE', message: realCompletion })
+    const record = state.mirror.activeSubagents.get('tu_ovr')
+    expect(record?.status).toBe('done')
+    expect(record?.endedAt).toBe(30_000)
+    expect(record?.result?.content).toBe('actually finished')
+    expect(record?.result?.isError).toBe(false)
+  })
+
   it('DISMISS_SUBAGENT flips a pending record to dismissed and ignores late completion', () => {
     // The Waiting bubble's dismiss affordance lets the user give up on
     // tracking a pending background subagent. It must flip pending ->
@@ -843,6 +909,84 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     })
     // Post-replay sweep must have flipped background → pending.
     expect(state.mirror.activeSubagents.get('tu_nores')?.status).toBe('pending')
+  })
+
+  it('stale-pending safety net flips a stranded pending record to interrupted', () => {
+    // If the server watcher that would synthesize a background subagent's
+    // completion is lost (server restart cleared the in-memory watcher map,
+    // the SDK's resume replay didn't re-include the launch ack, …) the record
+    // strands at `pending` forever. The sweep's stale-pending safety net flips
+    // such a record to `interrupted` once its last child-frame activity is
+    // older than PENDING_TIMEOUT_MS (30 min), so the WorkingBubble chip clears.
+    // A late real completion still overrides (the completion branch accepts
+    // 'interrupted').
+    const recent = Date.now()
+    const stale = recent - 31 * 60 * 1000 // 31 min ago — just past the 30-min threshold
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-1',
+      receivedAt: stale - 2_000,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_stale', name: 'Agent', input: { description: 'do work', run_in_background: true } }],
+      },
+    } as unknown as SdkMessage
+    const ack: SdkMessage = {
+      type: 'user',
+      uuid: 'u-1',
+      parent_tool_use_id: null,
+      receivedAt: stale - 1_000,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_stale', content: 'Async agent launched successfully' }],
+      },
+    } as unknown as SdkMessage
+    const result: SdkMessage = {
+      type: 'result',
+      subtype: 'success',
+      uuid: 'r-1',
+      receivedAt: stale,
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: result })
+    // After the result frame: background → pending (sweep). The record's
+    // lastActivity (endedAt) is `stale` (31 min ago), so the safety net then
+    // flips pending → interrupted on the SAME sweep.
+    expect(state.mirror.activeSubagents.get('tu_stale')?.status).toBe('interrupted')
+
+    // A fresh (recent) pending record is NOT false-stopped.
+    const freshToolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-2',
+      receivedAt: recent - 2_000,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_fresh', name: 'Agent', input: { description: 'do work', run_in_background: true } }],
+      },
+    } as unknown as SdkMessage
+    const freshAck: SdkMessage = {
+      type: 'user',
+      uuid: 'u-2',
+      parent_tool_use_id: null,
+      receivedAt: recent - 1_000,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_fresh', content: 'Async agent launched successfully' }],
+      },
+    } as unknown as SdkMessage
+    const freshResult: SdkMessage = {
+      type: 'result',
+      subtype: 'success',
+      uuid: 'r-2',
+      receivedAt: recent,
+    } as unknown as SdkMessage
+    state = reduceSessionState(state, { type: 'MESSAGE', message: freshToolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: freshAck })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: freshResult })
+    expect(state.mirror.activeSubagents.get('tu_fresh')?.status).toBe('pending')
   })
 
   it('PREPEND_MESSAGES does NOT sweep live in-flight tools via historical result frames', () => {

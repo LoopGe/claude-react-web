@@ -19,8 +19,12 @@
 // FRAGILITY: this reads the CLI's on-disk layout directly (the SDK exposes
 // no subagent-transcript API), so it depends on the CLI's project-dir
 // encoding and the `subagents/agent-<id>.jsonl` path. If the CLI changes
-// either, the watcher silently finds nothing and the turn-end sweep
-// (reducer) remains the fallback. No crash, no false completion.
+// either, real completion is never detected and only the maxMs backstop (a
+// synthesized `stopped`) eventually clears the record — no crash, no false
+// `completed`. The previous design's "fall back to the turn-end sweep" was
+// a no-op once the parent turn had ended (the record was already `pending`),
+// so it is no longer relied upon: the maxMs backstop synthesizes a frame so
+// the record can never strand.
 
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -86,6 +90,23 @@ function extractTextBlocks(content: unknown): string {
   return parts.join('\n').trim()
 }
 
+/** stop_reason values that mean the subagent is STILL RUNNING (will emit more
+ *  after the tool result / pause resolves). 'tool_use' is set on every
+ *  completed tool-calling assistant response — treating it as completion
+ *  false-completes any tool-using subagent within seconds of launch (the
+ *  common case). 'pause_turn' is a mid-flight pause (the subagent will
+ *  resume) and must likewise NOT be treated as completion. Any OTHER
+ *  stop_reason (end_turn, max_tokens, max_turns, stop_sequence, refusal, …)
+ *  means the subagent has stopped producing → terminal. We use a denylist of
+ *  the known non-terminal reasons rather than an allowlist so that a
+ *  terminal-but-unfamiliar reason (e.g. a CLI-specific 'max_turns') still
+ *  completes instead of polling until the maxMs fallback.
+ *
+ *  Hoisted to module scope: it is a constant, and readSubagentCompletion runs
+ *  once per poll per watcher, so a per-call allocation would churn GC over a
+ *  long backstop window. */
+const NON_TERMINAL_STOP_REASONS = new Set(['tool_use', 'pause_turn'])
+
 /** Read the subagent's transcript and, if it contains a final assistant
  *  message (one with a terminal `message.stop_reason`), return the completion.
  *  Returns null if the transcript doesn't exist yet, is mid-write, or hasn't
@@ -98,18 +119,6 @@ export function readSubagentCompletion(filePath: string): SubagentCompletion | n
   } catch {
     return null
   }
-  // stop_reason values that mean the subagent is STILL RUNNING (will emit more
-  // after the tool result / pause resolves). 'tool_use' is set on every
-  // completed tool-calling assistant response — treating it as completion
-  // false-completes any tool-using subagent within seconds of launch (the
-  // common case). 'pause_turn' is a mid-flight pause (the subagent will
-  // resume) and must likewise NOT be treated as completion. Any OTHER
-  // stop_reason (end_turn, max_tokens, max_turns, stop_sequence, refusal, …)
-  // means the subagent has stopped producing → terminal. We use a denylist of
-  // the known non-terminal reasons rather than an allowlist so that a
-  // terminal-but-unfamiliar reason (e.g. a CLI-specific 'max_turns') still
-  // completes instead of polling until the maxMs fallback.
-  const NON_TERMINAL_STOP_REASONS = new Set(['tool_use', 'pause_turn'])
   let lastStopReason: string | null = null
   let lastText = ''
   for (const line of text.split('\n')) {
@@ -144,52 +153,82 @@ export interface WatchOptions {
   toolUseId: string
   onCompleted: (completion: SubagentCompletion) => void
   intervalMs?: number
+  /** Absolute backstop, in ms (default 2 h). If the watcher reaches this
+   *  without detecting a terminal `stop_reason`, it synthesizes a `stopped`
+   *  completion so the record can never strand indefinitely. High by design:
+   *  a legitimately long background subagent (the common case that previously
+   *  false-timed-out at 10 min) is polled until its real `end_turn`, not cut
+   *  off. This only resolves the rare subagent whose transcript never gets a
+   *  terminal frame (the CLI died / ended via a non-standard path); a real
+   *  `completed` always wins first. */
   maxMs?: number
-  /** Called once if the watcher gives up at `maxMs` without a completion.
-   *  Lets the owner drop its per-toolUseId bookkeeping so a later re-arm
-   *  (e.g. an autoResume re-seeing the launch ack) can start a fresh watcher
-   *  instead of being blocked by a stale entry. Never called if `onCompleted`
-   *  fired or `stop()` was invoked first. */
-  onTimeout?: () => void
 }
 
-/** Poll a background subagent's transcript until it reaches completion (a
- *  final assistant message with stop_reason), then call `onCompleted`. Caps
- *  at `maxMs`; if no completion by then, stops silently — the reducer's
- *  turn-end sweep is the fallback. Returns a `stop()` to cancel early
- *  (called on session unload so a watcher can't fire into a dead session). */
+/** Poll a background subagent's transcript until it reaches completion, then
+ *  call `onCompleted`. Two resolution paths, BOTH funnel through `onCompleted`
+ *  so the owning record always leaves its `pending`/`background` state:
+ *
+ *    1. Real terminal `stop_reason` (end_turn / max_turns / …) → the
+ *       subagent's own final text, status `completed`/`stopped`.
+ *    2. `maxMs` backstop → synthesize `stopped`.
+ *
+ *  The previous design gave up silently at 10 min (`onTimeout`, no frame) and
+ *  relied on the client reducer's turn-end sweep to clear the record — but
+ *  that sweep is a no-op once the parent turn has ended (the record is already
+ *  `pending`), so a subagent that finished even seconds after the 10-min cap
+ *  stranded forever (verified in production logs: ~11 of 40 background
+ *  subagents timed out, most finishing 39s–7min AFTER the cap). Raising the
+ *  cap to 2h lets those finish for real, and synthesizing a frame on the
+ *  backstop guarantees the rare no-terminal-frame case still clears.
+ *
+ *  There is intentionally NO staleness heuristic: the CLI writes one JSON line
+ *  per COMPLETE assistant message, so a subagent mid-inference (or a long
+ *  tool) is legitimately transcript-quiet for minutes. A staleness threshold
+ *  could not reliably tell "stuck" from "thinking" and risked false-stopping a
+ *  running subagent. A false stop is recoverable (the reducer's task_notification
+ *  branch accepts `interrupted` and lets a late real completion override), but
+ *  the transient wrong status is still user-visible, so the watcher avoids
+ *  synthesizing anything but a real terminal frame or the maxMs backstop. The
+ *  maxMs backstop is the only synthesized path.
+ *
+ *  Returns a `stop()` to cancel early (called on session unload so a watcher
+ *  can't fire into a dead session). */
 export function watchBackgroundSubagent(opts: WatchOptions): () => void {
   const intervalMs = opts.intervalMs ?? 2000
-  const maxMs = opts.maxMs ?? 10 * 60 * 1000
+  const maxMs = opts.maxMs ?? 2 * 60 * 60 * 1000
   const filePath = subagentTranscriptPath(opts.cwd, opts.sessionId, opts.agentId)
-  let elapsed = 0
+  // Wall-clock for the backstop (not an `elapsed += intervalMs` counter, which
+  // undercounts real time when the event loop delays ticks).
+  const startMs = Date.now()
   let done = false
+
+  const finish = (completion: SubagentCompletion, level: 'info' | 'warn', reason: string) => {
+    if (done) return
+    done = true
+    clearInterval(timer)
+    log[level](
+      `[${opts.sessionId}] background subagent agentId=${opts.agentId} ` +
+      `toolUseId=${opts.toolUseId} ${reason} (status=${completion.status})`,
+    )
+    opts.onCompleted(completion)
+  }
+
   const tick = () => {
     if (done) return
+    // 1. Real terminal completion?
     const completion = readSubagentCompletion(filePath)
     if (completion) {
-      done = true
-      clearInterval(timer)
-      log.info(
-        `[${opts.sessionId}] background subagent agentId=${opts.agentId} ` +
-        `toolUseId=${opts.toolUseId} completed (status=${completion.status})`,
-      )
-      opts.onCompleted(completion)
+      finish(completion, 'info', 'completed (terminal stop_reason)')
       return
     }
-    elapsed += intervalMs
-    if (elapsed >= maxMs) {
-      done = true
-      clearInterval(timer)
-      log.warn(
-        `[${opts.sessionId}] background subagent agentId=${opts.agentId} ` +
-        `watcher timed out after ${maxMs}ms with no completion; falling back to the turn-end sweep`,
+    // 2. Hard backstop (wall-clock).
+    if (Date.now() - startMs >= maxMs) {
+      finish(
+        { status: 'stopped', summary: '' },
+        'warn',
+        `reached ${maxMs}ms backstop with no completion; synthesizing stopped`,
       )
-      // Drop the owner's bookkeeping so a later re-arm isn't blocked by this
-      // stale entry. The subagent may still be running (or may have finished
-      // after the transcript was last polled); a re-arm from a replayed ack
-      // will start a fresh watcher that can find the real completion.
-      opts.onTimeout?.()
+      return
     }
   }
   const timer = setInterval(tick, intervalMs)

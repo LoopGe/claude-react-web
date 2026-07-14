@@ -348,10 +348,6 @@ export const Chat = memo(function Chat({
   useEffect(() => {
     setPendingTurnSince(null)
   }, [session.id])
-  // Turn is "active" for layout purposes the instant the user sends, even
-  // before `session.working` arrives — this is what keeps the WorkingBubble in
-  // the same commit as the optimistic message (see pendingTurnSince comment).
-  const turnActive = session.working || pendingTurnSince != null
   const turnStartedAt = session.workingSince ?? pendingTurnSince ?? undefined
   /** Increments whenever we want the Composer's textarea refocused.
    *  Bumped after a successful send ?otherwise the click on the Send
@@ -512,6 +508,22 @@ export const Chat = memo(function Chat({
   })
   const attachments = useAttachments(session.id, session.cwd)
   const pastedImages = usePastedImages()
+  // Turn is "active" for layout purposes the instant the user sends, even
+  // before `session.working` arrives — this is what keeps the WorkingBubble in
+  // the same commit as the optimistic message (see pendingTurnSince comment).
+  // Also active during an SDK-driven auto-continuation turn (e.g. the model
+  // processing a background subagent's <task-notification> after the parent
+  // turn ended): those turns don't go through send() so `session.working`
+  // stays false and `pendingTurnSince` is null, but `stream.activePhase` is
+  // non-null while the SDK streams its response. `activePhase` is cleared by
+  // the result frame (in both replay and live), so this never false-fires on
+  // a reconnect replay whose final state has no live turn. Gated on
+  // `!session.terminated` because `liveTurn` is only cleared by a result
+  // frame — a crashed/killed subprocess that never emits one would otherwise
+  // leave `activePhase` non-null and stick the WorkingBubble on a dead
+  // session; a terminated session has `working=false` and `terminated=true`,
+  // so the gate drops the bubble exactly when it should.
+  const turnActive = session.working || pendingTurnSince != null || (stream.activePhase != null && !session.terminated)
   /** A background (async) subagent still in flight after the parent turn
    *  ended. The WorkingBubble stays mounted in a `Waiting` state while any
    *  such subagent exists, so the user sees that background work is ongoing

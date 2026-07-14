@@ -757,6 +757,25 @@ function trimFront(state: SessionState): SessionState {
  *
  *  Identity-stable: returns the same mirror reference when nothing needed
  *  sweeping (clone-on-write per Map). */
+/** Client-side safety-net timeout for stranded `pending` background
+ *  subagents. A `pending` record (parent turn ended) is normally cleared by
+ *  the SERVER watcher synthesizing a task_notification when the subagent's
+ *  own transcript reaches a terminal stop_reason. But if that watcher is lost
+ *  (server restart cleared the in-memory watcher map, the SDK's bounded resume
+ *  replay didn't re-include the launch ack, or the subagent transcript path
+ *  drifted) the record strands at `pending` forever — the WorkingBubble chip
+ *  reappears on every parent turn and never clears. This timeout flips such a
+ *  stranded record to `interrupted` once its last child-frame activity
+ *  (`endedAt`) is older than the threshold, so the chip clears.
+ *
+ *  Generous (30 min) and RECOVERABLE: a late real completion still overrides
+ *  (the task_notification completion branch accepts 'interrupted'). It only
+ *  fires for `pending` (post-turn) records whose `endedAt` is stale — a
+ *  still-running subagent advances `endedAt` via its child frames, so it is
+ *  never false-stopped. The one residual risk (a post-turn subagent
+ *  mid-inference with no child frames for >30 min) is rare and recoverable. */
+const PENDING_TIMEOUT_MS = 30 * 60 * 1000
+
 function sweepAtTurnEnd(mirror: ServerMirror): ServerMirror {
   let toolStatus = mirror.toolStatus
   let activeSubagents = mirror.activeSubagents
@@ -784,6 +803,27 @@ function sweepAtTurnEnd(mirror: ServerMirror): ServerMirror {
       if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
       activeSubagents.set(id, { ...sub, status: 'pending', endedAt: sub.endedAt ?? sub.startedAt })
     }
+  }
+
+  // Stale-pending safety net (see PENDING_TIMEOUT_MS): flip `pending`
+  // records whose last child-frame activity is older than the threshold to
+  // `interrupted`. `endedAt` is advanced by child frames (the async-detector
+  // branch), so a still-running subagent never trips this — only one that has
+  // gone quiet long enough to be considered stranded. Runs on every turn end
+  // and on replay, so a stranded chip clears without needing a reload.
+  const now = Date.now()
+  // Plausibility floor: a real server-stamped receivedAt is always post-2001
+  // epoch ms (> 1e12). A value below that is a non-epoch sentinel (a corrupt
+  // stamp or a test fixture using relative offsets) — the safety net must not
+  // treat 1970-era values as "30 min stale" and false-stop on them.
+  const EPOCH_PLAUSIBILITY_FLOOR = 1_000_000_000_000
+  for (const [id, sub] of activeSubagents) {
+    if (sub.status !== 'pending') continue
+    const lastActivity = sub.endedAt ?? sub.startedAt
+    if (typeof lastActivity !== 'number' || lastActivity < EPOCH_PLAUSIBILITY_FLOOR) continue
+    if (now - lastActivity <= PENDING_TIMEOUT_MS) continue
+    if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
+    activeSubagents.set(id, { ...sub, status: 'interrupted' })
   }
 
   // workflows: running → interrupted; flip still-running children too.
@@ -1357,14 +1397,19 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
     // still authoritative and must flip it to 'done') AND 'pending' (the
     // parent turn already ended and the turn-end sweep moved a still-
     // 'background' record to 'pending' — the async subagent kept running and
-    // its completion is arriving now, possibly turns later). 'interrupted' is
-    // deliberately excluded: a prior interrupt is ambiguous and a late
-    // notification shouldn't override it. A synchronous subagent never
-    // receives a task-notification, so accepting 'running' can't mis-flip a
-    // sync record. (Accepting 'pending' is the fix for the race where the
-    // sweep previously defeated late completion by flipping background to
-    // 'interrupted', which this branch excluded.)
-    if (existing && (existing.status === 'background' || existing.status === 'running' || existing.status === 'pending')) {
+    // its completion is arriving now, possibly turns later) AND 'interrupted'
+    // (the server watcher's maxMs backstop may have synthesized a 'stopped'
+    // frame that flipped the record to 'interrupted' while the subagent was
+    // still legitimately running; a later REAL completion must be able to
+    // override that synthesized stop, otherwise the false 'stopped' poisons
+    // the record permanently — see server/subagent-watcher.ts). A real user
+    // interrupt can also leave 'interrupted', but a task-notification only
+    // arrives when the subagent actually settled, so overriding is correct in
+    // both cases. A synchronous subagent never receives a task-notification,
+    // so accepting 'running'/'interrupted' can't mis-flip a sync record.
+    // 'dismissed' stays excluded: an explicit user dismiss is a deliberate
+    // terminal state a late notification must not revive.
+    if (existing && (existing.status === 'background' || existing.status === 'running' || existing.status === 'pending' || existing.status === 'interrupted')) {
       if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
       const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
       const isError = taskNotification.status !== 'completed'
@@ -1377,7 +1422,12 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
         // isAsync definitively (the ack may have been lost, leaving isAsync
         // unset if no child frame arrived to trip the async-detector).
         isAsync: true,
-        ...(existing.result ? {} : { result: { content: resultContent, isError } }),
+        // Don't clobber an existing (child-text-captured) result, AND don't
+        // set a result when the notification carries no content (notably a
+        // synthesized `stopped` from the watcher backstop, whose summary is
+        // '') — otherwise the empty result would block a later REAL
+        // completion from populating the subagent's actual output.
+        ...(existing.result || resultContent === '' ? {} : { result: { content: resultContent, isError } }),
       })
       changed = true
     }
