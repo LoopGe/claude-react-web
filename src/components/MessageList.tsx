@@ -294,11 +294,11 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   // direct scrollTop/scrollHeight measurements on scrollerRef are untouched.
   const setOsScroller = useOverlayScrollbar({ autoHide: 'leave' })
   const streamingRegionRef = useRef<HTMLDivElement | null>(null)
-  // --- /clear veil ----------------------------------------------------
-  // The panel-level `.panel-clearing-veil` (rendered by PanelSlot above
-  // this component) now owns the overlay + fade-out. MessageList just
-  // applies `.chat-messages-clearing` (see messagesClassName below) so
-  // content stays blurred/dimmed under the veil while `clearing` is true.
+  // --- /clear blur ----------------------------------------------------
+  // MessageList applies `.chat-messages-clearing` (see messagesClassName
+  // below) while `clearing` is true — the view-only blur that signals a
+  // clear in progress during the POST. There is no panel-level veil anymore;
+  // the fresh session Y plays `.entering` on mount.
   const [streamingOverlayHeight, setStreamingOverlayHeight] = useState(0)
   // Easter-egg: triple-clicking the empty-state sparkle swaps in a hidden
   // dino-style game. Local UI state only — no session/persistence concerns.
