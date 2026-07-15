@@ -67,6 +67,7 @@ import {
 import type { Defaults, ConfigResponse } from './types/config'
 import { setMaxUploadBytes } from './hooks/config-store'
 import { closeGroupPanelsState } from './utils/group-panels'
+import { inheritGroupId, inheritSidebarOrderId, joinGroupId } from './utils/session-slot'
 import { notificationTooltip } from './utils/notifications'
 import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
 import { randomId } from './utils/uuid'
@@ -383,6 +384,7 @@ export function App() {
   const focusedIdRef = useRef(focusedId)
   const sessionsRef = useRef(sessions)
   const maxOpenRef = useRef(maxOpen)
+  const maxGroupSizeRef = useRef(maxGroupSize)
   const groupsRef = useRef(groups)
   const activeGroupIdRef = useRef<string | null>(null)
   /** Forward ref to animatePanels (declared much later). closeSession /
@@ -467,6 +469,7 @@ export function App() {
   groupsRef.current = groups
   resumingRef.current = resuming
   maxOpenRef.current = maxOpen
+  maxGroupSizeRef.current = maxGroupSize
   paletteOpenRef.current = paletteOpen
   helpOpenRef.current = helpOpen
   historyPanelOpenRef.current = historyPanelOpen
@@ -761,6 +764,41 @@ export function App() {
           // working doesn't fire a notification on its first true→ false
           // transition when the user is still watching it.
           seedWorkingState(frame.session.id, frame.session.working)
+          // `/clear`, restart, and fork all spawn a fresh session Y that
+          // should land in an existing session X's group. The server tags
+          // this frame with `joinGroupOf` = X. Append Y to X's group NOW,
+          // in the same batch as `setSessions` above, so neither X nor Y
+          // flashes under "Ungrouped" before the POST response runs.
+          //
+          // APPEND (not replace) is deliberate: X is still in `sessions`
+          // until the POST-driven `swapSession` (clear/restart, same tab) or
+          // `session-removed(X)` (cross-tab) evicts it. Replacing X→Y here
+          // would evict X from its group while X is still in `sessions`,
+          // flashing X under "Ungrouped". Appending keeps X grouped until
+          // it's actually gone, so no flash. `swapSession`/`handleAddToGroup`
+          // are idempotent over an already-appended Y (dedup).
+          //
+          // sidebarOrder is intentionally NOT touched here: swapSession
+          // (clear/restart) replaces X→Y in order; for fork, Y is appended to
+          // the order by orderedSessions' unknown-id fallback. Touching it
+          // here would risk the same evict-X-while-present flash on order.
+          const joinGroupOf = frame.joinGroupOf
+          if (joinGroupOf && joinGroupOf !== sid) {
+            setGroups((prev) => {
+              const sourceGroup = prev.find((g) => g.sessionIds.includes(joinGroupOf))
+              // Respect maxGroupSize: if X's group is full, skip the append.
+              // For fork (X stays) this lets handleAddToGroup enforce the cap
+              // with its toast instead of silently exceeding it. For
+              // clear/restart (X is evicted by swapSession) the group isn't
+              // actually growing, but we can't tell the two apart here — so at
+              // max capacity Y briefly stays ungrouped until swapSession
+              // replaces X→Y. That's a rare, transient edge (group full +
+              // clearing), no worse than the pre-fix flash, and avoiding it
+              // would require distinguishing fork from clear/restart.
+              if (sourceGroup && sourceGroup.sessionIds.length >= maxGroupSizeRef.current) return prev
+              return joinGroupId(prev, joinGroupOf, sid)
+            })
+          }
           break
         }
         case 'session-removed': {
@@ -926,24 +964,8 @@ export function App() {
       })
       setOpenIds((prev) => prev.map((id) => (id === oldId ? newId : id)))
       setFocusedId((prev) => (prev === oldId ? newId : prev))
-      setGroups((prev) =>
-        prev.map((g) => {
-          const i = g.sessionIds.indexOf(oldId)
-          if (i === -1) return g
-          const next = g.sessionIds.slice()
-          // Don't duplicate if newId is already a member.
-          if (next.includes(newId)) next.splice(i, 1)
-          else next[i] = newId
-          return { ...g, sessionIds: next }
-        }),
-      )
-      setSidebarOrder((prev) => {
-        if (!prev.includes(oldId)) return prev
-        // If newId is already ordered, just drop oldId (avoid duplicating newId).
-        if (prev.includes(newId)) return prev.filter((id) => id !== oldId)
-        // Otherwise replace oldId → newId in place (Y inherits X's slot).
-        return prev.map((id) => (id === oldId ? newId : id))
-      })
+      setGroups((prev) => inheritGroupId(prev, oldId, newId))
+      setSidebarOrder((prev) => inheritSidebarOrderId(prev, oldId, newId))
       setLastSeenTurn((prev) => {
         const next = { ...prev }
         delete next[oldId]
@@ -1538,7 +1560,10 @@ export function App() {
         // Create the replacement session (no groupId — swapSession moves the
         // group slot X→Y atomically, avoiding handleAddToGroup's overflow
         // eviction kicking a sibling out while the old session still occupies
-        // its slot).
+        // its slot). `joinGroupOf: id` makes the server's `session-created(Y)`
+        // broadcast carry `joinGroupOf: X`, so every tab appends Y to X's
+        // group the instant Y appears — no "Ungrouped" flash before this POST
+        // resolves and swapSession runs (swapSession then evicts X).
         const res = await api.post<{ session: SessionInfo }>('/sessions', {
           cwd: source.cwd,
           model: source.model,
@@ -1547,6 +1572,7 @@ export function App() {
           // doesn't silently drop the window from 1M back to 200k.
           betas: source.betas,
           title: source.title,
+          joinGroupOf: id,
         })
         // Atomic X→Y swap (sessions/openIds/focusedId/groups/sidebarOrder/
         // lastSeenTurn). Y mounts fresh and plays .entering. swapSession also

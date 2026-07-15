@@ -56,7 +56,7 @@ describe('session permission mode routes', () => {
     })
 
     expect(res.status).toBe(201)
-    expect(sm.create).toHaveBeenCalledWith({ settings: { hooks } }, undefined)
+    expect(sm.create).toHaveBeenCalledWith({ settings: { hooks } }, undefined, undefined)
   })
 
   it('rejects unsupported hooks inside create-time settings', async () => {

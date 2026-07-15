@@ -378,7 +378,7 @@ export interface SessionManagerOptions {
  *  the frontend sidebar can replace 5-second polling with a push fee?. */
 export type GlobalSessionEvent =
   | { kind: 'update'; session: SessionInfo }
-  | { kind: 'created'; session: SessionInfo }
+  | { kind: 'created'; session: SessionInfo; joinGroupOf?: string }
   | { kind: 'removed'; id: string }
   /** A tool-permission request arrived for a session. Mirrored onto the
    *  global channel so that App-level code can fire a desktop notification

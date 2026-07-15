@@ -84,7 +84,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   // Create session
   app.post('/sessions', async (c) => {
     const body = await safeJson<Partial<Options> & { cwd?: string; provider?: string; enabledMcpServers?: string[]; enabledPlugins?: string[] }>(c.req)
-    const { enabledMcpServers, enabledPlugins, mcpServers, env: customEnv, ...rest } = body as Record<string, unknown> & {
+    const { enabledMcpServers, enabledPlugins, mcpServers, env: customEnv, joinGroupOf, ...rest } = body as Record<string, unknown> & {
       enabledMcpServers?: string[]
       enabledPlugins?: string[]
       mcpServers?: Record<string, unknown>
@@ -96,6 +96,12 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     if (pluginsErr) return c.json({ error: pluginsErr }, 400)
     const envErr = validateEnv(customEnv)
     if (envErr) return c.json({ error: envErr }, 400)
+    // `joinGroupOf` is set by the restart flow (Y joins X's group). Validate
+    // it's a string so it can't leak into spawn as an unexpected type; absent
+    // for every ordinary create.
+    if (joinGroupOf != null && typeof joinGroupOf !== 'string') {
+      return c.json({ error: 'joinGroupOf must be a string' }, 400)
+    }
     if (rest.permissionMode != null && !isUserSelectablePermissionMode(rest.permissionMode)) {
       return c.json({ error: `permissionMode must be one of ${permissionModeList()}` }, 400)
     }
@@ -108,7 +114,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     const mergedMcp = await sm.mergeMcpServersAsync(enabledMcpServers, mcpServers)
     if (mergedMcp) rest.mcpServers = mergedMcp
     if (enabledPlugins !== undefined) (rest as { enabledPlugins?: string[] }).enabledPlugins = enabledPlugins
-    const info = sm.create(rest as Options & { provider?: string }, customEnv as Record<string, string> | undefined)
+    const info = sm.create(rest as Options & { provider?: string }, customEnv as Record<string, string> | undefined, joinGroupOf as string | undefined)
     return c.json({ session: info }, 201)
   })
 

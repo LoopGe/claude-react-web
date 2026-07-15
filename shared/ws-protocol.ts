@@ -57,6 +57,17 @@ export interface WsSessionUpdate<Session> {
 export interface WsSessionCreated<Session> {
   kind: 'session-created'
   session: Session
+  /** Present when this session was spawned to JOIN another session's group
+   *  — carries the source (OLD) session id. Set by `/clear`, restart, and
+   *  fork: all three spawn a fresh session Y that should land in X's group.
+   *  Append semantics: the client appends Y to whatever group contains X,
+   *  in the same render batch as Y appearing, so neither X nor Y flashes
+   *  under "Ungrouped". X is NOT removed here — for `/clear`/restart the
+   *  POST-driven `swapSession` (same tab) or `session-removed(X)` (other
+   *  tabs) evicts X afterward; for fork X stays. This append-then-evict
+   *  ordering is what avoids the flash: X stays grouped until it's
+   *  actually gone from `sessions`. */
+  joinGroupOf?: string
 }
 export interface WsSessionRemoved {
   kind: 'session-removed'

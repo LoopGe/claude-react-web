@@ -628,7 +628,15 @@ export class SessionManager {
    *
    *  For resume, use `resume()` instead dthis path always allocates a
    *  fresh UUID and won't wire up SDK `resume`. */
-  create(opts: Options & { provider?: string }, customEnv?: Record<string, string>): SessionInfo {
+  create(
+    opts: Options & { provider?: string },
+    customEnv?: Record<string, string>,
+    /** Set by the restart flow: the id of the session Y joins. Threaded
+     *  through to spawn() so the `created` broadcast carries `joinGroupOf`,
+     *  letting every tab append Y to X's group (X is evicted later by
+     *  swapSession / session-removed). */
+    joinGroupOf?: string,
+  ): SessionInfo {
     // Pin a concrete default model for brand-new sessions so we don't lean
     // on the CLI subprocess's built-in default. When the client omits a
     // model, use the first entry of the configured model list
@@ -642,7 +650,7 @@ export class SessionManager {
       provider: opts.provider ?? this.defaultProvider,
       model: opts.model ?? defaultConfig.defaultModel,
     }
-    return this.spawn(randomUUID(), withDefault, customEnv)
+    return this.spawn(randomUUID(), withDefault, customEnv, undefined, undefined, undefined, joinGroupOf)
   }
 
   /** Resume a previously-persisted session. The SDK loads conversation
@@ -1060,6 +1068,9 @@ export class SessionManager {
       // the source inherits global (both undefined) — the fork then
       // inherits global too.
       { showPinnedUserMessage: meta.showPinnedUserMessage, autoRecap: meta.autoRecap },
+      // joinGroupOf: the source id — Y joins X's group (append semantics;
+      // X stays, since fork doesn't remove the source).
+      id,
     )
     if (parentOverride && parentOverride.kind !== 'inherit') {
       // Best-effort — the dynamic flag-layer pin matters mostly when the
@@ -1219,6 +1230,16 @@ export class SessionManager {
     historySeed?: SDKMessage[],
     skillOverride?: SessionSkillOverride,
     prefs?: { showPinnedUserMessage?: boolean; autoRecap?: boolean },
+    /** When this spawn is a fresh Y that should land in an existing session
+     *  X's sidebar group, pass X's id here so the `created` broadcast carries
+     *  `joinGroupOf: X`. Set by `/clear`, restart, and fork. Append
+     *  semantics: the client appends Y to X's group in the same render batch
+     *  Y appears — X is NOT removed by this signal (for `/clear`/restart the
+     *  POST-driven swapSession / session-removed evicts X afterward; for
+     *  fork X stays). This append-then-evict ordering keeps X grouped until
+     *  it's actually gone from `sessions`, so neither X nor Y flashes under
+     *  "Ungrouped". Undefined for every other caller. */
+    joinGroupOf?: string,
   ): SessionInfo {
     const providerName = opts.provider ?? this.defaultProvider
     const provider = this.providers.get(providerName)
@@ -1383,7 +1404,13 @@ export class SessionManager {
     // that knows how to insert, so there's a single canonical origin
     // for the row dno races with the POST /sessions response.
     this.writeStore(session)
-    this.broadcastGlobal({ kind: 'created', session: this.info(session) })
+    // `joinGroupOf` (set by /clear, restart, fork) is conditionally spread so
+    // the wire frame stays clean (no `undefined` key) for plain creates.
+    this.broadcastGlobal({
+      kind: 'created',
+      session: this.info(session),
+      ...(joinGroupOf ? { joinGroupOf } : {}),
+    })
     this.captureGitHead(session)
 
     // [DEBUG MCP] Log the MCP servers passed to the SDK at spawn time, then
@@ -1745,6 +1772,8 @@ export class SessionManager {
         undefined,
         undefined,
         settings.skillOverride,
+        undefined,
+        id,
       )
       const newYId = newY.id
 
