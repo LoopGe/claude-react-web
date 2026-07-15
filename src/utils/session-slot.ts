@@ -55,6 +55,42 @@ export function inheritSidebarOrderId(
   return order.map((id) => (id === oldId ? newId : id))
 }
 
+/** Append `newId` to the group containing `sourceId` (the `session-created`
+ *  `joinGroupOf` path), with an optional `maxGroupSize` cap bypass for the
+ *  evict case.
+ *
+ *  - Fork (`evicting` false/absent): `sourceId` stays, so the group genuinely
+ *    grows by one. Respect `maxGroupSize`: if `sourceId`'s group is already
+ *    full, return the input unchanged so the caller's `handleAddToGroup` can
+ *    toast on overflow instead of silently exceeding the cap.
+ *  - `/clear` + restart (`evicting` true): `sourceId` is being evicted
+ *    (same-tab `swapSession` / cross-tab `session-removed`), so appending
+ *    `newId` won't grow the group long-term. Bypass the cap — otherwise a
+ *    FULL group (e.g. a 3-up workspace at the default `maxGroupSize=3`)
+ *    skips the append and `newId` flashes under "Ungrouped" between the
+ *    `session-created` frame and the POST-driven `swapSession`.
+ *
+ *  Delegates the actual append (and its idempotency / source-unguarded
+ *  no-ops) to `joinGroupId`, so the caller's reference-equality short-circuit
+ *  still fires when nothing changes.
+ *
+ *  - `sourceId === newId` is a full no-op (returns input by reference).
+ *  - `sourceId` in no group → `joinGroupId` returns the input by reference
+ *    (`newId` stays ungrouped — matches a fork/clear of an ungrouped source). */
+export function joinGroupOfSource(
+  groups: SessionGroup[],
+  sourceId: string,
+  newId: string,
+  opts: { evicting?: boolean; maxGroupSize: number },
+): SessionGroup[] {
+  if (sourceId === newId) return groups
+  if (!opts.evicting) {
+    const sourceGroup = groups.find((g) => g.sessionIds.includes(sourceId))
+    if (sourceGroup && sourceGroup.sessionIds.length >= opts.maxGroupSize) return groups
+  }
+  return joinGroupId(groups, sourceId, newId)
+}
+
 /** Append `newId` to the same group that contains `oldId` (fork semantics:
  *  `oldId` stays, `newId` joins its group). Used by the `session-created`
  *  (`joinGroupOf`) handler so a forked session lands in its source's group

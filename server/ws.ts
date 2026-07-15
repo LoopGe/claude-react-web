@@ -270,7 +270,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
           for await (const ev of global.iterable) {
             if (closed) return
             if (ev.kind === 'update') queue.enqueue({ kind: 'session-update', session: ev.session })
-            else if (ev.kind === 'created') queue.enqueue({ kind: 'session-created', session: ev.session, joinGroupOf: ev.joinGroupOf })
+            else if (ev.kind === 'created') queue.enqueue({ kind: 'session-created', session: ev.session, joinGroupOf: ev.joinGroupOf, evictingSource: ev.evictingSource })
             else if (ev.kind === 'removed') queue.enqueue({ kind: 'session-removed', id: ev.id })
             else if (ev.kind === 'permission_request') {
               queue.enqueue({

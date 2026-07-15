@@ -68,6 +68,15 @@ export interface WsSessionCreated<Session> {
    *  ordering is what avoids the flash: X stays grouped until it's
    *  actually gone from `sessions`. */
   joinGroupOf?: string
+  /** Set to `true` by `/clear` and restart: the source session X is being
+   *  evicted (swapSession same-tab / session-removed cross-tab), so
+   *  appending Y to X's group won't grow it long-term. The client uses this
+   *  to bypass its `maxGroupSize` cap — without it, a FULL group (e.g. a
+   *  3-up workspace at the default maxGroupSize=3) skips the append and Y
+   *  flashes under "Ungrouped" between this frame and the POST-driven
+   *  swapSession. Absent for fork (X stays, so the cap stands and
+   *  handleAddToGroup can toast on overflow). */
+  evictingSource?: boolean
 }
 export interface WsSessionRemoved {
   kind: 'session-removed'

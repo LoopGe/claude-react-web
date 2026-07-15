@@ -1042,6 +1042,27 @@ describe('SessionManager', () => {
     const next = await it.next()
     expect(next.done).toBe(false)
     expect(next.value).toMatchObject({ kind: 'created', session: { id: forked.id } })
+    // fork tags Y with joinGroupOf (X stays in the group) but NOT
+    // evictingSource — the client must keep enforcing maxGroupSize for fork.
+    expect(next.value).toMatchObject({ joinGroupOf: source.id })
+    expect(next.value).not.toHaveProperty('evictingSource')
+    sub.unsubscribe()
+  })
+
+  it('clear() broadcasts a created event for the fresh session tagged with joinGroupOf + evictingSource', async () => {
+    const info = sm.create({})
+    mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
+    await tick()
+    const sub = sm.subscribeGlobal()
+    const it = sub.iterable[Symbol.asyncIterator]()
+    const next = await sm.clear(info.id)
+    const ev = await it.next()
+    expect(ev.done).toBe(false)
+    expect(ev.value).toMatchObject({ kind: 'created', session: { id: next.id } })
+    // clear() evicts X, so Y's created broadcast carries both joinGroupOf
+    // (so Y lands in X's group) and evictingSource (so the client bypasses
+    // its maxGroupSize cap — no "Ungrouped" flash on a full group).
+    expect(ev.value).toMatchObject({ joinGroupOf: info.id, evictingSource: true })
     sub.unsubscribe()
   })
 

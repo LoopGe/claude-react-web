@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { inheritGroupId, inheritSidebarOrderId, joinGroupId } from './session-slot'
+import { inheritGroupId, inheritSidebarOrderId, joinGroupId, joinGroupOfSource } from './session-slot'
 import type { SessionGroup } from '../types'
 
 const g = (id: string, sessionIds: string[]): SessionGroup => ({
@@ -98,5 +98,44 @@ describe('joinGroupId', () => {
     const next = joinGroupId(groups, 'x', 'y')
     expect(next[1]).toBe(other)
     expect(next[0].sessionIds).toEqual(['x', 'y'])
+  })
+})
+
+describe('joinGroupOfSource', () => {
+  it('appends newId to a non-full group (evicting false, fork)', () => {
+    const groups = [g('G1', ['a', 'x'])]
+    expect(joinGroupOfSource(groups, 'x', 'y', { evicting: false, maxGroupSize: 3 })[0].sessionIds).toEqual(['a', 'x', 'y'])
+  })
+
+  it('skips the append on a FULL group when evicting is false (fork — let handleAddToGroup toast)', () => {
+    const groups = [g('G1', ['a', 'b', 'x'])] // full at maxGroupSize=3
+    expect(joinGroupOfSource(groups, 'x', 'y', { evicting: false, maxGroupSize: 3 })).toBe(groups)
+  })
+
+  it('appends newId to a FULL group when evicting is true (clear/restart — X is leaving)', () => {
+    // Regression: this is the /clear-on-a-full-group flash. Without the
+    // evicting bypass, Y would stay ungrouped and flash under "Ungrouped".
+    const groups = [g('G1', ['a', 'b', 'x'])] // full at maxGroupSize=3
+    expect(joinGroupOfSource(groups, 'x', 'y', { evicting: true, maxGroupSize: 3 })[0].sessionIds).toEqual(['a', 'b', 'x', 'y'])
+  })
+
+  it('appends to a non-full group regardless of evicting', () => {
+    const groups = [g('G1', ['a', 'x'])]
+    expect(joinGroupOfSource(groups, 'x', 'y', { evicting: true, maxGroupSize: 3 })[0].sessionIds).toEqual(['a', 'x', 'y'])
+  })
+
+  it('returns the input by reference when sourceId is in no group (newId stays ungrouped)', () => {
+    const groups = [g('G1', ['a', 'b'])]
+    expect(joinGroupOfSource(groups, 'x', 'y', { evicting: true, maxGroupSize: 3 })).toBe(groups)
+  })
+
+  it('is a no-op when newId is already a member of sourceIds group', () => {
+    const groups = [g('G1', ['a', 'x', 'y'])]
+    expect(joinGroupOfSource(groups, 'x', 'y', { evicting: false, maxGroupSize: 3 })).toBe(groups)
+  })
+
+  it('is a no-op when sourceId === newId', () => {
+    const groups = [g('G1', ['a', 'x'])]
+    expect(joinGroupOfSource(groups, 'x', 'x', { evicting: true, maxGroupSize: 3 })).toBe(groups)
   })
 })

@@ -84,7 +84,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   // Create session
   app.post('/sessions', async (c) => {
     const body = await safeJson<Partial<Options> & { cwd?: string; provider?: string; enabledMcpServers?: string[]; enabledPlugins?: string[] }>(c.req)
-    const { enabledMcpServers, enabledPlugins, mcpServers, env: customEnv, joinGroupOf, ...rest } = body as Record<string, unknown> & {
+    const { enabledMcpServers, enabledPlugins, mcpServers, env: customEnv, joinGroupOf, evictingSource, ...rest } = body as Record<string, unknown> & {
       enabledMcpServers?: string[]
       enabledPlugins?: string[]
       mcpServers?: Record<string, unknown>
@@ -102,6 +102,14 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     if (joinGroupOf != null && typeof joinGroupOf !== 'string') {
       return c.json({ error: 'joinGroupOf must be a string' }, 400)
     }
+    // `evictingSource` is set by the restart flow (X is being evicted, so the
+    // client bypasses its maxGroupSize cap when appending Y). Validate it's a
+    // boolean so it can't leak into spawn as an unexpected type; absent for
+    // every ordinary create / fork.
+    if (evictingSource != null && typeof evictingSource !== 'boolean') {
+      return c.json({ error: 'evictingSource must be a boolean' }, 400)
+    }
+    const evicting = evictingSource === true
     if (rest.permissionMode != null && !isUserSelectablePermissionMode(rest.permissionMode)) {
       return c.json({ error: `permissionMode must be one of ${permissionModeList()}` }, 400)
     }
@@ -114,7 +122,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     const mergedMcp = await sm.mergeMcpServersAsync(enabledMcpServers, mcpServers)
     if (mergedMcp) rest.mcpServers = mergedMcp
     if (enabledPlugins !== undefined) (rest as { enabledPlugins?: string[] }).enabledPlugins = enabledPlugins
-    const info = sm.create(rest as Options & { provider?: string }, customEnv as Record<string, string> | undefined, joinGroupOf as string | undefined)
+    const info = sm.create(rest as Options & { provider?: string }, customEnv as Record<string, string> | undefined, joinGroupOf as string | undefined, evicting)
     return c.json({ session: info }, 201)
   })
 

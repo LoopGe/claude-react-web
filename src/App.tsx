@@ -67,7 +67,7 @@ import {
 import type { Defaults, ConfigResponse } from './types/config'
 import { setMaxUploadBytes } from './hooks/config-store'
 import { closeGroupPanelsState } from './utils/group-panels'
-import { inheritGroupId, inheritSidebarOrderId, joinGroupId } from './utils/session-slot'
+import { inheritGroupId, inheritSidebarOrderId, joinGroupOfSource } from './utils/session-slot'
 import { notificationTooltip } from './utils/notifications'
 import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
 import { randomId } from './utils/uuid'
@@ -784,20 +784,20 @@ export function App() {
           // here would risk the same evict-X-while-present flash on order.
           const joinGroupOf = frame.joinGroupOf
           if (joinGroupOf && joinGroupOf !== sid) {
-            setGroups((prev) => {
-              const sourceGroup = prev.find((g) => g.sessionIds.includes(joinGroupOf))
-              // Respect maxGroupSize: if X's group is full, skip the append.
-              // For fork (X stays) this lets handleAddToGroup enforce the cap
-              // with its toast instead of silently exceeding it. For
-              // clear/restart (X is evicted by swapSession) the group isn't
-              // actually growing, but we can't tell the two apart here — so at
-              // max capacity Y briefly stays ungrouped until swapSession
-              // replaces X→Y. That's a rare, transient edge (group full +
-              // clearing), no worse than the pre-fix flash, and avoiding it
-              // would require distinguishing fork from clear/restart.
-              if (sourceGroup && sourceGroup.sessionIds.length >= maxGroupSizeRef.current) return prev
-              return joinGroupId(prev, joinGroupOf, sid)
-            })
+            // `evictingSource` is set for /clear + restart: X is being evicted
+            // (swapSession same-tab / session-removed cross-tab), so appending
+            // Y won't grow the group long-term. joinGroupOfSource bypasses the
+            // maxGroupSize cap in that case — otherwise a FULL group (e.g. a
+            // 3-up workspace at the default maxGroupSize=3) skips the append
+            // and Y flashes under "Ungrouped" between this frame and the
+            // POST-driven swapSession. For fork (evictingSource absent) X stays,
+            // so the cap stands and handleAddToGroup can toast on overflow.
+            setGroups((prev) =>
+              joinGroupOfSource(prev, joinGroupOf, sid, {
+                evicting: frame.evictingSource === true,
+                maxGroupSize: maxGroupSizeRef.current,
+              }),
+            )
           }
           break
         }
@@ -1573,6 +1573,11 @@ export function App() {
           betas: source.betas,
           title: source.title,
           joinGroupOf: id,
+          // X is being evicted by this restart (swapSession replaces X→Y), so
+          // the server tags the created(Y) broadcast with evictingSource and
+          // the client bypasses the maxGroupSize cap when appending Y to X's
+          // group — no "Ungrouped" flash on a full group.
+          evictingSource: true,
         })
         // Atomic X→Y swap (sessions/openIds/focusedId/groups/sidebarOrder/
         // lastSeenTurn). Y mounts fresh and plays .entering. swapSession also

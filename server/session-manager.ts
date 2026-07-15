@@ -636,6 +636,10 @@ export class SessionManager {
      *  letting every tab append Y to X's group (X is evicted later by
      *  swapSession / session-removed). */
     joinGroupOf?: string,
+    /** Set by the restart flow (X is evicted): threaded to spawn() so the
+     *  `created` broadcast carries `evictingSource`, letting the client
+     *  bypass its maxGroupSize cap when appending Y. */
+    evictingSource?: boolean,
   ): SessionInfo {
     // Pin a concrete default model for brand-new sessions so we don't lean
     // on the CLI subprocess's built-in default. When the client omits a
@@ -650,7 +654,7 @@ export class SessionManager {
       provider: opts.provider ?? this.defaultProvider,
       model: opts.model ?? defaultConfig.defaultModel,
     }
-    return this.spawn(randomUUID(), withDefault, customEnv, undefined, undefined, undefined, joinGroupOf)
+    return this.spawn(randomUUID(), withDefault, customEnv, undefined, undefined, undefined, joinGroupOf, evictingSource)
   }
 
   /** Resume a previously-persisted session. The SDK loads conversation
@@ -1238,8 +1242,14 @@ export class SessionManager {
      *  POST-driven swapSession / session-removed evicts X afterward; for
      *  fork X stays). This append-then-evict ordering keeps X grouped until
      *  it's actually gone from `sessions`, so neither X nor Y flashes under
-     *  "Ungrouped". Undefined for every other caller. */
+     *  "Ungrouped". Undefined for every other caller.
+     *  `evictingSource`: pass `true` for `/clear` and restart — X is being
+     *  evicted, so the client bypasses its `maxGroupSize` cap when appending
+     *  Y (the group only grows transiently until swapSession / session-removed
+     *  removes X). Without it, a FULL group skips the append and Y flashes
+     *  under "Ungrouped". Absent for fork (X stays → the cap stands). */
     joinGroupOf?: string,
+    evictingSource?: boolean,
   ): SessionInfo {
     const providerName = opts.provider ?? this.defaultProvider
     const provider = this.providers.get(providerName)
@@ -1410,6 +1420,7 @@ export class SessionManager {
       kind: 'created',
       session: this.info(session),
       ...(joinGroupOf ? { joinGroupOf } : {}),
+      ...(evictingSource ? { evictingSource: true } : {}),
     })
     this.captureGitHead(session)
 
@@ -1774,6 +1785,11 @@ export class SessionManager {
         settings.skillOverride,
         undefined,
         id,
+        // evictingSource: X is being detached by this clear(), so the client
+        // bypasses its maxGroupSize cap when appending Y to X's group (the
+        // group only grows transiently until swapSession / session-removed
+        // evicts X). Without this, a full group flashes Y under "Ungrouped".
+        true,
       )
       const newYId = newY.id
 
