@@ -2011,6 +2011,18 @@ function userMsg(uuid: string, text: string): SdkMessage {
   } as unknown as SdkMessage
 }
 
+function imageMsg(uuid: string, data: string, media_type = 'image/png'): SdkMessage {
+  return {
+    type: 'user',
+    uuid,
+    parent_tool_use_id: null,
+    message: {
+      role: 'user',
+      content: [{ type: 'image', source: { type: 'base64', data, media_type } }],
+    },
+  } as unknown as SdkMessage
+}
+
 function asstMsg(uuid: string, text: string): SdkMessage {
   return {
     type: 'assistant',
@@ -2144,6 +2156,121 @@ describe('reducer: REPLAY_REPLACE on top of a cache', () => {
     ]
     const after = replay(cache, seed)
     expect(ids(after)).toEqual(['a1', 'a2', 'a3', 'a4', 'a5'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Prompt-only transcripts (no assistant/system/result frame at all — a turn
+// that never produced any output, e.g. the model didn't respond before the
+// server restarted). With no disk-stable anchor, splitReplayAgainstCache's
+// uuid-anchor path finds no overlap, so a restart re-seed replay used to be
+// treated as strictly-newer and appended — duplicating the user bubble on
+// every reconnect (the "I see three copies of my message" bug).
+// ---------------------------------------------------------------------------
+
+describe('splitReplayAgainstCache: no-anchor prompt-only fallback', () => {
+  it('drops a re-send of an already-cached prompt (different uuid, same text)', () => {
+    // Cache holds the server-minted-uuid copy; the disk seed carries the SDK
+    // uuid. Same logical message, no anchor to bridge them.
+    const cache = seedCache([userMsg('srv-minted', 'hi')])
+    const incoming = [userMsg('disk-sdk-uuid', 'hi')]
+    const { older, newer } = splitReplayAgainstCache(incoming, cache.mirror.items)
+    expect(older).toEqual([])
+    expect(newer).toEqual([])
+  })
+
+  it('drops a full multi-prompt overlap (same sequence, different uuids)', () => {
+    const cache = seedCache([userMsg('s1', 'one'), userMsg('s2', 'two')])
+    const incoming = [userMsg('d1', 'one'), userMsg('d2', 'two')]
+    const { older, newer } = splitReplayAgainstCache(incoming, cache.mirror.items)
+    expect(older).toEqual([])
+    expect(newer).toEqual([])
+  })
+
+  it('does NOT drop a different-text prompt (append it — could be a new turn)', () => {
+    const cache = seedCache([userMsg('s1', 'hi')])
+    const incoming = [userMsg('d1', 'totally different')]
+    const { older, newer } = splitReplayAgainstCache(incoming, cache.mirror.items)
+    expect(older).toEqual([])
+    expect(newer).toEqual(incoming)
+  })
+
+  it('does NOT fire when a disk-stable anchor exists (leave it to the anchor path)', () => {
+    // An assistant frame is present → the fallback must not signature-match
+    // the prompt and swallow a legitimate new same-text turn.
+    const cache = seedCache([userMsg('s1', 'ok'), asstMsg('a1', 'done')])
+    const incoming = [userMsg('d2', 'ok'), asstMsg('a2', 'again')]
+    const { older, newer } = splitReplayAgainstCache(incoming, cache.mirror.items)
+    // a2 is not in the cache → no anchor overlap → whole payload is newer.
+    expect(older).toEqual([])
+    expect(newer).toEqual(incoming)
+  })
+
+  it('drops a re-send of an image-only prompt only when the image matches', () => {
+    // Regression: plain-text signatures collapse every image-only prompt onto
+    // '' and would drop a genuinely different image. The richer fingerprint
+    // distinguishes different images, so a different image is appended (not
+    // lost), while the same image is still deduped.
+    const sameA = imageMsg('d-same', 'AAAA')
+    const diffB = imageMsg('d-diff', 'BBBB')
+    expect(splitReplayAgainstCache([sameA], seedCache([imageMsg('s', 'AAAA')]).mirror.items).newer).toEqual([])
+    expect(splitReplayAgainstCache([diffB], seedCache([imageMsg('s', 'AAAA')]).mirror.items).newer).toEqual([diffB])
+  })
+
+  it('does NOT drop a same-text prompt with a different image attachment', () => {
+    // text + image-A vs text + image-B: identical text, different image. The
+    // fingerprint differs on the image digest, so the new message is appended.
+    function textImage(uuid: string, text: string, data: string): SdkMessage {
+      return {
+        type: 'user',
+        uuid,
+        parent_tool_use_id: null,
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text },
+            { type: 'image', source: { type: 'base64', data, media_type: 'image/png' } },
+          ],
+        },
+      } as unknown as SdkMessage
+    }
+    const cache = seedCache([textImage('s1', 'look', 'AAAA')])
+    const incoming = [textImage('d1', 'look', 'BBBB')]
+    const { older, newer } = splitReplayAgainstCache(incoming, cache.mirror.items)
+    expect(older).toEqual([])
+    expect(newer).toEqual(incoming)
+  })
+})
+
+describe('reducer: prompt-only replay does not stack duplicates', () => {
+  it('original prompt + two restart replays stays at one bubble (the 3-copies bug)', () => {
+    // 1) The original send broadcasts the prompt under a server-minted uuid.
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('srv-minted', 'hi') })
+    expect(ids(state)).toEqual(['srv-minted'])
+    // 2) Server restart re-seeds the ring from disk (SDK uuid) and the client
+    //    reconnects — twice (server auto-recover + client resume, the
+    //    double-spawn seen in production logs). Each reconnect replays the
+    //    same prompt under the disk uuid.
+    state = replay(state, [userMsg('disk-sdk-uuid', 'hi')])
+    state = replay(state, [userMsg('disk-sdk-uuid', 'hi')])
+    expect(ids(state)).toEqual(['srv-minted'])
+    expect(state.mirror.items.filter((it) => it.msg.type === 'user')).toHaveLength(1)
+  })
+
+  it('a full-overlap drop still advances lastMessageUuid to the replay uuid (no reconnect loop)', () => {
+    // Regression: dropping the payload used to leave lastMessageUuid at the
+    // stale server-minted uuid, so the next reconnect's sinceUuid missed the
+    // post-restart ring and the server re-sent the same full replay forever.
+    // The drop must advance the cursor to the replay's (disk) uuid.
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('srv-minted', 'hi') })
+    expect(state.mirror.lastMessageUuid).toBe('srv-minted')
+    state = replay(state, [userMsg('disk-sdk-uuid', 'hi')])
+    // Still one bubble (no dup) ...
+    expect(ids(state)).toEqual(['srv-minted'])
+    // ... but the cursor now points at the uuid the server's ring recognizes.
+    expect(state.mirror.lastMessageUuid).toBe('disk-sdk-uuid')
   })
 })
 

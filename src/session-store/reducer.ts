@@ -246,6 +246,23 @@ function replayReplace(
     for (const message of newer) {
       state = applyMessage(state, message)
     }
+    // Full-overlap drop: the split treated the whole payload as already on
+    // screen (older=[], newer=[]), so applyMessage never ran and
+    // lastMessageUuid stays at the stale cached value (a server-minted prompt
+    // uuid the post-restart ring doesn't carry). Advance it to the replay's
+    // last message uuid — that is the newest the server has, and (after a
+    // restart re-seed) the uuid the server's ring actually recognizes. Without
+    // this, the next reconnect's sinceUuid misses the ring and the server
+    // re-sends the same full replay on every reconnect until a live message
+    // happens to land.
+    if (older.length === 0 && newer.length === 0 && messages.length > 0) {
+      const lastUuid = typeof messages[messages.length - 1].uuid === 'string'
+        ? (messages[messages.length - 1].uuid as string)
+        : null
+      if (lastUuid && state.mirror.lastMessageUuid !== lastUuid) {
+        state = withMirror(state, { ...state.mirror, lastMessageUuid: lastUuid })
+      }
+    }
     const finalLen = state.mirror.items.length
     const prevLen = prevMirror.items.length
     if (finalLen < prevLen) {
@@ -341,26 +358,137 @@ export function splitReplayAgainstCache(
   items: ServerMirror['items'],
 ): { older: SdkMessage[]; newer: SdkMessage[] } {
   const cacheUuids = new Set<string>()
+  let cacheHasAnchor = false
   for (const it of items) {
     const key = overlapAnchorUuid(it.msg)
-    if (key != null) cacheUuids.add(key)
+    if (key != null) {
+      cacheUuids.add(key)
+      cacheHasAnchor = true
+    }
   }
   let firstOverlap = -1
   let lastOverlap = -1
+  let replayHasAnchor = false
   for (let i = 0; i < messages.length; i++) {
     const key = overlapAnchorUuid(messages[i])
-    if (key != null && cacheUuids.has(key)) {
-      if (firstOverlap === -1) firstOverlap = i
-      lastOverlap = i
+    if (key != null) {
+      replayHasAnchor = true
+      if (cacheUuids.has(key)) {
+        if (firstOverlap === -1) firstOverlap = i
+        lastOverlap = i
+      }
     }
+  }
+  if (firstOverlap !== -1) {
+    return {
+      older: messages.slice(0, firstOverlap),
+      newer: messages.slice(lastOverlap + 1),
+    }
+  }
+  // No disk-stable anchor overlap. Degenerate case: a transcript with NO
+  // disk-stable frames at all (a turn that never produced an assistant /
+  // system / result message — e.g. the model never responded, or the turn
+  // was interrupted / crashed before any output). Top-level user prompts
+  // can't anchor by uuid (their server-minted in-memory uuid differs from
+  // the on-disk SDK uuid), so the anchor path above finds nothing and would
+  // return the whole payload as `newer` — applyMessage would then append the
+  // same prompt again on EVERY reconnect / resume replay, growing a stack of
+  // duplicate user bubbles (+1 per reconnect). This is the "I see three
+  // copies of my message after a server restart" bug.
+  //
+  // Fingerprint (NOT plain text alone — see promptContentFingerprint): folds
+  // in a digest of non-text blocks so different images/attachments don't
+  // collide. Plain-text signatures would collapse every image-only prompt
+  // onto '' and every same-text+different-image prompt onto one string,
+  // silently dropping a genuinely different message (data loss).
+  //
+  // EXACT-equality (not suffix / subset) is deliberate: it fixes the
+  // restart-replay dup without risking a legitimate new same-content turn.
+  // The only residual false-drop is a cross-tab same-CONTENT prompt in a
+  // no-anchor transcript (e.g. two tabs pasting the identical image with no
+  // reply yet) — a single tab can't send while disconnected, so it can't
+  // happen single-tab.
+  if (!cacheHasAnchor && !replayHasAnchor && promptSequencesEqual(items, messages)) {
+    return { older: [], newer: [] }
   }
   // No overlap → clean reconnect (or a disjoint older batch). Treat the whole
   // payload as newer; applyMessage append preserves the original behaviour.
-  if (firstOverlap === -1) return { older: [], newer: messages }
-  return {
-    older: messages.slice(0, firstOverlap),
-    newer: messages.slice(lastOverlap + 1),
+  return { older: [], newer: messages }
+}
+
+function promptSequencesEqual(
+  items: ServerMirror['items'],
+  messages: SdkMessage[],
+): boolean {
+  let i = 0
+  let m = 0
+  let matched = 0
+  // Advance each cursor to its next top-level prompt fingerprint (null when
+  // exhausted). Pair them; mismatch or one-sided exhaustion -> not equal.
+  const nextItemFp = (): string | null => {
+    while (i < items.length) {
+      const fp = promptContentFingerprint(items[i].msg)
+      if (fp != null) return fp
+      i++
+    }
+    return null
   }
+  const nextMsgFp = (): string | null => {
+    while (m < messages.length) {
+      const fp = promptContentFingerprint(messages[m])
+      if (fp != null) return fp
+      m++
+    }
+    return null
+  }
+  while (true) {
+    const iFp = nextItemFp()
+    const mFp = nextMsgFp()
+    // Require at least one matched prompt AND simultaneous exhaustion, so a
+    // payload with no top-level prompts on either side (attachments only) is
+    // NOT dropped as "full overlap".
+    if (iFp == null || mFp == null) return matched > 0 && iFp == null && mFp == null
+    if (iFp !== mFp) return false
+    matched++
+    i++
+    m++
+  }
+}
+
+/** A content fingerprint for a top-level user prompt: the prompt's text plus a
+ *  digest of its non-text content blocks (images / attachments). Returns null
+ *  for non-top-level-prompt frames so callers can skip them. Richer than
+ *  topLevelUserPromptSignature (plain-text-only, which collapses every
+ *  image-only prompt onto ''): two prompts with different images get different
+ *  fingerprints, so the no-anchor replay fallback can't false-drop a genuinely
+ *  different image/attachment prompt as a duplicate. */
+function promptContentFingerprint(msg: SdkMessage): string | null {
+  if (msg.type !== 'user') return null
+  if ((msg as { parent_tool_use_id?: string | null }).parent_tool_use_id != null) return null
+  const content = (msg as { message?: { content?: unknown } }).message?.content
+  let text = ''
+  const nonText: string[] = []
+  if (typeof content === 'string') {
+    text = content
+  } else if (Array.isArray(content)) {
+    for (const block of content as Array<Record<string, unknown>>) {
+      if (!block || typeof block !== 'object') continue
+      const t = block.type
+      if (t === 'text' && typeof block.text === 'string') {
+        text += block.text
+      } else if (t === 'image') {
+        const src = block.source as { media_type?: string; data?: string } | undefined
+        const media = typeof src?.media_type === 'string' ? src.media_type : ''
+        const data = typeof src?.data === 'string' ? src.data : ''
+        // media_type + length + head/tail: cheap yet discriminates different
+        // images without hashing megabytes of base64 on every comparison.
+        nonText.push(`img:${media}:${data.length}:${data.slice(0, 32)}:${data.length > 32 ? data.slice(-32) : ''}`)
+      } else {
+        nonText.push(String(t ?? 'block'))
+      }
+    }
+  }
+  return `${text} ${nonText.join('|')}`
 }
 
 /** Prepend a chronological batch of older messages (loaded from disk on
