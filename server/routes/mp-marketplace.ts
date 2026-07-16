@@ -17,7 +17,7 @@ import { HttpError } from '../errors.js'
 import { safeJson } from './index.js'
 import type { SessionManager } from '../session-manager.js'
 import { MpStore, type MpEntry } from '../mp-store.js'
-import { gitClone, gitCloneAtSha, gitPull, gitGetHeadSha, assertHttpsUrl } from '../git-clone.js'
+import { gitClone, gitCloneAtSha, gitPull, gitGetHeadSha, gitLsRemoteHead, assertHttpsUrl } from '../git-clone.js'
 import { parseRepoManifest, type ParsedPlugin, type ParsedPluginSource } from '../marketplace-parser.js'
 import { createLogger } from '../log.js'
 
@@ -98,6 +98,17 @@ function toPluginListItem(p: ParsedPlugin, enabled: boolean): PluginListItem {
   }
 }
 
+/** Per-marketplace update-check result. Mirrors `MpUpdateStatus` in
+ *  src/types.ts — kept as a server-local interface because the server
+ *  doesn't import client types. `hasUpdate` is true when the upstream tip
+ *  differs from the stored `lastSha` (a Refresh would move HEAD). */
+interface MpUpdateStatusItem {
+  id: string
+  hasUpdate: boolean
+  remoteSha?: string
+  error?: string
+}
+
 export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
   const app = new Hono()
 
@@ -107,6 +118,37 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
     const items = store.list().map((e) => toListItem(e, store))
     items.sort((a, b) => a.displayName.localeCompare(b.displayName))
     return c.json({ marketplaces: items })
+  })
+
+  // ─── Check for updates (non-mutating) ─────────────────────────────
+
+  app.post('/mp/marketplaces/check-updates', async (c) => {
+    const entries = store.list()
+    // `git ls-remote` each upstream and compare to the stored lastSha.
+    // Promise.allSettled isolates per-marketplace failures (dead URL,
+    // auth-required repo, timeout) so one bad marketplace doesn't blank
+    // the result for the rest. No disk / store mutation here — pure read.
+    const settled = await Promise.allSettled(
+      entries.map(async (e) => {
+        const remoteSha = await gitLsRemoteHead(e.source.url, e.source.ref)
+        return { id: e.id, hasUpdate: remoteSha !== e.lastSha, remoteSha } satisfies MpUpdateStatusItem
+      }),
+    )
+    const updates: MpUpdateStatusItem[] = settled.map((r, i) => {
+      const id = entries[i].id
+      if (r.status === 'fulfilled') return r.value
+      // Distinguish abort/timeout/network from a thrown HttpError message.
+      const reason = r.reason
+      const msg =
+        reason instanceof HttpError
+          ? reason.message
+          : reason instanceof Error
+            ? reason.message
+            : String(reason)
+      log.warn(`check-updates failed for ${id}: ${msg.slice(0, 200)}`)
+      return { id, hasUpdate: false, error: msg.slice(0, 300) }
+    })
+    return c.json({ ok: true, updates })
   })
 
   // ─── Add ─────────────────────────────────────────────────────────

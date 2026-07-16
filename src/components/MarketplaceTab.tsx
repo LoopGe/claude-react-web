@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../hooks/useApi'
-import type { MpListItem, MpPluginInfo, MpParseWarning } from '../types'
+import type { MpListItem, MpPluginInfo, MpParseWarning, MpUpdateStatus } from '../types'
 import { IconX, IconChevronDown, IconChevronRight, IconAlertTriangle } from './icons/ToolIcons'
 import { AnimatedCollapse } from './AnimatedCollapse'
 
@@ -27,6 +27,11 @@ interface RefreshResponse {
   entry: MpListItem
   updated: boolean
   warnings: MpParseWarning[]
+}
+
+interface CheckUpdatesResponse {
+  ok: true
+  updates: MpUpdateStatus[]
 }
 
 interface MarketplaceTabProps {
@@ -51,6 +56,10 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
   // can take seconds — disable the toggle button meanwhile to block double
   // clicks.
   const [togglingKeys, setTogglingKeys] = useState<Set<string>>(new Set())
+  // Per-marketplace update status from POST /mp/marketplaces/check-updates.
+  // `undefined` = not checked yet (no badge); an entry with hasUpdate=true
+  // shows the "Update available" pill. Checked once on tab open.
+  const [updateById, setUpdateById] = useState<Record<string, MpUpdateStatus>>({})
 
   // Add form
   const [newUrl, setNewUrl] = useState('')
@@ -72,6 +81,28 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
     }
   }, [])
 
+  // Fire one batch update check. Runs in the background after the list
+  // loads — failures are swallowed (the server isolates per-marketplace
+  // errors into the response, so a network blip just means no badge).
+  const fetchUpdates = useCallback(async (signal?: AbortSignal): Promise<void> => {
+    try {
+      // The server awaits Promise.allSettled of N concurrent `git ls-remote`
+      // calls, each capped at 60s — so its worst-case response is ~60s (the
+      // slowest one, since they run in parallel). The default 30s request
+      // timeout is shorter than that, which would let one slow upstream
+      // abort the whole batch and blank every badge. Give it headroom past
+      // the server's per-call ceiling.
+      const r = await api.post<CheckUpdatesResponse>('/mp/marketplaces/check-updates', {}, { signal, timeoutMs: 90_000 })
+      const byId: Record<string, MpUpdateStatus> = {}
+      for (const u of r.updates) byId[u.id] = u
+      setUpdateById(byId)
+    } catch (e) {
+      if ((e as Error).name === 'AbortError') return
+      // Non-fatal: leave updateById empty (no badges). Don't clobber the
+      // list error surface with a secondary failure.
+    }
+  }, [])
+
   useEffect(() => {
     const ac = new AbortController()
     // Wrap in an async IIFE so setState calls happen in the resolved
@@ -80,7 +111,12 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
     ;(async () => {
       try {
         const items = await fetchList(ac.signal)
-        if (items) setItems(items)
+        if (items) {
+          setItems(items)
+          // Kick off the update check only after we have a list — it
+          // doesn't block rendering; badges populate as it resolves.
+          void fetchUpdates(ac.signal)
+        }
       } catch (e) {
         setError((e as Error).message)
       } finally {
@@ -88,7 +124,7 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
       }
     })()
     return () => ac.abort()
-  }, [fetchList])
+  }, [fetchList, fetchUpdates])
 
   const fetchPlugins = useCallback(async (id: string) => {
     try {
@@ -116,6 +152,9 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
       if (r.warnings.length > 0) {
         setWarningsById((w) => ({ ...w, [r.entry.id]: r.warnings }))
       }
+      // A freshly-added marketplace was just cloned at upstream HEAD, so it
+      // can't be behind yet — seed an explicit "not behind" so no badge shows.
+      setUpdateById((prev) => ({ ...prev, [r.entry.id]: { id: r.entry.id, hasUpdate: false } }))
       setNewUrl('')
       setNewRef('')
     } catch (e) {
@@ -132,6 +171,8 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
       const r = await api.post<RefreshResponse>(`/mp/marketplaces/${encodeURIComponent(id)}/refresh`)
       setItems((prev) => prev.map((x) => (x.id === id ? r.entry : x)))
       setWarningsById((w) => ({ ...w, [id]: r.warnings }))
+      // Refresh pulled local up to upstream HEAD — clear the update badge.
+      setUpdateById((prev) => ({ ...prev, [id]: { id, hasUpdate: false } }))
       // Invalidate cached plugin list so a re-expand re-fetches.
       setPlugins((prev) => {
         const next = { ...prev }
@@ -289,6 +330,7 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
             expanded={expandedId === item.id}
             busy={busyId === item.id}
             confirmRemove={confirmRemoveId === item.id}
+            updateStatus={updateById[item.id]}
             onToggleExpand={() => void handleToggleExpand(item.id)}
             onRefresh={() => void handleRefresh(item.id)}
             onRequestRemove={() => setConfirmRemoveId(item.id)}
@@ -312,6 +354,8 @@ interface CardProps {
   expanded: boolean
   busy: boolean
   confirmRemove: boolean
+  /** Update-check result for this marketplace; `undefined` = not checked. */
+  updateStatus?: MpUpdateStatus
   onToggleExpand: () => void
   onRefresh: () => void
   onRequestRemove: () => void
@@ -323,7 +367,7 @@ interface CardProps {
 }
 
 function MarketplaceCard({
-  item, warnings, plugins, expanded, busy, confirmRemove,
+  item, warnings, plugins, expanded, busy, confirmRemove, updateStatus,
   onToggleExpand, onRefresh, onRequestRemove, onCancelRemove, onConfirmRemove, onTogglePlugin,
   togglingPlugins,
 }: CardProps) {
@@ -373,6 +417,36 @@ function MarketplaceCard({
           {item.enabledCount > 0 ? ' / ' : ''}
           {item.pluginCount} plugin{item.pluginCount === 1 ? '' : 's'}
         </span>
+        {updateStatus?.hasUpdate && (
+          <span
+            title="Upstream has new commits — click Refresh to pull"
+            style={{
+              fontSize: 11, color: 'var(--warn, var(--fg-muted))', flexShrink: 0,
+              display: 'inline-flex', alignItems: 'center', gap: 4,
+            }}
+          >
+            <span
+              aria-hidden
+              style={{
+                width: 7, height: 7, borderRadius: '50%',
+                background: 'var(--warn, var(--fg-muted))', flexShrink: 0,
+              }}
+            />
+            Update
+          </span>
+        )}
+        {updateStatus?.error && (
+          <span
+            title={`Couldn't check for updates: ${updateStatus.error}`}
+            style={{
+              fontSize: 11, color: 'var(--warn, var(--fg-muted))', flexShrink: 0,
+              display: 'inline-flex', alignItems: 'center', gap: 3, cursor: 'help',
+            }}
+            aria-label={`Couldn't check for updates: ${updateStatus.error}`}
+          >
+            <IconAlertTriangle size={12} />
+          </span>
+        )}
         <button className="btn btn-sm" onClick={onRefresh} disabled={busy} title="Pull from upstream">
           Refresh
         </button>

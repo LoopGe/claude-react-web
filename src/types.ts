@@ -400,6 +400,18 @@ export interface MpPluginInfo {
   enabled: boolean
 }
 
+/** Per-marketplace update status returned by POST /mp/marketplaces/check-updates.
+ *  `hasUpdate` is true when the upstream HEAD SHA differs from the locally
+ *  stored `lastSha` (i.e. a Refresh would pull new commits). `error` is set
+ *  when the ls-remote failed for this one marketplace; the rest still
+ *  resolve. `remoteSha` is surfaced for debugging but not currently rendered. */
+export interface MpUpdateStatus {
+  id: string
+  hasUpdate: boolean
+  remoteSha?: string
+  error?: string
+}
+
 /** Non-fatal warning surfaced by the manifest parser. The UI displays
  *  these next to the marketplace so the user knows when a plugin was
  *  silently dropped. */

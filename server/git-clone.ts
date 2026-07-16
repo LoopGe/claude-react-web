@@ -193,3 +193,43 @@ export async function gitGetHeadSha(cwd: string): Promise<string> {
   }
   return sha
 }
+
+/** Pull the first 40-hex commit SHA out of `git ls-remote` stdout. Output
+ *  is one `<sha>\t<refname>` line per advertised ref (plus possible symref
+ *  `ref: refs/heads/main` lines on some servers). We scan line-by-line and
+ *  return the first token that looks like a full SHA. Returns '' if nothing
+ *  matches — the caller decides whether to retry with a broader query. */
+function parseLsRemoteSha(stdout: string): string {
+  for (const line of stdout.split('\n')) {
+    const tok = line.trim().split(/\s+/)[0] ?? ''
+    if (/^[0-9a-f]{40}$/i.test(tok)) return tok
+  }
+  return ''
+}
+
+/** Query the remote HEAD SHA of an https repo WITHOUT cloning or mutating
+ *  anything on disk. Used by update detection to compare the upstream tip
+ *  against a stored `lastSha` and decide whether a marketplace is behind.
+ *
+ *  Runs `git ls-remote <url> <ref|HEAD>` — no local repo required, so this
+ *  works even if the marketplace cache dir was deleted. If `ref` is omitted
+ *  we ask for `HEAD`; if the server doesn't advertise HEAD (some don't) the
+ *  empty result triggers a fallback `git ls-remote <url>` that takes the
+ *  first advertised ref's sha (the default branch). Throws HttpError on git
+ *  failure or if no SHA can be parsed — callers isolate per-marketplace. */
+export async function gitLsRemoteHead(url: string, ref?: string): Promise<string> {
+  assertHttpsUrl(url)
+  const refArg = ref && typeof ref === 'string' && !ref.includes('\0') && ref.length <= 256 ? ref : 'HEAD'
+  // `--` guards a URL that happens to start with `-` (same contract as gitClone).
+  let stdout = await runGitOutside(['ls-remote', '--', url, refArg], undefined, PULL_TIMEOUT_MS)
+  let sha = parseLsRemoteSha(stdout)
+  if (!sha && refArg === 'HEAD') {
+    // HEAD not advertised — fall back to the first advertised ref.
+    stdout = await runGitOutside(['ls-remote', '--', url], undefined, PULL_TIMEOUT_MS)
+    sha = parseLsRemoteSha(stdout)
+  }
+  if (!sha) {
+    throw new HttpError(500, 'ls-remote returned no parseable SHA')
+  }
+  return sha
+}
