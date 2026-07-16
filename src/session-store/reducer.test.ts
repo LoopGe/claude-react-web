@@ -2274,6 +2274,50 @@ describe('reducer: prompt-only replay does not stack duplicates', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// uuid-bridged prompt overlap (#3): when the resume-seed rewrite makes the
+// replay's prompt uuid match the cache's (server-minted) uuid, the anchor path
+// detects the prompt overlap the same way it detects assistant overlap — no
+// dup, and the missed assistant reply is appended. Un-bridged (mismatched
+// uuid) sessions still rely on the signature fallback below.
+// ---------------------------------------------------------------------------
+
+describe('splitReplayAgainstCache: uuid-bridged prompt overlap (#3)', () => {
+  it('drops a re-sent prompt and appends the missed assistant (matching uuid)', () => {
+    // The #3 shape: cache holds the prompt (no assistant reply landed before a
+    // restart); the resume-seed replay carries the SAME prompt uuid (bridged)
+    // plus the assistant the client missed. The prompt overlaps → dropped; the
+    // assistant is newer → appended. No duplicate prompt.
+    const cache = seedCache([userMsg('U-shared', 'hi')])
+    const incoming = [userMsg('U-shared', 'hi'), asstMsg('a1', 'reply')]
+    const { older, newer } = splitReplayAgainstCache(incoming, cache.mirror.items)
+    expect(older).toEqual([])
+    expect(newer.map((m) => m.uuid)).toEqual(['a1'])
+  })
+
+  it('two same-text turns with different uuids are NOT collapsed (uuid disambiguates)', () => {
+    // cache ends in an "ok" prompt; the replay's "ok" is a GENUINE new turn
+    // (different uuid). Uuid matching (unlike signatures) keeps it.
+    const cache = seedCache([userMsg('u1', 'ok')])
+    const incoming = [userMsg('u2', 'ok'), asstMsg('a2', 'again')]
+    const { older, newer } = splitReplayAgainstCache(incoming, cache.mirror.items)
+    expect(older).toEqual([])
+    // u2 is a new turn (uuid not in cache) → no overlap → appended alongside a2.
+    expect(newer.map((m) => m.uuid)).toEqual(['u2', 'a2'])
+  })
+
+  it('un-bridged (mismatched uuid) prompt-only still falls to the signature fallback', () => {
+    // Old / desynced session: ring re-seeded from disk carries the SDK uuid
+    // (V), cache holds the server-minted uuid (U). Uuid path can't match →
+    // no disk-stable anchor on either side → signature fallback drops the dup.
+    const cache = seedCache([userMsg('U-server', 'hi')])
+    const incoming = [userMsg('V-disk', 'hi')]
+    const { older, newer } = splitReplayAgainstCache(incoming, cache.mirror.items)
+    expect(older).toEqual([])
+    expect(newer).toEqual([])
+  })
+})
+
 describe('reducer: CLEAR_TRANSCRIPT', () => {
   it('wipes both layers and marks the transcript ready (replayReady=true)', () => {
     // /clear resets the session to a fresh, live, empty state. Unlike RESET

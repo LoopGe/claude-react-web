@@ -24,6 +24,8 @@ import {
 import type { ProcessExitInfo } from './process-monitor.js'
 import { randomUUID } from 'node:crypto'
 import { SessionStore, type SessionMeta } from './persistence.js'
+import { PromptUuidStore, rewriteSeedPromptUuids, type PromptUuidEntry } from './prompt-uuid-store.js'
+import { promptFingerprintHash, type PromptFingerprintInput } from '../shared/prompt-fingerprint.js'
 import { McpConfigStore } from './mcp-config.js'
 import { RecapManager } from './recap.js'
 import type { SessionPhase, SessionRecap } from './session-types.js'
@@ -197,6 +199,7 @@ export class SessionManager {
   private crashRecoveryEnabled: boolean
   private healthMonitor: SessionHealthMonitor
   private store: SessionStore
+  private promptUuidStore: PromptUuidStore
   private mcpStore: McpConfigStore
   private providers: ProviderRegistry
   private defaultProvider: string
@@ -218,6 +221,7 @@ export class SessionManager {
     this.autoResumeEnabled = opts.autoResume ?? false
     this.crashRecoveryEnabled = opts.crashRecovery ?? false
     this.store = opts.store ?? new SessionStore()
+    this.promptUuidStore = new PromptUuidStore(opts.stateDir, this.historyCap)
     this.mcpStore = opts.mcpConfigStore ?? new McpConfigStore()
     this.providers = opts.providers ?? createDefaultProviders({
       claudeBinary: opts.claudeBinary,
@@ -803,7 +807,15 @@ export class SessionManager {
     } catch {
       /* disk read failed dfall back to an empty ring (pre-fix behaviour) */
     }
-    return this.spawn(id, resumeOpts, undefined, historySeed)
+    // uuid bridge: load the server-minted prompt uuids recorded for this
+    // session and rewrite the disk-seed's top-level prompt uuids (SDK V →
+    // server U) so the client's uuid-anchored replay overlap detection works
+    // after a server restart. Returns the seed unchanged when there's nothing
+    // to bridge (old/fresh session) or on any desync (signature fallback then
+    // handles dedup). Loaded onto the session so subsequent sends append to it.
+    const promptUuids = await this.promptUuidStore.load(id)
+    if (historySeed) historySeed = rewriteSeedPromptUuids(historySeed, promptUuids)
+    return this.spawn(id, resumeOpts, undefined, historySeed, undefined, undefined, undefined, undefined, promptUuids ?? [])
   }
 
   /** Respawn a FRESH conversation on an existing session id, discarding any
@@ -1279,6 +1291,12 @@ export class SessionManager {
      *  under "Ungrouped". Absent for fork (X stays → the cap stands). */
     joinGroupOf?: string,
     evictingSource?: boolean,
+    /** On resume: the promptUuids sidecar loaded from disk, used to seed
+     *  `session.promptUuids` (so subsequent sends append to the pre-restart
+     *  list) AND — at the resume() call site — to rewrite the historySeed's
+     *  prompt uuids (SDK V → server U). Undefined for every other caller
+     *  (fresh spawn / fork / clear start with an empty list). */
+    promptUuids?: PromptUuidEntry[],
   ): SessionInfo {
     const providerName = opts.provider ?? this.defaultProvider
     const provider = this.providers.get(providerName)
@@ -1375,6 +1393,8 @@ export class SessionManager {
       // below. Stored on the Session so info()/persist() can broadcast it
       // and so applyDynamicSkillOverrides can re-apply on later switches.
       skillOverride,
+      // Seed from the resume sidecar (empty for fresh spawn / fork / clear).
+      promptUuids: promptUuids ?? [],
     }
 
     if (!fullOpts.canUseTool) {
@@ -1528,6 +1548,21 @@ export class SessionManager {
   private dispatchUserMessage(s: Session, userMsg: SDKUserMessage): void {
     s.handle.enqueueUserMessage({ ...userMsg })
     this.pushToSession(s, userMsg)
+    this.recordPromptUuid(s, userMsg)
+  }
+
+  /** Append the server-minted uuid (+ content hash) of a just-sent top-level
+   *  prompt to the session's promptUuids sidecar, capped to historyCap (newest).
+   *  On resume, these uuids rewrite the disk-seed ring's prompt uuids (SDK V →
+   *  server U) so the client's uuid-anchored replay overlap detection works
+   *  across a server restart. Fire-and-forget the sidecar write — a missed
+   *  write only means the next resume falls back to the signature dedup. */
+  private recordPromptUuid(s: Session, userMsg: SDKUserMessage): void {
+    const h = promptFingerprintHash(userMsg as unknown as PromptFingerprintInput)
+    if (h == null) return // not a top-level prompt (defensive — send always is)
+    const next = [...(s.promptUuids ?? []), { u: userMsg.uuid as string, h }]
+    s.promptUuids = next.length > this.historyCap ? next.slice(next.length - this.historyCap) : next
+    void this.promptUuidStore.save(s.id, s.promptUuids)
   }
 
   /** Common bookkeeping after pushing a user message into a session:
@@ -2718,6 +2753,8 @@ export class SessionManager {
   async delete(id: string): Promise<void> {
     await this.unload(id, { terminated: true, reason: 'deleted' })
     this.store.remove(id)
+    // Drop the promptUuids sidecar too — the session is gone for good.
+    void this.promptUuidStore.remove(id)
     // Drop any stored recap — otherwise a new session that happens to
     // reuse this id (rare, but possible under --state-dir swaps) would
     // see the old summary. unload() already calls invalidate() but we

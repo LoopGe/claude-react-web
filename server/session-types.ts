@@ -19,6 +19,7 @@ import type { ProviderRegistry } from './providers/registry.js'
 import type { ProviderSessionHandle } from './providers/types.js'
 import type { HookRunRecord, HookRuntimeEvent, SessionHooksConfig } from '../shared/hooks.js'
 import type { SessionSkillOverride } from '../shared/skills.js'
+import type { PromptUuidEntry } from './prompt-uuid-store.js'
 
 /** Subscriber deach connected client gets one of these. */
 export interface Subscriber {
@@ -309,6 +310,15 @@ export interface Session {
    *  global config default; a boolean pins it. Persisted via SessionMeta
    *  and mirrored into SessionInfo. Pure UI pref — no SDK call. */
   autoRecap?: boolean
+  /** In-memory mirror of the promptUuids sidecar (server/prompt-uuid-store.ts):
+   *  the server-minted uuid + content hash of each top-level prompt ever sent,
+   *  newest-capped to historyCap. Loaded from the sidecar on resume, empty on a
+   *  fresh spawn, appended on send(). Used by resume() to rewrite the disk-seed
+   *  ring's prompt uuids (SDK V → server U) so the client's uuid-anchored
+   *  replay overlap detection works after a server restart. Undefined on
+   *  sessions spawned before this field existed (treated as empty → no bridge,
+   *  signature fallback handles dedup). */
+  promptUuids?: PromptUuidEntry[]
 }
 
 /** End every subscriber in a collection and clear it. Works on both
@@ -341,6 +351,9 @@ export interface SessionManagerOptions {
   providers?: ProviderRegistry
   defaultProvider?: string
   historyCap?: number
+  /** State directory (default ~/.claude-react-web/). Used for the promptUuids
+   *  sidecar that bridges top-level prompt uuids across server restarts. */
+  stateDir?: string
   /** When set, session metadata is persisted here so dormant sessions
    *  survive restarts. See server/persistence.ts. */
   store?: SessionStore

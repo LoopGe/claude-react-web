@@ -34,6 +34,7 @@ import {
 } from '../utils/question-answers'
 import { toolDebug, toolDebugEnabled } from './debug'
 import { parseWorkflowOutput } from './workflow-meta'
+import { promptContentFingerprint } from '../../shared/prompt-fingerprint.js'
 
 export function reduceSessionState(state: SessionState, action: SessionAction): SessionState {
   switch (action.type) {
@@ -357,13 +358,29 @@ export function splitReplayAgainstCache(
   messages: SdkMessage[],
   items: ServerMirror['items'],
 ): { older: SdkMessage[]; newer: SdkMessage[] } {
+  // cacheUuids holds the uuid of EVERY cache message — disk-stable frames
+  // (assistant / system / tool_result-bearing user) AND top-level user prompts
+  // — so the overlap bracket below can match a re-sent prompt by uuid too.
+  // This is what lets a bridged session (whose in-memory ring and client cache
+  // share the server-minted prompt uuid, after the resume-seed rewrite) detect
+  // prompt overlap the same way it detects assistant overlap — fixing the
+  // "#3" mid-turn-drop dup without signature matching (uuids are unique, so
+  // same-text different turns never false-match).
   const cacheUuids = new Set<string>()
+  // `cacheHasAnchor` / `replayHasAnchor` track DISK-STABLE anchors only (not
+  // prompts). The no-anchor fallback gate below uses these: a prompt-only
+  // transcript (the degenerate dup case) has no disk-stable anchor on either
+  // side, so the gate opens. Counting prompts as anchors here would make the
+  // gate almost always closed (every transcript has a prompt) and strand old,
+  // un-bridged sessions (whose prompt uuids DON'T match) back on the dup path.
   let cacheHasAnchor = false
   for (const it of items) {
     const key = overlapAnchorUuid(it.msg)
     if (key != null) {
       cacheUuids.add(key)
       cacheHasAnchor = true
+    } else if (typeof it.msg.uuid === 'string') {
+      cacheUuids.add(it.msg.uuid)
     }
   }
   let firstOverlap = -1
@@ -377,6 +394,12 @@ export function splitReplayAgainstCache(
         if (firstOverlap === -1) firstOverlap = i
         lastOverlap = i
       }
+    } else if (typeof messages[i].uuid === 'string' && cacheUuids.has(messages[i].uuid as string)) {
+      // A top-level prompt whose uuid is already in the cache → overlap. Only
+      // reachable for bridged sessions (uuid matches); un-bridged sessions
+      // carry a different (SDK) uuid and fall through to the fallback below.
+      if (firstOverlap === -1) firstOverlap = i
+      lastOverlap = i
     }
   }
   if (firstOverlap !== -1) {
@@ -390,11 +413,15 @@ export function splitReplayAgainstCache(
   // system / result message — e.g. the model never responded, or the turn
   // was interrupted / crashed before any output). Top-level user prompts
   // can't anchor by uuid (their server-minted in-memory uuid differs from
-  // the on-disk SDK uuid), so the anchor path above finds nothing and would
-  // return the whole payload as `newer` — applyMessage would then append the
-  // same prompt again on EVERY reconnect / resume replay, growing a stack of
-  // duplicate user bubbles (+1 per reconnect). This is the "I see three
-  // copies of my message after a server restart" bug.
+  // the on-disk SDK uuid on UN-BRIDGED sessions), so the anchor path above
+  // finds nothing and would return the whole payload as `newer` — applyMessage
+  // would then append the same prompt again on EVERY reconnect / resume
+  // replay, growing a stack of duplicate user bubbles (+1 per reconnect).
+  // This is the "I see three copies of my message after a server restart" bug.
+  //
+  // This fallback covers UN-BRIDGED sessions (old sessions, or desync where
+  // the resume-seed rewrite bailed). Bridged sessions resolve via the uuid
+  // path above and never reach here.
   //
   // Fingerprint (NOT plain text alone — see promptContentFingerprint): folds
   // in a digest of non-text blocks so different images/attachments don't
@@ -453,42 +480,6 @@ function promptSequencesEqual(
     i++
     m++
   }
-}
-
-/** A content fingerprint for a top-level user prompt: the prompt's text plus a
- *  digest of its non-text content blocks (images / attachments). Returns null
- *  for non-top-level-prompt frames so callers can skip them. Richer than
- *  topLevelUserPromptSignature (plain-text-only, which collapses every
- *  image-only prompt onto ''): two prompts with different images get different
- *  fingerprints, so the no-anchor replay fallback can't false-drop a genuinely
- *  different image/attachment prompt as a duplicate. */
-function promptContentFingerprint(msg: SdkMessage): string | null {
-  if (msg.type !== 'user') return null
-  if ((msg as { parent_tool_use_id?: string | null }).parent_tool_use_id != null) return null
-  const content = (msg as { message?: { content?: unknown } }).message?.content
-  let text = ''
-  const nonText: string[] = []
-  if (typeof content === 'string') {
-    text = content
-  } else if (Array.isArray(content)) {
-    for (const block of content as Array<Record<string, unknown>>) {
-      if (!block || typeof block !== 'object') continue
-      const t = block.type
-      if (t === 'text' && typeof block.text === 'string') {
-        text += block.text
-      } else if (t === 'image') {
-        const src = block.source as { media_type?: string; data?: string } | undefined
-        const media = typeof src?.media_type === 'string' ? src.media_type : ''
-        const data = typeof src?.data === 'string' ? src.data : ''
-        // media_type + length + head/tail: cheap yet discriminates different
-        // images without hashing megabytes of base64 on every comparison.
-        nonText.push(`img:${media}:${data.length}:${data.slice(0, 32)}:${data.length > 32 ? data.slice(-32) : ''}`)
-      } else {
-        nonText.push(String(t ?? 'block'))
-      }
-    }
-  }
-  return `${text} ${nonText.join('|')}`
 }
 
 /** Prepend a chronological batch of older messages (loaded from disk on
