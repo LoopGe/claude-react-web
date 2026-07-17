@@ -119,6 +119,18 @@ describe('shouldHideByDefault', () => {
   it('keeps assistant messages visible', () => {
     expect(shouldHideByDefault({ type: 'assistant', uuid: 'a1' } as unknown as SdkMessage)).toBe(false)
   })
+
+  it('hides command_lifecycle frames (CLI lifecycle marker, no renderable content)', () => {
+    expect(
+      shouldHideByDefault({
+        type: 'command_lifecycle',
+        command_uuid: 'c1',
+        state: 'queued',
+        uuid: 'm1',
+        session_id: 's1',
+      } as unknown as SdkMessage),
+    ).toBe(true)
+  })
 })
 
 describe('isHumanUserMessage', () => {

@@ -25,6 +25,12 @@ export const REJECTION_NEEDLES = [
 export function shouldHideByDefault(msg: SdkMessage): boolean {
   if (msg.type === 'system' && msg.subtype !== 'error' && msg.subtype !== 'compact_boundary' && msg.subtype !== 'api_retry') return true
   if (msg.type === 'user' && isLocalCommandLogUserMessage(msg)) return true
+  // `command_lifecycle` is a top-level lifecycle marker the `claude` CLI emits
+  // to track a command's state machine (queued → started → completed). It
+  // carries only ids/state — no renderable content — and isn't in our bundled
+  // SDK type defs (hence the string cast). Hide it like other system noise.
+  // Cast because the SDK's type union doesn't include this newer CLI-emitted type.
+  if ((msg.type as string) === 'command_lifecycle') return true
   return false
 }
 
