@@ -25,7 +25,6 @@ import type { ProcessExitInfo } from './process-monitor.js'
 import { randomUUID } from 'node:crypto'
 import { SessionStore, type SessionMeta } from './persistence.js'
 import { PromptUuidStore, rewriteSeedPromptUuids, type PromptUuidEntry } from './prompt-uuid-store.js'
-import { promptFingerprintHash, type PromptFingerprintInput } from '../shared/prompt-fingerprint.js'
 import { McpConfigStore } from './mcp-config.js'
 import { RecapManager } from './recap.js'
 import type { SessionPhase, SessionRecap } from './session-types.js'
@@ -221,7 +220,7 @@ export class SessionManager {
     this.autoResumeEnabled = opts.autoResume ?? false
     this.crashRecoveryEnabled = opts.crashRecovery ?? false
     this.store = opts.store ?? new SessionStore()
-    this.promptUuidStore = new PromptUuidStore(opts.stateDir, this.historyCap)
+    this.promptUuidStore = new PromptUuidStore(this.store.getDir(), this.historyCap)
     this.mcpStore = opts.mcpConfigStore ?? new McpConfigStore()
     this.providers = opts.providers ?? createDefaultProviders({
       claudeBinary: opts.claudeBinary,
@@ -1551,19 +1550,40 @@ export class SessionManager {
     this.recordPromptUuid(s, userMsg)
   }
 
-  /** Append the server-minted uuid (+ content hash) of a just-sent top-level
-   *  prompt to the session's promptUuids sidecar, capped to historyCap (newest).
-   *  On resume, these uuids rewrite the disk-seed ring's prompt uuids (SDK V →
-   *  server U) so the client's uuid-anchored replay overlap detection works
-   *  across a server restart. Fire-and-forget the sidecar write — a missed
-   *  write only means the next resume falls back to the signature dedup. */
+  /** Record a just-sent top-level prompt's server-minted uuid (`u`) as an
+   *  UNPAIRED entry in the in-memory `promptUuids` list (v undefined). The SDK
+   *  uuid `v` is filled in later by `onPromptEcho` when the SDK echoes the
+   *  prompt back (FIFO order pairs the echo's `v` with the oldest unpaired
+   *  `u`), at which point the sidecar is persisted. Recording `u` here (without
+   *  `v`) and persisting only at echo time means the sidecar never holds a `u`
+   *  whose `v` isn't also on disk — eliminating the sidecar-ahead desync that
+   *  broke the earlier positional scheme on same-text prompts. */
   private recordPromptUuid(s: Session, userMsg: SDKUserMessage): void {
-    const h = promptFingerprintHash(userMsg as unknown as PromptFingerprintInput)
-    if (h == null) return // not a top-level prompt (defensive — send always is)
-    const next = [...(s.promptUuids ?? []), { u: userMsg.uuid as string, h }]
+    if (userMsg.parent_tool_use_id != null) return // not a top-level prompt (defensive)
+    const u = typeof userMsg.uuid === 'string' ? userMsg.uuid : null
+    if (!u) return
+    const next = [...(s.promptUuids ?? []), { u }]
     s.promptUuids = next.length > this.historyCap ? next.slice(next.length - this.historyCap) : next
-    void this.promptUuidStore.save(s.id, s.promptUuids)
+    // No sidecar save here — see onPromptEcho (the entry is only useful once
+    // its SDK uuid `v` is known, which happens at echo time).
   }
+
+  /** Pair the SDK echo uuid `v` with the oldest still-unpaired sent prompt `u`
+   *  in `session.promptUuids`, then persist the sidecar. Called from the pump's
+   *  top-level-user-echo drop-filter (the SDK echoes each persisted prompt back
+   *  through the Query stream in FIFO order, so the oldest unpaired `u` is the
+   *  match). On a resume replay, every loaded entry is already paired (v set),
+   *  so this is a no-op. */
+  private onPromptEcho(s: Session, echoUuid: string): void {
+    const list = s.promptUuids
+    if (!list || list.length === 0) return
+    const idx = list.findIndex((e) => e.v == null)
+    if (idx === -1) return // no unpaired send (resume replay, or echo for a non-send frame)
+    if (list.some((e) => e.v === echoUuid)) return // already paired (defensive against a double echo)
+    list[idx] = { ...list[idx], v: echoUuid }
+    void this.promptUuidStore.save(s.id, list)
+  }
+
 
   /** Common bookkeeping after pushing a user message into a session:
    *  record in history, cap the ring buffer, broadcast to subscribers,
@@ -3281,6 +3301,9 @@ export class SessionManager {
         recordHookRun: (id, event) => this.recordHookRun(id, event),
         onBackgroundSubagentLaunched: (sessionId, toolUseId, agentId) =>
           this.startBackgroundSubagentWatcher(sessionId, toolUseId, agentId),
+        onPromptEcho: (s, echoUuid) => {
+          if (this.sessions.has(s.id)) this.onPromptEcho(s, echoUuid)
+        },
       }
     }
     return this.cachedPumpDeps

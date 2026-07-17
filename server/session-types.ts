@@ -351,8 +351,10 @@ export interface SessionManagerOptions {
   providers?: ProviderRegistry
   defaultProvider?: string
   historyCap?: number
-  /** State directory (default ~/.claude-react-web/). Used for the promptUuids
-   *  sidecar that bridges top-level prompt uuids across server restarts. */
+  /** State directory. Used as the parent for the per-session
+   *  prompt-uuid sidecar store (<stateDir>/prompt-uuids/<id>.json).
+   *  Required in production (cli passes it); omitted in tests that
+   *  don't exercise resume-seed bridging. */
   stateDir?: string
   /** When set, session metadata is persisted here so dormant sessions
    *  survive restarts. See server/persistence.ts. */

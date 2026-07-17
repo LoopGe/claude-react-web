@@ -64,6 +64,14 @@ export abstract class JsonFileStore<T> {
     return Array.from(this.index.values())
   }
 
+  /** The resolved state directory this store reads/writes. Exposed so a
+   *  sibling sidecar store (e.g. PromptUuidStore) can colocate its files
+   *  without a separate stateDir plumbing path — and so tests that pass a
+   *  temp-dir store automatically get a temp-dir sidecar (no home-dir leak). */
+  getDir(): string {
+    return this.dir
+  }
+
   /** Number of entries in the store without allocating an array. */
   count(): number {
     return this.index.size

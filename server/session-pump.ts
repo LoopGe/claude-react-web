@@ -250,6 +250,14 @@ export interface PumpDeps {
    *  the CLI doesn't reliably emit task_notification for Agent-launched
    *  background subagents. Optional so test fixtures can omit it. */
   onBackgroundSubagentLaunched?: (sessionId: string, toolUseId: string, agentId: string) => void
+  /** Called when the pump is about to drop the SDK's echo of a top-level user
+   *  prompt (the SDK replays persisted user input through the Query stream).
+   *  `echoUuid` is the SDK's on-disk uuid for that prompt. The SessionManager
+   *  pairs it with the server-minted uuid recorded at send() time (FIFO order)
+   *  so resume() can rewrite the disk-seed ring's prompt uuids and the client's
+   *  uuid-anchored replay overlap detection works after a restart. Optional so
+   *  test fixtures can omit it. */
+  onPromptEcho?: (session: Session, echoUuid: string) => void
 }
 
 export function hookLifecycleMessage(msg: SDKMessage): HookRuntimeEvent | null {
@@ -414,6 +422,15 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           !userMessageHasToolResult(msg) &&
           !isTaskNotificationUserMessage(msg)
         ) {
+          // Before dropping the SDK's echo of a top-level user prompt, hand its
+          // on-disk uuid (`v`) to the manager so it can pair it with the
+          // server-minted `u` recorded at send() time (FIFO order). That pairs
+          // the disk uuid with the ring/cache uuid, which resume() uses to
+          // rewrite the disk-seed ring so the client's uuid-anchored replay
+          // overlap detection works after a restart. No-op on a resume replay
+          // (every loaded entry is already paired).
+          const echoUuid = (msg as { uuid?: string }).uuid
+          if (echoUuid) deps.onPromptEcho?.(session, echoUuid)
           log.debug(`[session ${session.id}] dropping echoed top-level user message uuid=${(msg as { uuid: string }).uuid}`)
           continue
         }

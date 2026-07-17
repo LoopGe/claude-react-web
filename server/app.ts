@@ -113,7 +113,6 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
     opts.sessionManager ??
     new SessionManager({
       store: opts.sessionStore,
-      stateDir: opts.configDir,
       mcpConfigStore: opts.mcpConfigStore,
       mpStore: opts.mpStore,
       claudeBinary: opts.defaults?.claudeBinary,

@@ -4,9 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { PromptUuidStore, rewriteSeedPromptUuids, type PromptUuidEntry } from './prompt-uuid-store.js'
-import { promptFingerprintHash, type PromptFingerprintInput } from '../shared/prompt-fingerprint.js'
 
-/** Build a top-level user-prompt SDKMessage with the given (disk) uuid + text. */
+/** Build a top-level user-prompt SDKMessage (a disk-seed entry) with the given
+ *  (on-disk SDK) uuid + text. */
 function userPrompt(uuid: string, text: string): SDKMessage {
   return {
     type: 'user',
@@ -23,79 +23,78 @@ function asstMsg(uuid: string, text: string): SDKMessage {
     message: { role: 'assistant', content: [{ type: 'text', text }] },
   } as unknown as SDKMessage
 }
-/** A promptUuids entry for a prompt whose content fingerprints to the same
- *  hash as `userPrompt(serverUuid, text)` (i.e. the server-minted uuid for
- *  that text). */
-function entryFor(serverUuid: string, text: string): PromptUuidEntry {
-  return { u: serverUuid, h: promptFingerprintHash(userPrompt('any', text) as unknown as PromptFingerprintInput) as string }
+/** A paired sidecar entry: server uuid `u` ↔ SDK disk uuid `v`. */
+function entry(u: string, v: string): PromptUuidEntry {
+  return { u, v }
 }
 
-describe('rewriteSeedPromptUuids', () => {
-  it('rewrites the seed prompt uuids V -> U when positionally aligned', () => {
+describe('rewriteSeedPromptUuids (exact v→u lookup)', () => {
+  it('rewrites a seed prompt uuid V -> U when the map has V', () => {
     const seed = [userPrompt('V1', 'hi'), asstMsg('a1', 'reply')]
-    const promptUuids = [entryFor('U1', 'hi')]
-    const out = rewriteSeedPromptUuids(seed, promptUuids)
+    const out = rewriteSeedPromptUuids(seed, [entry('U1', 'V1')])
     expect(out[0].uuid).toBe('U1') // prompt rewritten
     expect(out[1].uuid).toBe('a1') // assistant untouched
   })
 
-  it('rewrites multiple prompts in order (positional, incl. same-text)', () => {
+  it('rewrites multiple prompts by exact uuid, including same-text prompts (no shift)', () => {
+    // The #1 regression: two same-text "ok" prompts. Exact v→u lookup maps
+    // each disk V to its own server U — no positional shift, unlike the old
+    // positional+hash scheme.
     const seed = [userPrompt('V1', 'ok'), userPrompt('V2', 'ok'), asstMsg('a1', 'r')]
-    // Two same-text "ok" prompts: positional alignment disambiguates them.
-    const promptUuids = [entryFor('U1', 'ok'), entryFor('U2', 'ok')]
-    const out = rewriteSeedPromptUuids(seed, promptUuids)
+    const out = rewriteSeedPromptUuids(seed, [entry('U1', 'V1'), entry('U2', 'V2')])
     expect(out[0].uuid).toBe('U1')
     expect(out[1].uuid).toBe('U2')
   })
 
-  it('aligns the seed against the SUFFIX of a longer promptUuids list (cap case)', () => {
-    // promptUuids holds the newest historyCap prompts; the seed window only
-    // contains the last 1. The seed's prompt must map to the LAST entry.
-    const seed = [userPrompt('V3', 'third')]
-    const promptUuids = [entryFor('U1', 'first'), entryFor('U2', 'second'), entryFor('U3', 'third')]
-    const out = rewriteSeedPromptUuids(seed, promptUuids)
-    expect(out[0].uuid).toBe('U3')
+  it('leaves a seed prompt unchanged when its V is not in the map (unpaired / SDK-injected)', () => {
+    // V2 was sent right before a crash (never echoed → no v pairing) OR is an
+    // SDK-injected <task-notification>; either way no mapping → left as V,
+    // client signature fallback then handles it.
+    const seed = [userPrompt('V1', 'hi'), userPrompt('V2', 'ho')]
+    const out = rewriteSeedPromptUuids(seed, [entry('U1', 'V1')])
+    expect(out[0].uuid).toBe('U1')
+    expect(out[1].uuid).toBe('V2') // unchanged
   })
 
-  it('bails (returns seed unchanged) when promptUuids is null/empty (old session)', () => {
+  it('skips unpaired sidecar entries (v undefined) — they carry no disk uuid', () => {
+    const seed = [userPrompt('V1', 'hi')]
+    const out = rewriteSeedPromptUuids(seed, [{ u: 'U1' }, { u: 'U2', v: 'V2' }])
+    expect(out[0].uuid).toBe('V1') // V1 not in the map (only V2 is) → unchanged
+  })
+
+  it('bails (no rewrite) when promptUuids is null/empty (old / fresh session)', () => {
     const seed = [userPrompt('V1', 'hi')]
     expect(rewriteSeedPromptUuids(seed, null)).toBe(seed)
     expect(rewriteSeedPromptUuids(seed, [])).toBe(seed)
     expect(rewriteSeedPromptUuids(seed, undefined)).toBe(seed)
   })
 
-  it('bails when the disk has more prompts than promptUuids recorded (offset < 0)', () => {
-    // SDK injected an extra user frame promptUuids does not have (desync).
-    const seed = [userPrompt('V1', 'hi'), userPrompt('V2', 'ho')]
-    const promptUuids = [entryFor('U1', 'hi')] // only one recorded
-    const out = rewriteSeedPromptUuids(seed, promptUuids)
-    expect(out[0].uuid).toBe('V1') // unchanged — no rewrite
-    expect(out[1].uuid).toBe('V2')
+  it('bails when no entry is paired (all v undefined)', () => {
+    const seed = [userPrompt('V1', 'hi')]
+    const out = rewriteSeedPromptUuids(seed, [{ u: 'U1' }])
+    expect(out[0].uuid).toBe('V1') // nothing to look up → unchanged
   })
 
-  it('bails on a fingerprint mismatch (desync: content drifted)', () => {
-    // promptUuids says the newest prompt was "hi" but disk's newest is "changed".
-    const seed = [userPrompt('V1', 'changed')]
-    const promptUuids = [entryFor('U1', 'hi')] // different content hash
-    const out = rewriteSeedPromptUuids(seed, promptUuids)
-    expect(out[0].uuid).toBe('V1') // unchanged — bail, fall back to signature dedup
+  it('leaves non-prompt frames (assistant / tool_result-bearing user) untouched', () => {
+    const toolResult = {
+      type: 'user',
+      uuid: 'TR1',
+      parent_tool_use_id: 'tu1',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'x' }] },
+    } as unknown as SDKMessage
+    const seed = [userPrompt('V1', 'hi'), toolResult, asstMsg('a1', 'r')]
+    // Even if TR1's uuid coincidentally equaled a paired v, it has a parent_tool_use_id → skipped.
+    const out = rewriteSeedPromptUuids(seed, [entry('U1', 'V1'), entry('U-TR', 'TR1')])
+    expect(out[0].uuid).toBe('U1') // prompt rewritten
+    expect(out[1].uuid).toBe('TR1') // tool_result-bearing user NOT rewritten (parent set)
+    expect(out[2].uuid).toBe('a1') // assistant not rewritten
   })
 
-  it('bails when an SDK-injected <task-notification> user frame shifts alignment', () => {
-    // Seed has a real prompt + a task-notification (both type user, parent null);
-    // promptUuids only has the real prompt. The positional+hash verify must bail.
-    const seed = [userPrompt('V1', 'hi'), userPrompt('V2', '<task-notification>done</task-notification>')]
-    const promptUuids = [entryFor('U1', 'hi')]
-    const out = rewriteSeedPromptUuids(seed, promptUuids)
-    expect(out[0].uuid).toBe('V1') // unchanged
-    expect(out[1].uuid).toBe('V2')
-  })
-
-  it('leaves a seed with no prompts unchanged', () => {
-    const seed = [asstMsg('a1', 'reply')]
-    const promptUuids = [entryFor('U1', 'hi')]
-    const out = rewriteSeedPromptUuids(seed, promptUuids)
-    expect(out[0].uuid).toBe('a1')
+  it('does not rewrite when u === v (already consistent — idempotent)', () => {
+    const seed = [userPrompt('V1', 'hi')]
+    const out = rewriteSeedPromptUuids(seed, [entry('V1', 'V1')])
+    expect(out[0].uuid).toBe('V1')
+    expect(out).toBe(seed) // no mutation
   })
 })
 
@@ -111,7 +110,7 @@ describe('PromptUuidStore', () => {
   })
 
   it('save / load roundtrip', async () => {
-    const entries = [entryFor('U1', 'hi'), entryFor('U2', 'ho')]
+    const entries = [entry('U1', 'V1'), entry('U2', 'V2')]
     await store.save('s1', entries)
     const loaded = await store.load('s1')
     expect(loaded).toEqual(entries)
@@ -122,19 +121,26 @@ describe('PromptUuidStore', () => {
   })
 
   it('caps to the newest historyCap entries on save', async () => {
-    const entries = [entryFor('U1', 'a'), entryFor('U2', 'b'), entryFor('U3', 'c'), entryFor('U4', 'd')]
+    const entries = [entry('U1', 'V1'), entry('U2', 'V2'), entry('U3', 'V3'), entry('U4', 'V4')]
     await store.save('s1', entries) // cap = 3 -> keep newest 3 (U2, U3, U4)
     const loaded = await store.load('s1')
     expect(loaded?.map((e) => e.u)).toEqual(['U2', 'U3', 'U4'])
   })
 
   it('remove deletes the sidecar', async () => {
-    await store.save('s1', [entryFor('U1', 'hi')])
+    await store.save('s1', [entry('U1', 'V1')])
     await store.remove('s1')
     expect(await store.load('s1')).toBeNull()
   })
 
   it('remove is a no-op when no sidecar exists', async () => {
     await expect(store.remove('never')).resolves.toBeUndefined()
+  })
+
+  it('no-ops load/save/remove when stateDir is undefined (standalone buildApp / unit tests)', async () => {
+    const noop = new PromptUuidStore(undefined, 500)
+    await expect(noop.load('s1')).resolves.toBeNull()
+    await expect(noop.save('s1', [entry('U1', 'V1')])).resolves.toBeUndefined()
+    await expect(noop.remove('s1')).resolves.toBeUndefined()
   })
 })
