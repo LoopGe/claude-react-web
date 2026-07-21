@@ -63,15 +63,34 @@ describe('subagent-watcher', () => {
       expect(c?.status).toBe('completed')
       expect(c?.summary).toBe('done')
     })
-    it('maps a non-end_turn stop_reason to stopped', () => {
+    it('maps ANY terminal stop_reason to completed (non-end_turn is NOT an error)', () => {
+      // stop_sequence / max_turns / max_tokens are normal completions: the
+      // subagent stopped producing and returned output, exactly like end_turn.
+      // Mapping them to 'stopped' (rendered as interrupted/exclamation by the
+      // reducer) was a false positive. Only the maxMs backstop (no terminal
+      // frame at all) synthesizes 'stopped'.
       const f = path.join(mkdtempSync(path.join(os.tmpdir(), 'sw-')), 'agent.jsonl')
       writeFileSync(
         f,
         JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hit limit' }], stop_reason: 'max_turns' } }) + '\n',
       )
       const c = readSubagentCompletion(f)
-      expect(c?.status).toBe('stopped')
+      expect(c?.status).toBe('completed')
       expect(c?.summary).toBe('hit limit')
+    })
+    it('maps stop_sequence (the real-world false-positive case) to completed', () => {
+      // Regression: subagents ending on stop_sequence were marked 'stopped'
+      // → interrupted → exclamation, even though stop_sequence is a normal
+      // API completion (the model hit a configured stop sequence). Verified
+      // against ~3 of ~546 real subagent transcripts in the wild.
+      const f = path.join(mkdtempSync(path.join(os.tmpdir(), 'sw-')), 'agent.jsonl')
+      writeFileSync(
+        f,
+        JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'here is my result' }], stop_reason: 'stop_sequence' } }) + '\n',
+      )
+      const c = readSubagentCompletion(f)
+      expect(c?.status).toBe('completed')
+      expect(c?.summary).toBe('here is my result')
     })
     it('does NOT false-complete on tool_use stop_reason (intermediate tool-call response)', () => {
       // A tool-using subagent emits stop_reason:'tool_use' on every intermediate

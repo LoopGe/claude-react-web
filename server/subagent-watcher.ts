@@ -140,8 +140,17 @@ export function readSubagentCompletion(filePath: string): SubagentCompletion | n
     lastText = extractTextBlocks(obj.message.content)
   }
   if (lastStopReason === null) return null
+  // Any terminal stop_reason means the subagent stopped producing and
+  // returned its final text — a normal completion. stop_sequence /
+  // max_turns / max_tokens are NOT errors: the subagent ran within its
+  // bounds and returned output, exactly like end_turn. Mapping them to
+  // 'stopped' (which the reducer renders as the interrupted/error state
+  // → exclamation icon) was a false positive for subagents ending on a
+  // non-end_turn terminal reason. Only the maxMs backstop below (no
+  // terminal frame at all — the subagent was killed/stranded mid-work)
+  // synthesizes 'stopped'; a real terminal frame is always 'completed'.
   return {
-    status: lastStopReason === 'end_turn' ? 'completed' : 'stopped',
+    status: 'completed',
     summary: lastText,
   }
 }
@@ -168,8 +177,10 @@ export interface WatchOptions {
  *  call `onCompleted`. Two resolution paths, BOTH funnel through `onCompleted`
  *  so the owning record always leaves its `pending`/`background` state:
  *
- *    1. Real terminal `stop_reason` (end_turn / max_turns / …) → the
- *       subagent's own final text, status `completed`/`stopped`.
+ *    1. Real terminal `stop_reason` (end_turn / max_turns / stop_sequence / …)
+ *       → the subagent's own final text, status `completed`. Any terminal
+ *       reason is a normal completion (the subagent stopped producing and
+ *       returned output); non-end_turn reasons are NOT errors.
  *    2. `maxMs` backstop → synthesize `stopped`.
  *
  *  The previous design gave up silently at 10 min (`onTimeout`, no frame) and

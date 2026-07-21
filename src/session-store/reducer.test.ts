@@ -713,6 +713,58 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     expect(record?.result?.isError).toBe(false)
   })
 
+  it('a non-end_turn terminal completion (stop_sequence) flips background to done, NOT interrupted', () => {
+    // Regression: the server watcher (subagent-watcher.ts) used to map any
+    // non-end_turn terminal stop_reason to status:'stopped', which the
+    // reducer treated as an error (interrupted → exclamation icon). A
+    // subagent that finished via stop_sequence / max_turns / max_tokens is
+    // a NORMAL completion (it returned output), so the watcher now maps
+    // every terminal stop_reason to 'completed'. This test pins the
+    // end-to-end wire shape: a task_notification carrying status:'completed'
+    // (the watcher's new output for stop_sequence) must flip background →
+    // done with the real output, never interrupted.
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-seq',
+      receivedAt: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_seq', name: 'Agent', input: { description: 'do work', run_in_background: true } }],
+      },
+    } as unknown as SdkMessage
+    const ack: SdkMessage = {
+      type: 'user',
+      uuid: 'u-seq',
+      parent_tool_use_id: null,
+      receivedAt: 1_000,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_seq', content: 'Async agent launched successfully' }],
+      },
+    } as unknown as SdkMessage
+    const completion: SdkMessage = {
+      type: 'system',
+      subtype: 'task_notification',
+      uuid: 'sys-seq',
+      task_id: 't-seq',
+      tool_use_id: 'tu_seq',
+      status: 'completed', // stop_sequence is now 'completed', not 'stopped'
+      summary: 'here is my result',
+      output_file: '',
+      receivedAt: 5_000,
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    expect(state.mirror.activeSubagents.get('tu_seq')?.status).toBe('background')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: completion })
+    const record = state.mirror.activeSubagents.get('tu_seq')
+    expect(record?.status).toBe('done')
+    expect(record?.result?.content).toBe('here is my result')
+    expect(record?.result?.isError).toBe(false)
+  })
+
   it('DISMISS_SUBAGENT flips a pending record to dismissed and ignores late completion', () => {
     // The Waiting bubble's dismiss affordance lets the user give up on
     // tracking a pending background subagent. It must flip pending ->
