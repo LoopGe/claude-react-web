@@ -88,6 +88,32 @@ export function formatQuestionAnswers(questions: QuestionSpec[], answers: Questi
   return JSON.stringify(payload)
 }
 
+/** Build the tool_result payload for the "Chat about this" path: instead of
+ *  answering the questions, the user typed a free-form clarification. Like
+ *  `formatQuestionAnswers`, this string lands in the model's tool_result via
+ *  the canUseTool deny+message channel, so the model reads it and keeps
+ *  working in the same turn (interrupt: false) — typically reformulating
+ *  the questions or answering the user's clarification.
+ *
+ *  The original questions are echoed back so the model has the exact text it
+ *  asked alongside the user's redirect. */
+export function formatQuestionClarification(questions: QuestionSpec[], feedback: string): string {
+  const questionList = questions.length
+    ? questions.map((q) => `- "${q.question}"`).join('\n')
+    : '(no questions)'
+  return [
+    'The user chose to clarify rather than answer the AskUserQuestion directly.',
+    'They may have additional context, a question of their own, or a redirect for you.',
+    'Take their message into account and reformulate your questions if appropriate.',
+    '',
+    'The user said:',
+    feedback.trim(),
+    '',
+    'Original questions asked:',
+    questionList,
+  ].join('\n')
+}
+
 /**
  * Rewrite SDK-provided suggestions to target the current session scope.
  *
