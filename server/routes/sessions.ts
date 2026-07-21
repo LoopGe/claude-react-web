@@ -163,6 +163,16 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     return c.json({ session: info })
   })
 
+  // Sleep a live, idle session: release the SDK subprocess + subscribers
+  // (dormant), keeping on-disk metadata + transcript for later resume.
+  // Reversible counterpart to DELETE. 409 if the session is working; a
+  // not-live / already-dormant id 404s. The client only renders the button
+  // for idle sessions, so both are guarded client-side too.
+  app.post('/sessions/:id/sleep', async (c) => {
+    const session = await sm.sleep(c.req.param('id'))
+    return c.json({ session })
+  })
+
   // Fork a session.
   app.post('/sessions/:id/fork', async (c) => {
     const info = await sm.fork(c.req.param('id'))

@@ -11,7 +11,7 @@ import { shortenPath } from '../../utils/paths'
 import { statusLabel } from '../../utils/session-status'
 import type { SessionInfo } from '../../types'
 import { Tooltip } from '../Tooltip'
-import { IconX, IconFolder, IconAlertTriangle } from '../icons/ToolIcons'
+import { IconX, IconFolder, IconAlertTriangle, IconMoon } from '../icons/ToolIcons'
 import { PermissionModeIcon, permissionModeLabel } from '../permission-mode-display'
 
 export interface SessionCardProps {
@@ -37,6 +37,9 @@ export interface SessionCardProps {
 
   onSelect: (id: string) => void
   onDelete: (id: string) => void
+  /** Put a live, idle session into dormant state (release the SDK
+   *  subprocess) without deleting it. Reversible via resume. */
+  onSleep: (id: string) => void
   onContextMenu: (e: React.MouseEvent, id: string) => void
   onDragStart: (e: React.DragEvent, id: string) => void
   onDragEnd: () => void
@@ -82,6 +85,7 @@ export const SessionCard = memo(function SessionCard({
   containerGroupId,
   onSelect,
   onDelete,
+  onSleep,
   onContextMenu,
   onDragStart,
   onDragEnd,
@@ -305,29 +309,57 @@ export const SessionCard = memo(function SessionCard({
           {' · '}{s.messageCount} msg{s.messageCount === 1 ? '' : 's'}
           {s.subscribers > 0 && ` · ${s.subscribers} viewer${s.subscribers === 1 ? '' : 's'}`}
         </span>
-        <Tooltip label="Delete session" placement="left">
-          <button
-            className="session-item-delete"
-            aria-label="Delete session"
-            onClick={(e) => {
-              e.stopPropagation()
-              if (s.messageCount > 0 && onAskConfirm) {
-                const title = s.title ?? s.id.slice(0, 8)
-                onAskConfirm({
-                  title: 'Delete session?',
-                  message: <p>Delete &ldquo;{title}&rdquo;? This permanently removes the conversation.</p>,
-                  confirmLabel: 'Delete',
-                  destructive: true,
-                  onConfirm: () => onDelete(s.id),
-                })
-                return
+        <span className="session-item-actions">
+          {/* Sleep (dormant) — only meaningful for an idle live session.
+              Working sessions are disabled with a hint; dormant/terminated
+              hide it (nothing to release). Reversible via resume, so no
+              confirmation needed (unlike Delete). */}
+          {s.phase === 'idle' || s.phase === 'working' ? (
+            <Tooltip
+              label={
+                s.phase === 'idle'
+                  ? 'Sleep — release resources (resumable)'
+                  : 'Wait for the turn to finish before sleeping'
               }
-              onDelete(s.id)
-            }}
-          >
-            <IconX size={12} />
-          </button>
-        </Tooltip>
+              placement="left"
+            >
+              <button
+                className="session-item-sleep"
+                aria-label="Sleep session"
+                disabled={s.phase !== 'idle'}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (s.phase === 'idle') onSleep(s.id)
+                }}
+              >
+                <IconMoon size={12} />
+              </button>
+            </Tooltip>
+          ) : null}
+          <Tooltip label="Delete session" placement="left">
+            <button
+              className="session-item-delete"
+              aria-label="Delete session"
+              onClick={(e) => {
+                e.stopPropagation()
+                if (s.messageCount > 0 && onAskConfirm) {
+                  const title = s.title ?? s.id.slice(0, 8)
+                  onAskConfirm({
+                    title: 'Delete session?',
+                    message: <p>Delete &ldquo;{title}&rdquo;? This permanently removes the conversation.</p>,
+                    confirmLabel: 'Delete',
+                    destructive: true,
+                    onConfirm: () => onDelete(s.id),
+                  })
+                  return
+                }
+                onDelete(s.id)
+              }}
+            >
+              <IconX size={12} />
+            </button>
+          </Tooltip>
+        </span>
       </div>
     </div>
   )

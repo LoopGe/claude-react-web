@@ -1669,6 +1669,39 @@ export function App() {
     [toast],
   )
 
+  /** Put a live, idle session into dormant state (release the SDK subprocess
+   *  + subscribers) without deleting it. Reversible via resumeSession / click.
+   *  The button is only rendered for idle sessions, so a 409 ("working") is
+   *  unexpected — handled as a revert + info toast. Optimistically flips the
+   *  session to dormant so the UI transitions immediately; the server's
+   *  subsequent session-update broadcast reconciles (idempotent). */
+  const sleepSession = useCallback(
+    async (id: string) => {
+      const prev = sessionsRef.current.find((s) => s.id === id)
+      setSessions((cur) => cur.map((s) => (s.id === id
+        ? {
+          ...s,
+          running: false,
+          phase: 'dormant',
+          working: false,
+          workingSince: undefined,
+          pendingPermissionCount: 0,
+        }
+        : s)))
+      try {
+        const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/sleep`, {})
+        setSessions((cur) => cur.map((s) => (s.id === id ? res.session : s)))
+      } catch (e) {
+        // Revert to the pre-sleep state.
+        if (prev) setSessions((cur) => cur.map((s) => (s.id === id ? prev : s)))
+        const msg = (e as Error).message
+        if (/working/i.test(msg)) toast.info('等当前回合结束再休眠')
+        else toast.error(`Couldn't sleep session: ${msg}`)
+      }
+    },
+    [toast],
+  )
+
   /** Select a session. Dormant (not running, not terminated) sessions are
    *  resumed first — the server spins up a fresh Query with
    *  `options.resume`, then the SSE replay fills in the transcript.
@@ -2961,6 +2994,7 @@ export function App() {
           onSelect={handleSelectFromSidebar}
           onCreate={handleCreate}
           onDelete={handleDelete}
+          onSleep={sleepSession}
           onClosePanel={closeSession}
           onFork={handleFork}
           onNewLikeThis={handleNewLikeThis}
@@ -3165,6 +3199,7 @@ export function App() {
                       accentStyle={sessionAccentMap.get(s.id)}
                       onFocus={focusPanel}
                       onClose={closeSession}
+                      onResume={(id) => { void resumeSession(id, () => {}) }}
                       groupLabel={owningGroup?.name}
                       onCloseGroupPanels={
                         owningGroup ? closeGroupPanelsHandlers.get(owningGroup.id) : undefined

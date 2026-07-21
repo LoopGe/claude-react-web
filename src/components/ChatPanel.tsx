@@ -113,6 +113,9 @@ export interface ChatPanelProps {
   accentStyle?: CSSProperties
   onFocus: (sessionId: string) => void
   onClose: (sessionId: string) => void
+  /** Resume a dormant session directly from the panel's dormant empty-state
+   *  (the "Resume" button). Mirrors the sidebar's click-to-resume path. */
+  onResume?: (sessionId: string) => void
   /** Name of the session's owning group, or undefined when ungrouped.
    *  Drives the panel context-menu's close-item label: "Remove from
    *  <group>" for grouped sessions (closing a group member removes it
@@ -220,6 +223,7 @@ export const ChatPanel = memo(function ChatPanel({
   accentStyle,
   onFocus,
   onClose,
+  onResume,
   groupLabel,
   onCloseGroupPanels,
   onDelete,
@@ -844,7 +848,19 @@ export const ChatPanel = memo(function ChatPanel({
                 {session.error ? (
                   <p>Last resume attempt failed: {session.error}. Click the session in the sidebar to try again.</p>
                 ) : (
-                  <p>Click the session again in the sidebar to resume it.</p>
+                  <p>This session was slept to release resources. Resume it to pick up where you left off.</p>
+                )}
+                {onResume && !session.terminated && (
+                  <button
+                    type="button"
+                    className="chat-panel-resume-btn"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onResume(session.id)
+                    }}
+                  >
+                    Resume session
+                  </button>
                 )}
               </>
             )}

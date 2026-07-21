@@ -866,6 +866,23 @@ body.resizing-col * {
   padding: 40px 20px;
 }
 .empty-state h2 { color: var(--fg); font-weight: 600; }
+/* "Resume session" button on the dormant empty-state. */
+.chat-panel-resume-btn {
+  margin-top: 16px;
+  padding: 8px 18px;
+  border-radius: 8px;
+  border: 1px solid var(--btn-border, var(--border));
+  background: var(--btn-bg);
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.chat-panel-resume-btn:hover {
+  background: var(--btn-hover-bg);
+  border-color: var(--accent, var(--border));
+}
 /* Centered column for the resuming spinner + caption. `.empty-state` only
    sets text-align:center, which doesn't center a block-level spinner div —
    the spinner sat at the left edge while the <p> centered, misaligning the

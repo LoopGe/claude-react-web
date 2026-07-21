@@ -1923,6 +1923,32 @@ export class SessionManager {
     }
   }
 
+  /** Put a live, idle session into dormant state to release its resources
+   *  (SDK subprocess, pump task, WS subscriber queues, pending-permission
+   *  map, git-broadcast timer, background-subagent watchers) WITHOUT deleting
+   *  it. The on-disk metadata + transcript are kept, so `resume(id)` brings
+   *  the session back. This is the user-facing "sleep" entry point — the
+   *  reversible counterpart to `delete()` (which terminates + removes the
+   *  store entry).
+   *
+   *  Reuses the private `unload()` dormant path verbatim; the only added
+   *  logic is the idle guard. `phaseOf` returns `'working'` for `clearing`,
+   *  `pendingTurns > 0`, `queueDepth > 0`, and `pending.size > 0`, so a
+   *  single `!== 'idle'` check rejects every mid-turn race (in-flight turn,
+   *  queued input, unanswered permission prompt) — sleeping any of those
+   *  would drop an in-flight assistant response or strand a permission
+   *  awaiter. Terminated sessions fail `requireLive` (410); already-dormant
+   *  sessions aren't in the live map, so `requireLive` → `require` throws 404. */
+  async sleep(id: string): Promise<SessionInfo> {
+    const s = this.requireLive(id)
+    if (this.phaseOf(s) !== 'idle') {
+      throw new HttpError(409, `session ${id} is working — wait for the turn to finish before sleeping`)
+    }
+    log.info(`[session ${id}] sleep: unloading to dormant (releasing SDK subprocess + subscribers)`)
+    await this.unload(id) // no opts => dormant, not terminated; keep store + transcript
+    return this.get(id)
+  }
+
   async setModel(id: string, model?: string): Promise<SessionInfo> {
     const s = this.requireLive(id)
     await this.requireHandleMethod<(model?: string) => Promise<void>>(

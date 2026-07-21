@@ -687,6 +687,49 @@ describe('SessionManager', () => {
     expect(resolved.behavior).toBe('deny')
   })
 
+  it('sleep() unloads an idle session to dormant (reversible, transcript kept)', async () => {
+    const info = sm.create({ cwd: '/tmp', model: 'm1' })
+    // A freshly-created session with no in-flight turn is idle.
+    expect(sm.get(info.id).phase).toBe('idle')
+
+    const slept = await sm.sleep(info.id)
+
+    // No longer live, but persisted as non-terminated (dormant).
+    expect(slept.running).toBe(false)
+    expect(slept.phase).toBe('dormant')
+    expect(slept.terminated).toBe(false)
+    const meta = store.get(info.id)
+    expect(meta).toBeDefined()
+    expect(meta!.terminated).toBe(false)
+    expect(meta!.cwd).toBe('/tmp')
+    expect(meta!.model).toBe('m1')
+
+    // resume() brings it back: a new Query with resume=id is spawned.
+    const resumed = await sm.resume(info.id)
+    expect(resumed.id).toBe(info.id)
+    expect(resumed.running).toBe(true)
+    expect(mockHandles).toHaveLength(2)
+    expect(mockHandles[1].options.resume).toBe(info.id)
+  })
+
+  it('sleep() rejects a working session with 409 (idle guard)', async () => {
+    const info = sm.create({})
+    sm.send(info.id, 'in-flight')
+    expect(sm.get(info.id).working).toBe(true)
+
+    await expect(sm.sleep(info.id)).rejects.toThrow(/working/)
+    // The session is untouched — still live and running.
+    expect(sm.get(info.id).running).toBe(true)
+    expect(mockHandles).toHaveLength(1)
+  })
+
+  it('sleep() on an already-dormant session throws (not live)', async () => {
+    const info = sm.create({})
+    await sm.sleep(info.id)
+    // A second sleep hits requireLive → require → 404 (not in the live map).
+    await expect(sm.sleep(info.id)).rejects.toThrow(/not found/)
+  })
+
   it('resume() spawns a new Query with options.resume set to the original id', async () => {
     const info = sm.create({ cwd: '/tmp', model: 'm1' })
     mockHandles[0].emit({ type: 'result' })

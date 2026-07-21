@@ -54,6 +54,9 @@ interface Props {
   onSelect: (id: string) => void
   onCreate: (form: NewSessionForm) => void
   onDelete: (id: string) => void
+  /** Put a live, idle session into dormant state (release the SDK
+   *  subprocess) without deleting it. Reversible via resume. */
+  onSleep: (id: string) => void
   /** Close the panel for a session if it's currently open in the main grid.
    *  No-op when the session isn't open. Used by the right-click menu. */
   onClosePanel?: (id: string) => void
@@ -153,6 +156,7 @@ export const SessionList = memo(function SessionList({
   onSelect,
   onCreate,
   onDelete,
+  onSleep,
   onClosePanel,
   onFork,
   onNewLikeThis,
@@ -517,6 +521,7 @@ export const SessionList = memo(function SessionList({
           containerGroupId={containerGroupId}
           onSelect={onSelect}
           onDelete={onDelete}
+          onSleep={onSleep}
           onContextMenu={handleCardContextMenu}
           onDragStart={handleCardDragStart}
           onDragEnd={handleCardDragEnd}
@@ -533,7 +538,7 @@ export const SessionList = memo(function SessionList({
         />
       </div>
     )
-  }, [openIdSlotMap, openIdSet, focusedId, resumingIds, unread, deletingIds, draggingId, dropHint, renamingId, accentStyleMap, onSelect, onDelete, handleCardContextMenu, handleCardDragStart, handleCardDragEnd, handleSetDropHint, handleClearDropHint, animatedReorder, animatedReorderInGroup, renameDraft, handleRenameDraftChange, commitRename, cancelRename, startRename, handleAskConfirm])
+  }, [openIdSlotMap, openIdSet, focusedId, resumingIds, unread, deletingIds, draggingId, dropHint, renamingId, accentStyleMap, onSelect, onDelete, onSleep, handleCardContextMenu, handleCardDragStart, handleCardDragEnd, handleSetDropHint, handleClearDropHint, animatedReorder, animatedReorderInGroup, renameDraft, handleRenameDraftChange, commitRename, cancelRename, startRename, handleAskConfirm])
 
   /** Resolve which ordered list a session belongs to and, when it lives in
    *  a group, that group's id. The flat view orders `visibleSessions`; the
@@ -959,6 +964,7 @@ export const SessionList = memo(function SessionList({
         onRename={(s) => startRename(s)}
         onClosePanel={(id) => onClosePanel?.(id)}
         onDelete={(id) => onDelete(id)}
+        onSleep={(id) => onSleep(id)}
         onMove={handleMove}
         canMoveUp={canMoveUp}
         canMoveDown={canMoveDown}

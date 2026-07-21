@@ -1106,3 +1106,20 @@
 }
 .session-item:hover .session-item-delete { opacity: 1; }
 .session-item-delete:hover { color: var(--danger); }
+/* Hover-revealed action cluster (sleep + delete) on the meta row. */
+.session-item-actions {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.session-item-sleep {
+  opacity: 0;
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  padding: 0 4px;
+}
+.session-item:hover .session-item-sleep { opacity: 1; }
+.session-item-sleep:hover { color: var(--accent, var(--fg)); }
+.session-item-sleep:disabled { cursor: not-allowed; opacity: 0; }
+.session-item:hover .session-item-sleep:disabled { opacity: 0.5; }

@@ -13,6 +13,7 @@ import {
   IconCopy,
   IconRefresh,
   IconClipboard,
+  IconMoon,
 } from '../icons/ToolIcons'
 
 export interface SessionContextMenuProps {
@@ -23,6 +24,9 @@ export interface SessionContextMenuProps {
   onRename: (s: SessionInfo) => void
   onClosePanel: (id: string) => void
   onDelete: (id: string) => void
+  /** Put a live, idle session into dormant state (release the SDK
+   *  subprocess) without deleting it. Reversible via resume. */
+  onSleep: (id: string) => void
   /** Keyboard-accessible alternative to drag-reorder. Moves the session
    *  one step up/down within its current sidebar section. `canMoveUp` /
    *  `canMoveDown` reflect whether a neighbour exists in that direction
@@ -74,6 +78,7 @@ export function SessionContextMenu({
   onRename,
   onClosePanel,
   onDelete,
+  onSleep,
   onMove,
   canMoveUp,
   canMoveDown,
@@ -160,6 +165,18 @@ export function SessionContextMenu({
         }
         onRestart(anchor.id)
       },
+    },
+    {
+      // Sleep is the reversible counterpart to Delete: unload the SDK
+      // subprocess + subscribers to free resources, but keep the on-disk
+      // metadata + transcript so resume() brings the session back. Only
+      // offered for idle live sessions — the server's idle guard rejects
+      // anything mid-turn (working / pending permission / queued input),
+      // and dormant / terminated sessions have nothing to release.
+      label: 'Sleep (release resources)',
+      icon: <IconMoon size={14} />,
+      disabled: session.phase !== 'idle',
+      onClick: () => onSleep(anchor.id),
     },
     // Keyboard-accessible reorder (drag-and-drop alternative). Only shown
     // when a move handler is wired and at least one direction is possible.

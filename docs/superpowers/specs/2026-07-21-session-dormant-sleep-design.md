@@ -77,29 +77,33 @@ live map so dormant side chats are invisible to it.
 **Sidebar** (`src/components/SessionList.tsx` + `SessionCard`): new `onSleep`
 prop threaded next to `onDelete`. A moon-icon button on each card, enabled only
 when `phase === 'idle'`; disabled with tooltip "等当前回合结束" when working;
-hidden for dormant / terminated. Dormant rows dim and show a moon corner badge,
-distinct from terminated (greyed).
+hidden for dormant / terminated. The sidebar context menu
+(`SessionContextMenu`) also gains a "Sleep (release resources)" item (idle-only,
+disabled otherwise). Dormant rows already dim via the existing `dormant` class
++ status chip; no new badge needed (the status label already reads "dormant").
 
-**Panel header** (`Chat` header): sleep button alongside the existing gear /
-inline chips when the focused session is idle; same handler as the sidebar.
+**Panel transition (focused session slept):** `ChatPanel` already renders a
+dormant empty-state when `!session.running && !session.terminated`
+("Session is dormant — Click the session again in the sidebar to resume it.").
+Sleep flips `running:false, phase:'dormant'`, so the focused panel transitions
+to this existing empty-state automatically — consistent with every other
+dormant transition (server restart, spawn-fail, GC). We add a **"Resume"
+button** to that empty-state (threaded `onResume` from App's `resumeSession`)
+so the user can wake the session directly from the panel without going to the
+sidebar.
 
-**`DormantOverlay`** (`src/components/DormantOverlay.tsx`, new): when the
-focused session's `phase === 'dormant'`, render a translucent overlay **on top
-of the preserved transcript**: "此会话已休眠以释放资源 · 点击恢复". Click →
-existing `resumeSession(id)` flow (`App.tsx:1642`). On resume the server
-broadcasts `session-update` with `phase` leaving `'dormant'`; the overlay
-auto-dismisses. Composer send is disabled in overlay state — the user must
-click the overlay to resume first (avoids a race between resume-spawn and an
-enqueued message).
+> Deviation from the original "preserve history + overlay" preference: keeping
+> `<Chat>` mounted across the dormant boundary (to preserve the live transcript
+> under an overlay) would run Chat's hooks (recap auto-gen, context-usage
+> polling, mcp-status) on a dormant session — paths that today never execute
+> for dormant sessions and risk regressing the working dormant flow. Reusing
+> the established empty-state is consistent and low-risk; on resume the server
+> re-seeds the transcript from disk (the existing replay path), so history
+> returns without a separate persistence mechanism. A live-history overlay can
+> be layered on later as a focused follow-up if desired.
 
-**Transition detail:** `useChatStream`'s per-session subscription stops
-receiving frames after dormant (server `endAllSubscribers`), but the shared hub
-WS connection stays open — no false "connection lost". Verify `useChatStream`
-resets `activePhase` / hides `WorkingBubble` on `phase → 'dormant'` so no stale
-"Working" lingers. The client `session-store` cache is **not cleared**; it
-serves as the read-only transcript under the overlay. On resume the server
-re-seeds from disk and the existing resume-replay overlap dedup handles
-duplicates.
+No new `DormantOverlay` component, no panel-header sleep button (the sidebar
+card + context menu already provide one affordance per session).
 
 ### Data flow
 
@@ -111,23 +115,24 @@ user clicks sleep (idle session)
       stopBackgroundSubagentWatchers(); endAllSubscribers();
       sessions.delete(id); writeStore(s)
       broadcastGlobal update{running:false, phase:'dormant'}
-  → client receives session-update → focused panel renders DormantOverlay
-    (transcript preserved); sidebar row dims + moon badge
+  → client receives session-update → focused panel transitions to the existing
+    dormant empty-state (with a Resume button); sidebar status chip reads "dormant"
 
-user clicks overlay (or selects the row again)
+user clicks Resume in the panel (or selects the row in the sidebar)
   → POST /sessions/:id/resume (existing)
   → sm.resume: spawn(resume:id) + re-seed history + broadcast update{running:true}
-  → overlay dismisses, transcript continues
+  → panel re-renders <Chat>, transcript re-seeded from disk
 ```
 
 ## Error handling
 
 - **Sleep while working:** 409; button already disabled client-side, toast兜底
   "等当前回合结束".
-- **Sleep already-dormant / not live:** 409; client doesn't render the button
-  for non-idle, ignore兜底.
+- **Sleep already-dormant / not live:** `requireLive` throws 404 (the session
+  isn't in the live map); client doesn't render the button for non-idle, ignore
+  兜底.
 - **Resume finds transcript missing:** existing path (`markTranscriptMissing` →
-  410 → marked terminated); overlay transitions to a terminated notice.
+  410 → marked terminated); the panel's empty-state shows the terminated branch.
 - **Session deleted/GC'd concurrently with sleep:** `requireLive` 404; client
   ignores.
 
@@ -142,13 +147,18 @@ user clicks overlay (or selects the row again)
 3. Already-dormant session: `sleep` throws 409.
 4. After `sleep`, `resume(id)` re-enters the live map and the history ring is
    seeded from disk.
-5. `sleep` denies pending permissions and stops background-subagent watchers
-   (verify `denyAll` + `stopBackgroundSubagentWatchers` are invoked / pending
-   map is empty after).
 
-**Client** (`session-store` + component tests):
+Note: a "sleep clears pending permissions" test is impossible by design —
+the idle guard rejects any session with `pending.size > 0` (phaseOf returns
+`'working'`), so `sleep` never reaches `unload` with pending perms. The
+`unload` deny-all path itself is already covered by the `delete()` tests.
+Likewise background-subagent watchers only exist while a parent turn is in
+flight (phase `'working'`), so they're also rejected by the guard.
 
-1. Focused session `phase → 'dormant'`: `DormantOverlay` appears and the cached
-   transcript is preserved.
-2. After resume (`phase` leaves dormant): overlay dismisses.
-3. Sleep button disabled when `phase === 'working'`.
+**Client** (component tests):
+
+1. `SessionCard` renders the sleep button when `phase === 'idle'`; disables it
+   (with hint) when `phase === 'working'`; hides it for dormant / terminated.
+2. `SessionContextMenu` "Sleep" item is disabled unless `phase === 'idle'`.
+3. The dormant empty-state in `ChatPanel` shows a Resume button that calls
+   `onResume` (covered by a render + click test).

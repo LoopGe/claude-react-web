@@ -17,6 +17,7 @@ function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
     messageCount: 5,
     subscribers: 1,
     lastActivityAt: Date.now(),
+    phase: 'idle',
     ...overrides,
   } as SessionInfo
 }
@@ -35,6 +36,7 @@ const baseProps: SessionCardProps = {
   renameDraft: '',
   onSelect: vi.fn(),
   onDelete: vi.fn(),
+  onSleep: vi.fn(),
   onContextMenu: vi.fn(),
   onDragStart: vi.fn(),
   onDragEnd: vi.fn(),
@@ -82,6 +84,34 @@ describe('SessionCard', () => {
     const session = makeSession({ running: false, terminated: true })
     const { container } = render(<SessionCard {...baseProps} session={session} />)
     expect(container.textContent).toContain('ended')
+  })
+
+  it('sleep button calls onSleep for an idle session', () => {
+    const onSleep = vi.fn()
+    const session = makeSession({ phase: 'idle' })
+    const { container } = render(<SessionCard {...baseProps} session={session} onSleep={onSleep} />)
+    const btn = container.querySelector('.session-item-sleep') as HTMLButtonElement
+    expect(btn).not.toBeNull()
+    expect(btn.disabled).toBe(false)
+    fireEvent.click(btn)
+    expect(onSleep).toHaveBeenCalledWith(session.id)
+  })
+
+  it('sleep button is disabled when the session is working', () => {
+    const onSleep = vi.fn()
+    const session = makeSession({ running: true, working: true, phase: 'working' })
+    const { container } = render(<SessionCard {...baseProps} session={session} onSleep={onSleep} />)
+    const btn = container.querySelector('.session-item-sleep') as HTMLButtonElement
+    expect(btn).not.toBeNull()
+    expect(btn.disabled).toBe(true)
+    fireEvent.click(btn)
+    expect(onSleep).not.toHaveBeenCalled()
+  })
+
+  it('sleep button is hidden for a dormant session', () => {
+    const session = makeSession({ running: false, terminated: false, phase: 'dormant' })
+    const { container } = render(<SessionCard {...baseProps} session={session} />)
+    expect(container.querySelector('.session-item-sleep')).toBeNull()
   })
 
   it('applies focused class when isFocused', () => {
