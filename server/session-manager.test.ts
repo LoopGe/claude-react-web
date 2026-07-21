@@ -2044,7 +2044,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       expect(mockHandles).toHaveLength(1) // no recovery respawn
     })
 
-    it('spawn failures bypass the ladder (binary unavailable — retrying cannot help)', async () => {
+    it('spawn failures unload to dormant (resumable), not terminated (binary unavailable is transient)', async () => {
       sm = new SessionManager({ store, crashRecovery: true })
       const info = sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
@@ -2053,11 +2053,22 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
 
       fireCrash(sm, info.id, { code: null, signal: null, killed: false, spawnError: { code: 'ENOENT', message: 'not found' } })
-      await waitFor(() => sm.get(info.id).terminated === true)
+      // Unloaded to dormant synchronously (unloadSpawnFailed -> unload runs
+      // its body with no await when not terminating).
+      await waitFor(() => sm.get(info.id).running === false)
 
-      expect(sm.get(info.id).terminated).toBe(true)
-      expect(sm.get(info.id).terminatedReason).toBe('spawn_failed')
-      expect(mockHandles).toHaveLength(1) // no recovery respawn
+      const dormant = sm.get(info.id)
+      expect(dormant.terminated).toBe(false)
+      expect(dormant.terminatedReason).toBe('spawn_failed')
+      expect(dormant.error).toMatch(/not found|ENOENT/)
+      expect(mockHandles).toHaveLength(1) // no auto-recovery respawn (retrying would fail identically)
+
+      // The binary being missing is transient + user-fixable, so the session
+      // must stay resumable: resume re-spawns and clears the stale error.
+      await sm.resume(info.id)
+      expect(mockHandles.length).toBeGreaterThanOrEqual(2)
+      expect(sm.get(info.id).running).toBe(true)
+      expect(sm.get(info.id).error).toBeUndefined()
     })
 
     it('Step 2: a second crash forks from the last completed turn and terminates the original', async () => {

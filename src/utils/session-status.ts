@@ -5,16 +5,19 @@ import type { SessionInfo } from '../types'
  *  wording can evolve independently. */
 export function statusClass(s: SessionInfo): string {
   if (s.recovering) return 'working'
-  if (s.error) return 'err'
   if (s.terminated) return 'terminated'
+  // A dormant session (!running && !terminated) stays 'dormant' even when it
+  // carries a stale error (e.g. a spawn_failed whose binary is now fixed) —
+  // it's resumable, not dead. 'err' is reserved for a RUNNING session that
+  // has nonetheless errored (rare; usually caught by `recovering` above).
+  if (!s.running) return 'dormant'
+  if (s.error) return 'err'
   if (s.working) return 'working'
-  if (s.running) return 'live'
-  return 'dormant'
+  return 'live'
 }
 
 export function statusLabel(s: SessionInfo): string {
   if (s.recovering) return 'Recovering from crash'
-  if (s.error) return `Errored: ${s.error}`
   if (s.terminated) {
     const reason = s.terminatedReason
     if (reason === 'query_error') return 'Session ended: upstream error'
@@ -30,8 +33,12 @@ export function statusLabel(s: SessionInfo): string {
     if (reason === 'crash_recovered_fork') return 'Session ended: recovered to a fork'
     return 'Session ended'
   }
+  // Dormant + stale error (e.g. spawn_failed): resumable, not dead — frame
+  // it as a failed resume attempt so the user knows to retry after fixing
+  // the underlying cause (missing CLI binary, etc.).
+  if (!s.running && s.error) return `Resume failed: ${s.error}`
   if (s.working) return 'Working on a turn'
-  if (s.running) return 'Live'
+  if (s.running) return s.error ? `Errored: ${s.error}` : 'Live'
   return 'Dormant'
 }
 

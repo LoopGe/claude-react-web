@@ -113,10 +113,13 @@ export const SessionCard = memo(function SessionCard({
   const working = s.running && s.working
   const pendingCount = s.pendingPermissionCount ?? 0
   // Single source of truth for the status chip — drives the dot colour,
-  // the short label, and the aria-label. Order matches the historical
-  // precedence (error → ended → resuming → working → live → dormant).
+  // the short label, and the aria-label. A dormant session (!running &&
+  // !terminated) shows 'dormant' even when it carries a stale error (e.g. a
+  // spawn_failed whose binary is now fixed) — it's resumable, not dead, and
+  // the card body already renders `s.error` below. 'err' is reserved for a
+  // RUNNING session that has nonetheless errored.
   const status: 'err' | 'ended' | 'resuming' | 'working' | 'live' | 'dormant' =
-    s.error ? 'err' : s.terminated ? 'ended' : isResuming ? 'resuming' : working ? 'working' : s.running ? 'live' : 'dormant'
+    s.terminated ? 'ended' : isResuming ? 'resuming' : working ? 'working' : s.running ? (s.error ? 'err' : 'live') : 'dormant'
   const statusText: Record<typeof status, string> = {
     err: 'err',
     ended: 'ended',

@@ -265,9 +265,13 @@ export class SessionManager {
    *    breaks out of iter.next(); cleanupPump then decides auto-resume vs
    *    terminate. We do NOT set terminated here — that would race
    *    cleanupPump's auto-resume attempt.
-   *  - Spawn failure (binary missing / not executable): terminate
-   *    immediately. No recovery — the binary is unavailable, retrying
-   *    spawn will keep failing.
+   *  - Spawn failure (binary missing / not executable): unload to dormant
+   *    with the error recorded. We don't auto-retry (the binary is still
+   *    gone this instant, a re-spawn would fail identically) but we also
+   *    don't permanently terminate — the binary being missing is a
+   *    transient, user-fixable condition, so the session stays resumable
+   *    and the user can retry once it's restored (reinstall / chmod /
+   *    CLAUDE_CODE_BINARY). See unloadSpawnFailed.
    *  - Crash (non-zero code / killed): when crashRecovery is enabled,
    *    record the crash context and defer to cleanupPump's recovery
    *    ladder (Step 1 in-place resume → Step 2 fork from last completed
@@ -341,10 +345,14 @@ export class SessionManager {
 
     log.error(`[session ${sessionId}] ${errorMsg}`)
 
-    // Spawn failures can't be recovered by retrying (the binary is
-    // unavailable / unusable). Terminate immediately.
+    // Spawn failures can't be recovered by auto-retrying (the binary is
+    // unavailable / unusable right now, a re-spawn would fail identically).
+    // But a missing binary is a transient, user-fixable condition — don't
+    // permanently terminate. Unload to dormant with the error recorded so
+    // the user can resume once the binary is restored (reinstall / chmod /
+    // CLAUDE_CODE_BINARY). A later successful resume clears the stale error.
     if (reason === 'spawn_failed') {
-      this.terminateCrashedSession(s, reason, errorMsg)
+      this.unloadSpawnFailed(s, reason, errorMsg)
       return
     }
 
@@ -484,11 +492,32 @@ export class SessionManager {
     this.backgroundWatchers.delete(sessionId)
   }
 
+  /** Unload a spawn-failed session to dormant (resumable) state with the
+   *  error recorded on the persisted meta. A missing/unusable binary is a
+   *  transient, user-fixable condition, so we don't permanently terminate
+   *  (unlike terminateCrashedSession): terminated stays false so resume()
+   *  still accepts the session. unload() destroys the handle, denies
+   *  pending perms, ends subscribers, broadcasts a dormant update, deletes
+   *  from the live map, and writeStore() persists the non-terminal meta WITH
+   *  error/terminatedReason. A later successful resume() -> spawn() clears
+   *  the stale error: snapshotMeta omits `error`, so spawn()'s writeStore
+   *  overwrites it with undefined. unload() runs its body synchronously
+   *  here (no opts.terminated => no await), so the session is gone from
+   *  the map by the time handleProcessExit returns and cleanupPump's
+   *  isLive() guard short-circuits. */
+  private unloadSpawnFailed(s: Session, reason: string, errorMsg: string): void {
+    s.terminatedReason = reason
+    s.error = errorMsg
+    this.broadcastSystemNotice(s, errorMsg) // before unload ends subscribers
+    void this.unload(s.id) // no opts => dormant, not terminated
+  }
+
   /** Terminate a crashed session immediately: the legacy non-recovery path
-   *  for spawn failures and for crashes when crashRecovery is disabled.
-   *  Also the final state written when the recovery ladder gives up (called
-   *  from cleanupPump's termination tail). Kept as a helper so the immediate
-   *  and give-up paths stay identical. */
+   *  for crashes when crashRecovery is disabled. Also the final state
+   *  written when the recovery ladder gives up (called from cleanupPump's
+   *  termination tail). Kept as a helper so the immediate and give-up paths
+   *  stay identical. (spawn_failed no longer terminates — see
+   *  unloadSpawnFailed.) */
   private terminateCrashedSession(
     s: Session,
     reason: string,

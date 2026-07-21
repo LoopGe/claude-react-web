@@ -197,6 +197,17 @@ export class ClaudeProvider implements AgentProvider {
       ANTHROPIC_SMALL_FAST_MODEL: effectiveModel,
     }
     if (customEnv) opts.env = { ...opts.env, ...customEnv }
+    // Force-disable the CLI's auto-updater. claude-react-web pins the binary
+    // itself (resolveClaudeBinary -> pathToClaudeCodeExecutable), so if a
+    // spawned subprocess ALSO runs its own updater, an upgrade replaces
+    // claude.exe mid-flight and concurrent session spawns hit ENOENT during
+    // the replacement window — every live session crashes with spawn_failed.
+    // The updater runs inside the subprocess, so it isn't logged here; it
+    // only surfaces as a burst of spawn_failed (observed: a 2.1.201 ->
+    // 2.1.212 auto-update took down all sessions at once). Asserted AFTER
+    // customEnv so even a per-session `env` can't re-enable it; operators
+    // update the binary manually (npm i -g) and restart.
+    opts.env = { ...opts.env, DISABLE_AUTOUPDATER: '1' }
     if (this.opts.mpStore) {
       // `enabledPlugins` undefined = all enabled (default). Present (incl. [])
       // = resolve only that subset. [] naturally yields an empty path list,
