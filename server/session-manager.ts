@@ -1946,7 +1946,10 @@ export class SessionManager {
     }
     log.info(`[session ${id}] sleep: unloading to dormant (releasing SDK subprocess + subscribers)`)
     await this.unload(id) // no opts => dormant, not terminated; keep store + transcript
-    return this.get(id)
+    // Read the info off the (now-detached) session object directly rather
+    // than this.get(id): `s` is the ground truth we just unloaded, and this
+    // avoids a store lookup (and works even when no store is configured).
+    return this.info(s)
   }
 
   async setModel(id: string, model?: string): Promise<SessionInfo> {
