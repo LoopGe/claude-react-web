@@ -148,4 +148,12 @@ export interface SessionInfoBase<PM = string> {
    *  that value. Manual recap (Alt+R) is never gated by this. Persisted
    *  so it survives resume / fork / reload. */
   autoRecap?: boolean
+  /** True when the user explicitly put this session to sleep (dormant) via
+   *  the "Sleep" action — distinct from a passive dormant state caused by a
+   *  server restart or crash. The client uses this to skip auto/background
+   *  resume paths (group-switch sibling resume, programmatic group open) so
+   *  a deliberately-slept session isn't woken behind the user's back. An
+   *  explicit click / drop / Resume-button still wakes it (and clears the
+   *  flag). Persisted so the intent survives a server restart. */
+  slept?: boolean
 }

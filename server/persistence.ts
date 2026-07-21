@@ -91,6 +91,11 @@ export interface SessionMeta {
   /** Per-session override for idle auto-recap. Undefined = inherit the
    *  global config default. Persisted so the override survives reload. */
   autoRecap?: boolean
+  /** True when the user explicitly slept this session (dormant) via the
+   *  "Sleep" action. Distinguishes deliberate dormancy from a passive
+   *  restart/crash dormant state so the client can skip auto-resume paths.
+   *  Cleared on resume. Persisted so the intent survives a restart. */
+  slept?: boolean
 }
 
 const FILE_NAME = 'sessions.json'
@@ -201,6 +206,7 @@ function coerceMeta(raw: unknown): SessionMeta | null {
       : undefined,
     showPinnedUserMessage: typeof r.showPinnedUserMessage === 'boolean' ? r.showPinnedUserMessage : undefined,
     autoRecap: typeof r.autoRecap === 'boolean' ? r.autoRecap : undefined,
+    slept: typeof r.slept === 'boolean' ? r.slept : undefined,
   }
 }
 

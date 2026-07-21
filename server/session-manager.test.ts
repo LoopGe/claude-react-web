@@ -691,6 +691,7 @@ describe('SessionManager', () => {
     const info = sm.create({ cwd: '/tmp', model: 'm1' })
     // A freshly-created session with no in-flight turn is idle.
     expect(sm.get(info.id).phase).toBe('idle')
+    expect(sm.get(info.id).slept).toBeFalsy()
 
     const slept = await sm.sleep(info.id)
 
@@ -698,16 +699,21 @@ describe('SessionManager', () => {
     expect(slept.running).toBe(false)
     expect(slept.phase).toBe('dormant')
     expect(slept.terminated).toBe(false)
+    // sleep() marks the session deliberately-slept so auto-resume paths skip it.
+    expect(slept.slept).toBe(true)
     const meta = store.get(info.id)
     expect(meta).toBeDefined()
     expect(meta!.terminated).toBe(false)
+    expect(meta!.slept).toBe(true)
     expect(meta!.cwd).toBe('/tmp')
     expect(meta!.model).toBe('m1')
 
-    // resume() brings it back: a new Query with resume=id is spawned.
+    // resume() brings it back: a new Query with resume=id is spawned, and
+    // clears the slept flag (the session is live again).
     const resumed = await sm.resume(info.id)
     expect(resumed.id).toBe(info.id)
     expect(resumed.running).toBe(true)
+    expect(resumed.slept).toBe(false)
     expect(mockHandles).toHaveLength(2)
     expect(mockHandles[1].options.resume).toBe(info.id)
   })

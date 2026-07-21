@@ -1621,10 +1621,12 @@ export function App() {
         for (const id of valid) next[id] = now
         return next
       })
-      // Resume dormant sessions in the backgroun?.
+      // Resume dormant sessions in the background — but NOT ones the user
+      // deliberately slept (slept:true). Those stay dormant until an explicit
+      // click / drop / Resume-button wakes them.
       for (const id of valid) {
         const s = sessions.find((x) => x.id === id)
-        if (s && !s.running && !s.terminated) {
+        if (s && !s.running && !s.terminated && !s.slept) {
           void api.post(`/sessions/${id}/resume`, {}).catch(() => {})
         }
       }
@@ -1686,6 +1688,10 @@ export function App() {
           working: false,
           workingSince: undefined,
           pendingPermissionCount: 0,
+          // Mark deliberately-slept so auto/background resume paths (group
+          // sibling resume, programmatic group open) skip this session —
+          // only an explicit click/drop/Resume-button should wake it.
+          slept: true,
         }
         : s)))
       try {
@@ -1773,10 +1779,13 @@ export function App() {
         // Resume dormant siblings fire-and-forget so they're live by the
         // time the user looks at them. The clicked member is resumed
         // (awaited) below — skipping it here avoids a double resume.
+        // Skip siblings the user deliberately slept (slept:true): those stay
+        // dormant until explicitly woken (their panel shows the dormant
+        // empty-state with a Resume button).
         for (const gid of groupIds) {
           if (gid === id) continue
           const sib = sessionsRef.current.find((x) => x.id === gid)
-          if (sib && !sib.running && !sib.terminated && !resumingRef.current.has(gid)) {
+          if (sib && !sib.running && !sib.terminated && !sib.slept && !resumingRef.current.has(gid)) {
             void resumeSession(gid, () => {}).catch(() => {})
           }
         }

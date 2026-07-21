@@ -310,6 +310,12 @@ export interface Session {
    *  global config default; a boolean pins it. Persisted via SessionMeta
    *  and mirrored into SessionInfo. Pure UI pref — no SDK call. */
   autoRecap?: boolean
+  /** True when the user explicitly slept this session via the "Sleep"
+   *  action. Distinguishes deliberate dormancy from passive restart/crash
+   *  dormancy so the client can skip auto-resume paths for slept sessions.
+   *  Set by sleep(), cleared by spawn() (resume / fresh). Persisted via
+   *  SessionMeta and mirrored into SessionInfo. */
+  slept?: boolean
   /** In-memory mirror of the promptUuids sidecar (server/prompt-uuid-store.ts):
    *  the server-minted uuid + content hash of each top-level prompt ever sent,
    *  newest-capped to historyCap. Loaded from the sidecar on resume, empty on a

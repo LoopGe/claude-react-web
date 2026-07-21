@@ -597,6 +597,7 @@ export class SessionManager {
       enabledPlugins: s.enabledPlugins,
       showPinnedUserMessage: s.showPinnedUserMessage,
       autoRecap: s.autoRecap,
+      slept: s.slept,
     })
   }
 
@@ -1394,6 +1395,10 @@ export class SessionManager {
       skillOverride,
       // Seed from the resume sidecar (empty for fresh spawn / fork / clear).
       promptUuids: promptUuids ?? [],
+      // A fresh spawn (create / resume / fork / clear) is live, so it's no
+      // longer in the deliberately-slept state. This clears a persisted
+      // slept:true when the user resumes a session they had slept.
+      slept: false,
     }
 
     if (!fullOpts.canUseTool) {
@@ -1945,6 +1950,11 @@ export class SessionManager {
       throw new HttpError(409, `session ${id} is working — wait for the turn to finish before sleeping`)
     }
     log.info(`[session ${id}] sleep: unloading to dormant (releasing SDK subprocess + subscribers)`)
+    // Mark the session as deliberately-slept BEFORE unload persists it, so
+    // the flag survives a server restart and the client can distinguish
+    // this from a passive restart/crash dormant state (and skip auto-resume
+    // paths). Cleared on the next spawn() (resume / fresh).
+    s.slept = true
     await this.unload(id) // no opts => dormant, not terminated; keep store + transcript
     // Read the info off the (now-detached) session object directly rather
     // than this.get(id): `s` is the ground truth we just unloaded, and this
@@ -3241,6 +3251,7 @@ export class SessionManager {
       skillOverride: s.skillOverride,
       showPinnedUserMessage: s.showPinnedUserMessage,
       autoRecap: s.autoRecap,
+      slept: s.slept,
     }
   }
 
@@ -3303,6 +3314,7 @@ export class SessionManager {
       enabledPlugins: meta.enabledPlugins,
       showPinnedUserMessage: meta.showPinnedUserMessage,
       autoRecap: meta.autoRecap,
+      slept: meta.slept,
     }
   }
 
