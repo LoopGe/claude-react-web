@@ -42,6 +42,16 @@ export interface PromptUuidEntry {
   v?: string
 }
 
+/** Retain the newest completed mappings without dropping in-flight sends.
+ *  Echoes may be delayed while a burst of queued prompts exceeds the normal
+ *  history window; pruning unpaired entries would shift FIFO pairing and map
+ *  later SDK uuids to the wrong server uuids. */
+export function retainPromptUuidEntries(entries: PromptUuidEntry[], cap: number): PromptUuidEntry[] {
+  const paired = entries.filter((entry) => entry.v != null)
+  const retainedPaired = new Set(paired.slice(-cap))
+  return entries.filter((entry) => entry.v == null || retainedPaired.has(entry))
+}
+
 export class PromptUuidStore {
   private readonly dir: string | null
   private readonly cap: number
@@ -76,10 +86,10 @@ export class PromptUuidStore {
     const file = this.file(sessionId)
     if (!file || !this.dir) return
     try {
-      // Cap to the newest `cap`: the resume-seed window is the newest
-      // historyCap messages, so the newest historyCap prompts cover every
-      // prompt that could appear in the seed.
-      const capped = entries.length > this.cap ? entries.slice(entries.length - this.cap) : entries
+      // Persist only the newest completed mappings. In-flight entries have no
+      // SDK uuid yet and therefore cannot participate in resume rewriting; do
+      // not persist them or let them affect the bounded sidecar window.
+      const capped = retainPromptUuidEntries(entries, this.cap).filter((entry) => entry.v != null)
       await writeAtomic(this.dir, file, capped)
     } catch (err) {
       log.warn(`save failed for ${sessionId}: ${(err as Error).message ?? err}`)

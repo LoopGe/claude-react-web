@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { PromptUuidStore, rewriteSeedPromptUuids, type PromptUuidEntry } from './prompt-uuid-store.js'
+import { PromptUuidStore, retainPromptUuidEntries, rewriteSeedPromptUuids, type PromptUuidEntry } from './prompt-uuid-store.js'
 
 /** Build a top-level user-prompt SDKMessage (a disk-seed entry) with the given
  *  (on-disk SDK) uuid + text. */
@@ -120,11 +120,27 @@ describe('PromptUuidStore', () => {
     expect(await store.load('missing')).toBeNull()
   })
 
-  it('caps to the newest historyCap entries on save', async () => {
+  it('caps to the newest historyCap completed entries on save', async () => {
     const entries = [entry('U1', 'V1'), entry('U2', 'V2'), entry('U3', 'V3'), entry('U4', 'V4')]
     await store.save('s1', entries) // cap = 3 -> keep newest 3 (U2, U3, U4)
     const loaded = await store.load('s1')
     expect(loaded?.map((e) => e.u)).toEqual(['U2', 'U3', 'U4'])
+  })
+
+  it('retains all unpaired entries while capping completed mappings', () => {
+    const entries = [
+      entry('U1', 'V1'), entry('U2', 'V2'), entry('U3', 'V3'), entry('U4', 'V4'),
+      { u: 'U5' }, { u: 'U6' }, { u: 'U7' },
+    ]
+    expect(retainPromptUuidEntries(entries, 3)).toEqual([
+      entry('U2', 'V2'), entry('U3', 'V3'), entry('U4', 'V4'),
+      { u: 'U5' }, { u: 'U6' }, { u: 'U7' },
+    ])
+  })
+
+  it('does not persist delayed unpaired sends in the sidecar', async () => {
+    await store.save('s1', [entry('U1', 'V1'), { u: 'U2' }, { u: 'U3' }])
+    expect(await store.load('s1')).toEqual([entry('U1', 'V1')])
   })
 
   it('remove deletes the sidecar', async () => {

@@ -24,7 +24,7 @@ import {
 import type { ProcessExitInfo } from './process-monitor.js'
 import { randomUUID } from 'node:crypto'
 import { SessionStore, type SessionMeta } from './persistence.js'
-import { PromptUuidStore, rewriteSeedPromptUuids, type PromptUuidEntry } from './prompt-uuid-store.js'
+import { PromptUuidStore, rewriteSeedPromptUuids, retainPromptUuidEntries, type PromptUuidEntry } from './prompt-uuid-store.js'
 import { McpConfigStore } from './mcp-config.js'
 import { RecapManager } from './recap.js'
 import type { SessionPhase, SessionRecap } from './session-types.js'
@@ -1563,7 +1563,12 @@ export class SessionManager {
     const u = typeof userMsg.uuid === 'string' ? userMsg.uuid : null
     if (!u) return
     const next = [...(s.promptUuids ?? []), { u }]
-    s.promptUuids = next.length > this.historyCap ? next.slice(next.length - this.historyCap) : next
+    // Keep every in-flight entry: SDK echoes can be delayed while a burst of
+    // queued prompts exceeds historyCap. Capping the whole list here would
+    // discard old unpaired entries and make the later FIFO echo pair with the
+    // wrong server uuid. Only completed mappings are bounded; unpaired entries
+    // are transient and are removed from the persisted sidecar at echo time.
+    s.promptUuids = retainPromptUuidEntries(next, this.historyCap)
     // No sidecar save here — see onPromptEcho (the entry is only useful once
     // its SDK uuid `v` is known, which happens at echo time).
   }
