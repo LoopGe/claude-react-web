@@ -3164,17 +3164,26 @@ export class SessionManager {
     return s
   }
 
-  /** Reject user-input turns during the crash-recovery window: the old
-   *  handle is aborted and about to be destroyed, so a send would be
-   *  enqueued to a dead Pushable (message lost) and bump pendingTurns on
-   *  the fresh handle with no queued input (stuck 'working'). Applied to
-   *  send()/sendContent() only dNOT clear() (the reset escape hatch must
+  /** Reject user-input turns during a provider transition when the current
+   *  handle cannot safely accept them. `exiting` covers the clean-exit /
+   *  auto-resume gap: the old SDK may still own a parked input waiter, so a
+   *  push cannot be reliably recovered even before the handle is destroyed.
+   *  The closed-handle check is the final invariant: never acknowledge or
+   *  broadcast a user turn after its provider input has closed. Applied to
+   *  send()/sendContent() only — NOT clear() (the reset escape hatch must
    *  stay usable during recovery) or execInSession (local !bash, doesn't
    *  touch the SDK handle). */
   private requireSendable(id: string): Session {
     const s = this.requireRunnable(id)
     if (s.recovering) {
       throw new HttpError(409, `session ${id} is recovering from a crash; retry shortly`)
+    }
+    if (s.exiting) {
+      throw new HttpError(409, `session ${id} is restarting; retry shortly`)
+    }
+    if (s.handle.closed) {
+      log.warn(`[session ${id}] send rejected — provider input is closed`)
+      throw new HttpError(409, `session ${id} is not ready for input; retry shortly`)
     }
     return s
   }
@@ -3431,8 +3440,9 @@ export class SessionManager {
 
     // Destroy the old handle BEFORE the async buildResumeOpts: if the MCP
     // OAuth refresh throws, the handle is already cleaned up (no
-    // ProcessMonitor/Pushable leak). respawnInPlace's destroy is a no-op
-    // (isClosed) when it runs.
+    // ProcessMonitor/Pushable leak). Sends are rejected while `exiting` is
+    // true, so no user turn can be acknowledged against this closed input.
+    // respawnInPlace's destroy is a no-op (isClosed) when it runs.
     session.handle.destroy('auto-resume')
     const resumeOpts = await this.buildResumeOpts(session)
     this.respawnInPlace(session, resumeOpts, 'auto-resume')

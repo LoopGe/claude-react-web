@@ -338,6 +338,53 @@ describe('SessionManager', () => {
     expect(after.lastTurnAt!).toBeGreaterThanOrEqual(before)
   })
 
+  it('rejects a user turn while autoResume is building resume options', async () => {
+    const info = sm.create({})
+    const firstHandle = mockHandles[0]
+    sm.send(info.id, 'first')
+    await tick()
+    firstHandle.emit({ type: 'result', session_id: info.id })
+    await tick()
+
+    const internals = sm as unknown as {
+      sessions: Map<string, unknown>
+      autoResume: (session: unknown) => Promise<boolean>
+      buildResumeOpts: (session: unknown) => Promise<Record<string, unknown>>
+    }
+    const session = internals.sessions.get(info.id)!
+    let releaseResumeOpts!: (opts: Record<string, unknown>) => void
+    internals.buildResumeOpts = vi.fn((): Promise<Record<string, unknown>> => new Promise((resolve) => {
+      releaseResumeOpts = resolve
+    }))
+
+    // A clean process exit marks the session as exiting before autoResume
+    // performs asynchronous setup. Input in this window must fail explicitly;
+    // accepting it would paint a bubble even though the old SDK can no longer
+    // guarantee delivery.
+    ;(session as { exiting: boolean }).exiting = true
+    const resuming = internals.autoResume(session)
+    expect(() => sm.send(info.id, 'sent-during-auto-resume')).toThrow(/restarting/i)
+    expect(sm.getHistory(info.id)?.some((message) =>
+      (message as { message?: { content?: unknown } }).message?.content === 'sent-during-auto-resume',
+    )).toBe(false)
+
+    releaseResumeOpts({ resume: info.id })
+    await resuming
+    expect(mockHandles).toHaveLength(2)
+    expect(mockHandles[1].options.resume).toBe(info.id)
+  })
+
+  it('rejects a user turn when the provider input is already closed', () => {
+    const info = sm.create({})
+    const internals = sm as unknown as {
+      sessions: Map<string, { handle: { destroy: (reason: string) => void } }>
+    }
+    internals.sessions.get(info.id)!.handle.destroy('test-closed-input')
+
+    expect(() => sm.send(info.id, 'must-not-be-acknowledged')).toThrow(/not ready for input/i)
+    expect(sm.getHistory(info.id)).toHaveLength(0)
+  })
+
   it('pendingTurns caps at 1 across multiple sends', async () => {
     // Multiple back-to-back sends never inflate pendingTurns past 1
     // (which would otherwise stick the UI in "working" forever once
