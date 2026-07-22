@@ -1703,6 +1703,24 @@ describe('reducer: PERMISSION_RESOLVED → questionAnswers (AskUserQuestion)', (
     expect(entries).toEqual([{ question: 'OK?', answer: null }])
   })
 
+  it('stores an explicit clarified sentinel from the resolution marker', () => {
+    let state = createInitialSessionState('s1')
+    state = seedQuestion(state, 'tu_q')
+    state = seedPendingPermission(state, 'pid-1', 'tu_q')
+    state = reduceSessionState(state, {
+      type: 'PERMISSION_RESOLVED',
+      id: 'pid-1',
+      decision: {
+        behavior: 'deny', persisted: false,
+        message: 'The user asked for more context.',
+        questionResolution: 'clarified',
+      },
+    })
+    expect(state.mirror.questionAnswers.get('tu_q')).toEqual([
+      { question: '', answer: null, clarified: true },
+    ])
+  })
+
   it('leaves questionAnswers unchanged when the message is not parseable JSON', () => {
     // Plain-deny path (non-question tools): decision.message is a free-form
     // human-readable string, not JSON. Must not corrupt question state.

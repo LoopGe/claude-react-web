@@ -119,7 +119,10 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
         // frame lands, independent of whether tool_result follows.
         // Scope: only when we previously seeded a pending entry for
         // this toolUseId (i.e. it really was an AskUserQuestion call).
-        if (questionAnswers.has(toolUseId) && action.decision.message) {
+        if (questionAnswers.has(toolUseId) && action.decision.questionResolution === 'clarified') {
+          questionAnswers = new Map(questionAnswers)
+          questionAnswers.set(toolUseId, [{ question: '', answer: null, clarified: true }])
+        } else if (questionAnswers.has(toolUseId) && action.decision.message) {
           const parsed = parseQuestionAnswersMessage(action.decision.message)
           if (parsed.length > 0) {
             questionAnswers = new Map(questionAnswers)

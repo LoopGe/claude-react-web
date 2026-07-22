@@ -32,6 +32,7 @@ export interface UsePermissionChannel {
   /** Submit answers for a pending AskUserQuestion. Answers align
    *  positionally with the pending request's `questions`. */
   answerQuestion: (pid: string, answers: QuestionAnswer[]) => Promise<void>
+  clarifyQuestion: (pid: string, feedback: string) => Promise<void>
   /** Push a permission_request event into the local state. */
   onRequest: (req: PermissionRequest) => void
   /** Push a permission_resolved event into the local state. */
@@ -127,6 +128,11 @@ export function usePermissionChannel(sessionId: string): UsePermissionChannel {
     [optimisticPost],
   )
 
+  const clarifyQuestion = useCallback(
+    (pid: string, feedback: string) => optimisticPost(pid, 'clarify-question', { feedback }, 'Clarification submission failed'),
+    [optimisticPost],
+  )
+
   const reset = useCallback(() => {
     setPending([])
     setError(null)
@@ -135,8 +141,8 @@ export function usePermissionChannel(sessionId: string): UsePermissionChannel {
   const clearError = useCallback(() => setError(null), [])
 
   return useMemo(
-    () => ({ pending, error, decide, answerQuestion, onRequest, onResolved, reset, clearError }),
-    [pending, error, decide, answerQuestion, onRequest, onResolved, reset, clearError],
+    () => ({ pending, error, decide, answerQuestion, clarifyQuestion, onRequest, onResolved, reset, clearError }),
+    [pending, error, decide, answerQuestion, clarifyQuestion, onRequest, onResolved, reset, clearError],
   )
 }
 

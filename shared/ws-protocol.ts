@@ -130,6 +130,7 @@ export interface PermissionDecision {
   behavior: 'allow' | 'deny'
   persisted: boolean
   message?: string
+  questionResolution?: 'clarified'
 }
 
 /** Existing request was resolved (by this tab or another). */

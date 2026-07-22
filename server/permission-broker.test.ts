@@ -763,6 +763,48 @@ describe('PermissionBroker', () => {
     })
   })
 
+  describe('clarifyQuestion', () => {
+    it('resolves with free-form context and broadcasts a clarified marker', async () => {
+      const session = makeFakeSession()
+      const pending = makeQuestionPermission()
+      session.pending.set(pending.id, pending)
+      const subscription = broker.subscribePermissions(session)
+      const nextEvent = subscription.iterable[Symbol.asyncIterator]().next()
+
+      broker.clarifyQuestion(session, pending.id, '  Why do you recommend red?  ')
+
+      expect(session.pending.has(pending.id)).toBe(false)
+      expect(pending.resolve).toHaveBeenCalledWith(expect.objectContaining({
+        behavior: 'deny',
+        interrupt: false,
+        toolUseID: pending.toolUseID,
+        message: expect.stringContaining('Why do you recommend red?'),
+      }))
+      await expect(nextEvent).resolves.toEqual(expect.objectContaining({
+        value: expect.objectContaining({
+          kind: 'resolved',
+          decision: expect.objectContaining({ questionResolution: 'clarified' }),
+        }),
+      }))
+      subscription.unsubscribe()
+    })
+
+    it.each(['', '   ', 'x'.repeat(4001)])('rejects invalid feedback', (feedback) => {
+      const session = makeFakeSession()
+      const pending = makeQuestionPermission()
+      session.pending.set(pending.id, pending)
+      expect(() => broker.clarifyQuestion(session, pending.id, feedback)).toThrow()
+      expect(session.pending.has(pending.id)).toBe(true)
+    })
+
+    it('rejects non-question pending requests', () => {
+      const session = makeFakeSession()
+      const pending = makeToolPermission()
+      session.pending.set(pending.id, pending)
+      expect(() => broker.clarifyQuestion(session, pending.id, 'explain')).toThrow('not an interactive question')
+    })
+  })
+
   // 鈹€鈹€鈹€ denyAll 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   describe('denyAll', () => {

@@ -179,6 +179,7 @@ export interface PermissionResolved {
   behavior: 'allow' | 'deny'
   persisted: boolean
   message?: string
+  questionResolution?: 'clarified'
 }
 
 /** Subset of SDK message shapes we actually render in the Chat panel. */

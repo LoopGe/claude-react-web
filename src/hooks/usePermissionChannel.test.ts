@@ -280,6 +280,26 @@ describe('usePermissionChannel', () => {
     expect(result.current.pending[0].id).toBe('q1')
   })
 
+  it('optimistically removes request on clarifyQuestion', async () => {
+    mockPost.mockResolvedValueOnce(undefined)
+    const { result } = renderHook(() => usePermissionChannel('s1'))
+    act(() => {
+      result.current.onRequest({
+        kind: 'question', id: 'q1', toolName: 'AskUserQuestion',
+        questions: [{ question: 'Pick one', options: [{ label: 'A' }] }],
+        toolUseID: 'tu-q1', createdAt: Date.now(),
+      })
+    })
+    await act(async () => {
+      await result.current.clarifyQuestion('q1', 'Explain first')
+    })
+    expect(result.current.pending).toEqual([])
+    expect(mockPost).toHaveBeenCalledWith(
+      '/sessions/s1/permissions/q1/clarify-question',
+      { feedback: 'Explain first' },
+    )
+  })
+
   it('shows error and re-fetches on answerQuestion failure', async () => {
     mockPost.mockRejectedValueOnce(new Error('timeout'))
     mockGet.mockResolvedValueOnce({ pending: [] })

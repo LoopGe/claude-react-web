@@ -39,6 +39,7 @@ interface Props {
    *  Single-select answers are a label string; multi-select are string[];
    *  null means the user explicitly skipped. */
   onSubmit: (answers: Array<string | string[] | null>) => void
+  onClarify: (feedback: string) => void
   /** Cancelling skips all questions (each becomes null). Lets the model
    *  continue with no guidance rather than blocking forever. */
   onSkipAll: () => void
@@ -53,7 +54,7 @@ interface Props {
   onDraftChange?: (draft: QuestionDraft) => void
 }
 
-export function QuestionDialog({ open = true, request, onSubmit, onSkipAll, onMinimize, initialDraft, onDraftChange }: Props) {
+export function QuestionDialog({ open = true, request, onSubmit, onClarify, onSkipAll, onMinimize, initialDraft, onDraftChange }: Props) {
   // Map question index → chosen label (or array for multi-select).
   // `null` means the user hasn't chosen anything for this question yet —
   // treated as "skip" on submit.
@@ -71,6 +72,9 @@ export function QuestionDialog({ open = true, request, onSubmit, onSkipAll, onMi
   // the click and the parent unmounting this dialog (it optimistically
   // drops the request from the pending queue on submit).
   const [busy, setBusy] = useState(false)
+  const [clarifying, setClarifying] = useState(false)
+  const [feedback, setFeedback] = useState('')
+  const feedbackRef = useRef<HTMLTextAreaElement>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
   // Refs so the Escape effect (registered once on mount) always reads
   // current values without re-registering on every render.
@@ -201,18 +205,34 @@ export function QuestionDialog({ open = true, request, onSubmit, onSkipAll, onMi
   }
 
   const submit = useCallback(() => {
-    if (!open) return
-    if (busy) return
+    if (!open || busy) return
     setBusy(true)
     onSubmit(choices)
   }, [busy, choices, onSubmit, open])
 
+  const clarify = useCallback(() => {
+    const text = feedback.trim()
+    if (!open || busy || !text) return
+    setBusy(true)
+    onClarify(text)
+  }, [busy, feedback, onClarify, open])
+
   const cancel = useCallback(() => {
-    if (!open) return
-    if (busy) return
+    if (!open || busy) return
+    if (clarifying) {
+      setClarifying(false)
+      setFeedback('')
+      return
+    }
     setBusy(true)
     onSkipAll()
-  }, [busy, onSkipAll, open])
+  }, [busy, clarifying, onSkipAll, open])
+
+  const enterClarification = useCallback(() => {
+    if (busy) return
+    setClarifying(true)
+    requestAnimationFrame(() => feedbackRef.current?.focus())
+  }, [busy])
   useLayoutEffect(() => { cancelRef.current = cancel })
 
   // Escape should cancel/skip — not fall through to the global Escape
@@ -265,22 +285,39 @@ export function QuestionDialog({ open = true, request, onSubmit, onSkipAll, onMi
           </button>
         </div>
 
-        <div className="modal-section question-body">
-          {(request.questions ?? []).map((q, qIdx) => (
-            <QuestionBlock
-              key={qIdx}
-              index={qIdx}
-              question={q}
-              value={choices[qIdx]}
-              onSingle={(label) => setSingle(qIdx, label)}
-              onMulti={(label) => toggleMulti(qIdx, label)}
-              otherActive={otherActive[qIdx]}
-              otherText={otherTexts[qIdx]}
-              onOtherToggle={() => toggleOther(qIdx)}
-              onOtherTextChange={(text) => setOtherText(qIdx, text)}
+        {clarifying ? (
+          <div className="modal-section question-body">
+            <label className="hint" htmlFor="question-clarification">Ask a follow-up or provide context.</label>
+            <textarea
+              ref={feedbackRef}
+              id="question-clarification"
+              className="composer-textarea"
+              value={feedback}
+              onChange={(e) => setFeedback(e.target.value)}
+              placeholder="Ask a follow-up or provide context..."
+              maxLength={4000}
+              rows={5}
+              disabled={busy}
             />
-          ))}
-        </div>
+          </div>
+        ) : (
+          <div className="modal-section question-body">
+            {(request.questions ?? []).map((q, qIdx) => (
+              <QuestionBlock
+                key={qIdx}
+                index={qIdx}
+                question={q}
+                value={choices[qIdx]}
+                onSingle={(label) => setSingle(qIdx, label)}
+                onMulti={(label) => toggleMulti(qIdx, label)}
+                otherActive={otherActive[qIdx]}
+                otherText={otherTexts[qIdx]}
+                onOtherToggle={() => toggleOther(qIdx)}
+                onOtherTextChange={(text) => setOtherText(qIdx, text)}
+              />
+            ))}
+          </div>
+        )}
 
         <div className="modal-footer" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -289,21 +326,26 @@ export function QuestionDialog({ open = true, request, onSubmit, onSkipAll, onMi
               onClick={cancel}
               disabled={busy}
               style={{ flex: 1 }}
-              title="Skip every question — the model will continue with no guidance"
+              title={clarifying ? 'Back to the questions' : 'Skip every question — the model will continue with no guidance'}
             >
-              Skip all
+              {clarifying ? 'Back' : 'Skip all'}
             </button>
+            {!clarifying && (
+              <button className="btn" onClick={enterClarification} disabled={busy} style={{ flex: 1 }}>
+                Chat about this
+              </button>
+            )}
             <button
               className="btn btn-primary"
-              onClick={submit}
-              disabled={busy || !hasAnyAnswer}
+              onClick={clarifying ? clarify : submit}
+              disabled={busy || (clarifying ? !feedback.trim() : !hasAnyAnswer)}
               style={{ flex: 2 }}
             >
-              Send answers
+              {clarifying ? 'Send clarification' : 'Send answers'}
             </button>
           </div>
           <span className="hint" style={{ textAlign: 'center' }}>
-            Your answers are sent back to the model as the tool result.
+            {clarifying ? 'Your message is sent back to the model as context.' : 'Your answers are sent back to the model as the tool result.'}
           </span>
         </div>
       </div>

@@ -393,7 +393,7 @@ export type SessionAction =
   | {
       type: 'PERMISSION_RESOLVED'
       id: string
-      decision: { behavior: 'allow' | 'deny'; persisted: boolean; message?: string }
+      decision: { behavior: 'allow' | 'deny'; persisted: boolean; message?: string; questionResolution?: 'clarified' }
     }
   | { type: 'CONTEXT_USAGE'; usage: ContextUsage }
   /** The SDK read a queued user turn off its input queue. Flips the

@@ -1494,6 +1494,9 @@ export const Chat = memo(function Chat({
               onSubmit={(answers) => {
                 void permissions.answerQuestion(pendingHead.id, answers)
               }}
+              onClarify={(feedback) => {
+                void permissions.clarifyQuestion(pendingHead.id, feedback)
+              }}
               onSkipAll={() => {
                 void permissions.answerQuestion(
                   pendingHead.id,

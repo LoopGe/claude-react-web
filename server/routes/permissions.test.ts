@@ -7,6 +7,7 @@ function makeApp() {
     listPending: vi.fn(() => []),
     decide: vi.fn(async () => {}),
     answerQuestion: vi.fn(() => {}),
+    clarifyQuestion: vi.fn(() => {}),
   }
   return { app: buildPermissionRouter(sm as unknown as SessionManager), sm }
 }
@@ -66,5 +67,33 @@ describe('permission routes', () => {
       behavior: 'deny',
       message: 'no',
     })
+  })
+
+  it('forwards trimmed question clarification', async () => {
+    const { app, sm } = makeApp()
+    const res = await app.request('/sessions/s1/permissions/q1/clarify-question', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ feedback: '  explain the trade-offs  ' }),
+    })
+    expect(res.status).toBe(200)
+    expect(sm.clarifyQuestion).toHaveBeenCalledWith('s1', 'q1', 'explain the trade-offs')
+  })
+
+  it.each([
+    [{}, 'feedback must be a string'],
+    [{ feedback: 42 }, 'feedback must be a string'],
+    [{ feedback: '   ' }, 'feedback must not be empty'],
+    [{ feedback: 'x'.repeat(4001) }, 'feedback is too long'],
+  ])('rejects invalid question clarification %#', async (body, error) => {
+    const { app, sm } = makeApp()
+    const res = await app.request('/sessions/s1/permissions/q1/clarify-question', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error })
+    expect(sm.clarifyQuestion).not.toHaveBeenCalled()
   })
 })

@@ -23,7 +23,7 @@ import type {
   QuestionAnswer,
   Session,
 } from './session-types.js'
-import { toSnapshot, sanitizeQuestions, formatQuestionAnswers, promoteToSession } from './permission-helpers.js'
+import { toSnapshot, sanitizeQuestions, formatQuestionAnswers, formatQuestionClarification, promoteToSession } from './permission-helpers.js'
 import { HttpError } from './errors.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import { createLogger } from './log.js'
@@ -603,6 +603,25 @@ export class PermissionBroker {
       behavior: 'deny',
       persisted: false,
       message,
+    })
+  }
+
+  /** Resolve an AskUserQuestion with free-form context instead of selections. */
+  clarifyQuestion(session: Session, pid: string, feedback: string): void {
+    const normalized = feedback.trim()
+    if (!normalized) throw new HttpError(400, 'feedback must not be empty')
+    if (normalized.length > 4000) throw new HttpError(400, 'feedback is too long')
+    const p = session.pending.get(pid)
+    if (!p) throw new HttpError(404, `pending ${pid} not found`)
+    if (p.kind !== 'question') {
+      throw new HttpError(400, `pending ${pid} is not an interactive question`)
+    }
+    this.cleanupPending(p)
+    session.pending.delete(pid)
+    const message = formatQuestionClarification(p.questions, normalized)
+    p.resolve({ behavior: 'deny', message, interrupt: false, toolUseID: p.toolUseID })
+    this.broadcastPermissionResolved(session, pid, {
+      behavior: 'deny', persisted: false, message, questionResolution: 'clarified',
     })
   }
 

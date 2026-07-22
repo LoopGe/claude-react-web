@@ -2557,6 +2557,14 @@ export class SessionManager {
     this.persist(s)
   }
 
+  /** Resolve a pending AskUserQuestion with free-form clarification. */
+  clarifyQuestion(sid: string, pid: string, feedback: string): void {
+    const s = this.require(sid)
+    this.permBroker.clarifyQuestion(s, pid, feedback)
+    s.lastActivityAt = Date.now()
+    this.persist(s)
+  }
+
   /** Subscription for permission-channel events. */
   subscribePermissions(id: string): {
     iterable: AsyncIterable<PermissionEvent>

@@ -55,6 +55,20 @@ export function buildPermissionRouter(sm: SessionManager): Hono {
     return c.json({ error: "behavior must be 'allow' or 'deny'" }, 400)
   })
 
+  // Clarify a pending AskUserQuestion with free-form context.
+  app.post('/sessions/:id/permissions/:pid/clarify-question', async (c) => {
+    const id = c.req.param('id')
+    const pid = c.req.param('pid')
+    const raw = await safeJson<{ feedback: unknown }>(c.req)
+    if (typeof raw.feedback !== 'string') return c.json({ error: 'feedback must be a string' }, 400)
+    const feedback = raw.feedback.trim()
+    if (!feedback) return c.json({ error: 'feedback must not be empty' }, 400)
+    if (feedback.length > 4000) return c.json({ error: 'feedback is too long' }, 400)
+    log.info(`clarify-question session=${id} pid=${pid}`)
+    sm.clarifyQuestion(id, pid, feedback)
+    return c.json({ ok: true })
+  })
+
   // Answer a pending AskUserQuestion.
   app.post('/sessions/:id/permissions/:pid/answer-question', async (c) => {
     const id = c.req.param('id')

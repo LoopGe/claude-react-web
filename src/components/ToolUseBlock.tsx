@@ -491,7 +491,7 @@ const PlanCard = memo(function PlanCard({
 // AskUserQuestion
 // ---------------------------------------------------------------------------
 
-type QuestionCardStatus = 'pending' | 'answered' | 'skipped'
+type QuestionCardStatus = 'pending' | 'answered' | 'skipped' | 'clarified'
 
 /**
  * Inline card for AskUserQuestion. The QuestionDialog overlay handles the
@@ -528,6 +528,7 @@ const QuestionCard = memo(function QuestionCard({
 
   const status: QuestionCardStatus = (() => {
     if (!answers || answers.length === 0) return 'pending'
+    if (answers.some((a) => a.clarified)) return 'clarified'
     return answers.every((a) => a.answer == null) ? 'skipped' : 'answered'
   })()
   // The dialog is minimized (hidden) but the question is still awaiting an
@@ -539,7 +540,9 @@ const QuestionCard = memo(function QuestionCard({
       ? 'You answered - Claude received your selections.'
       : status === 'skipped'
         ? 'You skipped every question - Claude is continuing without guidance.'
-        : 'Pending your answer.'
+        : status === 'clarified'
+          ? 'You sent context or a follow-up instead of selecting an answer.'
+          : 'Pending your answer.'
   // `key` forces a remount when status flips so the default-open state
   // re-applies; same trick PlanCard uses.
   const defaultOpen = status === 'pending'

@@ -28,6 +28,7 @@ export type QuestionAnswerValue = string | string[] | null
 export interface QuestionAnswerEntry {
   question: string
   answer: QuestionAnswerValue
+  clarified?: boolean
 }
 
 /** Scan an assistant message for AskUserQuestion tool_use ids. */
