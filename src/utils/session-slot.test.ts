@@ -138,4 +138,25 @@ describe('joinGroupOfSource', () => {
     const groups = [g('G1', ['a', 'x'])]
     expect(joinGroupOfSource(groups, 'x', 'x', { evicting: true, maxGroupSize: 3 })).toBe(groups)
   })
+
+  it('reproduces the clear race when sessions render before group membership', () => {
+    // `session-created(Y)` currently updates `sessions` before the separate
+    // `groups` state has appended Y. The sidebar derives UNGROUPED from that
+    // intermediate pair, so this is the exact state that produces the flash.
+    const source = 'x'
+    const replacement = 'y'
+    const sessionsBeforeGroupUpdate = [source, replacement]
+    const groupsBeforeGroupUpdate = [g('G1', [source])]
+    const groupedBeforeGroupUpdate = new Set(groupsBeforeGroupUpdate.flatMap((group) => group.sessionIds))
+
+    expect(sessionsBeforeGroupUpdate.filter((id) => !groupedBeforeGroupUpdate.has(id))).toEqual([replacement])
+
+    const groupsAfterGroupUpdate = joinGroupOfSource(groupsBeforeGroupUpdate, source, replacement, {
+      evicting: true,
+      maxGroupSize: 3,
+    })
+    const groupedAfterGroupUpdate = new Set(groupsAfterGroupUpdate.flatMap((group) => group.sessionIds))
+
+    expect(sessionsBeforeGroupUpdate.filter((id) => !groupedAfterGroupUpdate.has(id))).toEqual([])
+  })
 })

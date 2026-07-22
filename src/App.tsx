@@ -108,6 +108,10 @@ function sessionMetaEqual(a: SessionInfo, b: SessionInfo): boolean {
 export function App() {
   const [isConfigured, setIsConfigured] = useState<boolean | null>(null)
   const [sessions, setSessions] = useState<SessionInfo[]>([])
+  /** Replacement sessions announced by the server before their source-group
+   * membership has been applied locally. They must not flash under Ungrouped
+   * while the independent UI-state store catches up. */
+  const [pendingGroupInheritance, setPendingGroupInheritance] = useState<Map<string, { sourceId: string; evicting: boolean }>>(new Map())
   // False until the first sessions-snapshot frame arrives over WS. Drives a
   // sidebar skeleton so "No sessions yet" doesn't flash before the list loads.
   const [sessionsLoaded, setSessionsLoaded] = useState(false)
@@ -618,6 +622,17 @@ export function App() {
           const isFirstSnapshot = !firstSnapshotSeenRef.current
           firstSnapshotSeenRef.current = true
           setSessions(frame.sessions)
+          setPendingGroupInheritance((prev) => {
+            const liveIds = new Set(frame.sessions.map((s) => s.id))
+            const next = new Map(prev)
+            for (const [newId, pending] of next) {
+              // A reconnect snapshot is authoritative for the live session
+              // set. If either side of the inheritance is gone, no later
+              // session-removed frame can resolve this marker.
+              if (!liveIds.has(newId) || !liveIds.has(pending.sourceId)) next.delete(newId)
+            }
+            return next.size === prev.size ? prev : next
+          })
           setSessionsLoaded(true)
           // Reconcile open/focused against whatever the server reports.
           const ids = new Set(frame.sessions.map((s) => s.id))
@@ -784,6 +799,15 @@ export function App() {
           // here would risk the same evict-X-while-present flash on order.
           const joinGroupOf = frame.joinGroupOf
           if (joinGroupOf && joinGroupOf !== sid) {
+            // Keep the relationship even when groups are still hydrating. The
+            // pending marker prevents Y from rendering as Ungrouped until the
+            // source group becomes available (or the source is confirmed to be
+            // ungrouped).
+            setPendingGroupInheritance((prev) => {
+              const next = new Map(prev)
+              next.set(sid, { sourceId: joinGroupOf, evicting: frame.evictingSource === true })
+              return next
+            })
             // `evictingSource` is set for /clear + restart: X is being evicted
             // (swapSession same-tab / session-removed cross-tab), so appending
             // Y won't grow the group long-term. joinGroupOfSource bypasses the
@@ -947,6 +971,12 @@ export function App() {
       // (oldId ∈ openIds), so the swap always changes openIds and exit-detection
       // runs to consume this marker — no stale-entry risk.
       justSwappedInRef.current.add(newId)
+      setPendingGroupInheritance((prev) => {
+        if (!prev.has(newId)) return prev
+        const next = new Map(prev)
+        next.delete(newId)
+        return next
+      })
       setSessions((prev) => {
         const idx = prev.findIndex((s) => s.id === oldId)
         const withoutOld = idx === -1 ? prev : prev.filter((s) => s.id !== oldId)
@@ -985,6 +1015,34 @@ export function App() {
    *  and must be fully evicted, not just dropped from the panel). */
   const teardownRemovedSession = useCallback(
     (id: string) => {
+      // A cross-tab clear can deliver session-removed(X) after the created(Y)
+      // frame but before this tab has applied Y's inherited group. Preserve the
+      // replacement in X's group before removing X; otherwise clearing the
+      // pending marker below would make Y flash under Ungrouped.
+      const pendingReplacements = [...pendingGroupInheritance].filter(([, pending]) => pending.sourceId === id)
+      if (pendingReplacements.length > 0) {
+        setGroups((prev) => {
+          let next = prev
+          for (const [newId, pending] of pendingReplacements) {
+            next = joinGroupOfSource(next, id, newId, {
+              evicting: pending.evicting,
+              maxGroupSize: maxGroupSizeRef.current,
+            })
+          }
+          return next
+        })
+      }
+      setPendingGroupInheritance((prev) => {
+        let changed = false
+        const next = new Map(prev)
+        for (const [newId, pending] of next) {
+          if (newId === id || pending.sourceId === id) {
+            next.delete(newId)
+            changed = true
+          }
+        }
+        return changed ? next : prev
+      })
       setSessions((prev) => prev.filter((s) => s.id !== id))
       setOpenIds((prev) => prev.filter((x) => x !== id))
       setFocusedId((prev) => (prev === id ? null : prev))
@@ -1019,7 +1077,7 @@ export function App() {
         sessionStoreRegistry.delete(sideId)
       }
     },
-    [cleanupSideChat, pruneSession, setGroups, setLastSeenTurn, setSidebarOrder],
+    [cleanupSideChat, pendingGroupInheritance, pruneSession, setGroups, setLastSeenTurn, setSidebarOrder],
   )
   // eslint-disable-next-line react-hooks/refs -- intentional render-time ref sync (same pattern as animatePanelsRef): the WS session-removed handler (in an effect above) calls teardownRemovedSession via this ref.
   teardownRemovedSessionRef.current = teardownRemovedSession
@@ -2286,6 +2344,67 @@ export function App() {
     return ordered
   }, [sessions, sidebarOrder, pendingDeleteIds])
 
+  /** Retry group inheritance after UI state hydration or a later group change.
+   * A clear/fork frame may beat the async groups load; keep the relationship
+   * until it can be resolved instead of flashing the replacement under
+   * Ungrouped. */
+  useEffect(() => {
+    if (pendingGroupInheritance.size === 0 || uiStateLoading) return
+    const completed = [...pendingGroupInheritance].filter(([newId, pending]) =>
+      groups.some((g) => g.sessionIds.includes(pending.sourceId) && g.sessionIds.includes(newId)),
+    )
+    if (completed.length > 0) {
+      const timer = window.setTimeout(() => {
+        setPendingGroupInheritance((prev) => {
+          const next = new Map(prev)
+          for (const [newId] of completed) next.delete(newId)
+          return next.size === prev.size ? prev : next
+        })
+      }, 0)
+      return () => window.clearTimeout(timer)
+    }
+    const updates = [...pendingGroupInheritance].flatMap(([newId, pending]) => {
+      const sourceGroup = groups.find((g) => g.sessionIds.includes(pending.sourceId))
+      if (!sourceGroup) return []
+      return [{ newId, pending }]
+    })
+    if (updates.length === 0) return
+    const timer = window.setTimeout(() => {
+      for (const { newId, pending } of updates) {
+        setGroups((prev) => joinGroupOfSource(prev, pending.sourceId, newId, {
+          evicting: pending.evicting,
+          maxGroupSize: maxGroupSizeRef.current,
+        }))
+      }
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [groups, pendingGroupInheritance, setGroups, uiStateLoading])
+
+  // Once a hydrated, live source is known to be ungrouped, release its
+  // replacement in render-derived state on the next event rather than
+  // leaving it hidden indefinitely. The pending marker is otherwise cleared
+  // by the successful group append or the swap/teardown paths above.
+  useEffect(() => {
+    if (uiStateLoading || pendingGroupInheritance.size === 0) return
+    const releasable = [...pendingGroupInheritance].some(([newId, pending]) =>
+      sessions.some((s) => s.id === pending.sourceId)
+      && !groups.some((g) => g.sessionIds.includes(pending.sourceId))
+      && sessions.some((s) => s.id === newId),
+    )
+    if (!releasable) return
+    const timer = window.setTimeout(() => {
+      setPendingGroupInheritance((prev) => {
+        const next = new Map(prev)
+        for (const [newId, pending] of next) {
+          if (sessions.some((s) => s.id === pending.sourceId)
+            && !groups.some((g) => g.sessionIds.includes(pending.sourceId))) next.delete(newId)
+        }
+        return next.size === prev.size ? prev : next
+      })
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [groups, pendingGroupInheritance, sessions, uiStateLoading])
+
   /** Grouped sidebar view: groups -> ungrouped. Sessions not in any group
    *  appear in the "Ungrouped" section at the bottom. */
   const sidebarSections = useMemo((): SidebarSection[] => {
@@ -2309,14 +2428,14 @@ export function App() {
     // 2. Ungrouped sessions (not in any group).
     const ungrouped: SessionInfo[] = []
     for (const s of orderedSessions) {
-      if (!groupedIds.has(s.id)) ungrouped.push(s)
+      if (!groupedIds.has(s.id) && !pendingGroupInheritance.has(s.id)) ungrouped.push(s)
     }
     if (ungrouped.length > 0) {
       sections.push({ kind: 'ungrouped', sessions: ungrouped })
     }
 
     return sections
-  }, [orderedSessions, groups])
+  }, [orderedSessions, groups, pendingGroupInheritance])
 
   /** Reorder callback wired to the sidebar's DnD. Moves `draggedId` so it
    *  lands either before or after `targetId`. Dropping on itself is a
