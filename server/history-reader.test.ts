@@ -123,7 +123,9 @@ describe('paginateJsonl — normalization', () => {
       { type: 'assistant', uuid: 'a1', timestamp: '2026-06-24T08:34:23.548Z', message: { role: 'assistant', content: [] } },
     ])
     const page = paginateJsonl(raw, SID, { limit: 100 })
-    const [u, a] = page.messages as Array<{ receivedAt?: number; consumedAt?: number }>
+    const [u, a] = page.messages as Array<{ receivedAt?: number; consumedAt?: number; restoredFromDisk?: boolean }>
+    expect(u.restoredFromDisk).toBe(true)
+    expect(a.restoredFromDisk).toBe(true)
     expect(u.receivedAt).toBe(Date.parse('2026-06-24T08:34:19.057Z'))
     // A top-level prompt on disk was already consumed by the SDK — stamp
     // consumedAt so it isn't mislabelled 'queued'.

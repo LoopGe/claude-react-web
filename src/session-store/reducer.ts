@@ -275,20 +275,11 @@ function replayReplace(
         `(replay=${messages.length}, older=${older.length}, newer=${newer.length})`,
       )
     }
-    // Post-replay sweep: the disk transcript has no `result` frames, so the
-    // per-turn sweep (in applyMessage) never fired during replay. One final
-    // sweep catches all unswept running/background records — the same logic
-    // as a single `result` frame, applied once at the end.
-    //
-    // GUARD: only sweep when the replay has NO `result` frames — that's the
-    // disk-replay-after-server-restart case (all turns ended, CLI was killed).
-    // If the replay HAS `result` frames (WS reconnect from the in-memory ring),
-    // applyMessage already swept per-turn, and any remaining running records
-    // are from an in-progress turn that must NOT be swept (they'd flip to
-    // error/interrupted while the turn is still active).
-    if (!messages.some((m) => m.type === 'result')) {
-      state = withMirror(state, sweepAtTurnEnd(state.mirror))
-    }
+    // Never synthesize a turn end while merging a replay into an existing
+    // client cache. This is the live/incremental reconnect path, and the replay
+    // may legitimately end with an in-progress synchronous Agent tool_use and
+    // no result frame yet. Historical disk hydration is handled only by the
+    // fresh-state path below.
     return state
   }
   // Fresh state path: the prior mirror has no items (cold start, or the cache
@@ -310,11 +301,14 @@ function replayReplace(
   for (const message of messages) {
     working = applyMessage(working, message)
   }
-  // Post-replay sweep (same guard as the merge path: only when the replay
-  // has no `result` frames — disk replay after server restart).
-  const sweptMirror = messages.some((m) => m.type === 'result')
-    ? working.mirror
-    : sweepAtTurnEnd(working.mirror)
+  // A fresh replay without result frames is swept only when every frame came
+  // from the persisted CLI transcript. A new tab can subscribe to a live
+  // session mid-turn with an empty client cache; that fresh in-memory replay
+  // also has no result yet and must preserve a running synchronous subagent.
+  const isDiskReplay = messages.length > 0 && messages.every((m) => m.restoredFromDisk === true)
+  const sweptMirror = isDiskReplay && !messages.some((m) => m.type === 'result')
+    ? sweepAtTurnEnd(working.mirror)
+    : working.mirror
   return withMirror(prevState, { ...sweptMirror, replayReady: true })
 }
 

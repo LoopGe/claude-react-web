@@ -937,7 +937,7 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     const toolUse: SdkMessage = {
       type: 'assistant',
       uuid: 'a-1',
-      receivedAt: 0,
+      restoredFromDisk: true,
       message: {
         role: 'assistant',
         content: [{ type: 'tool_use', id: 'tu_nores', name: 'Agent', input: { description: 'do work', run_in_background: true } }],
@@ -947,7 +947,7 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
       type: 'user',
       uuid: 'u-1',
       parent_tool_use_id: null,
-      receivedAt: 1_000,
+      restoredFromDisk: true,
       message: {
         role: 'user',
         content: [{ type: 'tool_result', tool_use_id: 'tu_nores', content: 'Async agent launched successfully' }],
@@ -961,6 +961,67 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     })
     // Post-replay sweep must have flipped background → pending.
     expect(state.mirror.activeSubagents.get('tu_nores')?.status).toBe('pending')
+  })
+
+  it('does not sweep a live-memory replay while a sync subagent is still running', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: {
+        type: 'assistant', uuid: 'cached', receivedAt: Date.now() - 1_000,
+        message: { role: 'assistant', content: [{ type: 'text', text: 'cached' }] },
+      } as unknown as SdkMessage,
+    })
+    const liveStart = {
+      type: 'assistant', uuid: 'sync-live', receivedAt: Date.now(),
+      message: {
+        role: 'assistant',
+        content: [{
+          type: 'tool_use', id: 'tu_sync_live', name: 'Agent',
+          input: { description: 'still running', run_in_background: false },
+        }],
+      },
+    } as unknown as SdkMessage
+
+    state = reduceSessionState(state, {
+      type: 'REPLAY_REPLACE', messages: [liveStart], permissions: [],
+    })
+
+    expect(state.mirror.activeSubagents.get('tu_sync_live')?.status).toBe('running')
+  })
+
+  it('does not sweep a fresh live-memory replay while a sync subagent is still running', () => {
+    const liveStart = {
+      type: 'assistant', uuid: 'sync-live', receivedAt: Date.now(),
+      message: {
+        role: 'assistant',
+        content: [{
+          type: 'tool_use', id: 'tu_sync_live', name: 'Agent',
+          input: { description: 'still running', run_in_background: false },
+        }],
+      },
+    } as unknown as SdkMessage
+    const state = reduceSessionState(createInitialSessionState('s1'), {
+      type: 'REPLAY_REPLACE', messages: [liveStart], permissions: [],
+    })
+    expect(state.mirror.activeSubagents.get('tu_sync_live')?.status).toBe('running')
+  })
+
+  it('still sweeps an orphaned sync subagent restored from disk', () => {
+    const diskStart = {
+      type: 'assistant', uuid: 'sync-disk', restoredFromDisk: true,
+      message: {
+        role: 'assistant',
+        content: [{
+          type: 'tool_use', id: 'tu_sync_disk', name: 'Agent',
+          input: { description: 'orphaned', run_in_background: false },
+        }],
+      },
+    } as unknown as SdkMessage
+    const state = reduceSessionState(createInitialSessionState('s1'), {
+      type: 'REPLAY_REPLACE', messages: [diskStart], permissions: [],
+    })
+    expect(state.mirror.activeSubagents.get('tu_sync_disk')?.status).toBe('interrupted')
   })
 
   it('stale-pending safety net flips a stranded pending record to interrupted', () => {

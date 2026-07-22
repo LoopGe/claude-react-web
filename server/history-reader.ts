@@ -201,6 +201,10 @@ function normalize(o: RawLine, sessionId: string): unknown {
     session_id: o.session_id ?? sessionId,
     message: o.message,
     parent_tool_use_id: parent,
+    // Explicit provenance for the client replay reducer. A resumed session's
+    // history ring can contain a disk-restored prefix followed by live messages;
+    // timestamps cannot distinguish those sources because both have receivedAt.
+    restoredFromDisk: true,
     ...(hasTs ? { receivedAt: ts } : {}),
     // A top-level prompt on disk was already consumed by the SDK; stamp
     // consumedAt so it isn't mislabelled 'queued' by deriveDeliveryStatus.

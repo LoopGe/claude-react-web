@@ -207,6 +207,8 @@ export interface SdkMessage {
    *  and non-null for tool results and subagent-internal frames. The SDK
    *  declares this on both SDKUserMessage and SDKAssistantMessage. */
   parent_tool_use_id?: string | null
+  /** Server marker for frames normalized from the CLI's persisted JSONL. */
+  restoredFromDisk?: boolean
   /** SDK `SDKUserMessage.origin` — the true source of a user-role message.
    *  `kind: 'human'` is genuine human input; `'task-notification'` /
    *  `'peer'` / `'channel'` / `'coordinator'` / `'auto-continuation'` are
