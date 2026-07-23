@@ -19,9 +19,12 @@ import { loadConfig, config } from './config.js'
 import { disableFileLogging, getLogFilePath, createLogger } from './log.js'
 import { SessionStore, defaultStateDir } from './persistence.js'
 import { McpConfigStore } from './mcp-config.js'
+import { SessionManager } from './session-manager.js'
 import { SnippetStore } from './snippet-store.js'
 import { UiStateStore } from './ui-state-store.js'
 import { MpStore } from './mp-store.js'
+import { AppPluginStore } from './app-plugins/app-plugin-store.js'
+import { AppPluginManager } from './app-plugins/app-plugin-manager.js'
 import { attachWebSocket } from './ws.js'
 import { checkForUpdates } from './update-checker.js'
 import { startEventLoopProbe } from './event-loop-probe.js'
@@ -37,6 +40,8 @@ interface CliArgs {
   stateDir?: string
   claudeBinary?: string
   token?: string
+  disableAppPlugins: boolean
+  safeMode: boolean
   help: boolean
   version: boolean
 }
@@ -184,6 +189,8 @@ function parseArgs(argv: string[]): CliArgs {
     port: 3456,
     host: '127.0.0.1',
     open: true,
+    disableAppPlugins: false,
+    safeMode: false,
     help: false,
     version: false,
   }
@@ -225,6 +232,12 @@ function parseArgs(argv: string[]): CliArgs {
         break
       case '--token':
         args.token = next()
+        break
+      case '--disable-app-plugins':
+        args.disableAppPlugins = true
+        break
+      case '--safe-mode':
+        args.safeMode = true
         break
       case '-h':
       case '--help':
@@ -319,6 +332,39 @@ async function main() {
     )
   }
 
+  // Construct the SessionManager explicitly (rather than letting buildApp do
+  // it lazily) so the App Plugin manager's host adapters can reference it.
+  // buildApp accepts a pre-built manager via opts.sessionManager.
+  const sessionManager = new SessionManager({
+    store,
+    mcpConfigStore: mcpStore,
+    mpStore,
+    claudeBinary,
+    autoResume: true,
+    crashRecovery: true,
+  })
+
+  // App Plugins subsystem. Under --disable-app-plugins we still construct
+  // the manager (so shutdown() is uniform) but pass `undefined` to buildApp
+  // and attachWebSocket — the /api/app-plugins routes are NOT mounted and
+  // no app-plugin WS frames are emitted, matching the "absent" contract.
+  // Under --safe-mode the registry loads and static contributions register,
+  // but no subprocess ever activates (honoured by Stage B2's runtime).
+  const appPluginStore = new AppPluginStore({ stateDir })
+  const appPluginManager = new AppPluginManager({
+    store: appPluginStore,
+    stateDir,
+    hostVersion: pkg.version,
+    hostNodeMajor: Number((process.versions.node ?? '0.0.0').split('.')[0]),
+    sm: sessionManager,
+    safeMode: args.safeMode,
+    disabled: args.disableAppPlugins,
+  })
+  await appPluginManager.initialize()
+  if (args.disableAppPlugins) {
+    log.info('app plugins disabled (--disable-app-plugins)')
+  }
+
   const { getLogConfig } = await import('./log.js')
   const initial = getLogConfig()
   log.info(
@@ -331,12 +377,14 @@ async function main() {
     log.info(`file logging: ${logFilePath}`)
   }
 
-  const { app, sessionManager } = buildApp({
+  const { app } = buildApp({
+    sessionManager,
     sessionStore: store,
     mcpConfigStore: mcpStore,
     snippetStore,
     uiStateStore,
     mpStore,
+    appPluginManager: args.disableAppPlugins ? undefined : appPluginManager,
     defaults: { cwd: args.cwd, model: args.model, claudeBinary },
     configDir: stateDir,
     bind: { host: args.host, port: args.port },
@@ -425,7 +473,7 @@ async function main() {
   // returned shutdown fn closes every live socket during SIGINT.
   // @hono/node-server returns a Node http.Server (same shape), so cast
   // is safe.
-  const wsShutdown = attachWebSocket(server as unknown as Server, sessionManager)
+  const wsShutdown = attachWebSocket(server as unknown as Server, sessionManager, args.disableAppPlugins ? undefined : appPluginManager)
 
   // Diagnostic: sample event-loop delay so a synchronous stall (which makes
   // unrelated sessions appear to hang) shows up in the logs as a max spike.
@@ -442,6 +490,14 @@ async function main() {
     }
     disableFileLogging()
     await uiStateStore.flush()
+    // App Plugins: flush the registry + tear down any subprocesses (Stage
+    // B2). Runs before sessionManager.shutdown() so a plugin mid-Host-call
+    // doesn't race the session pool teardown.
+    try {
+      await appPluginManager.shutdown()
+    } catch (err) {
+      log.error('app plugins shutdown error:', err)
+    }
     try {
       await sessionManager.shutdown()
     } finally {

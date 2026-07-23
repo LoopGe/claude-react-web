@@ -33,13 +33,18 @@ const ResetConfigDialog = lazy(() =>
 const MarketplaceTab = lazy(() =>
   import('./MarketplaceTab').then((m) => ({ default: m.MarketplaceTab })),
 )
+// AppPluginsTab pulls in the plugin registry + management surface;
+// lazy-load so the weight only lands when the user opens the "App Plugins" tab.
+const AppPluginsTab = lazy(() =>
+  import('./AppPluginsTab').then((m) => ({ default: m.AppPluginsTab })),
+)
 // ShareTab pulls in the `qrcode` dependency ? lazy-load it so that weight
 // only lands when the user opens the "Open on phone" tab.
 const ShareTab = lazy(() =>
   import('./ShareTab').then((m) => ({ default: m.ShareTab })),
 )
 
-type Tab = 'api' | 'models' | 'server' | 'skills' | 'mcp' | 'marketplace' | 'share' | 'logs' | 'about'
+type Tab = 'api' | 'models' | 'server' | 'skills' | 'mcp' | 'marketplace' | 'app-plugins' | 'share' | 'logs' | 'about'
 
 type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'trace'
 
@@ -369,6 +374,7 @@ export function GlobalSettingsModal({
     { key: 'skills', label: 'Skills' },
     { key: 'mcp', label: 'MCP Servers' },
     { key: 'marketplace', label: 'Marketplace' },
+    { key: 'app-plugins', label: 'App Plugins' },
     { key: 'share', label: 'Open on phone' },
     { key: 'logs', label: 'Logs' },
     { key: 'about', label: 'About' },
@@ -525,6 +531,11 @@ export function GlobalSettingsModal({
               {tab === 'marketplace' && (
                 <Suspense fallback={<div className="lazy-tab-loading">Loading marketplace...</div>}>
                   <MarketplaceTab />
+                </Suspense>
+              )}
+              {tab === 'app-plugins' && (
+                <Suspense fallback={<div className="lazy-tab-loading">Loading app plugins...</div>}>
+                  <AppPluginsTab />
                 </Suspense>
               )}
               {tab === 'share' && (

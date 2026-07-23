@@ -1,0 +1,237 @@
+/* App Plugin (Mod) UI — management tab, command-result popovers/dialogs, and
+   contribution slots. All colours use theme tokens (defined in tokens.css
+   for both dark :root and [data-theme="light"]) so the surfaces track the
+   theme — no hardcoded hex. */
+
+/* ── Management tab ──────────────────────────────────────────────── */
+
+.app-plugins-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.app-plugins-intro {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+.app-plugins-install {
+  display: flex;
+  gap: 8px;
+}
+.app-plugins-install .input {
+  flex: 1;
+}
+.app-plugins-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.app-plugins-empty {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  padding: 12px 0;
+}
+.app-plugins-row {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg-elev);
+}
+.app-plugins-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.app-plugins-row-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--fg);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.app-plugins-name {
+  font-weight: 600;
+}
+.app-plugins-state {
+  font-size: var(--fs-xs);
+  padding: 1px 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+.app-plugins-state.state-ok { color: var(--ok); border-color: var(--ok); }
+.app-plugins-state.state-err { color: var(--danger); border-color: var(--danger); }
+.app-plugins-state.state-warn { color: var(--warn); border-color: var(--warn); }
+.app-plugins-row-actions {
+  display: flex;
+  gap: 6px;
+}
+.app-plugins-meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+}
+.app-plugins-err {
+  color: var(--danger);
+}
+.app-plugins-details {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.app-plugins-details h4 {
+  margin: 0 0 6px;
+  font-size: var(--fs-sm);
+}
+.app-plugins-perms ul,
+.app-plugins-contribs ul {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--fs-sm);
+}
+.app-plugins-perms label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.app-plugins-hosts,
+.app-plugins-trust,
+.app-plugins-hosts-ref {
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+}
+.app-plugins-trust {
+  margin-top: 6px;
+  line-height: 1.4;
+}
+.app-plugins-diag {
+  color: var(--warn);
+  font-size: var(--fs-xs);
+  margin-top: 4px;
+}
+.app-plugins-diag > div { margin-top: 2px; }
+
+/* ── Command result popover ─────────────────────────────────────── */
+
+.plugin-popover {
+  position: fixed;
+  z-index: 1000;
+  width: 320px;
+  max-width: calc(100vw - 16px);
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.plugin-popover[data-degraded] {
+  /* degraded (no anchor) — center via the inline transform */
+  width: 360px;
+}
+.plugin-popover-title {
+  font-weight: 600;
+  font-size: var(--fs-sm);
+}
+.plugin-popover-body {
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--fg);
+  max-height: 60vh;
+  overflow: auto;
+}
+.plugin-popover-close {
+  align-self: flex-end;
+}
+
+/* ── Command result dialog ──────────────────────────────────────── */
+
+.plugin-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.plugin-dialog {
+  width: 100%;
+  max-width: 480px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.plugin-dialog-title {
+  font-weight: 600;
+  font-size: var(--fs-md);
+}
+.plugin-dialog-body {
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--fg);
+  max-height: 60vh;
+  overflow: auto;
+}
+.plugin-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ── Result content ─────────────────────────────────────────────── */
+
+.plugin-content-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.plugin-content-kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0;
+}
+.plugin-content-kv dt {
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+}
+.plugin-content-kv dd {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+/* ── Header action slot ─────────────────────────────────────────── */
+
+.plugin-slot-action {
+  font-size: var(--fs-xs);
+  padding: 2px 8px;
+}

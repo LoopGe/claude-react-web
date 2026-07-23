@@ -70,6 +70,17 @@ describe('apiRequest', () => {
     } satisfies Partial<ApiError>)
   })
 
+  it('extracts the typed message + code from a structured { error: { code, message } } body', async () => {
+    // Plugin command errors return a structured body (HttpError.body). The
+    // client must surface the real message + code, not "HTTP 422".
+    mockFetch({ ok: false, status: 422, body: { error: { code: 'plugin-quarantined', message: 'plugin is quarantined' } } })
+    await expect(apiRequest('/fail')).rejects.toMatchObject({
+      message: 'plugin is quarantined',
+      status: 422,
+      code: 'plugin-quarantined',
+    } satisfies Partial<ApiError>)
+  })
+
   it('handles non-JSON response body', async () => {
     mockFetch({ ok: true, contentType: 'text/plain', body: 'hello' })
     const result = await apiRequest<string>('/text')

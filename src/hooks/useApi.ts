@@ -4,6 +4,10 @@
 
 export interface ApiError extends Error {
   status: number
+  /** Typed error code when the server returned a structured body
+   *  `{ error: { code, message } }` (e.g. PluginCommandError). Undefined for
+   *  plain `{ error: "string" }` bodies. */
+  code?: string
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -24,14 +28,29 @@ function toApiError(res: Response, body: unknown): ApiError {
       .filter((item): item is string => typeof item === 'string' && item.length > 0)
       .join('; ')
     : ''
-  const message =
-    (body && typeof body === 'object' && 'error' in body && typeof (body as { error: unknown }).error === 'string'
-      ? (body as { error: string }).error
-      : validationErrors
-        ? validationErrors
-      : `HTTP ${res.status}`) || `HTTP ${res.status}`
+
+  // The server returns errors in one of three shapes:
+  //   { error: "string" }                          -> plain message
+  //   { error: { code, message } }                 -> typed (PluginCommandError)
+  //   { errors: [{ path, message }, ...] }         -> validation list (above)
+  let message = ''
+  let code: string | undefined
+  if (body && typeof body === 'object' && 'error' in body) {
+    const errField = (body as { error: unknown }).error
+    if (typeof errField === 'string') {
+      message = errField
+    } else if (errField && typeof errField === 'object') {
+      const obj = errField as { code?: unknown; message?: unknown }
+      if (typeof obj.message === 'string') message = obj.message
+      if (typeof obj.code === 'string') code = obj.code
+    }
+  }
+  if (!message && validationErrors) message = validationErrors
+  if (!message) message = `HTTP ${res.status}`
+
   const err = new Error(message) as ApiError
   err.status = res.status
+  if (code) err.code = code
   return err
 }
 

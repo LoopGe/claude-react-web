@@ -222,6 +222,9 @@ export interface WsHookRunEvent<HookEvent> {
   event: HookEvent
 }
 
+import type { AppPluginClientInfo } from './app-plugins/runtime-state.js'
+import type { ResolvedPluginContributions } from './app-plugins/contributions.js'
+
 /** Heartbeat reply. */
 export interface WsPong {
   kind: 'pong'
@@ -236,6 +239,26 @@ export interface WsError {
   message: string
   /** Best-effort echo of the sessionId involved, when applicable. */
   sessionId?: string
+}
+
+/** Initial App Plugin list snapshot + subsequent updates. Emitted on WS
+ *  connect (so a fresh tab hydrates without a separate REST round-trip) and
+ *  whenever the full plugin set changes wholesale. Clients replace their
+ *  entire plugin map. The payload types are SDK-agnostic (defined in
+ *  shared/app-plugins/), so unlike session/permission frames these take no
+ *  generic parameters. */
+export interface WsAppPluginsSnapshot {
+  kind: 'app-plugins-snapshot'
+  plugins: AppPluginClientInfo[]
+}
+export interface WsAppPluginStateChanged {
+  kind: 'app-plugin-state-changed'
+  plugin: AppPluginClientInfo
+}
+export interface WsAppPluginContributionsChanged {
+  kind: 'app-plugin-contributions-changed'
+  pluginId: string
+  contributions: ResolvedPluginContributions
 }
 
 export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, HookEvent = never> =
@@ -256,6 +279,9 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsSessionCleared
   | WsCommandsChanged<Command>
   | WsHookRunEvent<HookEvent>
+  | WsAppPluginsSnapshot
+  | WsAppPluginStateChanged
+  | WsAppPluginContributionsChanged
   | WsPong
   | WsError
 

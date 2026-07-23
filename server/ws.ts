@@ -26,6 +26,7 @@ import type { Socket } from 'node:net'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { isUpgradeAuthorized } from './auth.js'
 import type { SessionBroadcaster } from './session-types.js'
+import type { AppPluginBroadcaster } from './app-plugins/event-bus.js'
 import { shouldBroadcastMessage } from './history-utils.js'
 import { createLogger } from './log.js'
 import {
@@ -222,7 +223,11 @@ function messageFrameJson(sessionId: string, message: object): string {
  *  Intentionally NOT a Hono middleware dwe need access to the raw
  *  Node server's `upgrade` event, which Hono doesn't expose. Mounting
  *  directly is simpler and avoids a two-layer handshake. */
-export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster): () => Promise<void> {
+export function attachWebSocket(
+  httpServer: HttpServer,
+  sm: SessionBroadcaster,
+  appPlugins?: AppPluginBroadcaster,
+): () => Promise<void> {
   // `noServer: true` means the WSS doesn't listen on its own port; it
   // only handles connections handed to it via `handleUpgrade()`. That's
   // how we share a port with Hono.
@@ -254,6 +259,7 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
     sockets.add(ws)
     const subs = new Map<string, SessionSub>()
     let globalCleanup: (() => void) | null = null
+    let appPluginCleanup: (() => void) | null = null
     let closed = false
 
     const queue = new WsWriteQueue(ws)
@@ -283,6 +289,35 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
         } catch (err) {
           if (!closed) {
             queue.enqueue({ kind: 'error', message: `global channel: ${(err as Error).message}` })
+          }
+        }
+      })()
+    }
+
+    // --- app-plugin channel (snapshot + state/contributions updates) ---
+    // Only started when an AppPluginManager was wired in. Mirrors the global
+    // channel: subscribe once per connection, fan every event into a frame.
+    const startAppPlugins = () => {
+      if (!appPlugins) return
+      const sub = appPlugins.subscribeAppPlugins()
+      appPluginCleanup = () => sub.unsubscribe()
+      void (async () => {
+        try {
+          for await (const ev of sub.iterable) {
+            if (closed) return
+            if (ev.kind === 'snapshot') queue.enqueue({ kind: 'app-plugins-snapshot', plugins: ev.plugins })
+            else if (ev.kind === 'state-changed') queue.enqueue({ kind: 'app-plugin-state-changed', plugin: ev.plugin })
+            else if (ev.kind === 'contributions-changed') {
+              queue.enqueue({
+                kind: 'app-plugin-contributions-changed',
+                pluginId: ev.pluginId,
+                contributions: ev.contributions,
+              })
+            }
+          }
+        } catch (err) {
+          if (!closed) {
+            queue.enqueue({ kind: 'error', message: `app-plugins channel: ${(err as Error).message}` })
           }
         }
       })()
@@ -621,6 +656,8 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
       subs.clear()
       globalCleanup?.()
       globalCleanup = null
+      appPluginCleanup?.()
+      appPluginCleanup = null
       sockets.delete(ws)
     })
 
@@ -635,8 +672,9 @@ export function attachWebSocket(httpServer: HttpServer, sm: SessionBroadcaster):
     })
 
     // Kick the global channel last so all listeners are wired before any
-    // frame might arrive.
+    // frame might arrive. The app-plugin channel follows the same rule.
     startGlobal()
+    startAppPlugins()
   })
 
   const shutdown = async () => {

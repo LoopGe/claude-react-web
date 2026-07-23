@@ -18,11 +18,14 @@ interface Props {
   sessions: SessionInfo[]
   onSelectSession: (id: string) => void
   onSelectMessage: (hit: MessageSearchHit, query: string) => void
+  /** Plugin-contributed commands (global, palette-visible) merged into the
+   *  Commands section. Built by the app from the plugin registry. */
+  pluginCommands?: PaletteItem[]
 }
 
 type PaletteSection = 'Commands' | 'Sessions' | 'Messages'
 
-interface PaletteItem {
+export interface PaletteItem {
   id: string
   section: PaletteSection
   label: string
@@ -35,7 +38,7 @@ function messageLabel(hit: MessageSearchHit): string {
   return hit.sessionTitle || hit.sessionId.slice(0, 12)
 }
 
-export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSession, onSelectMessage }: Props) {
+export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSession, onSelectMessage, pluginCommands }: Props) {
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [messageHits, setMessageHits] = useState<MessageSearchHit[]>([])
@@ -76,8 +79,13 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
         action: () => onSelectSession(session.id),
       })
     }
+    // Plugin-contributed commands (global, palette-visible). Each carries a
+    // stable id prefixed `plugin:` so they never collide with shortcuts.
+    for (const cmd of pluginCommands ?? []) {
+      result.push({ ...cmd, id: cmd.id.startsWith('plugin:') ? cmd.id : `plugin:${cmd.id}` })
+    }
     return result
-  }, [shortcuts, sessions, onSelectSession])
+  }, [shortcuts, sessions, onSelectSession, pluginCommands])
 
   useEffect(() => {
     if (!open || trimmedQuery.length < 2) {

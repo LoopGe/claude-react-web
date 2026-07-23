@@ -1,0 +1,24 @@
+{
+  "$schema": "https://claude-react-web.dev/schemas/app-plugin-v1.json",
+  "manifestVersion": 1,
+  "id": "fixture.selection",
+  "name": "Fixture: Selection",
+  "description": "Framework-verification fixture. Registers a message selection context menu and returns a fixed Popover echoing the selection. No translation, no network.",
+  "version": "1.0.0",
+  "publisher": "claude-react-web",
+  "license": "MIT",
+  "engines": { "claudeReactWeb": "^0.6.0", "node": ">=20" },
+  "runtime": { "service": "dist/service.mjs" },
+  "activationEvents": ["onCommand:fixture.selection.echo"],
+  "permissions": ["messages.selectedText"],
+  "contributes": {
+    "commands": [
+      { "id": "fixture.selection.echo", "title": "Echo selection", "category": "message.selection", "icon": "copy" }
+    ],
+    "contextMenus": [
+      { "id": "fixture.selection.menu", "location": "message.selectionContextMenu", "commandId": "fixture.selection.echo", "title": "Echo selection (fixture)", "when": "message.hasSelection == true" }
+    ],
+    "actions": [],
+    "configuration": { "properties": [] }
+  }
+}

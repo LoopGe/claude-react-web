@@ -26,6 +26,8 @@ import type { McpConfigStore } from './mcp-config.js'
 import type { SnippetStore } from './snippet-store.js'
 import type { UiStateStore } from './ui-state-store.js'
 import type { MpStore } from './mp-store.js'
+import type { AppPluginManager } from './app-plugins/app-plugin-manager.js'
+import { buildAppPluginRouter } from './app-plugins/routes.js'
 
 const appLog = createLogger('app')
 
@@ -75,6 +77,10 @@ export interface AppOptions {
    *  into Options.plugins. Optional to keep existing tests / standalone
    *  buildApp callers working without churn. */
   mpStore?: MpStore
+  /** App Plugin manager. When provided, the /api/app-plugins/* routes are
+   *  mounted and the WS layer broadcasts app-plugin state frames. Optional
+   *  so tests / standalone buildApp callers keep working without it. */
+  appPluginManager?: AppPluginManager
   /** Default values exposed via GET /api/config (used by the "new session" form).
    *  `claudeBinary` is NOT exposed to the UI — it's a server-side concern
    *  that gets injected into every Query via options.pathToClaudeCodeExecutable. */
@@ -243,6 +249,9 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
   }
   if (opts.mcpConfigStore && opts.mpStore && opts.snippetStore && opts.uiStateStore) {
     app.route('/api', buildResetRouter({ sm: sessionManager, configDir: opts.configDir ?? '', mcpStore: opts.mcpConfigStore, mpStore: opts.mpStore, snippetStore: opts.snippetStore, uiStateStore: opts.uiStateStore }))
+  }
+  if (opts.appPluginManager) {
+    app.route('/api/app-plugins', buildAppPluginRouter(opts.appPluginManager))
   }
 
   const clientDir = resolveClientDir(opts.clientDir)

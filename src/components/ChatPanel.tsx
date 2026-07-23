@@ -4,6 +4,7 @@
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
+import { PluginContributionSlot } from '../app-plugins/PluginContributionSlot'
 import { Chat } from './Chat'
 import { SideChatDrawer } from './SideChatDrawer'
 import { ContextMenu } from './ContextMenu'
@@ -786,6 +787,9 @@ export const ChatPanel = memo(function ChatPanel({
             )}
           </div>
         )}
+        {/* App Plugin `chat.header` action slot. Renders nothing when no
+            enabled plugin contributes an action here. */}
+        <PluginContributionSlot location="chat.header" session={session} />
       </div>
       <div className="chat-panel-body">
         {session.running || session.terminated ? (

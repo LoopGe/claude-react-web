@@ -1,0 +1,27 @@
+{
+  "manifestVersion": 1,
+  "id": "fixture.declarative",
+  "name": "Fixture: Declarative",
+  "description": "Framework-verification fixture. Static commands + a setting only; the command returns a notification. No Host API calls.",
+  "version": "1.0.0",
+  "publisher": "claude-react-web",
+  "license": "MIT",
+  "engines": { "claudeReactWeb": "^0.6.0", "node": ">=20" },
+  "runtime": { "service": "dist/service.mjs" },
+  "activationEvents": ["onCommand:fixture.declarative.ping"],
+  "permissions": [],
+  "contributes": {
+    "commands": [
+      { "id": "fixture.declarative.ping", "title": "Ping (fixture)", "category": "global", "showInPalette": true }
+    ],
+    "contextMenus": [],
+    "actions": [
+      { "id": "fixture.declarative.header", "location": "chat.header", "commandId": "fixture.declarative.ping", "title": "Ping" }
+    ],
+    "configuration": {
+      "properties": [
+        { "key": "fixture.declarative.label", "type": "string", "title": "Label", "default": "pong" }
+      ]
+    }
+  }
+}

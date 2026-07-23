@@ -5,6 +5,8 @@ import { App } from './App'
 import { ToastHost } from './components/ToastHost'
 import { ToastProvider } from './components/ToastProvider'
 import { WsHubProvider } from './hooks/useWsHub'
+import { PluginRegistryProvider } from './app-plugins/PluginRegistryProvider'
+import { PluginCommandResultHost } from './app-plugins/PluginCommandResultHost'
 import './styles.css'
 
 // WsHubProvider owns the single WebSocket connection shared by every
@@ -26,7 +28,11 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <MotionConfig reducedMotion="user">
       <ToastProvider>
         <WsHubProvider>
-          <App />
+          <PluginRegistryProvider>
+            <App />
+            {/* Global renderer for plugin Popover/Dialog command results. */}
+            <PluginCommandResultHost />
+          </PluginRegistryProvider>
         </WsHubProvider>
         <ToastHost />
       </ToastProvider>

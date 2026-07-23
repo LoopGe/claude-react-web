@@ -1,0 +1,22 @@
+{
+  "manifestVersion": 1,
+  "id": "fixture.service",
+  "name": "Fixture: Service",
+  "description": "Framework-verification fixture. Exercises activate/deactivate, storage, and a crash command. No business logic.",
+  "version": "1.0.0",
+  "publisher": "claude-react-web",
+  "license": "MIT",
+  "engines": { "claudeReactWeb": "^0.6.0", "node": ">=20" },
+  "runtime": { "service": "dist/service.mjs" },
+  "activationEvents": ["onCommand:fixture.service.store", "onCommand:fixture.service.crash"],
+  "permissions": ["storage"],
+  "contributes": {
+    "commands": [
+      { "id": "fixture.service.store", "title": "Storage round-trip (fixture)", "category": "global" },
+      { "id": "fixture.service.crash", "title": "Crash (fixture)", "category": "global" }
+    ],
+    "contextMenus": [],
+    "actions": [],
+    "configuration": { "properties": [] }
+  }
+}

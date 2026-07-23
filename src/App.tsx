@@ -22,6 +22,10 @@ import { registerSW } from './sw-register'
 import { useTheme } from './hooks/useTheme'
 import { useToast } from './hooks/useToast'
 import { useWsHub, useWsHubStatus } from './hooks/useWsHub'
+import { usePluginRegistry } from './app-plugins/PluginRegistryProvider'
+import { usePluginCommands } from './app-plugins/usePluginCommands'
+import { buildWhenContext, whenHolds } from './app-plugins/when'
+import type { PaletteItem } from './components/CommandPalette'
 import type { WsServerFrame } from './ws-types'
 import type { MessageSearchHit } from '../shared/search-results'
 import type { MessageJumpTarget } from '../shared/message-jump'
@@ -2344,6 +2348,40 @@ export function App() {
     return ordered
   }, [sessions, sidebarOrder, pendingDeleteIds])
 
+  // ── App Plugin command palette merge ───────────────────────────────
+  // Global, palette-visible plugin commands are merged into the Command
+  // Palette. A command's `when` is evaluated against the current context
+  // (active session + theme); non-matching commands are hidden.
+  const { plugins: appPlugins } = usePluginRegistry()
+  const { execute: executePluginCommand } = usePluginCommands()
+  const pluginPaletteCommands: PaletteItem[] = useMemo(() => {
+    const whenCtx = buildWhenContext({ sessionActive: orderedSessions.length > 0 })
+    const items: PaletteItem[] = []
+    for (const p of appPlugins) {
+      if (!p.enabled || !p.compatible) continue
+      for (const cmd of p.contributions.commands) {
+        if (cmd.showInPalette === false) continue
+        // Only global / no-category commands belong in the palette root.
+        if (cmd.category && cmd.category !== 'global') continue
+        if (!whenHolds(cmd.when, whenCtx)) continue
+        items.push({
+          id: `plugin:${p.id}:${cmd.id}`,
+          section: 'Commands',
+          label: cmd.title,
+          hint: p.name,
+          action: () => {
+            void executePluginCommand({
+              pluginId: p.id,
+              commandId: cmd.id,
+              context: { source: 'global', commandId: cmd.id, invokedAt: Date.now() },
+            })
+          },
+        })
+      }
+    }
+    return items
+  }, [appPlugins, orderedSessions.length, executePluginCommand])
+
   /** Retry group inheritance after UI state hydration or a later group change.
    * A clear/fork frame may beat the async groups load; keep the relationship
    * until it can be resolved instead of flashing the replacement under
@@ -3429,6 +3467,7 @@ export function App() {
           onClose={() => setPaletteOpen(false)}
           shortcuts={shortcuts}
           sessions={sessions}
+          pluginCommands={pluginPaletteCommands}
           onSelectMessage={handleSelectMessage}
           onSelectSession={(id) => {
             if (openIds.includes(id)) {
