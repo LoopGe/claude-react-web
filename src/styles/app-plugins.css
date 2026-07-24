@@ -132,6 +132,81 @@
 }
 .app-plugins-diag > div { margin-top: 2px; }
 
+/* ── Configuration editor ───────────────────────────────────────── */
+
+.app-plugins-config ul {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.app-plugins-config li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.app-plugins-config label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--fs-sm);
+}
+.app-plugins-config-label {
+  font-weight: 600;
+}
+.app-plugins-config .input {
+  width: 100%;
+}
+.app-plugins-config select.input {
+  width: auto;
+}
+.app-plugins-config-desc {
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+}
+
+/* ── Marketplace section ─────────────────────────────────────────── */
+
+.app-plugins-marketplace {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg-elev);
+  margin-bottom: 4px;
+}
+.app-plugins-marketplace h4 {
+  margin: 0 0 4px;
+  font-size: var(--fs-sm);
+}
+.app-plugins-installed-heading {
+  margin: 8px 0 4px;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+.app-plugins-mp-plugins {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.app-plugins-mp-plugin {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.app-plugins-mp-plugin strong {
+  font-size: var(--fs-sm);
+}
+
 /* ── Command result popover ─────────────────────────────────────── */
 
 .plugin-popover {

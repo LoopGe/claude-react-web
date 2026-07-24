@@ -9,12 +9,14 @@
 // All mutations go through REST; the WS snapshot in PluginRegistryProvider
 // keeps the list in sync across tabs without a manual refetch.
 
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { api, apiRequest } from '../hooks/useApi'
 import { usePluginRegistry } from '../app-plugins/PluginRegistryProvider'
+import { AppPluginMarketplaceSection } from './AppPluginMarketplaceSection'
 import type { AppPluginClientInfo } from '../../shared/app-plugins/runtime-state.js'
 import type { NormalisedPermission, AppPluginPermission, PermissionSpec } from '../../shared/app-plugins/permissions.js'
 import { ALL_PERMISSIONS } from '../../shared/app-plugins/permissions.js'
+import type { PluginConfigurationProperty } from '../../shared/app-plugins/contributions.js'
 
 export function AppPluginsTab() {
   const { plugins, refresh } = usePluginRegistry()
@@ -64,6 +66,9 @@ export function AppPluginsTab() {
         (Marketplace) add tools and servers to the agent — the two are separate.
       </p>
 
+      <AppPluginMarketplaceSection />
+
+      <h4 className="app-plugins-installed-heading">Installed</h4>
       <div className="app-plugins-install">
         <input
           className="input"
@@ -148,9 +153,91 @@ function PluginDetails({ plugin }: { plugin: AppPluginClientInfo }) {
         key={`${plugin.id}:${plugin.grantedPermissions.map((g) => g.permission).join(',')}`}
         plugin={plugin}
       />
+      {plugin.contributions.configuration.properties.length > 0 && (
+        <ConfigurationEditor key={`cfg:${plugin.id}`} plugin={plugin} />
+      )}
       <ContributionsSection plugin={plugin} />
     </div>
   )
+}
+
+function ConfigurationEditor({ plugin }: { plugin: AppPluginClientInfo }) {
+  const props = plugin.contributions.configuration.properties
+  const [values, setValues] = useState<Record<string, unknown>>({})
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Load current config (with defaults applied server-side) on mount.
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      try {
+        const res = await api.get<{ configuration: Record<string, unknown> }>(`/app-plugins/${encodeURIComponent(plugin.id)}/configuration`)
+        if (alive) setValues(res.configuration ?? {})
+      } catch (e) {
+        if (alive) setError((e as Error).message)
+      } finally {
+        if (alive) setLoading(false)
+      }
+    })()
+    return () => { alive = false }
+  }, [plugin.id])
+
+  const set = (key: string, v: unknown) => setValues((prev) => ({ ...prev, [key]: v }))
+
+  const save = async () => {
+    setSaving(true); setError(null)
+    try {
+      await api.put(`/app-plugins/${encodeURIComponent(plugin.id)}/configuration`, { values })
+    } catch (e) {
+      setError((e as Error).message)
+    } finally { setSaving(false) }
+  }
+
+  if (loading) return <div className="app-plugins-config"><h4>Settings</h4><p>Loading…</p></div>
+  return (
+    <div className="app-plugins-config">
+      <h4>Settings</h4>
+      {error && <div className="modal-error">{error}</div>}
+      <ul>
+        {props.map((prop) => (
+          <li key={prop.key}>
+            <label>
+              <span className="app-plugins-config-label">{prop.title}</span>
+              <ConfigInput prop={prop} value={values[prop.key]} onChange={(v) => set(prop.key, v)} />
+            </label>
+            {prop.description && <span className="app-plugins-config-desc">{prop.description}</span>}
+          </li>
+        ))}
+      </ul>
+      <button className="btn" disabled={saving} onClick={save}>Save settings</button>
+    </div>
+  )
+}
+
+function ConfigInput({ prop, value, onChange }: {
+  prop: PluginConfigurationProperty
+  value: unknown
+  onChange: (v: unknown) => void
+}) {
+  switch (prop.type) {
+    case 'boolean':
+      return <input type="checkbox" checked={!!value} onChange={(e) => onChange(e.target.checked)} />
+    case 'number':
+      return <input className="input" type="number" value={typeof value === 'number' ? value : ''} onChange={(e) => onChange(e.target.value === '' ? undefined : Number(e.target.value))} />
+    case 'enum':
+      return (
+        <select className="input" value={String(value ?? '')} onChange={(e) => onChange(e.target.value)}>
+          {(prop.enum ?? []).map((opt) => <option key={String(opt)} value={String(opt)}>{String(opt)}</option>)}
+        </select>
+      )
+    case 'array':
+      return <input className="input" type="text" value={Array.isArray(value) ? (value as string[]).join(', ') : ''} onChange={(e) => onChange(e.target.value.split(',').map((s) => s.trim()).filter(Boolean))} />
+    case 'string':
+    default:
+      return <input className="input" type="text" value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value)} />
+  }
 }
 
 function PermissionsSection({ plugin }: { plugin: AppPluginClientInfo }) {
@@ -215,14 +302,13 @@ function ContributionsSection({ plugin }: { plugin: AppPluginClientInfo }) {
   return (
     <div className="app-plugins-contribs">
       <h4>Contributions</h4>
-      {c.commands.length === 0 && c.contextMenus.length === 0 && c.actions.length === 0 && c.configuration.properties.length === 0 ? (
+      {c.commands.length === 0 && c.contextMenus.length === 0 && c.actions.length === 0 ? (
         <p>None.</p>
       ) : (
         <ul>
           {c.commands.map((cmd) => <li key={cmd.id}>command: <code>{cmd.id}</code> — {cmd.title}</li>)}
           {c.contextMenus.map((m) => <li key={m.id}>menu: <code>{m.id}</code> @ {m.location}</li>)}
           {c.actions.map((a) => <li key={a.id}>action: <code>{a.id}</code> @ {a.location}</li>)}
-          {c.configuration.properties.map((prop) => <li key={prop.key}>setting: <code>{prop.key}</code> ({prop.type})</li>)}
         </ul>
       )}
       {c.diagnostics.length > 0 && (

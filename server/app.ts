@@ -28,6 +28,8 @@ import type { UiStateStore } from './ui-state-store.js'
 import type { MpStore } from './mp-store.js'
 import type { AppPluginManager } from './app-plugins/app-plugin-manager.js'
 import { buildAppPluginRouter } from './app-plugins/routes.js'
+import type { AppPluginMarketplaceStore } from './app-plugins/marketplace-store.js'
+import { buildAppPluginMarketplaceRouter } from './app-plugins/marketplace-routes.js'
 
 const appLog = createLogger('app')
 
@@ -81,6 +83,10 @@ export interface AppOptions {
    *  mounted and the WS layer broadcasts app-plugin state frames. Optional
    *  so tests / standalone buildApp callers keep working without it. */
   appPluginManager?: AppPluginManager
+  /** App Plugin marketplace store. When provided alongside
+   *  `appPluginManager`, the /api/app-plugins/marketplaces/* routes are
+   *  mounted (add/refresh/remove GitHub marketplaces + install plugins). */
+  appPluginMarketplaceStore?: AppPluginMarketplaceStore
   /** Default values exposed via GET /api/config (used by the "new session" form).
    *  `claudeBinary` is NOT exposed to the UI — it's a server-side concern
    *  that gets injected into every Query via options.pathToClaudeCodeExecutable. */
@@ -249,6 +255,13 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
   }
   if (opts.mcpConfigStore && opts.mpStore && opts.snippetStore && opts.uiStateStore) {
     app.route('/api', buildResetRouter({ sm: sessionManager, configDir: opts.configDir ?? '', mcpStore: opts.mcpConfigStore, mpStore: opts.mpStore, snippetStore: opts.snippetStore, uiStateStore: opts.uiStateStore }))
+  }
+  if (opts.appPluginManager && opts.appPluginMarketplaceStore) {
+    // Mount the marketplace router BEFORE the generic /:id router — Hono
+    // matches the first registered route, so `GET /api/app-plugins/marketplaces`
+    // would otherwise be swallowed by `GET /:id` (id="marketplaces") in
+    // buildAppPluginRouter and 404 as an unknown plugin.
+    app.route('/api/app-plugins/marketplaces', buildAppPluginMarketplaceRouter(opts.appPluginMarketplaceStore, opts.appPluginManager))
   }
   if (opts.appPluginManager) {
     app.route('/api/app-plugins', buildAppPluginRouter(opts.appPluginManager))

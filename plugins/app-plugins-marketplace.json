@@ -1,0 +1,11 @@
+{
+  "name": "Claude React Web Plugins",
+  "appPlugins": [
+    {
+      "name": "translator",
+      "dir": "translator",
+      "description": "Select text in a message, right-click → Translate (LLM translation into a configurable target language).",
+      "version": "1.0.0"
+    }
+  ]
+}

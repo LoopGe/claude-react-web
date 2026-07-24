@@ -67,9 +67,14 @@ export interface AppPluginRecord {
   id: string
   installedVersion: string
   enabled: boolean
-  /** Install source. v1 supports only local-directory in-place reference
-   *  (no copy, no .crwp). The path is realpath-resolved at install. */
-  source: { type: 'local'; path: string; addedAt: number }
+  /** Install source. `local` = local-directory in-place reference (realpath-
+   *  resolved at install). `marketplace` = installed from a cloned App
+   *  Plugin marketplace; `path` is the plugin's subdir within the clone
+   *  (stable across `gitPull`, so revalidate picks up content changes),
+   *  and `marketplaceId`/`pluginName` link it back for updates/GC. */
+  source:
+    | { type: 'local'; path: string; addedAt: number }
+    | { type: 'marketplace'; marketplaceId: string; pluginName: string; path: string; addedAt: number }
   manifestHash: string
   /** Manifest as last validated. Re-validated on every load; a mismatch
    *  with the on-disk file transitions to `corrupted`. */
@@ -83,6 +88,12 @@ export interface AppPluginRecord {
    *  the crash-loop quarantine check. Trimmed to the window on each push. */
   crashTimestamps?: number[]
 }
+
+/** A plugin source without `addedAt` (used while building a record — the
+ *  install branches stamp `addedAt` per-branch). */
+export type PluginSourceBase =
+  | { type: 'local'; path: string }
+  | { type: 'marketplace'; marketplaceId: string; pluginName: string; path: string }
 
 // ── Client-facing info (WS snapshot / REST GET) ──────────────────────
 

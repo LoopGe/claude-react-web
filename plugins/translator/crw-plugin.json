@@ -1,0 +1,42 @@
+{
+  "$schema": "https://claude-react-web.dev/schemas/app-plugin-v1.json",
+  "manifestVersion": 1,
+  "id": "translator.claude-react-web",
+  "name": "Translate",
+  "description": "Select text in a message, right-click → Translate. Uses the host's LLM (ai.request) to translate into a configurable target language and shows the result in a popover. Caches translations per target language.",
+  "version": "1.0.0",
+  "publisher": "claude-react-web",
+  "license": "MIT",
+  "engines": { "claudeReactWeb": "^0.6.0", "pluginApi": "^1.0.0", "node": ">=20" },
+  "runtime": { "service": "dist/service.mjs" },
+  "activationEvents": ["onCommand:translator.claude-react-web.translate"],
+  "permissions": ["messages.selectedText", "ai.request", "storage"],
+  "contributes": {
+    "commands": [
+      { "id": "translator.claude-react-web.translate", "title": "Translate", "category": "message.selection", "icon": "translate" }
+    ],
+    "contextMenus": [
+      { "id": "translator.claude-react-web.menu", "location": "message.selectionContextMenu", "commandId": "translator.claude-react-web.translate", "title": "Translate", "when": "message.hasSelection == true" }
+    ],
+    "actions": [],
+    "configuration": {
+      "properties": [
+        {
+          "key": "translator.claude-react-web.target",
+          "type": "enum",
+          "title": "Target language",
+          "description": "Translate selected text into this language.",
+          "enum": ["zh-CN", "en", "ja", "ko", "fr", "de", "es", "ru", "ar", "pt"],
+          "default": "zh-CN"
+        },
+        {
+          "key": "translator.claude-react-web.cache",
+          "type": "boolean",
+          "title": "Cache translations",
+          "description": "Cache translations per text + target language to avoid repeat API calls.",
+          "default": true
+        }
+      ]
+    }
+  }
+}

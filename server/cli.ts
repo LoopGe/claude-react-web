@@ -24,6 +24,7 @@ import { SnippetStore } from './snippet-store.js'
 import { UiStateStore } from './ui-state-store.js'
 import { MpStore } from './mp-store.js'
 import { AppPluginStore } from './app-plugins/app-plugin-store.js'
+import { AppPluginMarketplaceStore } from './app-plugins/marketplace-store.js'
 import { AppPluginManager } from './app-plugins/app-plugin-manager.js'
 import { attachWebSocket } from './ws.js'
 import { checkForUpdates } from './update-checker.js'
@@ -351,6 +352,8 @@ async function main() {
   // Under --safe-mode the registry loads and static contributions register,
   // but no subprocess ever activates (honoured by Stage B2's runtime).
   const appPluginStore = new AppPluginStore({ stateDir })
+  const appPluginMarketplaceStore = new AppPluginMarketplaceStore({ stateDir })
+  await appPluginMarketplaceStore.load()
   const appPluginManager = new AppPluginManager({
     store: appPluginStore,
     stateDir,
@@ -359,6 +362,7 @@ async function main() {
     sm: sessionManager,
     safeMode: args.safeMode,
     disabled: args.disableAppPlugins,
+    marketplaceStore: appPluginMarketplaceStore,
   })
   await appPluginManager.initialize()
   if (args.disableAppPlugins) {
@@ -385,6 +389,7 @@ async function main() {
     uiStateStore,
     mpStore,
     appPluginManager: args.disableAppPlugins ? undefined : appPluginManager,
+    appPluginMarketplaceStore: args.disableAppPlugins ? undefined : appPluginMarketplaceStore,
     defaults: { cwd: args.cwd, model: args.model, claudeBinary },
     configDir: stateDir,
     bind: { host: args.host, port: args.port },
@@ -490,9 +495,14 @@ async function main() {
     }
     disableFileLogging()
     await uiStateStore.flush()
-    // App Plugins: flush the registry + tear down any subprocesses (Stage
-    // B2). Runs before sessionManager.shutdown() so a plugin mid-Host-call
-    // doesn't race the session pool teardown.
+    // App Plugins: flush the registry + marketplace store + tear down any
+    // subprocesses (Stage B2). Runs before sessionManager.shutdown() so a
+    // plugin mid-Host-call doesn't race the session pool teardown.
+    try {
+      await appPluginMarketplaceStore.flush()
+    } catch (err) {
+      log.error('app plugins marketplace flush error:', err)
+    }
     try {
       await appPluginManager.shutdown()
     } catch (err) {

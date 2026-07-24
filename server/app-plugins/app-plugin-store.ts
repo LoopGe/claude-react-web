@@ -105,7 +105,8 @@ function coerceRecord(raw: unknown, fallbackId: string): AppPluginRecord | null 
   const r = raw as Record<string, unknown>
   const id = typeof r.id === 'string' && r.id ? r.id : fallbackId
   const source = r.source as Record<string, unknown> | undefined
-  if (!source || source.type !== 'local' || typeof source.path !== 'string') return null
+  const sourceRecord = coerceSource(source)
+  if (!sourceRecord) return null
   const runtimeState = typeof r.runtimeState === 'string' ? (r.runtimeState as AppPluginRecord['runtimeState']) : 'disabled'
   // The registry file is hand-editable on disk, so grantedPermissions is
   // untrusted — a local attacker could inject hosts into a network.fetch
@@ -118,11 +119,7 @@ function coerceRecord(raw: unknown, fallbackId: string): AppPluginRecord | null 
     id,
     installedVersion: typeof r.installedVersion === 'string' ? r.installedVersion : '0.0.0',
     enabled: r.enabled === true,
-    source: {
-      type: 'local',
-      path: source.path,
-      addedAt: typeof source.addedAt === 'number' ? source.addedAt : 0,
-    },
+    source: sourceRecord,
     manifestHash: typeof r.manifestHash === 'string' ? r.manifestHash : '',
     manifest: r.manifest,
     grantedPermissions,
@@ -130,4 +127,24 @@ function coerceRecord(raw: unknown, fallbackId: string): AppPluginRecord | null 
     lastError: typeof r.lastError === 'string' ? r.lastError : undefined,
     crashTimestamps: Array.isArray(r.crashTimestamps) ? (r.crashTimestamps as number[]) : undefined,
   }
+}
+
+/** Coerce a raw `source` into a trusted record source. Accepts both `local`
+ *  and `marketplace` provenance; requires a valid `path` for both. The
+ *  registry file is hand-editable, so re-validate every field. */
+function coerceSource(source: Record<string, unknown> | undefined): AppPluginRecord['source'] | null {
+  if (!source || typeof source !== 'object') return null
+  const addedAt = typeof source.addedAt === 'number' ? source.addedAt : 0
+  if (source.type === 'local' && typeof source.path === 'string') {
+    return { type: 'local', path: source.path, addedAt }
+  }
+  if (
+    source.type === 'marketplace' &&
+    typeof source.path === 'string' &&
+    typeof source.marketplaceId === 'string' &&
+    typeof source.pluginName === 'string'
+  ) {
+    return { type: 'marketplace', marketplaceId: source.marketplaceId, pluginName: source.pluginName, path: source.path, addedAt }
+  }
+  return null
 }

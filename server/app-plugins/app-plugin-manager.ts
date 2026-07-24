@@ -20,11 +20,14 @@ import { AppPluginStore } from './app-plugin-store.js'
 import { ContributionRegistry } from './contribution-registry.js'
 import { AppPluginEventBus, type AppPluginBroadcaster } from './event-bus.js'
 import { loadManifest, resolvePluginDir } from './manifest-loader.js'
+import { AppPluginMarketplaceStore } from './marketplace-store.js'
+import { pluginDirInClone } from './marketplace-parser.js'
 import { PluginProcessManager } from './plugin-process-manager.js'
 import { ConfigurationStore } from './configuration-store.js'
 import { newInvocationId } from './rpc-peer.js'
 import { diffPermissions, normalisePermissions, type PermissionSpec } from '../../shared/app-plugins/permissions.js'
-import { canTransition, type AppPluginClientInfo, type AppPluginRecord, type PluginRuntimeState } from '../../shared/app-plugins/runtime-state.js'
+import { canTransition, type AppPluginClientInfo, type AppPluginRecord, type PluginRuntimeState, type PluginSourceBase } from '../../shared/app-plugins/runtime-state.js'
+import { isPathInside } from '../../shared/app-plugins/path-security.js'
 import type { PluginManifest } from '../../shared/app-plugins/manifest.js'
 import type { ResolvedPluginContributions } from '../../shared/app-plugins/contributions.js'
 import type { PluginCommandContext } from '../../shared/app-plugins/command-context.js'
@@ -49,12 +52,16 @@ export interface AppPluginManagerOptions {
   /** When true, the whole subsystem is off (CLI --disable-app-plugins):
    *  initialize is a no-op, list() is empty. */
   disabled?: boolean
+  /** Marketplace store — required to resolve `marketplace` install sources
+   *  (the plugin dir lives inside a cloned marketplace repo) and to find
+   *  plugins by marketplace on refresh/remove. Optional so tests/local-dir
+   *  use work without it. */
+  marketplaceStore?: AppPluginMarketplaceStore
 }
 
-export interface InstallSource {
-  type: 'local'
-  path: string
-}
+export type InstallSource =
+  | { type: 'local'; path: string }
+  | { type: 'marketplace'; marketplaceId: string; pluginName: string }
 
 export interface InstallResult {
   id: string
@@ -74,6 +81,7 @@ export class AppPluginManager implements AppPluginBroadcaster {
   private readonly safeMode: boolean
   readonly disabled: boolean
   private readonly sm: SessionManager
+  private readonly marketplaceStore?: AppPluginMarketplaceStore
   private readonly contributions = new ContributionRegistry()
   private readonly bus = new AppPluginEventBus()
   private readonly pm: PluginProcessManager
@@ -93,6 +101,7 @@ export class AppPluginManager implements AppPluginBroadcaster {
     this.safeMode = !!opts.safeMode
     this.disabled = !!opts.disabled
     this.sm = opts.sm
+    this.marketplaceStore = opts.marketplaceStore
     this.pm = new PluginProcessManager({
       stateDir: this.stateDir,
       sm: opts.sm,
@@ -180,6 +189,21 @@ export class AppPluginManager implements AppPluginBroadcaster {
     // only mutate if the manifest actually changed.
     const wasBad = record.runtimeState === 'incompatible' || record.runtimeState === 'corrupted'
     if (!manifestChanged && !pathChanged && !wasBad) return record
+
+    // If the manifest changed (e.g. a marketplace `gitPull` pulled a new
+    // version), diff permissions: an escalation → permission-required so the
+    // plugin doesn't re-activate with new code that needs capabilities the
+    // user hasn't consented to. Mirrors the install update path.
+    if (manifestChanged && record.enabled) {
+      const diff = diffPermissions(record.grantedPermissions, validation.permissions)
+      if (diff.isEscalation) {
+        return this.transition(
+          { ...record, manifest, manifestHash: hash, source: { ...record.source, path: dir } },
+          'permission-required',
+          'new version requires additional permissions',
+        )
+      }
+    }
     return this.transition(
       { ...record, manifest, manifestHash: hash, source: { ...record.source, path: dir } },
       record.enabled ? 'inactive' : 'disabled',
@@ -218,8 +242,11 @@ export class AppPluginManager implements AppPluginBroadcaster {
 
   async install(source: InstallSource): Promise<InstallResult> {
     this.guardEnabled()
-    if (source.type !== 'local') throw new HttpError(400, 'only local-directory install is supported in v1')
-    const dir = await resolvePluginDir(source.path)
+    // Resolve the on-disk plugin dir + the source record (without addedAt;
+    // addedAt is filled per-branch below). `local` realpath-resolves a path
+    // the caller supplied; `marketplace` looks up the cloned marketplace +
+    // resolves the plugin's subdir within it.
+    const { dir, sourceBase } = await this.resolveInstallSource(source)
     const { manifest, hash, validation } = await loadManifest(dir, {
       hostVersion: this.hostVersion,
       hostNodeMajor: this.hostNodeMajor,
@@ -233,7 +260,7 @@ export class AppPluginManager implements AppPluginBroadcaster {
       // bump, or the user re-ran install). Refresh the manifest/path WITHOUT
       // resetting enabled state or granted permissions — falling through to
       // the fresh-install path would silently disable the plugin and wipe
-      // consent decisions.
+      // consent decisions. Preserve the existing source's provenance/type.
       const refreshed = await this.revalidateRecord({
         ...existing,
         source: { ...existing.source, path: dir },
@@ -251,12 +278,12 @@ export class AppPluginManager implements AppPluginBroadcaster {
       // Update path: diff permissions. Escalation → permission-required,
       // new version NOT enabled. Route through transition() so the state
       // machine (and B2's deactivate-before-permission-required) stays the
-      // single authority on runtimeState.
+      // single authority on runtimeState. Preserve source provenance.
       const diff = diffPermissions(existing.grantedPermissions, validation.permissions)
       const base: AppPluginRecord = {
         ...existing,
         installedVersion: manifest.version,
-        source: { type: 'local', path: dir, addedAt: existing.source.addedAt },
+        source: { ...sourceBase, addedAt: existing.source.addedAt },
         manifest,
         manifestHash: hash,
       }
@@ -278,7 +305,7 @@ export class AppPluginManager implements AppPluginBroadcaster {
       id: manifest.id,
       installedVersion: manifest.version,
       enabled: false,
-      source: { type: 'local', path: dir, addedAt: now },
+      source: { ...sourceBase, addedAt: now },
       manifestHash: hash,
       manifest,
       grantedPermissions: validation.permissions,
@@ -290,6 +317,58 @@ export class AppPluginManager implements AppPluginBroadcaster {
     this.broadcastChanged(record)
     log.info(`installed ${manifest.id}@${manifest.version} from ${dir}`)
     return { id: manifest.id, version: manifest.version, permissionRequired: false }
+  }
+
+  /** Resolve an InstallSource to the on-disk plugin dir + a source record
+   *  (without `addedAt`, which the install branches fill). */
+  private async resolveInstallSource(source: InstallSource): Promise<{ dir: string; sourceBase: PluginSourceBase }> {
+    if (source.type === 'local') {
+      const dir = await resolvePluginDir(source.path)
+      return { dir, sourceBase: { type: 'local', path: dir } }
+    }
+    // marketplace
+    if (!this.marketplaceStore) throw new HttpError(400, 'marketplace install is not available (no marketplace store)')
+    const mp = this.marketplaceStore.get(source.marketplaceId)
+    if (!mp) throw new HttpError(404, `marketplace not found: ${source.marketplaceId}`)
+    const entry = mp.manifest.plugins.find((p) => p.name === source.pluginName)
+    if (!entry) throw new HttpError(404, `plugin '${source.pluginName}' not found in marketplace '${source.marketplaceId}'`)
+    const dir = await resolvePluginDir(pluginDirInClone(mp.cloneDir, entry.dir))
+    // Defense against symlink escape: the marketplace clone is untrusted
+    // (arbitrary GitHub repo, and git commits symlinks), so a plugin subdir
+    // could be a symlink pointing outside the clone. resolvePluginDir
+    // realpaths the target but doesn't re-check containment — do it here so
+    // the plugin's manifest/code can't be loaded from an unintended path.
+    const cloneReal = await fs.realpath(mp.cloneDir).catch(() => mp.cloneDir)
+    if (!isPathInside(dir, cloneReal, { isWindows: this.isWindows })) {
+      throw new HttpError(400, `marketplace plugin '${source.pluginName}' dir escapes the clone`)
+    }
+    return {
+      dir,
+      sourceBase: { type: 'marketplace', marketplaceId: source.marketplaceId, pluginName: source.pluginName, path: dir },
+    }
+  }
+
+  /** Re-validate a single plugin's manifest from disk + broadcast. Used by
+   *  the marketplace refresh path (after a `gitPull` pulls new content into
+   *  the clone, each installed plugin from that marketplace is re-validated
+   *  so version/permission changes surface). */
+  async revalidatePlugin(id: string): Promise<AppPluginClientInfo | undefined> {
+    this.guardEnabled()
+    const record = this.requireRecord(id)
+    const r = await this.revalidateRecord(record)
+    if (r !== record) {
+      this.store.upsert(r)
+      await this.store.flush()
+      this.maybeRegisterContributions(r)
+    }
+    this.refreshSnapshot()
+    this.broadcastChanged(r)
+    return this.toClientInfo(r)
+  }
+
+  /** List records installed from a given marketplace (for refresh/remove). */
+  recordsForMarketplace(marketplaceId: string): AppPluginRecord[] {
+    return this.store.list().filter((r) => r.source.type === 'marketplace' && r.source.marketplaceId === marketplaceId)
   }
 
   async enable(id: string): Promise<void> {
