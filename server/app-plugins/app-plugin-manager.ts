@@ -192,9 +192,12 @@ export class AppPluginManager implements AppPluginBroadcaster {
 
     // If the manifest changed (e.g. a marketplace `gitPull` pulled a new
     // version), diff permissions: an escalation → permission-required so the
-    // plugin doesn't re-activate with new code that needs capabilities the
-    // user hasn't consented to. Mirrors the install update path.
-    if (manifestChanged && record.enabled) {
+    // plugin doesn't (re-)activate with new code that needs capabilities the
+    // user hasn't consented to. Checked regardless of `enabled` — a disabled
+    // plugin that absorbed an escalated manifest during refresh must still
+    // gate enable() on re-consent (canTransition disabled→permission-required
+    // is legal). Mirrors the install update path.
+    if (manifestChanged) {
       const diff = diffPermissions(record.grantedPermissions, validation.permissions)
       if (diff.isEscalation) {
         return this.transition(

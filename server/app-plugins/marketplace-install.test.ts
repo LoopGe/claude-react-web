@@ -125,4 +125,23 @@ describe('AppPluginManager — marketplace install', () => {
     expect(info?.runtimeState).toBe('permission-required')
     expect(info?.permissionRequired).toBe(true)
   })
+
+  it('escalation gates a disabled plugin on enable (not just enabled ones)', async () => {
+    // Install but DON'T enable. A marketplace refresh lands a version with an
+    // added permission. The plugin goes permission-required; enable() must
+    // refuse until the user re-consents.
+    await manager.install({ type: 'marketplace', marketplaceId: 'test-mp', pluginName: 'translator' })
+    const pluginDir = join(cloneDir, 'translator')
+    writeFileSync(join(pluginDir, 'crw-plugin.json'), JSON.stringify({
+      manifestVersion: 1, id: 'translator.claude-react-web', name: 'translator', version: '1.1.0',
+      engines: { claudeReactWeb: '^0.6.0', node: '>=20' },
+      runtime: { service: 'dist/service.mjs' },
+      permissions: ['storage', 'ai.request'],
+      contributes: { commands: [], contextMenus: [], actions: [], configuration: { properties: [] } },
+    }))
+    const info = await manager.revalidatePlugin('translator.claude-react-web')
+    expect(info?.runtimeState).toBe('permission-required')
+    // enable() must refuse (re-consent required).
+    await expect(manager.enable('translator.claude-react-web')).rejects.toThrow(/re-consent|permission/i)
+  })
 })

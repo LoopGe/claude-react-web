@@ -225,7 +225,9 @@ function ConfigInput({ prop, value, onChange }: {
     case 'boolean':
       return <input type="checkbox" checked={!!value} onChange={(e) => onChange(e.target.checked)} />
     case 'number':
-      return <input className="input" type="number" value={typeof value === 'number' ? value : ''} onChange={(e) => onChange(e.target.value === '' ? undefined : Number(e.target.value))} />
+      // Empty → null (not undefined, which JSON.stringify drops) so the server
+      // sees the key and clears the stored value → next read applies the default.
+      return <input className="input" type="number" value={typeof value === 'number' ? value : ''} onChange={(e) => onChange(e.target.value === '' ? null : Number(e.target.value))} />
     case 'enum':
       return (
         <select className="input" value={String(value ?? '')} onChange={(e) => onChange(e.target.value)}>

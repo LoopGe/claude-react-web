@@ -73,7 +73,14 @@ export class ConfigurationStore {
         errors.push(verr.message)
         continue
       }
-      next[key] = value
+      // null/undefined → clear the stored key so the next read applies the
+      // declared default (applyConfigDefaults defaults only on missing keys,
+      // not on stored null). This is how a user "clears" a field to revert it.
+      if (value === null || value === undefined) {
+        delete next[key]
+      } else {
+        next[key] = value
+      }
     }
     if (errors.length > 0) return errors
     this.cache = next

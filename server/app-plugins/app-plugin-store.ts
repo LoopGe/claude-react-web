@@ -107,7 +107,13 @@ function coerceRecord(raw: unknown, fallbackId: string): AppPluginRecord | null 
   const source = r.source as Record<string, unknown> | undefined
   const sourceRecord = coerceSource(source)
   if (!sourceRecord) return null
-  const runtimeState = typeof r.runtimeState === 'string' ? (r.runtimeState as AppPluginRecord['runtimeState']) : 'disabled'
+  // runtimeState is hand-editable on disk — validate against the known set so
+  // an unknown value doesn't crash initialize() inside canTransition() (which
+  // indexes the allowed-transition map and would throw on an unknown state).
+  const KNOWN_STATES = new Set(['disabled', 'inactive', 'activating', 'active', 'deactivating', 'crashed', 'quarantined', 'incompatible', 'permission-required', 'corrupted'])
+  const runtimeState = (typeof r.runtimeState === 'string' && KNOWN_STATES.has(r.runtimeState)
+    ? r.runtimeState
+    : 'disabled') as AppPluginRecord['runtimeState']
   // The registry file is hand-editable on disk, so grantedPermissions is
   // untrusted — a local attacker could inject hosts into a network.fetch
   // grant. Re-normalise (drops unknown permissions + cleans host lists)
