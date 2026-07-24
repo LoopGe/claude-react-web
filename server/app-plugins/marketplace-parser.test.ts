@@ -1,8 +1,11 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve as resolvePath } from 'node:path'
 import { tmpdir } from 'node:os'
 import { parseAppPluginMarketplace, pluginDirInClone } from './marketplace-parser.js'
+
+// The real marketplace dir shipped in the repo (plugins/).
+const PLUGINS_DIR = resolvePath(__dirname, '..', '..', 'plugins')
 
 function writePlugin(dir: string, id: string) {
   mkdirSync(dir, { recursive: true })
@@ -65,5 +68,14 @@ describe('parseAppPluginMarketplace', () => {
 
   it('pluginDirInClone resolves a contained dir under the root', () => {
     expect(pluginDirInClone(root, 'translator')).toBe(join(root, 'translator'))
+  })
+})
+
+describe('parseAppPluginMarketplace — real plugins/ dir', () => {
+  it('lists the translator from the shipped marketplace catalog', async () => {
+    const res = await parseAppPluginMarketplace(PLUGINS_DIR)
+    const translator = res.plugins.find((p) => p.name === 'translator')
+    expect(translator).toBeDefined()
+    expect(translator?.dir).toBe('translator')
   })
 })
