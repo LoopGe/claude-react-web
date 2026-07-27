@@ -1,5 +1,8 @@
 node_modules/
-dist/
+# Root build output only. Nested dist/ dirs (plugins/, fixtures/) contain
+# pre-built plugin source that MUST be committed — don't ignore them.
+/dist/
+/packages/*/dist/
 .vite/
 coverage/
 *.log
