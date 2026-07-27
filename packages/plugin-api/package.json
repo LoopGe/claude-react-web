@@ -1,0 +1,22 @@
+{
+  "name": "@claude-react-web/plugin-api",
+  "version": "1.0.0",
+  "description": "SDK for authoring claude-react-web App Plugins. Wraps the JSON-RPC child-process protocol so plugin authors write activate/executeCommand handlers, not stdio framing.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "license": "MIT",
+  "publishConfig": { "access": "public" }
+}

@@ -5,7 +5,7 @@ export default defineConfig({
     // Server tests run in Node; client hook tests run in jsdom.
     // Use workspace-style overrides so both share one `vitest run`.
     environment: 'node',
-    include: ['server/**/*.test.ts', 'src/**/*.test.{ts,tsx}', 'shared/**/*.test.ts', 'plugins/**/*.test.ts'],
+    include: ['server/**/*.test.ts', 'src/**/*.test.{ts,tsx}', 'shared/**/*.test.ts', 'plugins/**/*.test.ts', 'packages/**/*.test.ts'],
     // SessionStore tests touch real fs; serialise to avoid tmp dir races.
     pool: 'forks',
     // `forks` spawns one Node process per test file. With ~70 files and the
