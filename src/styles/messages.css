@@ -760,6 +760,12 @@
   border-bottom: 1px solid var(--border);
   padding: 0 16px;
   gap: 0;
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  scrollbar-width: none;
+}
+.global-settings-tabs::-webkit-scrollbar {
+  display: none;
 }
 .global-settings-tab {
   background: none;
@@ -771,6 +777,8 @@
   font-weight: 500;
   color: var(--fg-muted);
   cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
   transition:
     color var(--motion-duration-fast) var(--motion-ease-standard),
     border-color var(--motion-duration-fast) var(--motion-ease-standard);
