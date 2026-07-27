@@ -113,4 +113,18 @@ describe('App Plugins — fixture integration (Stage D)', () => {
       expect((cmd.content as { text: string }).text).toBe('pong')
     }
   })
+
+  it('fixture.nyan: declarative status indicator override', async () => {
+    const dir = join(FIXTURES, 'fixture.nyan')
+    await manager.install({ type: 'local', path: dir })
+    await manager.enable('fixture.nyan')
+
+    const info = manager.get('fixture.nyan')!
+    expect(info.contributions.statusIndicators).toHaveLength(1)
+    expect(info.contributions.statusIndicators[0]).toMatchObject({
+      id: 'fixture.nyan.working',
+      asset: 'assets/nyan.svg',
+      when: 'session.working == true',
+    })
+  })
 })

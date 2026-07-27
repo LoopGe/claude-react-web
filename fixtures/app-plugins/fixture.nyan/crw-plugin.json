@@ -1,0 +1,22 @@
+{
+  "manifestVersion": 1,
+  "id": "fixture.nyan",
+  "name": "Fixture: Nyan Status",
+  "description": "Framework-verification fixture. Replaces the working indicator with an animated SVG when the session is working.",
+  "version": "1.0.0",
+  "publisher": "claude-react-web",
+  "license": "MIT",
+  "engines": { "claudeReactWeb": "^0.6.0", "node": ">=20" },
+  "runtime": { "service": "dist/service.mjs" },
+  "activationEvents": [],
+  "permissions": [],
+  "contributes": {
+    "commands": [],
+    "contextMenus": [],
+    "actions": [],
+    "configuration": { "properties": [] },
+    "statusIndicators": [
+      { "id": "fixture.nyan.working", "asset": "assets/nyan.svg", "when": "session.working == true" }
+    ]
+  }
+}

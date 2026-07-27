@@ -16,6 +16,7 @@ import type {
   PluginConfigurationProperty,
   PluginContextMenuContribution,
   PluginContributions,
+  PluginStatusIndicatorContribution,
   ResolvedPluginContributions,
 } from './contributions.js'
 import { validatePluginId, satisfiesRange, utf8ByteLength, LIMITS } from './validation.js'
@@ -144,6 +145,7 @@ export function validateManifest(raw: unknown, opts: ValidateManifestOptions): M
     const contribResult = resolvePluginContributions(
       typeof m.id === 'string' ? m.id : '',
       (contributes ?? {}) as PluginContributions,
+      isWin,
     )
     for (const d of contribResult.diagnostics) warnings.push(d)
     return { ok: false, errors, warnings, permissions, contributions: packageContributions(contribResult) }
@@ -153,6 +155,7 @@ export function validateManifest(raw: unknown, opts: ValidateManifestOptions): M
   const contribResult = resolvePluginContributions(
     typeof m.id === 'string' ? m.id : '',
     contributes as PluginContributions,
+    isWin,
   )
   for (const d of contribResult.diagnostics) warnings.push(d)
 
@@ -171,6 +174,7 @@ function packageContributions(c: ContributionResolution): ResolvedPluginContribu
     contextMenus: c.contextMenus,
     actions: c.actions,
     configuration: c.configuration,
+    statusIndicators: c.statusIndicators,
     diagnostics: c.diagnostics,
   }
 }
@@ -182,14 +186,16 @@ interface ContributionResolution {
   contextMenus: PluginContextMenuContribution[]
   actions: PluginActionContribution[]
   configuration: { properties: PluginConfigurationProperty[] }
+  statusIndicators: PluginStatusIndicatorContribution[]
   diagnostics: string[]
 }
 
-export function resolvePluginContributions(pluginId: string, c: PluginContributions): ContributionResolution {
+export function resolvePluginContributions(pluginId: string, c: PluginContributions, isWin = false): ContributionResolution {
   const diagnostics: string[] = []
   const commands: PluginCommandContribution[] = []
   const contextMenus: PluginContextMenuContribution[] = []
   const actions: PluginActionContribution[] = []
+  const statusIndicators: PluginStatusIndicatorContribution[] = []
 
   const seenIds = new Set<string>()
   const requirePrefix = (id: string, kind: string): boolean => {
@@ -277,5 +283,21 @@ export function resolvePluginContributions(pluginId: string, c: PluginContributi
     })
   }
 
-  return { commands, contextMenus, actions, configuration: { properties: configurationProps }, diagnostics }
+  // Status indicators (declarative UI override — image + when).
+  for (const ind of c.statusIndicators ?? []) {
+    if (!requirePrefix(ind.id, 'statusIndicator')) continue
+    if (typeof ind.asset !== 'string' || ind.asset.length === 0) {
+      diagnostics.push(`statusIndicator '${ind.id}' asset is required`)
+      continue
+    }
+    const aErr = validateRelativePath(ind.asset, { isWindows: isWin })
+    if (aErr) {
+      diagnostics.push(`statusIndicator '${ind.id}' asset: ${aErr}`)
+      continue
+    }
+    if (!checkWhen(ind.when, `statusIndicator '${ind.id}'`)) continue
+    statusIndicators.push(ind)
+  }
+
+  return { commands, contextMenus, actions, configuration: { properties: configurationProps }, statusIndicators, diagnostics }
 }

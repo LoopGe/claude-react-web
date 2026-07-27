@@ -243,6 +243,13 @@ export class AppPluginManager implements AppPluginBroadcaster {
     return r ? this.toClientInfo(r) : undefined
   }
 
+  /** Raw record (server-internal — used by the asset route to resolve the
+   *  plugin's install dir). */
+  getRecord(id: string): AppPluginRecord | undefined {
+    if (this.disabled) return undefined
+    return this.store.get(id)
+  }
+
   async install(source: InstallSource): Promise<InstallResult> {
     this.guardEnabled()
     // Resolve the on-disk plugin dir + the source record (without addedAt;
@@ -731,5 +738,5 @@ function normaliseFromManifest(m: PluginManifest): AppPluginClientInfo['declared
 }
 
 function emptyContributions(): ResolvedPluginContributions {
-  return { commands: [], contextMenus: [], actions: [], configuration: { properties: [] }, diagnostics: [] }
+  return { commands: [], contextMenus: [], actions: [], configuration: { properties: [] }, statusIndicators: [], diagnostics: [] }
 }

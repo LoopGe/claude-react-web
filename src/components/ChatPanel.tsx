@@ -5,6 +5,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { PluginContributionSlot } from '../app-plugins/PluginContributionSlot'
+import { PluginStatusIndicator } from '../app-plugins/PluginStatusIndicator'
 import { Chat } from './Chat'
 import { SideChatDrawer } from './SideChatDrawer'
 import { ContextMenu } from './ContextMenu'
@@ -778,12 +779,14 @@ export const ChatPanel = memo(function ChatPanel({
               </span>
             </Tooltip>
             {session.working && (
-              <Tooltip label="Assistant is working on a turn" placement="bottom">
-                <span className="chat-panel-working-indicator">
-                  <span className="chat-panel-working-dot" aria-hidden />
-                  working...
-                </span>
-              </Tooltip>
+              <PluginStatusIndicator sessionWorking={true}>
+                <Tooltip label="Assistant is working on a turn" placement="bottom">
+                  <span className="chat-panel-working-indicator">
+                    <span className="chat-panel-working-dot" aria-hidden />
+                    working...
+                  </span>
+                </Tooltip>
+              </PluginStatusIndicator>
             )}
           </div>
         )}

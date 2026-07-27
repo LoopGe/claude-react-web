@@ -6,10 +6,21 @@
 // management + command-invocation surface.
 
 import { Hono } from 'hono'
+import { promises as fs } from 'node:fs'
+import { resolve as resolvePath, extname } from 'node:path'
 import { HttpError, createErrorHandler } from '../errors.js'
 import { safeJson } from '../routes/index.js'
+import { validateRelativePath, isPathInside } from '../../shared/app-plugins/path-security.js'
 import type { AppPluginManager } from './app-plugin-manager.js'
 import type { InstallSource } from './app-plugin-manager.js'
+
+const ASSET_MAX_BYTES = 1024 * 1024 // 1 MB
+const ASSET_MIMES: Record<string, string> = {
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+}
 
 export function buildAppPluginRouter(manager: AppPluginManager): Hono {
   const app = new Hono()
@@ -89,6 +100,38 @@ export function buildAppPluginRouter(manager: AppPluginManager): Hono {
       context: body.context as never,
     })
     return c.json({ result })
+  })
+
+  // Static asset serving for plugin-supplied images (status indicators, etc.).
+  // Path-containment-checked: the asset must be inside the plugin's install dir.
+  app.get('/:id/assets/*', async (c) => {
+    const id = c.req.param('id')
+    const info = manager.get(id)
+    if (!info) throw new HttpError(404, 'app plugin not found')
+    // The plugin's install dir is record.source.path (the manager stores it).
+    const record = manager.getRecord(id)
+    if (!record) throw new HttpError(404, 'app plugin record not found')
+    const pluginDir = record.source.path
+    // Extract the asset path from the URL (everything after /assets/).
+    const assetPath = c.req.path.replace(/^\/[^/]+\/assets\//, '')
+    if (!assetPath) throw new HttpError(400, 'asset path is required')
+    const pErr = validateRelativePath(assetPath, { isWindows: process.platform === 'win32' })
+    if (pErr) throw new HttpError(400, `invalid asset path: ${pErr}`)
+    const ext = extname(assetPath).toLowerCase()
+    const mime = ASSET_MIMES[ext]
+    if (!mime) throw new HttpError(400, `unsupported asset type: ${ext || '(none)'}`)
+    const target = resolvePath(pluginDir, assetPath)
+    // realpath both sides + containment check (symlink escape defense).
+    const realTarget = await fs.realpath(target).catch(() => { throw new HttpError(404, 'asset not found') })
+    const realPluginDir = await fs.realpath(pluginDir).catch(() => pluginDir)
+    if (!isPathInside(realTarget, realPluginDir, { isWindows: process.platform === 'win32' })) {
+      throw new HttpError(400, 'asset path escapes the plugin directory')
+    }
+    const stat = await fs.stat(realTarget).catch(() => { throw new HttpError(404, 'asset not found') })
+    if (!stat.isFile()) throw new HttpError(400, 'asset is not a file')
+    if (stat.size > ASSET_MAX_BYTES) throw new HttpError(413, `asset exceeds ${ASSET_MAX_BYTES} bytes`)
+    const body = await fs.readFile(realTarget)
+    return c.body(body, 200, { 'Content-Type': mime, 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' })
   })
 
   return app

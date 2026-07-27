@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="20" viewBox="0 0 48 20">
+  <!-- A simple animated rainbow spinner as a stand-in for Nyan Cat. -->
+  <style>
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    .spinner { transform-origin: 10px 10px; animation: spin 0.8s linear infinite; }
+  </style>
+  <g class="spinner">
+    <circle cx="10" cy="10" r="7" fill="none" stroke="#e74c3c" stroke-width="2.5" stroke-dasharray="11 33" />
+    <circle cx="10" cy="10" r="7" fill="none" stroke="#f39c12" stroke-width="2.5" stroke-dasharray="11 33" stroke-dashoffset="-11" />
+    <circle cx="10" cy="10" r="7" fill="none" stroke="#2ecc71" stroke-width="2.5" stroke-dasharray="11 33" stroke-dashoffset="-22" />
+  </g>
+  <text x="24" y="14" font-size="9" fill="#888" font-family="sans-serif">nyan~</text>
+</svg>

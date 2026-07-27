@@ -142,4 +142,54 @@ describe('validateManifest — contribution diagnostics (warnings, not errors)',
     expect(r.ok).toBe(true)
     expect(r.warnings.join()).toMatch(/configuration key must be prefixed/)
   })
+
+  it('resolves valid statusIndicators', () => {
+    const r = validateManifest({
+      ...base,
+      contributes: {
+        ...base.contributes,
+        statusIndicators: [{ id: 'com.example.plugin.working', asset: 'assets/nyan.svg', when: 'session.working == true' }],
+      },
+    }, opts)
+    expect(r.ok).toBe(true)
+    expect(r.contributions?.statusIndicators).toHaveLength(1)
+    expect(r.contributions?.statusIndicators[0].asset).toBe('assets/nyan.svg')
+  })
+
+  it('flags statusIndicator with bad asset path', () => {
+    const r = validateManifest({
+      ...base,
+      contributes: {
+        ...base.contributes,
+        statusIndicators: [{ id: 'com.example.plugin.working', asset: '../../../etc/passwd' }],
+      },
+    }, opts)
+    expect(r.ok).toBe(true)
+    expect(r.warnings.join()).toMatch(/asset/)
+    expect(r.contributions?.statusIndicators).toHaveLength(0)
+  })
+
+  it('flags statusIndicator with id not prefixed', () => {
+    const r = validateManifest({
+      ...base,
+      contributes: {
+        ...base.contributes,
+        statusIndicators: [{ id: 'other.working', asset: 'assets/x.svg' }],
+      },
+    }, opts)
+    expect(r.ok).toBe(true)
+    expect(r.warnings.join()).toMatch(/must be prefixed/)
+  })
+
+  it('flags statusIndicator with malformed when', () => {
+    const r = validateManifest({
+      ...base,
+      contributes: {
+        ...base.contributes,
+        statusIndicators: [{ id: 'com.example.plugin.working', asset: 'assets/x.svg', when: 'a || b' }],
+      },
+    }, opts)
+    expect(r.ok).toBe(true)
+    expect(r.warnings.join()).toMatch(/malformed 'when'/)
+  })
 })

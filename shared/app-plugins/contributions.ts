@@ -103,6 +103,26 @@ export interface PluginConfigurationContribution {
   properties: PluginConfigurationProperty[]
 }
 
+// ── Status indicator override ────────────────────────────────────────
+//
+// A declarative UI override: the plugin provides an image (GIF/SVG/PNG)
+// that the host renders INSTEAD OF the default "working..." indicator when
+// the `when` clause holds. The image is served via
+// GET /api/app-plugins/:id/assets/<asset>. No iframe, no subprocess —
+// pure declarative replacement. This is the first substitutive (vs
+// additive) contribution point.
+
+export interface PluginStatusIndicatorContribution {
+  /** `<pluginId>.<name>` — must be prefixed by the plugin id. */
+  id: string
+  /** Relative path to the image under the plugin dir (GIF/SVG/PNG/WEBP).
+   *  Validated via validateRelativePath (no .. / absolute / symlink). */
+  asset: string
+  /** When clause, e.g. "session.working == true". */
+  when?: string
+  order?: number
+}
+
 // ── Aggregate ────────────────────────────────────────────────────────
 
 export interface PluginContributions {
@@ -110,6 +130,7 @@ export interface PluginContributions {
   contextMenus?: PluginContextMenuContribution[]
   actions?: PluginActionContribution[]
   configuration?: PluginConfigurationContribution
+  statusIndicators?: PluginStatusIndicatorContribution[]
 }
 
 /** A plugin's contributions after manifest validation, with `when` clauses
@@ -120,6 +141,7 @@ export interface ResolvedPluginContributions {
   contextMenus: PluginContextMenuContribution[]
   actions: PluginActionContribution[]
   configuration: PluginConfigurationContribution
+  statusIndicators: PluginStatusIndicatorContribution[]
   /** Contribution-level diagnostics (unknown location, duplicate id, etc.)
    *  that did not block registration. Surfaced in the management UI. */
   diagnostics: string[]
@@ -133,6 +155,7 @@ export type WhenContextKey =
   | 'plugin.enabled'
   | 'workspace.trusted'
   | 'session.active'
+  | 'session.working'
   | 'session.provider'
   | 'message.hasSelection'
   | 'message.selectionLength'

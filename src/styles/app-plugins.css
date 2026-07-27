@@ -310,3 +310,13 @@
   font-size: var(--fs-xs);
   padding: 2px 8px;
 }
+
+/* ── Status indicator override ───────────────────────────────────── */
+
+.plugin-status-indicator {
+  height: 20px;
+  width: auto;
+  vertical-align: middle;
+  border-radius: 4px;
+  display: inline-block;
+}

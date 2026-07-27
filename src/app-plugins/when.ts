@@ -11,6 +11,7 @@ import type { PluginCommandContribution, PluginContextMenuContribution, PluginAc
 export interface WhenContextInput {
   theme?: 'dark' | 'light'
   sessionActive?: boolean
+  sessionWorking?: boolean
   sessionProvider?: string
   workspaceTrusted?: boolean
   messageHasSelection?: boolean
@@ -27,6 +28,7 @@ export function buildWhenContext(input: WhenContextInput): WhenContext {
   const ctx: WhenContext = {}
   if (input.theme != null) ctx['theme'] = input.theme
   if (input.sessionActive != null) ctx['session.active'] = input.sessionActive
+  if (input.sessionWorking != null) ctx['session.working'] = input.sessionWorking
   if (input.sessionProvider != null) ctx['session.provider'] = input.sessionProvider
   if (input.workspaceTrusted != null) ctx['workspace.trusted'] = input.workspaceTrusted
   if (input.messageHasSelection != null) ctx['message.hasSelection'] = input.messageHasSelection
