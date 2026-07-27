@@ -108,12 +108,16 @@ export function buildAppPluginRouter(manager: AppPluginManager): Hono {
     const id = c.req.param('id')
     const info = manager.get(id)
     if (!info) throw new HttpError(404, 'app plugin not found')
-    // The plugin's install dir is record.source.path (the manager stores it).
     const record = manager.getRecord(id)
     if (!record) throw new HttpError(404, 'app plugin record not found')
     const pluginDir = record.source.path
-    // Extract the asset path from the URL (everything after /assets/).
-    const assetPath = c.req.path.replace(/^\/[^/]+\/assets\//, '')
+    // Extract the asset path: c.req.path is the FULL path (e.g.
+    // /api/app-plugins/fixture.nyan/assets/nyan.svg). Find the /assets/
+    // segment and take everything after it. decodeURIComponent handles
+    // URL-encoded characters in the path.
+    const assetsIdx = c.req.path.indexOf('/assets/')
+    if (assetsIdx === -1) throw new HttpError(400, 'asset path is required')
+    const assetPath = decodeURIComponent(c.req.path.slice(assetsIdx + '/assets/'.length))
     if (!assetPath) throw new HttpError(400, 'asset path is required')
     const pErr = validateRelativePath(assetPath, { isWindows: process.platform === 'win32' })
     if (pErr) throw new HttpError(400, `invalid asset path: ${pErr}`)
@@ -131,7 +135,15 @@ export function buildAppPluginRouter(manager: AppPluginManager): Hono {
     if (!stat.isFile()) throw new HttpError(400, 'asset is not a file')
     if (stat.size > ASSET_MAX_BYTES) throw new HttpError(413, `asset exceeds ${ASSET_MAX_BYTES} bytes`)
     const body = await fs.readFile(realTarget)
-    return c.body(body, 200, { 'Content-Type': mime, 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' })
+    // CSP: sandbox prevents script execution if the SVG is navigated to
+    // directly (same-origin). When loaded via <img> the browser already
+    // sandboxes SVG scripts, but direct navigation doesn't.
+    return c.body(body, 200, {
+      'Content-Type': mime,
+      'Cache-Control': 'no-cache',
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'",
+    })
   })
 
   return app

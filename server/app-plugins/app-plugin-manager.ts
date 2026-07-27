@@ -227,7 +227,7 @@ export class AppPluginManager implements AppPluginBroadcaster {
     // Resolve contributions directly from the manifest's `contributes`
     // block — independent of the engines compatibility check, so an
     // incompatible plugin still shows what it WOULD contribute in the UI.
-    return resolvePluginContributions(loaded.id, loaded.contributes ?? {})
+    return resolvePluginContributions(loaded.id, loaded.contributes ?? {}, this.isWindows)
   }
 
   // ── Public state machine ───────────────────────────────────────────

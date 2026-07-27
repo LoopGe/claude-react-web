@@ -8,7 +8,7 @@
 //
 // This is a substitutive (vs additive) contribution — the first of its kind.
 
-import { memo, useMemo, type ReactNode } from 'react'
+import { memo, useMemo, useState, type ReactNode } from 'react'
 import { useAllContributions } from './PluginRegistryProvider'
 import { buildWhenContext, filterContributions } from './when'
 import type { PluginStatusIndicatorContribution } from '../../shared/app-plugins/contributions.js'
@@ -22,6 +22,9 @@ interface Props {
 
 export const PluginStatusIndicator = memo(function PluginStatusIndicator({ sessionWorking, theme, children }: Props) {
   const all = useAllContributions()
+  // If the <img> fails to load (404, broken asset, etc.), fall back to the
+  // default indicator so the working state is never hidden by a broken image.
+  const [imgError, setImgError] = useState(false)
 
   const override = useMemo(() => {
     const items: Array<PluginStatusIndicatorContribution & { pluginId: string }> = []
@@ -35,8 +38,11 @@ export const PluginStatusIndicator = memo(function PluginStatusIndicator({ sessi
     return filtered.length > 0 ? filtered[0] : null
   }, [all, sessionWorking, theme])
 
-  if (!override) return <>{children}</>
+  if (!override || imgError) return <>{children}</>
 
-  const src = `/api/app-plugins/${encodeURIComponent(override.pluginId)}/assets/${override.asset}`
-  return <img className="plugin-status-indicator" src={src} alt="" aria-label="working" />
+  // URL-encode each path segment so characters like #, ?, spaces don't
+  // break the URL.
+  const encodedAsset = override.asset.split('/').map(encodeURIComponent).join('/')
+  const src = `/api/app-plugins/${encodeURIComponent(override.pluginId)}/assets/${encodedAsset}`
+  return <img className="plugin-status-indicator" src={src} alt="" aria-label="working" onError={() => setImgError(true)} />
 })
