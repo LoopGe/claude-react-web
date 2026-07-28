@@ -32,7 +32,7 @@ export function targetName(target) {
 export function buildPrompt(target, text, model) {
   const name = targetName(target)
   const system =
-    `Translate into ${name}. First line: the source language name. Everything after the first line: the translation. Nothing else.`
+    `Translate into ${name}. Respond with JSON: {"translation":"<translated text>","source":"<source language name>"}. No markdown, no code fences.`
   const params = {
     purpose: 'translation',
     system,
@@ -44,20 +44,24 @@ export function buildPrompt(target, text, model) {
 }
 
 /** Parse the LLM's response into {translation, source}. The prompt asks for
- *  the source language name on the first line, and the translation on all
- *  subsequent lines (so multi-line translations aren't truncated).
- *  Tolerant — degrades gracefully if the format isn't followed. */
+ *  JSON: {"translation":"...","source":"..."}. Strips code fences if present,
+ *  then JSON.parse. Degrades to {translation: <raw>, source: 'unknown'} if
+ *  parsing fails so the user still sees something. */
 export function parseTranslation(content) {
   const raw = typeof content === 'string' ? content : String(content ?? '')
-  const trimmed = raw.trim()
-  const nlIdx = trimmed.indexOf('\n')
-  if (nlIdx === -1) {
-    // Single line — treat the whole thing as the translation.
-    return { translation: trimmed, source: 'unknown' }
+  let text = raw.trim()
+  // Strip ```json ... ``` or ``` ... ``` fences.
+  text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
+  try {
+    const obj = JSON.parse(text)
+    return {
+      translation: typeof obj.translation === 'string' ? obj.translation : raw.trim(),
+      source: typeof obj.source === 'string' && obj.source ? obj.source : 'unknown',
+    }
+  } catch {
+    // Not valid JSON — treat the whole response as the translation.
+    return { translation: raw.trim(), source: 'unknown' }
   }
-  const source = trimmed.slice(0, nlIdx).trim()
-  const translation = trimmed.slice(nlIdx + 1).trim()
-  return { translation: translation || trimmed, source: source || 'unknown' }
 }
 
 /** Stable cache key for a (text, target) pair. sha256 eliminates the

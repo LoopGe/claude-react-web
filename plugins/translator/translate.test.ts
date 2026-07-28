@@ -9,7 +9,7 @@ describe('translator — buildPrompt', () => {
     const p = buildPrompt('ja', 'hello')
     expect(p.purpose).toBe('translation')
     expect(p.system).toMatch(/Japanese/)
-    expect(p.system).toMatch(/source language name/)
+    expect(p.system).toMatch(/JSON/)
     expect(p.messages).toEqual([{ role: 'user', content: 'hello' }])
   })
 
@@ -19,24 +19,24 @@ describe('translator — buildPrompt', () => {
 })
 
 describe('translator — parseTranslation', () => {
-  it('parses source-on-first-line format', () => {
-    const r = parseTranslation('English\n你好')
+  it('parses JSON with translation + source', () => {
+    const r = parseTranslation('{"translation":"你好","source":"English"}')
     expect(r).toEqual({ translation: '你好', source: 'English' })
   })
 
-  it('handles multi-line translation (source on line 1, rest is translation)', () => {
-    const r = parseTranslation('English\nLine one of translation.\nLine two of translation.')
-    expect(r.source).toBe('English')
-    expect(r.translation).toBe('Line one of translation.\nLine two of translation.')
-  })
-
-  it('handles extra whitespace', () => {
-    const r = parseTranslation('  English  \n  hola  ')
+  it('strips ```json fences', () => {
+    const r = parseTranslation('```json\n{"translation":"hola","source":"English"}\n```')
     expect(r.translation).toBe('hola')
     expect(r.source).toBe('English')
   })
 
-  it('degrades to unknown source on single-line response', () => {
+  it('handles multi-line translation inside JSON', () => {
+    const r = parseTranslation('{"translation":"line1\\nline2","source":"English"}')
+    expect(r.translation).toBe('line1\nline2')
+    expect(r.source).toBe('English')
+  })
+
+  it('degrades to raw text on non-JSON', () => {
     const r = parseTranslation('just a translation')
     expect(r).toEqual({ translation: 'just a translation', source: 'unknown' })
   })
