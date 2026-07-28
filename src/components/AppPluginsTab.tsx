@@ -90,10 +90,10 @@ export function AppPluginsTab() {
           onChange={(e) => setInstallPath(e.target.value)}
           aria-label="Plugin directory path"
         />
-        <button className="btn btn-sm" onClick={() => setShowDirPicker(true)} disabled={busy} title="Browse">
-          <IconFolder size={13} /> Browse
+        <button className="btn" onClick={() => setShowDirPicker(true)} disabled={busy} title="Browse">
+          <IconFolder size={14} /> Browse
         </button>
-        <button className="btn btn-sm primary" disabled={busy || !installPath.trim()} onClick={install}>
+        <button className="btn primary" disabled={busy || !installPath.trim()} onClick={install}>
           {busy ? 'Installing…' : 'Install'}
         </button>
       </div>
