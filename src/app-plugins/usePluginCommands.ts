@@ -114,6 +114,7 @@ export function usePluginCommands() {
             result,
             pluginId: opts.pluginId,
             commandId: opts.commandId,
+            retry: { pluginId: opts.pluginId, commandId: opts.commandId, context: opts.context, anchor: opts.anchor },
           }
           commandResults.push(entry)
         }

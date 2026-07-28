@@ -238,8 +238,15 @@
   max-height: 60vh;
   overflow: auto;
 }
-.plugin-popover-close {
-  align-self: flex-end;
+.plugin-popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.plugin-popover-close,
+.plugin-popover-retry {
+  font-size: var(--fs-xs);
+  padding: 2px 10px;
 }
 /* Loading spinner for the "Translating…" popover. Only applies when the
    popover has data-loading="true" (set by the host for loading entries). */

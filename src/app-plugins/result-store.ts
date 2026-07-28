@@ -14,6 +14,9 @@ export interface ActiveResult {
   result: PluginCommandResult
   pluginId: string
   commandId: string
+  /** The original ExecuteOptions (without anchor), stored so a "retry"
+   *  can re-fire the same command. Undefined for loading entries. */
+  retry?: { pluginId: string; commandId: string; context: unknown; anchor?: { messageId: string; element: HTMLElement | null; rect: DOMRect } }
 }
 
 type Listener = () => void

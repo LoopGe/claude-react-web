@@ -14,33 +14,31 @@ import { memo, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStor
 import { AnimatePresence, motion } from 'motion/react'
 import { commandResults, type ActiveResult } from './result-store'
 import { invocationAnchors } from './invocation-anchor-store'
+import { usePluginCommands } from './usePluginCommands'
 import { Markdown } from '../components/Markdown'
 import { EXIT_TRANSITION, useMotionTransition } from '../utils/transitions'
 import type { PluginCommandResult, PluginResultContent } from '../../shared/app-plugins/command-result.js'
 
 export function PluginCommandResultHost() {
-  // useSyncExternalStore is the correct pattern for an external mutable
-  // store — it avoids the setState-in-effect lint and tears correctly under
-  // concurrent rendering.
   const results = useSyncExternalStore(commandResults.subscribe, commandResults.snapshot, commandResults.snapshot)
+  const { execute } = usePluginCommands()
   return (
     <AnimatePresence>
       {results.map((r) => (
-        <ResultCard key={r.id} entry={r} />
+        <ResultCard key={r.id} entry={r} execute={execute} />
       ))}
     </AnimatePresence>
   )
 }
 
-const ResultCard = memo(function ResultCard({ entry }: { entry: ActiveResult }) {
+const ResultCard = memo(function ResultCard({ entry, execute }: { entry: ActiveResult; execute: (opts: never) => void }) {
   if (entry.result.type === 'dialog') {
-    return <PluginDialog entry={entry} />
+    return <PluginDialog entry={entry} execute={execute} />
   }
-  // popover (or degraded popover)
-  return <PluginPopover entry={entry} />
+  return <PluginPopover entry={entry} execute={execute} />
 })
 
-function PluginPopover({ entry }: { entry: ActiveResult }) {
+function PluginPopover({ entry, execute }: { entry: ActiveResult; execute: (opts: never) => void }) {
   const result = entry.result as Extract<PluginCommandResult, { type: 'popover' }>
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
   const [degraded, setDegraded] = useState(false)
@@ -99,14 +97,34 @@ function PluginPopover({ entry }: { entry: ActiveResult }) {
     >
       {result.title && <div className="plugin-popover-title">{result.title}</div>}
       <div className="plugin-popover-body">{renderContent(result.content)}</div>
-      {dismissible && (
-        <button className="btn plugin-popover-close" onClick={dismiss} aria-label="Close">Close</button>
-      )}
+      <div className="plugin-popover-actions">
+        {entry.retry && (
+          <button
+            className="btn plugin-popover-retry"
+            onClick={() => {
+              if (entry.retry) {
+                commandResults.dismiss(entry.id)
+                void execute({
+                  pluginId: entry.retry.pluginId,
+                  commandId: entry.retry.commandId,
+                  context: entry.retry.context as never,
+                  anchor: entry.retry.anchor,
+                } as never)
+              }
+            }}
+          >
+            Retry
+          </button>
+        )}
+        {dismissible && (
+          <button className="btn plugin-popover-close" onClick={dismiss} aria-label="Close">Close</button>
+        )}
+      </div>
     </motion.div>
   )
 }
 
-function PluginDialog({ entry }: { entry: ActiveResult }) {
+function PluginDialog({ entry, execute: _execute }: { entry: ActiveResult; execute: (opts: never) => void }) {
   const result = entry.result as Extract<PluginCommandResult, { type: 'dialog' }>
   const exitT = useMotionTransition(EXIT_TRANSITION)
   const dismiss = () => commandResults.dismiss(entry.id)

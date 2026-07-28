@@ -32,7 +32,7 @@ export function targetName(target) {
 export function buildPrompt(target, text, model) {
   const name = targetName(target)
   const system =
-    `Translate into ${name}. First line: the translation. Second line: the source language name. Nothing else.`
+    `Translate into ${name}. First line: the source language name. Everything after the first line: the translation. Nothing else.`
   const params = {
     purpose: 'translation',
     system,
@@ -44,17 +44,20 @@ export function buildPrompt(target, text, model) {
 }
 
 /** Parse the LLM's response into {translation, source}. The prompt asks for
- *  two lines: first line = translation, second line = source language name.
+ *  the source language name on the first line, and the translation on all
+ *  subsequent lines (so multi-line translations aren't truncated).
  *  Tolerant — degrades gracefully if the format isn't followed. */
 export function parseTranslation(content) {
   const raw = typeof content === 'string' ? content : String(content ?? '')
   const trimmed = raw.trim()
-  const lines = trimmed.split('\n').filter((l) => l.trim())
-  if (lines.length >= 2) {
-    return { translation: lines[0].trim(), source: lines[1].trim() || 'unknown' }
+  const nlIdx = trimmed.indexOf('\n')
+  if (nlIdx === -1) {
+    // Single line — treat the whole thing as the translation.
+    return { translation: trimmed, source: 'unknown' }
   }
-  // Single line or empty — treat the whole thing as the translation.
-  return { translation: trimmed, source: 'unknown' }
+  const source = trimmed.slice(0, nlIdx).trim()
+  const translation = trimmed.slice(nlIdx + 1).trim()
+  return { translation: translation || trimmed, source: source || 'unknown' }
 }
 
 /** Stable cache key for a (text, target) pair. sha256 eliminates the
