@@ -44,23 +44,37 @@ export function buildPrompt(target, text, model) {
 }
 
 /** Parse the LLM's response into {translation, source}. The prompt asks for
- *  JSON: {"translation":"...","source":"..."}. Strips code fences if present,
- *  then JSON.parse. Degrades to {translation: <raw>, source: 'unknown'} if
+ *  JSON: {"translation":"...","source":"..."}. Strips code fences, extracts
+ *  the first {...} object (in case the LLM adds surrounding text), then
+ *  JSON.parse. Degrades to {translation: <raw>, source: 'unknown'} if
  *  parsing fails so the user still sees something. */
 export function parseTranslation(content) {
   const raw = typeof content === 'string' ? content : String(content ?? '')
   let text = raw.trim()
   // Strip ```json ... ``` or ``` ... ``` fences.
   text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
+  // Try direct parse first.
   try {
-    const obj = JSON.parse(text)
-    return {
-      translation: typeof obj.translation === 'string' ? obj.translation : raw.trim(),
-      source: typeof obj.source === 'string' && obj.source ? obj.source : 'unknown',
-    }
-  } catch {
-    // Not valid JSON — treat the whole response as the translation.
-    return { translation: raw.trim(), source: 'unknown' }
+    return extractFromJson(text, raw)
+  } catch { /* not pure JSON */ }
+  // If that fails, try to extract the first {...} block (LLM may add
+  // surrounding text like "Here is the translation: {...}").
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start !== -1 && end > start) {
+    try {
+      return extractFromJson(text.slice(start, end + 1), raw)
+    } catch { /* not valid JSON either */ }
+  }
+  // Degrade: treat the whole response as the translation.
+  return { translation: raw.trim(), source: 'unknown' }
+}
+
+function extractFromJson(jsonStr, raw) {
+  const obj = JSON.parse(jsonStr)
+  return {
+    translation: typeof obj.translation === 'string' ? obj.translation : raw.trim(),
+    source: typeof obj.source === 'string' && obj.source ? obj.source : 'unknown',
   }
 }
 

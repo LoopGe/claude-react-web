@@ -36,6 +36,12 @@ describe('translator — parseTranslation', () => {
     expect(r.source).toBe('English')
   })
 
+  it('extracts JSON from surrounding text', () => {
+    const r = parseTranslation('Here is the translation:\n{"translation":"你好","source":"English"}')
+    expect(r.translation).toBe('你好')
+    expect(r.source).toBe('English')
+  })
+
   it('degrades to raw text on non-JSON', () => {
     const r = parseTranslation('just a translation')
     expect(r).toEqual({ translation: 'just a translation', source: 'unknown' })
