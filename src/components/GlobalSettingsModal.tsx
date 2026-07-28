@@ -1186,13 +1186,13 @@ function SkillsTab({
         </div>
         <div className="settings-skill-path-row">
           <input className="input" placeholder="Absolute server path to a skill folder" aria-label="Server path to skill folder" value={importPath} onChange={(e) => setImportPath(e.target.value)} spellCheck={false} />
-          <button className="btn btn-sm" onClick={() => setShowImportPicker(true)} disabled={importingSkill}><IconFolder size={13} /> Browse</button>
-          <button className="btn btn-sm primary" onClick={() => void importFromServerPath()} disabled={importingSkill || !importPath.trim()}>
+          <button className="btn" onClick={() => setShowImportPicker(true)} disabled={importingSkill}><IconFolder size={14} /> Browse</button>
+          <button className="btn primary" onClick={() => void importFromServerPath()} disabled={importingSkill || !importPath.trim()}>
             {importingSkill ? 'Installing…' : 'Install'}
           </button>
         </div>
         <div className="settings-actions-row settings-skill-import-actions">
-          <button className="btn btn-sm" onClick={() => fileInputRef.current?.click()} disabled={importingSkill}><IconFileText size={13} /> Select Local Folder</button>
+          <button className="btn" onClick={() => fileInputRef.current?.click()} disabled={importingSkill}><IconFileText size={14} /> Select Local Folder</button>
           <span className="settings-note">Directory upload works in Chromium-based browsers; drag-and-drop uses the same importer.</span>
           <input
             ref={fileInputRef}
@@ -1207,7 +1207,7 @@ function SkillsTab({
 
       <div className="settings-section-head">
         <span className="settings-note">{skills.length} filesystem skill{skills.length !== 1 ? 's' : ''}</span>
-        <button className="btn btn-sm" onClick={() => void refresh()} disabled={loading}><IconRefresh size={13} /> {loading ? 'Refreshing…' : 'Refresh'}</button>
+        <button className="btn" onClick={() => void refresh()} disabled={loading}><IconRefresh size={14} /> {loading ? 'Refreshing…' : 'Refresh'}</button>
       </div>
       {error && <div className="settings-error">{error}</div>}
       {notice && <div className="settings-success">{notice}</div>}
