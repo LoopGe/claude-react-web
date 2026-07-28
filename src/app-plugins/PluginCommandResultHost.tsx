@@ -82,6 +82,7 @@ function PluginPopover({ entry }: { entry: ActiveResult }) {
 
   const dismiss = () => commandResults.dismiss(entry.id)
   const dismissible = result.dismissible !== false
+  const isLoading = entry.id.startsWith('loading-')
 
   return (
     <motion.div
@@ -89,6 +90,7 @@ function PluginPopover({ entry }: { entry: ActiveResult }) {
       className="plugin-popover"
       style={pos ? { left: pos.x, top: pos.y } : { left: '50%', top: '40%', transform: 'translateX(-50%)' }}
       data-degraded={degraded ? 'true' : undefined}
+      data-loading={isLoading ? 'true' : undefined}
       initial={{ opacity: 0, scale: 0.98, transition: exitT }}
       animate={{ opacity: 1, scale: 1, transition: exitT }}
       exit={{ opacity: 0, scale: 0.98, transition: exitT }}

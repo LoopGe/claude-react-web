@@ -241,6 +241,26 @@
 .plugin-popover-close {
   align-self: flex-end;
 }
+/* Loading spinner for the "Translating…" popover. Only applies when the
+   popover has data-loading="true" (set by the host for loading entries). */
+.plugin-popover[data-loading] .plugin-content-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.plugin-popover[data-loading] .plugin-content-text::after {
+  content: '';
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: plugin-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes plugin-spin {
+  to { transform: rotate(360deg); }
+}
 
 /* ── Command result dialog ──────────────────────────────────────── */
 

@@ -63,17 +63,32 @@ export function usePluginCommands() {
 
   const execute = useCallback(
     async (opts: ExecuteOptions): Promise<PluginCommandResult | null> => {
-      // Show a sticky "running…" toast immediately so the user knows
-      // something is happening (LLM calls take 1-10s). Dismissed when the
-      // result arrives or on error.
-      const loadingId = toast.show('info', 'Translating…', { durationMs: 0 })
+      // Show a loading popover immediately at the anchor position so the
+      // user sees feedback (LLM calls take 1-10s). Replaced by the real
+      // result when it arrives.
+      const loadingId = `loading-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      if (opts.anchor) {
+        invocationAnchors.set(loadingId, {
+          messageId: opts.anchor.messageId,
+          element: opts.anchor.element,
+          rect: opts.anchor.rect,
+        })
+      }
+      commandResults.push({
+        id: loadingId,
+        result: { type: 'popover', invocationId: loadingId, content: { kind: 'text', text: 'Translating…' } },
+        pluginId: opts.pluginId,
+        commandId: opts.commandId,
+      })
       try {
         const res = await api.post<{ result: PluginCommandResult }>(
           `/app-plugins/${encodeURIComponent(opts.pluginId)}/commands/${encodeURIComponent(opts.commandId)}`,
           { context: opts.context },
           { timeoutMs: 35_000 },
         )
-        toast.dismiss(loadingId)
+        // Dismiss the loading popover.
+        commandResults.dismiss(loadingId)
+        invocationAnchors.clear(loadingId)
         const result = res.result
         if (!result) return null
         const invocationId = (result as { invocationId?: string }).invocationId
@@ -109,7 +124,8 @@ export function usePluginCommands() {
         // (prefixed with the code so the user can tell e.g. plugin-quarantined
         // from command-timeout) and return a structured CommandError so callers
         // can branch on `code`.
-        toast.dismiss(loadingId)
+        commandResults.dismiss(loadingId)
+        invocationAnchors.clear(loadingId)
         const e = err as { status?: number; message?: string; code?: string }
         const message = e.message ?? 'Command failed'
         const code = (e.code as PluginCommandErrorCode | undefined) ?? 'unknown'

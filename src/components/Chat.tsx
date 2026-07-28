@@ -708,6 +708,13 @@ export const Chat = memo(function Chat({
       label: m.title,
       icon: <IconGlobe size={14} />,
       onClick: () => {
+        // Capture the selection's screen rect at click time so the popover
+        // anchors to where the user selected, not where they clicked the
+        // menu item.
+        const sel = window.getSelection()
+        const rect = sel && sel.rangeCount > 0
+          ? sel.getRangeAt(0).getBoundingClientRect()
+          : new DOMRect(window.innerWidth / 2, window.innerHeight / 2, 0, 0)
         void executePluginCommand({
           pluginId: m.pluginId,
           commandId: m.commandId,
@@ -721,6 +728,7 @@ export const Chat = memo(function Chat({
             message: { role: 'assistant', contentBlockType: 'text' },
             selection: { text: selection, length: selection.length, truncated: false },
           } as never,
+          anchor: { messageId: '', element: null, rect },
         })
       },
     }))
