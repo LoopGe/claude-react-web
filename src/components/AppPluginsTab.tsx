@@ -28,6 +28,17 @@ export function AppPluginsTab() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [modelList, setModelList] = useState<string[]>([])
+
+  // Fetch the server's model list once for the config editor (model field
+  // uses a <datalist> so users can pick or type freely).
+  useEffect(() => {
+    let alive = true
+    void api.get<{ models?: string[] }>('/config').then((res) => {
+      if (alive && Array.isArray(res.models)) setModelList(res.models)
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [])
 
   const install = useCallback(async () => {
     const path = installPath.trim()
@@ -122,6 +133,7 @@ export function AppPluginsTab() {
             key={p.id}
             plugin={p}
             expanded={expanded === p.id}
+            modelList={modelList}
             onToggleExpand={() => setExpanded(expanded === p.id ? null : p.id)}
             onEnable={() => enable(p.id)}
             onDisable={() => disable(p.id)}
@@ -137,6 +149,7 @@ export function AppPluginsTab() {
 function PluginRow(props: {
   plugin: AppPluginClientInfo
   expanded: boolean
+  modelList: string[]
   onToggleExpand: () => void
   onEnable: () => void
   onDisable: () => void
@@ -169,12 +182,12 @@ function PluginRow(props: {
         <span>v{p.version}</span>
         {p.lastError && <span className="app-plugins-err">{p.lastError}</span>}
       </div>
-      {expanded && <PluginDetails plugin={p} />}
+      {expanded && <PluginDetails plugin={p} modelList={props.modelList} />}
     </li>
   )
 }
 
-function PluginDetails({ plugin }: { plugin: AppPluginClientInfo }) {
+function PluginDetails({ plugin, modelList }: { plugin: AppPluginClientInfo; modelList: string[] }) {
   return (
     <div className="app-plugins-details">
       {/* key remounts PermissionsSection when the granted set changes, so its
@@ -184,14 +197,14 @@ function PluginDetails({ plugin }: { plugin: AppPluginClientInfo }) {
         plugin={plugin}
       />
       {plugin.contributions.configuration.properties.length > 0 && (
-        <ConfigurationEditor key={`cfg:${plugin.id}`} plugin={plugin} />
+        <ConfigurationEditor key={`cfg:${plugin.id}`} plugin={plugin} modelList={modelList} />
       )}
       <ContributionsSection plugin={plugin} />
     </div>
   )
 }
 
-function ConfigurationEditor({ plugin }: { plugin: AppPluginClientInfo }) {
+function ConfigurationEditor({ plugin, modelList }: { plugin: AppPluginClientInfo; modelList: string[] }) {
   const props = plugin.contributions.configuration.properties
   const [values, setValues] = useState<Record<string, unknown>>({})
   const [loading, setLoading] = useState(true)
@@ -235,7 +248,7 @@ function ConfigurationEditor({ plugin }: { plugin: AppPluginClientInfo }) {
           <li key={prop.key}>
             <label>
               <span className="app-plugins-config-label">{prop.title}</span>
-              <ConfigInput prop={prop} value={values[prop.key]} onChange={(v) => set(prop.key, v)} />
+              <ConfigInput prop={prop} value={values[prop.key]} onChange={(v) => set(prop.key, v)} modelList={modelList} />
             </label>
             {prop.description && <span className="app-plugins-config-desc">{prop.description}</span>}
           </li>
@@ -246,10 +259,11 @@ function ConfigurationEditor({ plugin }: { plugin: AppPluginClientInfo }) {
   )
 }
 
-function ConfigInput({ prop, value, onChange }: {
+function ConfigInput({ prop, value, onChange, modelList }: {
   prop: PluginConfigurationProperty
   value: unknown
   onChange: (v: unknown) => void
+  modelList: string[]
 }) {
   switch (prop.type) {
     case 'boolean':
@@ -267,8 +281,27 @@ function ConfigInput({ prop, value, onChange }: {
     case 'array':
       return <input className="input" type="text" value={Array.isArray(value) ? (value as string[]).join(', ') : ''} onChange={(e) => onChange(e.target.value.split(',').map((s) => s.trim()).filter(Boolean))} />
     case 'string':
-    default:
-      return <input className="input" type="text" value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value)} />
+    default: {
+      // Model fields: render a datalist (dropdown + free text).
+      const isModelField = prop.key.toLowerCase().includes('model')
+      const listId = isModelField ? `dl-${prop.key}` : undefined
+      return (
+        <>
+          <input
+            className="input"
+            type="text"
+            list={listId}
+            value={typeof value === 'string' ? value : ''}
+            onChange={(e) => onChange(e.target.value)}
+          />
+          {isModelField && (
+            <datalist id={listId}>
+              {modelList.map((m) => <option key={m} value={m} />)}
+            </datalist>
+          )}
+        </>
+      )
+    }
   }
 }
 
