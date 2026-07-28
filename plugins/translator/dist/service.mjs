@@ -43,7 +43,7 @@ const handlers = {
   executeCommand: async ({ invocationId, context }) => {
     const text = context?.selection?.text ?? ''
     const target = config['translator.claude-react-web.target'] || 'zh-CN'
-    const useCache = config['translator.claude-react-web.cache'] !== false
+    const useCache = config['translator.claude-react-web.cache'] !== false && !context?._skipCache
     const model = config['translator.claude-react-web.model'] || undefined
     return translate({ invocationId, text, target, useCache, model, callHost })
   },

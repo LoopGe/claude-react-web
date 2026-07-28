@@ -107,7 +107,7 @@ function PluginPopover({ entry, execute }: { entry: ActiveResult; execute: (opts
                 void execute({
                   pluginId: entry.retry.pluginId,
                   commandId: entry.retry.commandId,
-                  context: entry.retry.context as never,
+                  context: { ...(entry.retry.context as Record<string, unknown>), _skipCache: true } as never,
                   anchor: entry.retry.anchor,
                 } as never)
               }
