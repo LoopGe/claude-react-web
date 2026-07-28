@@ -63,12 +63,17 @@ export function usePluginCommands() {
 
   const execute = useCallback(
     async (opts: ExecuteOptions): Promise<PluginCommandResult | null> => {
+      // Show a sticky "running…" toast immediately so the user knows
+      // something is happening (LLM calls take 1-10s). Dismissed when the
+      // result arrives or on error.
+      const loadingId = toast.show('info', 'Translating…', { durationMs: 0 })
       try {
         const res = await api.post<{ result: PluginCommandResult }>(
           `/app-plugins/${encodeURIComponent(opts.pluginId)}/commands/${encodeURIComponent(opts.commandId)}`,
           { context: opts.context },
           { timeoutMs: 35_000 },
         )
+        toast.dismiss(loadingId)
         const result = res.result
         if (!result) return null
         const invocationId = (result as { invocationId?: string }).invocationId
@@ -104,6 +109,7 @@ export function usePluginCommands() {
         // (prefixed with the code so the user can tell e.g. plugin-quarantined
         // from command-timeout) and return a structured CommandError so callers
         // can branch on `code`.
+        toast.dismiss(loadingId)
         const e = err as { status?: number; message?: string; code?: string }
         const message = e.message ?? 'Command failed'
         const code = (e.code as PluginCommandErrorCode | undefined) ?? 'unknown'
