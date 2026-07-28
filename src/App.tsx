@@ -198,6 +198,11 @@ export function App() {
   const newSessionDialogOpenRef = useRef(newSessionDialogOpen)
   const [resumeDialogOpen, setResumeDialogOpen] = useState(false)
   const resumeDialogOpenRef = useRef(resumeDialogOpen)
+  // Double-tap Escape detection: timestamp of the last Escape press +
+  // whether an overlay was open on that press (so a "clean" double-tap
+  // — no overlay was open on the first press — opens resume).
+  const lastEscapeAtRef = useRef(0)
+  const overlayWasOpenOnFirstPressRef = useRef(false)
   // When set, the resume picker was opened from a panel's `/resume` local
   // command: the chosen session should REPLACE this panel's slot rather than
   // open in a new panel. Null = the global (Mod+Shift+O) resume flow.
@@ -2280,10 +2285,27 @@ export function App() {
         {
           combo: 'escape',
           handler: () => {
+            // Double-tap Escape detection: if the user presses Escape twice
+            // within 400ms AND no overlay was open on the first press (so
+            // the first press was a no-op or an interrupt), open resume.
+            // Date.now() is called at event-dispatch time, not during render
+            // — the handler is defined in useMemo but invoked later by the
+            // keyboard dispatcher.
+            // eslint-disable-next-line react-hooks/purity
+            const now = Date.now()
+            const isDoubleTap = now - lastEscapeAtRef.current < 400
+              && !overlayWasOpenOnFirstPressRef.current
+            lastEscapeAtRef.current = now
+
+            if (isDoubleTap && focusedIdRef.current) {
+              requestResumeForPanel(focusedIdRef.current)
+              return
+            }
+
             // Escape ownership is two-tier:
             //   1. Focus-trapped dialogs (PermissionDialog, QuestionDialog) and
             //      nested overlays (DirectoryPicker) handle Escape LOCALLY and
-            //      stop propagation xthey need custom semantics (deny / skip /
+            //      stop propagation — they need custom semantics (deny / skip /
             //      dismiss-just-this-layer) and must NOT fall through to the
             //      "interrupt session" branch below.
             //   2. Every other non-trapping overlay routes through this single
@@ -2292,6 +2314,20 @@ export function App() {
             // Git is checked before Settings because it's the more recently
             // introduced overlay and tends to be what the user wants to
             // close when they press Esc with both possible.
+
+            // Record whether an overlay is open right now, so the next
+            // Escape press knows if this was a "clean" single press.
+            const overlayWasOpen = !!(
+              paletteOpenRef.current
+              || historyPanelOpenRef.current
+              || helpOpenRef.current
+              || resumeDialogOpenRef.current
+              || newSessionDialogOpenRef.current
+              || gitPanelOpenForRef.current
+              || settingsOpenForRef.current
+            )
+            overlayWasOpenOnFirstPressRef.current = overlayWasOpen
+
             if (paletteOpenRef.current) setPaletteOpen(false)
             else if (historyPanelOpenRef.current) setHistoryPanelOpen(false)
             else if (helpOpenRef.current) setHelpOpen(false)
@@ -2317,10 +2353,12 @@ export function App() {
             }
           },
           allowInInput: true, // Esc inside textarea should still close modals / interrupt
-          description: 'Close overlay / Interrupt',
+          description: 'Close overlay / Interrupt / Double-tap for resume',
         },
       ],
       [closeSession, setGitPanelOpenFor, setHelpOpen, setSettingsOpenFor, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel],
+      // requestResumeForPanel is intentionally omitted — it's declared after
+      // this useMemo (line order) and is stable (useCallback with stable deps).
     )
   useKeyboardShortcuts(shortcuts)
 
