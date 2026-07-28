@@ -54,9 +54,12 @@ import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { useSessionRecap } from '../hooks/useSessionRecap'
 import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
-import { ContextMenu } from './ContextMenu'
+import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
-import { IconSearch, IconFileText, IconFileCode, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconMessageCircle, IconArrowLeft, IconTrash } from './icons/ToolIcons'
+import { useAllContributions } from '../app-plugins/PluginRegistryProvider'
+import { usePluginCommands } from '../app-plugins/usePluginCommands'
+import { buildWhenContext, filterContributions } from '../app-plugins/when'
+import { IconSearch, IconFileText, IconFileCode, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconMessageCircle, IconArrowLeft, IconTrash, IconGlobe } from './icons/ToolIcons'
 import { PLAN_TOOL_NAMES } from '../constants/toolNames'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
@@ -681,6 +684,47 @@ export const Chat = memo(function Chat({
   // Message-area right-click menu. `selection` is captured at open time —
   // clicking a menu item can collapse the live selection, so we snapshot it.
   const [exportMenuPos, setExportMenuPos] = useState<{ x: number; y: number; selection: string } | null>(null)
+  // Plugin selection-menu commands (e.g. Translate). Injected into the
+  // existing right-click menu when the user has a text selection.
+  const allContribs = useAllContributions()
+  const { execute: executePluginCommand } = usePluginCommands()
+
+  /** Build plugin ContextMenuItems for the current selection. Returns []
+   *  when there's no selection or no enabled plugin contributes a
+   *  `message.selectionContextMenu` command whose `when` holds. */
+  const buildPluginMenuItems = useCallback((selection: string): ContextMenuItem[] => {
+    if (!selection.trim()) return []
+    const items: Array<{ id: string; title: string; commandId: string; when?: string; order?: number; pluginId: string }> = []
+    for (const c of allContribs) {
+      for (const m of c.contextMenus) {
+        if (m.location === 'message.selectionContextMenu') {
+          items.push({ ...m, pluginId: c.pluginId })
+        }
+      }
+    }
+    const ctx = buildWhenContext({ sessionWorking: !!session.working, messageHasSelection: true, messageSelectionLength: selection.length })
+    const filtered = filterContributions(items, ctx)
+    return filtered.map((m) => ({
+      label: m.title,
+      icon: <IconGlobe size={14} />,
+      onClick: () => {
+        void executePluginCommand({
+          pluginId: m.pluginId,
+          commandId: m.commandId,
+          context: {
+            source: 'message-selection',
+            invocationId: '',
+            commandId: m.commandId,
+            invokedAt: Date.now(),
+            sessionId: session.id,
+            messageId: '',
+            message: { role: 'assistant', contentBlockType: 'text' },
+            selection: { text: selection, length: selection.length, truncated: false },
+          } as never,
+        })
+      },
+    }))
+  }, [allContribs, executePluginCommand, session.id, session.working])
   // Export-success feedback now goes through the global toast hub.
   const toast = useToast()
   const [searchQuery, setSearchQuery] = useState('')
@@ -1247,6 +1291,13 @@ export const Chat = memo(function Chat({
                   { label: '' },
                 ]
               : []),
+            // Plugin selection-menu items (e.g. Translate) — injected above
+            // "Search messages" when the user has a selection and a plugin
+            // contributes a matching command.
+            ...(() => {
+              const pluginItems = buildPluginMenuItems(exportMenuPos.selection)
+              return pluginItems.length > 0 ? [...pluginItems, { label: '' } as ContextMenuItem] : []
+            })(),
             {
               label: 'Search messages',
               icon: <IconSearch size={14} />,

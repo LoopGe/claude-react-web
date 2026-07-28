@@ -8,9 +8,6 @@
 // carries the complete content, so showing both just flickers).
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { usePluginContextMenu, type MenuContext } from '../app-plugins/usePluginContextMenu'
-import { PluginContextMenu } from '../app-plugins/PluginContextMenu'
-import { buildSelectionContext } from '../app-plugins/buildSelectionContext'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { Markdown } from './Markdown'
 import { PlanStatusProvider, PlanContentProvider, ToolStatusProvider, ToolResultProvider } from '../hooks/usePlanStatus'
@@ -289,49 +286,6 @@ function useStableSet(candidate: Set<string>): Set<string> {
 
 export const MessageList = memo(function MessageList({ items, working, clearing, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, leadingItems, trailingItems, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, emptyStateContent, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
-
-  // ── App Plugin message-selection context menu ─────────────────────
-  // On contextmenu over a message with an active text selection, build a
-  // MessageSelectionCommandContext and offer plugin `message.selectionContextMenu`
-  // commands. Cross-message / collapsed / sensitive-block selections fall
-  // through to the native menu (buildSelectionContext returns !ok).
-  const { buildItems: buildSelectionMenuItems, hasAny: hasSelectionMenu } = usePluginContextMenu('message.selectionContextMenu')
-  const [selectionMenu, setSelectionMenu] = useState<{ x: number; y: number; context: MenuContext } | null>(null)
-  // Evict an open selection menu on session switch so a stale menu (whose
-  // context references the old session/message) can't fire a command against
-  // the previous session after the user has switched panels.
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset on session switch
-    setSelectionMenu(null)
-  }, [transcriptRevealKey])
-  const handleSelectionContextMenu = useCallback((e: React.MouseEvent, itemId: string, msg: unknown) => {
-    if (!hasSelectionMenu) return // no plugin contributes a selection menu
-    const sel = window.getSelection()
-    if (!sel) return
-    const boundary = e.currentTarget as HTMLElement
-    const m = msg as { type?: string; role?: string }
-    const role: 'user' | 'assistant' | 'system' | 'tool' =
-      m.type === 'user' ? 'user' : m.type === 'assistant' ? 'assistant' : m.type === 'tool' ? 'tool' : 'system'
-    const res = buildSelectionContext({
-      selection: sel,
-      sessionId: transcriptRevealKey ?? '',
-      messageId: itemId,
-      messageBoundary: boundary,
-      role,
-      contentBlockType: 'text',
-    })
-    if (!res.ok) return // collapsed / cross-message / sensitive block → native menu
-    const menuContext: MenuContext = {
-      base: res.context,
-      anchor: { messageId: itemId, element: boundary, rect: boundary.getBoundingClientRect() },
-      when: { messageHasSelection: true, messageSelectionLength: res.context.selection.length, sessionActive: !!transcriptRevealKey },
-    }
-    // Only suppress the native menu if a plugin actually contributes an item
-    // holding against the current `when`.
-    if (buildSelectionMenuItems(menuContext).length === 0) return
-    e.preventDefault()
-    setSelectionMenu({ x: e.clientX, y: e.clientY, context: menuContext })
-  }, [hasSelectionMenu, buildSelectionMenuItems, transcriptRevealKey])
 
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
   // can detect viewport shrink (TodoChecklist panel growing).
@@ -1617,7 +1571,6 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
         data-enter-id={isEntering ? item.id : undefined}
         ref={isEntering ? enterNodeRef : undefined}
         onAnimationEnd={isEntering ? handleEnterAnimationEnd : undefined}
-        onContextMenu={(e) => handleSelectionContextMenu(e, item.id, item.msg)}
       >
         <MessageView
           msg={item.msg}
@@ -1633,7 +1586,7 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
         />
       </div>
     )
-  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, handleEnterAnimationEnd, enterNodeRef, working, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, handleSelectionContextMenu])
+  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, handleEnterAnimationEnd, enterNodeRef, working, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash])
 
   /* eslint-disable react-hooks/refs -- the pending reveal flag must commit in
      the same render as the ready transcript so the first visible frame can be
@@ -1768,16 +1721,6 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
           <StreamingFooter content={visibleStreamingContent} />
         </div>
       )}
-      {/* App Plugin message-selection context menu. Renders only when a
-          plugin contributes an item that holds against the gesture's `when`. */}
-      <PluginContextMenu
-        open={!!selectionMenu}
-        x={selectionMenu?.x ?? 0}
-        y={selectionMenu?.y ?? 0}
-        location="message.selectionContextMenu"
-        context={selectionMenu?.context ?? null}
-        onClose={() => setSelectionMenu(null)}
-      />
       </div>
     </div>
     </ResultConsumedCtx.Provider>
