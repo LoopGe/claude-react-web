@@ -9,7 +9,7 @@ describe('translator — buildPrompt', () => {
     const p = buildPrompt('ja', 'hello')
     expect(p.purpose).toBe('translation')
     expect(p.system).toMatch(/Japanese/)
-    expect(p.system).toMatch(/JSON/)
+    expect(p.system).toMatch(/First line/)
     expect(p.messages).toEqual([{ role: 'user', content: 'hello' }])
   })
 
@@ -19,42 +19,26 @@ describe('translator — buildPrompt', () => {
 })
 
 describe('translator — parseTranslation', () => {
-  it('parses compact JSON', () => {
-    const r = parseTranslation('{"translation":"你好","source":"English"}')
+  it('parses two-line format (translation + source)', () => {
+    const r = parseTranslation('你好\nEnglish')
     expect(r).toEqual({ translation: '你好', source: 'English' })
   })
 
-  it('strips a ```json fence', () => {
-    const r = parseTranslation('```json\n{"translation":"hola","source":"English"}\n```')
+  it('handles extra whitespace + blank lines', () => {
+    const r = parseTranslation('  hola  \n\n  English  ')
     expect(r.translation).toBe('hola')
     expect(r.source).toBe('English')
   })
 
-  it('extracts the JSON object from surrounding text', () => {
-    const r = parseTranslation('Here you go: {"translation":"bonjour","source":"English"} done')
-    expect(r.translation).toBe('bonjour')
+  it('degrades to unknown source on single-line response', () => {
+    const r = parseTranslation('just a translation')
+    expect(r).toEqual({ translation: 'just a translation', source: 'unknown' })
   })
 
-  it('degrades to the raw text + unknown source on non-JSON', () => {
-    const r = parseTranslation('just some text')
-    expect(r).toEqual({ translation: 'just some text', source: 'unknown' })
-  })
-
-  it('degrades gracefully when JSON is malformed', () => {
-    const r = parseTranslation('{translation: missing quotes}')
+  it('handles empty content', () => {
+    const r = parseTranslation('')
+    expect(r.translation).toBe('')
     expect(r.source).toBe('unknown')
-    expect(r.translation.length).toBeGreaterThan(0)
-  })
-
-  it('handles a missing source field', () => {
-    const r = parseTranslation('{"translation":"hi"}')
-    expect(r.translation).toBe('hi')
-    expect(r.source).toBe('unknown')
-  })
-
-  it('handles a } inside a JSON string value (string-aware brace scan)', () => {
-    const r = parseTranslation('{"translation":"a}b","source":"English"}')
-    expect(r).toEqual({ translation: 'a}b', source: 'English' })
   })
 })
 
@@ -96,6 +80,7 @@ describe('translator — translate flow (callHost injected)', () => {
       text: 'hello',
       target: 'zh-CN',
       useCache: true,
+      model: undefined,
       callHost: callHost as never,
     })
     expect(result).toMatchObject({ type: 'popover', invocationId: 'inv-1' })
@@ -118,6 +103,7 @@ describe('translator — translate flow (callHost injected)', () => {
       text: 'hello',
       target: 'es',
       useCache: true,
+      model: undefined,
       callHost: callHost as never,
     })
     expect(result.type).toBe('popover')
@@ -137,6 +123,7 @@ describe('translator — translate flow (callHost injected)', () => {
       text: 'hello',
       target: 'zh-CN',
       useCache: false,
+      model: undefined,
       callHost: callHost as never,
     })
     expect(result.type).toBe('notification')

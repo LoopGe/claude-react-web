@@ -44,9 +44,8 @@ const handlers = {
     const text = context?.selection?.text ?? ''
     const target = config['translator.claude-react-web.target'] || 'zh-CN'
     const useCache = config['translator.claude-react-web.cache'] !== false
-    // The full flow (cache → ai.request → parse → cache) lives in the pure,
-    // unit-tested translate() helper; here we just inject the real callHost.
-    return translate({ invocationId, text, target, useCache, callHost })
+    const model = config['translator.claude-react-web.model'] || undefined
+    return translate({ invocationId, text, target, useCache, model, callHost })
   },
 }
 

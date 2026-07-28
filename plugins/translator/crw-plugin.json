@@ -30,6 +30,13 @@
           "default": "zh-CN"
         },
         {
+          "key": "translator.claude-react-web.model",
+          "type": "string",
+          "title": "Model",
+          "description": "Model for translation. Leave empty to use the server's default model. Use a faster model (e.g. claude-haiku-4-5-20251001) for quicker translations.",
+          "default": ""
+        },
+        {
           "key": "translator.claude-react-web.cache",
           "type": "boolean",
           "title": "Cache translations",

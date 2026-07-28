@@ -24,76 +24,37 @@ export function targetName(target) {
 }
 
 /** Build the ai.request params (system + messages) for translating `text`
- *  into `target`. The LLM is asked to return compact JSON so we can extract
- *  the translation + detected source language. */
-export function buildPrompt(target, text) {
+ *  into `target`. The LLM is asked to return the translation on the first
+ *  line and the source language on the second — simpler + faster than
+ *  asking for JSON (less output tokens, no format "thinking"). Does NOT
+ *  hardcode a model — the host's defaultModel is used (configurable per
+ *  user via the optional `model` setting in the plugin config). */
+export function buildPrompt(target, text, model) {
   const name = targetName(target)
   const system =
-    `You are a translation assistant. Translate the user's text into ${name}. ` +
-    `Detect the source language. Respond ONLY with compact JSON: ` +
-    `{"translation":"<translated text>","source":"<source language name>"}. ` +
-    `If the text is already in ${name}, set translation to the original text and still name the source. ` +
-    `Do not add commentary, markdown, or code fences.`
-  return {
+    `Translate into ${name}. First line: the translation. Second line: the source language name. Nothing else.`
+  const params = {
     purpose: 'translation',
     system,
     messages: [{ role: 'user', content: text }],
+    maxTokens: 1024,
   }
+  if (model) params.model = model
+  return params
 }
 
-/** Parse the LLM's response into {translation, source}. Tolerant:
- *  - strips code fences if present;
- *  - extracts the first {...} JSON object;
- *  - degrades to {translation: <raw text>, source: 'unknown'} on any failure
- *    so the user still sees something rather than an error. */
+/** Parse the LLM's response into {translation, source}. The prompt asks for
+ *  two lines: first line = translation, second line = source language name.
+ *  Tolerant — degrades gracefully if the format isn't followed. */
 export function parseTranslation(content) {
   const raw = typeof content === 'string' ? content : String(content ?? '')
-  const json = extractJson(raw)
-  if (json) {
-    const translation = typeof json.translation === 'string' ? json.translation : raw.trim()
-    const source = typeof json.source === 'string' && json.source ? json.source : 'unknown'
-    return { translation, source }
+  const trimmed = raw.trim()
+  const lines = trimmed.split('\n').filter((l) => l.trim())
+  if (lines.length >= 2) {
+    return { translation: lines[0].trim(), source: lines[1].trim() || 'unknown' }
   }
-  // Degrade: the whole response is the translation; source unknown.
-  return { translation: raw.trim(), source: 'unknown' }
-}
-
-/** Pull the first balanced {...} JSON object out of `s` (after stripping
- *  ```json fences). String-aware: skips over quoted strings so a `}` inside
- *  a JSON string value (e.g. {"translation":"a}b"}) doesn't fool the brace
- *  counter. Returns null if none / unparseable. */
-function extractJson(s) {
-  let text = s.trim()
-  // Strip a leading code fence (```json ... ``` or ``` ... ```).
-  text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '')
-  const start = text.indexOf('{')
-  if (start === -1) return null
-  let depth = 0
-  let inString = false
-  let escape = false
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i]
-    if (inString) {
-      if (escape) { escape = false; continue }
-      if (ch === '\\') { escape = true; continue }
-      if (ch === '"') inString = false
-      continue
-    }
-    if (ch === '"') { inString = true; continue }
-    if (ch === '{') depth++
-    else if (ch === '}') {
-      depth--
-      if (depth === 0) {
-        const candidate = text.slice(start, i + 1)
-        try {
-          return JSON.parse(candidate)
-        } catch {
-          return null
-        }
-      }
-    }
-  }
-  return null
+  // Single line or empty — treat the whole thing as the translation.
+  return { translation: trimmed, source: 'unknown' }
 }
 
 /** Stable cache key for a (text, target) pair. sha256 eliminates the
@@ -117,7 +78,7 @@ export function toPopover(invocationId, { translation, source }) {
 /** The full translate flow, with `callHost` injected so it's testable without
  *  a subprocess or real LLM credentials. Returns a PluginCommandResult
  *  (popover on success / cache hit; notification on ai failure). */
-export async function translate({ invocationId, text, target, useCache, callHost }) {
+export async function translate({ invocationId, text, target, useCache, model, callHost }) {
   const tgt = target || 'zh-CN'
   const key = cacheKey(text, tgt)
 
@@ -136,7 +97,7 @@ export async function translate({ invocationId, text, target, useCache, callHost
   // Translate via the host's LLM.
   let content
   try {
-    const res = await callHost('ai.request', { ...buildPrompt(tgt, text), maxTokens: 1024 })
+    const res = await callHost('ai.request', buildPrompt(tgt, text, model))
     content = res?.content ?? ''
   } catch (e) {
     return {
@@ -161,4 +122,3 @@ export async function translate({ invocationId, text, target, useCache, callHost
 
   return toPopover(invocationId, parsed)
 }
-
