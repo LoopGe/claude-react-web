@@ -757,27 +757,21 @@
 .modal-backdrop[data-state="closing"] > .global-settings-modal { animation: overlay-panel-out var(--motion-duration-base) var(--motion-ease-exit) both; }
 .global-settings-tabs {
   display: flex;
+  flex-wrap: wrap;
   border-bottom: 1px solid var(--border);
-  padding: 0 16px;
+  padding: 0 12px;
   gap: 0;
-  overflow-x: auto;
-  flex-wrap: nowrap;
-  scrollbar-width: none;
-}
-.global-settings-tabs::-webkit-scrollbar {
-  display: none;
 }
 .global-settings-tab {
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
-  padding: 10px 16px;
+  padding: 8px 12px;
   font: inherit;
   font-size: 13px;
   font-weight: 500;
   color: var(--fg-muted);
   cursor: pointer;
-  flex-shrink: 0;
   white-space: nowrap;
   transition:
     color var(--motion-duration-fast) var(--motion-ease-standard),
