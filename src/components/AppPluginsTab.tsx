@@ -13,6 +13,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, apiRequest } from '../hooks/useApi'
 import { usePluginRegistry } from '../app-plugins/PluginRegistryProvider'
 import { AppPluginMarketplaceSection } from './AppPluginMarketplaceSection'
+import { DirectoryPicker } from './DirectoryPicker'
+import { IconFolder } from './icons/ToolIcons'
 import type { AppPluginClientInfo } from '../../shared/app-plugins/runtime-state.js'
 import type { NormalisedPermission, AppPluginPermission, PermissionSpec } from '../../shared/app-plugins/permissions.js'
 import { ALL_PERMISSIONS } from '../../shared/app-plugins/permissions.js'
@@ -21,6 +23,7 @@ import type { PluginConfigurationProperty } from '../../shared/app-plugins/contr
 export function AppPluginsTab() {
   const { plugins, refresh } = usePluginRegistry()
   const [installPath, setInstallPath] = useState('')
+  const [showDirPicker, setShowDirPicker] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
@@ -35,6 +38,14 @@ export function AppPluginsTab() {
       await refresh()
     } catch (e) { setError((e as Error).message) } finally { setBusy(false) }
   }, [installPath, refresh])
+
+  const installFromPath = useCallback(async (path: string) => {
+    setBusy(true); setError(null)
+    try {
+      await api.post('/app-plugins/install', { source: { type: 'local', path } })
+      await refresh()
+    } catch (e) { setError((e as Error).message) } finally { setBusy(false) }
+  }, [refresh])
 
   const enable = useCallback(async (id: string) => {
     setBusy(true); setError(null)
@@ -73,17 +84,34 @@ export function AppPluginsTab() {
         <input
           className="input"
           type="text"
-          placeholder="Local plugin directory path (dev mode)…"
+          placeholder="Local plugin directory path…"
           value={installPath}
           onChange={(e) => setInstallPath(e.target.value)}
           aria-label="Plugin directory path"
         />
+        <button className="btn" onClick={() => setShowDirPicker(true)} disabled={busy} title="Browse">
+          <IconFolder size={14} /> Browse
+        </button>
         <button className="btn btn-primary" disabled={busy || !installPath.trim()} onClick={install}>
           Install
         </button>
       </div>
 
       {error && <div className="modal-error">{error}</div>}
+
+      {showDirPicker && (
+        <DirectoryPicker
+          title="Pick a plugin folder"
+          selectLabel="Install this folder"
+          footerHint="Select a folder that contains crw-plugin.json"
+          onPick={(path) => {
+            setInstallPath(path)
+            setShowDirPicker(false)
+            void installFromPath(path)
+          }}
+          onClose={() => setShowDirPicker(false)}
+        />
+      )}
 
       <ul className="app-plugins-list">
         {plugins.length === 0 && <li className="app-plugins-empty">No app plugins installed.</li>}
