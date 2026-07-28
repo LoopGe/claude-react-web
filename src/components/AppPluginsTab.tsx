@@ -10,6 +10,7 @@
 // keeps the list in sync across tabs without a manual refetch.
 
 import { useCallback, useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { api, apiRequest } from '../hooks/useApi'
 import { usePluginRegistry } from '../app-plugins/PluginRegistryProvider'
 import { AppPluginMarketplaceSection } from './AppPluginMarketplaceSection'
@@ -99,7 +100,7 @@ export function AppPluginsTab() {
 
       {error && <div className="modal-error">{error}</div>}
 
-      {showDirPicker && (
+      {showDirPicker && createPortal(
         <DirectoryPicker
           title="Pick a plugin folder"
           selectLabel="Install this folder"
@@ -110,7 +111,8 @@ export function AppPluginsTab() {
             void installFromPath(path)
           }}
           onClose={() => setShowDirPicker(false)}
-        />
+        />,
+        document.body,
       )}
 
       <ul className="app-plugins-list">
