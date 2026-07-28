@@ -1187,7 +1187,7 @@ function SkillsTab({
         <div className="settings-skill-path-row">
           <input className="input" placeholder="Absolute server path to a skill folder" aria-label="Server path to skill folder" value={importPath} onChange={(e) => setImportPath(e.target.value)} spellCheck={false} />
           <button className="btn" onClick={() => setShowImportPicker(true)} disabled={importingSkill}><IconFolder size={14} /> Browse</button>
-          <button className="btn primary" onClick={() => void importFromServerPath()} disabled={importingSkill || !importPath.trim()}>
+          <button className="btn btn-primary" onClick={() => void importFromServerPath()} disabled={importingSkill || !importPath.trim()}>
             {importingSkill ? 'Installing…' : 'Install'}
           </button>
         </div>
@@ -1306,7 +1306,7 @@ function McpTab({
         <span className="settings-note settings-mcp-count">
           {servers.length} server{servers.length !== 1 ? 's' : ''} configured
         </span>
-        <button className="btn btn-sm" onClick={onAdd}>
+        <button className="btn" onClick={onAdd}>
           + Add Server
         </button>
       </div>
@@ -1442,45 +1442,45 @@ function McpCard({
           <span className="settings-card-meta">{testResult.toolCount} tool{testResult.toolCount !== 1 ? 's' : ''}</span>
         )}
         <div className="settings-mcp-actions">
-          <button className="btn btn-sm" onClick={() => void runTest()} disabled={testing || authBusy}>
+          <button className="btn" onClick={() => void runTest()} disabled={testing || authBusy}>
             {testing ? 'Testing...' : 'Test'}
           </button>
-          <button className="btn btn-sm" onClick={() => void listTools()} disabled={testing || authBusy}>
+          <button className="btn" onClick={() => void listTools()} disabled={testing || authBusy}>
             List tools
           </button>
           {isRemote && (
-            <button className="btn btn-sm" onClick={() => void startAuth()} disabled={testing || authBusy}>
+            <button className="btn" onClick={() => void startAuth()} disabled={testing || authBusy}>
               {authBusy ? 'Auth...' : server.oauthAuthorized ? 'Re-auth' : 'Auth'}
             </button>
           )}
           {isRemote && server.oauthAuthorized && (
-            <button className="btn btn-sm btn-danger" onClick={() => void clearAuth()} disabled={testing || authBusy}>
+            <button className="btn btn-danger" onClick={() => void clearAuth()} disabled={testing || authBusy}>
               Clear auth
             </button>
           )}
           <button
-            className="btn btn-sm"
+            className="btn"
             onClick={() => onToggle(server.name, server.enabled === false)}
             title={server.enabled !== false ? 'Disable' : 'Enable'}
           >
             {server.enabled !== false ? 'ON' : 'OFF'}
           </button>
-          <button className="btn btn-sm" onClick={() => onEdit(server)}>
+          <button className="btn" onClick={() => onEdit(server)}>
             Edit
           </button>
           {!confirmDelete ? (
-            <button className="btn btn-sm btn-danger" onClick={() => setConfirmDelete(true)}>
+            <button className="btn btn-danger" onClick={() => setConfirmDelete(true)}>
               Del
             </button>
           ) : (
             <div className="settings-mcp-confirm">
               <button
-                className="btn btn-sm btn-danger"
+                className="btn btn-danger"
                 onClick={() => { onDelete(server.name); setConfirmDelete(false) }}
               >
                 Confirm
               </button>
-              <button className="btn btn-sm" onClick={() => setConfirmDelete(false)} aria-label="Cancel">
+              <button className="btn" onClick={() => setConfirmDelete(false)} aria-label="Cancel">
                 <IconX size={12} />
               </button>
             </div>

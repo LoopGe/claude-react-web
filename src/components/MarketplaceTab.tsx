@@ -447,12 +447,12 @@ function MarketplaceCard({
             <IconAlertTriangle size={12} />
           </span>
         )}
-        <button className="btn btn-sm" onClick={onRefresh} disabled={busy} title="Pull from upstream">
+        <button className="btn" onClick={onRefresh} disabled={busy} title="Pull from upstream">
           Refresh
         </button>
         {!confirmRemove ? (
           <button
-            className="btn btn-sm"
+            className="btn"
             style={{ color: 'var(--danger)' }}
             onClick={onRequestRemove}
             disabled={busy}
@@ -517,7 +517,7 @@ function MarketplaceCard({
                 return (
                   <button
                     key={f}
-                    className="btn btn-sm"
+                    className="btn"
                     onClick={() => setPluginFilter(f)}
                     aria-pressed={pluginFilter === f}
                     style={{
@@ -564,7 +564,7 @@ function MarketplaceCard({
                 const toggling = togglingPlugins.has(`${item.id}:${p.name}`)
                 return (
                   <button
-                    className="btn btn-sm"
+                    className="btn"
                     onClick={() => onTogglePlugin(p.name, !p.enabled)}
                     disabled={toggling}
                     title={p.enabled ? 'Disable for new and live sessions' : 'Enable for new and live sessions'}

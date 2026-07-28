@@ -93,7 +93,7 @@ export function AppPluginsTab() {
         <button className="btn" onClick={() => setShowDirPicker(true)} disabled={busy} title="Browse">
           <IconFolder size={14} /> Browse
         </button>
-        <button className="btn primary" disabled={busy || !installPath.trim()} onClick={install}>
+        <button className="btn btn-primary" disabled={busy || !installPath.trim()} onClick={install}>
           {busy ? 'Installing…' : 'Install'}
         </button>
       </div>
