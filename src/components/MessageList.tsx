@@ -1248,15 +1248,32 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     if (typeof ResizeObserver === 'undefined') return
     let cancelled = false
     let raf = 0
-    let lastScrollHeight = 0
+    // Content-only baseline (scrollHeight MINUS the live streaming spacer),
+    // tracked monotonically. We must exclude the spacer here, not track raw
+    // scrollHeight: the streaming footer's spacer reserves ~the capped
+    // overlay height while a turn is active, inflating scrollHeight. When the
+    // turn ends the footer exits and the spacer shrinks to 0 — a SHRINK this
+    // observer's "only fire on growth" guard would skip without decrementing
+    // the baseline, leaving it inflated by ~110px. Any post-exit content
+    // growth smaller than that inflation (notably Virtuoso's async re-
+    // measurement of the just-landed final assistant message at its real
+    // Markdown height, which routinely lands after the spacer is gone because
+    // the SDK emits `result` only ~15ms after the `assistant` frame) would
+    // then read as `<= lastContentHeight` and be skipped — so the viewport
+    // never re-pinned and landed short of the bottom (the "bounces up a bit
+    // when the streaming footer disappears" jolt). Comparing content-only
+    // height makes the baseline immune to the spacer's lifecycle.
+    let lastContentHeight = 0
+    const contentHeightOf = (scroller: HTMLElement) =>
+      scroller.scrollHeight - getStreamingSpacerHeight(scroller)
     const ro = new ResizeObserver(() => {
       if (cancelled) return
       const scroller = scrollerRef.current
       if (!scroller) return
       if (!shouldFollowRef.current || scrollAnimatingRef.current) return
-      const sh = scroller.scrollHeight
-      if (sh <= lastScrollHeight) return
-      lastScrollHeight = sh
+      const contentH = contentHeightOf(scroller)
+      if (contentH <= lastContentHeight) return
+      lastContentHeight = contentH
       scroller.scrollTop = scroller.scrollHeight
     })
     const attach = () => {
@@ -1268,7 +1285,7 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
       // growth). See the block comment above for why.
       const itemList = scroller.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')
       if (!itemList) { raf = requestAnimationFrame(attach); return }
-      lastScrollHeight = scroller.scrollHeight
+      lastContentHeight = contentHeightOf(scroller)
       ro.observe(itemList)
     }
     attach()

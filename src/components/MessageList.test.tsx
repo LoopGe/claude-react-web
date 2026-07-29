@@ -574,6 +574,109 @@ describe('MessageList', () => {
     expect(scroller.scrollTop).toBe(280)
   })
 
+  it('re-pins to the bottom when settled content grows AFTER the streaming footer exits', () => {
+    // Regression guard for the "当 StreamingFooter 消失，视图向上弹一段" bug.
+    //
+    // The streaming bubble is height-capped (.streaming-plain max-height:
+    // calc(3lh + 20px)); the Virtuoso Footer spacer reserves that capped
+    // height so settled messages scroll under the overlay. When the turn
+    // ends the footer exits and the spacer is removed.
+    //
+    // The settled-content-growth backstop (item-list ResizeObserver) tracks
+    // `lastScrollHeight` MONOTONICALLY: it only updates on growth
+    // (`sh > lastScrollHeight`) and skips on shrink. So while streaming, the
+    // spacer inflates `lastScrollHeight` to (content + spacer); when the
+    // spacer then shrinks to 0 at turn end, `lastScrollHeight` is NOT
+    // decremented — it stays inflated by ~the former spacer height.
+    //
+    // The final assistant message lands only ~15ms before the `result` frame
+    // (server logs show assistant→result ≈ 10–16ms), so Virtuoso's async
+    // re-measurement of that message at its real Markdown height frequently
+    // lands AFTER the spacer is gone. That post-exit growth is compared
+    // against the stale inflated `lastScrollHeight` and — being smaller than
+    // the ~110px spacer inflation — is skipped, so the backstop never
+    // re-pins. The viewport is left at the old scrollTop, short of the new
+    // bottom: the visible "bounces up a bit" jolt.
+    vi.useFakeTimers()
+    virtuosoMockState.atBottomReport = true
+    virtuosoMockState.reportBeforeRef = true
+    virtuosoMockState.clientHeight = 100
+
+    const msgs = [
+      makeMsg('user', { message: { content: [{ type: 'text', text: 'q' }] } }),
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'a' }] } }),
+    ]
+
+    let contentHeight = 200 // settled items (user + assistant)
+    let regionHeight = 80   // capped streaming overlay
+
+    const { container, rerender } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" />,
+    )
+
+    const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
+    const region = container.querySelector('.chat-streaming-region') as HTMLElement
+
+    // Model a real browser scroller: scrollHeight = settled content + the
+    // COMMITTED Footer spacer; scrollTop is clamped to [0, maxScrollTop] and
+    // the clamp writes back (browsers physically reduce scrollTop when
+    // content shrinks below it — the behaviour the bug hides behind).
+    const readSpacer = () => {
+      const sp = scroller.querySelector<HTMLElement>('.virtuoso-streaming-spacer')
+      return sp ? (Number.parseFloat(sp.style.height) || 0) : 0
+    }
+    let rawScrollTop = 0
+    Object.defineProperty(scroller, 'scrollHeight', {
+      configurable: true,
+      get: () => contentHeight + readSpacer(),
+    })
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => 100 })
+    Object.defineProperty(scroller, 'scrollTop', {
+      configurable: true,
+      get: () => {
+        const max = Math.max(0, contentHeight + readSpacer() - 100)
+        if (rawScrollTop > max) rawScrollTop = max // browser clamp-on-shrink
+        return rawScrollTop
+      },
+      set: (v: number) => { rawScrollTop = v },
+    })
+    Object.defineProperty(region, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ height: regionHeight, width: 400, top: 0, left: 0, right: 400, bottom: regionHeight, x: 0, y: 0 }),
+    })
+
+    // Commit the overlay -> spacer = 80 -> pin to bottom (200 + 80 - 100 = 180).
+    regionHeight = 80
+    act(() => { fireResize(region) })
+    expect(scroller.scrollTop).toBe(180)
+
+    // Inflate the backstop's lastScrollHeight to the peak (content + spacer =
+    // 280) by firing the item-list observer while the spacer is present.
+    const itemList = scroller.querySelector('[data-testid="virtuoso-item-list"]') as HTMLElement
+    act(() => { fireResize(itemList) })
+
+    // Turn ends: streamingContent -> null. The 180ms exit timer unmounts the
+    // region -> streamingOverlayHeight -> 0 -> spacer removed. scrollHeight
+    // drops to 200 and the browser clamps scrollTop 180 -> 100 (bottom of the
+    // settled content).
+    rerender(<MessageList items={toItems(msgs as SdkMessage[])} streamingContent={null} />)
+    act(() => { vi.advanceTimersByTime(180) })
+    expect(scroller.scrollTop).toBe(100) // clamped to the post-exit bottom
+
+    // Virtuoso now re-measures the final assistant message at its real
+    // (taller) Markdown height — a post-exit content growth of 50px.
+    contentHeight = 250
+    act(() => { fireResize(itemList) })
+
+    // The viewport MUST follow to the new bottom (250 - 100 = 150). With the
+    // stale monotonic lastScrollHeight, the growth (250) is <= the inflated
+    // peak (280), so the backstop skips the re-pin and scrollTop stays at
+    // 100 — 50px short of the bottom (the "bounces up" jolt).
+    expect(scroller.scrollTop).toBe(150)
+
+    vi.useRealTimers()
+  })
+
   it('hides jump-to-bottom when the scroller cannot scroll down', async () => {
     virtuosoMockState.atBottomReport = false
     virtuosoMockState.reportBeforeRef = true
