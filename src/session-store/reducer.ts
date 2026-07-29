@@ -1018,10 +1018,22 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
     ? { ...message, consumedAt: effectiveConsumedAt }
     : message
 
+  // `api_retry` is a TRANSIENT rate-limit-retry indicator: it never enters
+  // items/messages/IDB (keeping the transcript append-only). It is routed to
+  // a dedicated slot here, and cleared by the next non-retry message. It also
+  // does NOT advance lastMessageUuid — it must not anchor sinceUuid (the
+  // server ring still holds the frame, so a reconnect whose sinceUuid points
+  // at the prior non-retry message re-sends the api_retry and re-arms the
+  // slot). updateTranscriptMirror is a no-op for api_retry (toTranscriptItem
+  // returns null), so it neither appends nor needs the old in-place
+  // replace/strip logic.
+  const isApiRetry = message.type === 'system' && message.subtype === 'api_retry'
+
   const workingMirror: ServerMirror = {
     ...mirror,
     eventCount: mirror.eventCount + 1,
-    ...(messageUuid ? { lastMessageUuid: messageUuid } : {}),
+    ...(messageUuid && !isApiRetry ? { lastMessageUuid: messageUuid } : {}),
+    apiRetry: isApiRetry ? incomingMessage : null,
   }
 
   let working: SessionState = {
@@ -1063,35 +1075,6 @@ function updateTranscriptMirror(mirror: ServerMirror, message: SdkMessage): Serv
   const prev = mirror.items[mirror.items.length - 1]
   const item = toTranscriptItem(message, prev)
   if (!item) return mirror
-
-  // Consecutive api_retry frames: replace the previous one in place
-  // (the countdown resets, so the UI only ever shows one card).
-  if (
-    item.msg.type === 'system' &&
-    item.msg.subtype === 'api_retry' &&
-    prev?.msg.type === 'system' &&
-    prev.msg.subtype === 'api_retry'
-  ) {
-    const items = mirror.items.slice(0, -1).concat(item)
-    const messages = mirror.messages.slice(0, -1).concat(item.msg)
-    return { ...mirror, items, messages }
-  }
-
-  // Retry cycle ended — a non-retry message landed (assistant output,
-  // system error, etc.). Strip the trailing api_retry card whose
-  // countdown is no longer meaningful; the new message itself carries
-  // the outcome.
-  if (
-    item.msg.subtype !== 'api_retry' &&
-    prev?.msg.type === 'system' &&
-    prev.msg.subtype === 'api_retry'
-  ) {
-    return {
-      ...mirror,
-      items: [...mirror.items.slice(0, -1), item],
-      messages: [...mirror.messages.slice(0, -1), item.msg],
-    }
-  }
 
   return {
     ...mirror,

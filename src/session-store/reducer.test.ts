@@ -2167,6 +2167,19 @@ function resultMsg(uuid: string): SdkMessage {
   return { type: 'result', subtype: 'success', uuid } as unknown as SdkMessage
 }
 
+function apiRetryMsg(uuid: string, attempt = 1, retryDelayMs = 1000): SdkMessage {
+  return {
+    type: 'system',
+    subtype: 'api_retry',
+    uuid,
+    attempt,
+    max_retries: 3,
+    retry_delay_ms: retryDelayMs,
+    error_status: 429,
+    error: 'rate_limit_error',
+  } as unknown as SdkMessage
+}
+
 function seedCache(messages: SdkMessage[]): ReturnType<typeof createInitialSessionState> {
   // Build a cache exactly as a full replay would, then return state.
   let state = createInitialSessionState('s')
@@ -2469,5 +2482,64 @@ describe('reducer: CLEAR_TRANSCRIPT', () => {
     expect(after.intent.pendingPlaceholders.size).toBe(0)
     expect(isEmpty(after.mirror.toolStatus)).toBe(true)
     expect(isEmpty(after.mirror.activeSubagents)).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// api_retry is a TRANSIENT frame routed to `mirror.apiRetry`, NOT items /
+// messages / IDB — keeping the transcript append-only (no in-place replace,
+// no supersession tracking).
+// ---------------------------------------------------------------------------
+
+describe('reducer: api_retry transient slot', () => {
+  it('routes api_retry to the slot, not items/messages, and does not advance lastMessageUuid', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: asstMsg('a1', 'hi') })
+    expect(state.mirror.lastMessageUuid).toBe('a1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: apiRetryMsg('r1') })
+    // Slot holds the frame; items/messages untouched; cursor stays at a1.
+    expect(state.mirror.apiRetry?.uuid).toBe('r1')
+    expect(ids(state)).toEqual(['a1'])
+    expect(state.mirror.messages.map((m) => m.uuid)).toEqual(['a1'])
+    expect(state.mirror.lastMessageUuid).toBe('a1')
+  })
+
+  it('overwrites the slot on consecutive api_retry (latest wins, no in-place replace)', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: apiRetryMsg('r1', 1, 1000) })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: apiRetryMsg('r2', 2, 2000) })
+    expect(state.mirror.apiRetry?.uuid).toBe('r2')
+    expect((state.mirror.apiRetry as { attempt?: number }).attempt).toBe(2)
+    expect(ids(state)).toEqual([]) // neither retry entered items
+  })
+
+  it('clears the slot when a non-retry message lands (retry cycle ended)', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: apiRetryMsg('r1') })
+    expect(state.mirror.apiRetry).not.toBeNull()
+    state = reduceSessionState(state, { type: 'MESSAGE', message: asstMsg('a1', 'done') })
+    expect(state.mirror.apiRetry).toBeNull()
+    expect(ids(state)).toEqual(['a1']) // the assistant appended; no stale retry in items
+  })
+
+  it('replay: api_retry mid-payload sets then clears the slot; trailing api_retry keeps it', () => {
+    // [api_retry, assistant] → slot set then cleared; items has only assistant.
+    let state = replay(createInitialSessionState('s'), [apiRetryMsg('r1'), asstMsg('a1', 'ok')])
+    expect(state.mirror.apiRetry).toBeNull()
+    expect(ids(state)).toEqual(['a1'])
+    // Replay ending in api_retry (turn in-progress) → slot stays set.
+    state = replay(createInitialSessionState('s2'), [asstMsg('a2', 'x'), apiRetryMsg('r2')])
+    expect(state.mirror.apiRetry?.uuid).toBe('r2')
+    expect(ids(state)).toEqual(['a2'])
+  })
+
+  it('loadOlder (PREPEND) drops historical api_retry (never an item, never sets the slot)', () => {
+    let state = seedCache([asstMsg('a1', 'anchor')])
+    state = reduceSessionState(state, {
+      type: 'PREPEND_MESSAGES',
+      messages: [apiRetryMsg('old-r'), asstMsg('old-a', 'older')],
+    })
+    expect(ids(state)).toEqual(['old-a', 'a1']) // old-r dropped, no slot set
+    expect(state.mirror.apiRetry).toBeNull()
   })
 })

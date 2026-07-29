@@ -293,6 +293,13 @@ export interface ServerMirror {
   liveTurn: LiveTurnState | null
   contextUsage: ContextUsage | null
   lastMessageUuid: string | null
+  /** Transient `api_retry` system frame (rate-limit retry indicator). Lives
+   *  OUTSIDE items/messages/IDB — it is purely transient (only meaningful
+   *  while a retry is in flight, cleared by the next non-retry message), so
+   *  routing it to a dedicated slot keeps the transcript append-only (no
+   *  in-place replace, no IDB supersession tracking). Null when no retry is
+   *  in progress. */
+  apiRetry: SdkMessage | null
   /** message-consumed frames that arrived before the matching message row.
    *  The WS channels are independent, so an idle session can deliver the
    *  consumed signal before the user-message broadcast. Cache it here and
@@ -456,6 +463,8 @@ export interface SessionSnapshot {
    *  subagentIndex. */
   workflowIndex: ReadonlyMap<string, WorkflowRecord>
   lastMessageUuid: string | null
+  /** Transient `api_retry` frame mirrored from ServerMirror (see there). */
+  apiRetry: SdkMessage | null
 }
 
 /** Build a fresh ServerMirror. Used by createInitialSessionState and by any
@@ -470,6 +479,7 @@ export function createInitialServerMirror(): ServerMirror {
     liveTurn: null,
     contextUsage: null,
     lastMessageUuid: null,
+    apiRetry: null,
     pendingConsumedMessages: new Map<string, number>(),
     permissionPending: new Map(),
     permissionDecisions: new Map(),

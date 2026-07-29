@@ -83,19 +83,26 @@ describe('SessionStore IDB cache (Phase 1)', () => {
     expect(items.map((i) => i.id)).toContain('a-0')
   })
 
-  it('drains superseded api_retry uuids from IDB (no re-emerge on cold-load)', async () => {
+  it('api_retry is transient: never enters IDB (no supersession tracking needed)', async () => {
+    // api_retry is routed to the mirror.apiRetry slot, NOT items/messages/IDB,
+    // so the transcript stays append-only. Consecutive api_retry overwrite the
+    // slot (no in-place replace, no IDB delete). Neither retry uuid lands in
+    // IDB → nothing to supersede, nothing to re-emerge on cold-load.
     const store = new SessionStore('s3')
     await store.idbReady
-    // Two consecutive api_retry → the first is replaced in place.
     store.dispatch({ type: 'MESSAGE', message: apiRetryMsg('retry-1') })
     store.dispatch({ type: 'MESSAGE', message: apiRetryMsg('retry-2') })
+    // A real message alongside, to confirm only non-retry frames persist.
+    store.dispatch({ type: 'MESSAGE', message: asstMsg('a1') })
     store.persistNow()
     await store.flushIdb()
 
     const records = await readAllIdbRecords('s3')
     const uuids = records.map((r) => r.uuid)
-    expect(uuids).toContain('retry-2')
-    expect(uuids).not.toContain('retry-1') // superseded → deleted from IDB
+    expect(uuids).toEqual(['a1']) // only the assistant frame; no api_retry
+    // The latest api_retry is held in the transient slot (cleared by the
+    // assistant frame that followed it).
+    expect(store.getSnapshot().apiRetry).toBeNull()
   })
 
   it('clearPersisted clears IDB records for the session', async () => {

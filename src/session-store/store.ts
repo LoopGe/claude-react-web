@@ -226,7 +226,13 @@ function loadFromStorage(sessionId: string): { messages: TranscriptItem[]; rawMe
     // the cache is a non-essential render hint and the WS replay repopulates
     // within seconds.
     if (!data || data.v !== 2 || !Array.isArray(data.messages)) return null
-    const rawMessages = data.messages as SdkMessage[]
+    // Strip transient `api_retry` from old caches (pre-cutover caches stored
+    // it inside messages; it now lives in the apiRetry slot and must not be
+    // re-persisted to IDB). toTranscriptItem already drops it from items;
+    // this keeps the raw messages array clean too.
+    const rawMessages = (data.messages as SdkMessage[]).filter(
+      (m) => !(m.type === 'system' && m.subtype === 'api_retry'),
+    )
     // Re-derive TranscriptItems from the messages via the SAME producer the
     // live store uses (toTranscriptItem with prev-threading), so the hydrated
     // items are byte-identical to what a live build would produce. This drops
@@ -310,9 +316,6 @@ export class SessionStore {
    *  check false-fire. Infinity lowers correctly on the first assigned seq. */
   private maxSeq = 0
   private minSeq = Number.POSITIVE_INFINITY
-  /** uuids superseded by api_retry in-place replace, drained to IDB delete
-   *  on the next save so they don't re-emerge on cold-load cursor. */
-  private supersededUuids = new Set<string>()
   /** In-flight IDB write chain; clearPersisted/destroy await the tail. Writes
    *  are CHAINED (each saveIdb awaits the previous) so flushIdb awaiting the
    *  tail awaits every queued write — no write is orphaned to land after a
@@ -469,21 +472,8 @@ export class SessionStore {
   }
 
   dispatch(action: SessionAction): void {
-    // Detect api_retry tail-supersession: the reducer's updateTranscriptMirror
-    // replaces/strips the trailing api_retry in place when a new api_retry (or
-    // a non-retry after a retry) lands. The dropped uuid would otherwise linger
-    // in IDB and re-emerge on cold-load cursor — capture it here for deletion.
-    let prevTailUuid: string | undefined
-    if (action.type === 'MESSAGE') {
-      const items = this.state.mirror.items
-      prevTailUuid = items.length > 0 ? items[items.length - 1].id : undefined
-    }
     const next = reduceSessionState(this.state, action)
     if (next === this.state) return
-    if (prevTailUuid != null && action.type === 'MESSAGE') {
-      const stillPresent = next.mirror.items.some((i) => i.id === prevTailUuid)
-      if (!stillPresent) this.supersededUuids.add(prevTailUuid)
-    }
     // CLEAR_TRANSCRIPT (the /clear wipe) resets IDB tracking so the next save
     // re-persists the fresh empty → new state from scratch.
     if (action.type === 'CLEAR_TRANSCRIPT') {
@@ -732,7 +722,6 @@ export class SessionStore {
     this.uuidToSeq.clear()
     this.maxSeq = 0
     this.minSeq = Number.POSITIVE_INFINITY
-    this.supersededUuids.clear()
     // Re-arm the write-failure warning so a fresh failure streak after a
     // /clear surfaces its first warning (the streak ended with the clear).
     this.idbWriteFailureWarned = false
@@ -742,8 +731,9 @@ export class SessionStore {
    *  (chronological rank) at persist time. New messages only ever arrive at
    *  the ends of `mirror.messages` (live/replay append at the tail; loadOlder
    *  backfill at the head), so the unpersisted set forms a prefix (older →
-   *  --minSeq) and/or suffix (newer → ++maxSeq). Also drains superseded
-   *  api_retry uuids. */
+   *  --minSeq) and/or suffix (newer → ++maxSeq). `api_retry` never reaches
+   *  `messages` (transient slot), so it is never written to IDB — no
+   *  supersession/deletion path needed. */
   private async saveIdb(): Promise<void> {
     if (!this.idbAvailable) return
     const gen = this.clearGeneration
@@ -823,10 +813,7 @@ export class SessionStore {
       }
     }
 
-    const superseded = Array.from(this.supersededUuids)
-    this.supersededUuids.clear()
-
-    if (newRecords.length === 0 && superseded.length === 0) return
+    if (newRecords.length === 0) return
 
     // If a clear started while we built records (sync, no await above), bail —
     // writing now would resurrect what clearIdb is about to wipe.
@@ -847,14 +834,10 @@ export class SessionStore {
       minSeq: Number.isFinite(this.minSeq) ? this.minSeq : 0,
     }
     try {
-      // Single atomic tx (put records + delete superseded + put meta). A
-      // racing clearSession (separate tx) now serializes wholly before or
-      // wholly after — never a delete-then-put that resurrects.
-      await applyWrites(db, sessionId, newRecords, superseded, meta)
-      for (const u of superseded) {
-        this.persistedUuids.delete(u)
-        this.uuidToSeq.delete(u)
-      }
+      // Single atomic tx (put records + put meta). A racing clearSession
+      // (separate tx) now serializes wholly before or wholly after — never a
+      // delete-then-put that resurrects.
+      await applyWrites(db, newRecords, meta)
       // Success re-arms the per-streak warning so a later fresh failure is
       // surfaced again.
       this.idbWriteFailureWarned = false
@@ -928,6 +911,7 @@ export class SessionStore {
       activePhase: mirror.liveTurn?.phase ?? null,
       tokenRate: mirror.liveTurn?.tokenRate ?? null,
       contextUsage: mirror.contextUsage,
+      apiRetry: mirror.apiRetry,
       error: intent.error,
       permissionDecisions: mirror.permissionDecisions,
       planStatus: mirror.planStatus,

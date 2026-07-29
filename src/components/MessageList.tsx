@@ -68,6 +68,11 @@ interface Props {
   /** Accumulated text from streaming deltas. When non-null, a live
    *  "typing" bubble is rendered at the bottom of the transcript. */
   streamingContent?: string | null
+  /** Transient `api_retry` frame (rate-limit retry indicator), or null when
+   *  no retry is in flight. Rendered as a tail divider via ApiRetryView (it
+   *  lives outside items/messages/IDB — a dedicated transient slot — so this
+   *  synthesizes a tail item for rendering only). */
+  apiRetry?: SdkMessage | null
   /** Precomputed plan status keyed by toolUseId. */
   planStatus?: ReadonlyMap<string, PlanStatus>
   /** Plan body text extracted from ExitPlanMode tool_result outputs. */
@@ -284,7 +289,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, clearing, replayReady = true, transcriptRevealKey, streamingContent, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, leadingItems, trailingItems, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, emptyStateContent, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd }: Props) {
+export const MessageList = memo(function MessageList({ items, working, clearing, replayReady = true, transcriptRevealKey, streamingContent, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, leadingItems, trailingItems, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, emptyStateContent, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
@@ -740,6 +745,22 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
         })
       }
     }
+    // Append the transient `api_retry` divider as a synthetic tail item
+    // (render-only — it lives in the `apiRetry` slot, not items/messages/IDB).
+    // Stable id + no receivedAt so the entrance-animation gate skips it and
+    // Virtuoso reuses the row across consecutive retry frames (the slot is
+    // overwritten in place, so ApiRetryView gets fresh delayMs props without a
+    // remount — same UX as the old in-place replace, minus the append-only
+    // violation).
+    if (apiRetry) {
+      out.push({
+        id: '__api_retry__',
+        msg: apiRetry,
+        isCompactSummary: false,
+        renderableIndex: out.length,
+        itemIndex: -2,
+      })
+    }
     // Pre-compute stable lookups so itemContent doesn't depend on the
     // renderableItems array reference (which changes on every message append
     // and would defeat Virtuoso's row-level memo).
@@ -753,7 +774,7 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
       lastItemId: out[out.length - 1]?.id,
       nextItemTypeMap: nextMap,
     }
-  }, [items, parentToolUseIdFilter, isResultConsumed, leadingItems, trailingItems])
+  }, [items, parentToolUseIdFilter, isResultConsumed, leadingItems, trailingItems, apiRetry])
 
   // --- Reverse infinite scroll: keep the viewport anchored on prepend ----
   // Virtuoso requires `firstItemIndex` to decrease by exactly the number of
@@ -2502,9 +2523,10 @@ interface ApiRetryMessage {
  *  which the retry will fire) by combining the message's mount time
  *  with `retry_delay_ms`. The deadline is held in state and reset only
  *  when a fresh frame lands with a different `retry_delay_ms` — the
- *  reducer replaces consecutive `api_retry` frames in place
- *  (`reducer.ts:298-300`) so this component gets new props rather than
- *  remounting. Reading deadline-now is monotonic across that prop
+ *  reducer routes consecutive `api_retry` frames to the `mirror.apiRetry`
+ *  slot (overwriting the previous), and MessageList renders that slot as a
+ *  synthetic tail item with a stable id, so this component gets new props
+ *  rather than remounting. Reading deadline-now is monotonic across that prop
  *  change; the previous baseline+delay split could briefly show a
  *  garbled number for one render after a new frame.
  *
@@ -2525,8 +2547,8 @@ function ApiRetryView({ msg }: { msg: SdkMessage }) {
   // render where deadline is "new" but now is from the previous frame.
   //
   // Caveat: when `delayMs` changes mid-component-life (the reducer
-  // replaces consecutive api_retry frames in place —see
-  // `reducer.ts:298-300`), there's a single render between prop change
+  // overwrites the `apiRetry` slot with the new frame —see
+  // `reducer.ts` applyMessage), there's a single render between prop change
   // and effect-firing where we still use the old deadline. React
   // batches the effect's setState into the same microtask, so visually
   // it's a flash at most a frame long. Building a "fresh deadline in

@@ -140,18 +140,17 @@ export async function putMessages(
   await tx.done
 }
 
-/** Apply a save atomically in ONE transaction: put new records, delete
- *  superseded uuids, update meta. Doing all three in a single readwrite tx
- *  means a racing clearSession (its own tx) serializes wholly before or
- *  wholly after this write — never delete-then-put (resurrect) or
- *  put-then-partial-delete. The tx is created synchronously on entry (before
- *  any await), so once this is called the write is ordered against any
- *  concurrent clear deterministically by IDB's tx-creation order. */
+/** Apply a save atomically in ONE transaction: put new records + update meta.
+ *  Doing both in a single readwrite tx means a racing clearSession (its own tx)
+ *  serializes wholly before or wholly after this write — never a
+ *  delete-then-put that resurrects. The tx is created synchronously on entry
+ *  (before any await), so once this is called the write is ordered against any
+ *  concurrent clear deterministically by IDB's tx-creation order. (No per-uuid
+ *  delete path: `api_retry` is transient and never written to IDB, so nothing
+ *  is ever superseded.) */
 export async function applyWrites(
   db: IDBPDatabase,
-  sessionId: string,
   records: MessageRecord[],
-  deleteUuids: string[],
   meta: SessionMeta,
 ): Promise<void> {
   const tx = db.transaction([MESSAGES_STORE, META_STORE], 'readwrite')
@@ -159,23 +158,10 @@ export async function applyWrites(
   for (const r of records) {
     await messages.put(r)
   }
-  for (const uuid of deleteUuids) {
-    await messages.delete([sessionId, uuid])
-  }
   await tx.objectStore(META_STORE).put(meta)
   await tx.done
 }
 
-/** Delete messages by uuid for a session (drain superseded api_retry uuids). */
-export async function deleteMessages(db: IDBPDatabase, sessionId: string, uuids: string[]): Promise<void> {
-  if (uuids.length === 0) return
-  const tx = db.transaction(MESSAGES_STORE, 'readwrite')
-  const store = tx.objectStore(MESSAGES_STORE)
-  for (const uuid of uuids) {
-    await store.delete([sessionId, uuid])
-  }
-  await tx.done
-}
 
 /** Fetch up to `n` messages strictly older than `beforeSeq` (descending —
  *  newest-first among the older set). Returns the records (caller dispatches

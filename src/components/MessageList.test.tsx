@@ -1559,17 +1559,17 @@ describe('ApiRetryView divider', () => {
   })
 
   it('renders an api_retry frame as a retry divider with countdown + attempt', () => {
-    const items = toItems([
-      makeMsg('system', {
-        subtype: 'api_retry',
-        attempt: 1,
-        max_retries: 3,
-        retry_delay_ms: 9000,
-        error_status: 429,
-        error: 'rate_limit_error',
-      }),
-    ])
-    const { container } = render(<MessageList items={items} />)
+    // api_retry arrives via the transient `apiRetry` slot (not items), rendered
+    // as a synthetic tail item.
+    const apiRetry = makeMsg('system', {
+      subtype: 'api_retry',
+      attempt: 1,
+      max_retries: 3,
+      retry_delay_ms: 9000,
+      error_status: 429,
+      error: 'rate_limit_error',
+    })
+    const { container } = render(<MessageList items={[]} apiRetry={apiRetry} />)
 
     const divider = container.querySelector('.msg.result.retry')
     expect(divider).toBeTruthy()
@@ -1586,16 +1586,14 @@ describe('ApiRetryView divider', () => {
   })
 
   it('uses the "overloaded" label for a 529 and omits the /max tail when max_retries is missing', () => {
-    const items = toItems([
-      makeMsg('system', {
-        subtype: 'api_retry',
-        attempt: 2,
-        retry_delay_ms: 4000,
-        error_status: 529,
-        error: 'overloaded_error',
-      }),
-    ])
-    const { container } = render(<MessageList items={items} />)
+    const apiRetry = makeMsg('system', {
+      subtype: 'api_retry',
+      attempt: 2,
+      retry_delay_ms: 4000,
+      error_status: 529,
+      error: 'overloaded_error',
+    })
+    const { container } = render(<MessageList items={[]} apiRetry={apiRetry} />)
 
     const mark = container.querySelector('.msg.result.retry .result-mark')
     expect(mark?.textContent).toContain('overloaded')
@@ -1607,17 +1605,15 @@ describe('ApiRetryView divider', () => {
 
   it('shows "retrying now" once the countdown reaches zero', () => {
     vi.useFakeTimers()
-    const items = toItems([
-      makeMsg('system', {
-        subtype: 'api_retry',
-        attempt: 1,
-        max_retries: 3,
-        retry_delay_ms: 2000,
-        error_status: 429,
-        error: 'rate_limit_error',
-      }),
-    ])
-    const { container } = render(<MessageList items={items} />)
+    const apiRetry = makeMsg('system', {
+      subtype: 'api_retry',
+      attempt: 1,
+      max_retries: 3,
+      retry_delay_ms: 2000,
+      error_status: 429,
+      error: 'rate_limit_error',
+    })
+    const { container } = render(<MessageList items={[]} apiRetry={apiRetry} />)
 
     // Advance past the 2s deadline.
     act(() => {

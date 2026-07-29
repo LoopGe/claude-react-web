@@ -69,6 +69,10 @@ export interface ChatStream {
   messages: SdkMessage[]
   error: string | null
   contextUsage: ContextUsage | null
+  /** Transient `api_retry` frame (rate-limit retry indicator), or null when
+   *  no retry is in flight. Routed to a dedicated slot (not items/messages) —
+   *  MessageList renders it as a tail divider. */
+  apiRetry: SdkMessage | null
   tokenRate: number | null
   streamingContent: string | null
   activePhase: ActivePhase
@@ -144,6 +148,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   const activePhase = useSessionField(sessionId, 'activePhase')
   const tokenRate = useSessionField(sessionId, 'tokenRate')
   const contextUsage = useSessionField(sessionId, 'contextUsage')
+  const apiRetry = useSessionField(sessionId, 'apiRetry')
   const error = useSessionField(sessionId, 'error')
   const permissionDecisions = useSessionField(sessionId, 'permissionDecisions')
   const planStatus = useSessionField(sessionId, 'planStatus')
@@ -477,6 +482,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       messages,
       error: displayedError,
       contextUsage,
+      apiRetry,
       tokenRate,
       streamingContent,
       activePhase,
@@ -500,6 +506,6 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       hasOlder,
       loadingOlder,
     }),
-    [items, messages, displayedError, contextUsage, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, replayReady, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder],
+    [items, messages, displayedError, contextUsage, apiRetry, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, replayReady, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder],
   )
 }

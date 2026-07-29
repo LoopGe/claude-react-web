@@ -80,6 +80,10 @@ export function isTrimBoundary(msg: SdkMessage): boolean {
 
 export function toTranscriptItem(msg: SdkMessage, prev: TranscriptItem | undefined): TranscriptItem | null {
   if (msg.type === 'stream_event') return null
+  // `api_retry` is a TRANSIENT rate-limit-retry indicator routed to
+  // `mirror.apiRetry` (see reducer applyMessage) — it never becomes a
+  // TranscriptItem, keeping items/messages/IDB append-only.
+  if (msg.type === 'system' && msg.subtype === 'api_retry') return null
 
   const hiddenByDefault = shouldHideByDefault(msg)
   const id = typeof msg.uuid === 'string'
@@ -100,10 +104,6 @@ export function toTranscriptItem(msg: SdkMessage, prev: TranscriptItem | undefin
     // for disk-restored history — the header hides the timestamp then.
     receivedAt: typeof msg.receivedAt === 'number' ? msg.receivedAt : undefined,
     deliveryStatus: deriveDeliveryStatus(msg),
-  }
-
-  if (msg.type === 'system' && msg.subtype === 'api_retry' && prev?.msg.type === 'system' && prev.msg.subtype === 'api_retry') {
-    return item
   }
 
   return item
