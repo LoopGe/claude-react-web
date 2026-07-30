@@ -28,8 +28,11 @@ export const PERMISSION_MODE_CYCLE: PermissionMode[] = [
 ]
 
 /** Reasoning effort level — controls how many tokens the model spends.
- *  The SDK default is 'high' (equivalent to omitting the parameter). */
-export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+ *  The SDK default is 'high' (equivalent to omitting the parameter).
+ *  Defined in shared/model-info.ts so both server and client use the same
+ *  type; re-exported here for backward-compatible client imports. */
+export type { EffortLevel } from '../shared/model-info'
+import type { EffortLevel } from '../shared/model-info'
 
 /** User-selectable effort levels, ordered low→max. Shown in the effort
  *  chip dropdown. All five are always offered: unsupported levels for the
@@ -124,17 +127,10 @@ export interface NewSessionForm {
   groupId?: string
 }
 
-export interface ModelInfo {
-  id: string
-  display_name?: string
-  description?: string
-  /** Whether this model supports fast mode (research-preview Opus speedup). */
-  supports_fast_mode?: boolean
-  /** Whether this model supports effort levels. */
-  supports_effort?: boolean
-  /** Effort levels this model supports (subset of EFFORT_LEVELS). */
-  supported_effort_levels?: EffortLevel[]
-}
+/** Wire shape of a supported model entry. Defined in shared/model-info.ts
+ *  so both server and client use the same type; re-exported here for
+ *  backward-compatible client imports. */
+export type { ModelInfo } from '../shared/model-info'
 
 /** A slash command exposed by the SDK (e.g. /help, /clear). */
 export interface SlashCommand {

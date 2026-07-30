@@ -189,7 +189,6 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   app.post('/sessions/:id/messages', async (c) => {
     const id = c.req.param('id')
     const body = await safeJson<{ text?: string; content?: unknown[] }>(c.req)
-    let accepted: { uuid: string; receivedAt: number }
 
     if (Array.isArray(body.content) && body.content.length > 0) {
       let totalBase64 = 0
@@ -212,14 +211,15 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
         return c.json({ error: 'total image payload too large' }, 413)
       }
       log.info(`POST /sessions/${id}/messages — content array with ${body.content.length} blocks`)
-      accepted = sm.sendContent(id, body.content as Array<{ type: string; [k: string]: unknown }>) as unknown as { uuid: string; receivedAt: number }
+      const accepted = sm.sendContent(id, body.content as Array<{ type: string; [k: string]: unknown }>)
+      return c.json({ ok: true, message: { uuid: accepted.uuid, receivedAt: accepted.receivedAt } })
     } else {
       const text = typeof body.text === 'string' ? body.text : ''
       if (!text.trim()) return c.json({ error: 'text is required' }, 400)
       log.info(`POST /sessions/${id}/messages — ${text.length} chars`)
-      accepted = sm.send(id, text) as unknown as { uuid: string; receivedAt: number }
+      const accepted = sm.send(id, text)
+      return c.json({ ok: true, message: { uuid: accepted.uuid, receivedAt: accepted.receivedAt } })
     }
-    return c.json({ ok: true, message: { uuid: accepted.uuid, receivedAt: accepted.receivedAt } })
   })
 
   // Paginated history (lazy-load older messages from disk).
@@ -362,36 +362,11 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     return c.json({ usage })
   })
 
-  // Supported models
-  //
-  // The SDK's ModelInfo uses { value, displayName, description, ... } —
-  // camelCase plus a generic `value` key. The browser bundle has its own
-  // ModelInfo type using snake_case `display_name` and id-shaped `id`.
-  // We translate at the wire so the browser type doesn't have to know
-  // about the SDK's shape; if the SDK ever renames fields again (it has
-  // before), only this one mapping changes. Drop entries with no
-  // identifier — defensive, since rendering an <option> with neither id
-  // nor label produces an invisible row that looks like a layout bug.
+  // Supported models — the manager translates the SDK's camelCase ModelInfo
+  // to the snake_case wire `ModelInfo` (shared/model-info.ts) and filters
+  // entries with no identifier, so the route is a passthrough.
   app.get('/sessions/:id/models', async (c) => {
-    type SdkModelInfo = {
-      value: string
-      displayName: string
-      description: string
-      supportsFastMode: boolean
-      supportsEffort: boolean
-      supportedEffortLevels: ('low' | 'medium' | 'high' | 'xhigh' | 'max')[]
-    }
-    const raw = (await sm.supportedModels(c.req.param('id'))) as unknown as SdkModelInfo[]
-    const models = raw
-      .filter((m) => typeof m.value === 'string' && m.value.trim().length > 0)
-      .map((m) => ({
-        id: m.value as string,
-        display_name: m.displayName,
-        description: m.description,
-        supports_fast_mode: m.supportsFastMode,
-        supports_effort: m.supportsEffort,
-        supported_effort_levels: m.supportedEffortLevels,
-      }))
+    const models = await sm.supportedModels(c.req.param('id'))
     return c.json({ models })
   })
 

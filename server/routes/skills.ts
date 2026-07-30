@@ -197,12 +197,7 @@ export function buildSkillsRouter(sm: SessionManager): Hono {
   // applyFlagSettings forwarding.
   app.post('/sessions/:id/skill-override', async (c) => {
     const body = await safeJson<{ override?: unknown }>(c.req)
-    // Accept both `{ override: ... }` (preferred) and a bare union — the
-    // bare form keeps curl/tests terse without making the client guess.
-    const raw = body && Object.prototype.hasOwnProperty.call(body, 'override')
-      ? body.override
-      : body
-    const override = parseSkillOverride(raw)
+    const override = parseSkillOverride(body?.override)
     const session = await sm.setSkillOverride(c.req.param('id'), override)
     return c.json({ session })
   })

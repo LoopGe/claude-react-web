@@ -50,6 +50,7 @@ import {
 } from './session-types.js'
 import { HttpError } from './errors.js'
 import { effortLevelsForModel } from './effort-capability.js'
+import type { ModelInfo } from '../shared/model-info.js'
 import { PermissionBroker } from './permission-broker.js'
 import { SessionHealthMonitor } from './session-health.js'
 import { pushBounded, stampReceivedAt, stampConsumedAt } from './history-utils.js'
@@ -190,6 +191,23 @@ function buildSnippet(text: string, query: string, maxLength = 180): string {
 }
 
 const log = createLogger('session')
+
+/** A user message after `stampReceivedAt` has stamped `receivedAt` on it.
+ *  The SDK's `SDKUserMessage` type doesn't include `receivedAt` (it's a
+ *  server-added field), so this intersection lets callers (the HTTP route)
+ *  read both `uuid` and `receivedAt` without an `as unknown as` cast. */
+type SentUserMessage = SDKUserMessage & { receivedAt: number }
+
+/** The SDK's camelCase model-info shape (translated to the snake_case wire
+ *  `ModelInfo` at the boundary so the browser bundle doesn't import the SDK). */
+type SdkModelInfo = {
+  value: string
+  displayName: string
+  description: string
+  supportsFastMode: boolean
+  supportsEffort: boolean
+  supportedEffortLevels: ('low' | 'medium' | 'high' | 'xhigh' | 'max')[]
+}
 
 export class SessionManager {
   private sessions = new Map<string, Session>()
@@ -1489,7 +1507,7 @@ export class SessionManager {
   }
 
   /** Send a user turn into an existing session. */
-  send(id: string, text: string): SDKUserMessage {
+  send(id: string, text: string): SentUserMessage {
     const s = this.requireSendable(id)
     // Note: the `/clear` slash command is intercepted client-side by
     // src/local-commands.ts, which POSTs /sessions/:id/clear instead of
@@ -1509,11 +1527,14 @@ export class SessionManager {
       `running=${s.running}, terminated=${s.terminated}`,
     )
     this.dispatchUserMessage(s, userMsg)
-    return userMsg
+    // dispatchUserMessage → pushToSession → stampReceivedAt stamps receivedAt
+    // in place before this returns; cast once here so the route reads it
+    // without its own `as unknown as`.
+    return userMsg as SentUserMessage
   }
 
   /** Send a user turn with a content array (text + image blocks). */
-  sendContent(id: string, content: Array<{ type: string; [k: string]: unknown }>): SDKUserMessage {
+  sendContent(id: string, content: Array<{ type: string; [k: string]: unknown }>): SentUserMessage {
     const s = this.requireSendable(id)
     const userMsg: SDKUserMessage = {
       type: 'user',
@@ -1528,7 +1549,7 @@ export class SessionManager {
       `pendingTurns=${s.pendingTurns}, input.closed=${s.handle.closed}`,
     )
     this.dispatchUserMessage(s, userMsg)
-    return userMsg
+    return userMsg as SentUserMessage
   }
 
   /** Shared tail for send() and sendContent(): push into the SDK input
@@ -2190,10 +2211,20 @@ export class SessionManager {
     }
   }
 
-  async supportedModels(id: string) {
+  async supportedModels(id: string): Promise<ModelInfo[]> {
     const s = this.requireLive(id)
     const fn = this.requireHandleMethod<() => Promise<unknown>>(s, 'supportedModels', 'supported models')
-    return this.timeSdkControl(id, 'supportedModels', fn)
+    const raw = (await this.timeSdkControl(id, 'supportedModels', fn)) as SdkModelInfo[]
+    return raw
+      .filter((m) => typeof m.value === 'string' && m.value.trim().length > 0)
+      .map((m) => ({
+        id: m.value,
+        display_name: m.displayName,
+        description: m.description,
+        supports_fast_mode: m.supportsFastMode,
+        supports_effort: m.supportsEffort,
+        supported_effort_levels: m.supportedEffortLevels,
+      }))
   }
 
   async supportedCommands(id: string) {
@@ -2328,9 +2359,10 @@ export class SessionManager {
     const global = this.mcpStore.toSdkConfig() ?? {}
     const result: Record<string, unknown> = {}
 
-    // Add explicitly-requested global servers. Guard on Array.isArray so a
-    // stray string (e.g. enabledMcpServers:"foo") can't be iterated
-    // character-by-character.
+    // Add explicitly-requested global servers. The parameter is typed
+    // `string[]` and the HTTP routes validate it via `validateStringArray`
+    // before calling, so no runtime Array.isArray / typeof guard is needed
+    // here — the type system is the single boundary.
     //
     // An explicit request overrides the global `enabled` flag: a globally
     // disabled server is "off by default" (not pre-checked in the new-session
@@ -2338,9 +2370,8 @@ export class SessionManager {
     // box. `toSdkConfig` skips disabled servers, so for names not present
     // there we fall back to `getSdkServerConfig`, which ignores `enabled`.
     // Unknown names resolve to nothing and are silently dropped.
-    if (Array.isArray(enabledGlobal)) {
+    if (enabledGlobal) {
       for (const name of enabledGlobal) {
-        if (typeof name !== 'string') continue
         const cfg = global[name] ?? this.mcpStore.getSdkServerConfig(name)
         if (cfg) result[name] = cfg
       }
@@ -2359,7 +2390,7 @@ export class SessionManager {
     enabledGlobal?: string[],
     sessionMcp?: Record<string, unknown>,
   ): Promise<Record<string, unknown> | undefined> {
-    if (this.mcpStore && Array.isArray(enabledGlobal)) {
+    if (this.mcpStore && enabledGlobal) {
       await this.mcpStore.refreshOAuthTokens(enabledGlobal)
     }
     return this.mergeMcpServers(enabledGlobal, sessionMcp)
