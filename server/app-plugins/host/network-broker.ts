@@ -1,6 +1,8 @@
-// Network broker — the ONLY path a plugin uses to make outbound HTTP(S).
+// Network broker — the Host API path a plugin uses to make outbound HTTPS.
 //
-// SSRF defenses (a real, enforced boundary per the trust model):
+// SSRF defenses (defense-in-depth for plugins that use network.fetch — NOT
+// an OS-level sandbox; plugins are trusted local programs that can
+// `import node:net` and bypass this broker entirely):
 //   - HTTPS only (plain HTTP rejected).
 //   - Target host must be in the granted network.fetch allowlist.
 //   - A custom `https.Agent` lookup resolves the host and connects to a
@@ -20,6 +22,7 @@
 import { request as httpsRequest, type RequestOptions, Agent } from 'node:https'
 import { lookup as dnsLookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
+import { isPrivateIP } from '../../ssrf.js'
 import type { PermissionChecker } from '../permission-manager.js'
 
 const MAX_REDIRECTS = 5
@@ -144,12 +147,12 @@ function safeLookup(hostname: string, _opts: unknown, cb: (err: NodeJS.ErrnoExce
   const host = hostname.replace(/^\[|\]$/g, '') // strip IPv6 brackets
   const ver = isIP(host)
   if (ver > 0) {
-    if (isUnsafeIp(host, ver)) return cb(new Error(`target IP is not allowed: ${host}`) as NodeJS.ErrnoException, '', 0)
+    if (isPrivateIP(host)) return cb(new Error(`target IP is not allowed: ${host}`) as NodeJS.ErrnoException, '', 0)
     return cb(null, host, ver)
   }
   void dnsLookup(host, { all: true }).then(
     (addrs) => {
-      const unsafe = addrs.find((a) => isUnsafeIp(a.address, isIP(a.address)))
+      const unsafe = addrs.find((a) => isPrivateIP(a.address))
       if (unsafe) return cb(new Error(`host ${host} resolves to a disallowed address (${unsafe.address})`) as NodeJS.ErrnoException, '', 0)
       const first = addrs[0]
       if (!first) return cb(new Error(`host ${host} did not resolve`) as NodeJS.ErrnoException, '', 0)
@@ -159,26 +162,4 @@ function safeLookup(hostname: string, _opts: unknown, cb: (err: NodeJS.ErrnoExce
   )
 }
 
-/** True iff the IP is loopback / private / link-local / cloud metadata.
- *  `ver` is the `net.isIP` result (4 or 6). */
-function isUnsafeIp(ip: string, ver: number): boolean {
-  if (ver === 4) {
-    const [a, b] = ip.split('.').map(Number)
-    if (a === 127) return true // loopback
-    if (a === 10) return true // private
-    if (a === 172 && b >= 16 && b <= 31) return true // private
-    if (a === 192 && b === 168) return true // private
-    if (a === 169 && b === 254) return true // link-local + cloud metadata (169.254.169.254)
-    if (a === 0) return true // 0.0.0.0/8
-    if (a === 100 && b >= 64 && b <= 127) return true // CGNAT
-    return false
-  }
-  if (ver === 6) {
-    const lower = ip.toLowerCase()
-    if (lower === '::1' || lower === '::') return true // loopback / unspecified
-    if (lower.startsWith('fe80')) return true // link-local
-    if (lower.startsWith('fc') || lower.startsWith('fd')) return true // unique-local
-    return false
-  }
-  return true
-}
+

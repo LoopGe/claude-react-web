@@ -22,6 +22,8 @@ function isPrivateIPv4(ip: string): boolean {
   if (a === 169 && b === 254) return true
   // 0.0.0.0
   if (a === 0) return true
+  // 100.64.0.0/10 — CGNAT (carrier-grade NAT, shared address space)
+  if (a === 100 && b >= 64 && b <= 127) return true
   return false
 }
 
@@ -53,8 +55,11 @@ function isPrivateIPv6(ip: string): boolean {
   return false
 }
 
-/** Return true if the IP address is in a private / link-local / loopback range. */
-function isPrivateIP(ip: string): boolean {
+/** Return true if the IP address is in a private / link-local / loopback range.
+ *  Handles IPv4, IPv6, and IPv4-mapped IPv6 (::ffff:a.b.c.d). Exported so the
+ *  app-plugin network broker shares the same comprehensive check rather than
+ *  maintaining a divergent (and historically less complete) copy. */
+export function isPrivateIP(ip: string): boolean {
   if (isIPv4(ip)) return isPrivateIPv4(ip)
   if (isIPv6(ip)) return isPrivateIPv6(ip)
   return false
