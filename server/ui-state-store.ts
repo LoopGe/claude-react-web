@@ -8,6 +8,7 @@
 
 import { readFile } from 'node:fs/promises'
 import { join as joinPath } from 'node:path'
+import { homedir } from 'node:os'
 import { writeAtomic } from './json-file-store.js'
 import { createLogger } from './log.js'
 
@@ -77,7 +78,7 @@ export class UiStateStore {
   private writing: Promise<void> = Promise.resolve()
 
   constructor(opts: { stateDir?: string } = {}) {
-    this.dir = opts.stateDir ?? joinPath(process.env.HOME ?? process.env.USERPROFILE ?? '.', DEFAULT_DIR_NAME)
+    this.dir = opts.stateDir ?? joinPath(homedir(), DEFAULT_DIR_NAME)
     this.file = joinPath(this.dir, FILE_NAME)
   }
 

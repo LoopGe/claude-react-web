@@ -16,6 +16,7 @@ import {
   createLogger,
 } from './log.js'
 import { setWebAuth } from './auth.js'
+import { HttpError } from './errors.js'
 
 const log = createLogger('config')
 
@@ -159,11 +160,12 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
 export let config: ServerConfig = DEFAULTS
 
 /** Return the configured auth token or throw. Use at request time so a
- *  missing token surfaces as an HTTP 500 rather than a silent fallback. */
+ *  missing token surfaces as an HTTP 401 rather than a silent fallback. */
 export function requireAuthToken(): string {
   const token = config.authToken
   if (!token) {
-    throw new Error(
+    throw new HttpError(
+      401,
       'authToken is not configured. Set `authToken` in config.json (and optionally `baseUrl`).',
     )
   }

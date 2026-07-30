@@ -18,7 +18,7 @@
 import { promises as fs, existsSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { resolve as resolvePath, join } from 'node:path'
-import { homedir } from 'node:os'
+
 import { createHash } from 'node:crypto'
 import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import type { JsonFileStoreOptions } from './json-file-store.js'
@@ -464,11 +464,6 @@ export class MpStore extends JsonFileStore<MpEntry> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Default state directory. Mirrors `defaultStateDir` from persistence.ts — *  duplicated here so callers don't need to import that module. */
-export function defaultMpStateDir(): string {
-  return resolvePath(homedir(), DEFAULT_DIR_NAME)
-}
 
 /** Derive a slug from a git URL. Examples:
  *    https://github.com/owner/repo.git — repo
