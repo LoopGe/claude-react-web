@@ -78,6 +78,12 @@ interface Entry {
    *  closure (and potentially large captured stderr) alive. */
   stderrDataHandler: ((chunk: string) => void) | null
   stderrEndHandler: (() => void) | null
+  /** stdin/stdout socket error listeners — attached in spawnFor so a
+   *  post-exit write by the SDK (ECONNABORTED / EPIPE on a closed pipe)
+   *  doesn't surface as an unhandled stream error. Detached in
+   *  finalizeEntry alongside the stderr listeners. */
+  stdinErrorHandler: ((err: Error) => void) | null
+  stdoutErrorHandler: ((err: Error) => void) | null
   safetyTimer: NodeJS.Timeout | null
   resolved: boolean
 }
@@ -133,6 +139,8 @@ export class ProcessMonitor {
       errorHandler: null,
       stderrDataHandler: null,
       stderrEndHandler: null,
+      stdinErrorHandler: null,
+      stdoutErrorHandler: null,
       safetyTimer: null,
       resolved: false,
     })
@@ -192,6 +200,29 @@ export class ProcessMonitor {
         entry.stderrDataHandler = stderrDataHandler
         entry.stderrEndHandler = stderrEndHandler
       }
+    }
+
+    // Attach 'error' listeners on stdin/stdout pipe sockets. When the CLI
+    // subprocess exits, its stdin/stdout pipes close; if the SDK then writes
+    // to stdin (control message, queued input), the write fails with
+    // ECONNABORTED or EPIPE. Without a listener on the socket, Node treats
+    // this as an unhandled stream error and prints a raw stack trace to the
+    // terminal (all-internal frames, no application context). The process
+    // exit is already handled by exitHandler — these listeners just suppress
+    // the socket-level noise.
+    if (child.stdin) {
+      const stdinErrorHandler = (err: Error) => {
+        log.debug(`[process-monitor] stdin socket error [${sid}]: ${(err as NodeJS.ErrnoException).code ?? ''} ${err.message}`)
+      }
+      child.stdin.on('error', stdinErrorHandler)
+      if (entry) entry.stdinErrorHandler = stdinErrorHandler
+    }
+    if (child.stdout) {
+      const stdoutErrorHandler = (err: Error) => {
+        log.debug(`[process-monitor] stdout socket error [${sid}]: ${(err as NodeJS.ErrnoException).code ?? ''} ${err.message}`)
+      }
+      child.stdout.on('error', stdoutErrorHandler)
+      if (entry) entry.stdoutErrorHandler = stdoutErrorHandler
     }
 
     if (!entry) {
@@ -305,6 +336,13 @@ export class ProcessMonitor {
     if (entry.process?.stderr) {
       if (entry.stderrDataHandler) entry.process.stderr.off('data', entry.stderrDataHandler)
       if (entry.stderrEndHandler) entry.process.stderr.off('end', entry.stderrEndHandler)
+    }
+    // Detach the stdin/stdout error listeners for the same GC reason.
+    if (entry.process?.stdin && entry.stdinErrorHandler) {
+      entry.process.stdin.off('error', entry.stdinErrorHandler)
+    }
+    if (entry.process?.stdout && entry.stdoutErrorHandler) {
+      entry.process.stdout.off('error', entry.stdoutErrorHandler)
     }
     entry.resolveExit(info)
     this.entries.delete(reg)
