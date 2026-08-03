@@ -158,6 +158,15 @@ export function useNotifications(options?: UseNotificationsOptions): UseNotifica
         setPermission('granted')
       }
       setEnabled(true)
+      // Fire a test notification so the user immediately sees that it works
+      // (and can verify OS-level settings like sound / Action Center).
+      try {
+        new Notification('Notifications enabled', {
+          body: 'You will be notified when turns complete and permissions are requested.',
+          tag: 'crw-test-notification',
+          silent: false,
+        })
+      } catch { /* constructor failure is non-fatal — the flag is already set */ }
     },
     [enabled, setEnabled],
   )
