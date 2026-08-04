@@ -58,8 +58,11 @@ export const ContextBar = memo(function ContextBar({ usage }: Props) {
     <div className={`ctx-bar ctx-bar-${level}`}>
       <div className="ctx-bar-label">
         <span>
-          Context
-          {usage.model && <span className="ctx-bar-model" title={usage.model}>{usage.model}</span>}
+          {warning && (
+            <span className={`ctx-bar-warning ctx-bar-warning-${warning.level}`}>
+              {warning.percentLeft}% until auto-compact
+            </span>
+          )}
         </span>
         <span className="ctx-bar-nums">
           {formatTokens(used)} / {formatTokens(max)}
@@ -82,11 +85,6 @@ export const ContextBar = memo(function ContextBar({ usage }: Props) {
           style={{ ['--ctx-progress' as string]: bounded / 100 } as CSSProperties}
         />
       </div>
-      {warning && (
-        <div className={`ctx-bar-warning ctx-bar-warning-${warning.level}`}>
-          {warning.percentLeft}% until auto-compact
-        </div>
-      )}
     </div>
   )
 })
