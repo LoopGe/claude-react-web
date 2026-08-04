@@ -5,7 +5,6 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { PluginContributionSlot } from '../app-plugins/PluginContributionSlot'
-import { PluginStatusIndicator } from '../app-plugins/PluginStatusIndicator'
 import { Chat } from './Chat'
 import { SideChatDrawer } from './SideChatDrawer'
 import { ContextMenu } from './ContextMenu'
@@ -18,7 +17,7 @@ import { useGitStatus } from '../hooks/useGitStatus'
 import { useChatStream } from '../hooks/useChatStream'
 import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { useIsMobile } from '../hooks/useIsMobile'
-import { statusClass, statusLabel, shortenModel } from '../utils/session-status'
+import { shortenModel } from '../utils/session-status'
 import { useModelOptions } from '../hooks/useModelOptions'
 import { AnimatePresence } from 'motion/react'
 import { ModelPicker } from './ModelPicker'
@@ -527,12 +526,6 @@ export const ChatPanel = memo(function ChatPanel({
             {slot}
           </span>
         </Tooltip>
-        <Tooltip label={statusLabel(session)} placement="bottom">
-          <span
-            className={`chat-panel-status ${statusClass(session)}`}
-            aria-label={statusLabel(session)}
-          />
-        </Tooltip>
         {hasUnread && !focused && (
           <Tooltip label="New turn completed while this panel wasn't focused" placement="bottom">
             <span
@@ -778,16 +771,6 @@ export const ChatPanel = memo(function ChatPanel({
                 {effectiveMessageCount} {effectiveMessageCount === 1 ? 'msg' : 'msgs'}
               </span>
             </Tooltip>
-            {session.working && (
-              <PluginStatusIndicator sessionWorking={true}>
-                <Tooltip label="Assistant is working on a turn" placement="bottom">
-                  <span className="chat-panel-working-indicator">
-                    <span className="chat-panel-working-dot" aria-hidden />
-                    working...
-                  </span>
-                </Tooltip>
-              </PluginStatusIndicator>
-            )}
           </div>
         )}
         {/* App Plugin `chat.header` action slot. Renders nothing when no
