@@ -10,14 +10,16 @@ afterEach(() => {
 })
 
 describe('PinnedUserMessage', () => {
-  it('renders a pinned-user-message button carrying the text and title', () => {
+  it('renders a pinned-user-message body button carrying the text and title', () => {
     const { container } = render(<PinnedUserMessage text="What is the plan?" onClick={() => {}} />)
     const root = container.querySelector('.pinned-user-message')
     expect(root).not.toBeNull()
-    expect(root?.tagName).toBe('BUTTON')
-    expect(root?.getAttribute('title')).toBe('What is the plan?')
-    // type="button" must survive the motion.button swap so it never submits a form.
-    expect(root?.getAttribute('type')).toBe('button')
+    // The clickable body is a <button> inside the root <div>.
+    const body = root?.querySelector('.pinned-user-message-body')
+    expect(body?.tagName).toBe('BUTTON')
+    expect(body?.getAttribute('title')).toBe('What is the plan?')
+    // type="button" so it never submits a form.
+    expect(body?.getAttribute('type')).toBe('button')
     expect(root?.querySelector('.pinned-user-message-text')?.textContent).toBe('What is the plan?')
   })
 
@@ -26,10 +28,10 @@ describe('PinnedUserMessage', () => {
     expect(container.querySelector('.pinned-user-message')?.className).toContain('pinned-user-message-clearing')
   })
 
-  it('fires onClick when clicked', () => {
+  it('fires onClick when the body is clicked', () => {
     const onClick = vi.fn()
     const { container } = render(<PinnedUserMessage text="x" onClick={onClick} />)
-    fireEvent.click(container.querySelector('.pinned-user-message')!)
+    fireEvent.click(container.querySelector('.pinned-user-message-body')!)
     expect(onClick).toHaveBeenCalledTimes(1)
   })
 

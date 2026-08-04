@@ -304,10 +304,13 @@
   flex: 0 0 auto;
   pointer-events: auto;
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 0;
   width: 100%;
-  padding: 6px 12px;
+  /* Right padding matches RecapWindow's header (12px) so the toggle button
+     sits at the same horizontal position as the recap close button — the two
+     are stacked vertically and a mismatch reads as misaligned. */
+  padding: 0 12px 0 0;
   border-radius: 10px;
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg) 82%, transparent);
@@ -318,14 +321,39 @@
   font-size: 12.5px;
   line-height: 1.4;
   text-align: left;
-  cursor: pointer;
   overflow: hidden;
   transition: border-color var(--motion-duration-fast) var(--motion-ease-standard),
               background var(--motion-duration-fast) var(--motion-ease-standard);
 }
+/* The clickable body (label + text) — jump-prev on click. */
+.pinned-user-message-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 10px 0 0 10px;
+}
+/* Header row: body (label + text) + chevron toggle, on one line. */
+.pinned-user-message-header-row {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+}
+.pinned-user-message-body:hover {
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+}
 .pinned-user-message:hover {
   border-color: var(--msg-user-border);
-  background: color-mix(in srgb, var(--bg) 70%, transparent);
 }
 /* During a /clear, reuse the transcript's `clear-blur-fade` keyframes
    (defined in chat.css — @keyframes are global) so the pinned header
@@ -355,6 +383,89 @@
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--fg-muted);
+}
+/* Chevron toggle button on the right — opens the all-questions list. */
+.pinned-user-message-dropdown-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* Match RecapWindow's close-button size (26×26) so the two sit at the
+     same horizontal position AND the same visual weight when stacked. */
+  width: 26px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard),
+              color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.pinned-user-message-dropdown-toggle:hover {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+}
+.pinned-user-message-dropdown-toggle.open svg {
+  transform: rotate(180deg);
+}
+.pinned-user-message-dropdown-toggle svg {
+  transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
+}
+/* Expanded question list — the ONLY element whose height is tweened on
+   expand/collapse AND the scroll container. The overlay-scrollbar utility is
+   attached directly to this element. `overflow-y: auto` + `max-height` cap it
+   at ~5 rows; the height tween (driven by the component's useLayoutEffect)
+   animates the inline height between 0 and natural. Because the scrollbar
+   track is a sibling appended to this element's PARENT (the header root),
+   not a child of this element, `overflow` on this element doesn't clip the
+   track — the track sits on the root, positioned to match this element's box. */
+.pinned-user-message-list {
+  flex: 0 0 auto;
+  /* border-box so the height tween includes border + padding in the height
+     value. The collapse branch additionally zeroes border-top + padding
+     inline before tweening (a scroll container's offsetHeight otherwise
+     sticks at border+padding = 9px even at height:0). */
+  box-sizing: border-box;
+  min-height: 0;
+  max-height: calc(5 * 34px + 1px);
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  transition: height var(--motion-duration-base) var(--motion-ease-standard);
+}
+.pinned-user-message-list-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 6px;
+  /* Wrap the full question text (multi-line) instead of truncating — the
+     whole point of the list is to read past questions, so ellipsis would
+     hide exactly what the user came to see. */
+  white-space: normal;
+  word-break: break-word;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard),
+              color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.pinned-user-message-list-item:hover {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+}
+.pinned-user-message-list-item.active {
+  color: var(--fg);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 /* During a /clear, reuse the transcript's `clear-blur-fade` keyframes
    (defined in chat.css — @keyframes are global) so the recap dissolves

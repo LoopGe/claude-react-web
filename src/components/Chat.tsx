@@ -39,7 +39,7 @@ import { useInputHistory } from '../hooks/useInputHistory'
 import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { Composer } from './Composer'
 import { ContextBar } from './ContextBar'
-import { MessageList, WorkingBubble } from './MessageList'
+import { MessageList, WorkingBubble, type ScrollNavigator } from './MessageList'
 import { PermissionDialog } from './PermissionDialog'
 import { QuestionDialog, type QuestionDraft } from './QuestionDialog'
 import { SubagentOverlay } from './SubagentOverlay'
@@ -294,6 +294,13 @@ export const Chat = memo(function Chat({
     },
     [],
   )
+  // Full list of rendered user messages, lifted from MessageList for the
+  // pinned-header dropdown. Dedup is done in MessageList (length+ids), so a
+  // setState here only fires when the set genuinely changed.
+  const [userMessages, setUserMessages] = useState<{ id: string; text: string; index: number }[]>([])
+  const handleUserMessagesChange = useCallback((msgs: { id: string; text: string; index: number }[]) => {
+    setUserMessages(msgs)
+  }, [])
   // In-panel resume picker (variant="panel"). Only renders when this panel
   // is the resume target; the global / empty-state flow uses the App-root
   // modal instead. Mounted conditionally like the git overlay, so the
@@ -1252,9 +1259,9 @@ export const Chat = memo(function Chat({
   // MessageList registers its prev/next-user-message navigator here so the
   // chat-area right-click menu ("Scroll to previous/next user message") can
   // drive it without prop-threading through the message list.
-  const scrollNavRef = useRef<((dir: 'prev' | 'next') => void) | null>(null)
-  const registerNavigate = useCallback((fn: (dir: 'prev' | 'next') => void) => {
-    scrollNavRef.current = fn
+  const scrollNavRef = useRef<ScrollNavigator | null>(null)
+  const registerNavigate = useCallback((nav: ScrollNavigator) => {
+    scrollNavRef.current = nav
   }, [])
 
   // Stable wrapper so MessageList's `itemContent` useCallback (whose dep
@@ -1315,12 +1322,12 @@ export const Chat = memo(function Chat({
             {
               label: 'Scroll to previous user message',
               icon: <IconArrowUp size={14} />,
-              onClick: () => scrollNavRef.current?.('prev'),
+              onClick: () => scrollNavRef.current?.prev(),
             },
             {
               label: 'Scroll to next user message',
               icon: <IconArrowDown size={14} />,
-              onClick: () => scrollNavRef.current?.('next'),
+              onClick: () => scrollNavRef.current?.next(),
             },
             { label: '' },
             {
@@ -1467,6 +1474,7 @@ export const Chat = memo(function Chat({
           onAbortBash={abortBashCommand}
           onVisibleRangeChange={handleVisibleRangeChange}
           onPinnedUserMessageChange={handlePinnedUserMessageChange}
+          onUserMessagesChange={handleUserMessagesChange}
           cwd={session.cwd}
         />
         </div>
@@ -1704,7 +1712,13 @@ export const Chat = memo(function Chat({
               key="pinned"
               text={pinnedText}
               clearing={effectiveClearing}
-              onClick={() => scrollNavRef.current?.('prev')}
+              userMessages={userMessages}
+              activeId={pinnedUserMsg.id}
+              onJumpTo={(id) => {
+                const msg = userMessages.find((m) => m.id === id)
+                if (msg) scrollNavRef.current?.to(msg.index)
+              }}
+              onClick={() => scrollNavRef.current?.prev()}
             />
           )}
         </AnimatePresence>

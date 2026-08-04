@@ -43,6 +43,16 @@ export type { ActiveSubagent } from '../session-store/types'
  *  referential across renders (consumers' useContext equality check). */
 const EMPTY_TASK_MAP = new Map<string, never>()
 
+/** Scroll-navigation surface registered by MessageList and held by the parent
+ *  (Chat) for the pinned-header dropdown + right-click menu. `to(index)`
+ *  jumps to a specific renderable item (used by the dropdown); `prev`/`next`
+ *  step to the adjacent user message. */
+export interface ScrollNavigator {
+  prev: () => void
+  next: () => void
+  to: (index: number) => void
+}
+
 interface Props {
   items: TranscriptItem[]
   /** Whether the session is currently processing a turn. Gates the
@@ -139,9 +149,17 @@ interface Props {
   /** Register a navigator that scrolls the transcript to the previous /
    *  next real user message relative to the current viewport top. Wired up
    *  the chain to the session right-click menu ("Scroll to previous/next
-   *  user message"). The callback identity is stable for the component's
-   *  lifetime, so the parent can register it once. */
-  onRegisterNavigate?: (fn: (dir: 'prev' | 'next') => void) => void
+   *  user message") and the pinned-header dropdown. The callback identity
+   *  is stable for the component's lifetime, so the parent can register it
+   *  once. */
+  onRegisterNavigate?: (nav: ScrollNavigator) => void
+  /** Reports the full list of real top-level user messages currently
+   *  rendered, oldest→newest, as {id, text, index}. `index` is the
+   *  renderable-item index (passable to ScrollNavigator.to). Used by the
+   *  pinned-header dropdown to list every question for direct jump. Fires
+   *  only when the list identity changes (length + every id), not on every
+   *  render. */
+  onUserMessagesChange?: (msgs: { id: string; text: string; index: number }[]) => void
   /** Override the empty-state content shown when there are no messages and
    *  replay is ready. Defaults to a generic "Type a message below to start
    *  the conversation." prompt. Side Chat overrides this to communicate the
@@ -289,7 +307,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, clearing, replayReady = true, transcriptRevealKey, streamingContent, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, leadingItems, trailingItems, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, emptyStateContent, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd }: Props) {
+export const MessageList = memo(function MessageList({ items, working, clearing, replayReady = true, transcriptRevealKey, streamingContent, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, leadingItems, trailingItems, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
@@ -1417,6 +1435,27 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   useEffect(() => {
     userMsgIndicesRef.current = userMsgIndices
   }, [userMsgIndices])
+  // Cache of the last lifted user-message list, for dedup (see the effect
+  // below). Declared before the effect that reads it.
+  const userMsgListRef = useRef<{ id: string; text: string; index: number }[]>([])
+
+  // Lift the full user-message list {id, text} to the parent for the
+  // pinned-header dropdown. Dedup by length + ids so we only re-emit when the
+  // set actually changes (streaming token flushes re-derive renderableItems
+  // but don't add user messages, so this avoids churning the parent's state).
+  useEffect(() => {
+    if (!onUserMessagesChange) return
+    const msgs = userMsgIndices.map((idx) => {
+      const it = renderableItems[idx]
+      return { id: it.id, text: extractUserText(it.msg) ?? '', index: idx }
+    })
+    const prev = userMsgListRef.current
+    if (prev.length === msgs.length && prev.every((p, i) => p.id === msgs[i].id && p.text === msgs[i].text && p.index === msgs[i].index)) {
+      return
+    }
+    userMsgListRef.current = msgs
+    onUserMessagesChange(msgs)
+  }, [userMsgIndices, renderableItems, onUserMessagesChange])
 
   // Top-most visible data index, tracked from Virtuoso's `rangeChanged`.
   // rangeChanged reports indices in OFFSET space (dataIndex + firstItemIndex),
@@ -1482,6 +1521,13 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     emitPinned(topVisibleIdxRef.current)
   }, [transcriptRevealKey, emitPinned])
 
+  const navigateToIndex = useCallback((target: number) => {
+    // Disable follow so the programmatic scroll doesn't fight auto-follow
+    // (mirrors the search-result scroll path).
+    shouldFollowRef.current = false
+    virtuosoRef.current?.scrollToIndex({ index: target, behavior: 'smooth', align: 'start' })
+  }, [])
+
   const navigate = useCallback((dir: 'prev' | 'next') => {
     const indices = userMsgIndicesRef.current
     if (indices.length === 0) return
@@ -1499,16 +1545,15 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
       }
     }
     if (target == null) return
-    // Disable follow so the programmatic scroll doesn't fight auto-follow
-    // (mirrors the search-result scroll path).
-    shouldFollowRef.current = false
-    virtuosoRef.current?.scrollToIndex({ index: target, behavior: 'smooth', align: 'start' })
-  }, [])
+    navigateToIndex(target)
+  }, [navigateToIndex])
 
-  // Expose the navigator to the parent (Chat —App — session context menu).
+  // Expose the navigator to the parent (Chat —App — session context menu +
+  // pinned-header dropdown). Object form so callers get prev/next/to in one
+  // stable registration.
   useEffect(() => {
-    onRegisterNavigate?.(navigate)
-  }, [onRegisterNavigate, navigate])
+    onRegisterNavigate?.({ prev: () => navigate('prev'), next: () => navigate('next'), to: navigateToIndex })
+  }, [onRegisterNavigate, navigate, navigateToIndex])
 
   const scrollerRefCb = useCallback((ref: HTMLElement | Window | null) => {
     const prev = scrollerRef.current
