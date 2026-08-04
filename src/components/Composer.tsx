@@ -15,7 +15,9 @@ import { useToast } from '../hooks/useToast'
 import type { PastedImage, SlashCommand } from '../types'
 import { CommandPicker } from './CommandPicker'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
-import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconSendInterruptToggle, IconLoader } from './icons/ToolIcons'
+import { Markdown } from './Markdown'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconSendInterruptToggle, IconLoader, IconFileText } from './icons/ToolIcons'
 
 interface Props {
   input: string
@@ -134,6 +136,13 @@ export const Composer = memo(function Composer({
   /** `!!` prefix → shared mode: output is injected into the SDK transcript so
    *  the model sees it (triggers a model turn). Plain `!` is local-only. */
   const sharedMode = input.startsWith('!!')
+
+  // ── Expanded mode (Alt+Enter) ──────────────────────────────────
+  // Enlarges the textarea (max-height 180px → 70vh) and shows an Edit/Preview
+  // toggle above it. Preview renders the current input as Markdown.
+  const [expanded, setExpanded] = useState(false)
+  const [previewMode, setPreviewMode] = useState(false)
+  const setPreviewOs = useOverlayScrollbar({ autoHide: 'leave' })
 
   /** Filter commands by prefix match against name + aliases. */
   const filteredCommands = useMemo(() => {
@@ -378,7 +387,7 @@ export const Composer = memo(function Composer({
 
   return (
     <div
-      className={`chat-composer ${dragOver ? 'chat-composer-drag' : ''}`}
+      className={`chat-composer ${dragOver ? 'chat-composer-drag' : ''} ${expanded ? 'chat-composer-expanded' : ''}`}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
@@ -432,9 +441,46 @@ export const Composer = memo(function Composer({
             </span>
           </div>
         )}
+        {expanded && (
+          <div className="composer-expanded-tabs">
+            <button
+              type="button"
+              className={`composer-expanded-tab${!previewMode ? ' active' : ''}`}
+              onClick={() => setPreviewMode(false)}
+            >
+              <IconPencil size={12} />
+              Edit
+            </button>
+            <button
+              type="button"
+              className={`composer-expanded-tab${previewMode ? ' active' : ''}`}
+              onClick={() => setPreviewMode(true)}
+            >
+              <IconFileText size={12} />
+              Preview
+            </button>
+            <button
+              type="button"
+              className="composer-expanded-close"
+              onClick={() => { setExpanded(false); setPreviewMode(false) }}
+              aria-label="Exit expanded mode"
+            >
+              <IconX size={14} />
+            </button>
+          </div>
+        )}
+        {expanded && previewMode ? (
+          <div className="composer-preview" ref={setPreviewOs}>
+            {input.trim() ? (
+              <Markdown text={input} />
+            ) : (
+              <div className="composer-preview-empty">Nothing to preview yet.</div>
+            )}
+          </div>
+        ) : (
         <textarea
           ref={textareaRef}
-          className="textarea"
+          className={`textarea${expanded ? ' textarea-expanded' : ''}`}
           aria-label="Message input"
           placeholder={
             dragOver
@@ -541,6 +587,17 @@ export const Composer = memo(function Composer({
               }
               return
             }
+            // Alt+Enter: toggle expanded mode (enlarge textarea + show
+            // Edit/Preview tabs). Checked BEFORE the Enter-send guard below
+            // (alt doesn't affect shiftKey, so the send guard would catch it
+            // first). stopPropagation prevents the key from bubbling further.
+            if (e.key === 'Enter' && e.altKey) {
+              e.preventDefault()
+              e.stopPropagation()
+              setExpanded((v) => !v)
+              setPreviewMode(false)
+              return
+            }
             // Skip Enter while an IME composition is active — CJK input
             // methods fire Enter to confirm a candidate, and we'd otherwise
             // treat that as "send" and ship a half-finished message.
@@ -586,6 +643,7 @@ export const Composer = memo(function Composer({
           }}
           disabled={disabled}
         />
+        )}
         {pickerOpen && filteredCommands.length > 0 && (
           <CommandPicker
             commands={filteredCommands}
