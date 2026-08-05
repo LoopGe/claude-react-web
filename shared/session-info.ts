@@ -89,6 +89,18 @@ export interface SessionInfoBase<PM = string> {
   recovering?: boolean
   terminated: boolean
   terminatedReason?: string
+  /** True when the session is `terminated` but only with a *transient*
+   *  reason (process crash / query error / spawn failure) AND the server
+   *  would still allow a manual `resume()` — i.e. the SDK transcript is
+   *  expected to be recoverable. Lets the client offer a "retry resume"
+   *  affordance instead of a hard "session ended" dead-end, without the
+   *  client having to mirror the server's reason classification.
+   *
+   *  Always false for non-terminated sessions and for hard-terminal
+   *  reasons (deleted / transcript_missing / crash_recovered_fork /
+   *  unknown). A successful resume clears `terminated` (and thus this)
+   *  via spawn()'s writeStore. */
+  canRetryResume?: boolean
   error?: string
   /** True while the SDK is mid-turn. Drives the "thinking" animation. */
   working: boolean

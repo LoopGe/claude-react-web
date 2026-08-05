@@ -810,16 +810,111 @@ describe('SessionManager', () => {
     expect(mockHandles).toHaveLength(1)
   })
 
-  it('resume() refuses terminated sessions', async () => {
+  it('resume() refuses hard-terminated sessions (deleted / transcript_missing / crash_recovered_fork)', async () => {
     const info = sm.create({})
     // Simulate the pump finishing naturally — queue a result then close.
+    // This leaves terminated:true with terminatedReason:'query_ended' (a
+    // TRANSIENT reason — covered by the next test). Overwrite it with a
+    // hard-terminal reason to verify the guard still 410s those.
     mockHandles[0].emit({ type: 'result' })
     mockHandles[0].finish()
     await tick()
-    // pump's finally block sets terminated=true, persists, and the session
-    // is still in memory. Unload to persist the terminal state.
     await sm.unload(info.id)
-    await expect(sm.resume(info.id)).rejects.toThrow(/ended/i)
+    expect(store.get(info.id)?.terminated).toBe(true)
+
+    for (const reason of ['deleted', 'transcript_missing', 'crash_recovered_fork'] as const) {
+      const meta = store.get(info.id)!
+      store.upsert({ ...meta, terminatedReason: reason })
+      await expect(sm.resume(info.id)).rejects.toThrow(/ended/i)
+    }
+  })
+
+  it('resume() allows resuming a transiently-terminated session when the transcript still exists', async () => {
+    // Auto-recovery (crash ladder) may have failed and left the session
+    // terminated with a transient reason (process crash / query error /
+    // spawn failure), but the SDK transcript can still be intact on disk.
+    // resume() must defer to the hasSdkTranscript probe rather than
+    // hard-410-ing — the user's manual retry should succeed.
+    const info = sm.create({ cwd: '/tmp', model: 'm1' })
+    sm.send(info.id, 'hi')
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    mockHandles[0].finish()
+    await tick()
+    await sm.unload(info.id)
+    // Pump natural end → terminated:true, terminatedReason:'query_ended'.
+    expect(store.get(info.id)?.terminated).toBe(true)
+    expect(store.get(info.id)?.terminatedReason).toBe('query_ended')
+
+    // Default mock → transcript exists on disk. The transient reason lets
+    // resume() fall through to the probe, which authorises the spawn.
+    const resumed = await sm.resume(info.id)
+    expect(resumed.id).toBe(info.id)
+    expect(resumed.terminated).toBe(false)
+    // Resumed with `resume: id` (not a fresh respawn).
+    expect(mockHandles[1].options.resume).toBe(info.id)
+    expect(mockHandles[1].options.sessionId).toBeUndefined()
+    // spawn()'s writeStore is a wholesale replace → the stale terminal
+    // state is cleared from the persisted meta.
+    const after = store.get(info.id)!
+    expect(after.terminated).toBe(false)
+    expect(after.terminatedReason).toBeUndefined()
+    expect(after.error).toBeUndefined()
+  })
+
+  it('resume() of a transiently-terminated session with a missing transcript falls back to transcript_missing 410', async () => {
+    // Transient reason lets resume() past the guard, but the on-disk
+    // transcript is gone — the hasSdkTranscript probe must catch it,
+    // mark it transcript_missing, and 410 (mirroring the existing
+    // !hasTranscript + lastTurnAt branch for non-terminated sessions).
+    const info = sm.create({ cwd: '/tmp', model: 'm1' })
+    sm.send(info.id, 'hi')
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    await tick()
+    await sm.unload(info.id)
+    // Force a transient reason + a completed turn (so the probe's
+    // markTranscriptMissing branch fires rather than respawnFresh).
+    const meta = store.get(info.id)!
+    store.upsert({ ...meta, terminated: true, terminatedReason: 'process_exited' })
+    expect(store.get(info.id)?.lastTurnAt).toBeDefined()
+
+    // Transcript missing on disk.
+    mockGetSessionInfo.mockResolvedValueOnce(undefined)
+
+    await expect(sm.resume(info.id)).rejects.toThrow(/missing|ended/i)
+    // markTranscriptMissing overwrote the reason to transcript_missing.
+    expect(store.get(info.id)?.terminatedReason).toBe('transcript_missing')
+  })
+
+  it('resume() unloads and re-spawns a live transiently-terminated zombie (crash while server is running)', async () => {
+    // The pump's cleanup tail sets terminated=true but does NOT unload, so a
+    // crashed session lingers in the live map as a dead zombie. resume() must
+    // NOT short-circuit return that zombie (which would advertise
+    // canRetryResume but do nothing) — it must unload the zombie and fall
+    // through to the store/disk path to actually re-spawn. This is the
+    // live-crash case (server still running), distinct from the post-restart
+    // dormant case covered above.
+    const info = sm.create({ cwd: '/tmp', model: 'm1' })
+    sm.send(info.id, 'hi')
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    mockHandles[0].finish()
+    await tick()
+    // The session is now a LIVE zombie: still in the map, terminated:true,
+    // transient reason 'query_ended' (pump natural end, no autoResume in tests).
+    const zombie = sm.get(info.id)
+    expect(zombie.terminated).toBe(true)
+    expect(zombie.terminatedReason).toBe('query_ended')
+    expect(zombie.canRetryResume).toBe(true)
+
+    // Default mock → transcript exists on disk. resume() unloads the zombie
+    // and re-spawns with `resume: id` on a fresh handle.
+    const resumed = await sm.resume(info.id)
+    expect(resumed.id).toBe(info.id)
+    expect(resumed.terminated).toBe(false)
+    expect(resumed.running).toBe(true)
+    expect(mockHandles[1].options.resume).toBe(info.id)
+    // The stale terminal state is cleared in the persisted meta.
+    expect(store.get(info.id)?.terminated).toBe(false)
+    expect(store.get(info.id)?.terminatedReason).toBeUndefined()
   })
 
   it('resume() preserves lastTurnAt so a second resume after going dormant still works', async () => {

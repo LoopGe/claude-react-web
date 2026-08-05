@@ -1693,7 +1693,12 @@ export function App() {
       // click / drop / Resume-button wakes them.
       for (const id of valid) {
         const s = sessions.find((x) => x.id === id)
-        if (s && !s.running && !s.terminated && !s.slept) {
+        // !s.slept: a deliberately-slept session isn't woken behind the
+        // user's back. `s.canRetryResume`: a transiently-terminated session
+        // (process crash / query error) may still be recoverable — let it
+        // try the resume POST; the server probes the transcript and 410s
+        // (flipping it back to hard-terminal) if it's truly gone.
+        if (s && !s.running && !s.slept && (!s.terminated || s.canRetryResume)) {
           void api.post(`/sessions/${id}/resume`, {}).catch(() => {})
         }
       }
@@ -1798,7 +1803,10 @@ export function App() {
       // Ungrouped session — single-panel mode (replace all open panels).
       if (!sessionGroup) {
         setLastSeenTurn((prev) => ({ ...prev, [id]: s.lastTurnAt ?? Date.now() }))
-        if (!s.running && !s.terminated && !resumingRef.current.has(id)) {
+        // `s.canRetryResume`: a transiently-terminated session (crash /
+        // query error) may still be recoverable — attempt the resume; the
+        // server probes the transcript and 410s if it's genuinely gone.
+        if (!s.running && !s.slept && (!s.terminated || s.canRetryResume) && !resumingRef.current.has(id)) {
           await resumeSession(id, () => {
             setOpenIds([id])
             setFocusedId(id)
@@ -1852,7 +1860,7 @@ export function App() {
         for (const gid of groupIds) {
           if (gid === id) continue
           const sib = sessionsRef.current.find((x) => x.id === gid)
-          if (sib && !sib.running && !sib.terminated && !sib.slept && !resumingRef.current.has(gid)) {
+          if (sib && !sib.running && !sib.slept && (!sib.terminated || sib.canRetryResume) && !resumingRef.current.has(gid)) {
             void resumeSession(gid, () => {}).catch(() => {})
           }
         }
@@ -1860,9 +1868,11 @@ export function App() {
       setFocusedId(id)
 
       // Resume the clicked session if dormant (resume FIRST so it's live
-      // before the user interacts). Running/terminated sessions are already
-      // open in the grid via setOpenIds above.
-      if (s.running || s.terminated) return
+      // before the user interacts). Running sessions are already open in
+      // the grid via setOpenIds above. Hard-terminal sessions are dead;
+      // transiently-terminated ones (canRetryResume) still get a resume
+      // attempt (the server 410s if the transcript is truly gone).
+      if (s.running || (s.terminated && !s.canRetryResume)) return
       if (resumingRef.current.has(id)) return
       await resumeSession(id, () => {})
     },
@@ -2905,7 +2915,9 @@ export function App() {
   const handleAcceptSidebarDrop = useCallback(async (sidebarId: string, targetSlotId: string) => {
     const existing = sessionsRef.current.find((x) => x.id === sidebarId)
     let live = existing
-    if (existing && !existing.running && !existing.terminated) {
+    // Transiently-terminated (canRetryResume) sessions are still worth
+    // resuming here — the server probes the transcript and 410s if gone.
+    if (existing && !existing.running && (!existing.terminated || existing.canRetryResume)) {
       try {
         const res = await api.post<{ session: SessionInfo }>(
           `/sessions/${sidebarId}/resume`,
@@ -3535,8 +3547,9 @@ export function App() {
                 return
               }
               const known = sessions.find((s) => s.id === id)
-              if (known && !known.running && !known.terminated) {
-                // Tracked dormant session — reuse the sidebar resume flow.
+              if (known && !known.running && (!known.terminated || known.canRetryResume)) {
+                // Tracked dormant (or transiently-terminated) session —
+                // reuse the sidebar resume flow.
                 void handleSelect(id)
               } else if (known?.running) {
                 openSession(id, known.lastTurnAt)

@@ -1514,8 +1514,13 @@ export const Chat = memo(function Chat({
       input={input}
       setInput={setInput}
       sending={sending}
-      disabled={session.terminated}
-      terminated={session.terminated}
+      // A transiently-terminated session (canRetryResume) is treated as
+      // recoverable, not ended: don't disable input or show the "session
+      // has ended" banner — the panel is attempting/eligible for resume.
+      // If resume fails the server flips it to hard-terminal
+      // (canRetryResume=false) and the banner appears then.
+      disabled={session.terminated && !session.canRetryResume}
+      terminated={session.terminated && !session.canRetryResume}
       terminatedReason={session.terminatedReason}
       canAttach={!!session.cwd}
       attachments={attachments.attachments}

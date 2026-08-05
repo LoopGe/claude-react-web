@@ -131,7 +131,9 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
   }, [selectedIndex])
 
   const choose = (s: ResumableSession | undefined) => {
-    if (!open || !s || s.terminated) return
+    // Hard-terminal sessions can't be resumed; transiently-terminated ones
+    // (canRetryResume) can — let them through so the user can retry.
+    if (!open || !s || (s.terminated && !s.canRetryResume)) return
     onResume(s.sessionId)
   }
 
@@ -228,14 +230,14 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
                   className={`palette-item${i === selectedIndex ? ' selected' : ''}`}
                   role="option"
                   aria-selected={i === selectedIndex}
-                  disabled={s.terminated}
+                  disabled={s.terminated && !s.canRetryResume}
                   onMouseEnter={() => setSelectedIndex(i)}
                   onClick={() => choose(s)}
                   style={{
                     flexDirection: 'column',
                     alignItems: 'flex-start',
                     gap: 2,
-                    opacity: s.terminated ? 0.5 : 1,
+                    opacity: s.terminated && !s.canRetryResume ? 0.5 : 1,
                   }}
                 >
                   <span
@@ -253,7 +255,8 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
                       {label}
                     </span>
                     {s.running && <span className="resume-badge resume-badge-running">running</span>}
-                    {s.terminated && <span className="resume-badge">ended</span>}
+                    {s.terminated && !s.canRetryResume && <span className="resume-badge">ended</span>}
+                    {s.terminated && s.canRetryResume && <span className="resume-badge">retry</span>}
                     {!s.known && !s.terminated && <span className="resume-badge">CLI</span>}
                   </span>
                   <span

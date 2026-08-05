@@ -69,6 +69,10 @@ export interface ResumableSession {
   known: boolean
   running: boolean
   terminated: boolean
+  /** True when terminated but only with a transient reason (crash / query
+   *  error) — the server still allows a manual resume. Mirrors
+   *  SessionInfo.canRetryResume so the /resume picker can offer retry. */
+  canRetryResume?: boolean
 }
 
 /** A name collection of sessions for quick group switching. Each session

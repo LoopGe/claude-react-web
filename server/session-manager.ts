@@ -96,6 +96,28 @@ export {
 } from './session-types.js'
 export { HttpError } from './errors.js'
 
+/** `terminatedReason` values that reflect a transient process/query failure
+ *  rather than a true terminal state. The SDK transcript may still be intact
+ *  on disk, so `resume()` defers to the `hasSdkTranscript` probe instead of
+ *  hard-410-ing — auto-recovery may have failed (crash ladder exhausted) even
+ *  though the conversation data is perfectly recoverable.
+ *
+ *  Truly-terminal reasons keep the 410: `deleted` (user intent), and
+ *  `transcript_missing` / `crash_recovered_fork` (the data is genuinely gone
+ *  or already succeeded-into a fork). An unknown/undefined reason is also
+ *  treated as hard-terminal (defensive: don't assume recoverable). */
+const TRANSIENT_TERMINATED_REASONS = new Set([
+  'query_error',
+  'query_ended',
+  'process_killed',
+  'process_exited',
+  'spawn_failed',
+])
+
+function isTransientTerminatedReason(reason?: string): boolean {
+  return !!reason && TRANSIENT_TERMINATED_REASONS.has(reason)
+}
+
 /** Resolve the effective policy for a session by combining (optional)
  *  session-level override with the current global config. The result is the
  *  single authoritative source for both spawn-time and dynamic skill wiring,
@@ -722,7 +744,25 @@ export class SessionManager {
    */
   async resume(id: string): Promise<SessionInfo> {
     const live = this.sessions.get(id)
-    if (live) return this.info(live)
+    if (live) {
+      // The pump's cleanup tail sets `terminated=true` but does NOT unload,
+      // so a crashed session lingers here as a dead zombie. For a transient
+      // reason (process crash / query error) the caller is asking to retry —
+      // unload the zombie so we fall through to the store/disk path below and
+      // actually re-spawn, instead of returning the dead session as-is (which
+      // would advertise canRetryResume but do nothing). Hard-terminal zombies
+      // are returned as-is: there's nothing to retry and the client shows the
+      // ended banner off the terminated info.
+      if (live.terminated && isTransientTerminatedReason(live.terminatedReason)) {
+        log.info(
+          `[session ${id}] resume requested on live transiently-terminated zombie ` +
+          `(reason=${live.terminatedReason}); unloading before re-spawn`,
+        )
+        await this.unload(id)
+      } else {
+        return this.info(live)
+      }
+    }
     if (!this.store) {
       throw new HttpError(404, `session ${id} not found (no persistence configured)`)
     }
@@ -734,7 +774,22 @@ export class SessionManager {
     const meta = this.store.get(id) ?? (await this.adoptDiskSession(id, this.defaultProvider))
     if (!meta) throw new HttpError(404, `session ${id} not found`)
     if (meta.terminated) {
-      throw new HttpError(410, `session ${id} has ended and cannot be resumed`)
+      if (isTransientTerminatedReason(meta.terminatedReason)) {
+        // Auto-recovery failed (process crash / query error / spawn failure),
+        // but the SDK transcript may still be intact on disk. Don't hard-410
+        // — fall through to the hasSdkTranscript probe below, which
+        // authoritatively decides whether resume is actually possible. If the
+        // transcript turns out to be gone, the probe's markTranscriptMissing
+        // branch (with a transcript_missing 410) handles it. A successful
+        // spawn() then clears the stale terminated/error/terminatedReason via
+        // writeStore, so the session recovers cleanly.
+        log.info(
+          `[session ${id}] resume requested on transiently-terminated session ` +
+          `(reason=${meta.terminatedReason}); probing transcript before allowing`,
+        )
+      } else {
+        throw new HttpError(410, `session ${id} has ended and cannot be resumed`)
+      }
     }
     // Ground-truth resume gate: probe the SDK's on-disk transcript FIRST.
     // `lastTurnAt` is only a fallible in-memory proxy (the pump sets it
@@ -3002,12 +3057,18 @@ export class SessionManager {
         const providerName = s.provider ?? live?.provider ?? meta?.provider ?? provider.name
         if (live && live.provider !== providerName) continue
         if (!live && meta?.provider && meta.provider !== providerName) continue
+        const terminated = live?.terminated ?? meta?.terminated ?? false
         mapped.push({
           ...s,
           provider: providerName,
           known: !!live || !!meta,
           running: !!live && live.running,
-          terminated: live?.terminated ?? meta?.terminated ?? false,
+          terminated,
+          // Transient-terminated (crash / query error): the server's
+          // resume() will still attempt it, so let the picker offer retry.
+          canRetryResume:
+            terminated &&
+            isTransientTerminatedReason(live?.terminatedReason ?? meta?.terminatedReason),
         })
       }
     }
@@ -3285,6 +3346,7 @@ export class SessionManager {
       recovering: s.recovering,
       terminated: s.terminated,
       terminatedReason: s.terminatedReason,
+      canRetryResume: s.terminated && isTransientTerminatedReason(s.terminatedReason),
       error: s.error,
       working: isWorking,
       workingSince: isWorking ? s.workingSince : undefined,
@@ -3344,6 +3406,7 @@ export class SessionManager {
       running: false,
       terminated: meta.terminated,
       terminatedReason: meta.terminatedReason,
+      canRetryResume: meta.terminated && isTransientTerminatedReason(meta.terminatedReason),
       error: meta.error,
       working: false,
       workingSince: undefined,

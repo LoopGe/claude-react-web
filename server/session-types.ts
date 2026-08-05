@@ -99,6 +99,11 @@ export interface ResumableSession {
   running: boolean
   /** True when this app has marked the session terminated (cannot resume). */
   terminated: boolean
+  /** True when terminated but only with a transient reason (crash / query
+   *  error) — the server would still allow a manual resume. Mirrors
+   *  SessionInfo.canRetryResume so the /resume picker can offer retry on
+   *  transiently-terminated sessions instead of greying them out. */
+  canRetryResume?: boolean
 }
 
 /** Re-export the canonical shapes from shared so server-side modules
