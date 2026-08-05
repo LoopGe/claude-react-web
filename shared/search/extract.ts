@@ -2,10 +2,16 @@
 //
 // MUST stay aligned with what react-markdown actually renders.  We
 // guarantee that by running the same unified pipeline (remark-parse +
-// remark-gfm + remark-rehype) and walking the resulting hast tree
-// through the SAME walker the rehype highlight plugin uses at render
-// time.  An alignment test in __tests__/alignment.test.ts asserts
-// the contract holds against a representative sample of markdown.
+// remark-gfm + remark-rehype + rehype-strip-structural-whitespace) and
+// walking the resulting hast tree through the SAME walker the rehype
+// highlight plugin uses at render time.  An alignment test in
+// __tests__/alignment.test.ts asserts the contract holds against a
+// representative sample of markdown.
+//
+// `rehypeStripStructuralWhitespace` MUST match the render pipeline in
+// Markdown.tsx — both sides strip structural-whitespace text nodes,
+// otherwise the two trees would diverge and the search counter would
+// desync from the visible highlights.
 
 import { unified, type Processor } from 'unified'
 import remarkParse from 'remark-parse'
@@ -14,6 +20,7 @@ import remarkRehype from 'remark-rehype'
 
 import { flattenHast, type HastNode } from './hast-walk.js'
 import { lineDiff } from './line-diff.js'
+import { rehypeStripStructuralWhitespace } from './rehype-strip-structural-whitespace.js'
 
 interface SearchableMessage {
   type?: string
@@ -37,7 +44,8 @@ function getProcessor(): Processor {
   _processor = unified()
     .use(remarkParse)
     .use(remarkGfm)
-    .use(remarkRehype) as unknown as Processor
+    .use(remarkRehype)
+    .use(rehypeStripStructuralWhitespace) as unknown as Processor
   return _processor
 }
 

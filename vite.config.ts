@@ -30,7 +30,7 @@ export default defineConfig({
         manualChunks(id) {
           if (id.includes('node_modules')) {
             if (/[/\\]react-dom[/\\]/.test(id) || /[/\\]react[/\\]/.test(id)) return 'react-vendor'
-            if (/[/\\](react-markdown|remark-gfm|highlight\.js|lowlight|unified|micromark|mdast-util|hast-util|unist-util|bail|trough|vfile|property-information|comma-separated-tokens|space-separated-tokens|decode-named-character-reference|character-entities|trim-lines|ccount|escape-string-regexp|markdown-table|zwitch|direction|is-plain-obj)[/\\]/.test(id)) return 'markdown-vendor'
+            if (/[/\\](react-markdown|remark-gfm|remark-breaks|highlight\.js|lowlight|unified|micromark|mdast-util|hast-util|unist-util|bail|trough|vfile|property-information|comma-separated-tokens|space-separated-tokens|decode-named-character-reference|character-entities|trim-lines|ccount|escape-string-regexp|markdown-table|zwitch|direction|is-plain-obj)[/\\]/.test(id)) return 'markdown-vendor'
             if (/[/\\]react-virtuoso[/\\]/.test(id)) return 'virtuoso-vendor'
           }
         },

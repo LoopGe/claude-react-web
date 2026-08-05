@@ -2132,7 +2132,7 @@ const MessageView = memo(function MessageView({
               ))}
             </div>
           )}
-          {userContent && <Markdown text={userContent} searchQuery={searchQuery} activeMatchIdx={activeMatchInItem} />}
+          {userContent && <Markdown text={userContent} breaks searchQuery={searchQuery} activeMatchIdx={activeMatchInItem} />}
         </div>
       </div>
     )

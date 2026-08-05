@@ -11,9 +11,11 @@ import { memo, useMemo, useState, useRef } from 'react'
 import type { ComponentPropsWithoutRef } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkBreaks from 'remark-breaks'
 import { ErrorBoundary } from './ErrorBoundary'
 import { rehypeHighlightQuery } from '../search'
 import { lowlight } from '../utils/lowlight-instance'
+import { rehypeStripStructuralWhitespace } from '../../shared/search/rehype-strip-structural-whitespace'
 
 /** Minimal hast-like node shape. Uses a loose type rather than importing
  *  hast's full union to keep the plugin self-contained. */
@@ -143,18 +145,18 @@ const MD_COMPONENTS: Components = {
   h6: ({ children }) => <h6>{children}</h6>,
 }
 
-export const Markdown = memo(function Markdown({ text, searchQuery, activeMatchIdx }: { text: string; searchQuery?: string; activeMatchIdx?: number }) {
+export const Markdown = memo(function Markdown({ text, searchQuery, activeMatchIdx, breaks }: { text: string; searchQuery?: string; activeMatchIdx?: number; breaks?: boolean }) {
   // Fall back to a <pre>-rendered raw text if anything inside react-markdown
   // (or our rehype plugins) throws — prevents one bad message from blanking
   // the whole transcript.
   return (
     <ErrorBoundary fallback={<pre className="md md-fallback">{text}</pre>}>
-      <MarkdownInner text={text} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />
+      <MarkdownInner text={text} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} breaks={breaks} />
     </ErrorBoundary>
   )
 })
 
-const MarkdownInner = memo(function MarkdownInner({ text, searchQuery, activeMatchIdx }: { text: string; searchQuery?: string; activeMatchIdx?: number }) {
+const MarkdownInner = memo(function MarkdownInner({ text, searchQuery, activeMatchIdx, breaks }: { text: string; searchQuery?: string; activeMatchIdx?: number; breaks?: boolean }) {
   const q = searchQuery?.trim()
 
   // Build the plugin array once per query change.  The search
@@ -178,15 +180,30 @@ const MarkdownInner = memo(function MarkdownInner({ text, searchQuery, activeMat
   // navigation target. The caller is expected to map "global active
   // hit" → "local match index inside this block" before passing it
   // here. Undefined / out-of-range silently means "no active mark".
+  // `rehypeStripStructuralWhitespace` runs FIRST so the highlighter sees the
+  // same tree ingest does (see extract.ts) — keeps search offsets aligned. It
+  // removes the inter-block `\n` and post-`<br>` `\n` text nodes that
+  // `white-space: pre-wrap` would otherwise render as extra blank lines.
   const rehypePlugins = useMemo(
-    () => q ? [rehypeHighlightLite, () => rehypeHighlightQuery(q, activeMatchIdx)] : [rehypeHighlightLite],
+    () => q ? [rehypeStripStructuralWhitespace, rehypeHighlightLite, () => rehypeHighlightQuery(q, activeMatchIdx)] : [rehypeStripStructuralWhitespace, rehypeHighlightLite],
     [q, activeMatchIdx],
+  )
+
+  // `breaks` turns single newlines into <br> (via remark-breaks) instead of
+  // the CommonMark default — which collapses a soft break to a space. Used for
+  // human user messages, where a Shift+Enter newline should stay a newline in
+  // the rendered bubble. Assistant output keeps the default so its Markdown
+  // paragraph spacing is unchanged. The array identity is memoised on `breaks`
+  // so react-markdown's internal plugin cache stays effective across renders.
+  const remarkPlugins = useMemo(
+    () => (breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]),
+    [breaks],
   )
 
   return (
     <div className="md">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
         components={MD_COMPONENTS}
       >

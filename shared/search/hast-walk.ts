@@ -81,8 +81,14 @@ export type WalkEvent =
  *  IMPORTANT: a text node containing only spaces (no `\n`) is NOT
  *  structural — it's the meaningful whitespace between two inline
  *  elements like "[a](u) [b](u)" → `<a>a</a>" "<a>b</a>`.  Dropping
- *  that would silently glue inline siblings together. */
-function isStructuralWhitespace(text: string): boolean {
+ *  that would silently glue inline siblings together.
+ *
+ *  Exported because `rehype-strip-structural-whitespace.ts` removes the
+ *  same nodes at render time (so `white-space: pre-wrap` doesn't render
+ *  them as blank lines). Both the walker's skip and the plugin's delete
+ *  MUST agree on what counts as structural, so they share this one
+ *  definition — never duplicate it. */
+export function isStructuralWhitespace(text: string): boolean {
   if (text.length === 0) return false
   for (let i = 0; i < text.length; i++) {
     const c = text.charCodeAt(i)
