@@ -252,6 +252,13 @@ export class ClaudeProvider implements AgentProvider {
       ANTHROPIC_BASE_URL: defaultConfig.baseUrl,
       ANTHROPIC_API_KEY: undefined,
     }
+    // Pass through max output tokens config to the CLI subprocess. The CLI
+    // reads CLAUDE_CODE_MAX_OUTPUT_TOKENS to cap single-response output;
+    // 0 / unset = CLI default. Only set when the user configured a non-zero
+    // value (don't override the CLI's own default with 0).
+    if (defaultConfig.maxOutputTokens > 0) {
+      env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(defaultConfig.maxOutputTokens)
+    }
     for (const key of Object.keys(process.env)) {
       if (key.startsWith('ANTHROPIC_') && key !== 'ANTHROPIC_API_KEY' && !(key in env)) {
         env[key] = process.env[key]

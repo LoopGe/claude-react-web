@@ -81,6 +81,9 @@ interface ConfigFile {
    *  affect ExitPlanMode / AskUserQuestion (interactive review is never
    *  bypassed) or the dontAsk lockdown mode. */
   allowSensitivePathEdits: boolean
+  /** Max output tokens per model response, passed to the CLI subprocess as
+   *  CLAUDE_CODE_MAX_OUTPUT_TOKENS. 0 = use the CLI's own default. */
+  maxOutputTokens: number
 }
 
 export interface ServerConfig {
@@ -121,6 +124,9 @@ export interface ServerConfig {
   /** When true, acceptEdits/bypassPermissions also bypass the sensitive-path
    *  safety checks. See ConfigFile.allowSensitivePathEdits. */
   readonly allowSensitivePathEdits: boolean
+  /** Max output tokens per model response (CLAUDE_CODE_MAX_OUTPUT_TOKENS).
+   *  0 = CLI default. */
+  readonly maxOutputTokens: number
 }
 
 /** Hardcoded defaults. Captured as its own constant so applyParsedConfig
@@ -153,6 +159,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   showPinnedUserMessage: true,
   autoRecap: true,
   allowSensitivePathEdits: false,
+  maxOutputTokens: 0,
 })
 
 /** Current server config. Frozen after loadConfig() dreads are safe,
@@ -348,6 +355,10 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): v
     ;(merged as { allowSensitivePathEdits: boolean }).allowSensitivePathEdits = file_.allowSensitivePathEdits
   }
 
+  if (typeof file_.maxOutputTokens === 'number' && file_.maxOutputTokens >= 0) {
+    ;(merged as { maxOutputTokens: number }).maxOutputTokens = file_.maxOutputTokens
+  }
+
   config = Object.freeze(merged)
 
   // Enable or disable file logging based on the loaded config.
@@ -399,6 +410,7 @@ export const WRITABLE_CONFIG_KEYS = [
   'showPinnedUserMessage',
   'autoRecap',
   'allowSensitivePathEdits',
+  'maxOutputTokens',
 ] as const
 
 /**
