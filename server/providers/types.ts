@@ -23,6 +23,10 @@ export interface CreateSessionOptions {
   includeHookEvents?: boolean
   resume?: string
   forkSession?: boolean
+  /** When forking (forkSession + resume), truncate the fork's loaded history
+   *  to (and including) this assistant message uuid. Without it the CLI
+   *  doesn't know where to cut and the fork subprocess hangs. SDK option. */
+  resumeSessionAt?: string
   onUserMessageConsumed?: (message: AgentUserMessage) => void
   canUseTool?: (...args: unknown[]) => Promise<unknown>
   providerExtras?: Record<string, unknown>

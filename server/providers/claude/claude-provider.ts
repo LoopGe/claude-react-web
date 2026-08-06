@@ -72,6 +72,7 @@ export class ClaudeProvider implements AgentProvider {
     const sdkOptions = { ...((opts.providerExtras?.sdkOptions as Options | undefined) ?? {}) }
     if (opts.resume && !sdkOptions.resume) sdkOptions.resume = opts.resume
     if (opts.forkSession !== undefined) sdkOptions.forkSession = opts.forkSession
+    if (opts.resumeSessionAt !== undefined) sdkOptions.resumeSessionAt = opts.resumeSessionAt
     if (opts.cwd !== undefined) sdkOptions.cwd = opts.cwd
     if (opts.model !== undefined) sdkOptions.model = opts.model
     if (opts.title !== undefined) sdkOptions.title = opts.title
