@@ -396,6 +396,7 @@ export function App() {
   const openIdsRef = useRef(openIds)
   const focusedIdRef = useRef(focusedId)
   const sessionsRef = useRef(sessions)
+  const resumeTargetPanelIdRef = useRef(resumeTargetPanelId)
   const maxOpenRef = useRef(maxOpen)
   const maxGroupSizeRef = useRef(maxGroupSize)
   const groupsRef = useRef(groups)
@@ -479,6 +480,7 @@ export function App() {
   openIdsRef.current = openIds
   focusedIdRef.current = focusedId
   sessionsRef.current = sessions
+  resumeTargetPanelIdRef.current = resumeTargetPanelId
   groupsRef.current = groups
   resumingRef.current = resuming
   maxOpenRef.current = maxOpen
@@ -1699,7 +1701,10 @@ export function App() {
         // try the resume POST; the server probes the transcript and 410s
         // (flipping it back to hard-terminal) if it's truly gone.
         if (s && !s.running && !s.slept && (!s.terminated || s.canRetryResume)) {
-          void api.post(`/sessions/${id}/resume`, {}).catch(() => {})
+          const pm = sessionsRef.current.find((s) => s.id === resumeTargetPanelIdRef.current)?.permissionMode
+          void api.post(`/sessions/${id}/resume`, {
+            permissionMode: pm,
+          }).catch(() => {})
         }
       }
     },
@@ -1713,7 +1718,10 @@ export function App() {
     async (id: string, afterSuccess: (res: { session: SessionInfo }) => void) => {
       setResuming((prev) => new Set(prev).add(id))
       try {
-        const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/resume`, {})
+        const pm = sessionsRef.current.find((s) => s.id === resumeTargetPanelIdRef.current)?.permissionMode
+        const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/resume`, {
+          permissionMode: pm,
+        })
         setSessions((prev) => prev.map((p) => (p.id === id ? res.session : p)))
         afterSuccess(res)
       } catch (e) {
@@ -3079,6 +3087,50 @@ export function App() {
     [toast, cleanupSideChat, swapSession, teardownRemovedSession, pruneSession],
   )
 
+  /** Discard every message after a given assistant message (right-click
+   *  "discard from here"). The server forks from the anchor (inclusive) and
+   *  detaches X (removeFromStore) — same X→Y swap shape as /clear, so we
+   *  reuse the clearingIds guard to suppress the session-removed(X) teardown
+   *  until swapSession replaces X. `deleteOriginal` also unlinks X's
+   *  transcript server-side (irreversible) — no extra client action. */
+  const handleDiscard = useCallback(
+    async (id: string, fromAssistantUuid: string, deleteOriginal: boolean) => {
+      clearingIdsRef.current.add(id)
+      setClearingIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
+      try {
+        const res = await api.post<{ session: SessionInfo }>(
+          `/sessions/${id}/discard`,
+          { fromAssistantUuid, deleteOriginal },
+        )
+        const newId = res.session.id
+        if (newId !== id) {
+          cleanupSideChat(id)
+          swapSession(id, newId, res.session)
+          pruneSession(id)
+        }
+      } catch (e) {
+        if (clearingServerRemovedRef.current.has(id)) {
+          teardownRemovedSession(id)
+        }
+        toast.error(`Couldn't discard: ${(e as Error).message}`)
+        // Re-throw so the caller's confirm dialog (Chat.discardConfirm)
+        // can catch it and reopen (busy=false) for retry. On success the
+        // Chat unmounts via the id swap, so the resolution is a no-op.
+        throw e
+      } finally {
+        clearingIdsRef.current.delete(id)
+        clearingServerRemovedRef.current.delete(id)
+        setClearingIds((prev) => {
+          if (!prev.has(id)) return prev
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+      }
+    },
+    [toast, cleanupSideChat, swapSession, teardownRemovedSession, pruneSession],
+  )
+
   const refreshConfigResponse = useCallback(async () => {
     const r = await api.get<ConfigResponse>('/config')
     setDefaults(r.defaults)
@@ -3440,6 +3492,7 @@ export function App() {
                       historyOpen={historyPanelOpen && focusedId === s.id}
                       onCloseHistory={() => setHistoryPanelOpen(false)}
                       onClearSession={handleClear}
+                      onDiscard={handleDiscard}
                       onOpenSettingsTab={openSettingsTab}
                       onShowHelp={showHelpWithCommands}
                       sideChatSession={sideChat?.parentId === s.id ? sideChat.session : undefined}

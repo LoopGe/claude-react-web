@@ -31,6 +31,13 @@ interface Props {
   /** When true, both buttons are disabled — used for the brief window
    *  between click and the server's response landing. */
   busy?: boolean
+  /** Optional checkbox rendered below the message (e.g. "permanently
+   *  delete"). When `checkboxLabel` is set, the checkbox is controlled:
+   *  `checkboxChecked` is its state and `onCheckboxChange` flips it.
+   *  Undefined = no checkbox (the default; existing callers unaffected). */
+  checkboxLabel?: string
+  checkboxChecked?: boolean
+  onCheckboxChange?: (checked: boolean) => void
   /** Called on confirm-button click. Returning a promise blocks the
    *  next click until it settles, but does NOT auto-close the dialog —
    *  the caller is expected to update state to unmount it. */
@@ -45,6 +52,9 @@ export function ConfirmDialog({
   cancelLabel = 'Cancel',
   destructive = false,
   busy = false,
+  checkboxLabel,
+  checkboxChecked = false,
+  onCheckboxChange,
   onConfirm,
   onCancel,
 }: Props) {
@@ -94,6 +104,17 @@ export function ConfirmDialog({
         </div>
         <div className="modal-section">
           <div className="confirm-dialog-message">{message}</div>
+          {checkboxLabel && (
+            <label className="confirm-dialog-checkbox">
+              <input
+                type="checkbox"
+                checked={checkboxChecked}
+                onChange={(e) => onCheckboxChange?.(e.target.checked)}
+                disabled={busy}
+              />
+              {checkboxLabel}
+            </label>
+          )}
         </div>
         <div className="modal-footer">
           <button
@@ -106,7 +127,7 @@ export function ConfirmDialog({
           </button>
           <button
             type="button"
-            className={destructive ? 'btn btn-danger' : 'btn btn-primary'}
+            className={destructive ? 'btn btn-danger-solid' : 'btn btn-primary'}
             onClick={() => { void onConfirm() }}
             disabled={busy}
             // Auto-focus so Enter triggers confirm directly. Destructive

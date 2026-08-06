@@ -159,6 +159,10 @@ export interface ChatPanelProps {
    *  and returns a fresh session; App swaps the panel id. Triggered by the
    *  `/clear` local command. */
   onClearSession: (panelSessionId: string) => void
+  /** Discard every message after a given assistant message (right-click
+   *  "discard from here"). Server forks from the anchor and swaps the
+   *  panel id; `deleteOriginal` also unlinks the source transcript. */
+  onDiscard?: (sessionId: string, fromAssistantUuid: string, deleteOriginal: boolean) => Promise<void> | void
   /** Open this panel's settings overlay on a specific tab. Triggered by the
    *  `/mcp` local command. */
   onOpenSettingsTab: (panelSessionId: string, tab: SettingsTabName) => void
@@ -238,6 +242,7 @@ export const ChatPanel = memo(function ChatPanel({
   historyOpen,
   onCloseHistory,
   onClearSession,
+  onDiscard,
   onOpenSettingsTab,
   onShowHelp,
   sideChatSession,
@@ -793,6 +798,7 @@ export const ChatPanel = memo(function ChatPanel({
             historyOpen={historyOpen}
             onCloseHistory={onCloseHistory}
             onClearSession={onClearSession}
+            onDiscard={onDiscard}
             onOpenSettingsTab={onOpenSettingsTab}
             onShowHelp={onShowHelp}
             settingsTabRequest={settingsTabRequest}

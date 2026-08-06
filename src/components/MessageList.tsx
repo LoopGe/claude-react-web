@@ -165,6 +165,13 @@ interface Props {
    *  the conversation." prompt. Side Chat overrides this to communicate the
    *  ephemeral nature of the drawer. */
   emptyStateContent?: ReactNode
+  /** True when the session is expected to have history (e.g. a discard-fork
+   *  seeded from a prior conversation, or a resumed session). When set, the
+   *  empty-state is suppressed until `replayReady` so the "Start a
+   *  conversation" placeholder doesn't flash during the replay window
+   *  between the panel swap and the history landing. A fresh /clear session
+   *  passes false (or omits) so its empty-state shows immediately. */
+  expectHistory?: boolean
   /** Called when the user clicks "Switch model" on a model_not_found error
    *  message. The parent opens its model picker / settings so the user can
    *  pick a valid model without leaving the transcript. */
@@ -307,7 +314,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, clearing, replayReady = true, transcriptRevealKey, streamingContent, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, leadingItems, trailingItems, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd }: Props) {
+export const MessageList = memo(function MessageList({ items, working, clearing, replayReady = true, transcriptRevealKey, streamingContent, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, leadingItems, trailingItems, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
@@ -1776,7 +1783,7 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
           increaseViewportBy={{ top: 0, bottom: 600 }}
           alignToBottom
         />
-        {renderableItems.length === 0 && (
+        {renderableItems.length === 0 && (!expectHistory || replayReady) && (
           <div className="chat-messages-empty">
             {emptyStateContent ?? (gameOpen
                 ? <EasterEggGame onExit={closeEasterEgg} />

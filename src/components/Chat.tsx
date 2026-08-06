@@ -55,11 +55,12 @@ import { useSessionRecap } from '../hooks/useSessionRecap'
 import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
+import { ConfirmDialog } from './ConfirmDialog'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
 import { useAllContributions } from '../app-plugins/PluginRegistryProvider'
 import { usePluginCommands } from '../app-plugins/usePluginCommands'
 import { buildWhenContext, filterContributions } from '../app-plugins/when'
-import { IconSearch, IconFileText, IconFileCode, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconMessageCircle, IconArrowLeft, IconTrash, IconGlobe } from './icons/ToolIcons'
+import { IconSearch, IconFileText, IconFileCode, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconMessageCircle, IconArrowLeft, IconTrash, IconGlobe, IconScissors } from './icons/ToolIcons'
 import { PLAN_TOOL_NAMES } from '../constants/toolNames'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
@@ -199,14 +200,26 @@ interface Props {
   onDelete?: (sessionId: string) => void
   /** Request a confirmation dialog (rendered by ChatPanel) before a
    *  destructive action. Mirrors SessionList's onAskConfirm so the panel
-   *  menu's Delete uses the same confirm UX as the sidebar's. */
+   *  menu's Delete uses the same confirm UX as the sidebar's. The optional
+   *  checkbox fields render a controlled checkbox below the message (used
+   *  by "discard from here" for the "permanently delete" toggle). */
   onAskConfirm?: (config: {
     title: string
     message: React.ReactNode
     confirmLabel: string
     destructive?: boolean
+    checkboxLabel?: string
+    checkboxChecked?: boolean
+    onCheckboxChange?: (checked: boolean) => void
     onConfirm: () => void | Promise<void>
   }) => void
+  /** Discard every message after a given assistant message (fork-from-
+   *  anchor + panel swap). `deleteOriginal` also unlinks the source
+   *  transcript. Driven by the right-click "discard from here" menu item.
+   *  Returns a promise so the caller's confirm dialog can await it and
+   *  close (or un-busy) on completion — on success the Chat unmounts (id
+   *  swap) so the resolution is a no-op; on failure the dialog reopens. */
+  onDiscard?: (sessionId: string, fromAssistantUuid: string, deleteOriginal: boolean) => Promise<void> | void
   /** Owning group name, or undefined when ungrouped. Relabels the close
    *  menu item to "Remove from <group>" since closing a group member
    *  removes it from the group (App.closeSession). */
@@ -250,7 +263,7 @@ export const Chat = memo(function Chat({
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
   recapOpen, onCloseRecap,
   onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, globalPrefs, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, historyOpen, onCloseHistory,
-  snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
+  snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, onDiscard, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
 }: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
@@ -690,11 +703,60 @@ export const Chat = memo(function Chat({
   }, [])
   // Message-area right-click menu. `selection` is captured at open time —
   // clicking a menu item can collapse the live selection, so we snapshot it.
-  const [exportMenuPos, setExportMenuPos] = useState<{ x: number; y: number; selection: string } | null>(null)
+  // `targetId` is the uuid of the message row the user right-clicked (via
+  // `data-message-id`), used by the "discard from here" menu item.
+  const [exportMenuPos, setExportMenuPos] = useState<
+    { x: number; y: number; selection: string; targetId?: string } | null
+  >(null)
+  // Prefetched "discard from here" cut points: the uuids of every
+  // successfully-completed turn's last assistant message, with a short
+  // preview of each. A right-clicked assistant message is a legal cut
+  // point iff its uuid is in this map. Fetched once when the panel opens a
+  // session that has completed turns (lastTurnAt set); right-click then
+  // checks locally with zero latency.
+  const [discardAnchors, setDiscardAnchors] = useState<Map<string, string>>(new Map())
+  useEffect(() => {
+    if (!session.lastTurnAt || !onDiscard) { setDiscardAnchors(new Map()); return }
+    let cancelled = false
+    void api.get<{ anchors: Array<{ uuid: string; preview: string }> }>(`/sessions/${session.id}/discard-anchors`)
+      .then((res) => {
+        if (cancelled) return
+        setDiscardAnchors(new Map(res.anchors.map((a) => [a.uuid, a.preview] as const)))
+      })
+      .catch(() => { /* session gone / not yet flushed — no anchors */ })
+    return () => { cancelled = true }
+  }, [session.id, session.lastTurnAt, onDiscard])
   // Plugin selection-menu commands (e.g. Translate). Injected into the
   // existing right-click menu when the user has a text selection.
   const allContribs = useAllContributions()
   const { execute: executePluginCommand } = usePluginCommands()
+
+  /** True when `uuid` is a recorded turn anchor — a successfully-completed
+   *  turn's last assistant message. Only such a uuid is a legal "discard
+   *  from here" cut point (cutting mid-turn would orphan tool pairs). */
+  const isDiscardableAnchor = useCallback((uuid: string | undefined) => {
+    return !!uuid && discardAnchors.has(uuid)
+  }, [discardAnchors])
+
+  /** Open the discard confirmation modal (rendered locally via
+   *  `discardConfirm`). The checkbox toggles `deleteOriginal` (also unlink
+   *  the source transcript, irreversible). confirmLabel follows the
+   *  checkbox so the button matches the chosen severity. */
+  const [discardConfirm, setDiscardConfirm] = useState<{
+    anchorUuid: string
+    preview: string
+    deleteOriginal: boolean
+    busy: boolean
+  } | null>(null)
+  const openDiscardConfirm = useCallback((anchorUuid: string) => {
+    if (!onDiscard) return
+    setDiscardConfirm({
+      anchorUuid,
+      preview: discardAnchors.get(anchorUuid) ?? '',
+      deleteOriginal: false,
+      busy: false,
+    })
+  }, [discardAnchors, onDiscard])
 
   /** Build plugin ContextMenuItems for the current selection. Returns []
    *  when there's no selection or no enabled plugin contributes a
@@ -1329,6 +1391,22 @@ export const Chat = memo(function Chat({
               icon: <IconArrowDown size={14} />,
               onClick: () => scrollNavRef.current?.next(),
             },
+            ...(onDiscard ? [{
+              label: 'Discard this message and after',
+              icon: <IconScissors size={14} />,
+              danger: true,
+              // Legal cut point = the right-clicked message is an assistant
+              // message whose uuid is a recorded turn anchor (a success
+              // turn's last reply). Otherwise grey out with a hint.
+              disabled: !isDiscardableAnchor(exportMenuPos.targetId),
+              title: !isDiscardableAnchor(exportMenuPos.targetId)
+                ? 'Can only discard after a completed reply' : undefined,
+              onClick: () => {
+                if (exportMenuPos.targetId && isDiscardableAnchor(exportMenuPos.targetId)) {
+                  openDiscardConfirm(exportMenuPos.targetId)
+                }
+              },
+            } as ContextMenuItem, { label: '' } as ContextMenuItem] : []),
             { label: '' },
             {
               label: 'Export as Markdown',
@@ -1447,13 +1525,16 @@ export const Chat = memo(function Chat({
           onContextMenu={(e) => {
             e.preventDefault()
             const selection = window.getSelection()?.toString() ?? ''
-            setExportMenuPos({ x: e.clientX, y: e.clientY, selection })
+            const targetEl = (e.target as HTMLElement).closest('[data-message-id]')
+            const targetId = targetEl?.getAttribute('data-message-id') ?? undefined
+            setExportMenuPos({ x: e.clientX, y: e.clientY, selection, targetId })
           }}
         >
         <MessageList
           items={stream.items}
           working={turnActive}
           replayReady={stream.replayReady}
+          expectHistory={session.messageCount > 0}
           clearing={effectiveClearing}
           transcriptRevealKey={session.id}
           streamingContent={stream.streamingContent}
@@ -1478,6 +1559,44 @@ export const Chat = memo(function Chat({
           cwd={session.cwd}
         />
         </div>
+        {discardConfirm && (
+          <ConfirmDialog
+            title="Discard messages after this point?"
+            message={
+              <>
+                <p>Messages after {discardConfirm.preview ? `「${discardConfirm.preview}」` : 'this reply'}{' '}
+                will be discarded. The conversation continues from here in a new session.</p>
+                <p className="confirm-dialog-hint">
+                  {discardConfirm.deleteOriginal
+                    ? <>The original conversation will be <strong>permanently deleted</strong> — it cannot be recovered.</>
+                    : <>The original is kept on disk and can be recovered via <code>/resume</code>.</>}
+                </p>
+              </>
+            }
+            confirmLabel={discardConfirm.deleteOriginal ? 'Discard and delete' : 'Discard'}
+            destructive
+            busy={discardConfirm.busy}
+            checkboxLabel="Also delete the original conversation (irreversible)"
+            checkboxChecked={discardConfirm.deleteOriginal}
+            onCheckboxChange={(checked) => setDiscardConfirm((prev) => prev && { ...prev, deleteOriginal: checked })}
+            onConfirm={async () => {
+              if (!onDiscard) return
+              setDiscardConfirm((prev) => prev && { ...prev, busy: true })
+              try {
+                await onDiscard(session.id, discardConfirm.anchorUuid, discardConfirm.deleteOriginal)
+                // On success the panel swaps to the forked session id and
+                // this Chat unmounts (key=session.id), so the close below is
+                // a no-op. Keep it for the rare same-id-success edge.
+                setDiscardConfirm(null)
+              } catch {
+                // Failure: App.handleDiscard already toasted the error.
+                // Reopen the dialog so the user can retry or cancel.
+                setDiscardConfirm((prev) => prev && { ...prev, busy: false })
+              }
+            }}
+            onCancel={() => { if (!discardConfirm.busy) setDiscardConfirm(null) }}
+          />
+        )}
         </ReopenQuestionProvider>
         </WorkflowProvider>
       </SubagentProvider>

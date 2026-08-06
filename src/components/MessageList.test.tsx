@@ -194,6 +194,27 @@ describe('MessageList', () => {
     expect(container.querySelector('.chat-empty')).toBeTruthy()
   })
 
+  it('suppresses the empty state when expectHistory is set and replay is not ready', () => {
+    // A discard-fork / resumed session carries history; between the panel
+    // swap and the WS replay landing, items is still empty. The empty-state
+    // must NOT flash — expectHistory gates it until replayReady.
+    const { container } = render(
+      <MessageList items={[]} expectHistory replayReady={false} />,
+    )
+    expect(container.querySelector('.chat-messages-empty')).toBeNull()
+    expect(container.textContent).not.toContain('Start a conversation')
+  })
+
+  it('shows the empty state once replay lands even with expectHistory (history was empty)', () => {
+    // expectHistory only suppresses DURING the replay window. Once replay
+    // completes (replayReady) with no messages, the empty-state shows —
+    // e.g. a discard whose anchor was the very first turn.
+    const { container } = render(
+      <MessageList items={[]} expectHistory replayReady />,
+    )
+    expect(container.querySelector('.chat-messages-empty')).toBeTruthy()
+  })
+
   it('swaps the empty state for the easter-egg game after triple-clicking the icon', () => {
     const { container } = render(<MessageList items={[]} />)
     // game not present initially
