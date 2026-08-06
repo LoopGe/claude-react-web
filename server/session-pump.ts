@@ -231,6 +231,19 @@ export interface PumpDeps {
    *  (counter exhausted / no anchor / fork failed) dfall through to
    *  terminate. */
   attemptCrashRecovery?: (session: Session) => Promise<boolean>
+  /** Record a successfully-completed turn's anchor (the uuid of its last
+   *  main-thread assistant message) to the turn-anchor sidecar. Used by
+   *  the "discard messages from here onward" feature to mark legal cut
+   *  points. Fire-and-forget on the turn path. Optional so test fixtures
+   *  that don't exercise discard can omit it. */
+  recordTurnAnchor?: (sessionId: string, assistantUuid: string, completedAt: number) => void
+  /** Record a result frame (cost/duration/turns/usage) to the result-frames
+   *  sidecar. The SDK doesn't persist result to the on-disk transcript, so
+   *  without this a resumed/dormant session loses the per-turn result
+   *  summaries. `resultUuid` is the result frame's own uuid (dedup);
+   *  `assistantUuid` is the turn's last assistant uuid (positions the result
+   *  in the seed). Fire-and-forget on the turn path. */
+  recordResultFrame?: (sessionId: string, resultUuid: string, assistantUuid: string, result: SDKMessage) => void
   /** Reference to the broadcaster dneeded by the mutating-tool detector
    *  to schedule a debounced `git-status-changed` frame after Claude
    *  runs Edit/Write/NotebookEdit/Bash. Optional so test fixtures that
@@ -611,6 +624,24 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           // keep the previous anchor rather than trusting a failed turn.
           if ((msg as { subtype?: string }).subtype === 'success' && session.lastAssistantUuid) {
             session.lastSafeResumeUuid = session.lastAssistantUuid
+            // Persist this turn's anchor to the sidecar so the "discard
+            // messages from here onward" feature can offer ANY historical
+            // success turn as a cut point (not just the in-memory
+            // lastSafeResumeUuid, which only tracks the most recent one).
+            // Fire-and-forget: the turn path doesn't block on disk writes.
+            deps.recordTurnAnchor?.(session.id, session.lastAssistantUuid, Date.now())
+          }
+          // Persist the result frame itself to the result-frames sidecar.
+          // The SDK doesn't write result to the on-disk transcript, so
+          // without this a resumed/dormant session loses the per-turn result
+          // summaries (cost/duration/turns/usage). Both success AND error
+          // results are recorded (error turns have a result summary too).
+          // Fire-and-forget: the turn path doesn't block on disk writes.
+          {
+            const resultUuid = (msg as { uuid?: string }).uuid
+            if (resultUuid && session.lastAssistantUuid) {
+              deps.recordResultFrame?.(session.id, resultUuid, session.lastAssistantUuid, msg)
+            }
           }
           const moreQueued = session.handle.queueDepth > 0
           log.debug(

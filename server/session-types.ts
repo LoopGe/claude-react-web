@@ -88,6 +88,11 @@ export interface ResumableSession {
   /** First meaningful user prompt dshown as a preview/secondary line. */
   firstPrompt?: string
   cwd?: string
+  /** The CLI's permission mode (default/acceptEdits/bypassPermissions/plan),
+   *  from the SDK's getSessionInfo `mode` field. Only set for CLI-created
+   *  sessions adopted from disk; sessions this app created read it from
+   *  sessions.json instead. */
+  permissionMode?: string
   /** Creation time (epoch ms), from the transcript's first entry. */
   createdAt?: number
   /** Last-modified time (epoch ms) of the on-disk transcript. */

@@ -287,6 +287,105 @@ export async function readHistoryEntries(
   return historyEntriesFromJsonl(raw, sessionId, opts)
 }
 
+/** Backfill turn anchors from the on-disk transcript for sessions whose
+ *  turns completed BEFORE the turn-anchor sidecar existed (i.e. before the
+ *  "discard from here" feature shipped). The sidecar is only populated by
+ *  the pump on NEW success results, so without this a long-lived session
+ *  has zero legal cut points even though it has hundreds of completed turns.
+ *
+ *  A turn's LAST main-thread assistant frame is identified by
+ *  `message.stop_reason !== 'tool_use'` — `tool_use` means the turn is
+ *  mid-flight (calling a tool, expecting a tool_result to continue), so
+ *  cutting there would orphan the result. Frames with `error` /
+ *  `isApiErrorMessage` are excluded (failed turns are indeterminate, mirroring
+ *  the pump's `lastSafeResumeUuid` which is promoted only on
+ *  `result.subtype === 'success'`). `result` frames are NOT on disk, so
+ *  `stop_reason` + `error` are the available success signals.
+ *
+ *  Returns anchors in chronological (file) order with `completedAt` from the
+ *  line's `timestamp`. Used by SessionManager.listDiscardAnchors / discard
+ *  to seed the sidecar when it's empty — after the first call the sidecar
+ *  holds the backfill and subsequent calls read it directly. */
+export async function readTurnAnchorsFromDisk(
+  sessionId: string,
+): Promise<Array<{ assistantUuid: string; completedAt: number }>> {
+  const file = await findTranscriptFile(sessionId)
+  if (!file) return []
+  let raw: string
+  try {
+    raw = await readFile(file, 'utf8')
+  } catch (err) {
+    log.warn(`readTurnAnchorsFromDisk readFile error session=${sessionId}: ${(err as Error).message ?? err}`)
+    return []
+  }
+  return turnAnchorsFromJsonl(raw)
+}
+
+/** True when an assistant message's content is ONLY tool_use blocks (no
+ *  text/thinking) — i.e. a mid-turn tool call, not a turn-ending reply.
+ *  Used as a fallback for older SDK transcripts whose tool-call frames
+ *  don't carry `stop_reason: 'tool_use'`. */
+function isToolUseOnlyContent(content: unknown): boolean {
+  if (!Array.isArray(content) || content.length === 0) return false
+  let sawToolUse = false
+  for (const block of content) {
+    if (!block || typeof block !== 'object') return false
+    const b = block as { type?: string }
+    if (b.type === 'tool_use') {
+      sawToolUse = true
+    } else if (b.type === 'text' || b.type === 'thinking') {
+      // Has a renderable non-tool block → not tool-only (could be a mixed
+      // turn-end frame with text + trailing tool_use). Keep it.
+      return false
+    }
+    // Other block types (e.g. redacted_thinking) don't disqualify either way.
+  }
+  return sawToolUse
+}
+
+/** Pure core of readTurnAnchorsFromDisk: parse JSONL text and derive
+ *  success-turn anchors. Exported for unit testing without touching the
+ *  filesystem. See readTurnAnchorsFromDisk for the selection rationale. */
+export function turnAnchorsFromJsonl(
+  raw: string,
+): Array<{ assistantUuid: string; completedAt: number }> {
+  const anchors: Array<{ assistantUuid: string; completedAt: number }> = []
+  for (const line of raw.split('\n')) {
+    if (!line) continue
+    let parsed: RawLine
+    try {
+      parsed = JSON.parse(line) as RawLine
+    } catch {
+      continue
+    }
+    // Main-thread assistant frames only (sidechain = subagent inner stream).
+    if (parsed.type !== 'assistant' || parsed.isSidechain) continue
+    const uuid = typeof parsed.uuid === 'string' ? parsed.uuid : undefined
+    if (!uuid) continue
+    const msg = parsed.message as { stop_reason?: unknown; content?: unknown }
+    // A turn's LAST assistant frame is the cut point. Identify it:
+    //   - stop_reason === 'tool_use' → mid-turn tool call (expects a
+    //     tool_result to continue) → NOT a turn end, always exclude.
+    //   - stop_reason === 'end_turn' / 'stop_sequence' → explicit turn end.
+    //   - stop_reason missing (older SDK versions didn't write it) → fall
+    //     back to content shape: a frame whose content is ONLY tool_use
+    //     blocks (no text/thinking) is a mid-turn tool call, not a turn end.
+    //     This catches the 95/107 `(none)` frames on real transcripts that
+    //     are mid-turn tool calls the old SDK just didn't tag.
+    if (msg.stop_reason === 'tool_use') continue
+    if (
+      (msg.stop_reason === undefined || msg.stop_reason === null || msg.stop_reason === '') &&
+      isToolUseOnlyContent(msg.content)
+    ) continue
+    // Failed turns (API error / explicit error) are indeterminate — skip,
+    // mirroring the pump's success-only lastSafeResumeUuid promotion.
+    if (parsed.error || parsed.isApiErrorMessage) continue
+    const ts = typeof parsed.timestamp === 'string' ? Date.parse(parsed.timestamp) : NaN
+    anchors.push({ assistantUuid: uuid, completedAt: Number.isFinite(ts) ? ts : Date.now() })
+  }
+  return anchors
+}
+
 /** Pure core of readHistoryPage: parse JSONL text, filter to the renderable
  *  subset, and paginate. Exported for unit testing without touching the
  *  filesystem. */
