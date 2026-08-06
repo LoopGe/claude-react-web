@@ -675,3 +675,66 @@
   font-family: var(--mono);
   font-size: 12px;
 }
+/* Optional checkbox below the message (discard "permanently delete").
+   Mirrors .settings-toggle's self-drawn checkbox (messages.css) so the
+   look is identical across default/glow/hc skins — a native checkbox would
+   render inconsistently under glow's :checked override and hc's contrast
+   rules. */
+.confirm-dialog-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+  cursor: pointer;
+  user-select: none;
+}
+.confirm-dialog-checkbox input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: none;
+  border: 2px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-elev-1);
+  cursor: pointer;
+  position: relative;
+  transition: border-color var(--motion-duration-fast) var(--motion-ease-standard),
+              background var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.confirm-dialog-checkbox input[type="checkbox"]:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+.confirm-dialog-checkbox input[type="checkbox"]:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.confirm-dialog-checkbox input[type="checkbox"]:checked::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(45deg);
+  width: 4px;
+  height: 8px;
+  border: solid var(--bg);
+  border-width: 0 2px 2px 0;
+}
+.confirm-dialog-checkbox input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.confirm-dialog-checkbox input[type="checkbox"]:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+/* Secondary hint paragraph (kept-on-disk / permanently-deleted note). */
+.confirm-dialog-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+}

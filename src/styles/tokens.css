@@ -597,6 +597,23 @@
   box-shadow: 0 1px 0 color-mix(in srgb, #fff 22%, transparent) inset,
               0 2px 10px color-mix(in srgb, var(--accent) 35%, transparent);
 }
+/* Danger buttons (Discard, Delete) layer a danger-tinted glow on top of the
+   raised base — symmetric with .btn-primary's accent halo so destructive
+   CTAs read as equally "present" under the glow skin, not as flat default
+   buttons. Hover intensifies (see the :hover rule below). */
+[data-skin="glow"] .btn-danger {
+  background-image: linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent), transparent);
+  box-shadow: 0 1px 0 color-mix(in srgb, #fff 22%, transparent) inset,
+              0 2px 10px color-mix(in srgb, var(--danger) 35%, transparent);
+}
+/* Solid danger CTA (confirm button): same accent-halo shape as .btn-primary
+   but in the danger colour, so a destructive confirm reads as a raised
+   primary action under the glow skin. */
+[data-skin="glow"] .btn-danger-solid {
+  background-image: linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent), transparent);
+  box-shadow: 0 1px 0 color-mix(in srgb, #fff 22%, transparent) inset,
+              0 2px 10px color-mix(in srgb, var(--danger) 35%, transparent);
+}
 /* Scroll-to-bottom FAB: the floating accent pill is its own class (not a
    .btn), so it misses the raised sheen above. Give it the same glassy
    treatment (sheen + inset rim) on top of its accent --fab-shadow so it
@@ -697,9 +714,13 @@
 
 /* ── glow · medium-impact surfaces ───────────────────────────────────── */
 
-/* Danger button + active icon button get tinted glows. */
-[data-skin="glow"] .btn-danger:hover:not(:disabled) {
-  box-shadow: 0 0 12px color-mix(in srgb, var(--danger) 22%, transparent);
+/* Danger button hover intensifies its halo (the default .btn-danger glow
+   rule above sets the resting halo; hover widens it). Active icon button
+   gets its own accent tinted glow. */
+[data-skin="glow"] .btn-danger:hover:not(:disabled),
+[data-skin="glow"] .btn-danger-solid:hover:not(:disabled) {
+  box-shadow: 0 1px 0 color-mix(in srgb, #fff 22%, transparent) inset,
+              0 2px 14px color-mix(in srgb, var(--danger) 50%, transparent);
 }
 [data-skin="glow"] .btn-icon.active {
   box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 20%, transparent);

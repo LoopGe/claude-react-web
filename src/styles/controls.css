@@ -27,6 +27,19 @@
   border-color: color-mix(in srgb, var(--danger) 40%, transparent);
 }
 .btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+/* Solid variant of .btn-danger for a destructive PRIMARY CTA (the confirm
+   button in a ConfirmDialog). Mirrors .btn-primary's raised, filled look
+   but in the danger colour — the ghost .btn-danger reads as low-weight
+   (appropriate for secondary destructive actions like git "discard"), but
+   a modal's confirm button is the focused action and should be as present
+   as a Save button. White text on every theme: --danger is a mid-dark red
+   everywhere, so #fff keeps contrast without needing an --on-danger token. */
+.btn-danger-solid {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+.btn-danger-solid:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 88%, #000); }
 /* Square icon button for header toggles (bell, etc.). Same height as
    regular .btn but fixed-width and bigger glyph. */
 .btn-icon {
