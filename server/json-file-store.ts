@@ -7,6 +7,7 @@
 import { promises as fs } from 'node:fs'
 import { join, resolve as resolvePath } from 'node:path'
 import { homedir } from 'node:os'
+import { randomBytes } from 'node:crypto'
 import { createLogger, type Logger } from './log.js'
 
 export const DEFAULT_DIR_NAME = '.claude-react-web'
@@ -197,11 +198,45 @@ export abstract class JsonFileStore<T> {
 
 export async function writeAtomic(dir: string, file: string, data: unknown): Promise<void> {
   await fs.mkdir(dir, { recursive: true })
-  const tmp = `${file}.${process.pid}.tmp`
+  // Random suffix on the tmp name so two concurrent writes (even across
+  // different stores that share this helper) can't collide on the same
+  // `${file}.${pid}.tmp` path — on Windows a second writeFile to an
+  // already-locked tmp returns EPERM. Using crypto.randomBytes (not
+  // Math.random, which is unavailable in this context) keeps the name
+  // unique per write.
+  const suffix = randomBytes(6).toString('hex')
+  const tmp = `${file}.${process.pid}.${suffix}.tmp`
   // Pretty-print so the file is human-inspectable.
   await fs.writeFile(tmp, JSON.stringify(data, null, 2), { encoding: 'utf8', mode: 0o600 })
   // chmod after writeFile because the `mode` option is only respected on
   // POSIX systems — on Windows NTFS the option is silently ignored.
   try { await fs.chmod(tmp, 0o600) } catch { /* Windows: no POSIX perms */ }
-  await fs.rename(tmp, file)
+  // rename can fail on Windows when the destination is briefly locked
+  // (antivirus scanning, a concurrent reader releasing the handle). These
+  // are transient — retry a few times with a short backoff. EPERM /
+  // EACCES / EBUSY / ENOTEMPTY are the observed codes. On POSIX rename
+  // is atomic and these don't occur, so the retry is a no-op there.
+  await renameWithRetry(tmp, file)
+}
+
+/** Rename with a bounded retry for the Windows "destination locked"
+ *  transient. Throws the last error if all retries fail. */
+async function renameWithRetry(src: string, dest: string, attempts = 5): Promise<void> {
+  let lastErr: unknown
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await fs.rename(src, dest)
+      return
+    } catch (err) {
+      lastErr = err
+      const code = (err as NodeJS.ErrnoException).code
+      if (code !== 'EPERM' && code !== 'EACCES' && code !== 'EBUSY' && code !== 'ENOTEMPTY') {
+        throw err // non-transient — don't retry
+      }
+      // Backoff: 10ms, 20ms, 40ms, 80ms (last attempt no wait). Kept short
+      // — the lock window is typically milliseconds (AV scan release).
+      await new Promise((r) => setTimeout(r, 10 * (2 ** i)))
+    }
+  }
+  throw lastErr
 }
