@@ -2408,4 +2408,137 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       expect(mockHandles).toHaveLength(1) // no respawn on give-up
     })
   })
+
+  describe('discard (fork-from-anchor)', () => {
+    const waitFor = async (cond: () => boolean | Promise<boolean>, ticks = 60) => {
+      for (let i = 0; i < ticks; i++) {
+        if (await cond()) return true
+        await new Promise((r) => setImmediate(r))
+      }
+      return false
+    }
+
+    /** Complete a turn with a known assistant uuid so the pump records it
+     *  as a turn anchor (success result → turnAnchorStore.append). */
+    const completeTurn = (handle: MockQueryHandle, sessionId: string, asstUuid: string) => {
+      handle.emit({ type: 'assistant', uuid: asstUuid, parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'reply ' + asstUuid }] } })
+      handle.emit({ type: 'result', subtype: 'success', uuid: 'res-' + asstUuid, session_id: sessionId, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+    }
+
+    /** Read the turn-anchor sidecar via the manager's internals. */
+    const anchorsOf = async (sid: string) => {
+      const smAny = sm as unknown as { turnAnchorStore: { load: (id: string) => Promise<Array<{ assistantUuid: string; completedAt: number }> | null> } }
+      return (await smAny.turnAnchorStore.load(sid)) ?? []
+    }
+
+    it('records a turn anchor on each successful result', async () => {
+      const info = sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      completeTurn(h0, info.id, 'asst-1')
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+      // The pump records the anchor asynchronously (fire-and-forget); poll
+      // for the sidecar write to land.
+      await waitFor(async () => (await anchorsOf(info.id)).length > 0)
+      const anchors = await anchorsOf(info.id)
+      expect(anchors).toHaveLength(1)
+      expect(anchors[0].assistantUuid).toBe('asst-1')
+    })
+
+    it('discard() forks from the anchor and swaps X out (keeps transcript)', async () => {
+      const info = sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      completeTurn(h0, info.id, 'asst-1')
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+      await waitFor(async () => (await anchorsOf(info.id)).length > 0)
+
+      const y = await sm.discard(info.id, 'asst-1')
+      // Y is a new session id, live, not terminated.
+      expect(y.id).not.toBe(info.id)
+      expect(y.terminated).toBe(false)
+      expect(y.running).toBe(true)
+      // The fork spawn carried resumeSessionAt = the anchor (inclusive).
+      const forkHandle = mockHandles.at(-1)!
+      expect(forkHandle.options.resume).toBe(info.id)
+      expect(forkHandle.options.forkSession).toBe(true)
+      expect(forkHandle.options.resumeSessionAt).toBe('asst-1')
+      // X is gone from the live map + store (unload + removeFromStore).
+      expect(() => sm.get(info.id)).toThrow(/not found/i)
+    })
+
+    it('discard() refuses a non-anchor uuid (400)', async () => {
+      const info = sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      completeTurn(h0, info.id, 'asst-1')
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+      // 'asst-bogus' was never recorded as a turn anchor.
+      await expect(sm.discard(info.id, 'asst-bogus')).rejects.toThrow(/isn't the last reply|Cannot discard/i)
+    })
+
+    it('Y inherits X turn anchors truncated to the cut point (composable)', async () => {
+      const info = sm.create({ cwd: dir })
+      // Seed three turn anchors directly into the sidecar (bypassing the
+      // pump's fire-and-forget append, which races the test's event loop
+      // under the full suite). discard() reads the sidecar, not the pump,
+      // so this exercises the real cut-point inheritance logic without
+      // flaky timing.
+      const smAnchors = sm as unknown as { turnAnchorStore: { save: (id: string, entries: Array<{ assistantUuid: string; completedAt: number }>) => Promise<void> } }
+      await smAnchors.turnAnchorStore.save(info.id, [
+        { assistantUuid: 'asst-1', completedAt: 1000 },
+        { assistantUuid: 'asst-2', completedAt: 2000 },
+        { assistantUuid: 'asst-3', completedAt: 3000 },
+      ])
+      // Complete one real turn so fork() has a transcript + lastTurnAt
+      // (fork refuses without a completed turn).
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      completeTurn(h0, info.id, 'asst-1')
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+
+      // Discard after asst-2 → Y should inherit anchors [asst-1, asst-2]
+      // (the cut point inclusive, asst-3 dropped). A later discard on Y
+      // can still cut at asst-1 or asst-2.
+      const y = await sm.discard(info.id, 'asst-2')
+      await waitFor(async () => (await anchorsOf(y.id)).length > 0)
+      const yAnchors = await anchorsOf(y.id)
+      expect(yAnchors.map((a) => a.assistantUuid)).toEqual(['asst-1', 'asst-2'])
+    })
+
+    it('deleteOriginal unlinks the source transcript + sidecar', async () => {
+      const info = sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      completeTurn(h0, info.id, 'asst-1')
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+      await waitFor(async () => (await anchorsOf(info.id)).length > 0)
+
+      const y = await sm.discard(info.id, 'asst-1', { deleteOriginal: true })
+      expect(y.id).not.toBe(info.id)
+      // X's sidecar is gone.
+      expect(await anchorsOf(info.id)).toEqual([])
+      // X's prompt-uuid sidecar is gone too.
+      const smAny = sm as unknown as { promptUuidStore: { load: (id: string) => Promise<unknown> } }
+      expect(await smAny.promptUuidStore.load(info.id)).toBeNull()
+    })
+
+    it('listDiscardAnchors returns anchors with previews', async () => {
+      const info = sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      completeTurn(h0, info.id, 'asst-1')
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+      await waitFor(async () => (await anchorsOf(info.id)).length > 0)
+
+      const { anchors } = await sm.listDiscardAnchors(info.id)
+      expect(anchors).toHaveLength(1)
+      expect(anchors[0].uuid).toBe('asst-1')
+      // Preview: the mock SDK doesn't write a disk transcript, so
+      // readHistoryEntries returns nothing and the preview degrades to a
+      // placeholder. (Real preview content is exercised by the e2e check
+      // in the plan, not this unit test.)
+      expect(anchors[0].preview).toBe('(reply not found on disk)')
+    })
+  })
 })

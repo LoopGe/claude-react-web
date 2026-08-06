@@ -25,6 +25,8 @@ import type { ProcessExitInfo } from './process-monitor.js'
 import { randomUUID } from 'node:crypto'
 import { SessionStore, type SessionMeta } from './persistence.js'
 import { PromptUuidStore, rewriteSeedPromptUuids, retainPromptUuidEntries, type PromptUuidEntry } from './prompt-uuid-store.js'
+import { TurnAnchorStore, type TurnAnchorEntry } from './turn-anchor-store.js'
+import { ResultFrameStore, type ResultFrameEntry } from './result-frame-store.js'
 import { McpConfigStore } from './mcp-config.js'
 import { RecapManager } from './recap.js'
 import type { SessionPhase, SessionRecap } from './session-types.js'
@@ -57,6 +59,8 @@ import { pushBounded, stampReceivedAt, stampConsumedAt } from './history-utils.j
 import { watchBackgroundSubagent, type SubagentCompletion } from './subagent-watcher.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
+import { deleteTranscriptFile } from './history-reader.js'
+import { readTurnAnchorsFromDisk } from './history-reader.js'
 import { createPushable, type Pushable } from './pushable.js'
 import { createDefaultProviders } from './providers/default-providers.js'
 import type { ProviderCapabilities, ProviderSessionHandle } from './providers/types.js'
@@ -116,6 +120,80 @@ const TRANSIENT_TERMINATED_REASONS = new Set([
 
 function isTransientTerminatedReason(reason?: string): boolean {
   return !!reason && TRANSIENT_TERMINATED_REASONS.has(reason)
+}
+
+/** Extract the model name from the first assistant frame in a history seed.
+ *  Used by resume() when the session's persisted meta has no model (e.g. a
+ *  CLI-created session adopted from disk — the SDK's getSessionInfo doesn't
+ *  return model). The on-disk assistant frame carries `message.model` (the
+ *  SDK's internal model name), which the CLI accepts on resume. */
+function firstAssistantModel(seed: SDKMessage[] | undefined): string | undefined {
+  if (!seed) return undefined
+  for (const msg of seed) {
+    if ((msg as { type?: string }).type === 'assistant') {
+      const model = (msg as { message?: { model?: string } }).message?.model
+      if (typeof model === 'string' && model) return model
+    }
+  }
+  return undefined
+}
+
+/** Merge result frames from the sidecar back into a disk-read history seed.
+ *  The SDK doesn't persist result to the on-disk transcript, so a seed read
+ *  from disk lacks the per-turn result summaries (cost/duration/turns/usage).
+ *  This inserts each result right after its corresponding assistant frame
+ *  (matched by assistantUuid), restoring the turn-end summaries the client
+ *  renders. Entries whose assistantUuid isn't in the seed (older than the
+ *  ring window) are silently dropped — they have nowhere to insert. */
+function mergeResultFrames(
+  seed: SDKMessage[],
+  resultFrames: ResultFrameEntry[] | null | undefined,
+): SDKMessage[] {
+  if (!resultFrames || resultFrames.length === 0 || seed.length === 0) return seed
+  const byAssistant = new Map<string, SDKMessage>()
+  for (const entry of resultFrames) {
+    byAssistant.set(entry.assistantUuid, entry.result)
+  }
+  const merged: SDKMessage[] = []
+  let inserted = 0
+  for (const msg of seed) {
+    merged.push(msg)
+    const uuid = (msg as { uuid?: string }).uuid
+    if (uuid && (msg as { type?: string }).type === 'assistant') {
+      const result = byAssistant.get(uuid)
+      if (result) {
+        merged.push(result)
+        inserted++
+      }
+    }
+  }
+  // If nothing was inserted (no assistant matched), return the original
+  // array to avoid an unnecessary copy.
+  return inserted > 0 ? merged : seed
+}
+
+/** Short preview of an assistant message for the discard-anchors listing.
+ *  First text block's first ~80 chars; falls back to a tool-use label or
+ *  the uuid prefix when there's no text. Tolerates any shape (the message
+ *  may be absent from disk — returns a placeholder). */
+function previewAssistantMessage(msg: unknown): string {
+  if (!msg || typeof msg !== 'object') return '(reply not found on disk)'
+  const content = (msg as { message?: { content?: unknown } }).message?.content
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      if (!block || typeof block !== 'object') continue
+      const b = block as { type?: string; text?: unknown; name?: unknown }
+      if (b.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
+        const t = b.text.replace(/\s+/g, ' ').trim()
+        return t.length > 80 ? t.slice(0, 80) + '…' : t
+      }
+      if (b.type === 'tool_use' && typeof b.name === 'string') {
+        return `tool: ${b.name}`
+      }
+    }
+  }
+  const uuid = (msg as { uuid?: string }).uuid
+  return uuid ? uuid.slice(0, 8) : '(empty reply)'
 }
 
 /** Resolve the effective policy for a session by combining (optional)
@@ -239,6 +317,8 @@ export class SessionManager {
   private healthMonitor: SessionHealthMonitor
   private store: SessionStore
   private promptUuidStore: PromptUuidStore
+  private turnAnchorStore: TurnAnchorStore
+  private resultFrameStore: ResultFrameStore
   private mcpStore: McpConfigStore
   private providers: ProviderRegistry
   private defaultProvider: string
@@ -261,6 +341,8 @@ export class SessionManager {
     this.crashRecoveryEnabled = opts.crashRecovery ?? false
     this.store = opts.store ?? new SessionStore()
     this.promptUuidStore = new PromptUuidStore(this.store.getDir(), this.historyCap)
+    this.turnAnchorStore = new TurnAnchorStore(this.store.getDir(), this.historyCap)
+    this.resultFrameStore = new ResultFrameStore(this.store.getDir(), this.historyCap)
     this.mcpStore = opts.mcpConfigStore ?? new McpConfigStore()
     this.providers = opts.providers ?? createDefaultProviders({
       claudeBinary: opts.claudeBinary,
@@ -742,7 +824,7 @@ export class SessionManager {
    *  - Refuses to resume terminated sessions; the SDK can't continue past
    *    a `result` message anyway.
    */
-  async resume(id: string): Promise<SessionInfo> {
+  async resume(id: string, opts?: { permissionMode?: PermissionMode }): Promise<SessionInfo> {
     const live = this.sessions.get(id)
     if (live) {
       // The pump's cleanup tail sets `terminated=true` but does NOT unload,
@@ -830,12 +912,35 @@ export class SessionManager {
     // Transcript exists → safe to resume even if our lastTurnAt proxy is
     // stale. Fall through to build resumeOpts with `resume: id`.
     const provider = meta.provider ?? this.defaultProvider
+    // Read the history seed FIRST so we can extract the model from the
+    // transcript's first assistant frame when meta.model is missing (a
+    // CLI-created session adopted from disk has no model in its meta — the
+    // SDK's getSessionInfo doesn't return it). The on-disk assistant frame
+    // carries `message.model` (the SDK's internal name), which the CLI
+    // accepts on resume.
+    let historySeed: SDKMessage[] | undefined
+    try {
+      const page = await this.readProviderHistoryPage(provider, id, {
+        limit: this.historyCap,
+        // Side Chat: exclude the inherited parent prefix (fork boundary) so
+        // re-seeding the ring on resume doesn't paint the parent's history.
+        ...(meta.forkBoundaryUuid ? { afterUuid: meta.forkBoundaryUuid } : {}),
+      })
+      if (page.messages.length > 0) historySeed = page.messages as SDKMessage[]
+    } catch {
+      /* disk read failed — fall back to an empty ring (pre-fix behaviour) */
+    }
+    const resolvedModel = meta.model ?? firstAssistantModel(historySeed)
     const resumeOpts: Options & { provider?: string; enabledPlugins?: string[] } = {
       provider,
       resume: id,
       cwd: meta.cwd,
-      model: meta.model,
-      permissionMode: meta.permissionMode,
+      model: resolvedModel,
+      // Use the persisted permissionMode if available (sessions we created).
+      // For CLI sessions adopted from disk (no permissionMode in meta), fall
+      // back to the caller-supplied mode (the user's current panel mode) so
+      // "resume in whatever mode I'm currently in" works as expected.
+      permissionMode: meta.permissionMode ?? opts?.permissionMode,
       title: meta.title,
       // Carry the effort level forward so a resumed session keeps its
       // reasoning depth instead of falling back to the SDK default.
@@ -858,28 +963,6 @@ export class SessionManager {
       await this.mcpStore.refreshOAuthTokens(allGlobalMcpNames)
       resumeOpts.mcpServers = this.mcpStore.toSdkConfig()
     }
-    // Seed the live history ring with the transcript tail from disk. The SDK
-    // loads the transcript as context on resume but does NOT re-emit it
-    // through the Query stream, so without this the ring stays empty until a
-    // new turn lands and the first subscribe replays nothing. We take the
-    // newest page (historyCap messages) dsymmetric with a long-lived session
-    // whose ring only holds its recent tail; older history is paged in by the
-    // client's loadOlder() scroll-up exactly as before. A failed/empty disk
-    // read degrades to the old behaviour (empty ring) rather than blocking
-    // resume dreadHistoryPage already returns an empty page when the file is
-    // absent or unreadable.
-    let historySeed: SDKMessage[] | undefined
-    try {
-      const page = await this.readProviderHistoryPage(provider, id, {
-        limit: this.historyCap,
-        // Side Chat: exclude the inherited parent prefix (fork boundary) so
-        // re-seeding the ring on resume doesn't paint the parent's history.
-        ...(meta.forkBoundaryUuid ? { afterUuid: meta.forkBoundaryUuid } : {}),
-      })
-      if (page.messages.length > 0) historySeed = page.messages as SDKMessage[]
-    } catch {
-      /* disk read failed dfall back to an empty ring (pre-fix behaviour) */
-    }
     // uuid bridge: load the server-minted prompt uuids recorded for this
     // session and rewrite the disk-seed's top-level prompt uuids (SDK V →
     // server U) so the client's uuid-anchored replay overlap detection works
@@ -887,7 +970,14 @@ export class SessionManager {
     // to bridge (old/fresh session) or on any desync (signature fallback then
     // handles dedup). Loaded onto the session so subsequent sends append to it.
     const promptUuids = await this.promptUuidStore.load(id)
-    if (historySeed) historySeed = rewriteSeedPromptUuids(historySeed, promptUuids)
+    if (historySeed) {
+      // Merge result frames from the sidecar — the SDK doesn't persist
+      // result to disk, so the disk-read seed lacks per-turn result
+      // summaries (cost/duration/turns/usage).
+      const resultFrames = await this.resultFrameStore.load(id)
+      historySeed = mergeResultFrames(historySeed, resultFrames)
+      historySeed = rewriteSeedPromptUuids(historySeed, promptUuids)
+    }
     return this.spawn(id, resumeOpts, undefined, historySeed, undefined, undefined, undefined, undefined, promptUuids ?? [])
   }
 
@@ -1078,7 +1168,7 @@ export class SessionManager {
    *  `result` message, so forking earlier fails with `No conversation
    *  found with session ID: <uuid>` from the CLI. `lastTurnAt` is our
    *  ground-truth signal (set only by the pump on a real `result`). */
-  async fork(id: string, opts?: { resumeSessionAt?: string }): Promise<SessionInfo> {
+  async fork(id: string, opts?: { resumeSessionAt?: string; historySeed?: SDKMessage[]; inheritIdentity?: boolean }): Promise<SessionInfo> {
     const live = this.sessions.get(id)
     const meta = live ?? this.store.get(id)
     if (!meta) throw new HttpError(404, `session ${id} not found`)
@@ -1139,7 +1229,11 @@ export class SessionManager {
         `session ${id}'s SDK transcript file is missing on disk dit cannot be forked. The session has been marked terminated; delete it from the sidebar.`,
       )
     }
-    const title = meta.title ? `${meta.title} (fork)` : undefined
+    // `inheritIdentity`: for discard (which is an in-place truncation, not a
+    // sibling branch) keep the source's title verbatim instead of appending
+    // " (fork)" — the user expects the conversation to continue under the
+    // same name, not a renamed fork.
+    const title = opts?.inheritIdentity ? meta.title : (meta.title ? `${meta.title} (fork)` : undefined)
     const sourceProvider = meta.provider ?? this.defaultProvider
     const forkOpts: Options & { provider?: string; enabledPlugins?: string[] } = {
       provider: sourceProvider,
@@ -1179,7 +1273,7 @@ export class SessionManager {
       randomUUID(),
       forkOpts,
       undefined,
-      undefined,
+      opts?.historySeed,
       parentOverride,
       // Carry the source's pure-UI pref overrides onto the fork so a
       // pinned header / auto-recap override survives forking. No-op when
@@ -1222,6 +1316,216 @@ export class SessionManager {
       }
     }
     return forkInfo
+  }
+
+  /** Discard every message AFTER a given assistant message, keeping that
+   *  turn and everything before it. Implemented as a fork from the anchor
+   *  (`resumeSessionAt` is inclusive — the anchor message is kept) followed
+   *  by a clear-style X→Y swap: the source X is removed from the sidebar
+   *  (unloaded, `removed` broadcast) and Y replaces it in the panel. The
+   *  source transcript is left on disk by default (recoverable via
+   *  `/resume`); pass `deleteOriginal: true` to also unlink X's jsonl.
+   *
+   *  `fromAssistantUuid` MUST be the uuid of a successfully-completed turn's
+   *  LAST main-thread assistant message (a "turn anchor"). Any other uuid
+   *  (a user prompt, a mid-turn assistant frame, a failed turn) would cut
+   *  mid-turn and orphan tool_use↔tool_result pairs — refused with 400.
+   *  Anchors are persisted by the pump on every `result.subtype==='success'`
+   *  (see turn-anchor-store); we look the supplied uuid up there.
+   *
+   *  Y inherits X's turn-anchor sidecar truncated to the cut point, so a
+   *  later discard on Y can still cut at any earlier turn (the feature
+   *  composes — repeated discards walk back through history). */
+  async discard(
+    id: string,
+    fromAssistantUuid: string,
+    opts?: { deleteOriginal?: boolean },
+  ): Promise<SessionInfo> {
+    // 1. Validate the anchor: it must be a recorded turn anchor (a success
+    //    turn's last assistant frame). A uuid not in the sidecar is either
+    //    a non-anchor message or a turn whose anchor was never persisted —
+    //    either way, cutting there would orphan tool pairs, so refuse.
+    //    ensureAnchorsLoaded backfills from disk for sessions whose turns
+    //    predate the sidecar, so historical sessions are usable too.
+    const anchors = await this.ensureAnchorsLoaded(id)
+    const anchorIdx = anchors.findIndex((e) => e.assistantUuid === fromAssistantUuid)
+    if (anchorIdx < 0) {
+      throw new HttpError(
+        400,
+        `Cannot discard from this message — it isn't the last reply of a ` +
+        `successfully-completed turn. Pick an assistant reply to cut after.`,
+      )
+    }
+
+    // 2. Fork from the anchor. fork() probes the transcript on disk and
+    //    throws 410 (marking X terminated) if it's gone, same as resume.
+    //    resumeSessionAt is inclusive (SDK: "up to and including"), so the
+    //    anchor's whole turn is preserved and only LATER turns are dropped.
+    //    Seed Y's in-memory history ring with X's transcript up to (and
+    //    including) the anchor, so the panel shows the kept history
+    //    immediately instead of an empty "start a conversation" state.
+    //    fork()'s SDK subprocess writes Y's disk transcript async after
+    //    spawn, so we can't read Y's disk at spawn time — read X's disk
+    //    tail and truncate to the anchor, mirroring resume()'s historySeed.
+    //    User-prompt uuids are rewritten via X's promptUuid sidecar so the
+    //    client's uuid-anchored replay dedup works. Older history beyond
+    //    the tail is paged in by the client's loadOlder() scroll-up.
+    const liveX = this.sessions.get(id)
+    const metaX = liveX ?? this.store.get(id)
+    const providerX = metaX?.provider ?? this.defaultProvider
+    let historySeed: SDKMessage[] | undefined
+    let seedSource = 'none'
+    try {
+      // Prefer X's in-memory history ring: it contains result frames (the
+      // SDK doesn't persist result to disk). Using the ring preserves the
+      // per-turn result summaries (cost/duration/turns) the client renders,
+      // which a disk-only seed would drop.
+      if (liveX && liveX.history.length > 0) {
+        const ringAnchor = liveX.history.findIndex((m) => (m as { uuid?: string }).uuid === fromAssistantUuid)
+        if (ringAnchor >= 0) {
+          historySeed = liveX.history.slice(0, ringAnchor + 1) as SDKMessage[]
+          seedSource = 'ring'
+        }
+      }
+      // Fall back to disk when the ring is empty (dormant X) or the anchor
+      // is older than the ring's window. Disk lacks result frames but covers
+      // turns outside the ring.
+      if (!historySeed) {
+        const page = await this.readProviderHistoryPage(providerX, id, { limit: this.historyCap })
+        const anchorInPage = page.messages.findIndex((m) => (m as { uuid?: string }).uuid === fromAssistantUuid)
+        historySeed = anchorInPage >= 0
+          ? (page.messages.slice(0, anchorInPage + 1) as SDKMessage[])
+          : (page.messages.length > 0 ? (page.messages as SDKMessage[]) : undefined)
+        seedSource = 'disk'
+      }
+      log.info(`[session ${id}] discard historySeed: ${historySeed?.length ?? 0} msgs (source: ${seedSource})`)
+    } catch (err) {
+      log.warn(`[session ${id}] discard historySeed read failed:`, err)
+    }
+    if (historySeed) {
+      const promptUuids = await this.promptUuidStore.load(id)
+      // Only merge result frames when the seed came from disk (disk lacks
+      // result; the in-memory ring already has them). Avoids double-inserting.
+      if (seedSource === 'disk') {
+        const resultFrames = await this.resultFrameStore.load(id)
+        historySeed = mergeResultFrames(historySeed, resultFrames)
+      }
+      historySeed = rewriteSeedPromptUuids(historySeed, promptUuids)
+    }
+    const forkInfo = await this.fork(id, { resumeSessionAt: fromAssistantUuid, historySeed, inheritIdentity: true })
+
+    // 3. Copy X's turn-anchor sidecar to Y, truncated to the cut point
+    //    (anchor inclusive). Without this, Y only has anchors for turns it
+    //    produces itself — a second discard on Y couldn't cut any earlier
+    //    than Y's first new turn, breaking the "repeatedly walk back"
+    //    contract. Entries are in completion order, so slice(0, anchorIdx+1)
+    //    keeps the anchor and everything before it.
+    const inherited = anchors.slice(0, anchorIdx + 1)
+    await this.turnAnchorStore.save(forkInfo.id, inherited)
+
+    // Copy X's result-frame sidecar to Y, truncated to the cut point. Only
+    // result frames whose assistantUuid is in the inherited anchors (i.e.
+    // the turn is at or before the cut point) are kept — later turns'
+    // result summaries are discarded along with the turns themselves.
+    const resultFrames = (await this.resultFrameStore.load(id)) ?? []
+    if (resultFrames.length > 0) {
+      const anchorUuids = new Set(inherited.map((a) => a.assistantUuid))
+      const inheritedResults = resultFrames.filter((e) => anchorUuids.has(e.assistantUuid))
+      if (inheritedResults.length > 0) {
+        await this.resultFrameStore.merge(forkInfo.id, inheritedResults)
+      }
+    }
+
+    // 4. Unload X. removeFromStore drops it from the sidebar (clear-style
+    //    X→Y swap). deleteOriginal additionally unlinks X's transcript: we
+    //    pass `terminated: true` so unload AWAITS the pump (the CLI
+    //    subprocess exits, releasing the file handle) before we unlink —
+    //    otherwise Windows EPERM/EBUSY on a still-locked jsonl.
+    if (opts?.deleteOriginal) {
+      await this.unload(id, { terminated: true, reason: 'discarded', removeFromStore: true })
+      await deleteTranscriptFile(id)
+      void this.turnAnchorStore.remove(id)
+      void this.resultFrameStore.remove(id)
+      void this.promptUuidStore.remove(id)
+    } else {
+      await this.unload(id, { removeFromStore: true })
+    }
+
+    log.info(
+      `[session ${id}] discarded ${anchors.length - anchorIdx - 1} turn(s) after anchor ` +
+      `${fromAssistantUuid.slice(0, 8)} → forked to ${forkInfo.id}` +
+      (opts?.deleteOriginal ? ' (original transcript deleted)' : ' (original kept on disk)'),
+    )
+    return forkInfo
+  }
+
+  /** Load the turn-anchor sidecar, backfilling from the on-disk transcript
+   *  when it's empty. The sidecar is only populated by the pump on NEW
+   *  success results, so a session whose turns completed before the feature
+   *  shipped has an empty sidecar despite hundreds of completed turns on
+   *  disk. This reads the transcript, derives each success turn's last
+   *  assistant frame (stop_reason !== 'tool_use', no error), and seeds the
+   *  sidecar so subsequent calls read it directly. Returns the (now-loaded)
+   *  anchors in chronological order. */
+  private async ensureAnchorsLoaded(id: string): Promise<TurnAnchorEntry[]> {
+    const existing = (await this.turnAnchorStore.load(id)) ?? []
+    if (existing.length > 0) return existing
+    // Empty sidecar — backfill from disk. readTurnAnchorsFromDisk returns
+    // success-turn last-frames; if the transcript is also empty/missing
+    // (no completed turns yet), this returns [] and we skip the write (a
+    // concurrent turn could still append later). Use `merge` (not `save`)
+    // so a pump append that landed between our load and write is preserved
+    // rather than clobbered.
+    const backfilled = await readTurnAnchorsFromDisk(id)
+    if (backfilled.length > 0) {
+      await this.turnAnchorStore.merge(id, backfilled)
+      log.info(`[session ${id}] backfilled ${backfilled.length} turn anchor(s) from disk`)
+    }
+    return backfilled
+  }
+
+  /** List the legal "discard from here" cut points for a session — each
+   *  successfully-completed turn's last assistant message, with a short
+   *  preview of that reply. Drives the client's right-click menu: an
+   *  assistant message is a legal cut point iff its uuid is in this list.
+   *
+   *  Preview is the first ~80 chars of the assistant reply's first text
+   *  block; falls back to a tool-use label or the uuid prefix when there's
+   *  no text (e.g. a pure tool_use reply). */
+  async listDiscardAnchors(id: string): Promise<{
+    anchors: Array<{ uuid: string; completedAt: number; preview: string }>
+  }> {
+    const anchors = await this.ensureAnchorsLoaded(id)
+    if (anchors.length === 0) return { anchors: [] }
+
+    // Build a uuid → message map from the on-disk transcript so we can
+    // attach a preview without a second pass. readHistoryEntries returns
+    // every renderable message in chronological order.
+    const live = this.sessions.get(id)
+    const meta = live ?? this.store.get(id)
+    const providerName = (live?.provider ?? meta?.provider ?? this.defaultProvider)
+    const provider = this.providers.get(providerName)
+    const uuidToMessage = new Map<string, unknown>()
+    if (provider?.readHistoryEntries) {
+      try {
+        const afterUuid = live?.forkBoundaryUuid ?? meta?.forkBoundaryUuid
+        const entries = await provider.readHistoryEntries(id, afterUuid ? { afterUuid } : {})
+        for (const entry of entries) {
+          const uuid = (entry.message as { uuid?: string }).uuid
+          if (typeof uuid === 'string') uuidToMessage.set(uuid, entry.message)
+        }
+      } catch (err) {
+        log.warn(`[session ${id}] listDiscardAnchors: history read failed:`, err)
+      }
+    }
+
+    return {
+      anchors: anchors.map((a) => ({
+        uuid: a.assistantUuid,
+        completedAt: a.completedAt,
+        preview: previewAssistantMessage(uuidToMessage.get(a.assistantUuid)),
+      })),
+    }
   }
 
   /** Create a Side Chat — an ephemeral fork of the parent session's
@@ -1521,6 +1825,7 @@ export class SessionManager {
       includeHookEvents: true,
       resume: fullOpts.resume,
       forkSession: fullOpts.forkSession,
+      resumeSessionAt: (fullOpts as { resumeSessionAt?: string }).resumeSessionAt,
       onUserMessageConsumed: (msg) => this.onInputConsumed(id, msg as SDKUserMessage),
       canUseTool: fullOpts.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
       providerExtras: { sdkOptions },
@@ -2913,6 +3218,10 @@ export class SessionManager {
     this.store.remove(id)
     // Drop the promptUuids sidecar too — the session is gone for good.
     void this.promptUuidStore.remove(id)
+    // And the turn-anchor sidecar (legal discard cut points).
+    void this.turnAnchorStore.remove(id)
+    // And the result-frame sidecar (per-turn result summaries).
+    void this.resultFrameStore.remove(id)
     // Drop any stored recap — otherwise a new session that happens to
     // reuse this id (rare, but possible under --state-dir swaps) would
     // see the old summary. unload() already calls invalidate() but we
@@ -3460,6 +3769,17 @@ export class SessionManager {
           this.startBackgroundSubagentWatcher(sessionId, toolUseId, agentId),
         onPromptEcho: (s, echoUuid) => {
           if (this.sessions.has(s.id)) this.onPromptEcho(s, echoUuid)
+        },
+        recordTurnAnchor: (sessionId, assistantUuid, completedAt) => {
+          // Fire-and-forget on the turn path; a missed anchor only means
+          // that turn can't serve as a discard cut point (recoverable by
+          // re-promoting on a later replay of the transcript).
+          void this.turnAnchorStore.append(sessionId, { assistantUuid, completedAt })
+        },
+        recordResultFrame: (sessionId, resultUuid, assistantUuid, result) => {
+          // Fire-and-forget; a missed frame only means that turn's result
+          // summary (cost/duration) won't show on resume.
+          void this.resultFrameStore.append(sessionId, { resultUuid, assistantUuid, result })
         },
       }
     }

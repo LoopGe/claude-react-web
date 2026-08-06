@@ -157,9 +157,16 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     return c.json({ session: info })
   })
 
-  // Resume a dormant session.
+  // Resume a dormant session. The optional `permissionMode` is used when the
+  // session has no persisted mode (CLI sessions adopted from disk) — it lets
+  // the caller pass "the mode I'm currently in" so resume doesn't drop the
+  // user back to default.
   app.post('/sessions/:id/resume', async (c) => {
-    const info = await sm.resume(c.req.param('id'))
+    const body = await safeJson<{ permissionMode?: string }>(c.req).catch(() => ({ permissionMode: undefined }))
+    const mode = typeof body.permissionMode === 'string' && isUserSelectablePermissionMode(body.permissionMode)
+      ? body.permissionMode as PermissionMode
+      : undefined
+    const info = await sm.resume(c.req.param('id'), { permissionMode: mode })
     return c.json({ session: info })
   })
 
@@ -182,6 +189,31 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   // Create a Side Chat — ephemeral fork with boundary prompt.
   app.post('/sessions/:id/side-chat', async (c) => {
     const info = await sm.createSideChat(c.req.param('id'))
+    return c.json({ session: info }, 201)
+  })
+
+  // List the legal "discard from here" cut points — each
+  // successfully-completed turn's last assistant message with a preview.
+  // Drives the client's right-click menu legality check (prefetched when a
+  // panel opens a session that has completed turns).
+  app.get('/sessions/:id/discard-anchors', async (c) => {
+    const result = await sm.listDiscardAnchors(c.req.param('id'))
+    return c.json(result)
+  })
+
+  // Discard every message AFTER a given assistant message. Forks from the
+  // anchor (inclusive — the anchor's turn is kept), then swaps the source X
+  // out of the sidebar (clear-style X→Y). `deleteOriginal` also unlinks X's
+  // on-disk transcript (irreversible). The anchor must be a turn anchor
+  // (see GET /discard-anchors); any other uuid → 400.
+  app.post('/sessions/:id/discard', async (c) => {
+    const body = await safeJson<{ fromAssistantUuid?: string; deleteOriginal?: boolean }>(c.req)
+    if (typeof body.fromAssistantUuid !== 'string' || !body.fromAssistantUuid) {
+      return c.json({ error: 'fromAssistantUuid is required' }, 400)
+    }
+    const info = await sm.discard(c.req.param('id'), body.fromAssistantUuid, {
+      deleteOriginal: body.deleteOriginal === true,
+    })
     return c.json({ session: info }, 201)
   })
 
