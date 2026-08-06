@@ -261,6 +261,44 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     }
   }
 
+  // Editable session title. Seeded from `session.title`; re-synced from the
+  // server-propagated value when the input isn't focused (e.g. the title was
+  // changed from the sidebar's inline rename while this panel was open).
+  // Commits on Enter / blur; Escape cancels and stops propagation so the
+  // first Esc cancels the edit instead of closing the panel.
+  const [titleDraft, setTitleDraft] = useState(session.title ?? '')
+  const titleInputRef = useRef<HTMLInputElement>(null)
+  // Set by the Escape handler to tell the synchronous blur→commitTitle path
+  // to skip committing. blur() fires onBlur synchronously inside the same
+  // keydown call, before the queued setTitleDraft(state reset) is applied —
+  // so commitTitle would otherwise read the stale (edited) draft and treat
+  // Escape as a submit. The ref is the one safe channel across that gap.
+  const skipCommitRef = useRef(false)
+  useEffect(() => {
+    if (titleInputRef.current && document.activeElement === titleInputRef.current) return
+    setTitleDraft(session.title ?? '')
+  }, [session.title])
+
+  const commitTitle = async () => {
+    if (skipCommitRef.current) {
+      skipCommitRef.current = false
+      setTitleDraft(session.title ?? '')
+      return
+    }
+    const title = titleDraft.trim()
+    if (title === (session.title ?? '').trim()) {
+      setTitleDraft(session.title ?? '')
+      return
+    }
+    try {
+      const r = await api.patch<{ session: SessionInfo }>(`/sessions/${session.id}`, { title })
+      onSessionUpdate(r.session)
+    } catch (e) {
+      toast.error(`Couldn't rename session: ${(e as Error).message}`)
+      setTitleDraft(session.title ?? '')
+    }
+  }
+
   const changeModel = (model: string) =>
     runAndRefresh(() => api.post<{ session: SessionInfo }>(`/sessions/${session.id}/model`, { model: model || undefined }))
 
@@ -610,12 +648,39 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
         <h4>Read-only (set at create)</h4>
         <ReadOnlyField label="Session ID" value={session.id} mono />
         <ReadOnlyField label="CWD" value={session.cwd ?? '—'} mono />
-        <ReadOnlyField label="Title" value={session.title ?? '—'} />
         <ReadOnlyField label="Created" value={new Date(session.createdAt).toLocaleString()} />
       </div>
 
       <div className="settings-section">
         <h4>Live controls</h4>
+        <div className="settings-field">
+          <label>Title</label>
+          <input
+            ref={titleInputRef}
+            className="input"
+            value={titleDraft}
+            placeholder="(auto)"
+            onChange={(e) => setTitleDraft(e.target.value)}
+            onBlur={() => void commitTitle()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                ;(e.currentTarget as HTMLInputElement).blur()
+              } else if (e.key === 'Escape') {
+                // Only intercept Escape when there are pending edits —
+                // otherwise let it propagate so the global Escape chain
+                // closes the panel as usual.
+                if (titleDraft.trim() !== (session.title ?? '').trim()) {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  skipCommitRef.current = true
+                  setTitleDraft(session.title ?? '')
+                }
+                ;(e.currentTarget as HTMLInputElement).blur()
+              }
+            }}
+          />
+        </div>
         <div className="settings-field">
           <label>Model</label>
           <select
