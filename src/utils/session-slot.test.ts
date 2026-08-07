@@ -14,9 +14,28 @@ describe('inheritGroupId', () => {
     expect(inheritGroupId(groups, 'x', 'y')[0].sessionIds).toEqual(['a', 'y', 'b'])
   })
 
-  it('drops oldId (no duplicate) when newId is already a member', () => {
+  it('moves newId into oldId slot (no duplicate) when newId is already a member', () => {
+    // newId already sits right after oldId with nothing trailing — moving
+    // and dropping both collapse to the same result, but assert the move
+    // semantics explicitly (newId takes oldId's index, not its appended one).
     const groups = [g('G1', ['a', 'x', 'y'])]
     expect(inheritGroupId(groups, 'x', 'y')[0].sessionIds).toEqual(['a', 'y'])
+  })
+
+  it('preserves oldId position when newId was appended after a trailing sibling (clear race)', () => {
+    // Regression: /clear's session-created(Y) frame appends Y to the END of
+    // X's group before swapSession runs. Y must inherit X's slot, not stay
+    // appended at the end — otherwise a non-last session jumps to the
+    // bottom of its group on every clear.
+    const groups = [g('G1', ['a', 'x', 'b', 'y'])]
+    expect(inheritGroupId(groups, 'x', 'y')[0].sessionIds).toEqual(['a', 'y', 'b'])
+  })
+
+  it('moves newId into oldId slot when newId was appended before oldId', () => {
+    // Defensive: newId already present ahead of oldId. Move still lands newId
+    // at oldId's (shifted) position.
+    const groups = [g('G1', ['y', 'a', 'x', 'b'])]
+    expect(inheritGroupId(groups, 'x', 'y')[0].sessionIds).toEqual(['a', 'y', 'b'])
   })
 
   it('leaves other groups untouched and returns them by reference', () => {

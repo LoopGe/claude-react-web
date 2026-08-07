@@ -7,10 +7,17 @@ import type { SessionGroup } from '../types'
  *  restart. The `session-created` handler does NOT use this (it appends via
  *  `joinGroupId` so X stays grouped until swapSession evicts it, avoiding an
  *  "Ungrouped" flash). `swapSession` is idempotent over an already-appended
- *  Y: if `newId` is already a member, `oldId` is simply dropped.
+ *  Y: if `newId` is already a member, `newId` is moved into `oldId`'s slot
+ *  (and `oldId` dropped) rather than left at the end where it was appended.
+ *
+ *  The move matters for `/clear`: `session-created(Y)` lands before the POST
+ *  resolves and appends Y to the END of X's group. If `swapSession` then only
+ *  dropped X, Y would stay at the end — a non-last session would jump to the
+ *  bottom of its group on every clear. Moving Y into X's slot preserves the
+ *  original position.
  *
  *  - If `newId` is already a member of a group that also contains `oldId`,
- *    `oldId` is dropped (no duplicate).
+ *    `newId` is moved to `oldId`'s position and `oldId` is dropped.
  *  - Groups without `oldId` are returned by reference (no churn).
  *  - `oldId === newId` is a full no-op (returns input by reference). */
 export function inheritGroupId(
@@ -25,8 +32,18 @@ export function inheritGroupId(
     if (i === -1) return g
     changed = true
     const ids = g.sessionIds.slice()
-    if (ids.includes(newId)) ids.splice(i, 1)
-    else ids[i] = newId
+    const j = ids.indexOf(newId)
+    if (j === -1) {
+      // newId not yet present — take oldId's slot in place.
+      ids[i] = newId
+    } else {
+      // newId was already appended (session-created joinGroupOf frame that
+      // landed before swapSession). Move it to oldId's slot so it inherits
+      // X's position instead of lingering at the appended end. Removing
+      // newId first shifts oldId's index down by one when j < i.
+      ids.splice(j, 1)
+      ids[j < i ? i - 1 : i] = newId
+    }
     return { ...g, sessionIds: ids }
   })
   // Return the input by reference when no group contained oldId, so the
