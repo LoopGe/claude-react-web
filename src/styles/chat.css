@@ -889,6 +889,9 @@
 .worktree-marker-sub code {
   font-family: var(--mono);
   color: var(--fg);
+  background: var(--bg-elev-2);
+  padding: 1px 5px;
+  border-radius: 3px;
 }
 
 /* Compact-summary card — the user-role "summary" frame that the SDK
@@ -962,15 +965,21 @@
 .thinking-details[data-state="open"] .thinking-preview {
   display: none;
 }
-/* Selector must out-specify `.msg-body pre` (messages.css), which sets
-   `margin: 8px 0` on every <pre> in a message body. `.thinking-body` alone
-   (0,1,0) loses to `.msg-body pre` (0,1,1), so the intended margin never
-   applied. `.msg-body .thinking-body` (0,2,0) wins. We keep only a small top
-   gap below the summary and zero the bottom, so bottom spacing is governed by
-   the `.thinking-details` wrapper — matching `.tool-result-details` — instead
-   of a bottom margin the collapse's flow-root would trap inside the card. */
-.msg-body .thinking-body {
+/* Thinking-text <pre>. Self-sufficient: carries its own code-block chrome
+   (background, border, radius, padding, overflow, mono font, size) so it no
+   longer leans on a shared `.msg-body pre` base. Only a small top gap below
+   the summary; the bottom is zeroed so bottom spacing is governed by the
+   `.thinking-details` wrapper — matching `.tool-result-details` — instead of
+   a bottom margin the collapse's flow-root would trap inside the card. */
+.thinking-body {
   margin: 6px 0 0;
+  padding: 10px 12px;
+  background: var(--code-bg);
+  border: 1px solid var(--code-block-border);
+  border-radius: 6px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 12.5px;
   color: var(--code-fg);
 }
 .msg-header {

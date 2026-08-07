@@ -735,8 +735,7 @@
 
 /* Code blocks: subtle accent rim on hover for reading hierarchy. */
 [data-skin="glow"] .code-block:hover .code-block-bar,
-[data-skin="glow"] .code-block:hover > pre,
-[data-skin="glow"] .code-block:hover .msg-body pre {
+[data-skin="glow"] .code-block:hover > pre {
   border-color: color-mix(in srgb, var(--accent) 25%, var(--code-block-border));
 }
 

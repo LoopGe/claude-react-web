@@ -83,13 +83,22 @@
 }
 
 .msg-body { word-wrap: break-word; }
-.msg-body code {
+/* Inline code + fenced <pre> base for rendered Markdown. `.md` is the root
+   <div> Markdown.tsx always wraps its output in, so this covers every
+   <Markdown> site — chat message bodies, RecapWindow, Composer preview,
+   plugin command results — whether or not it sits inside a .msg-body.
+   Non-Markdown <pre>/<code> in the message body (tool cards, thinking
+   blocks, worktree markers, etc.) carry their OWN complete styling and do
+   not parasitise this base; the unscoped .code-block > pre rule below
+   (top-radius:0, flush under the bar) still wins via source order at equal
+   specificity 0,1,1. */
+.md code {
   font-family: var(--mono);
   background: var(--bg-elev-2);
   padding: 1px 5px;
   border-radius: 3px;
 }
-.msg-body pre {
+.md pre {
   background: var(--code-bg);
   border: 1px solid var(--code-block-border);
   border-radius: 6px;
@@ -99,7 +108,7 @@
   font-size: 12.5px;
   margin: 8px 0;
 }
-.msg-body pre code {
+.md pre code {
   background: none;
   padding: 0;
   border-radius: 0;
@@ -151,11 +160,18 @@
 /* Markdown render-error fallback. Markdown wraps its renderer in an
    ErrorBoundary that swaps in `<pre class="md md-fallback">` when a
    plugin throws. The subtle danger-tinted border tells the reader the
-   text is shown raw because rendering failed, without screaming. */
+   text is shown raw because rendering failed, without screaming.
+   Self-sufficient: it IS the .md element (not a descendant), so the
+   .md pre base rule above does not match it — font-family and margin
+   are declared here. */
 .md-fallback {
+  margin: 8px 0;
   border-left: 2px solid color-mix(in srgb, var(--danger) 50%, transparent);
   background: color-mix(in srgb, var(--danger) 6%, transparent);
   padding: 8px 12px;
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 12.5px;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -260,7 +276,9 @@
   font-family: var(--mono);
   font-size: 12px;
   color: var(--fg-muted);
-  margin-top: 4px;
+  /* margin shorthand (not margin-top) so the UA <pre> margin (1em 0) is
+     fully defeated on the <pre> variant; harmless on the <div> variant. */
+  margin: 4px 0 0;
   background: var(--bg);
   padding: 8px 10px;
   border-radius: 4px;
@@ -1342,6 +1360,7 @@ button.tool-chip.tool-chip-copyable.copied {
   flex-shrink: 0;
 }
 .bash-tool-command {
+  font-family: var(--mono);
   flex: 1;
   min-width: 0;
   color: var(--fg);
@@ -1396,6 +1415,13 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   white-space: pre-wrap;
   word-break: break-word;
   overflow-x: auto;
+}
+.bash-tool-full code {
+  /* The UA `code { font-family: monospace }` declaration sits directly on the
+     inner <code>, so it overrides the var(--mono) set on the parent <pre>
+     (inheritance does not apply). Keep the command text on the app's mono
+     stack to match every other code surface. */
+  font-family: var(--mono);
 }
 
 /* --- Read inline view ----------------------------------------------- */
@@ -1607,6 +1633,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   color: var(--fg-muted);
 }
 .task-mutation-deps code {
+  font-family: var(--mono);
   background: var(--bg-elev-2);
   padding: 1px 5px;
   border-radius: 3px;
@@ -1714,6 +1741,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   margin: 2px 0;
 }
 .plan-card-allowed-item code {
+  font-family: var(--mono);
   background: var(--bg-elev-2);
   padding: 1px 4px;
   border-radius: 3px;
@@ -1743,9 +1771,9 @@ details.plan-card-collapsible > summary > .plan-card-header {
   border-bottom: none;
   padding: 0;
 }
-/* Override .msg-body pre styles that leak into code blocks inside plan
-   cards. Without these, the <pre> gets a duplicate background, border,
-   and border-radius that conflict with the .code-block wrapper design. */
+/* Override .md pre styles that leak into code blocks inside plan cards.
+   Without these, the <pre> gets a duplicate background, border, and
+   border-radius that conflict with the .code-block wrapper design. */
 .plan-card-body .code-block {
   overflow: hidden;
   border-radius: 6px;

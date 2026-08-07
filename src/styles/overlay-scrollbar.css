@@ -129,12 +129,17 @@
    tables, tool inputs, diffs, command output, raw JSON, question previews)
    where a thumb is more noise than value. Wheel/trackpad swipe still scrolls.
    Same pattern as the existing .global-settings-tabs rule (utilities.css).
-   `.msg-body pre` also covers .thinking-body, which is a <pre> matched by that
-   selector. */
+   `.thinking-body` and `.bash-tool-full` are the non-Markdown <pre> in
+   message bodies that may scroll; they're listed explicitly (there is no
+   shared `.msg-body pre` base anymore). `.md pre` extends the hide to
+   <Markdown> rendered outside a message body (RecapWindow, Composer preview,
+   plugin results). */
 .os-hidden,
-.msg-body pre,
+.md pre,
 .md table,
 .tool-input,
+.thinking-body,
+.bash-tool-full,
 .diff-block,
 .bash-msg-pre,
 .perm-raw,
@@ -142,9 +147,11 @@
   scrollbar-width: none;
 }
 .os-hidden::-webkit-scrollbar,
-.msg-body pre::-webkit-scrollbar,
+.md pre::-webkit-scrollbar,
 .md table::-webkit-scrollbar,
 .tool-input::-webkit-scrollbar,
+.thinking-body::-webkit-scrollbar,
+.bash-tool-full::-webkit-scrollbar,
 .diff-block::-webkit-scrollbar,
 .bash-msg-pre::-webkit-scrollbar,
 .perm-raw::-webkit-scrollbar,
