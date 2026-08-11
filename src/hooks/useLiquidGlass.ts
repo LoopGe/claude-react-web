@@ -116,9 +116,12 @@ export function useLiquidGlass(
     let lastW = 0
     let lastH = 0
     let raf = 0
-    let debounce: ReturnType<typeof setTimeout> | undefined
 
     const build = () => {
+      // Clear the pending-frame flag so a later resize can arm a new build.
+      // Must happen before the early returns, or a size-unchanged no-op would
+      // leave `raf` truthy and starve the next resize.
+      raf = 0
       const feImage = feImageRef.current
       const feDisp = feDispRef.current
       if (!feImage || !feDisp) return
@@ -198,28 +201,40 @@ export function useLiquidGlass(
       // Legacy xlink for older renderers.
       feImage.setAttribute('width', String(w))
       feImage.setAttribute('height', String(h))
+      // Pin the map to the element origin. feImage without x/y defaults its
+      // primitive subregion to the filter region's origin (the <filter> here
+      // uses x/y=-30% to give the blur/displacement room to sample outside the
+      // element), so the map would sit offset down-right and the element's
+      // right/bottom ~30% would sample past the map's edge — transparent
+      // black, i.e. a hard -scale/2 smear with a visible seam. The map is
+      // generated at the element's exact pixel size, so 0,0 is correct.
+      feImage.setAttribute('x', '0')
+      feImage.setAttribute('y', '0')
       feDisp.setAttribute('scale', String(strength))
     }
 
+    // Throttle to one rebuild per animation frame instead of a trailing
+    // debounce. A debounce is starved by the footer's continuous resizes
+    // while text streams in — every token flush grows the bubble, so the
+    // debounce keeps resetting and never fires, leaving the displacement
+    // map stuck at the pre-stream size (stale bottom bezel / seam until
+    // streaming pauses). Rebuilding on the next frame keeps the map in
+    // lockstep with the live size. build() reads getBoundingClientRect() at
+    // frame time and no-ops when the size didn't actually change, so bursts
+    // still coalesce into a single rebuild per settled frame.
     const schedule = () => {
-      clearTimeout(debounce)
-      // Debounce so the rapid resizes during the footer's open / height
-      // animation collapse into a single rebuild once size settles.
-      debounce = setTimeout(() => {
-        cancelAnimationFrame(raf)
-        raf = requestAnimationFrame(build)
-      }, 160)
+      if (raf) return
+      raf = requestAnimationFrame(build)
     }
 
     const ro = new ResizeObserver(schedule)
     ro.observe(el)
-    // First build right away (don't wait for the debounce) so the glass
-    // is correct on the very first paint of the footer.
+    // First build right away (don't wait for a resize) so the glass is
+    // correct on the very first paint of the footer.
     raf = requestAnimationFrame(build)
 
     return () => {
       ro.disconnect()
-      clearTimeout(debounce)
       cancelAnimationFrame(raf)
     }
   }, [supported, enabled, targetRef, bezel, radius, strength])

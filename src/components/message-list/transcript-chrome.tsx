@@ -91,7 +91,11 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
               height="160%"
               colorInterpolationFilters="sRGB"
             >
-              <feImage ref={feImageRef} result="map" preserveAspectRatio="none" />
+              {/* x/y=0 pin the map to the element origin. Without them the SVG
+                  default subregion (0%,0% of the filter region) starts at the
+                  filter region's -30% offset, so the element's right/bottom
+                  ~30% sample outside the map and get a hard -scale/2 smear. */}
+              <feImage ref={feImageRef} result="map" preserveAspectRatio="none" x="0" y="0" />
               <feDisplacementMap
                 ref={feDispRef}
                 in="SourceGraphic"
