@@ -1006,28 +1006,34 @@
   align-items: center;
   gap: 8px;
 }
-/* Collapse toggle — same chevron vocabulary as the sidebar group collapse
-   (SessionList), just squeezed into the compact panel header. */
+/* Collapse toggle — reuses the pinned-user-message history-chevron style
+   (borderless, fg-muted → hover bg, chevron rotates 180° when open) but at a
+   compact 20×20 so the chevron doesn't inflate the sticky bar's header. */
 .todo-panel-collapse {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 20px;
   height: 20px;
   padding: 0;
+  border: none;
   background: transparent;
-  border: 1px solid transparent;
-  border-radius: 4px;
   color: var(--fg-muted);
   cursor: pointer;
-  transition: color var(--motion-duration-fast) var(--motion-ease-standard),
-              background var(--motion-duration-fast) var(--motion-ease-standard),
-              border-color var(--motion-duration-fast) var(--motion-ease-standard);
+  border-radius: 6px;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard),
+              color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .todo-panel-collapse:hover {
-  color: var(--fg);
   background: var(--btn-hover-bg);
-  border-color: var(--btn-hover-border);
+  color: var(--fg);
+}
+.todo-panel-collapse.open svg {
+  transform: rotate(180deg);
+}
+.todo-panel-collapse svg {
+  transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .todo-panel-collapse:focus-visible {
   outline: var(--focus-ring);
@@ -1086,10 +1092,12 @@
   align-items: center;
   gap: 8px;
   line-height: 1.4;
+  /* Anchors the long-press progress fill (.todo-item::after). */
+  position: relative;
   /* Long-press-to-hide: suppress text selection / the mobile callout so a
      sustained touch reads as a press, while touch-action: pan-y keeps the
-     list scrollable. The press highlight (below) appears on pointerdown so
-     there's immediate feedback before the 500ms timer fires. */
+     list scrollable. The press highlight + progress fill (below) appear on
+     pointerdown so there's immediate feedback before the 500ms timer fires. */
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
@@ -1100,6 +1108,38 @@
 }
 .todo-item.todo-item-pressing {
   background: var(--btn-hover-bg);
+}
+/* Long-press progress fill — the item fills left→right over LONG_PRESS_MS
+   (threaded through `--press-ms` on the <li>) so a sustained press reads as
+   a "charging" gesture that commits exactly as the bar reaches full. Shown
+   only while .todo-item-pressing (pointer down); released early → class
+   removed → the fill resets. */
+.todo-item::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  transform: scaleX(0);
+  transform-origin: left center;
+  pointer-events: none;
+  opacity: 0;
+}
+.todo-item.todo-item-pressing::after {
+  opacity: 1;
+  animation: todo-press-fill var(--press-ms, 500ms) linear forwards;
+}
+@keyframes todo-press-fill {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* The fill is decorative motion — reduced-motion users keep the static
+     press background (the hide still commits at 500ms). */
+  .todo-item.todo-item-pressing::after {
+    animation: none;
+    opacity: 0;
+  }
 }
 .todo-icon {
   flex-shrink: 0;

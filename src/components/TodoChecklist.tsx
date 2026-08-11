@@ -23,7 +23,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SdkMessage } from '../types'
 import type { Skin } from '../utils/theme'
-import { IconCheck, IconCircleDot, IconCircle, IconCheckboxDot, IconCheckbox, IconChevronDown, IconChevronRight, IconRotateCcw } from './icons/ToolIcons'
+import { IconCheck, IconCircleDot, IconCircle, IconCheckboxDot, IconCheckbox, IconChevronDown, IconRotateCcw } from './icons/ToolIcons'
+import { AnimatedCollapse } from './AnimatedCollapse'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import {
@@ -76,6 +77,10 @@ const LONG_PRESS_MS = 500
 /** Pointer travel (px) from the press origin that cancels a long-press —
  *  the list is scrollable and a drag/scroll shouldn't trigger a hide. */
 const PRESS_MOVE_SLOP = 10
+/** How long the undo row stays after a hide before auto-dismissing (toast
+ *  pattern). Dismissal only closes the undo affordance — the hidden items
+ *  STAY hidden; the "hide" is committed once the undo window closes. */
+const UNDO_DISMISS_MS = 5000
 
 export const TodoChecklist = memo(function TodoChecklist({ messages, working, skin, clearing, sessionId }: Props) {
   const result = useMemo(() => extractTodos(messages, !!working), [messages, working])
@@ -99,6 +104,18 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
     validate: (v): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string'),
   })
   const hiddenSet = useMemo(() => new Set(hiddenList), [hiddenList])
+
+  // Undo row auto-dismisses after UNDO_DISMISS_MS (toast pattern) so a hide
+  // doesn't leave a permanent button in the sticky header. Re-shown on every
+  // new hide; hiding again just resets the window. Dismissal does NOT clear
+  // hiddenList — the items stay hidden, the undo affordance is what closes.
+  const [undoDismissed, setUndoDismissed] = useState(false)
+  useEffect(() => {
+    if (hiddenList.length === 0) return
+    setUndoDismissed(false)
+    const t = window.setTimeout(() => setUndoDismissed(true), UNDO_DISMISS_MS)
+    return () => window.clearTimeout(t)
+  }, [hiddenList])
 
   const hideTodo = useCallback((k: string) => {
     setHiddenList((prev) => (prev.includes(k) ? prev : [...prev, k]))
@@ -207,21 +224,21 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
         <div className="todo-panel-header-right">
           <button
             type="button"
-            className="todo-panel-collapse"
+            className={`todo-panel-collapse${collapsed ? '' : ' open'}`}
             onClick={() => setCollapsed((c) => !c)}
             title={collapsed ? '展开任务列表' : '折叠任务列表'}
             aria-expanded={!collapsed}
             aria-controls="todo-panel-list"
             aria-label={collapsed ? '展开任务列表' : '折叠任务列表'}
           >
-            {collapsed ? <IconChevronRight size={12} /> : <IconChevronDown size={12} />}
+            <IconChevronDown size={16} />
           </button>
           <span className="todo-panel-count">
             {doneCount}/{visibleTodos.length}
           </span>
         </div>
       </div>
-      {hiddenVisibleCount > 0 && (
+      {hiddenVisibleCount > 0 && !undoDismissed && (
         <div className="todo-panel-undo">
           <span>已隐藏 {hiddenVisibleCount} 项</span>
           <button type="button" className="todo-panel-undo-btn" onClick={undoHidden}>
@@ -229,11 +246,14 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
           </button>
         </div>
       )}
-      {!collapsed && (
+      <AnimatedCollapse open={!collapsed}>
         <ul ref={setListScroller} id="todo-panel-list" className="todo-panel-list">
           {visibleTodos.map((t, i) => (
             <li
               key={i}
+              // --press-ms feeds the long-press progress fill (`.todo-item::after`),
+              // keeping the CSS animation duration in sync with LONG_PRESS_MS.
+              style={{ '--press-ms': `${LONG_PRESS_MS}ms` } as React.CSSProperties}
               className={`todo-item todo-${t.status}${pressingKey === t.key ? ' todo-item-pressing' : ''}`}
               onPointerDown={(e) => onItemPointerDown(e, t.key)}
               onPointerMove={onItemPointerMove}
@@ -258,7 +278,7 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
             </li>
           ))}
         </ul>
-      )}
+      </AnimatedCollapse>
     </div>
   )
 })

@@ -1,15 +1,32 @@
-import { afterEach, describe, it, expect, vi } from 'vitest'
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { TodoChecklist } from './TodoChecklist'
 import type { SdkMessage } from '../types'
 
+// AnimatedCollapse (which wraps the todo <ul> for the fold animation) touches
+// ResizeObserver + matchMedia, neither of which jsdom provides. Same stubs as
+// FindingsCard.test.tsx — matchMedia reports "no reduced motion" so the height
+// tween runs its normal timer-driven path in tests.
+beforeEach(() => {
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  )
+  vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))
+})
+
 // Isolate every test: drop persisted todo state, unmount any rendered
 // component (so the module-level useLocalStorage listener map is drained),
-// and restore real timers for tests that didn't fake them.
+// restore real timers for tests that didn't fake them, and unstub globals.
 afterEach(() => {
   window.localStorage.clear()
   cleanup()
   vi.useRealTimers()
+  vi.unstubAllGlobals()
 })
 
 function makeMsg(overrides: Partial<SdkMessage> = {}): SdkMessage {
@@ -478,16 +495,22 @@ describe('TodoChecklist — collapse + long-press hide', () => {
   }
 
   it('collapses the list via the header chevron and restores it', () => {
+    vi.useFakeTimers()
     const { container } = render(<TodoChecklist messages={msgs} working />)
     expect(container.querySelector('.todo-panel-list')).not.toBeNull()
 
     fireEvent.click(container.querySelector('.todo-panel-collapse')!)
     expect(container.querySelector('.todo-panel')?.classList.contains('todo-panel-collapsed')).toBe(true)
-    // List unmounted; header + count stay.
+    // Collapse is animated — the list exits over ~240 ms (AnimatedCollapse,
+    // unmountOnExit) before the <ul> unmounts. Header + count stay throughout.
+    act(() => {
+      vi.advanceTimersByTime(400)
+    })
     expect(container.querySelector('.todo-panel-list')).toBeNull()
     expect(container.querySelector('.todo-panel-count')?.textContent).toBe('0/2')
 
     fireEvent.click(container.querySelector('.todo-panel-collapse')!)
+    // Expand mounts the list synchronously — only the height tween animates.
     expect(container.querySelector('.todo-panel')?.classList.contains('todo-panel-collapsed')).toBe(false)
     expect(container.querySelector('.todo-panel-list')).not.toBeNull()
   })
@@ -632,5 +655,36 @@ describe('TodoChecklist — collapse + long-press hide', () => {
     const second = render(<TodoChecklist messages={msgs} sessionId="hid-s1" working />)
     expect(second.container.querySelectorAll('.todo-item').length).toBe(1)
     expect(second.container.querySelector('.todo-panel-undo')).not.toBeNull()
+  })
+
+  it('auto-dismisses the undo row after a few seconds but keeps items hidden', () => {
+    // Toast pattern: the undo affordance closes on its own after UNDO_DISMISS_MS,
+    // but that commits the hide — the item does NOT reappear.
+    vi.useFakeTimers()
+    const { container } = render(<TodoChecklist messages={msgs} sessionId="dismiss-s1" working />)
+    longPress(container.querySelectorAll('.todo-item')[0])
+    expect(container.querySelector('.todo-panel-undo')).not.toBeNull()
+
+    act(() => {
+      vi.advanceTimersByTime(6000)
+    })
+    expect(container.querySelector('.todo-panel-undo')).toBeNull()
+    expect(container.querySelectorAll('.todo-item').length).toBe(1)
+    expect(container.querySelector('.todo-text')?.textContent).toBe('B')
+  })
+
+  it('shows the pressing state with the fill-duration hook while the pointer is down', () => {
+    // The progress fill is driven by `.todo-item-pressing` + a `--press-ms`
+    // inline var so the CSS animation stays in sync with the 500ms hide timer.
+    vi.useFakeTimers()
+    const { container } = render(<TodoChecklist messages={msgs} working />)
+    const item = container.querySelector('.todo-item')!
+    fireEvent.pointerDown(item, { pointerId: 1, button: 0, clientX: 0, clientY: 0 })
+    expect(item.classList.contains('todo-item-pressing')).toBe(true)
+    expect(item.getAttribute('style')).toContain('--press-ms')
+    act(() => {
+      vi.advanceTimersByTime(500)
+    })
+    fireEvent.pointerUp(item, { pointerId: 1 })
   })
 })
