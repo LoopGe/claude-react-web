@@ -518,6 +518,102 @@ describe('liteContextUsageFromResult', () => {
     })
     expect(liteContextUsageFromResult(msg)!.autoCompactThreshold).toBe(179000)
   })
+
+  it('returns null for a spawn/restart warm-up result with all-zero usage', () => {
+    // The SDK emits a placeholder `result` at spawn/restart with iterations=[]
+    // and every bucket zero. Broadcasting it would clobber the last good
+    // snapshot with `0 / N · 0.0%` — keep the last good value instead.
+    const msg = makeResult({
+      usage: {
+        input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        iterations: [],
+      },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+    })
+    expect(liteContextUsageFromResult(msg)).toBeNull()
+  })
+
+  it('drops a cumulative cache_read bucket that exceeds the context window', () => {
+    // Some proxies return a cumulative conversation counter in
+    // cache_read_input_tokens (4M for a long chat) instead of a per-request
+    // value. A single bucket can never exceed the window in a valid response,
+    // so it's garbage — drop it and surface the real prompt (input_tokens).
+    const msg = makeResult({
+      usage: { input_tokens: 50000, cache_read_input_tokens: 4000000 },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+    })
+    const out = liteContextUsageFromResult(msg)
+    expect(out).not.toBeNull()
+    expect(out!.totalTokens).toBe(50000)
+    expect(out!.cacheReadTokens).toBeUndefined()
+    expect(out!.percentage).toBeCloseTo(25, 5)
+  })
+
+  it('drops a cumulative cache_creation bucket that exceeds the context window', () => {
+    const msg = makeResult({
+      usage: { input_tokens: 1000, cache_creation_input_tokens: 3000000 },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+    })
+    const out = liteContextUsageFromResult(msg)
+    expect(out).not.toBeNull()
+    expect(out!.totalTokens).toBe(1000)
+    expect(out!.cacheCreationTokens).toBeUndefined()
+  })
+
+  it('drops both cache buckets when each exceeds the context window', () => {
+    const msg = makeResult({
+      usage: {
+        input_tokens: 1000,
+        cache_creation_input_tokens: 4000000,
+        cache_read_input_tokens: 5000000,
+      },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+    })
+    const out = liteContextUsageFromResult(msg)
+    expect(out).not.toBeNull()
+    expect(out!.totalTokens).toBe(1000)
+    expect(out!.cacheCreationTokens).toBeUndefined()
+    expect(out!.cacheReadTokens).toBeUndefined()
+  })
+
+  it('returns null when input_tokens alone exceeds the context window', () => {
+    // Guard 1 only drops cache buckets; a real input_tokens over the window
+    // is still unparseable and must keep the last good value (never a false
+    // 100% reading).
+    const msg = makeResult({
+      usage: { input_tokens: 300000 },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+    })
+    expect(liteContextUsageFromResult(msg)).toBeNull()
+  })
+
+  it('keeps a cache bucket exactly at the context window (not dropped)', () => {
+    // Guard 1 drops buckets strictly GREATER than the window (`>`), so a
+    // bucket exactly equal to it is legitimate — prompt fully in cache at
+    // exactly 100%. Pin the boundary so the `>` vs `>=` choice stays.
+    const msg = makeResult({
+      usage: { input_tokens: 0, cache_read_input_tokens: 200000 },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+    })
+    const out = liteContextUsageFromResult(msg)
+    expect(out).not.toBeNull()
+    expect(out!.totalTokens).toBe(200000)
+    expect(out!.percentage).toBe(100)
+    expect(out!.cacheReadTokens).toBe(200000)
+  })
+
+  it('drops a cache bucket then zeroes out (Guard 1 → Guard 2 composition)', () => {
+    // input=0 with a cache_read bucket over the window: Guard 1 drops the
+    // bucket, the recomputed total is 0, and Guard 2 then rejects the zero.
+    // This exercises the interplay of the two guards in one frame.
+    const msg = makeResult({
+      usage: { input_tokens: 0, cache_read_input_tokens: 4000000 },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+    })
+    expect(liteContextUsageFromResult(msg)).toBeNull()
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -612,6 +708,27 @@ describe('liteContextUsageFromAssistant', () => {
       usage: { input_tokens: 500000, cache_read_input_tokens: 600000 },
     })
     expect(liteContextUsageFromAssistant(msg, cached)).toBeNull()
+  })
+
+  it('returns null for an all-zero usage payload (opening assistant frame)', () => {
+    // Every turn's opening assistant message carries a usage object that is
+    // present but all-zero. Broadcasting it would drop the bar to 0%.
+    expect(liteContextUsageFromAssistant(makeAssistant({ usage: {} }), cached)).toBeNull()
+  })
+
+  it('returns null when input and output tokens are both zero', () => {
+    const msg = makeAssistant({ usage: { input_tokens: 0, output_tokens: 0 } })
+    expect(liteContextUsageFromAssistant(msg, cached)).toBeNull()
+  })
+
+  it('drops a cumulative cache_read bucket from an assistant frame', () => {
+    const msg = makeAssistant({
+      usage: { input_tokens: 1000, cache_read_input_tokens: 3000000 },
+    })
+    const out = liteContextUsageFromAssistant(msg, cached)
+    expect(out).not.toBeNull()
+    expect(out!.totalTokens).toBe(1000)
+    expect(out!.cacheReadTokens).toBeUndefined()
   })
 })
 

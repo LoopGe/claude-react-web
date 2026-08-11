@@ -840,32 +840,45 @@ function assembleLiteUsage(opts: {
    *  suspicious payload ('result' = end-of-turn, 'assistant' = mid-turn). */
   source?: 'result' | 'assistant'
 }): LiteContextUsage | null {
-  const totalTokens =
-    opts.inputTokens + (opts.cacheCreation ?? 0) + (opts.cacheRead ?? 0)
+  // Guard 1 — drop impossible cache buckets. A single prompt-side bucket can
+  // never exceed the context window in a valid Anthropic response (the full
+  // prompt = input + cache_read + cache_creation must fit in the window), so
+  // a bucket larger than the window is garbage. Some proxies return a
+  // CUMULATIVE conversation counter in cache_read_input_tokens (millions of
+  // tokens for a long chat); summing that against the window would make every
+  // snapshot look >100% and get rejected below, leaving the ContextBar empty
+  // forever. Drop the bad bucket and recompute from the survivors.
+  let { cacheCreation, cacheRead } = opts
+  if (cacheCreation != null && cacheCreation > opts.contextWindow) cacheCreation = undefined
+  if (cacheRead != null && cacheRead > opts.contextWindow) cacheRead = undefined
+  const totalTokens = opts.inputTokens + (cacheCreation ?? 0) + (cacheRead ?? 0)
   if (totalTokens > opts.contextWindow) {
     log.debug(
       `[context-usage] raw total ${totalTokens} > contextWindow ${opts.contextWindow} for model ${opts.model}; skipping update`,
     )
     return null
   }
-  // DIAGNOSTIC (2026-06): users report the ContextBar dropping to 0% at the
-  // end of a turn. The only way that can happen on the server is for
-  // assembleLiteUsage to return an object with totalTokens=0 — which is
-  // currently allowed (no zero-guard). Log loudly (warn, not debug) when
-  // we're about to emit that, so a reproduction surfaces in the default-
-  // level logs without anyone having to flip LOG_LEVEL. Behavior unchanged:
-  // we still return the zero-valued snapshot so we don't mask the bug
-  // before we've confirmed the SDK is actually the source.
+  // Guard 2 — zero-total → keep the last good value. The SDK emits
+  // placeholder frames with an all-zero usage payload: every turn's opening
+  // `assistant` message and the spawn/restart `result` warm-up both carry
+  // `input_tokens: 0` (sometimes with `iterations: []`). Broadcasting those
+  // would clobber the last good snapshot and drop the ContextBar to
+  // `0 / N · 0.0%`. A real turn's `result` always has input_tokens > 0, so
+  // returning null here is safe and only affects the placeholders. Log level:
+  // warn for end-of-turn zero (still suspicious), debug for mid-turn zero
+  // (expected every turn — would spam at warn).
   if (totalTokens <= 0) {
-    log.warn(
-      `[context-usage] zero totalTokens about to be broadcast ` +
+    const msg =
+      `[context-usage] zero totalTokens → skipping ` +
       `(source=${opts.source ?? 'unknown'}, model=${opts.model}, ` +
       `inputTokens=${opts.inputTokens}, ` +
       `cacheCreation=${opts.cacheCreation === undefined ? 'undef' : opts.cacheCreation}, ` +
       `cacheRead=${opts.cacheRead === undefined ? 'undef' : opts.cacheRead}, ` +
       `outputTokens=${opts.outputTokens === undefined ? 'undef' : opts.outputTokens}, ` +
-      `contextWindow=${opts.contextWindow})`,
-    )
+      `contextWindow=${opts.contextWindow})`
+    if (opts.source === 'result') log.warn(msg)
+    else log.debug(msg)
+    return null
   }
   const out: LiteContextUsage = {
     totalTokens,
@@ -874,8 +887,10 @@ function assembleLiteUsage(opts: {
     percentage: (totalTokens / opts.contextWindow) * 100,
     model: opts.model,
   }
-  if (typeof opts.cacheCreation === 'number') out.cacheCreationTokens = opts.cacheCreation
-  if (typeof opts.cacheRead === 'number') out.cacheReadTokens = opts.cacheRead
+  // Forward the SANITIZED buckets so the UI never shows the fake cumulative
+  // cache figure (e.g. "cache 4M") that Guard 1 just dropped from the total.
+  if (typeof cacheCreation === 'number') out.cacheCreationTokens = cacheCreation
+  if (typeof cacheRead === 'number') out.cacheReadTokens = cacheRead
   if (typeof opts.outputTokens === 'number') out.outputTokens = opts.outputTokens
   if (typeof opts.autoCompactThreshold === 'number') out.autoCompactThreshold = opts.autoCompactThreshold
   return out
