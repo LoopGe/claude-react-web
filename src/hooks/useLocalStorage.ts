@@ -47,7 +47,7 @@ function notifyListeners(key: string, value: unknown): void {
 }
 
 export function useLocalStorage<T>(
-  key: string,
+  key: string | null,
   initial: T,
   options?: Options<T>,
 ): [T, (value: T | ((prev: T) => T)) => void] {
@@ -62,7 +62,8 @@ export function useLocalStorage<T>(
   const initialRef = useRef(initial)
 
   const [value, setValue] = useState<T>(() => {
-    if (typeof window === 'undefined') return initial
+    // null key → pure in-memory state: no read from localStorage.
+    if (typeof window === 'undefined' || key == null) return initial
     try {
       const raw = window.localStorage.getItem(key)
       if (raw == null) return initial
@@ -79,7 +80,8 @@ export function useLocalStorage<T>(
   // this tab, (b) localStorage writes from other tabs. Only depends on
   // `key` so the listener set-up runs once per key change.
   useEffect(() => {
-    if (typeof window === 'undefined') return
+    // null key → no cross-instance / cross-tab subscription.
+    if (typeof window === 'undefined' || key == null) return
 
     const onSync: Listener<unknown> = (next) => {
       const validate = validateRef.current
@@ -129,7 +131,8 @@ export function useLocalStorage<T>(
   // including this one. Since `value` is already what each instance is
   // about to be set to, React's Object.is bailout absorbs the echo.
   useEffect(() => {
-    if (typeof window === 'undefined') return
+    // null key → pure in-memory state: no write to localStorage.
+    if (typeof window === 'undefined' || key == null) return
     try {
       window.localStorage.setItem(key, JSON.stringify(value))
     } catch (err) {

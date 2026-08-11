@@ -20,17 +20,22 @@
 // The panel auto-hides when there are no tasks or when all tasks are done and
 // the assistant has stopped working.
 
-import { memo, useMemo, useRef } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SdkMessage } from '../types'
 import type { Skin } from '../utils/theme'
-import { IconCheck, IconCircleDot, IconCircle, IconCheckboxDot, IconCheckbox } from './icons/ToolIcons'
+import { IconCheck, IconCircleDot, IconCircle, IconCheckboxDot, IconCheckbox, IconChevronDown, IconChevronRight, IconRotateCcw } from './icons/ToolIcons'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useLocalStorage } from '../hooks/useLocalStorage'
 import {
   buildTaskStateMap,
   lastUserInputIndex,
 } from '../utils/task-events'
 
 interface Todo {
+  /** Stable identity for the local hide-set. Task* items use the server-
+   *  assigned numeric id (`#N`, from TaskState.id); TodoWrite snapshots have
+   *  no id, so the content string is the fallback. */
+  key: string
   content: string
   status: 'pending' | 'in_progress' | 'completed'
   activeForm?: string
@@ -52,9 +57,27 @@ interface Props {
    *  the store. The last visible list is frozen for the duration so the
    *  panel stays mounted (and fading) after `messages` empties. */
   clearing?: boolean
+  /** Per-session persistence key for the collapse + hidden-set state. When
+   *  omitted both stay in memory only (no localStorage writes) — the tests
+   *  rely on this. */
+  sessionId?: string
 }
 
-export const TodoChecklist = memo(function TodoChecklist({ messages, working, skin, clearing }: Props) {
+// localStorage keys for per-session UI state. null → pure in-memory state.
+const LS_PREFIX = 'claude-react-web:todo:'
+function keyCollapsed(sid?: string): string | null {
+  return sid ? `${LS_PREFIX}collapsed:${sid}` : null
+}
+function keyHidden(sid?: string): string | null {
+  return sid ? `${LS_PREFIX}hidden:${sid}` : null
+}
+
+const LONG_PRESS_MS = 500
+/** Pointer travel (px) from the press origin that cancels a long-press —
+ *  the list is scrollable and a drag/scroll shouldn't trigger a hide. */
+const PRESS_MOVE_SLOP = 10
+
+export const TodoChecklist = memo(function TodoChecklist({ messages, working, skin, clearing, sessionId }: Props) {
   const result = useMemo(() => extractTodos(messages, !!working), [messages, working])
   const hc = skin === 'hc'
   // Cap the list height so a long checklist doesn't dominate the viewport
@@ -64,6 +87,62 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
   // visible. Declared here (before the early returns) so the hook order is
   // stable across renders where the panel is hidden.
   const setListScroller = useOverlayScrollbar({ autoHide: 'leave' })
+
+  // --- collapse + hidden-set state --------------------------------------
+  // Persisted per session in localStorage (null key → in-memory only, which
+  // the existing tests rely on). All declared before the early return so the
+  // hook order is stable across renders where the panel is hidden.
+  const [collapsed, setCollapsed] = useLocalStorage<boolean>(keyCollapsed(sessionId), false, {
+    validate: (v): v is boolean => typeof v === 'boolean',
+  })
+  const [hiddenList, setHiddenList] = useLocalStorage<string[]>(keyHidden(sessionId), [], {
+    validate: (v): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string'),
+  })
+  const hiddenSet = useMemo(() => new Set(hiddenList), [hiddenList])
+
+  const hideTodo = useCallback((k: string) => {
+    setHiddenList((prev) => (prev.includes(k) ? prev : [...prev, k]))
+  }, [setHiddenList])
+  const undoHidden = useCallback(() => setHiddenList([]), [setHiddenList])
+
+  // --- long-press-to-hide gesture (pointer events) ----------------------
+  // Pointer-only affordance — a long-press has no keyboard equivalent. TODO:
+  // add a keyboard-accessible alternative (per-item secondary action) before
+  // treating this as the sole hide path.
+  const pressTimerRef = useRef<number | null>(null)
+  const pressStartRef = useRef<{ x: number; y: number } | null>(null)
+  const [pressingKey, setPressingKey] = useState<string | null>(null)
+
+  const clearPress = useCallback(() => {
+    if (pressTimerRef.current != null) window.clearTimeout(pressTimerRef.current)
+    pressTimerRef.current = null
+    pressStartRef.current = null
+    setPressingKey(null)
+  }, [])
+  // Cleanup on unmount so a pending timer can't fire on a detached item.
+  useEffect(() => () => {
+    if (pressTimerRef.current != null) window.clearTimeout(pressTimerRef.current)
+  }, [])
+
+  const onItemPointerDown = useCallback((e: React.PointerEvent<HTMLLIElement>, key: string) => {
+    if (e.button !== 0) return
+    clearPress()
+    pressStartRef.current = { x: e.clientX, y: e.clientY }
+    setPressingKey(key)
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* jsdom / stale pointerId */ }
+    pressTimerRef.current = window.setTimeout(() => {
+      hideTodo(key)
+      clearPress()
+    }, LONG_PRESS_MS)
+  }, [clearPress, hideTodo])
+
+  const onItemPointerMove = useCallback((e: React.PointerEvent<HTMLLIElement>) => {
+    const s = pressStartRef.current
+    if (!s) return
+    if (Math.hypot(e.clientX - s.x, e.clientY - s.y) > PRESS_MOVE_SLOP) clearPress()
+  }, [clearPress])
+
+  const onItemPointerEnd = useCallback(() => clearPress(), [clearPress])
 
   // The result that would be shown right now under the normal hide rules
   // (null when the panel should be hidden). Mirrors the old inline early
@@ -94,43 +173,92 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
   // before any non-clearing render populated the ref. If both are null the
   // panel was hidden when the clear started, so there's nothing to fade.
   const renderResult = clearing ? (frozenRef.current ?? visibleResult) : visibleResult
-  if (!renderResult) return null
 
-  const todos = renderResult.todos
-  const doneCount = todos.filter((t) => t.status === 'completed').length
+  // Visible list is the render result minus locally-hidden tasks. The count
+  // chip reflects only what's shown; the undo row explains the difference.
+  const todos = renderResult ? renderResult.todos : []
+  const visibleTodos = todos.filter((t) => !hiddenSet.has(t.key))
+  const doneCount = visibleTodos.filter((t) => t.status === 'completed').length
+  const hiddenVisibleCount = todos.filter((t) => hiddenSet.has(t.key)).length
+
+  // Prune hidden keys that no longer exist in the FULL derived list — an
+  // agent `TaskUpdate(status:'deleted')`, a /clear that wiped `messages`, or
+  // a provisional `pending:<toolUseId>` key resolving to its real `#N`.
+  // Uses `result` (not `renderResult`): when the panel is auto-hidden
+  // (all-done + idle → renderResult null) the tasks still exist and the
+  // hidden set must survive the auto-hide.
+  useEffect(() => {
+    if (hiddenList.length === 0) return
+    const alive = new Set((result?.todos ?? []).map((t) => t.key))
+    const pruned = hiddenList.filter((k) => alive.has(k))
+    if (pruned.length !== hiddenList.length) setHiddenList(pruned)
+  }, [result, hiddenList, setHiddenList])
+
+  if (!renderResult) return null
 
   return (
     <div
-      className={`todo-panel${working ? ' todo-panel-working' : ''}${clearing ? ' todo-panel-clearing' : ''}`}
+      className={`todo-panel${working ? ' todo-panel-working' : ''}${clearing ? ' todo-panel-clearing' : ''}${collapsed ? ' todo-panel-collapsed' : ''}`}
       role="status"
       aria-label="Task checklist"
     >
       <div className="todo-panel-header">
         <span className="todo-panel-title">{renderResult.source === 'todowrite' ? 'TodoList' : 'TaskList'}</span>
-        <span className="todo-panel-count">
-          {doneCount}/{todos.length}
-        </span>
+        <div className="todo-panel-header-right">
+          <button
+            type="button"
+            className="todo-panel-collapse"
+            onClick={() => setCollapsed((c) => !c)}
+            title={collapsed ? '展开任务列表' : '折叠任务列表'}
+            aria-expanded={!collapsed}
+            aria-controls="todo-panel-list"
+            aria-label={collapsed ? '展开任务列表' : '折叠任务列表'}
+          >
+            {collapsed ? <IconChevronRight size={12} /> : <IconChevronDown size={12} />}
+          </button>
+          <span className="todo-panel-count">
+            {doneCount}/{visibleTodos.length}
+          </span>
+        </div>
       </div>
-      <ul ref={setListScroller} className="todo-panel-list">
-        {todos.map((t, i) => (
-          <li key={i} className={`todo-item todo-${t.status}`}>
-            <span className="todo-icon" aria-hidden>
-              {t.status === 'completed' ? (
-                <IconCheck size={12} />
-              ) : t.status === 'in_progress' ? (
-                hc ? <IconCheckboxDot size={12} /> : <IconCircleDot size={12} />
-              ) : (
-                hc ? <IconCheckbox size={12} /> : <IconCircle size={12} />
-              )}
-            </span>
-            <span className="todo-text">
-              <span className="todo-text-shimmer">
-                {t.status === 'in_progress' && t.activeForm ? t.activeForm : t.content}
+      {hiddenVisibleCount > 0 && (
+        <div className="todo-panel-undo">
+          <span>已隐藏 {hiddenVisibleCount} 项</span>
+          <button type="button" className="todo-panel-undo-btn" onClick={undoHidden}>
+            <IconRotateCcw size={12} /> 撤销
+          </button>
+        </div>
+      )}
+      {!collapsed && (
+        <ul ref={setListScroller} id="todo-panel-list" className="todo-panel-list">
+          {visibleTodos.map((t, i) => (
+            <li
+              key={i}
+              className={`todo-item todo-${t.status}${pressingKey === t.key ? ' todo-item-pressing' : ''}`}
+              onPointerDown={(e) => onItemPointerDown(e, t.key)}
+              onPointerMove={onItemPointerMove}
+              onPointerUp={onItemPointerEnd}
+              onPointerCancel={onItemPointerEnd}
+              onPointerLeave={onItemPointerEnd}
+            >
+              <span className="todo-icon" aria-hidden>
+                {t.status === 'completed' ? (
+                  <IconCheck size={12} />
+                ) : t.status === 'in_progress' ? (
+                  hc ? <IconCheckboxDot size={12} /> : <IconCircleDot size={12} />
+                ) : (
+                  hc ? <IconCheckbox size={12} /> : <IconCircle size={12} />
+                )}
               </span>
-            </span>
-          </li>
-        ))}
-      </ul>
+              <span className="todo-text">
+                <span className="todo-text-shimmer">
+                  {t.status === 'in_progress' && t.activeForm ? t.activeForm : t.content}
+                </span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 })
@@ -235,6 +363,10 @@ function sanitizeTodos(raw: unknown[]): Todo[] {
     const status = obj.status
     if (status !== 'pending' && status !== 'in_progress' && status !== 'completed') continue
     out.push({
+      // TodoWrite snapshots have no per-item id — the content string is the
+      // only stable-ish identity. A hidden item reappears if the agent
+      // rewords it (key changes → old hidden key gets pruned).
+      key: obj.content,
       content: obj.content,
       status,
       activeForm: typeof obj.activeForm === 'string' ? obj.activeForm : undefined,
@@ -289,6 +421,11 @@ function extractFromTaskEvents(messages: SdkMessage[]): Todo[] | null {
     // in-flight create whose result hasn't landed yet still shows this turn.
     if (t.provisional && stale) continue
     out.push({
+      // Server-assigned `#N` id — the stable identity for the hide-set. A
+      // provisional `pending:<toolUseId>` key resolves to `#N` once the
+      // TaskCreate result lands; the old key is pruned and the task shows
+      // again (it's genuinely in-flight).
+      key: t.id,
       content: t.subject,
       // 'cancelled' maps to 'completed' for the 3-state UI (it's resolved —
       // won't be worked on); this also makes it count toward done/total.

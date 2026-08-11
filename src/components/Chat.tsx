@@ -1601,7 +1601,7 @@ export const Chat = memo(function Chat({
         </WorkflowProvider>
       </SubagentProvider>
 
-      <TodoChecklist messages={stream.messages} working={session.working} skin={skin} clearing={effectiveClearing} />
+      <TodoChecklist messages={stream.messages} working={session.working} skin={skin} clearing={effectiveClearing} sessionId={session.id} />
       <MonitorBar messages={stream.messages} clearing={effectiveClearing} />
 
       {/* Always-mounted live region ?see `.error-bar-empty` in styles.css.

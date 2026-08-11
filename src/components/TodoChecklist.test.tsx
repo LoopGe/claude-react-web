@@ -1,7 +1,16 @@
-import { describe, it, expect } from 'vitest'
-import { render } from '@testing-library/react'
+import { afterEach, describe, it, expect, vi } from 'vitest'
+import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { TodoChecklist } from './TodoChecklist'
 import type { SdkMessage } from '../types'
+
+// Isolate every test: drop persisted todo state, unmount any rendered
+// component (so the module-level useLocalStorage listener map is drained),
+// and restore real timers for tests that didn't fake them.
+afterEach(() => {
+  window.localStorage.clear()
+  cleanup()
+  vi.useRealTimers()
+})
 
 function makeMsg(overrides: Partial<SdkMessage> = {}): SdkMessage {
   return { type: 'assistant', message: { content: [] }, ...overrides } as SdkMessage
@@ -448,5 +457,180 @@ describe('TodoChecklist — Task* reconstruction', () => {
     expect(container.querySelector('.todo-panel')).not.toBeNull()
     expect(container.querySelector('.todo-text')?.textContent).toBe('X')
     expect(container.querySelector('.todo-panel-count')?.textContent).toBe('0/1')
+  })
+})
+
+describe('TodoChecklist — collapse + long-press hide', () => {
+  const msgs = [
+    multiTodoMsg([
+      { content: 'A', status: 'pending' },
+      { content: 'B', status: 'pending' },
+    ]),
+  ]
+
+  /** Fire a 500ms long-press on an item. Requires vi.useFakeTimers() active. */
+  function longPress(item: Element, pointerId = 1): void {
+    fireEvent.pointerDown(item, { pointerId, button: 0, clientX: 0, clientY: 0 })
+    act(() => {
+      vi.advanceTimersByTime(500)
+    })
+    fireEvent.pointerUp(item, { pointerId })
+  }
+
+  it('collapses the list via the header chevron and restores it', () => {
+    const { container } = render(<TodoChecklist messages={msgs} working />)
+    expect(container.querySelector('.todo-panel-list')).not.toBeNull()
+
+    fireEvent.click(container.querySelector('.todo-panel-collapse')!)
+    expect(container.querySelector('.todo-panel')?.classList.contains('todo-panel-collapsed')).toBe(true)
+    // List unmounted; header + count stay.
+    expect(container.querySelector('.todo-panel-list')).toBeNull()
+    expect(container.querySelector('.todo-panel-count')?.textContent).toBe('0/2')
+
+    fireEvent.click(container.querySelector('.todo-panel-collapse')!)
+    expect(container.querySelector('.todo-panel')?.classList.contains('todo-panel-collapsed')).toBe(false)
+    expect(container.querySelector('.todo-panel-list')).not.toBeNull()
+  })
+
+  it('persists collapsed state per sessionId', () => {
+    const first = render(<TodoChecklist messages={msgs} sessionId="s1" working />)
+    fireEvent.click(first.container.querySelector('.todo-panel-collapse')!)
+    expect(first.container.querySelector('.todo-panel-collapsed')).not.toBeNull()
+    first.unmount()
+
+    // Same session → still collapsed on remount.
+    const second = render(<TodoChecklist messages={msgs} sessionId="s1" working />)
+    expect(second.container.querySelector('.todo-panel-collapsed')).not.toBeNull()
+    second.unmount()
+
+    // Different session → expanded again.
+    const other = render(<TodoChecklist messages={msgs} sessionId="s2" working />)
+    expect(other.container.querySelector('.todo-panel-collapsed')).toBeNull()
+  })
+
+  it('never writes to localStorage when sessionId is omitted', () => {
+    const { container, unmount } = render(<TodoChecklist messages={msgs} working />)
+    fireEvent.click(container.querySelector('.todo-panel-collapse')!)
+    unmount()
+    expect(window.localStorage.getItem('claude-react-web:todo:collapsed:')).toBeNull()
+    expect(window.localStorage.getItem('claude-react-web:todo:hidden:')).toBeNull()
+  })
+
+  it('hides an item on long-press and shows an undo row', () => {
+    vi.useFakeTimers()
+    const { container } = render(<TodoChecklist messages={msgs} working />)
+    longPress(container.querySelectorAll('.todo-item')[0])
+
+    expect(container.querySelectorAll('.todo-item').length).toBe(1)
+    expect(container.querySelector('.todo-text')?.textContent).toBe('B')
+    expect(container.querySelector('.todo-panel-count')?.textContent).toBe('0/1')
+    expect(container.querySelector('.todo-panel-undo')?.textContent).toContain('已隐藏 1 项')
+  })
+
+  it('does not hide on a short press', () => {
+    vi.useFakeTimers()
+    const { container } = render(<TodoChecklist messages={msgs} working />)
+    const item = container.querySelector('.todo-item')!
+    fireEvent.pointerDown(item, { pointerId: 1, button: 0, clientX: 0, clientY: 0 })
+    act(() => {
+      vi.advanceTimersByTime(300)
+    })
+    fireEvent.pointerUp(item, { pointerId: 1 })
+
+    expect(container.querySelectorAll('.todo-item').length).toBe(2)
+    expect(container.querySelector('.todo-panel-undo')).toBeNull()
+  })
+
+  it('cancels the long-press when the pointer moves beyond the slop', () => {
+    vi.useFakeTimers()
+    const { container } = render(<TodoChecklist messages={msgs} working />)
+    const item = container.querySelector('.todo-item')!
+    fireEvent.pointerDown(item, { pointerId: 1, button: 0, clientX: 0, clientY: 0 })
+    fireEvent.pointerMove(item, { pointerId: 1, clientX: 50, clientY: 50 })
+    act(() => {
+      vi.advanceTimersByTime(500)
+    })
+    fireEvent.pointerUp(item, { pointerId: 1 })
+
+    expect(container.querySelectorAll('.todo-item').length).toBe(2)
+    expect(container.querySelector('.todo-panel-undo')).toBeNull()
+  })
+
+  it('keeps the panel and undo row visible when every item is hidden', () => {
+    vi.useFakeTimers()
+    const { container } = render(<TodoChecklist messages={msgs} working />)
+    longPress(container.querySelectorAll('.todo-item')[0], 1)
+    longPress(container.querySelectorAll('.todo-item')[0], 2)
+
+    expect(container.querySelector('.todo-panel')).not.toBeNull()
+    expect(container.querySelectorAll('.todo-item').length).toBe(0)
+    expect(container.querySelector('.todo-panel-count')?.textContent).toBe('0/0')
+    expect(container.querySelector('.todo-panel-undo')).not.toBeNull()
+  })
+
+  it('undo restores every hidden item', () => {
+    vi.useFakeTimers()
+    const { container } = render(<TodoChecklist messages={msgs} working />)
+    longPress(container.querySelectorAll('.todo-item')[0])
+    expect(container.querySelectorAll('.todo-item').length).toBe(1)
+
+    fireEvent.click(container.querySelector('.todo-panel-undo-btn')!)
+    expect(container.querySelectorAll('.todo-item').length).toBe(2)
+    expect(container.querySelector('.todo-panel-undo')).toBeNull()
+  })
+
+  it('prunes hidden keys once the agent deletes the task', () => {
+    const taskMsgs = [
+      ...created('tu1', 1, 'Keep me'),
+      ...created('tu2', 2, 'Remove me'),
+    ]
+    vi.useFakeTimers()
+    const { container, rerender } = render(
+      <TodoChecklist messages={taskMsgs} sessionId="prune-s1" working />,
+    )
+    expect(container.querySelectorAll('.todo-item').length).toBe(2)
+
+    // Hide 'Remove me' (server id #2) → persisted under the session key.
+    longPress(container.querySelectorAll('.todo-item')[1])
+    expect(container.querySelectorAll('.todo-item').length).toBe(1)
+    expect(container.querySelector('.todo-panel-undo')).not.toBeNull()
+    expect(window.localStorage.getItem('claude-react-web:todo:hidden:prune-s1')).toBe('["2"]')
+
+    // Agent deletes task #2 → the hidden key is pruned (not just hidden by
+    // the derived view) and the undo row goes.
+    rerender(
+      <TodoChecklist
+        messages={[
+          ...taskMsgs,
+          taskUseMsg('tu3', 'TaskUpdate', { taskId: '2', status: 'deleted' }),
+          taskResultMsg('tu3', 'Deleted task #2'),
+        ]}
+        sessionId="prune-s1"
+        working
+      />,
+    )
+    expect(container.querySelector('.todo-panel-undo')).toBeNull()
+    expect(window.localStorage.getItem('claude-react-web:todo:hidden:prune-s1')).toBe('[]')
+  })
+
+  it('does not persist the hidden set without a sessionId', () => {
+    vi.useFakeTimers()
+    const first = render(<TodoChecklist messages={msgs} working />)
+    longPress(first.container.querySelectorAll('.todo-item')[0])
+    first.unmount()
+
+    const second = render(<TodoChecklist messages={msgs} working />)
+    expect(second.container.querySelectorAll('.todo-item').length).toBe(2)
+  })
+
+  it('persists the hidden set per sessionId', () => {
+    vi.useFakeTimers()
+    const first = render(<TodoChecklist messages={msgs} sessionId="hid-s1" working />)
+    longPress(first.container.querySelectorAll('.todo-item')[0])
+    first.unmount()
+
+    const second = render(<TodoChecklist messages={msgs} sessionId="hid-s1" working />)
+    expect(second.container.querySelectorAll('.todo-item').length).toBe(1)
+    expect(second.container.querySelector('.todo-panel-undo')).not.toBeNull()
   })
 })
