@@ -3,6 +3,7 @@ import {
   createInitialClientIntent,
   createInitialServerMirror,
   type ClientIntent,
+  type LiveTurnState,
   type ServerMirror,
   type SessionAction,
   type SessionState,
@@ -1771,6 +1772,42 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
     : mirror
 }
 
+// ── Token-rate sliding window ──────────────────────────────────────
+const RATE_WINDOW_MS = 3000      // sliding-window span (balanced responsiveness)
+const RATE_CHAR_THROTTLE_MS = 500  // min gap between char-path sample pushes
+const RATE_SAMPLE_CAP = 60         // ring length hard cap (safety)
+const CHARS_PER_TOKEN = 4          // char→token ratio, matches Claude Code's rough estimate
+
+/** Push a (t, cumulativeTokens) sample into the sliding window and recompute
+ *  the rate. Returns the fields that changed so callers spread them into the
+ *  liveTurn they're building. Prunes samples older than RATE_WINDOW_MS; with
+ *  <2 samples (or non-positive token delta) it keeps the existing rate
+ *  rather than nulling it — so a frozen value survives a long idle until
+ *  fresh samples re-establish the rate. */
+function pushRateSample(liveTurn: LiveTurnState, now: number, tokens: number): Partial<LiveTurnState> {
+  const samples = [...liveTurn.samples, { t: now, tokens }].filter(
+    (s) => s.t >= now - RATE_WINDOW_MS,
+  )
+  const capped = samples.length > RATE_SAMPLE_CAP
+    ? samples.slice(samples.length - RATE_SAMPLE_CAP)
+    : samples
+
+  let tokenRate = liveTurn.tokenRate
+  if (capped.length >= 2) {
+    const first = capped[0]
+    const last = capped[capped.length - 1]
+    const dt = (last.t - first.t) / 1000
+    const dtokens = last.tokens - first.tokens
+    if (dt > 0 && dtokens > 0) {
+      tokenRate = Math.round(dtokens / dt)
+    }
+  }
+
+  return tokenRate !== liveTurn.tokenRate
+    ? { samples: capped, tokenRate }
+    : { samples: capped }
+}
+
 function updateLiveTurnMirror(mirror: ServerMirror, message: SdkMessage): ServerMirror {
   if (message.type !== 'stream_event') return mirror
   const event = message.event as Record<string, unknown> | undefined
@@ -1790,6 +1827,8 @@ function updateLiveTurnMirror(mirror: ServerMirror, message: SdkMessage): Server
       totalChars: 0,
       lastRateUpdate: Date.now(),
       writingStartedAt: null,  // Track when actual writing starts
+      samples: [],
+      hasRealTokens: false,
     }
   }
 
@@ -1799,23 +1838,18 @@ function updateLiveTurnMirror(mirror: ServerMirror, message: SdkMessage): Server
     if (typeof outputTokens === 'number') {
       const now = Date.now()
 
-      // Use real token count with writing-phase elapsed time
-      // (excludes thinking phase delay)
-      const writingStart = liveTurn.writingStartedAt ?? liveTurn.startedAt
-      const elapsed = (now - writingStart) / 1000
-
-      // Always prefer real token rate over estimated rate
-      // Guard against division by zero (elapsed could be 0 if timestamps match)
-      const tokenRate = (outputTokens > 0 && elapsed > 0.5)
-        ? Math.round(outputTokens / elapsed)
-        : liveTurn.tokenRate
+      // First real sample: reset the window so char-estimate samples are
+      // discarded and the estimate→real switch can't cause a level jump.
+      // The displayed rate is kept as-is until 2 real samples exist.
+      const next = liveTurn.hasRealTokens
+        ? pushRateSample(liveTurn, now, outputTokens)
+        : { hasRealTokens: true, samples: [{ t: now, tokens: outputTokens }] }
 
       liveTurn = {
         ...liveTurn,
+        ...next,
         outputTokens,
-        tokenRate,
         lastDeltaAt: now,
-        lastRateUpdate: now,  // Update timestamp for rate calculation
       }
     }
   } else if (event.type === 'content_block_start') {
@@ -1839,45 +1873,30 @@ function updateLiveTurnMirror(mirror: ServerMirror, message: SdkMessage): Server
       const now = Date.now()
       const newTotalChars = liveTurn.totalChars + text.length
 
-      // Estimate token rate from character flow
-      // Only when we have a writing phase (not just tool_use)
+      // Estimate token rate from character flow. Only when we have a writing
+      // phase (not just tool_use), real tokens haven't taken over, and enough
+      // time has passed since the last char sample (throttle). Pushes through
+      // the SAME sliding window as the real path so the two stay unified.
       const hasWritingPhase = liveTurn.writingStartedAt !== null
-      const elapsed = hasWritingPhase
-        ? (now - (liveTurn.writingStartedAt ?? liveTurn.startedAt)) / 1000
-        : 0
+      const estimatedTokens = Math.round(newTotalChars / CHARS_PER_TOKEN)
 
-      // Char→token ratio. Matches Claude Code's official rough estimate
-      // (services/tokenEstimation.ts: roughTokenCountEstimation defaults to
-      // bytesPerToken = 4). Accurate for English/code; for CJK the real ratio
-      // is ~0.5-1 chars/token so this UNDERESTIMATES the rate — the safer
-      // direction for a display-only fallback. JSON-like dense content would
-      // warrant 2, but stream text is prose, so 4 holds.
-      const charsPerToken = 4
-      const estimatedTokens = Math.round(newTotalChars / charsPerToken)
-
-      // Only use estimated rate if:
-      // 1. We don't have a real rate from message_delta yet
-      // 2. We're in writing phase (not just tool_use)
-      // 3. Enough time has elapsed and we have tokens
-      // 4. elapsed > 0 to prevent division by zero
-      let tokenRate = liveTurn.tokenRate
+      let next: Partial<LiveTurnState> = { totalChars: newTotalChars }
       if (
-        tokenRate === null &&
+        !liveTurn.hasRealTokens &&
         hasWritingPhase &&
-        elapsed > 0.5 &&
-        now - liveTurn.lastRateUpdate >= 500 &&
-        estimatedTokens > 0
+        now - liveTurn.lastRateUpdate >= RATE_CHAR_THROTTLE_MS &&
+        estimatedTokens > 0 &&
+        estimatedTokens > (liveTurn.samples[liveTurn.samples.length - 1]?.tokens ?? 0)
       ) {
-        tokenRate = Math.round(estimatedTokens / elapsed)
+        next = { ...next, ...pushRateSample(liveTurn, now, estimatedTokens), lastRateUpdate: now }
       }
 
       liveTurn = {
         ...liveTurn,
+        ...next,
         textChunks: [...liveTurn.textChunks, text],
         lastDeltaAt: now,
         dirty: true,
-        totalChars: newTotalChars,
-        ...(tokenRate !== liveTurn.tokenRate ? { tokenRate, lastRateUpdate: now } : {}),
       }
     }
   } else if (event.type === 'message_stop') {

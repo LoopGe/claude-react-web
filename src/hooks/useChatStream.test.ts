@@ -297,7 +297,8 @@ describe('useChatStream', () => {
       dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
       dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
       // First message_delta — lazily creates liveTurn (startedAt = 1000).
-      // elapsed is 0, below the 0.5s guard, so no rate yet.
+      // First real sample resets the window to [(1000, 50)]; with a single
+      // sample there's no rate yet.
       dispatchToSession('s1', {
         kind: 'message',
         sessionId: 's1',
@@ -306,9 +307,8 @@ describe('useChatStream', () => {
           event: { type: 'message_delta', usage: { output_tokens: 50 } },
         },
       })
-      // Second message_delta — cumulative semantics: 120 tokens over 0.6s
-      // (writingStart falls back to startedAt since no text block arrived)
-      // = 200 tok/s.
+      // Second message_delta — window-incremental semantics: token delta
+      // (120-50) over 0.6s = 116.67, rounded to 117 tok/s.
       dateSpy.mockReturnValue(1600)
       dispatchToSession('s1', {
         kind: 'message',
@@ -323,7 +323,7 @@ describe('useChatStream', () => {
     // setTokenRate is called outside startTransition so it's a sync
     // state update, but React may batch it with the transition flush.
     await waitFor(() => {
-      expect(result.current.tokenRate).toBe(200)
+      expect(result.current.tokenRate).toBe(117)
     })
   })
 
@@ -350,7 +350,8 @@ describe('useChatStream', () => {
           event: { type: 'message_delta', usage: { output_tokens: 10 } },
         },
       })
-      // Cumulative rate: 120 tokens over 0.6s = 200 tok/s.
+      // Window-incremental: token delta (120-10) over 0.6s = 183.33 →
+      // 183 tok/s (only the final `result`-clears-null is asserted here).
       dateSpy.mockReturnValue(1600)
       dispatchToSession('s1', {
         kind: 'message',

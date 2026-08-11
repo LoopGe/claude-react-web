@@ -245,10 +245,11 @@ export interface LiveTurnState {
   textChunks: string[]
   flushedText: string
   outputTokens?: number
-  /** Output token rate in tok/s. This is a CUMULATIVE AVERAGE over the
-   *  writing phase (outputTokens / writing-elapsed), not an instantaneous
-   *  rate, so it converges toward the mean as the turn grows longer. Null
-   *  until the first real message_delta (or the char-flow fallback) lands. */
+  /** Output token rate in tok/s. A sliding-window rate over the most recent
+   *  RATE_WINDOW_MS of samples (real output_tokens or char-estimated total),
+   *  so it reflects recent output speed rather than the turn's lifetime
+   *  average. Frozen while idle (no samples pushed). Null until the first
+   *  real message_delta (or the char-flow fallback) lands. */
   tokenRate: number | null
   startedAt: number
   lastDeltaAt: number
@@ -264,6 +265,15 @@ export interface LiveTurnState {
   /** Timestamp when the first text content_block_start arrived.
    *  Excludes thinking phase time from rate calculation. */
   writingStartedAt: number | null
+  /** Sliding-window samples: (t, cumulative token count). Both the real
+   *  output_tokens and the char-estimated total feed this ring; the rate is
+   *  (last.tokens - first.tokens) / (last.t - first.t) across samples within
+   *  RATE_WINDOW_MS. Pruned on every push; hard cap RATE_SAMPLE_CAP. */
+  samples: Array<{ t: number; tokens: number }>
+  /** True once a real output_tokens sample has been recorded. Gates the
+   *  char-estimate path off, and the FIRST real sample resets the window so
+   *  the estimate→real switch cannot produce a level jump. */
+  hasRealTokens: boolean
 }
 
 /** Server-authored fields. Everything here is derived purely from WS frames
