@@ -641,4 +641,21 @@ describe('SessionStore dismissed-subagent persistence', () => {
     store.reset() // /clear
     expect(store.getState().intent.dismissedSubagents.size).toBe(0)
   })
+
+  it('a dismiss is persisted synchronously (survives an <2s refresh)', () => {
+    const store = new SessionStore('sess-immediate')
+    const toolUse: SdkMessage = {
+      type: 'assistant', uuid: 'a-1', receivedAt: 0,
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu_i', name: 'Agent', input: { description: 'w' } }] },
+    } as unknown as SdkMessage
+    store.dispatch({ type: 'MESSAGE', message: toolUse })
+    // No explicit persistNow() here — the dispatch itself must write.
+    store.dispatch({ type: 'DISMISS_SUBAGENT', toolUseId: 'tu_i' })
+    // The 2s debounced save has not fired (no timers awaited), so the key
+    // being present NOW proves dispatch persisted synchronously.
+    const raw = localStorage.getItem(STORAGE_PREFIX + 'sess-immediate')
+    expect(raw).not.toBeNull()
+    const parsed = JSON.parse(raw!)
+    expect(parsed.dismissedSubagents).toContain('tu_i')
+  })
 })

@@ -497,6 +497,10 @@ export class SessionStore {
     this.snapshot = this.buildSnapshot(next)
     this.scheduleFlush()
     this.scheduleSave()
+    // A dismiss must survive an immediate refresh: bypass the 2s save
+    // debounce so the dismissed set is persisted synchronously (sync LS write
+    // is what hydrate reads; IDB write is chained async but fire-and-forget).
+    if (action.type === 'DISMISS_SUBAGENT') this.persistNow()
     this.emit()
   }
 
