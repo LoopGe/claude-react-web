@@ -43,6 +43,7 @@ import { useAppOverlays } from './app/useAppOverlays'
 import { useExitPresence } from './hooks/useExitPresence'
 import { AnimatePresence } from 'motion/react'
 import { createCallbackRegistry, type CallbackRegistry } from './utils/callbackRegistry'
+import { shouldAutoResumeOnSelect } from './utils/select-resume'
 
 // Lazy-load heavy modal/overlay components that are only shown on demand.
 // This keeps the initial bundle lean — the user pays the download cost
@@ -413,7 +414,7 @@ export function App() {
   const historyPanelOpenRef = useRef(historyPanelOpen)
   const settingsOpenForRef = useRef(settingsOpenFor)
   const gitPanelOpenForRef = useRef(gitPanelOpenFor)
-  const handleSelectRef = useRef<(id: string) => void>(() => {})
+  const handleSelectRef = useRef<(id: string, opts?: { auto?: boolean }) => void>(() => {})
   const handleDeleteRef = useRef<(id: string) => void>(() => {})
   const jumpNonceRef = useRef(0)
   /** Ids mid-/clear. While a clear is in flight, the server broadcasts
@@ -1799,7 +1800,13 @@ export function App() {
    *  panel) a group larger than maxOpen degrades to opening just the
    *  clicked session. */
   const handleSelect = useCallback(
-    async (id: string) => {
+    async (id: string, opts?: { auto?: boolean }) => {
+      // `auto` marks an automatic open (URL-hash restore on page refresh /
+      // deep link) as opposed to an explicit user click. Automatic restores
+      // must not wake a session the user deliberately slept (slept:true) —
+      // only an explicit click / drop / Resume button does. The panel layout
+      // (group sync, focus, dormant empty-state) is identical either way.
+      const auto = opts?.auto === true
       const s = sessionsRef.current.find((x) => x.id === id)
       if (!s) {
         openSession(id, undefined)
@@ -1814,7 +1821,10 @@ export function App() {
         // `s.canRetryResume`: a transiently-terminated session (crash /
         // query error) may still be recoverable — attempt the resume; the
         // server probes the transcript and 410s if it's genuinely gone.
-        if (!s.running && !s.slept && (!s.terminated || s.canRetryResume) && !resumingRef.current.has(id)) {
+        // Ungrouped opens never auto-wake a deliberately-slept session
+        // (treated as auto regardless of how it was opened) — the panel
+        // opens to the dormant empty-state with a Resume button instead.
+        if (shouldAutoResumeOnSelect(s, { auto: true }) && !resumingRef.current.has(id)) {
           await resumeSession(id, () => {
             setOpenIds([id])
             setFocusedId(id)
@@ -1879,8 +1889,11 @@ export function App() {
       // before the user interacts). Running sessions are already open in
       // the grid via setOpenIds above. Hard-terminal sessions are dead;
       // transiently-terminated ones (canRetryResume) still get a resume
-      // attempt (the server 410s if the transcript is truly gone).
-      if (s.running || (s.terminated && !s.canRetryResume)) return
+      // attempt (the server 410s if the transcript is truly gone). An
+      // `auto` open (page-refresh hash restore) must NOT wake a session the
+      // user deliberately slept — only an explicit click / drop / Resume
+      // button does (see shouldAutoResumeOnSelect).
+      if (!shouldAutoResumeOnSelect(s, { auto })) return
       if (resumingRef.current.has(id)) return
       await resumeSession(id, () => {})
     },
@@ -1936,7 +1949,7 @@ export function App() {
 
   // Deep linking: sync URL hash ↔ open panels. Ref-backed callbacks so
   // the hook's effects never re-run on identity churn.
-  const openSessionFromUrlRef = useRef((id: string) => { handleSelectRef.current(id) })
+  const openSessionFromUrlRef = useRef((id: string) => { handleSelectRef.current(id, { auto: true }) })
   const focusPanelFromUrlRef = useRef((id: string) => { focusPanel(id) })
   /* eslint-disable react-hooks/refs -- intentional render-time ref read; useSessionUrl stores the value in its own ref on mount */
   useSessionUrl({
