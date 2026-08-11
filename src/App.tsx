@@ -3,6 +3,7 @@
 // overlay (inside ChatPanel) rather than a right drawer — see below.
 
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { SessionList } from './components/SessionList'
 import { ChatPanel } from './components/ChatPanel'
 import { PanelSlot } from './components/PanelSlot'
@@ -44,6 +45,12 @@ import { useExitPresence } from './hooks/useExitPresence'
 import { AnimatePresence } from 'motion/react'
 import { createCallbackRegistry, type CallbackRegistry } from './utils/callbackRegistry'
 import { shouldAutoResumeOnSelect } from './utils/select-resume'
+
+// How long the evicted session X fades out (WAAPI, opacity only) before the
+// atomic X→Y swap commits. The replacement Y then fades in over X's empty
+// slot, so the two fades together read as one in-place replacement. See
+// swapSession.
+const SWAP_EXIT_MS = 160
 
 // Lazy-load heavy modal/overlay components that are only shown on demand.
 // This keeps the initial bundle lean — the user pays the download cost
@@ -820,20 +827,26 @@ export function App() {
               next.set(sid, { sourceId: joinGroupOf, evicting: frame.evictingSource === true })
               return next
             })
-            // `evictingSource` is set for /clear + restart: X is being evicted
-            // (swapSession same-tab / session-removed cross-tab), so appending
-            // Y won't grow the group long-term. joinGroupOfSource bypasses the
-            // maxGroupSize cap in that case — otherwise a FULL group (e.g. a
-            // 3-up workspace at the default maxGroupSize=3) skips the append
-            // and Y flashes under "Ungrouped" between this frame and the
-            // POST-driven swapSession. For fork (evictingSource absent) X stays,
-            // so the cap stands and handleAddToGroup can toast on overflow.
-            setGroups((prev) =>
-              joinGroupOfSource(prev, joinGroupOf, sid, {
-                evicting: frame.evictingSource === true,
-                maxGroupSize: maxGroupSizeRef.current,
-              }),
-            )
+            // For /clear + restart (`evictingSource` true): X is being evicted by
+            // the POST-driven swapSession (same tab) or session-removed
+            // (cross-tab), and that path places Y EXACTLY in X's slot. We
+            // deliberately do NOT append Y to the group here: appending would
+            // flash Y at the group tail for the 80-140ms before the POST swap —
+            // shoving the following cards down and then back, and reading as a
+            // "Y first appears in the wrong place" teleport. The pending marker
+            // above keeps Y hidden (not rendered as Ungrouped, not rendered at
+            // the tail) until swapSession/teardown places it.
+            // For fork (`evictingSource` absent) X stays, so append now so the
+            // forked session lands in its source's group immediately; the
+            // maxGroupSize cap stands and handleAddToGroup can toast on overflow.
+            if (frame.evictingSource !== true) {
+              setGroups((prev) =>
+                joinGroupOfSource(prev, joinGroupOf, sid, {
+                  evicting: false,
+                  maxGroupSize: maxGroupSizeRef.current,
+                }),
+              )
+            }
           }
           break
         }
@@ -967,53 +980,105 @@ export function App() {
   /** Atomic local X→Y session swap. In one batched state update, replaces
    *  `oldId` with `newId`/`newSession` everywhere a session id is tracked:
    *  sessions (remove old, upsert new at old's position), openIds, focusedId,
-   *  groups (sessionIds), sidebarOrder, lastSeenTurn. Used by /clear and
-   *  restart. Driven by the POST response (which
-   *  carries Y), so `sessions` carries Y the instant openIds adopts it — no
-   *  gap for the WS session-created/session-removed frames to race. Those
-   *  frames are idempotent confirmations. Also marks newId in `justSwappedInRef`
-   *  so the exit-detection effect suppresses the closing-ghost for the swap
-   *  (true swaps only — evictions/replaces still animate). openIds and groups
-   *  swap together, so activeGroupId stays consistent (no null-flicker). */
+   *  groups (sessionIds), sidebarOrder, lastSeenTurn. Used by /clear, restart
+   *  and discard. Driven by the POST response (which carries Y), so `sessions`
+   *  carries Y the instant openIds adopts it — no gap for the WS
+   *  session-created/session-removed frames to race. Those frames are
+   *  idempotent confirmations. Also marks newId in `justSwappedInRef` so the
+   *  exit-detection effect suppresses the closing-ghost for the swap (true
+   *  swaps only — evictions/replaces still animate). openIds and groups swap
+   *  together, so activeGroupId stays consistent (no null-flicker).
+   *
+   * Before the commit, X fades out in place (WAAPI, opacity only) so the
+   * eviction reads as a smooth in-place replacement: every surviving card's
+   * position is unchanged (Y takes X's exact slot), so there is deliberately
+   * no FLIP/slide — only X dims out and Y dims in over the same slot. The
+   * fade is skipped for reduced-motion and when X's card isn't currently
+   * rendered. Callers should `await` this so the clearing guard stays armed
+   * through the fade. */
   const swapSession = useCallback(
-    (oldId: string, newId: string, newSession: SessionInfo) => {
+    async (oldId: string, newId: string, newSession: SessionInfo) => {
       if (oldId === newId) return
+      // Fade X out in place before the atomic swap unmounts it — otherwise X
+      // pops out in the same frame Y appears, which reads as "remove then add".
+      // Opacity only: no translateY (Y inherits X's slot, so there's no motion
+      // for a slide to add — a positional nudge would read as jitter).
+      const xEl = document.querySelector<HTMLElement>(`[data-session-card-id="${oldId}"]`)
+      if (xEl && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        try {
+          const anim = xEl.animate(
+            [
+              { opacity: 1 },
+              { opacity: 0 },
+            ],
+            { duration: SWAP_EXIT_MS, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'forwards' },
+          )
+          await anim.finished
+        } catch {
+          /* element removed mid-fade (e.g. cross-tab) — proceed with the swap */
+        }
+      }
       // Mark the swap so the exit-detection effect suppresses X's closing-ghost
       // (true swap → Y fades in via .entering). Callers pass an OPEN panel's id
       // (oldId ∈ openIds), so the swap always changes openIds and exit-detection
       // runs to consume this marker — no stale-entry risk.
       justSwappedInRef.current.add(newId)
-      setPendingGroupInheritance((prev) => {
-        if (!prev.has(newId)) return prev
-        const next = new Map(prev)
-        next.delete(newId)
-        return next
-      })
-      setSessions((prev) => {
-        const idx = prev.findIndex((s) => s.id === oldId)
-        const withoutOld = idx === -1 ? prev : prev.filter((s) => s.id !== oldId)
-        const existing = withoutOld.findIndex((s) => s.id === newId)
-        if (existing >= 0) {
-          // session-created(Y) already landed — refresh in place.
-          const next = withoutOld.slice()
-          next[existing] = newSession
+      // Commit the swap synchronously so Y's card is in the DOM before we look
+      // it up for the fade-in below. In async contexts (this POST continuation)
+      // React 19's scheduler would otherwise defer the commit to a
+      // MessageChannel macrotask, leaving Y's card unmounted here.
+      flushSync(() => {
+        setPendingGroupInheritance((prev) => {
+          if (!prev.has(newId)) return prev
+          const next = new Map(prev)
+          next.delete(newId)
           return next
+        })
+        setSessions((prev) => {
+          const idx = prev.findIndex((s) => s.id === oldId)
+          const withoutOld = idx === -1 ? prev : prev.filter((s) => s.id !== oldId)
+          const existing = withoutOld.findIndex((s) => s.id === newId)
+          if (existing >= 0) {
+            // session-created(Y) already landed — refresh in place.
+            const next = withoutOld.slice()
+            next[existing] = newSession
+            return next
+          }
+          // Insert Y at X's old position so it inherits X's sidebar slot.
+          const next = withoutOld.slice()
+          next.splice(idx === -1 ? withoutOld.length : idx, 0, newSession)
+          return next
+        })
+        setOpenIds((prev) => prev.map((id) => (id === oldId ? newId : id)))
+        setFocusedId((prev) => (prev === oldId ? newId : prev))
+        setGroups((prev) => inheritGroupId(prev, oldId, newId))
+        setSidebarOrder((prev) => inheritSidebarOrderId(prev, oldId, newId))
+        setLastSeenTurn((prev) => {
+          const next = { ...prev }
+          delete next[oldId]
+          next[newId] = newSession.lastTurnAt ?? Date.now()
+          return next
+        })
+      })
+      // Fade the replacement in over X's now-empty slot — the in-place half of
+      // the X-out/Y-in swap. batch1 no longer appends Y for evicting clears
+      // (it stays pending/hidden), so Y mounts here for the first time;
+      // `fill: 'backwards'` applies the transparent start keyframe in the same
+      // frame the card mounts (before the browser paints), so there's no
+      // opacity-1 flash.
+      if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        const yEl = document.querySelector<HTMLElement>(`[data-session-card-id="${newId}"]`)
+        if (yEl) {
+          try {
+            yEl.animate(
+              [{ opacity: 0 }, { opacity: 1 }],
+              { duration: 160, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'backwards' },
+            )
+          } catch {
+            /* element removed (e.g. cross-tab) — skip */
+          }
         }
-        // Insert Y at X's old position so it inherits X's sidebar slot.
-        const next = withoutOld.slice()
-        next.splice(idx === -1 ? withoutOld.length : idx, 0, newSession)
-        return next
-      })
-      setOpenIds((prev) => prev.map((id) => (id === oldId ? newId : id)))
-      setFocusedId((prev) => (prev === oldId ? newId : prev))
-      setGroups((prev) => inheritGroupId(prev, oldId, newId))
-      setSidebarOrder((prev) => inheritSidebarOrderId(prev, oldId, newId))
-      setLastSeenTurn((prev) => {
-        const next = { ...prev }
-        delete next[oldId]
-        next[newId] = newSession.lastTurnAt ?? Date.now()
-        return next
-      })
+      }
     },
     [setGroups, setLastSeenTurn, setSidebarOrder],
   )
@@ -1626,6 +1691,11 @@ export function App() {
       const source = sessions.find((s) => s.id === id)
       if (!source) return
       let swapped = false
+      // Guard the WS session-removed(X) teardown while the swap's exit fade is
+      // in flight: without it, a cross-tab delete during the fade would tear X
+      // down before swapSession slots Y, dropping the group position. Same
+      // pattern as handleClear / handleDiscard.
+      clearingIdsRef.current.add(id)
       try {
         // Create the replacement session (no groupId — swapSession moves the
         // group slot X→Y atomically, avoiding handleAddToGroup's overflow
@@ -1644,15 +1714,17 @@ export function App() {
           title: source.title,
           joinGroupOf: id,
           // X is being evicted by this restart (swapSession replaces X→Y), so
-          // the server tags the created(Y) broadcast with evictingSource and
-          // the client bypasses the maxGroupSize cap when appending Y to X's
-          // group — no "Ungrouped" flash on a full group.
+          // the server tags the created(Y) broadcast with evictingSource. The
+          // client uses that flag to keep Y pending (NOT appended) until
+          // swapSession places it in X's exact slot — no group-tail flash.
           evictingSource: true,
         })
         // Atomic X→Y swap (sessions/openIds/focusedId/groups/sidebarOrder/
         // lastSeenTurn). Y mounts fresh and plays .entering. swapSession also
         // inserts Y into `sessions`, so openSessions resolves it with no gap.
-        swapSession(id, res.session.id, res.session)
+        // Awaited so the exit fade completes (and X stays guarded) before the
+        // delete below broadcasts session-removed(X).
+        await swapSession(id, res.session.id, res.session)
         swapped = true
         // Delete the old session server-side. performDelete→closeSession cleans
         // up side-chat/registry/accent; its openIds/groups/sessions filters are
@@ -1669,7 +1741,24 @@ export function App() {
           // case dominates, so re-adding is net-positive.)
           setSessions((prev) => (prev.some((s) => s.id === id) ? prev : [source, ...prev]))
         }
+        // Clear any evicting replacement marker for X that swapSession never
+        // consumed (POST failed after the session-created(Y) broadcast) — with
+        // batch1 no longer appending Y, a stuck pending would hide Y forever.
+        setPendingGroupInheritance((prev) => {
+          let changed = false
+          const next = new Map(prev)
+          for (const [newId, pending] of next) {
+            if (pending.evicting && pending.sourceId === id) {
+              next.delete(newId)
+              changed = true
+            }
+          }
+          return changed ? next : prev
+        })
         toast.error(`Couldn't restart session: ${(e as Error).message}`)
+      } finally {
+        clearingIdsRef.current.delete(id)
+        clearingServerRemovedRef.current.delete(id)
       }
     },
     [sessions, performDelete, toast, swapSession],
@@ -2471,6 +2560,10 @@ export function App() {
       return () => window.clearTimeout(timer)
     }
     const updates = [...pendingGroupInheritance].flatMap(([newId, pending]) => {
+      // Evicting replacements (clear/restart) are placed into X's exact slot by
+      // swapSession — don't append them here, which would flash Y at the group
+      // tail. Only fork (non-evicting) replacements retry the append.
+      if (pending.evicting) return []
       const sourceGroup = groups.find((g) => g.sessionIds.includes(pending.sourceId))
       if (!sourceGroup) return []
       return [{ newId, pending }]
@@ -2491,20 +2584,31 @@ export function App() {
   // replacement in render-derived state on the next event rather than
   // leaving it hidden indefinitely. The pending marker is otherwise cleared
   // by the successful group append or the swap/teardown paths above.
+  //
+  // Also release replacements whose SOURCE is gone from the sidebar entirely
+  // (sourceId not in sessions) — the swap/teardown that should have consumed
+  // the marker never ran (e.g. the WS dropped between the session-created and
+  // session-removed broadcasts). With batch1 no longer appending evicting Ys,
+  // a stuck marker would hide the replacement forever.
   useEffect(() => {
     if (uiStateLoading || pendingGroupInheritance.size === 0) return
-    const releasable = [...pendingGroupInheritance].some(([newId, pending]) =>
-      sessions.some((s) => s.id === pending.sourceId)
-      && !groups.some((g) => g.sessionIds.includes(pending.sourceId))
-      && sessions.some((s) => s.id === newId),
-    )
+    const shouldRelease = (newId: string, pending: { sourceId: string; evicting: boolean }) =>
+      // Fork (non-evicting): release when the live source is ungrouped. Evicting
+      // replacements (clear/restart) stay pending until swapSession places them —
+      // releasing on an ungrouped source would flash Y under Ungrouped for the
+      // 80-140ms before the POST swap.
+      (!pending.evicting
+        && sessions.some((s) => s.id === pending.sourceId)
+        && !groups.some((g) => g.sessionIds.includes(pending.sourceId)))
+      // Stale source: the source session is gone while the replacement exists.
+      || (!sessions.some((s) => s.id === pending.sourceId) && sessions.some((s) => s.id === newId))
+    const releasable = [...pendingGroupInheritance].some(([newId, pending]) => shouldRelease(newId, pending))
     if (!releasable) return
     const timer = window.setTimeout(() => {
       setPendingGroupInheritance((prev) => {
         const next = new Map(prev)
         for (const [newId, pending] of next) {
-          if (sessions.some((s) => s.id === pending.sourceId)
-            && !groups.some((g) => g.sessionIds.includes(pending.sourceId))) next.delete(newId)
+          if (shouldRelease(newId, pending)) next.delete(newId)
         }
         return next.size === prev.size ? prev : next
       })
@@ -3029,13 +3133,13 @@ export function App() {
   /** `/clear` a panel: POST to the server (which atomically spawns a fresh
    *  session Y and detaches X), then swap X→Y locally in ONE batched
    *  `swapSession` transaction (sessions/openIds/groups/sidebarOrder/
-   *  lastSeenTurn). There is no 180 ms veil gate — data swaps the instant Y is
-   *  known, so client state never lags server state. The WS session-created(Y)
-   *  / session-removed(X) frames are idempotent confirmations (the
-   *  clearingIdsRef guard keeps X fully alive until the swap). X's transcript
-   *  survives on disk, recoverable via the resume picker. The cleared panel
-   *  blurs (view-only, via `clearingIds`) during the POST; Y mounts fresh and
-   *  plays `.entering`. */
+   *  lastSeenTurn). swapSession first fades X out (WAAPI, ~160ms) so the
+   *  replacement reads as an in-place X-out/Y-in; data commits right after the
+   *  fade. The WS session-created(Y) / session-removed(X) frames are idempotent
+   *  confirmations (the clearingIdsRef guard keeps X fully alive until the
+   *  swap). X's transcript survives on disk, recoverable via the resume
+   *  picker. The cleared panel blurs (view-only, via `clearingIds`) during the
+   *  POST; Y mounts fresh and plays `.entering`. */
 
   const handleClear = useCallback(
     async (id: string) => {
@@ -3056,7 +3160,7 @@ export function App() {
           cleanupSideChat(id)
           // Atomic X→Y in one batch. Y mounts fresh and plays .entering
           // (not suppressed — the wipe + empty-panel-fade-in is the clear).
-          swapSession(id, newId, res.session)
+          await swapSession(id, newId, res.session)
           // X is gone — prune its notification edge-detector entry (the
           // guarded session-removed skipped pruneSession; swapSession
           // doesn't touch it; <Chat> unmount has no backstop for it).
@@ -3072,9 +3176,23 @@ export function App() {
           // (groups/sidebarOrder/lastSeenTurn/registries/side-chat, not just
           // the panel slot). Y (created server-side) is in the sidebar.
           teardownRemovedSession(id)
+        } else {
+          // server never acted (network error before processing) — X is still
+          // live; leave the panel as-is. The evicting replacement marker for Y
+          // was never consumed (batch1 no longer appends Y), so clear it —
+          // otherwise Y stays hidden forever.
+          setPendingGroupInheritance((prev) => {
+            let changed = false
+            const next = new Map(prev)
+            for (const [newId, pending] of next) {
+              if (pending.evicting && pending.sourceId === id) {
+                next.delete(newId)
+                changed = true
+              }
+            }
+            return changed ? next : prev
+          })
         }
-        // else: server never acted (network error before processing) — X is
-        // still live; leave the panel as-is.
         toast.error(`Couldn't clear session: ${(e as Error).message}`)
       } finally {
         // Release the guard + blur only when this is the last in-flight clear
@@ -3118,12 +3236,27 @@ export function App() {
         const newId = res.session.id
         if (newId !== id) {
           cleanupSideChat(id)
-          swapSession(id, newId, res.session)
+          await swapSession(id, newId, res.session)
           pruneSession(id)
         }
       } catch (e) {
         if (clearingServerRemovedRef.current.has(id)) {
           teardownRemovedSession(id)
+        } else {
+          // server never acted — X is still live. Clear the unconsumed evicting
+          // replacement marker (batch1 no longer appends Y) so Y isn't hidden
+          // forever.
+          setPendingGroupInheritance((prev) => {
+            let changed = false
+            const next = new Map(prev)
+            for (const [newId, pending] of next) {
+              if (pending.evicting && pending.sourceId === id) {
+                next.delete(newId)
+                changed = true
+              }
+            }
+            return changed ? next : prev
+          })
         }
         toast.error(`Couldn't discard: ${(e as Error).message}`)
         // Re-throw so the caller's confirm dialog (Chat.discardConfirm)
