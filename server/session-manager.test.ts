@@ -207,6 +207,13 @@ vi.mock('./exec.js', async (importOriginal) => {
   }
 })
 
+// Mock compact-summary so compact() tests never hit the real Anthropic API.
+// summarizeForCompact is the single LLM dependency of SessionManager.compact;
+// tests override its resolved value per-case.
+vi.mock('./compact-summary.js', () => ({
+  summarizeForCompact: vi.fn(async () => 'MOCK SUMMARY'),
+}))
+
 // Helper: yield to the event loop so the SessionManager's pump() can
 // process whatever the mock just emitted. The pump iterates asynchronously,
 // so a `setImmediate`-tick is enough to drain one message.
@@ -219,6 +226,7 @@ import { config as defaultConfig } from './config.js'
 import { McpConfigStore } from './mcp-config.js'
 import { MpStore } from './mp-store.js'
 import { execCommand as mockExecCommand } from './exec.js'
+import { summarizeForCompact } from './compact-summary.js'
 import { buildSessionRouter } from './routes/sessions.js'
 
 function makeTmpDir(): string {
@@ -240,6 +248,8 @@ describe('SessionManager', () => {
     mockListSessions.mockReset()
     mockListSessions.mockImplementation(async () => [])
     vi.mocked(mockExecCommand).mockClear()
+    vi.mocked(summarizeForCompact).mockReset()
+    vi.mocked(summarizeForCompact).mockResolvedValue('MOCK SUMMARY')
     dir = makeTmpDir()
     store = new SessionStore({ stateDir: dir })
     await store.load()
@@ -636,6 +646,201 @@ describe('SessionManager', () => {
     // X is removed from the store (unified with regular sessions).
     expect(store.get(side.id)).toBeUndefined()
     expect(sm.list().find((s) => s.id === side.id)).toBeUndefined()
+  })
+
+  it('clear(id, { seedText }) seeds Y with a compact boundary + synthetic summary', async () => {
+    const info = sm.create({})
+    mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
+    await tick()
+    expect(sm.getHistory(info.id)!).toHaveLength(1)
+
+    const next = await sm.clear(info.id, { seedText: 'HAND-OFF SUMMARY' })
+
+    // Y's ring holds exactly [boundary, summary] — nothing else.
+    const history = sm.getHistory(next.id)!
+    expect(history).toHaveLength(2)
+    // [0] is the client-facing divider (never sent to the SDK).
+    const boundary = history[0] as { type: string; subtype: string; compact_metadata: { trigger: string } }
+    expect(boundary.type).toBe('system')
+    expect(boundary.subtype).toBe('compact_boundary')
+    expect(boundary.compact_metadata.trigger).toBe('auto')
+    // [1] is the user-role summary carrying the hand-off text.
+    const seed = history[1] as { type: string; message: { content: string }; isSynthetic: boolean; shouldQuery: boolean }
+    expect(seed.type).toBe('user')
+    expect(seed.message.content).toBe('HAND-OFF SUMMARY')
+    expect(seed.isSynthetic).toBe(true)
+    expect(seed.shouldQuery).toBe(false)
+    // The seed must not bump Y into a turn.
+    expect(sm.get(next.id).working).toBe(false)
+    expect(sm.get(next.id).phase).toBe('idle')
+    // The SDK received the seed through the input pushable (raw push) exactly
+    // once, and with shouldQuery:false so it never triggers an assistant turn.
+    const seedConsumed = mockHandles[1].consumed.find(
+      (m) => (m as { isSynthetic?: boolean }).isSynthetic === true,
+    )
+    expect(seedConsumed).toBeDefined()
+    expect((seedConsumed as { shouldQuery: boolean }).shouldQuery).toBe(false)
+    expect(mockHandles[1].consumed.filter((m) => (m as { isSynthetic?: boolean }).isSynthetic === true)).toHaveLength(1)
+  })
+
+  it('clear(id, { seedText }) does not leak the seed into Y persisted metadata', async () => {
+    // R3: the boundary + summary are in-memory artifacts of the live ring —
+    // never persisted into the store meta (they aren't in the CLI-owned
+    // jsonl either). After a restart the divider is absent from the UI but the
+    // summary text remains inside the SDK's transcript. Guard against the
+    // seed being persisted as a meta field here.
+    const info = sm.create({})
+    await tick()
+    const next = await sm.clear(info.id, { seedText: 'HAND-OFF SUMMARY' })
+    const meta = store.get(next.id)
+    expect(meta).toBeDefined()
+    expect(JSON.stringify(meta)).not.toContain('HAND-OFF SUMMARY')
+  })
+
+  it('compact() refuses unknown / working / terminated sessions', async () => {
+    // Unknown → 404.
+    await expect(sm.compact('ghost')).rejects.toMatchObject({ status: 404 })
+
+    // Working → 409.
+    const info = sm.create({})
+    sm.send(info.id, 'busy')
+    expect(sm.get(info.id).phase).toBe('working')
+    await expect(sm.compact(info.id)).rejects.toMatchObject({ status: 409 })
+
+    // Let the turn complete.
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    await tick()
+    expect(sm.get(info.id).phase).toBe('idle')
+
+    // Terminated → 410.
+    mockHandles[0].finish()
+    await tick()
+    expect(sm.get(info.id).terminated).toBe(true)
+    await expect(sm.compact(info.id)).rejects.toMatchObject({ status: 410 })
+  })
+
+  it('compact() refuses a slept (dormant) session with 404 (unloaded from the live map)', async () => {
+    // unload() removes dormant sessions from the live map, so compact()'s
+    // require() throws 404 before the phase guard. The 412 branch in compact()
+    // is defensive parity with RecapManager for a hypothetical in-map-but-not-
+    // running session — not reachable through the public API today.
+    const info = sm.create({})
+    await sm.sleep(info.id)
+    // unload removed it from the live map (listActivity only sees live
+    // sessions); get() still resolves it from the store as a dormant meta.
+    expect(sm.listActivity().find((a) => a.sessionId === info.id)).toBeUndefined()
+    await expect(sm.compact(info.id)).rejects.toMatchObject({ status: 404 })
+  })
+
+  it('compact() summarises an idle session and swaps to a fresh seeded session', async () => {
+    vi.mocked(summarizeForCompact).mockResolvedValueOnce('HAND-OFF')
+    const info = sm.create({})
+    mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
+    await tick()
+    expect(sm.getHistory(info.id)!).toHaveLength(1)
+
+    const next = await sm.compact(info.id)
+
+    expect(vi.mocked(summarizeForCompact)).toHaveBeenCalledTimes(1)
+    // X is removed (not left dormant), Y is fresh under a new id.
+    expect(next.id).not.toBe(info.id)
+    expect(sm.list().find((s) => s.id === info.id)).toBeUndefined()
+    expect(mockHandles).toHaveLength(2)
+    // Y is seeded with the boundary + hand-off summary, and is idle.
+    const history = sm.getHistory(next.id)!
+    expect(history).toHaveLength(2)
+    expect((history[0] as { subtype: string }).subtype).toBe('compact_boundary')
+    const seed = history[1] as { message: { content: string }; shouldQuery: boolean }
+    expect(seed.message.content).toBe('HAND-OFF')
+    expect(seed.shouldQuery).toBe(false)
+    expect(sm.get(next.id).phase).toBe('idle')
+  })
+
+  it('compact() falls back to a plain clear when the summary is empty', async () => {
+    vi.mocked(summarizeForCompact).mockResolvedValueOnce('')
+    const info = sm.create({})
+    mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
+    await tick()
+
+    const next = await sm.compact(info.id)
+
+    // No boundary / summary seeded — Y is a plain empty session.
+    expect(sm.getHistory(next.id)!).toHaveLength(0)
+    expect(vi.mocked(summarizeForCompact)).toHaveBeenCalledTimes(1)
+  })
+
+  it('two concurrent compacts never double-spawn a fresh session', async () => {
+    vi.mocked(summarizeForCompact).mockResolvedValue('HAND-OFF')
+    const info = sm.create({})
+    mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
+    await tick()
+
+    const results = await Promise.allSettled([sm.compact(info.id), sm.compact(info.id)])
+
+    // The `s.clearing` guard in clear() lets exactly ONE clear spawn Y; the
+    // loser either sees clearing=true and returns X's (stale) info, or lands
+    // after X was unloaded and rejects. Either way, no second subprocess.
+    expect(mockHandles).toHaveLength(2) // X + exactly one Y
+    expect(results.filter((r) => r.status === 'fulfilled').length).toBeGreaterThanOrEqual(1)
+    // Exactly one live session remains (the fresh Y), seeded.
+    const live = sm.list().filter((s) => s.running)
+    expect(live).toHaveLength(1)
+    expect(sm.getHistory(live[0].id)!).toHaveLength(2)
+  })
+
+  it('listActivity() emits coarse activity snapshots for live sessions', () => {
+    const info = sm.create({ cwd: '/tmp', model: 'test-model' })
+    const activity = sm.listActivity()
+    expect(activity).toHaveLength(1)
+    expect(activity[0]).toMatchObject({
+      sessionId: info.id,
+      provider: 'claude',
+      cwd: '/tmp',
+      model: 'test-model',
+      running: true,
+      terminated: false,
+      pendingTurns: 0,
+      pendingPermissions: 0,
+      historyLength: 0,
+    })
+    expect(activity[0].lastActivityAt).toBeGreaterThan(0)
+
+    // After a send, the snapshot reports the in-flight turn + workingSince.
+    sm.send(info.id, 'hi')
+    const working = sm.listActivity()[0]
+    expect(working.pendingTurns).toBe(1)
+    expect(working.workingSince).toBeGreaterThan(0)
+  })
+
+  it('getCachedContextUsage() reads the pump-cached snapshot, or null', async () => {
+    const info = sm.create({})
+    expect(sm.getCachedContextUsage(info.id)).toBeNull()
+    expect(sm.getCachedContextUsage('ghost')).toBeNull()
+
+    // A `result` with a valid usage payload populates the cache.
+    mockHandles[0].emit({
+      type: 'result',
+      session_id: info.id,
+      usage: {
+        input_tokens: 90_000,
+        cache_creation_input_tokens: null,
+        cache_read_input_tokens: null,
+        iterations: [
+          { type: 'message', input_tokens: 90_000, cache_creation_input_tokens: null, cache_read_input_tokens: null, output_tokens: 500 },
+        ],
+      },
+      modelUsage: { 'claude-sonnet-4-5': { contextWindow: 200_000, maxOutputTokens: 64_000 } },
+    })
+    await tick()
+
+    const usage = sm.getCachedContextUsage(info.id)
+    expect(usage).not.toBeNull()
+    expect(usage!.totalTokens).toBe(90_000)
+    expect(usage!.maxTokens).toBe(200_000)
+    expect(usage!.percentage).toBeCloseTo(45)
+    expect(usage!.model).toBe('claude-sonnet-4-5')
+    // 200000 − min(64000, 20000) − 13000 = 167000.
+    expect(usage!.autoCompactThreshold).toBe(167_000)
   })
 
   it('subscribeContextUsage() hands a fresh subscriber the last cached snapshot', async () => {

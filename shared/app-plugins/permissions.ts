@@ -27,6 +27,7 @@ export type AppPluginPermission =
   | 'sessions.read'
   | 'sessions.send'
   | 'sessions.interrupt'
+  | 'sessions.compact'
   | 'messages.selectedText'
   | 'git.read'
   | 'git.write'
@@ -48,6 +49,7 @@ export const ALL_PERMISSIONS: readonly AppPluginPermission[] = [
   'sessions.read',
   'sessions.send',
   'sessions.interrupt',
+  'sessions.compact',
   'messages.selectedText',
   'git.read',
   'git.write',

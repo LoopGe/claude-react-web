@@ -1,0 +1,53 @@
+{
+  "$schema": "https://claude-react-web.dev/schemas/app-plugin-v1.json",
+  "manifestVersion": 1,
+  "id": "idle-compact.claude-react-web",
+  "name": "Idle auto-compact",
+  "description": "Automatically compacts a conversation when a session has been idle for a while and its context window is getting full. Summarises the conversation and continues in a fresh session seeded with the hand-off summary (CLI /compact semantics).",
+  "version": "1.0.0",
+  "publisher": "claude-react-web",
+  "license": "MIT",
+  "engines": { "claudeReactWeb": "^0.6.0", "pluginApi": "^1.0.0", "node": ">=20" },
+  "runtime": { "service": "dist/service.mjs" },
+  "activationEvents": ["onStartup"],
+  "permissions": ["sessions.read", "sessions.compact"],
+  "contributes": {
+    "commands": [
+      { "id": "idle-compact.claude-react-web.compactNow", "title": "Run idle auto-compact check", "category": "global", "icon": "sparkles" }
+    ],
+    "contextMenus": [],
+    "actions": [],
+    "configuration": {
+      "properties": [
+        {
+          "key": "idle-compact.claude-react-web.enabled",
+          "type": "boolean",
+          "title": "Enabled",
+          "description": "Master switch for idle auto-compact.",
+          "default": true
+        },
+        {
+          "key": "idle-compact.claude-react-web.idleMinutes",
+          "type": "number",
+          "title": "Idle minutes",
+          "description": "Compact a session only after it has been idle for at least this many minutes.",
+          "default": 10
+        },
+        {
+          "key": "idle-compact.claude-react-web.thresholdPercent",
+          "type": "number",
+          "title": "Context threshold (%)",
+          "description": "Compact when the context window is at least this % full (of the auto-compact threshold when known, otherwise of maxTokens).",
+          "default": 90
+        },
+        {
+          "key": "idle-compact.claude-react-web.minHistoryMessages",
+          "type": "number",
+          "title": "Min history messages",
+          "description": "Skip sessions with fewer than this many history messages — avoids compacting thin conversations.",
+          "default": 20
+        }
+      ]
+    }
+  }
+}

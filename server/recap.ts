@@ -110,7 +110,7 @@ export function detectLanguage(userText: string): string | null {
 
 // ── History extraction ─────────────────────────────────────────────
 
-interface ExtractedLine {
+export interface ExtractedLine {
   role: 'User' | 'Assistant'
   text: string
 }
@@ -135,7 +135,7 @@ function truncate(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max) + '…'
 }
 
-function extractHistory(messages: SDKMessage[]): {
+export function extractHistory(messages: SDKMessage[]): {
   lines: ExtractedLine[]
   stats: SessionRecapStats
   language: string | null
@@ -194,12 +194,18 @@ function extractHistory(messages: SDKMessage[]): {
   return { lines, stats, language }
 }
 
-function buildTranscript(lines: ExtractedLine[], language: string | null): string {
+export function buildTranscript(
+  lines: ExtractedLine[],
+  language: string | null,
+  opts?: { tailHint?: string },
+): string {
   const CHAR_BUDGET = 12_000
   const formatted = lines.map((l, i) => `[${i + 1}] ${l.role}: ${l.text}`)
-  const tailHint = language
-    ? `\n\n---\nWrite the recap summary in ${language}.`
-    : `\n\n---\nWrite the recap summary in the same language the user uses in their messages above.`
+  const tailHint =
+    opts?.tailHint ??
+    (language
+      ? `\n\n---\nWrite the recap summary in ${language}.`
+      : `\n\n---\nWrite the recap summary in the same language the user uses in their messages above.`)
   const effectiveBudget = CHAR_BUDGET - tailHint.length
   const total = formatted.reduce((n, s) => n + s.length + 1, 0)
   if (total <= effectiveBudget) return formatted.join('\n') + tailHint

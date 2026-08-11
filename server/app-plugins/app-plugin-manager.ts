@@ -155,6 +155,31 @@ export class AppPluginManager implements AppPluginBroadcaster {
     if (dirty) await this.store.flush()
     this.refreshSnapshot()
     log.info(`initialized with ${records.length} app plugin(s)${this.safeMode ? ' (safe mode)' : ''}`)
+    await this.activateStartupPlugins()
+  }
+
+  /** Activate every enabled plugin that declares `onStartup` in its
+   *  activationEvents, so background watchers start without a command being
+   *  invoked. Called once at boot (end of initialize()) and from enable() for
+   *  newly-enabled onStartup plugins. Gated on `runtimeState === 'inactive'`:
+   *  crashed/quarantined, permission-required, incompatible, or corrupted
+   *  records are skipped (quarantine survives a restart, so a crashed plugin
+   *  stays down until the user intervenes). Failures are logged, never fatal
+   *  — one bad plugin must not block boot or enable. */
+  private async activateStartupPlugins(): Promise<void> {
+    if (this.safeMode) return
+    for (const record of this.store.list()) {
+      if (!record.enabled) continue
+      if (record.runtimeState !== 'inactive') continue
+      const manifest = record.manifest as PluginManifest | undefined
+      if (!manifest?.activationEvents?.includes('onStartup')) continue
+      try {
+        await this.pm.ensureActive(record)
+        log.info(`[${record.id}] activated onStartup`)
+      } catch (err) {
+        log.warn(`[${record.id}] onStartup activation failed: ${(err as Error).message}`)
+      }
+    }
   }
 
   /** Re-validate a record's manifest from disk. Returns the same record
@@ -404,6 +429,17 @@ export class AppPluginManager implements AppPluginBroadcaster {
     this.refreshSnapshot()
     this.broadcastChanged(next)
     log.info(`enabled ${id}`)
+    // onStartup plugins activate immediately on enable (no command needed) so
+    // background watchers start without user interaction. Fire-and-forget:
+    // activation is async and must not block the enable HTTP response; failures
+    // are logged, and ensureActive's own teardown-race handling covers disable
+    // landing while activation is in flight.
+    const manifest = next.manifest as PluginManifest | undefined
+    if (manifest?.activationEvents?.includes('onStartup')) {
+      void this.pm.ensureActive(next).catch((err) =>
+        log.warn(`[${id}] onStartup activation after enable failed: ${(err as Error).message}`),
+      )
+    }
   }
 
   async disable(id: string): Promise<void> {

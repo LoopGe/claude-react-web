@@ -116,6 +116,12 @@ export interface ResumableSession {
  *  through `session-types.ts` like everything else. */
 export type { SessionPhase, SessionRecap, SessionRecapStats } from '../shared/session-info.js'
 
+/** Coarse per-session activity snapshot returned by `SessionManager.listActivity()`
+ *  and surfaced to plugins via the `sessions.list` Host API. Single source of
+ *  truth lives in the shared wire protocol so server and plugin contract can't
+ *  drift. */
+export type { SessionActivity } from '../shared/app-plugins/rpc-protocol.js'
+
 export interface Session {
   id: string
   provider: string

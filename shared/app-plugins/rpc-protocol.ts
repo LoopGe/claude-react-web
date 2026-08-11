@@ -141,6 +141,51 @@ export interface SessionReadParams { sessionId: string }
 export interface SessionSendParams { sessionId: string; text: string }
 export interface SessionInterruptParams { sessionId: string }
 
+/** Coarse per-session activity snapshot for background watchers — never the
+ *  transcript. One entry per live session, carrying lifecycle + usage signals
+ *  a polling plugin needs (pick an idle session to compact). */
+export interface SessionActivity {
+  sessionId: string
+  provider: string
+  cwd?: string
+  model?: string
+  running: boolean
+  terminated: boolean
+  slept?: boolean
+  /** Pending user turns (messages sent but no matching `result` yet). */
+  pendingTurns: number
+  /** Number of unanswered tool-permission prompts (0 = none). */
+  pendingPermissions: number
+  /** Epoch ms of last activity (any user turn / SDK result / interrupt). */
+  lastActivityAt: number
+  /** Epoch ms when the current turn started, present only while working. */
+  workingSince?: number
+  /** Number of messages in the in-memory history ring. */
+  historyLength: number
+}
+export type SessionListResult = SessionActivity[]
+
+export interface SessionContextUsageParams { sessionId: string }
+/** Cached context-usage snapshot for the session (`session.lastContextUsage`),
+ *  or null when the session is unknown or has no snapshot yet. Shape mirrors
+ *  `LiteContextUsage` in server/session-pump.ts. */
+export type SessionContextUsageResult = {
+  totalTokens: number
+  maxTokens: number
+  rawMaxTokens: number
+  percentage: number
+  model: string
+  autoCompactThreshold?: number
+} | null
+
+export interface SessionCompactParams { sessionId: string }
+/** The compact succeeded: the conversation was summarised and swapped to a
+ *  fresh session `sessionId` carrying the summary forward. */
+export type SessionCompactResult = { ok: true; sessionId: string }
+
+/** The plugin's own validated configuration (defaults applied). */
+export type ConfigGetResult = Record<string, unknown>
+
 export interface GitReadParams { sessionId: string; op: 'status' | 'diff' | 'log' }
 export type GitReadResult = unknown
 
@@ -156,6 +201,10 @@ export const HOST_METHODS = [
   'sessions.read',
   'sessions.send',
   'sessions.interrupt',
+  'sessions.list',
+  'sessions.contextUsage',
+  'sessions.compact',
+  'config.get',
   'git.read',
   'workspace.read',
   'workspace.write',

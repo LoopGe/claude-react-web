@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { AppPluginStore } from './app-plugin-store.js'
@@ -52,7 +52,7 @@ rl.on('line', (line) => {
 globalThis.__callHost = callHost
 `
 
-function buildPlugin(root: string, id: string, body: string): string {
+function buildPlugin(root: string, id: string, body: string, overrides?: Record<string, unknown>): string {
   const dir = join(root, id.replace(/\./g, '_'))
   mkdirSync(join(dir, 'dist'), { recursive: true })
   const manifest = {
@@ -64,10 +64,31 @@ function buildPlugin(root: string, id: string, body: string): string {
     runtime: { service: 'dist/service.mjs' },
     permissions: ['storage'],
     contributes: { commands: [{ id: `${id}.run`, title: 'Run' }], contextMenus: [], actions: [], configuration: { properties: [] } },
+    ...overrides,
   }
   writeFileSync(join(dir, 'crw-plugin.json'), JSON.stringify(manifest))
   writeFileSync(join(dir, 'dist', 'service.mjs'), `${CHILD_RUNTIME}\n${body}\n`)
   return dir
+}
+
+/** Body that writes `marker` on activate — proves the subprocess ran without a
+ *  command being invoked. */
+function startupMarkerBody(marker: string): string {
+  return `
+import { writeFileSync } from 'node:fs'
+handlers.activate = async () => {
+  writeFileSync(${JSON.stringify(marker)}, 'activated')
+  return { ok: true }
+}
+`
+}
+
+async function waitForState(manager: AppPluginManager, id: string, state: string, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (manager.get(id)!.runtimeState !== state && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 25))
+  }
+  expect(manager.get(id)!.runtimeState).toBe(state)
 }
 
 describe('AppPluginManager — runtime (B2)', () => {
@@ -203,5 +224,69 @@ handlers.executeCommand = async ({ invocationId }) => {
     if (result.type === 'notification') {
       expect((result.content as { text: string }).text).toMatch(/missing param/)
     }
+  })
+
+  it('an onStartup plugin activates on enable without a command', async () => {
+    const marker = join(stateDir, 'startup-enable-marker.txt')
+    const dir = buildPlugin(stateDir, 'com.example.boot', startupMarkerBody(marker), {
+      activationEvents: ['onStartup'],
+    })
+    await manager.install({ type: 'local', path: dir })
+    await manager.enable('com.example.boot')
+
+    // enable() fire-and-forgets onStartup activation — no executeCommand call.
+    await waitForState(manager, 'com.example.boot', 'active')
+    expect(existsSync(marker)).toBe(true)
+    expect(readFileSync(marker, 'utf8')).toBe('activated')
+  })
+
+  it('re-initialise (boot) re-activates an enabled onStartup plugin', async () => {
+    const marker = join(stateDir, 'startup-boot-marker.txt')
+    const dir = buildPlugin(stateDir, 'com.example.boot', startupMarkerBody(marker), {
+      activationEvents: ['onStartup'],
+    })
+    await manager.install({ type: 'local', path: dir })
+    await manager.enable('com.example.boot')
+    await waitForState(manager, 'com.example.boot', 'active')
+    expect(existsSync(marker)).toBe(true)
+
+    // A restart clamps active→inactive, then activateStartupPlugins() at the
+    // end of initialize() brings it back up — the marker gets rewritten.
+    rmSync(marker, { force: true })
+    await manager.shutdown()
+    manager = new AppPluginManager({ store, stateDir, hostVersion: '0.6.0', hostNodeMajor: 20, sm: smStub })
+    await manager.initialize()
+    await waitForState(manager, 'com.example.boot', 'active')
+    expect(existsSync(marker)).toBe(true)
+    expect(readFileSync(marker, 'utf8')).toBe('activated')
+  })
+
+  it('safe mode does not auto-activate onStartup plugins at boot', async () => {
+    const marker = join(stateDir, 'startup-safe-marker.txt')
+    const dir = buildPlugin(stateDir, 'com.example.boot', startupMarkerBody(marker), {
+      activationEvents: ['onStartup'],
+    })
+    await manager.install({ type: 'local', path: dir })
+    // enable() itself fire-and-forgets activation even in safe mode, so write
+    // the store record directly to model a previously-enabled plugin at boot.
+    const rec = store.get('com.example.boot')!
+    store.upsert({ ...rec, enabled: true, runtimeState: 'inactive' })
+    await store.flush()
+
+    const safe = new AppPluginManager({
+      store,
+      stateDir,
+      hostVersion: '0.6.0',
+      hostNodeMajor: 20,
+      sm: smStub,
+      safeMode: true,
+    })
+    await safe.initialize()
+
+    // activateStartupPlugins() returns immediately in safe mode — the plugin
+    // stays inactive and the subprocess never runs.
+    expect(safe.get('com.example.boot')!.runtimeState).toBe('inactive')
+    expect(existsSync(marker)).toBe(false)
+    await safe.shutdown()
   })
 })

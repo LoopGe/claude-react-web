@@ -21,6 +21,7 @@ import { SessionAdapter } from './session-adapter.js'
 import { GitAdapter } from './git-adapter.js'
 import { WorkspaceAdapter } from './workspace-adapter.js'
 import type { NormalisedPermission } from '../../../shared/app-plugins/permissions.js'
+import type { PluginConfigurationProperty } from '../../../shared/app-plugins/contributions.js'
 import type { SessionManager } from '../../session-manager.js'
 
 const log = createLogger('app-plugins:host')
@@ -35,6 +36,10 @@ export interface HostContext {
    *  plugin-originated log lines. The `log` Host API method routes through
    *  this so it shares the same 1000/min cap as captured stderr. */
   onStructuredLog?: (line: string) => void
+  /** Declared `contributes.configuration.properties` for this plugin. Needed
+   *  by `config.get` to apply defaults on read. Threaded from the manifest so
+   *  the handler works without the plugin having to re-declare them. */
+  configurationProps?: PluginConfigurationProperty[]
 }
 
 /** Build the host-side services + register handlers on `peer`. Returns the
@@ -98,6 +103,23 @@ export function registerHostApi(peer: RpcPeer, ctx: HostContext): {
   peer.registerHandler('sessions.interrupt', async (p) => {
     const { sessionId } = requireParams(p, ['sessionId']) as { sessionId: string }
     return sessions.interrupt(sessionId)
+  })
+  peer.registerHandler('sessions.list', async () => {
+    return sessions.list()
+  })
+  peer.registerHandler('sessions.contextUsage', async (p) => {
+    const { sessionId } = requireParams(p, ['sessionId']) as { sessionId: string }
+    return sessions.contextUsage(sessionId)
+  })
+  peer.registerHandler('sessions.compact', async (p) => {
+    const { sessionId } = requireParams(p, ['sessionId']) as { sessionId: string }
+    return sessions.compact(sessionId)
+  })
+  peer.registerHandler('config.get', async () => {
+    // No permission check: a plugin reads only its OWN declared config.
+    // Defaults are applied against the manifest properties so a config that
+    // was never written resolves to the declared defaults.
+    return config.get(ctx.configurationProps ?? [])
   })
   peer.registerHandler('git.read', async (p) => {
     const params = requireParams(p, ['sessionId', 'op']) as { sessionId: string; op: 'status' | 'diff' | 'log'; path?: string; limit?: number }

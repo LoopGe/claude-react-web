@@ -29,7 +29,8 @@ import { TurnAnchorStore, type TurnAnchorEntry } from './turn-anchor-store.js'
 import { ResultFrameStore, type ResultFrameEntry } from './result-frame-store.js'
 import { McpConfigStore } from './mcp-config.js'
 import { RecapManager } from './recap.js'
-import type { SessionPhase, SessionRecap } from './session-types.js'
+import { summarizeForCompact } from './compact-summary.js'
+import type { SessionActivity, SessionPhase, SessionRecap } from './session-types.js'
 import { tryCaptureGitHead, invalidateStatusCache } from './git.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
 import { execCommand, escapeXml } from './exec.js'
@@ -2162,7 +2163,7 @@ export class SessionManager {
    *
    *  Idempotent: a second clear() while one is already in flight returns the
    *  current SessionInfo without re-driving the lifecycle. */
-  async clear(id: string): Promise<SessionInfo> {
+  async clear(id: string, opts?: { seedText?: string }): Promise<SessionInfo> {
     const s = this.requireRunnable(id)
     if (s.clearing) return this.info(s)
 
@@ -2284,6 +2285,23 @@ export class SessionManager {
         }
       }
 
+      // Optional compaction seed: when this clear was requested by compact(),
+      // inject the hand-off summary into Y so the continuation can pick up
+      // where X left off. Seeded as a `shouldQuery:false` user message (appended
+      // to Y's transcript without triggering a turn; merged into the next real
+      // user message) plus a synthetic `compact_boundary` divider so the client
+      // renders the familiar compact divider + summary. Must happen while Y is
+      // live and X is still attached — the swap that follows is then identical
+      // to a plain /clear. Best-effort: a failure is logged and the clear still
+      // completes (Y is usable, just without the summary seed).
+      if (opts?.seedText) {
+        try {
+          this.seedCompactSummary(newYId, opts.seedText)
+        } catch (err) {
+          log.warn(`[session ${newYId}] clear: seeding compact summary failed:`, err)
+        }
+      }
+
       // Detach X now that Y is live. unload() destroys the live Query (the
       // subprocess exits asynchronously, releasing the transcript file
       // handle), marks the session not-running, and removes it from the live
@@ -2307,6 +2325,102 @@ export class SessionManager {
     } finally {
       s.clearing = false
     }
+  }
+
+  /** `/compact` — summarise the conversation, then continue in a fresh session
+   *  seeded with the summary (CLI `/compact` semantics).
+   *
+   *  The SDK has no programmatic compact (auto-compact is CLI-internal), so we
+   *  implement it as "summarise + clear-with-seed": summarize X's history via
+   *  the LLM, spawn a fresh session Y carrying the same settings, seed Y with
+   *  the hand-off summary (as a `shouldQuery:false` user message that merges
+   *  into the next real turn), and detach X exactly like /clear. The client
+   *  renders the synthetic compact divider + summary; the next user message
+   *  continues the conversation with the summary in context.
+   *
+   *  Phase-guarded like recap auto-generation: unknown → 404, terminated →
+   *  410, dormant → 412, working (in-flight turn / queued input / unanswered
+   *  permission prompt) → 409. */
+  async compact(id: string): Promise<SessionInfo> {
+    const s = this.require(id)
+    switch (this.phaseOf(s)) {
+      case 'terminated':
+        throw new HttpError(410, `session ${id} is terminated`)
+      case 'dormant':
+        throw new HttpError(412, `session ${id} is dormant; resume it before compacting`)
+      case 'working':
+        throw new HttpError(409, `session ${id} is working; retry when idle`)
+    }
+    const summary = await summarizeForCompact(s.history.slice(), s.model)
+    if (!summary) {
+      log.info(`[session ${id}] compact: no compressible content, falling back to plain clear`)
+      return this.clear(id)
+    }
+    log.info(`[session ${id}] compact: summarised ${s.history.length} messages, seeding fresh session`)
+    return this.clear(id, { seedText: summary })
+  }
+
+  /** Seed a freshly-spawned session Y with a compact hand-off summary.
+   *
+   *  Two artifacts, both broadcast to Y's subscribers and appended to Y's
+   *  history ring, in this exact order (the client computes `isCompactSummary`
+   *  from the PREVIOUS transcript item, so the boundary MUST precede the
+   *  summary):
+   *
+   *   1. A synthetic `system/compact_boundary` divider. Client-only — the SDK
+   *      never sees it (the CLI emits its own boundary when IT compacts; here
+   *      we fabricate one so the UI shows the familiar divider).
+   *   2. A user-role summary carrying the LLM hand-off text, pushed to the SDK
+   *      via `sendControlMessage` with `shouldQuery:false` — the SDK appends
+   *      it to the transcript WITHOUT triggering an assistant turn and merges
+   *      it into the next user message that does query. `isSynthetic: true`
+   *      makes the client render it as a neutral card, not a "you" bubble.
+   *
+   *  The pump's drop-filter discards the seed's eventual text-only echo
+   *  (`parent_tool_use_id === null`), so the ring holds exactly one copy. */
+  private seedCompactSummary(sessionId: string, summary: string): void {
+    const s = this.sessions.get(sessionId)
+    if (!s || !s.running) return
+
+    // 1) Client-facing divider — never sent to the SDK. pre_tokens reflects
+    //    the session's last-known context usage (or 0 before any snapshot).
+    const boundary: import('@anthropic-ai/claude-agent-sdk').SDKCompactBoundaryMessage = {
+      type: 'system',
+      subtype: 'compact_boundary',
+      uuid: randomUUID(),
+      session_id: s.id,
+      compact_metadata: {
+        trigger: 'auto',
+        pre_tokens: s.lastContextUsage?.totalTokens ?? 0,
+      },
+    }
+    stampReceivedAt(boundary)
+    pushBounded(s.history, boundary, this.historyCap)
+    for (const sub of s.subscribers.values()) {
+      try { sub.push(boundary) } catch { /* dropped */ }
+    }
+
+    // 2) User-role summary — seed the SDK (no turn) AND broadcast locally.
+    const control = s.handle.sendControlMessage
+    if (typeof control !== 'function') {
+      throw new HttpError(501, `provider ${s.provider} does not support compact seeding`)
+    }
+    const seed: SDKUserMessage = {
+      type: 'user',
+      message: { role: 'user', content: summary },
+      parent_tool_use_id: null,
+      isSynthetic: true,
+      shouldQuery: false,
+      uuid: randomUUID(),
+      session_id: s.id,
+    }
+    control.call(s.handle, seed)
+    stampReceivedAt(seed)
+    pushBounded(s.history, seed, this.historyCap)
+    for (const sub of s.subscribers.values()) {
+      try { sub.push(seed) } catch { /* dropped */ }
+    }
+    s.lastActivityAt = Date.now() // restart the idle clock on Y
   }
 
   /** Put a live, idle session into dormant state to release its resources
@@ -3333,6 +3447,34 @@ export class SessionManager {
     return out
   }
 
+  /** Coarse per-session activity snapshot for host-side watchers (App Plugin
+   *  background code that must NOT see the transcript). One entry per live
+   *  session carrying the lifecycle + usage signals a polling plugin needs to
+   *  pick an idle candidate — `pendingTurns`/`pendingPermissions` to skip
+   *  working sessions, `historyLength` to skip thin ones, `lastActivityAt`
+   *  for the idle clock. */
+  listActivity(): SessionActivity[] {
+    const out: SessionActivity[] = []
+    for (const s of this.sessions.values()) {
+      const isWorking = s.running && s.pendingTurns > 0
+      out.push({
+        sessionId: s.id,
+        provider: s.provider,
+        cwd: s.cwd,
+        model: s.model,
+        running: s.running,
+        terminated: s.terminated,
+        slept: s.slept,
+        pendingTurns: s.pendingTurns,
+        pendingPermissions: s.pending.size,
+        lastActivityAt: s.lastActivityAt,
+        workingSince: isWorking ? s.workingSince : undefined,
+        historyLength: s.history.length,
+      })
+    }
+    return out
+  }
+
   /** List sessions resumable from disk via the SDK's `listSessions()`.
    *
    *  Unlike `list()` (which only knows about sessions THIS app created /
@@ -3412,6 +3554,14 @@ export class SessionManager {
   getHistory(id: string): SDKMessage[] | null {
     const s = this.sessions.get(id)
     return s ? s.history.slice() : null
+  }
+
+  /** Cached context-usage snapshot for a session, or null when the session is
+   *  unknown or has no snapshot yet. Cheap: reads the value the pump cached
+   *  from the last context-usage frame — never touches the SDK (contrast the
+   *  live `contextUsage(id)` above, which round-trips to the subprocess). */
+  getCachedContextUsage(id: string): import('./session-pump.js').LiteContextUsage | null {
+    return this.sessions.get(id)?.lastContextUsage ?? null
   }
 
   /** Offset-paginated read of a session's FULL transcript from disk, used by

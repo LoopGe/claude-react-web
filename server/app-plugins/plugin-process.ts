@@ -13,6 +13,7 @@ import { createLogger } from '../log.js'
 import { RpcPeer, RpcError, newInvocationId } from './rpc-peer.js'
 import { registerHostApi } from './host/host-api.js'
 import { resolvePluginContributions } from '../../shared/app-plugins/manifest-validator.js'
+import type { PluginConfigurationProperty } from '../../shared/app-plugins/contributions.js'
 import type { AppPluginRecord, PluginRuntimeState } from '../../shared/app-plugins/runtime-state.js'
 import type { PluginManifest } from '../../shared/app-plugins/manifest.js'
 import type { PluginCommandContext } from '../../shared/app-plugins/command-context.js'
@@ -42,12 +43,17 @@ export class PluginProcess {
   private peer: RpcPeer
   private host: ReturnType<typeof registerHostApi>
   private closed = false
+  /** Declared configuration properties (manifest `contributes.configuration`),
+   *  resolved once at construction so `config.get` can apply defaults. */
+  private readonly configurationProps: PluginConfigurationProperty[]
 
   constructor(private readonly opts: PluginProcessOptions) {
     this.pluginId = opts.record.id
     const manifest = opts.record.manifest as PluginManifest
     const servicePath = resolvePath(opts.record.source.path, manifest.runtime.service)
     const env = cleanEnv()
+    this.configurationProps =
+      resolvePluginContributions(manifest.id, manifest.contributes ?? {}).configuration.properties
 
     this.peer = new RpcPeer({
       command: process.execPath,
@@ -67,6 +73,7 @@ export class PluginProcess {
       grants: opts.record.grantedPermissions,
       sm: opts.sm,
       onStructuredLog: (line) => opts.onLog(line),
+      configurationProps: this.configurationProps,
     })
     this.peer.start()
   }
@@ -78,9 +85,7 @@ export class PluginProcess {
   }
 
   async activate(): Promise<void> {
-    const manifest = this.opts.record.manifest as PluginManifest
-    const props = resolvePluginContributions(manifest.id, manifest.contributes ?? {}).configuration.properties
-    const configuration = await this.host.config.get(props)
+    const configuration = await this.host.config.get(this.configurationProps)
     const result = (await this.peer.call(
       'activate',
       {

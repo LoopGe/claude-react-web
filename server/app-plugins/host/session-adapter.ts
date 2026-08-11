@@ -4,6 +4,7 @@
 // checks its permission first.
 
 import type { SessionManager } from '../../session-manager.js'
+import type { SessionActivity } from '../../session-types.js'
 import type { PermissionChecker } from '../permission-manager.js'
 
 export class SessionAdapter {
@@ -35,5 +36,36 @@ export class SessionAdapter {
   async interrupt(sessionId: string): Promise<void> {
     this.perm.assert('sessions.interrupt')
     this.sm.interrupt(sessionId)
+  }
+
+  /** Enumerate live sessions as coarse activity snapshots (never the
+   *  transcript). The background-watcher surface for picking an idle
+   *  candidate. */
+  async list(): Promise<SessionActivity[]> {
+    this.perm.assert('sessions.read')
+    return this.sm.listActivity()
+  }
+
+  /** Cached context-usage snapshot for a session, or null when unknown /
+   *  no snapshot yet. Cheap — reads the pump's cache, no SDK round-trip. */
+  async contextUsage(sessionId: string): Promise<{
+    totalTokens: number
+    maxTokens: number
+    rawMaxTokens: number
+    percentage: number
+    model: string
+    autoCompactThreshold?: number
+  } | null> {
+    this.perm.assert('sessions.read')
+    return this.sm.getCachedContextUsage(sessionId)
+  }
+
+  /** Compact an idle session: summarise the conversation and swap to a fresh
+   *  session seeded with the hand-off summary. Throws for unknown / working /
+   *  terminated / dormant sessions (see SessionManager.compact guards). */
+  async compact(sessionId: string): Promise<{ ok: true; sessionId: string }> {
+    this.perm.assert('sessions.compact')
+    const fresh = await this.sm.compact(sessionId)
+    return { ok: true, sessionId: fresh.id }
   }
 }
