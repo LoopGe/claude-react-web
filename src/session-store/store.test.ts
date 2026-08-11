@@ -588,3 +588,57 @@ describe('SessionStore storage quota', () => {
     setItemSpy.mockRestore()
   })
 })
+
+describe('SessionStore dismissed-subagent persistence', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  it('a dismissed subagent stays hidden after a refresh-style rehydrate', () => {
+    // Store A: build an async subagent transcript and dismiss it, then force
+    // the cache write (persistNow bypasses the 2s debounce).
+    const storeA = new SessionStore('sess-dismiss')
+    const toolUse: SdkMessage = {
+      type: 'assistant', uuid: 'a-1', receivedAt: 0,
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu_x', name: 'Agent', input: { description: 'w', run_in_background: true } }] },
+    } as unknown as SdkMessage
+    const ack: SdkMessage = {
+      type: 'user', uuid: 'u-1', parent_tool_use_id: null, receivedAt: 1_000,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_x', content: 'Async agent launched successfully' }] },
+    } as unknown as SdkMessage
+    storeA.dispatch({ type: 'MESSAGE', message: toolUse })
+    storeA.dispatch({ type: 'MESSAGE', message: ack })
+    storeA.dispatch({ type: 'DISMISS_SUBAGENT', toolUseId: 'tu_x' })
+    storeA.persistNow()
+
+    // A refresh = a brand-new store hydrating from the same localStorage key.
+    const storeB = new SessionStore('sess-dismiss')
+    const snap = storeB.getSnapshot()
+    expect(snap.activeSubagents.some((a) => a.toolUseId === 'tu_x')).toBe(false)
+  })
+
+  it('loads a v2 cache without dismissedSubagents as an empty set', () => {
+    const key = STORAGE_PREFIX + 'sess-old'
+    const msg: SdkMessage = {
+      type: 'assistant', uuid: 'a-1', receivedAt: 0,
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu_1', name: 'Read', input: {} }] },
+    } as unknown as SdkMessage
+    // Old v2 shape: no dismissedSubagents field.
+    localStorage.setItem(key, JSON.stringify({ v: 2, savedAt: Date.now(), messages: [msg], lastMessageUuid: null }))
+    const store = new SessionStore('sess-old')
+    expect(store.getState().intent.dismissedSubagents.size).toBe(0)
+  })
+
+  it('/clear wipes dismissedSubagents', () => {
+    const store = new SessionStore('sess-clear')
+    const toolUse: SdkMessage = {
+      type: 'assistant', uuid: 'a-1', receivedAt: 0,
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu_c', name: 'Agent', input: { description: 'w' } }] },
+    } as unknown as SdkMessage
+    store.dispatch({ type: 'MESSAGE', message: toolUse })
+    store.dispatch({ type: 'DISMISS_SUBAGENT', toolUseId: 'tu_c' })
+    expect(store.getState().intent.dismissedSubagents.has('tu_c')).toBe(true)
+    store.reset() // /clear
+    expect(store.getState().intent.dismissedSubagents.size).toBe(0)
+  })
+})

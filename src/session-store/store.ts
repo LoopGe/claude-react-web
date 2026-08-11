@@ -1,5 +1,5 @@
 import { createInitialSessionState, type ServerMirror, type SessionAction, type SessionSnapshot, type SessionState, type TranscriptItem } from './types'
-import { rebuildIndexesFromMessages, reduceSessionState, MEMORY_ITEM_CAP } from './reducer'
+import { rebuildIndexesFromMessages, reduceSessionState, reapplyDismissed, MEMORY_ITEM_CAP } from './reducer'
 import { toTranscriptItem } from './normalize'
 import type { SdkMessage } from '../types'
 import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME } from '../constants/toolNames'
@@ -149,12 +149,15 @@ function persistToStorage(sessionId: string, state: SessionState): void {
   // Only the server-authored mirror is persisted, as a per-field-capped
   // render projection (see project.ts). plainText / items / ClientIntent are
   // NOT persisted — re-derived on hydrate. Optimistic placeholders die with
-  // the tab by design.
+  // the tab by design. The ONE exception is `dismissedSubagents`: it is the
+  // only client-owned, non-derivable flag, so it rides along in the payload
+  // to keep dismissed subagents hidden across refresh.
   const mirror = state.mirror
   // Project each message (no-op ref for small messages). Live state is never
   // touched — projection is persist-only.
   const projected: SdkMessage[] = mirror.messages.map(projectMessage)
   const lastMessageUuid = mirror.lastMessageUuid
+  const dismissedSubagents = Array.from(state.intent.dismissedSubagents)
 
   let toWrite: string
 
@@ -165,6 +168,7 @@ function persistToStorage(sessionId: string, state: SessionState): void {
     savedAt: Date.now(),
     messages: projected,
     lastMessageUuid,
+    dismissedSubagents,
   })
 
   if (fullPayload.length <= STORAGE_MAX_BYTES) {
@@ -176,7 +180,8 @@ function persistToStorage(sessionId: string, state: SessionState): void {
     // on pathological inputs (the on-disk log + loadOlder cover the dropped
     // older messages). +1 per message accounts for the array comma.
     const sizes = projected.map((m) => JSON.stringify(m).length + 1)
-    const wrapperOverhead = 96 + (lastMessageUuid?.length ?? 0)
+    // Include the dismissed-array in the wrapper overhead estimate.
+    const wrapperOverhead = 96 + (lastMessageUuid?.length ?? 0) + JSON.stringify(dismissedSubagents).length
     let total = wrapperOverhead
     let kept = 0
     for (let i = sizes.length - 1; i >= 0; i--) {
@@ -190,6 +195,7 @@ function persistToStorage(sessionId: string, state: SessionState): void {
       savedAt: Date.now(),
       messages: keptMessages,
       lastMessageUuid,
+      dismissedSubagents,
     })
   }
 
@@ -216,7 +222,7 @@ function persistToStorage(sessionId: string, state: SessionState): void {
   }
 }
 
-function loadFromStorage(sessionId: string): { messages: TranscriptItem[]; rawMessages: unknown[]; lastMessageUuid: string | null } | null {
+function loadFromStorage(sessionId: string): { messages: TranscriptItem[]; rawMessages: unknown[]; lastMessageUuid: string | null; dismissedSubagents: string[] } | null {
   try {
     const raw = localStorage.getItem(STORAGE_PREFIX + sessionId)
     if (!raw) return null
@@ -250,6 +256,9 @@ function loadFromStorage(sessionId: string): { messages: TranscriptItem[]; rawMe
       messages,
       rawMessages,
       lastMessageUuid: typeof data.lastMessageUuid === 'string' ? data.lastMessageUuid : null,
+      dismissedSubagents: Array.isArray(data.dismissedSubagents)
+        ? (data.dismissedSubagents as unknown[]).filter((x): x is string => typeof x === 'string')
+        : [],
     }
   } catch {
     return null
@@ -361,9 +370,14 @@ export class SessionStore {
       const seeded: SessionState = {
         sessionId,
         mirror: seededMirror,
-        intent: fresh.intent,
+        intent: {
+          ...fresh.intent,
+          dismissedSubagents: new Set(cached.dismissedSubagents),
+        },
       }
-      this.state = rebuildIndexesFromMessages(seeded, seededMirror.messages)
+      // Rebuild indexes from the cached messages, THEN re-apply persisted
+      // dismissals so dismissed subagents stay hidden across refresh.
+      this.state = reapplyDismissed(rebuildIndexesFromMessages(seeded, seededMirror.messages))
       this.snapshot = this.buildSnapshot(this.state)
     } else {
       this.state = createInitialSessionState(sessionId)
