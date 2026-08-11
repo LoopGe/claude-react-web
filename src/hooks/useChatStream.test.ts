@@ -384,6 +384,282 @@ describe('useChatStream', () => {
     })
   })
 
+  it('char-fallback rate uses the sliding window with the 500ms throttle', async () => {
+    const { result } = renderHook(
+      () => useChatStream('s1', noopPerms),
+    )
+
+    const dateSpy = vi.spyOn(Date, 'now')
+
+    act(() => {
+      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
+      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
+
+      // Writing phase starts (liveTurn lazily created at t=0).
+      dateSpy.mockReturnValue(0)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: {
+          type: 'stream_event',
+          event: { type: 'content_block_start', content_block: { type: 'text' } },
+        },
+      })
+
+      // First char delta at t=100 — only 100ms after liveTurn creation, so
+      // it's inside the throttle window: no sample pushed, no rate.
+      dateSpy.mockReturnValue(100)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: {
+          type: 'stream_event',
+          event: { type: 'content_block_delta', delta: { text: 'aaaa' } },
+        },
+      })
+
+      // t=600: past the throttle (600-0 ≥ 500), estimated = round(8/4) = 2
+      // tokens > 0 → first sample (600, 2).
+      dateSpy.mockReturnValue(600)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: {
+          type: 'stream_event',
+          event: { type: 'content_block_delta', delta: { text: 'aaaa' } },
+        },
+      })
+
+      // t=1200: second sample (1200, 3) → window rate (3-2)/0.6 = 1.67 → 2.
+      dateSpy.mockReturnValue(1200)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: {
+          type: 'stream_event',
+          event: { type: 'content_block_delta', delta: { text: 'aaaa' } },
+        },
+      })
+
+      // t=1300: only 100ms after the last push → throttled, no new sample.
+      // If the throttle were broken the rate would jump to 3 — the final
+      // assertion distinguishes the two.
+      dateSpy.mockReturnValue(1300)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: {
+          type: 'stream_event',
+          event: { type: 'content_block_delta', delta: { text: 'aaaa' } },
+        },
+      })
+    })
+
+    await waitFor(() => {
+      expect(result.current.tokenRate).toBe(2)
+    })
+  })
+
+  it('freezes the displayed rate across a long idle (tool-call gap)', async () => {
+    const { result } = renderHook(
+      () => useChatStream('s1', noopPerms),
+    )
+
+    const dateSpy = vi.spyOn(Date, 'now')
+
+    act(() => {
+      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
+      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
+
+      // Two real deltas establish a rate of 117 tok/s.
+      dateSpy.mockReturnValue(1000)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: { type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 50 } } },
+      })
+      dateSpy.mockReturnValue(1600)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: { type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 120 } } },
+      })
+
+      // Long tool gap: 30s later a tool_use block starts, but no text or
+      // message_delta → no samples pushed → rate must stay frozen.
+      dateSpy.mockReturnValue(31000)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: {
+          type: 'stream_event',
+          event: { type: 'content_block_start', content_block: { type: 'tool_use', name: 'Bash' } },
+        },
+      })
+    })
+
+    await waitFor(() => {
+      expect(result.current.tokenRate).toBe(117)
+    })
+  })
+
+  it('recomputes from fresh samples after a long idle (pre-idle samples pruned)', async () => {
+    const { result } = renderHook(
+      () => useChatStream('s1', noopPerms),
+    )
+
+    const dateSpy = vi.spyOn(Date, 'now')
+
+    act(() => {
+      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
+      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
+
+      // Establish 117 tok/s.
+      dateSpy.mockReturnValue(1000)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: { type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 50 } } },
+      })
+      dateSpy.mockReturnValue(1600)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: { type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 120 } } },
+      })
+
+      // 10s idle (> RATE_WINDOW_MS). First post-idle delta: the window prunes
+      // the pre-idle samples; with a single fresh sample the rate keeps the
+      // frozen 117.
+      dateSpy.mockReturnValue(11000)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: { type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 120 } } },
+      })
+      // Second post-idle delta at +0.5s: rate recomputes from the two fresh
+      // samples only: (200-120)/0.5 = 160 tok/s.
+      dateSpy.mockReturnValue(11500)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: { type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 200 } } },
+      })
+    })
+
+    await waitFor(() => {
+      expect(result.current.tokenRate).toBe(160)
+    })
+  })
+
+  it('estimate→real seam: first real delta resets the window and keeps the displayed value', async () => {
+    const { result } = renderHook(
+      () => useChatStream('s1', noopPerms),
+    )
+
+    const dateSpy = vi.spyOn(Date, 'now')
+
+    act(() => {
+      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
+      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
+
+      // Char samples establish an estimated rate of 2 tok/s.
+      dateSpy.mockReturnValue(0)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+      })
+      dateSpy.mockReturnValue(600)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: { type: 'stream_event', event: { type: 'content_block_delta', delta: { text: 'aaaa' } } },
+      })
+      dateSpy.mockReturnValue(1200)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: { type: 'stream_event', event: { type: 'content_block_delta', delta: { text: 'aaaa' } } },
+      })
+
+      // First REAL delta: resets the window, keeps the displayed 2.
+      dateSpy.mockReturnValue(1800)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: { type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 100 } } },
+      })
+    })
+
+    // The seam itself: one real sample exists, displayed value still 2.
+    await waitFor(() => {
+      expect(result.current.tokenRate).toBe(2)
+    })
+
+    // Next real delta: recomputes from real counts only: (160-100)/0.6 = 100.
+    dateSpy.mockReturnValue(2400)
+    act(() => {
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: { type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 160 } } },
+      })
+    })
+
+    await waitFor(() => {
+      expect(result.current.tokenRate).toBe(100)
+    })
+  })
+
+  it('keeps the frozen rate when post-idle deltas report no token growth', async () => {
+    const { result } = renderHook(
+      () => useChatStream('s1', noopPerms),
+    )
+
+    const dateSpy = vi.spyOn(Date, 'now')
+
+    act(() => {
+      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
+      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
+
+      // Establish 117 tok/s.
+      dateSpy.mockReturnValue(1000)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: { type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 50 } } },
+      })
+      dateSpy.mockReturnValue(1600)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: { type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 120 } } },
+      })
+
+      // 10s idle. First post-idle delta reports the same cumulative count
+      // (no new output during the gap): window pruned to a single sample,
+      // rate keeps 117.
+      dateSpy.mockReturnValue(11000)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: { type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 120 } } },
+      })
+      // Second post-idle delta, still no growth (Δtokens = 0): rate keeps 117.
+      dateSpy.mockReturnValue(11500)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: { type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 120 } } },
+      })
+    })
+
+    await waitFor(() => {
+      expect(result.current.tokenRate).toBe(117)
+    })
+  })
+
   // ── reset ─────────────────────────────────────────────────────
 
   it('resets all state on reset()', async () => {
