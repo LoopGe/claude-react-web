@@ -370,6 +370,14 @@ export interface ClientIntent {
    *  ERROR action (driven by WS error frames) and cleared by the client
    *  via clearError(). The clear path makes this client-owned. */
   error: string | null
+  /** toolUseIds the user explicitly dismissed while in-flight
+   *  (running/background/pending). Client-owned and NOT derivable from the
+   *  message stream — it is the only record that those ids were dismissed.
+   *  Survives mirror rebuilds (REPLAY_REPLACE / hydrate re-derive
+   *  activeSubagents from messages and would otherwise resurrect the chips).
+   *  Re-applied to mirror via reapplyDismissed() after any rebuild. Cleared
+   *  by CLEAR_TRANSCRIPT. Persisted in the transcript cache payload. */
+  dismissedSubagents: ReadonlySet<string>
 }
 
 export interface SessionState {
@@ -501,6 +509,7 @@ export function createInitialClientIntent(): ClientIntent {
   return {
     pendingPlaceholders: new Map<string, TranscriptItem>(),
     error: null,
+    dismissedSubagents: new Set<string>(),
   }
 }
 

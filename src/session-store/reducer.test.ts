@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { reduceSessionState, splitReplayAgainstCache } from './reducer'
-import { createInitialSessionState, type SessionState } from './types'
+import { reduceSessionState, splitReplayAgainstCache, rebuildIndexesFromMessages, reapplyDismissed } from './reducer'
+import { createInitialSessionState, type SessionState, type ServerMirror } from './types'
 import { isTrimBoundary } from './normalize'
 import type { PermissionRequest, SdkMessage } from '../types'
 
@@ -883,6 +883,110 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     const before = state
     state = reduceSessionState(state, { type: 'DISMISS_SUBAGENT', toolUseId: 'tu_sync' })
     expect(state).toBe(before)
+  })
+
+  it('DISMISS_SUBAGENT records the id on intent.dismissedSubagents', () => {
+    const toolUse: SdkMessage = {
+      type: 'assistant', uuid: 'a-1', receivedAt: 0,
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu_i', name: 'Agent', input: { description: 'w' } }] },
+    } as unknown as SdkMessage
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
+    state = reduceSessionState(state, { type: 'DISMISS_SUBAGENT', toolUseId: 'tu_i' })
+    expect(state.mirror.activeSubagents.get('tu_i')?.status).toBe('dismissed')
+    expect(state.intent.dismissedSubagents.has('tu_i')).toBe(true)
+  })
+
+  it('a dismissed async subagent stays dismissed after refresh-style rebuild + reapply', () => {
+    const toolUse: SdkMessage = {
+      type: 'assistant', uuid: 'a-1', receivedAt: 0,
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu_dis', name: 'Agent', input: { description: 'do work' } }] },
+    } as unknown as SdkMessage
+    const ack: SdkMessage = {
+      type: 'user', uuid: 'u-1', parent_tool_use_id: null, receivedAt: 1_000,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_dis', content: 'Async agent launched successfully' }] },
+    } as unknown as SdkMessage
+    const result: SdkMessage = { type: 'result', subtype: 'success', uuid: 'r-1', receivedAt: 2_000 } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    for (const m of [toolUse, ack, result]) state = reduceSessionState(state, { type: 'MESSAGE', message: m })
+    expect(state.mirror.activeSubagents.get('tu_dis')?.status).toBe('pending')
+
+    state = reduceSessionState(state, { type: 'DISMISS_SUBAGENT', toolUseId: 'tu_dis' })
+    expect(state.intent.dismissedSubagents.has('tu_dis')).toBe(true)
+
+    // Refresh simulation (mirrors SessionStore constructor): fresh mirror,
+    // seed the cached transcript, rebuild indexes, re-apply persisted dismiss.
+    const fresh = createInitialSessionState('s1')
+    const seededMirror: ServerMirror = {
+      ...fresh.mirror,
+      messages: state.mirror.messages,
+      items: state.mirror.items,
+      lastMessageUuid: state.mirror.lastMessageUuid,
+      replayReady: true,
+    }
+    const seeded: SessionState = {
+      sessionId: 's1',
+      mirror: seededMirror,
+      intent: { ...fresh.intent, dismissedSubagents: state.intent.dismissedSubagents },
+    }
+    const rebuilt = reapplyDismissed(rebuildIndexesFromMessages(seeded, seededMirror.messages))
+    expect(rebuilt.mirror.activeSubagents.get('tu_dis')?.status).toBe('dismissed')
+  })
+
+  it('reapplyDismissed prunes ids for absent records', () => {
+    // Two dismissed in-flight records, then a /clear-style empty mirror: the
+    // ids must be pruned from intent (nothing to dismiss against).
+    const toolUseA: SdkMessage = {
+      type: 'assistant', uuid: 'a-1', receivedAt: 0,
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu_a', name: 'Agent', input: { description: 'a' } }] },
+    } as unknown as SdkMessage
+    const toolUseB: SdkMessage = {
+      type: 'assistant', uuid: 'a-2', receivedAt: 0,
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu_b', name: 'Agent', input: { description: 'b' } }] },
+    } as unknown as SdkMessage
+    let state = createInitialSessionState('s1')
+    for (const m of [toolUseA, toolUseB]) state = reduceSessionState(state, { type: 'MESSAGE', message: m })
+    state = reduceSessionState(state, { type: 'DISMISS_SUBAGENT', toolUseId: 'tu_a' })
+    state = reduceSessionState(state, { type: 'DISMISS_SUBAGENT', toolUseId: 'tu_b' })
+    expect(state.intent.dismissedSubagents.size).toBe(2)
+
+    const cleared = createInitialSessionState('s1')
+    const seeded: SessionState = {
+      sessionId: 's1',
+      mirror: cleared.mirror,
+      intent: { ...cleared.intent, dismissedSubagents: state.intent.dismissedSubagents },
+    }
+    const reapplied = reapplyDismissed(seeded)
+    expect(reapplied.intent.dismissedSubagents.size).toBe(0)
+  })
+
+  it('reapplyDismissed is idempotent', () => {
+    const toolUse: SdkMessage = {
+      type: 'assistant', uuid: 'a-1', receivedAt: 0,
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu_dis', name: 'Agent', input: { description: 'w' } }] },
+    } as unknown as SdkMessage
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
+    state = reduceSessionState(state, { type: 'DISMISS_SUBAGENT', toolUseId: 'tu_dis' })
+
+    const fresh = createInitialSessionState('s1')
+    const seededMirror: ServerMirror = {
+      ...fresh.mirror,
+      messages: state.mirror.messages,
+      items: state.mirror.items,
+      lastMessageUuid: state.mirror.lastMessageUuid,
+      replayReady: true,
+    }
+    const seeded: SessionState = {
+      sessionId: 's1',
+      mirror: seededMirror,
+      intent: { ...fresh.intent, dismissedSubagents: state.intent.dismissedSubagents },
+    }
+    const once = reapplyDismissed(rebuildIndexesFromMessages(seeded, seededMirror.messages))
+    expect(once.mirror.activeSubagents.get('tu_dis')?.status).toBe('dismissed')
+    const twice = reapplyDismissed(once)
+    expect(twice).toBe(once)
   })
 
   it('REPLAY re-applies the turn-end sweep (background -> pending) on hydration', () => {

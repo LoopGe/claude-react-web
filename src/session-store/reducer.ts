@@ -173,11 +173,14 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
       // Flip an in-flight subagent (running/background/pending) to `dismissed`
       // so it leaves the WorkingBubble chip set. Uses a dedicated `dismissed`
       // status (NOT `interrupted`) so the inline SubagentCard renders a neutral
-      // state instead of a false error. For sync subagents (running) the
-      // tool_result merge later overwrites to done/interrupted (the merge
-      // branch doesn't check status); for async (background/pending) the
-      // completion branch excludes `dismissed` so a late task_notification
-      // won't override the dismiss. No-op for already-settled records.
+      // state instead of a false error. The result merge only processes
+      // status === 'running' records, and the completion branch excludes
+      // `dismissed`, so a dismissed record stays dismissed for BOTH sync and
+      // async subagents — an explicit dismiss is a deliberate terminal state.
+      // Also records the id on intent.dismissedSubagents so the dismiss
+      // survives mirror rebuilds (refresh/replay re-derive activeSubagents
+      // from the message stream, which has no record of the dismiss).
+      // No-op for already-settled records.
       const existing = state.mirror.activeSubagents.get(action.toolUseId)
       if (!existing || (existing.status !== 'running' && existing.status !== 'background' && existing.status !== 'pending')) return state
       const activeSubagents = new Map(state.mirror.activeSubagents)
@@ -186,7 +189,12 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
         status: 'dismissed',
         endedAt: existing.endedAt ?? existing.startedAt,
       })
-      return withMirror(state, { ...state.mirror, activeSubagents })
+      const dismissedSubagents = new Set(state.intent.dismissedSubagents)
+      dismissedSubagents.add(action.toolUseId)
+      return withIntent(
+        withMirror(state, { ...state.mirror, activeSubagents }),
+        { ...state.intent, dismissedSubagents },
+      )
     }
     case 'CLEAR_TRANSCRIPT': {
       // Same full wipe as RESET, but the post-/clear session is live and
@@ -1111,6 +1119,47 @@ export function rebuildIndexesFromMessages(
     mirror = updateIndexesMirror(mirror, message)
   }
   return withMirror(state, mirror)
+}
+
+/** Re-apply client-side dismissals to a freshly-rebuilt mirror. After a
+ *  hydrate / replay rebuilds `activeSubagents` from the message stream, the
+ *  records the user dismissed come back as `running`/`background`/`pending`
+ *  (the stream has no record of the dismiss). This flips them back to
+ *  `dismissed` (stamping `endedAt` the same way DISMISS_SUBAGENT does) and
+ *  prunes ids that no longer have a dismissable record (absent post-/clear,
+ *  or settled naturally to done/interrupted/rejected). Ids whose record is
+ *  already `dismissed` are kept so a future rebuild can re-apply. Idempotent. */
+export function reapplyDismissed(state: SessionState): SessionState {
+  if (state.intent.dismissedSubagents.size === 0) return state
+  let activeSubagents = state.mirror.activeSubagents
+  let mirrorChanged = false
+  for (const id of state.intent.dismissedSubagents) {
+    const sub = activeSubagents.get(id)
+    if (!sub) continue
+    if (sub.status !== 'running' && sub.status !== 'background' && sub.status !== 'pending') continue
+    if (activeSubagents === state.mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
+    activeSubagents.set(id, { ...sub, status: 'dismissed', endedAt: sub.endedAt ?? sub.startedAt })
+    mirrorChanged = true
+  }
+  // Prune ids whose record no longer exists or settled naturally; keep ids
+  // that are still dismissed or dismissable so a future rebuild can re-apply.
+  let dismissed = state.intent.dismissedSubagents
+  for (const id of state.intent.dismissedSubagents) {
+    const sub = activeSubagents.get(id)
+    if (!sub) {
+      if (dismissed === state.intent.dismissedSubagents) dismissed = new Set(dismissed)
+      ;(dismissed as Set<string>).delete(id)
+      continue
+    }
+    if (sub.status !== 'dismissed' && sub.status !== 'running' && sub.status !== 'background' && sub.status !== 'pending') {
+      if (dismissed === state.intent.dismissedSubagents) dismissed = new Set(dismissed)
+      ;(dismissed as Set<string>).delete(id)
+    }
+  }
+  const intent = dismissed === state.intent.dismissedSubagents ? state.intent : { ...state.intent, dismissedSubagents: dismissed }
+  const mirror = mirrorChanged ? { ...state.mirror, activeSubagents } : state.mirror
+  if (mirror === state.mirror && intent === state.intent) return state
+  return withIntent(withMirror(state, mirror), intent)
 }
 
 function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerMirror {
