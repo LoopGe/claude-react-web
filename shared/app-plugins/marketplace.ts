@@ -9,12 +9,23 @@
 /** One plugin entry discovered in a marketplace clone. `dir` is relative to
  *  the clone root (validated for containment — no `..` / absolute). The
  *  name/description/version are hints from the catalog; the source of truth
- *  is each plugin's own `crw-plugin.json` (re-validated at install). */
+ *  is each plugin's own `crw-plugin.json` (re-validated at install).
+ *
+ *  `installed` / `installedVersion` are NOT part of the persisted catalog —
+ *  they are annotated by `GET /:id/plugins` so the UI can show an already-
+ *  installed plugin as "Installed" (or "Update" on a newer catalog version)
+ *  instead of a bare Install button. */
 export interface AppPluginMarketplacePlugin {
   name: string
   dir: string
   description?: string
   version?: string
+  /** True when a plugin with this catalog name is already installed from
+   *  this marketplace. Omitted on the persisted manifest; set only by the
+   *  plugins route's annotation. */
+  installed?: boolean
+  /** Installed version, present when `installed`. */
+  installedVersion?: string
 }
 
 /** Parsed marketplace catalog. */

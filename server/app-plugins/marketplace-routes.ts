@@ -18,6 +18,7 @@ import { createLogger } from '../log.js'
 import type { AppPluginMarketplaceStore } from './marketplace-store.js'
 import type { AppPluginManager } from './app-plugin-manager.js'
 import type { AppPluginMarketplaceInfo, AppPluginMarketplaceRecord } from '../../shared/app-plugins/marketplace.js'
+import type { AppPluginRecord } from '../../shared/app-plugins/runtime-state.js'
 
 const log = createLogger('app-plugins:mp-routes')
 
@@ -144,7 +145,19 @@ export function buildAppPluginMarketplaceRouter(store: AppPluginMarketplaceStore
     if (!SAFE_NAME.test(id)) throw new HttpError(400, 'invalid marketplace id')
     const record = store.get(id)
     if (!record) throw new HttpError(404, 'marketplace not found')
-    return c.json({ plugins: record.manifest.plugins })
+    // Annotate each catalog plugin with its install state so the UI can show
+    // "Installed" / "Update" instead of a bare Install button. Match against
+    // this marketplace's own installed records by catalog name (the install
+    // route stores source.pluginName === catalog entry name).
+    const installed = new Map<string, AppPluginRecord>()
+    for (const r of manager.recordsForMarketplace(id)) {
+      if (r.source.type === 'marketplace') installed.set(r.source.pluginName, r)
+    }
+    const plugins = record.manifest.plugins.map((p) => {
+      const rec = installed.get(p.name)
+      return rec ? { ...p, installed: true, installedVersion: rec.installedVersion } : { ...p, installed: false }
+    })
+    return c.json({ plugins })
   })
 
   app.post('/:id/plugins/:pluginName/install', async (c) => {

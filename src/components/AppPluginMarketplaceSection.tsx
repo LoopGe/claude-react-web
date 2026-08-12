@@ -107,6 +107,15 @@ function MarketplaceRow(props: {
   const [plugins, setPlugins] = useState<AppPluginMarketplacePlugin[] | null>(null)
   const [installing, setInstalling] = useState<string | null>(null)
 
+  const fetchPlugins = useCallback(async (): Promise<AppPluginMarketplacePlugin[] | null> => {
+    try {
+      const res = await api.get<{ plugins: AppPluginMarketplacePlugin[] }>(`/app-plugins/marketplaces/${encodeURIComponent(mp.id)}/plugins`)
+      return res.plugins ?? []
+    } catch {
+      return null
+    }
+  }, [mp.id])
+
   useEffect(() => {
     if (!expanded) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- clear plugin list on collapse
@@ -114,29 +123,29 @@ function MarketplaceRow(props: {
       return
     }
     let alive = true
-    void (async () => {
-      try {
-        const res = await api.get<{ plugins: AppPluginMarketplacePlugin[] }>(`/app-plugins/marketplaces/${encodeURIComponent(mp.id)}/plugins`)
-        if (alive) {
-          // eslint-disable-next-line react-hooks/set-state-in-effect -- on-expand lazy fetch of the plugin list
-          setPlugins(res.plugins ?? [])
-        }
-      } catch {
-        if (alive) {
-          // eslint-disable-next-line react-hooks/set-state-in-effect -- on-expand fetch failure
-          setPlugins([])
-        }
+    // setState happens inside the promise callback — outside the synchronous
+    // effect body — so react-hooks/set-state-in-effect does not fire here.
+    void fetchPlugins().then((res) => {
+      if (!alive) return
+      if (res !== null) {
+        setPlugins(res)
+      } else {
+        setPlugins([])
       }
-    })()
+    })
     return () => { alive = false }
-  }, [expanded, mp.id])
+  }, [expanded, fetchPlugins])
 
   const install = async (name: string) => {
     setInstalling(name)
     try {
       await api.post(`/app-plugins/marketplaces/${encodeURIComponent(mp.id)}/plugins/${encodeURIComponent(name)}/install`)
       // The WS state-changed frame from manager.install refreshes the
-      // installed list in AppPluginsTab; nothing to do here.
+      // installed list in AppPluginsTab. This row's cached plugin list also
+      // needs a refresh so the freshly-installed plugin flips from "Install"
+      // to "Installed" without a collapse/expand.
+      const fresh = await fetchPlugins()
+      if (fresh !== null) setPlugins(fresh)
     } catch { /* surfaced via the installed list / next expand */ } finally {
       setInstalling(null)
     }
@@ -163,18 +172,36 @@ function MarketplaceRow(props: {
         <ul className="app-plugins-mp-plugins">
           {plugins === null && <li>Loading…</li>}
           {plugins !== null && plugins.length === 0 && <li>No plugins in this marketplace.</li>}
-          {plugins?.map((p) => (
-            <li key={p.name} className="app-plugins-mp-plugin">
-              <div>
-                <strong>{p.name}</strong>
-                {p.version && <span className="app-plugins-meta"> v{p.version}</span>}
-                {p.description && <div className="app-plugins-meta">{p.description}</div>}
-              </div>
-              <button className="btn btn-primary" disabled={installing === p.name} onClick={() => install(p.name)}>
-                {installing === p.name ? 'Installing…' : 'Install'}
-              </button>
-            </li>
-          ))}
+          {plugins?.map((p) => {
+            const installed = p.installed === true
+            // A catalog version that differs from what's installed means an
+            // update is available; otherwise the installed plugin is current.
+            const updateAvailable =
+              installed && p.version !== undefined && p.installedVersion !== undefined && p.installedVersion !== p.version
+            return (
+              <li key={p.name} className="app-plugins-mp-plugin">
+                <div>
+                  <strong>{p.name}</strong>
+                  {p.version && <span className="app-plugins-meta"> v{p.version}</span>}
+                  {p.description && <div className="app-plugins-meta">{p.description}</div>}
+                  {installed && p.installedVersion && (
+                    <div className="app-plugins-meta">Installed v{p.installedVersion}</div>
+                  )}
+                </div>
+                {installed ? (
+                  updateAvailable ? (
+                    <button className="btn" disabled={installing === p.name} onClick={() => install(p.name)}>Update</button>
+                  ) : (
+                    <button className="btn" disabled>Installed</button>
+                  )
+                ) : (
+                  <button className="btn btn-primary" disabled={installing === p.name} onClick={() => install(p.name)}>
+                    {installing === p.name ? 'Installing…' : 'Install'}
+                  </button>
+                )}
+              </li>
+            )
+          })}
         </ul>
       )}
     </li>

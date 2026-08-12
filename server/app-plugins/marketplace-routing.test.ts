@@ -183,3 +183,78 @@ describe('marketplace refresh — subdir marketplace', () => {
     expect(body.marketplace.sourceType).toBe('local')
   })
 })
+
+describe('marketplace GET /:id/plugins — installed annotation', () => {
+  let stateDir: string
+  let cloneDir: string
+  let manager: AppPluginManager
+  let mpStore: AppPluginMarketplaceStore
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(join(tmpdir(), 'mp-plugins-'))
+    cloneDir = mkdtempSync(join(tmpdir(), 'mp-clone-plugins-'))
+    // A real plugin dir so POST .../install can resolve + validate a manifest.
+    mkdirSync(join(cloneDir, 'translator', 'dist'), { recursive: true })
+    writeFileSync(join(cloneDir, 'translator', 'dist', 'service.mjs'), 'export function activate(){}')
+    writeFileSync(join(cloneDir, 'translator', 'crw-plugin.json'), JSON.stringify({
+      manifestVersion: 1, id: 'translator.claude-react-web', name: 'translator', version: '1.0.0',
+      engines: { claudeReactWeb: '^0.6.0', node: '>=20' },
+      runtime: { service: 'dist/service.mjs' },
+      permissions: ['storage'],
+      contributes: {
+        commands: [{ id: 'translator.claude-react-web.run', title: 'Run' }],
+        contextMenus: [], actions: [], configuration: { properties: [] },
+      },
+    }))
+    writeFileSync(join(cloneDir, 'app-plugins-marketplace.json'), JSON.stringify({
+      name: 'Test Market',
+      appPlugins: [{ name: 'translator', dir: 'translator', description: 'translate', version: '1.0.0' }],
+    }))
+    const store = new AppPluginStore({ stateDir })
+    mpStore = new AppPluginMarketplaceStore({ stateDir })
+    manager = new AppPluginManager({ store, stateDir, hostVersion: '0.6.0', hostNodeMajor: 20, sm: smStub, marketplaceStore: mpStore })
+    const now = Date.now()
+    mpStore.upsert({
+      id: 'test-mp',
+      displayName: 'Test Market',
+      source: { type: 'local', path: cloneDir },
+      cloneDir,
+      addedAt: now,
+      lastRefreshedAt: now,
+      lastSha: '',
+      manifest: { name: 'Test Market', plugins: [{ name: 'translator', dir: 'translator', description: 'translate', version: '1.0.0' }] },
+    })
+    return mpStore.flush()
+  })
+
+  afterEach(async () => {
+    await manager.shutdown().catch(() => {})
+    rmSync(stateDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    rmSync(cloneDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+  })
+
+  it('annotates plugins as installed:false when nothing is installed', async () => {
+    const app = new Hono()
+    app.route('/api/app-plugins/marketplaces', buildAppPluginMarketplaceRouter(mpStore, manager))
+    const res = await app.request('/api/app-plugins/marketplaces/test-mp/plugins')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { plugins: Array<{ name: string; installed?: boolean; installedVersion?: string }> }
+    expect(body.plugins).toHaveLength(1)
+    expect(body.plugins[0].name).toBe('translator')
+    expect(body.plugins[0].installed).toBe(false)
+    expect(body.plugins[0].installedVersion).toBeUndefined()
+  })
+
+  it('annotates a plugin as installed + installedVersion after install', async () => {
+    const app = new Hono()
+    app.route('/api/app-plugins/marketplaces', buildAppPluginMarketplaceRouter(mpStore, manager))
+    const installRes = await app.request('/api/app-plugins/marketplaces/test-mp/plugins/translator/install', { method: 'POST' })
+    expect(installRes.status).toBe(200)
+    const res = await app.request('/api/app-plugins/marketplaces/test-mp/plugins')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { plugins: Array<{ name: string; installed?: boolean; installedVersion?: string }> }
+    expect(body.plugins).toHaveLength(1)
+    expect(body.plugins[0].installed).toBe(true)
+    expect(body.plugins[0].installedVersion).toBe('1.0.0')
+  })
+})

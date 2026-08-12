@@ -175,10 +175,22 @@
   padding: 10px 12px;
   background: var(--bg-elev);
   margin-bottom: 4px;
+  /* Vertical rhythm inside the card: heading, intro, add-URL row, and the
+     marketplace list are flex items now, so each gets a real gap instead of
+     abutting (the input row used to sit flush against the list below). */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .app-plugins-marketplace h4 {
-  margin: 0 0 4px;
+  margin: 0;
   font-size: var(--fs-sm);
+}
+.app-plugins-marketplace .app-plugins-intro {
+  margin: 0;
+}
+.app-plugins-marketplace .app-plugins-list {
+  margin: 0;
 }
 .app-plugins-installed-heading {
   margin: 8px 0 4px;
