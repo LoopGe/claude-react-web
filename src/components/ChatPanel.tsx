@@ -2,7 +2,7 @@
  *  carries the close button, focus click-target, and a dormant/terminated
  *  placeholder when the session's Query isn't live. */
 
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { PluginContributionSlot } from '../app-plugins/PluginContributionSlot'
 import { Chat } from './Chat'
@@ -272,10 +272,6 @@ export const ChatPanel = memo(function ChatPanel({
   // single-panel and touch can't HTML5-drag, so disable it there.
   const isMobile = useIsMobile()
   const [dropActive, setDropActive] = useState(false)
-  /** Live message count reported by <Chat> during streaming. Used to
-   *  keep the header "X msgs" label up-to-date without waiting for a
-   *  server-pushed session-update (which only fires at turn end). */
-  const [liveMessageCount, setLiveMessageCount] = useState(0)
   /** Tracks the `generatedAt` of the recap the user has dismissed. When it
    *  matches the current session.recap.generatedAt, the floating window
    *  stays hidden; a NEW recap (different generatedAt) auto-reopens it.
@@ -339,9 +335,6 @@ export const ChatPanel = memo(function ChatPanel({
   // fetch window.
   const modelOptions = useModelOptions(session.id, !!modelMenu && !!session.running)
   const chipsDisabled = !session.running || session.terminated
-  // Use the live count from the stream when available; fall back to the
-  // server-pushed session.messageCount (updated only at turn boundaries).
-  const effectiveMessageCount = Math.max(session.messageCount, liveMessageCount)
   // Git status powers BOTH the header chip (always-visible summary) and
   // the GitPanel overlay (mounted inside <Chat>). Hoisting the hook here
   // means a single fetch satisfies both consumers; the panel receives
@@ -435,21 +428,52 @@ export const ChatPanel = memo(function ChatPanel({
   const effortChoices = effortCaps && effortCaps.length > 0 ? effortCaps : EFFORT_LEVELS
 
   const permMode = session.permissionMode ?? 'default'
-  const isNonDefaultMode = permMode !== 'default'
-  /** Detect permission-mode changes and apply a brief flash animation
-   *  class to the header. The class triggers mode-flash and is removed
-   *  on animationend so it can replay on the next switch.
-   *  Also tracks the previous mode for the badge slide-out transition. */
+  /** Track the previous mode for the badge slide-out transition (the
+   *  mode switch no longer flashes the header — colours were removed).
+   *  Runs in a layout effect so the transition is in place before the
+   *  first paint — otherwise the new label would flash one frame at its
+   *  natural width and the trailing chips would already have shifted. */
   const prevPermModeRef = useRef(permMode)
-  const [modeChanging, setModeChanging] = useState(false)
   const [modeTransitionFrom, setModeTransitionFrom] = useState<PermissionMode | null>(null)
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (prevPermModeRef.current !== permMode) {
       setModeTransitionFrom(prevPermModeRef.current)
       prevPermModeRef.current = permMode
-      setModeChanging(true)
     }
   }, [permMode])
+  /** Mode labels vary in width ("default" vs "bypassPermissions"), so the
+   *  wrap would otherwise snap to the new width the instant the label
+   *  swaps and teleport every chip after it (fast, effort, model). On a
+   *  transition we pin the wrap to the OLD width on the first painted
+   *  frame, then glide it to the NEW width — that animates BOTH
+   *  directions (narrowing glides left, widening glides right). Overflow
+   *  is clipped while the width is pinned so the wider incoming label
+   *  can't overlap the chips after it. */
+  const modeWrapRef = useRef<HTMLSpanElement>(null)
+  useLayoutEffect(() => {
+    if (modeTransitionFrom == null) return
+    const wrap = modeWrapRef.current
+    const incoming = wrap?.querySelector<HTMLElement>('.chat-panel-mode-badge.mode-slide-in')
+    if (!wrap || !incoming) return
+    const newW = incoming.getBoundingClientRect().width
+    const outgoing = wrap.querySelector<HTMLElement>('.chat-panel-mode-badge.mode-slide-out')
+    const oldW = outgoing ? outgoing.getBoundingClientRect().width : newW
+    wrap.style.width = `${oldW}px`
+    wrap.style.overflow = 'hidden'
+    // Glide to the new width on the next frame. Guard on the same incoming
+    // node so a stale rAF from a rapid A→B→C switch can't write a wrong
+    // width.
+    const raf = requestAnimationFrame(() => {
+      if (wrap.querySelector('.chat-panel-mode-badge.mode-slide-in') === incoming) {
+        wrap.style.width = `${newW}px`
+      }
+    })
+    return () => {
+      cancelAnimationFrame(raf)
+      wrap.style.width = ''
+      wrap.style.overflow = ''
+    }
+  }, [modeTransitionFrom])
   // Fast mode chip.
   //  - Visibility is gated on the SDK reporting a runtime state: undefined
   //    means the current model doesn't support fast mode (the SDK omits the
@@ -472,7 +496,6 @@ export const ChatPanel = memo(function ChatPanel({
         'chat-panel',
         focused ? 'focused' : '',
         dropActive ? 'drop-target' : '',
-        isNonDefaultMode ? 'mode-active' : '',
         entering ? 'entering' : '',
         `mode-${permMode}`,
       ].filter(Boolean).join(' ')}
@@ -512,8 +535,7 @@ export const ChatPanel = memo(function ChatPanel({
       }}
     >
       <div
-        className={`chat-panel-header${modeChanging ? ' mode-changing' : ''}`}
-        onAnimationEnd={() => modeChanging && setModeChanging(false)}
+        className="chat-panel-header"
         // The header is the drag handle for panel swaps — the body stays
         // non-draggable so textarea text selection and scrolling work.
         draggable={!isMobile}
@@ -551,6 +573,7 @@ export const ChatPanel = memo(function ChatPanel({
             control rather than a warning. */}
         <Tooltip label={`Permission mode: ${permissionModeLabel(permMode)} · click to change`} placement="bottom">
           <span
+            ref={modeWrapRef}
             className="chat-panel-mode-badge-wrap"
             onMouseDown={(e) => e.stopPropagation()}
           >
@@ -668,30 +691,6 @@ export const ChatPanel = memo(function ChatPanel({
               <span className="chat-panel-model-badge-value">{shortenModel(session.model)}</span>
             </button>
           </Tooltip>
-          {/* Git chip — surfaces branch + dirty/ahead/behind/untracked
-              counts at a glance. Hidden when the cwd isn't a git repo
-              (so non-git sessions don't get visual noise) or while the
-              status fetch is still settling and we have no data yet. */}
-          {gitStatus.data && gitStatus.data.isRepo === true && (
-            <Tooltip label={gitChipTitle(gitStatus.data)} placement="bottom">
-              <button
-                type="button"
-                className={[
-                  'chat-panel-git-badge',
-                  gitStatus.data.state !== 'clean' && gitStatus.data.state !== 'dirty' ? 'conflict' : '',
-                  gitStatus.data.state === 'dirty' ? 'dirty' : '',
-                ].filter(Boolean).join(' ')}
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onOpenGitPanel(session.id)
-                }}
-              >
-                <span className="chat-panel-git-badge-icon" aria-hidden>Git</span>
-                <span className="chat-panel-git-badge-value">{gitChipText(gitStatus.data)}</span>
-              </button>
-            </Tooltip>
-          )}
           {/* Side Chat collapsed badge — removed from header;
               now rendered as a tab on the panel's right edge below. */}
         </div>
@@ -761,7 +760,7 @@ export const ChatPanel = memo(function ChatPanel({
         )}
         {/* Second header row — secondary metadata. Muted colour, smaller
             font, skipped when there's literally nothing to show. */}
-        {(session.cwd || effectiveMessageCount > 0) && (
+        {(session.cwd || gitStatus.data?.isRepo === true) && (
           <div className="chat-panel-header-row2">
             {session.cwd && (
               <Tooltip label={session.cwd} placement="bottom">
@@ -771,11 +770,31 @@ export const ChatPanel = memo(function ChatPanel({
                 </span>
               </Tooltip>
             )}
-            <Tooltip label={`${effectiveMessageCount} messages`} placement="bottom">
-              <span className="chat-panel-msgcount">
-                {effectiveMessageCount} {effectiveMessageCount === 1 ? 'msg' : 'msgs'}
-              </span>
-            </Tooltip>
+            {/* Git chip — surfaces branch + dirty/ahead/behind/untracked
+                counts at a glance. Lives on row 2, right-aligned, so it
+                no longer competes with the row-1 badges. Hidden when the
+                cwd isn't a git repo or while the status fetch is still
+                settling (no data yet). */}
+            {gitStatus.data && gitStatus.data.isRepo === true && (
+              <Tooltip label={gitChipTitle(gitStatus.data)} placement="bottom">
+                <button
+                  type="button"
+                  className={[
+                    'chat-panel-git-badge',
+                    gitStatus.data.state !== 'clean' && gitStatus.data.state !== 'dirty' ? 'conflict' : '',
+                    gitStatus.data.state === 'dirty' ? 'dirty' : '',
+                  ].filter(Boolean).join(' ')}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onOpenGitPanel(session.id)
+                  }}
+                >
+                  <span className="chat-panel-git-badge-icon" aria-hidden>Git</span>
+                  <span className="chat-panel-git-badge-value">{gitChipText(gitStatus.data)}</span>
+                </button>
+              </Tooltip>
+            )}
           </div>
         )}
         {/* App Plugin `chat.header` action slot. Renders nothing when no
@@ -813,7 +832,6 @@ export const ChatPanel = memo(function ChatPanel({
             onGitRefresh={gitStatus.refresh}
             recapOpen={recapOpen}
             onCloseRecap={() => setRecapDismissedAt(session.recap?.generatedAt ?? null)}
-            onLiveMessageCount={setLiveMessageCount}
             onRegisterInterrupt={onRegisterInterrupt}
             onRegisterRecap={onRegisterRecap}
             onOpenSettingsPanel={onOpenSettings}

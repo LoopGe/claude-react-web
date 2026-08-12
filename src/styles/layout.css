@@ -197,7 +197,11 @@ body.resizing-col .app {
 .chat-panel-header {
   display: flex;
   flex-direction: column;
-  background: var(--bg-elev);
+  /* Theme base tint: a faint wash of the session's --accent over the
+     neutral elevation surface, so each panel's header carries its theme
+     colour without going per-mode. Composes with the theme/skin's
+     --bg-elev automatically. */
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-elev));
   border-bottom: 1px solid var(--border);
   font-size: 12px;
   /* The whole header is the drag handle for panel swaps. */
@@ -286,35 +290,11 @@ body.resizing-col .app {
   box-shadow: 0 0 0 2px var(--bg);
 }
 
-/* Non-default permission mode visual cue. Two layers:
-   1. .chat-panel.mode-active tints the header background + adds a left
-      border so the panel as a whole reads as "different from default".
-   2. .chat-panel-mode-badge is a small pill near the title — the user's
-      eye lands on the title first, so the cue should be there too. It is
-      also the interactive control: clicking it opens the mode menu (this
-      replaced the old separate "mode" chip in the meta strip).
-   Tinted with --warn (amber) for plan, --danger for bypass/dontAsk,
-   --accent for acceptEdits/auto. In default mode --mode-color is unset
-   and the badge renders muted/neutral (see the rules below). */
-.chat-panel.mode-active .chat-panel-header {
-  background: color-mix(in srgb, var(--mode-color, var(--warn)) 8%, var(--bg-elev));
-  border-bottom-color: color-mix(in srgb, var(--mode-color, var(--warn)) 35%, var(--border));
-  box-shadow: inset 3px 0 0 var(--mode-color, var(--warn));
-}
-.chat-panel.mode-default { --mode-color: var(--fg-muted); }
-.chat-panel.mode-plan { --mode-color: var(--warn); }
-.chat-panel.mode-bypassPermissions { --mode-color: var(--danger); }
-.chat-panel.mode-dontAsk { --mode-color: var(--danger); }
-.chat-panel.mode-acceptEdits { --mode-color: var(--accent); }
-.chat-panel.mode-auto { --mode-color: var(--accent); }
-
-/* Smooth mode-colour transitions on the panel itself. --mode-color is
-   registered via @property so the browser can interpolate it. The header
-   uses color-mix() — because the colour-stop is the only thing that
-   changes, the interpolation Just Works in supporting browsers. */
-.chat-panel {
-  transition: --mode-color var(--motion-duration-moderate) var(--motion-ease-standard);
-}
+/* Non-default permission mode no longer tints the panel header — the mode
+   is conveyed by the badge label (and its tooltip) only. The mode badge is
+   a small pill near the title and doubles as the interactive control
+   (clicking opens the mode menu). It stays uniformly muted across modes so
+   switching permission mode doesn't repaint the header. */
 
 /* Panel enter/exit animations — fade + subtle scale on mount, fade-out
    on unmount. The exiting class is applied by App.tsx before the panel
@@ -341,25 +321,6 @@ body.resizing-col .app {
 .chat-panel-slot.exiting {
   animation: panel-exit var(--motion-duration-fast) var(--motion-ease-exit) forwards;
 }
-.chat-panel.mode-active .chat-panel-header {
-  transition: background var(--motion-duration-moderate) var(--motion-ease-standard), border-bottom-color var(--motion-duration-moderate) var(--motion-ease-standard), box-shadow var(--motion-duration-moderate) var(--motion-ease-standard);
-}
-/* Ensure the header also transitions smoothly when reverting to default
-   mode (losing .mode-active). Without this, the header snaps back. */
-.chat-panel .chat-panel-header {
-  transition: background var(--motion-duration-moderate) var(--motion-ease-standard), border-bottom-color var(--motion-duration-moderate) var(--motion-ease-standard), box-shadow var(--motion-duration-moderate) var(--motion-ease-standard);
-}
-/* Attention-grabbing flash when the permission mode changes. The header
-   briefly brightens (25% → 8% tint) to draw the eye to the mode switch.
-   Set/unset by ChatPanel.tsx via the mode-changing class; removed on
-   animationend so it can replay on the next switch. */
-@keyframes mode-flash {
-  0%   { background: color-mix(in srgb, var(--mode-color) 25%, var(--bg-elev)); }
-  100% { background: color-mix(in srgb, var(--mode-color) 8%, var(--bg-elev)); }
-}
-.chat-panel-header.mode-changing.mode-changing {
-  animation: mode-flash var(--motion-duration-slow) var(--motion-ease-standard);
-}
 /* Mode badge slide transition. On switch the old badge slides out to the
    left while the new one slides in from the right, producing a lateral
    "flow" effect. The wrapper clips overflow so the outgoing badge
@@ -377,6 +338,10 @@ body.resizing-col .app {
   position: relative;
   display: inline-flex;
   border-radius: 4px;
+  /* Width is set inline only during a mode switch (to reserve the wider
+     label then glide to the new width) — this makes the trailing chips
+     follow smoothly instead of teleporting. No-op when width is auto. */
+  transition: width var(--motion-duration-moderate) var(--motion-ease-standard);
 }
 
 .chat-panel-mode-badge {
@@ -387,10 +352,11 @@ body.resizing-col .app {
   font-size: 11px;
   font-weight: 600;
   font-family: var(--mono);
-  /* Default mode: muted, no tint — reads as a quiet control, not a
-     warning. Non-default modes override --mode-color above. */
-  color: var(--mode-color, var(--fg-muted));
-  background: transparent;
+  /* The accent-tinted chip is uniform across modes (theme色); the mode
+     distinction lives in the per-mode label colour rules below, so
+     switching modes repaints the chip text but never the header. */
+  color: var(--fg-muted);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
   border: none;
   border-radius: 4px;
   flex-shrink: 0;
@@ -399,6 +365,15 @@ body.resizing-col .app {
   cursor: pointer;
   transition: background var(--motion-duration-fast) var(--motion-ease-standard), color var(--motion-duration-moderate) var(--motion-ease-standard), transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
+/* Per-mode text colour — mirrors the sidebar's --mode-color language:
+   default stays muted, plan warns, permission-heavy modes signal danger,
+   editing/auto modes read as the session accent. */
+.chat-panel-mode-badge.mode-default { color: var(--fg-muted); }
+.chat-panel-mode-badge.mode-plan { color: var(--warn); }
+.chat-panel-mode-badge.mode-bypassPermissions,
+.chat-panel-mode-badge.mode-dontAsk { color: var(--danger); }
+.chat-panel-mode-badge.mode-acceptEdits,
+.chat-panel-mode-badge.mode-auto { color: var(--accent); }
 /* The outgoing badge is positioned absolutely so it overlaps the incoming
    one and doesn't affect layout while it slides away. It keeps its natural
    size and slides left out of frame. */
@@ -413,22 +388,13 @@ body.resizing-col .app {
 .chat-panel-mode-badge.mode-slide-in {
   animation: mode-slide-in var(--motion-duration-moderate) var(--motion-ease-enter);
 }
-/* Non-default modes get the tinted background; default stays transparent
-   until hover so it doesn't compete with the title. */
-.chat-panel-mode-badge.mode-plan,
-.chat-panel-mode-badge.mode-bypassPermissions,
-.chat-panel-mode-badge.mode-dontAsk,
-.chat-panel-mode-badge.mode-acceptEdits,
-.chat-panel-mode-badge.mode-auto {
-  background: color-mix(in srgb, var(--mode-color, var(--warn)) 12%, transparent);
-}
 .chat-panel-mode-badge:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--mode-color, var(--fg-muted)) 20%, transparent);
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
   transform: translateY(calc(-1 * var(--motion-distance-2xs)));
 }
 .chat-panel-mode-badge:active:not(:disabled) { transform: translateY(0) scale(var(--motion-scale-press)); }
 .chat-panel-mode-badge:focus-visible {
-  outline: 2px solid var(--mode-color, var(--accent));
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 .chat-panel-mode-badge:disabled {
@@ -690,6 +656,14 @@ body.resizing-col .app {
 .chat-panel-git-badge.conflict .chat-panel-git-badge-value {
   color: var(--danger);
 }
+/* Git chip on header row 2 — right-aligned so it sits opposite the cwd
+   path and no longer competes with the row-1 badges. The Tooltip wrapper
+   (`.tt-wrap`, inline-flex) is the direct flex item of row 2, so the auto
+   margin goes on it rather than on the badge button. `:has` matches the
+   existing `.tt-wrap:has(> .git-branch-row)` pattern in git-panel.css. */
+.chat-panel-header-row2 > .tt-wrap:has(> .chat-panel-git-badge) {
+  margin-left: auto;
+}
 
 /* Side Chat collapsed tab — vertical strip on the right edge of the
    panel, vertically centred. Click to re-expand the drawer. */
@@ -748,8 +722,9 @@ body.resizing-col .app {
   .side-chat-expand-tab-dot { animation: none; opacity: 1; }
 }
 
-/* Row 2 pieces: cwd (folder icon + shortened path), message count, and an
-   inline working… chip echoing the status dot for a stronger hint. */
+/* Row 2 pieces: cwd (folder icon + shortened path) on the left, and the
+   git chip right-aligned opposite it (see the margin-left rule near the
+   git-badge styles). */
 .chat-panel-cwd {
   display: inline-flex;
   align-items: center;
@@ -760,10 +735,6 @@ body.resizing-col .app {
   white-space: nowrap;
   min-width: 0;
   flex-shrink: 1;
-}
-.chat-panel-msgcount {
-  font-family: var(--mono);
-  flex-shrink: 0;
 }
 .chat-panel-working-indicator {
   display: inline-flex;
@@ -796,8 +767,9 @@ body.resizing-col .app {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Meta strip that holds the model + git badges. Sits between the panel
-   title (left-aligned) and close button (right-aligned). */
+/* Meta strip that holds the model badge. Sits between the panel
+   title (left-aligned) and the panel edge (right-aligned). The git chip
+   now lives on header row 2 (see the margin-left rule above). */
 .chat-panel-meta {
   display: flex;
   align-items: center;

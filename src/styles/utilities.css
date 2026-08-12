@@ -775,7 +775,8 @@
   .perm-overlay[data-state="closing"] > .perm-card,
   .appearance-panel,
   .chat-jump-to-bottom,
-  .chat-panel-header.mode-changing {
+  .chat-panel-mode-badge.mode-slide-in,
+  .chat-panel-mode-badge.mode-slide-out {
     animation-duration: 0.01ms !important;
   }
   .notification-icon .notification-icon-slash,

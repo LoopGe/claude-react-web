@@ -740,18 +740,19 @@
   border-color: color-mix(in srgb, var(--accent) 25%, var(--code-block-border));
 }
 
-/* Non-default mode badge: glow so the active permission mode is scannable. */
-[data-skin="glow"] .chat-panel-mode-badge.mode-plan,
-[data-skin="glow"] .chat-panel-mode-badge.mode-bypassPermissions,
-[data-skin="glow"] .chat-panel-mode-badge.mode-dontAsk,
-[data-skin="glow"] .chat-panel-mode-badge.mode-acceptEdits,
-[data-skin="glow"] .chat-panel-mode-badge.mode-auto {
-  box-shadow: 0 0 10px color-mix(in srgb, var(--mode-color, var(--accent)) 28%, transparent);
-}
 /* Fast-mode badge: glow in --fast when on, mirroring the active mode-badge
    treatment so an enabled speed state reads with the same glow language. */
 [data-skin="glow"] .chat-panel-fast-badge.fast-on {
   box-shadow: 0 0 10px color-mix(in srgb, var(--fast) 28%, transparent);
+}
+
+/* Mode badge: the glass skin keeps the accent chip even more translucent so
+   it sits in the surface like glass instead of reading as a solid fill. */
+[data-skin="glow"] .chat-panel-mode-badge {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+[data-skin="glow"] .chat-panel-mode-badge:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 /* Context-usage fill bar gets a glowing leading edge. */

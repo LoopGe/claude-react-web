@@ -168,10 +168,6 @@ interface Props {
    *  with the local `clearing` state (which serves the SDK in-band cleared
    *  path) via `effectiveClearing = clearingProp || localClearing`. */
   clearing?: boolean
-  /** Called whenever the live stream message count changes, so the parent
-   *  header can display an up-to-date count without waiting for a
-   *  server-pushed session-update (which only fires at turn boundaries). */
-  onLiveMessageCount?: (count: number) => void
   /** Called once on mount so the parent can store a reference to this
    *  panel's interrupt() function. Enables the ESC shortcut in App to
    *  trigger the same code-path as the Composer's interrupt button. */
@@ -262,7 +258,7 @@ export const Chat = memo(function Chat({
   settingsOpen, onCloseSettings,
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
   recapOpen, onCloseRecap,
-  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, globalPrefs, onLiveMessageCount, onRegisterInterrupt, onRegisterRecap, historyOpen, onCloseHistory,
+  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, globalPrefs, onRegisterInterrupt, onRegisterRecap, historyOpen, onCloseHistory,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, onDiscard, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
 }: Props) {
@@ -978,12 +974,6 @@ export const Chat = memo(function Chat({
     },
     [],
   )
-
-  // Report live message count to parent so the header stays up-to-date
-  // during streaming (server only pushes session-update at turn boundaries).
-  useEffect(() => {
-    onLiveMessageCount?.(stream.messages.length)
-  }, [stream.messages.length, onLiveMessageCount])
 
   // Session recap ?phase-driven auto-generation. The hook reads
   // session.phase + session.lastTurnAt + session.recap (all kept current
