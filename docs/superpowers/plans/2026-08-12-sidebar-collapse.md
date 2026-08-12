@@ -107,7 +107,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `useLocalStorage` (already imported in `App.tsx`).
-- Produces: `sidebarCollapsed: boolean` state + `setSidebarCollapsed: (v: boolean | ((prev: boolean) => boolean)) => void` in `App`; a `sidebar-collapsed` class on the `.app` element; `inert`/`aria-hidden` on the `<aside class="sidebar">`.
+- Produces: `sidebarCollapsed: boolean` state + `_setSidebarCollapsed: (v: boolean | ((prev: boolean) => boolean)) => void` in `App`; a `sidebar-collapsed` class on the `.app` element; `inert`/`aria-hidden` on the `<aside class="sidebar">`. Task 3 renames `_setSidebarCollapsed` → `setSidebarCollapsed` when it adds the first usages.
 
 - [ ] **Step 1: Add the storage key**
 
@@ -143,8 +143,10 @@ In `src/App.tsx`, immediately after the `panelMinRatio` line (`const panelMinRat
 ```ts
 /** Desktop sidebar hide/show. Persisted so a reload restores the state;
  *  expanding keeps the drag-resized width (see --sidebar-width below). */
-const [sidebarCollapsed, setSidebarCollapsed] = useLocalStorage<boolean>(SIDEBAR_COLLAPSED_KEY, false)
+const [sidebarCollapsed, _setSidebarCollapsed] = useLocalStorage<boolean>(SIDEBAR_COLLAPSED_KEY, false)
 ```
+
+Note: the setter is named `_setSidebarCollapsed` because `noUnusedLocals` (tsconfig.json) rejects an unused binding, and the setter has no callers until Task 3. TypeScript exempts `_`-prefixed names from the unused check. Task 3 renames it back to `setSidebarCollapsed` when it adds the first usages.
 
 - [ ] **Step 4: Tag the `.app` class**
 
@@ -203,7 +205,17 @@ In `src/App.tsx`, change the ToolIcons import (currently `import { IconSettings,
 import { IconSettings, IconBellToggle, IconMenu, IconSidebar } from './components/icons/ToolIcons'
 ```
 
-- [ ] **Step 2: Render the desktop toggle button**
+- [ ] **Step 2: Rename the Task 2 setter**
+
+Task 2 named the setter `_setSidebarCollapsed` (to satisfy `noUnusedLocals` while it had no callers). The button and shortcut in this task introduce its first usages, so rename it back to `setSidebarCollapsed`:
+
+In `src/App.tsx`, change the state declaration (currently at the `panelMinRatio` line) to:
+
+```ts
+const [sidebarCollapsed, setSidebarCollapsed] = useLocalStorage<boolean>(SIDEBAR_COLLAPSED_KEY, false)
+```
+
+- [ ] **Step 3: Render the desktop toggle button**
 
 In `src/App.tsx`, inside `.main-header`, immediately before the `<div className="main-toolbar" role="group" aria-label="App actions">` element, insert:
 
@@ -223,7 +235,7 @@ In `src/App.tsx`, inside `.main-header`, immediately before the `<div className=
 )}
 ```
 
-- [ ] **Step 3: Register the Mod+B shortcut**
+- [ ] **Step 4: Register the Mod+B shortcut**
 
 In `src/App.tsx`, inside the `shortcuts` `useMemo` array, insert this entry right after the `mod+k` ("Command palette") entry:
 
@@ -241,7 +253,7 @@ Then add `setSidebarCollapsed` to that `useMemo`'s dependency array (currently `
 [closeSession, setGitPanelOpenFor, setHelpOpen, setSettingsOpenFor, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel, setSidebarCollapsed]
 ```
 
-- [ ] **Step 4: Typecheck + lint**
+- [ ] **Step 5: Typecheck + lint**
 
 Run: `npm run typecheck`
 Expected: PASS.
@@ -249,7 +261,7 @@ Expected: PASS.
 Run: `npm run lint`
 Expected: PASS (no new findings in `src/App.tsx`).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/App.tsx
