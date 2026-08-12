@@ -26,6 +26,7 @@ import { MpStore } from './mp-store.js'
 import { AppPluginStore } from './app-plugins/app-plugin-store.js'
 import { AppPluginMarketplaceStore } from './app-plugins/marketplace-store.js'
 import { AppPluginManager } from './app-plugins/app-plugin-manager.js'
+import { seedBuiltinMarketplace } from './app-plugins/builtin-marketplace.js'
 import { attachWebSocket } from './ws.js'
 import { checkForUpdates } from './update-checker.js'
 import { startEventLoopProbe } from './event-loop-probe.js'
@@ -354,6 +355,11 @@ async function main() {
   const appPluginStore = new AppPluginStore({ stateDir })
   const appPluginMarketplaceStore = new AppPluginMarketplaceStore({ stateDir })
   await appPluginMarketplaceStore.load()
+  // Seed the bundled official App Plugin marketplace on first launch (no-op on
+  // later launches; skipped when app plugins are disabled).
+  if (!args.disableAppPlugins) {
+    await seedBuiltinMarketplace(appPluginMarketplaceStore)
+  }
   const appPluginManager = new AppPluginManager({
     store: appPluginStore,
     stateDir,
