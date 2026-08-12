@@ -67,6 +67,7 @@ const SnippetsManagerDialog = lazy(() => import('./components/SnippetsManagerDia
 const PromptDialog = lazy(() => import('./components/PromptDialog').then((m) => ({ default: m.PromptDialog })))
 
 import {
+  SIDEBAR_COLLAPSED_KEY,
   SIDEBAR_MIN_KEY,
   SIDEBAR_MAX_KEY,
   SIDEBAR_MIN_DEFAULT,
@@ -314,6 +315,10 @@ export function App() {
   const sidebarMaxPx = Math.max(sidebarMinPx + 100, Math.min(1200, Math.round(sidebarMaxPxRaw)))
   const [panelMinRatioRaw] = useLocalStorage<number>(PANEL_MIN_RATIO_KEY, PANEL_MIN_RATIO_DEFAULT)
   const panelMinRatio = Math.max(0.05, Math.min(0.4, panelMinRatioRaw))
+
+  /** Desktop sidebar hide/show. Persisted so a reload restores the state;
+   *  expanding keeps the drag-resized width (see --sidebar-width below). */
+  const [sidebarCollapsed, _setSidebarCollapsed] = useLocalStorage<boolean>(SIDEBAR_COLLAPSED_KEY, false)
 
   // Groups are optional — sessions without a group appear in the
   // "Ungrouped" sidebar section. No default group is auto-created.
@@ -3379,7 +3384,7 @@ export function App() {
   return (
     <ErrorBoundary>
     <div
-      className={`app${isMobile && drawerOpen ? ' drawer-open' : ''}`}
+      className={`app${isMobile && drawerOpen ? ' drawer-open' : ''}${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}
       style={{ ['--sidebar-width' as string]: `${effectiveSidebarWidth}px` }}
     >
       {/* Skip link for keyboard users — first focusable element on the
@@ -3388,7 +3393,15 @@ export function App() {
           a Tab-only user doesn't have to walk through the entire
           sidebar to reach the conversation. */}
       <a className="skip-link" href="#main">Skip to chat</a>
-      <aside className="sidebar" aria-label="Sessions" {...drawerSwipe}>
+      {/* Desktop-only: a persisted `sidebarCollapsed` must not inert the mobile
+          drawer (the user may collapse on desktop, then resize to mobile). */}
+      <aside
+        className="sidebar"
+        aria-label="Sessions"
+        inert={!isMobile && sidebarCollapsed}
+        aria-hidden={!isMobile && sidebarCollapsed}
+        {...drawerSwipe}
+      >
         <div className="brand">
           <span className="brand-dot" /> claude-react-web
         </div>
