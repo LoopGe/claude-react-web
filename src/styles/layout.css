@@ -52,6 +52,12 @@ body.resizing-col * {
   cursor: col-resize !important;
   user-select: none !important;
 }
+/* Suppress the .app grid-column transition while the sidebar resizer is
+   being dragged — otherwise every mousemove restarts the 240ms ease and
+   the sidebar trails the cursor instead of tracking 1:1. */
+body.resizing-col .app {
+  transition: none;
+}
 
 /* Sidebar hide/show (desktop only). Collapsing sets the grid column to 0 so
    the chat panels fill the window. Scoped to ≥769px — the mobile drawer in
@@ -87,9 +93,9 @@ body.resizing-col * {
   min-height: 0;
   overflow: hidden;
 }
-/* App-level toolbar row. After removing the focused-session echo it
-   holds only the right-aligned button cluster, so the row can be
-   shorter than before and its only contents flush-right. */
+/* App-level toolbar row. The sidebar toggle button sits at the left
+   (desktop only); the toolbar cluster stays flush-right via
+   margin-left: auto on .main-toolbar. */
 .main-header {
   min-height: var(--app-header-height);
   display: flex;
