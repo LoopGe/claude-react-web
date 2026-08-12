@@ -4,7 +4,7 @@
 // claude CLI process at runtime — bundling it would break its internal
 // filesystem-relative lookups. All other deps (hono, open) are bundled.
 import { build } from 'esbuild'
-import { mkdirSync, writeFileSync, readFileSync, chmodSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, chmodSync, cpSync } from 'node:fs'
 
 mkdirSync('dist', { recursive: true })
 
@@ -33,5 +33,12 @@ if (!bundled.startsWith('#!')) {
 
 // Mark it executable (chmod 755)
 chmodSync(path, 0o755)
+
+// Ship the official App Plugin marketplace with the package so the built-in
+// marketplace works offline without a runtime git clone. Test files excluded.
+cpSync('plugins', 'dist/plugins', {
+  recursive: true,
+  filter: (src) => !/\.test\.(ts|js|tsx|jsx)$/.test(src),
+})
 
 console.log('✔ Built dist/cli.mjs')
