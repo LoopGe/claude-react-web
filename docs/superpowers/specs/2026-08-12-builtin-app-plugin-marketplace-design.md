@@ -94,8 +94,8 @@ export const BUILTIN_MARKETPLACE_DISPLAY_NAME = 'Claude React Web Plugins'
   - `join(here, 'plugins')` — when bundled as `dist/cli.mjs` → `dist/plugins`
   - `join(here, '..', '..', 'plugins')` — when running `tsx server/cli.ts` from `server/app-plugins/` → `<repo>/plugins`
   where `here = dirname(fileURLToPath(import.meta.url))`. (The dev candidate is `../..` because the module lives at `server/app-plugins/`.)
-- `buildBuiltinRecord(store, pluginsDir): Promise<AppPluginMarketplaceRecord>` — `manifest = await parseAppPluginMarketplace(pluginsDir)` (synchronous local read, fully populated from the start), `source: { type: 'local', path: pluginsDir }`, `cloneDir: pluginsDir`, `lastSha: ''`, timestamps `Date.now()`.
-- `seedBuiltinMarketplace(store): Promise<void>` — resolve the dir (warn + return if absent, e.g. a broken install), `buildBuiltinRecord`, then `await store.seedBuiltinIfFirstRun(record)`. Any error is caught and logged — seeding must never break boot. **No background clone**: the local parse is instant.
+- `buildBuiltinRecord(pluginsDir): Promise<AppPluginMarketplaceRecord>` — `manifest = await parseAppPluginMarketplace(pluginsDir)` (synchronous local read, fully populated from the start), `source: { type: 'local', path: pluginsDir }`, `cloneDir: pluginsDir`, `lastSha: ''`, timestamps `Date.now()`. (No `store` param — `cloneDir` is the bundled dir itself, not `store.cloneDirFor`.)
+- `seedBuiltinMarketplace(store, pluginsDir?): Promise<void>` — resolve the dir (warn + return if absent, e.g. a broken install), `buildBuiltinRecord`, then `await store.seedBuiltinIfFirstRun(record)`. Any error is caught and logged — seeding must never break boot. **No background clone**: the local parse is instant. (`pluginsDir` is optional for tests; it defaults to the runtime-resolved bundled dir.)
 
 ### 7. CLI wiring
 
