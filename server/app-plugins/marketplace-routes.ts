@@ -13,6 +13,7 @@ import { HttpError, createErrorHandler } from '../errors.js'
 import { safeJson } from '../routes/index.js'
 import { assertHttpsUrl, gitClone, gitGetHeadSha, gitPull } from '../git-clone.js'
 import { parseAppPluginMarketplace } from './marketplace-parser.js'
+import { validateRelativePath } from '../../shared/app-plugins/path-security.js'
 import { createLogger } from '../log.js'
 import type { AppPluginMarketplaceStore } from './marketplace-store.js'
 import type { AppPluginManager } from './app-plugin-manager.js'
@@ -31,11 +32,17 @@ export function buildAppPluginMarketplaceRouter(store: AppPluginMarketplaceStore
   app.get('/', (c) => c.json({ marketplaces: store.list().map(toInfo) }))
 
   app.post('/', async (c) => {
-    const body = await safeJson<{ url?: string; ref?: string }>(c.req)
+    const body = await safeJson<{ url?: string; ref?: string; subdir?: string }>(c.req)
     const url = body.url?.trim()
     if (!url) throw new HttpError(400, 'url is required')
     assertHttpsUrl(url)
     const ref = typeof body.ref === 'string' && body.ref.trim() ? body.ref.trim() : undefined
+    let subdir: string | undefined
+    if (typeof body.subdir === 'string' && body.subdir.trim()) {
+      subdir = body.subdir.trim()
+      const subErr = validateRelativePath(subdir, { isWindows: process.platform === 'win32' })
+      if (subErr) throw new HttpError(400, `invalid subdir: ${subErr}`)
+    }
     const id = store.generateId(url)
     const cloneDir = store.cloneDirFor(id)
     await fs.mkdir(dirname(cloneDir), { recursive: true })
@@ -47,7 +54,7 @@ export function buildAppPluginMarketplaceRouter(store: AppPluginMarketplaceStore
     }
     let manifest
     try {
-      manifest = await parseAppPluginMarketplace(cloneDir)
+      manifest = await parseAppPluginMarketplace(cloneDir, subdir)
     } catch (err) {
       await rm(cloneDir, { recursive: true, force: true }).catch(() => {})
       throw new HttpError(400, `marketplace parse failed: ${(err as Error).message}`)
@@ -58,6 +65,7 @@ export function buildAppPluginMarketplaceRouter(store: AppPluginMarketplaceStore
       id,
       displayName: manifest.name ?? id,
       source: { type: 'https', url, ref },
+      subdir,
       cloneDir,
       addedAt: now,
       lastRefreshedAt: now,
@@ -75,23 +83,30 @@ export function buildAppPluginMarketplaceRouter(store: AppPluginMarketplaceStore
     if (!SAFE_NAME.test(id)) throw new HttpError(400, 'invalid marketplace id')
     const record = store.get(id)
     if (!record) throw new HttpError(404, 'marketplace not found')
-    let pull
-    try {
-      pull = await gitPull(record.cloneDir)
-    } catch (err) {
-      throw new HttpError(400, `refresh failed: ${(err as Error).message}`)
-    }
-    const manifest = await parseAppPluginMarketplace(record.cloneDir)
-    const updated: AppPluginMarketplaceRecord = {
-      ...record,
-      manifest,
-      lastRefreshedAt: Date.now(),
-      lastSha: pull.newSha,
+
+    // Local (bundled) marketplaces have no git remote — refresh re-parses the
+    // on-disk catalog in place. https marketplaces git-pull as before. Both
+    // re-parse from the effective root (cloneDir + optional subdir).
+    let updated: AppPluginMarketplaceRecord
+    let didUpdate = false
+    if (record.source.type === 'local') {
+      const manifest = await parseAppPluginMarketplace(record.cloneDir, record.subdir)
+      updated = { ...record, manifest, lastRefreshedAt: Date.now() }
+    } else {
+      let pull
+      try {
+        pull = await gitPull(record.cloneDir)
+      } catch (err) {
+        throw new HttpError(400, `refresh failed: ${(err as Error).message}`)
+      }
+      const manifest = await parseAppPluginMarketplace(record.cloneDir, record.subdir)
+      updated = { ...record, manifest, lastRefreshedAt: Date.now(), lastSha: pull.newSha }
+      didUpdate = pull.updated
     }
     store.upsert(updated)
     await store.flush()
     // Re-validate every plugin installed from this marketplace so version /
-    // permission changes from the pulled content surface (escalation →
+    // permission changes from the refreshed content surface (escalation →
     // permission-required; new version → updated record).
     for (const pluginRecord of manager.recordsForMarketplace(id)) {
       try {
@@ -100,7 +115,7 @@ export function buildAppPluginMarketplaceRouter(store: AppPluginMarketplaceStore
         log.warn(`revalidate ${pluginRecord.id} after marketplace refresh failed: ${(err as Error).message}`)
       }
     }
-    return c.json({ ok: true, updated: pull.updated, marketplace: toInfo(updated) })
+    return c.json({ ok: true, updated: didUpdate, marketplace: toInfo(updated) })
   })
 
   app.delete('/:id', async (c) => {
