@@ -23,12 +23,24 @@ export interface AppPluginMarketplaceManifest {
   plugins: AppPluginMarketplacePlugin[]
 }
 
+/** Where a marketplace's plugin content comes from. `https` = a user-added
+ *  cloned git repo; `local` = a bundled dir shipped with the app
+ *  (dist/plugins/) that is read in place, never cloned. */
+export type AppPluginMarketplaceSource =
+  | { type: 'https'; url: string; ref?: string }
+  | { type: 'local'; path: string }
+
 /** A marketplace record persisted in the store (one per cloned repo). */
 export interface AppPluginMarketplaceRecord {
   /** URL-safe slug used as the on-disk clone dir name + route :id. */
   id: string
   displayName: string
-  source: { type: 'https'; url: string; ref?: string }
+  source: AppPluginMarketplaceSource
+  /** Optional relative path within cloneDir that holds the marketplace
+   *  content (catalog + plugin dirs). The official host repo keeps its
+   *  catalog in `plugins/`, so a marketplace seeded from it uses
+   *  subdir: 'plugins'. Absent = content is at cloneDir root. */
+  subdir?: string
   /** Absolute path to the cloned repo on disk. */
   cloneDir: string
   addedAt: number
@@ -43,8 +55,10 @@ export interface AppPluginMarketplaceRecord {
 export interface AppPluginMarketplaceInfo {
   id: string
   displayName: string
-  url: string
+  sourceType: 'https' | 'local'
+  url?: string
   ref?: string
+  subdir?: string
   addedAt: number
   lastRefreshedAt: number
   lastSha: string

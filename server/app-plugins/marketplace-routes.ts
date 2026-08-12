@@ -152,8 +152,10 @@ function toInfo(r: AppPluginMarketplaceRecord): AppPluginMarketplaceInfo {
   return {
     id: r.id,
     displayName: r.displayName,
-    url: r.source.url,
-    ref: r.source.ref,
+    sourceType: r.source.type,
+    url: r.source.type === 'https' ? r.source.url : undefined,
+    ref: r.source.type === 'https' ? r.source.ref : undefined,
+    subdir: r.subdir,
     addedAt: r.addedAt,
     lastRefreshedAt: r.lastRefreshedAt,
     lastSha: r.lastSha,
