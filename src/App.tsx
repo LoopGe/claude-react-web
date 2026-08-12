@@ -35,7 +35,7 @@ import { PERMISSION_MODE_CYCLE } from './types'
 import { ACCENT_COLORS } from './theme'
 import { AppearancePanel } from './components/AppearancePanel'
 import { ErrorBoundary } from './components/ErrorBoundary'
-import { IconSettings, IconBellToggle, IconMenu } from './components/icons/ToolIcons'
+import { IconSettings, IconBellToggle, IconMenu, IconSidebar } from './components/icons/ToolIcons'
 import { UpdateBanner } from './components/UpdateBanner'
 import { useUpdateInfo } from './hooks/useUpdateInfo'
 import { useUiState } from './hooks/useUiState'
@@ -318,7 +318,7 @@ export function App() {
 
   /** Desktop sidebar hide/show. Persisted so a reload restores the state;
    *  expanding keeps the drag-resized width (see --sidebar-width below). */
-  const [sidebarCollapsed, _setSidebarCollapsed] = useLocalStorage<boolean>(SIDEBAR_COLLAPSED_KEY, false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useLocalStorage<boolean>(SIDEBAR_COLLAPSED_KEY, false)
 
   // Groups are optional — sessions without a group appear in the
   // "Ungrouped" sidebar section. No default group is auto-created.
@@ -2366,6 +2366,11 @@ export function App() {
           description: 'Command palette',
         },
         {
+          combo: 'mod+b',
+          handler: () => setSidebarCollapsed((v) => !v),
+          description: 'Toggle sidebar',
+        },
+        {
           combo: 'mod+shift+h',
           handler: () => {
             // No-op when no panel is focused — the overlay is per-panel
@@ -2481,7 +2486,7 @@ export function App() {
           description: 'Close overlay / Interrupt / Double-tap for resume',
         },
       ],
-      [closeSession, setGitPanelOpenFor, setHelpOpen, setSettingsOpenFor, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel],
+      [closeSession, setGitPanelOpenFor, setHelpOpen, setSettingsOpenFor, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel, setSidebarCollapsed],
       // requestResumeForPanel is intentionally omitted — it's declared after
       // this useMemo (line order) and is stable (useCallback with stable deps).
     )
@@ -3500,6 +3505,19 @@ export function App() {
               it at the top was both redundant and subtly wrong (it looked
               like "the active session" when all three are active). Now the
               row holds only the app-level toolbar. */}
+          {/* Desktop sidebar hide/show toggle. Rendered only on desktop — on mobile
+              the sidebar is a drawer controlled by the hamburger (drawer-toggle). */}
+          {!isMobile && (
+            <button
+              className="btn btn-icon"
+              onClick={() => setSidebarCollapsed((v) => !v)}
+              aria-pressed={!sidebarCollapsed}
+              aria-label={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
+              title={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
+            >
+              <IconSidebar size={16} />
+            </button>
+          )}
           {/* role="group" rather than "toolbar": ARIA's toolbar pattern
               expects arrow-key roving between items, which we don't
               implement (Tab walks the cluster like ordinary buttons).
