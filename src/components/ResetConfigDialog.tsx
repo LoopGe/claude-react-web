@@ -29,6 +29,9 @@ export function ResetConfigDialog({ open, onClose }: Props) {
   const presence = useExitPresence(open)
   const dialogRef = useRef<HTMLDivElement>(null)
   useFocusTrap(dialogRef, { restoreFocus: true })
+  // Handle for the post-reset page reload. Cleared on unmount so the timer
+  // can't fire after the dialog (or a test environment) is torn down.
+  const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const toast = useToast()
   const { reset, clearing } = useResetConfig()
 
@@ -52,6 +55,13 @@ export function ResetConfigDialog({ open, onClose }: Props) {
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
   }, [open, onClose])
+  // Cancel a pending post-reset reload when the dialog actually unmounts.
+  // (Not when `open` goes false — the 400ms reload is the intended behavior
+  // after a successful reset; it must only be cancelled if the component is
+  // torn down first.)
+  useEffect(() => () => {
+    if (reloadTimer.current !== null) { clearTimeout(reloadTimer.current); reloadTimer.current = null }
+  }, [])
 
   if (!presence.shouldRender) return null
 
@@ -88,7 +98,8 @@ export function ResetConfigDialog({ open, onClose }: Props) {
       }
       toast.success(`Cleared ${okCount} item(s)`)
       onClose()
-      setTimeout(() => location.reload(), 400)
+      if (reloadTimer.current !== null) clearTimeout(reloadTimer.current)
+      reloadTimer.current = setTimeout(() => location.reload(), 400)
     } catch (e) {
       // Server POST failed (network/5xx/abort). useResetConfig's finally has
       // already reset `clearing`; browser-side items were NOT cleared (they

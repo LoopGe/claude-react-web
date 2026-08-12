@@ -404,7 +404,10 @@ describe('SessionStore projection (persist-only capping)', () => {
     expect(kept).toBeLessThan(300)
     // lastMessageUuid preserved.
     expect(data.lastMessageUuid).toBe('u-299')
-  })
+    // This test does ~300 × 8KB localStorage writes — measured 4.0s isolated,
+    // up to ~5.7s under full-suite parallel load, which exceeds vitest's 5s
+    // default and flakes the whole verify gate. Raise the per-test timeout.
+  }, 10_000)
 })
 
 describe('SessionStore.clearPersisted', () => {
