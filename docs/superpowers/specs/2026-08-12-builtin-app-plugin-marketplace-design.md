@@ -123,10 +123,10 @@ Gated on `--disable-app-plugins` because in that mode the marketplace routes are
 | `server/app-plugins/app-plugin-manager.ts` | `resolveInstallSource` passes `mp.source.subdir` to `pluginDirInClone` |
 | `server/app-plugins/builtin-marketplace.ts` | **new** — constants + `buildBuiltinRecord` / `seedBuiltinMarketplace` / `populateBuiltin` |
 | `server/cli.ts` | call `seedBuiltinMarketplace` after store load (gated on `!args.disableAppPlugins`) |
-| `server/app-plugins/marketplace-store.test.ts` | first-run seed tests |
+| `server/app-plugins/marketplace-store.test.ts` | **new** — first-run seed tests |
 | `server/app-plugins/marketplace-parser.test.ts` | subdir parse + containment tests |
+| `server/app-plugins/marketplace-install.test.ts` | manager install resolves a subdir marketplace (record with `source.subdir`) |
 | `server/app-plugins/builtin-marketplace.test.ts` | **new** — record shape + seed no-op tests |
-| `server/app-plugins/marketplace-routing.test.ts` | POST with `subdir` against a local git repo fixture |
 
 No client, `package.json`, or `build.mjs` changes.
 
@@ -137,7 +137,7 @@ No client, `package.json`, or `build.mjs` changes.
 3. **Parser — `pluginDirInClone` containment.** With `subdir`, resolving a relative `dir` stays under `cloneDir`; `..` / absolute are rejected by the existing `validateRelativePath` used at catalog-coercion time.
 4. **builtin-marketplace — record shape.** `buildBuiltinRecord` yields the right `id` / `source.url` / `source.subdir` / `cloneDir` under the store's cache dir / empty manifest.
 5. **builtin-marketplace — seed no-op.** With a store whose file already exists, `seedBuiltinMarketplace` does not add a record and does not kick off a populate.
-6. **Routing — subdir clone/parse.** Mirror the existing `marketplace-routing.test.ts` local git-repo fixture: `POST /marketplaces { url, subdir: 'plugins' }` clones, parses the subdir catalog, and `GET /:id/plugins` lists the plugins; `POST /:id/refresh` re-parses through `source.subdir`.
+6. **Manager — subdir install resolution.** Mirror `marketplace-install.test.ts`'s fake-clone pattern: pre-populate the store with a record whose `source.subdir` is `plugins` and lay the fake clone out as `cloneDir/plugins/<plugin>/crw-plugin.json` + `cloneDir/plugins/app-plugins-marketplace.json`; `manager.install({ type: 'marketplace', ... })` succeeds, records marketplace provenance, and the installed record's `source.path` points under `cloneDir/plugins/`. A same record **without** `subdir` (plugins at the clone root) still installs — guards the regression.
 7. **Regression — existing marketplace tests still pass** (routing / install / parser) with the new optional `subdir` field absent.
 
 ## Open questions / decisions
