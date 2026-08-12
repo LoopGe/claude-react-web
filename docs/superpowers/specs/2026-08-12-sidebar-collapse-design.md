@@ -88,7 +88,9 @@ Scope the collapse to desktop so mobile is untouched:
   flex-end` to `flex-start`, and move `.main-toolbar { margin-left: auto }`
   from the mobile media query into the base rule — this puts the button at the
   left edge while the existing cluster stays flush-right (matches the mobile
-  header layout).
+  header layout). The now-redundant `.main-header { justify-content:
+  flex-start }` / `.main-toolbar { margin-left: auto }` overrides in the
+  ≤768px media query can be removed.
 
 ### Keyboard shortcut
 
