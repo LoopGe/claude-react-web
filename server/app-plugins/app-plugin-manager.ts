@@ -367,7 +367,7 @@ export class AppPluginManager implements AppPluginBroadcaster {
     if (!mp) throw new HttpError(404, `marketplace not found: ${source.marketplaceId}`)
     const entry = mp.manifest.plugins.find((p) => p.name === source.pluginName)
     if (!entry) throw new HttpError(404, `plugin '${source.pluginName}' not found in marketplace '${source.marketplaceId}'`)
-    const dir = await resolvePluginDir(pluginDirInClone(mp.cloneDir, entry.dir))
+    const dir = await resolvePluginDir(pluginDirInClone(mp.cloneDir, entry.dir, mp.subdir))
     // Defense against symlink escape: the marketplace clone is untrusted
     // (arbitrary GitHub repo, and git commits symlinks), so a plugin subdir
     // could be a symlink pointing outside the clone. resolvePluginDir

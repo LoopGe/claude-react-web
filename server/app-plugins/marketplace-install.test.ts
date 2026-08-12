@@ -145,3 +145,58 @@ describe('AppPluginManager — marketplace install', () => {
     await expect(manager.enable('translator.claude-react-web')).rejects.toThrow(/re-consent|permission/i)
   })
 })
+
+describe('AppPluginManager — marketplace install with subdir', () => {
+  let stateDir: string
+  let cloneDir: string
+  let store: AppPluginStore
+  let mpStore: AppPluginMarketplaceStore
+  let manager: AppPluginManager
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(join(tmpdir(), 'mp-inst-sub-'))
+    cloneDir = mkdtempSync(join(tmpdir(), 'mp-clone-sub-'))
+    // Marketplace content lives under <clone>/plugins/ — the layout of the
+    // official host repo (catalog is NOT at the clone root).
+    writePlugin(join(cloneDir, 'plugins', 'translator'), 'translator.claude-react-web')
+    writeFileSync(join(cloneDir, 'plugins', 'app-plugins-marketplace.json'), JSON.stringify({
+      name: 'Nested Market',
+      appPlugins: [{ name: 'translator', dir: 'translator', description: 'translate', version: '1.0.0' }],
+    }))
+    store = new AppPluginStore({ stateDir })
+    mpStore = new AppPluginMarketplaceStore({ stateDir })
+    manager = new AppPluginManager({ store, stateDir, hostVersion: '0.6.0', hostNodeMajor: 20, sm: smStub, marketplaceStore: mpStore })
+    const now = Date.now()
+    const record: AppPluginMarketplaceRecord = {
+      id: 'sub-mp',
+      displayName: 'Nested Market',
+      source: { type: 'https', url: 'https://github.com/loopge/claude-react-web' },
+      subdir: 'plugins',
+      cloneDir,
+      addedAt: now,
+      lastRefreshedAt: now,
+      lastSha: 'abc123',
+      manifest: { name: 'Nested Market', plugins: [{ name: 'translator', dir: 'translator' }] },
+    }
+    mpStore.upsert(record)
+  })
+
+  afterEach(async () => {
+    await manager.shutdown().catch(() => {})
+    rmSync(stateDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    rmSync(cloneDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+  })
+
+  it('installs a plugin from a subdir marketplace (content under clone/subdir)', async () => {
+    const result = await manager.install({ type: 'marketplace', marketplaceId: 'sub-mp', pluginName: 'translator' })
+    expect(result.id).toBe('translator.claude-react-web')
+    const rec = store.get('translator.claude-react-web')!
+    expect(rec.source.type).toBe('marketplace')
+    if (rec.source.type === 'marketplace') {
+      expect(rec.source.marketplaceId).toBe('sub-mp')
+      // The path is realpath'd by resolvePluginDir; just verify it ends with
+      // the expected subdir-relative suffix (avoids Windows 8.3 name issues).
+      expect(rec.source.path).toMatch(/plugins[/\\]translator$/)
+    }
+  })
+})

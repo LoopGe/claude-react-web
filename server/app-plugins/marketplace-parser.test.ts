@@ -71,6 +71,37 @@ describe('parseAppPluginMarketplace', () => {
   })
 })
 
+describe('parseAppPluginMarketplace — subdir', () => {
+  let root: string
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'mp-parse-sub-')) })
+  afterEach(() => { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }) })
+
+  it('parses a marketplace whose catalog lives in a subdir', async () => {
+    writePlugin(join(root, 'plugins', 'translator'), 'translator.claude-react-web')
+    writeFileSync(join(root, 'plugins', 'app-plugins-marketplace.json'), JSON.stringify({
+      name: 'Nested Market',
+      appPlugins: [{ name: 'translator', dir: 'translator' }],
+    }))
+    const res = await parseAppPluginMarketplace(root, 'plugins')
+    expect(res.name).toBe('Nested Market')
+    expect(res.plugins.map((p) => p.name)).toEqual(['translator'])
+  })
+
+  it('auto-scans the subdir when it has no manifest', async () => {
+    writePlugin(join(root, 'plugins', 'alpha'), 'com.example.alpha')
+    const res = await parseAppPluginMarketplace(root, 'plugins')
+    expect(res.plugins.map((p) => p.name)).toEqual(['com.example.alpha'])
+  })
+
+  it('throws on an invalid (escaping) subdir', async () => {
+    await expect(parseAppPluginMarketplace(root, '../escape')).rejects.toThrow(/subdir/)
+  })
+
+  it('pluginDirInClone resolves inside the subdir', () => {
+    expect(pluginDirInClone(root, 'translator', 'plugins')).toBe(join(root, 'plugins', 'translator'))
+  })
+})
+
 describe('parseAppPluginMarketplace — real plugins/ dir', () => {
   it('lists the translator from the shipped marketplace catalog', async () => {
     const res = await parseAppPluginMarketplace(PLUGINS_DIR)

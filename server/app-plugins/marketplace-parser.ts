@@ -25,9 +25,12 @@ const MARKETPLACE_FILE = 'app-plugins-marketplace.json'
 
 /** Parse a marketplace clone. Returns the catalog (name + plugins). Throws
  *  on a malformed marketplace.json; an empty catalog (no plugins found) is
- *  a valid result, not an error. */
-export async function parseAppPluginMarketplace(repoRoot: string): Promise<AppPluginMarketplaceManifest> {
-  const manifestPath = join(repoRoot, MARKETPLACE_FILE)
+ *  a valid result, not an error. `subdir` is an optional contained relative
+ *  path within `repoRoot` that holds the marketplace content (the official
+ *  host repo keeps its catalog in `plugins/`). */
+export async function parseAppPluginMarketplace(repoRoot: string, subdir?: string): Promise<AppPluginMarketplaceManifest> {
+  const root = marketplaceRoot(repoRoot, subdir)
+  const manifestPath = join(root, MARKETPLACE_FILE)
   let fromManifest = false
   let name: string | undefined
   let entries: AppPluginMarketplacePlugin[] = []
@@ -52,9 +55,9 @@ export async function parseAppPluginMarketplace(repoRoot: string): Promise<AppPl
   }
 
   if (!fromManifest) {
-    entries = await autoScan(repoRoot)
+    entries = await autoScan(root)
     if (entries.length === 0) {
-      log.warn(`no ${MARKETPLACE_FILE} and no plugins found by auto-scan in ${repoRoot}`)
+      log.warn(`no ${MARKETPLACE_FILE} and no plugins found by auto-scan in ${root}`)
     }
   }
 
@@ -133,9 +136,22 @@ async function autoScan(repoRoot: string): Promise<AppPluginMarketplacePlugin[]>
 }
 
 /** Resolve a plugin entry's absolute dir within the clone (after containment
- *  was already validated). Used by the install route. */
-export function pluginDirInClone(repoRoot: string, dir: string): string {
-  // resolvePath with a relative `dir` stays under repoRoot; the entry was
-  // already validated to be relative + contained.
-  return resolvePath(repoRoot, dir)
+ *  was already validated). Used by the install route. `subdir` is the
+ *  marketplace content subdir, resolved first. */
+export function pluginDirInClone(repoRoot: string, dir: string, subdir?: string): string {
+  // resolvePath with a relative `dir` stays under the effective root; the
+  // entry was already validated to be relative + contained, and the subdir
+  // is validated by marketplaceRoot.
+  return resolvePath(marketplaceRoot(repoRoot, subdir), dir)
+}
+
+/** Resolve the effective marketplace root (clone root + optional subdir),
+ *  validating that the subdir stays inside the clone. The record layer
+ *  validates on persist; this re-checks as defense-in-depth because the
+ *  parser can also be called directly. */
+function marketplaceRoot(repoRoot: string, subdir?: string): string {
+  if (!subdir) return repoRoot
+  const err = validateRelativePath(subdir, { isWindows: process.platform === 'win32' })
+  if (err) throw new Error(`invalid marketplace subdir '${subdir}': ${err}`)
+  return join(repoRoot, subdir)
 }
