@@ -633,6 +633,7 @@
 /* Status dots glow in their own colour. */
 [data-skin="glow"] .session-status-dot.status-live { box-shadow: var(--dot-glow) color-mix(in srgb, var(--ok) 80%, transparent); }
 [data-skin="glow"] .session-status-dot.status-working { box-shadow: var(--dot-glow) color-mix(in srgb, var(--accent) 85%, transparent); }
+[data-skin="glow"] .session-status-dot.status-waiting { box-shadow: var(--dot-glow) color-mix(in srgb, var(--warn) 80%, transparent); }
 [data-skin="glow"] .session-status-dot.status-err { box-shadow: var(--dot-glow) color-mix(in srgb, var(--danger) 80%, transparent); }
 
 /* Checked checkboxes glow in the accent — the same halo vocabulary as the

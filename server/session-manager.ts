@@ -564,10 +564,23 @@ export class SessionManager {
         // always cleared here — a later re-arm (e.g. an autoResume re-seeing
         // the launch ack) is never blocked by a stale entry.
         perSession!.delete(toolUseId)
+        // The sidebar reads `backgroundSubagentCount` for its status dot;
+        // broadcast the updated info so it flips out of 'waiting' the moment
+        // the subagent settles (skip when the session was unloaded mid-poll).
+        if (this.sessions.has(session.id)) {
+          this.broadcastGlobal({ kind: 'update', session: this.info(session) })
+        }
         this.broadcastSynthesizedTaskNotification(session, toolUseId, agentId, completion)
       },
     })
     perSession.set(toolUseId, stop)
+    // A new background subagent just launched — broadcast the updated count
+    // so the sidebar can switch this session away from a plain 'live' dot
+    // (the parent turn is still running right now; the `result` frame that
+    // ends it re-broadcasts info via persist(), carrying the same count).
+    if (this.sessions.has(session.id)) {
+      this.broadcastGlobal({ kind: 'update', session: this.info(session) })
+    }
   }
 
   /** Synthesize a `system`/`task_notification` frame for a completed
@@ -2340,7 +2353,7 @@ export class SessionManager {
    *
    *  Phase-guarded like recap auto-generation: unknown → 404, terminated →
    *  410, dormant → 412, working (in-flight turn / queued input / unanswered
-   *  permission prompt) → 409. */
+   *  permission prompt / running background subagent) → 409. */
   async compact(id: string): Promise<SessionInfo> {
     const s = this.require(id)
     switch (this.phaseOf(s)) {
@@ -2433,16 +2446,26 @@ export class SessionManager {
    *
    *  Reuses the private `unload()` dormant path verbatim; the only added
    *  logic is the idle guard. `phaseOf` returns `'working'` for `clearing`,
-   *  `pendingTurns > 0`, `queueDepth > 0`, and `pending.size > 0`, so a
-   *  single `!== 'idle'` check rejects every mid-turn race (in-flight turn,
-   *  queued input, unanswered permission prompt) — sleeping any of those
-   *  would drop an in-flight assistant response or strand a permission
-   *  awaiter. Terminated sessions fail `requireLive` (410); already-dormant
-   *  sessions aren't in the live map, so `requireLive` → `require` throws 404. */
+   *  `pendingTurns > 0`, `queueDepth > 0`, `pending.size > 0`, and a live
+   *  background-subagent watcher, so a single `!== 'idle'` check rejects
+   *  every mid-turn race (in-flight turn, queued input, unanswered
+   *  permission prompt, still-running async subagent) — sleeping any of
+   *  those would drop an in-flight assistant response, strand a permission
+   *  awaiter, or abandon a background subagent's completion watcher.
+   *  Terminated sessions fail `requireLive` (410); already-dormant sessions
+   *  aren't in the live map, so `requireLive` → `require` throws 404. */
   async sleep(id: string): Promise<SessionInfo> {
     const s = this.requireLive(id)
     if (this.phaseOf(s) !== 'idle') {
-      throw new HttpError(409, `session ${id} is working — wait for the turn to finish before sleeping`)
+      // The parent turn may have already finished while a background
+      // subagent is still running — blame the real blocker, not the turn.
+      const hasBackgroundSubagent = (this.backgroundWatchers.get(s.id)?.size ?? 0) > 0
+      throw new HttpError(
+        409,
+        hasBackgroundSubagent
+          ? `session ${id} has a background subagent still running — wait for it to finish before sleeping`
+          : `session ${id} is working — wait for the turn to finish before sleeping`,
+      )
     }
     log.info(`[session ${id}] sleep: unloading to dormant (releasing SDK subprocess + subscribers)`)
     // Mark the session as deliberately-slept BEFORE unload persists it, so
@@ -3809,6 +3832,10 @@ export class SessionManager {
       error: s.error,
       working: isWorking,
       workingSince: isWorking ? s.workingSince : undefined,
+      // Background (async) subagents still in flight. The parent turn may
+      // have completed (working=false) while these keep running; the sidebar
+      // uses the count to show a 'waiting' state instead of plain 'live'.
+      backgroundSubagentCount: this.backgroundWatchers.get(s.id)?.size ?? 0,
       lastTurnAt: s.lastTurnAt,
       gitStartSha: s.gitStartSha,
       pendingPermissionCount: s.pending.size,
@@ -3833,13 +3860,15 @@ export class SessionManager {
   phaseOf(s: Session): SessionPhase {
     if (s.terminated) return 'terminated'
     if (!s.running) return 'dormant'
-    // Any in-flight assistant turn, queued user input, or unanswered
-    // tool-permission prompt counts as "working" dnone of those are
-    // safe moments to summarise the conversation.
+    // Any in-flight assistant turn, queued user input, unanswered
+    // tool-permission prompt, or running background subagent counts as
+    // "working" dnone of those are safe moments to summarise the
+    // conversation (the transcript is still being appended to).
     if (s.clearing) return 'working'
     if (s.pendingTurns > 0) return 'working'
     if (s.handle.queueDepth > 0) return 'working'
     if (s.pending.size > 0) return 'working'
+    if ((this.backgroundWatchers.get(s.id)?.size ?? 0) > 0) return 'working'
     return 'idle'
   }
 
@@ -3869,6 +3898,8 @@ export class SessionManager {
       error: meta.error,
       working: false,
       workingSince: undefined,
+      // A dormant session has no live Query, so no subagent watchers.
+      backgroundSubagentCount: undefined,
       lastTurnAt: meta.lastTurnAt,
       gitStartSha: meta.gitStartSha,
       // A dormant Query holds no canUseTool callbacks; pending is always 0.

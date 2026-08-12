@@ -74,6 +74,43 @@ describe('SessionCard', () => {
     expect(container.textContent).toContain('working')
   })
 
+  it('renders "waiting" badge when parent turn is done but a background subagent is in flight', () => {
+    const session = makeSession({ running: true, working: false, backgroundSubagentCount: 1, phase: 'working' })
+    const { container } = render(<SessionCard {...baseProps} session={session} />)
+    expect(container.textContent).toContain('waiting')
+    // Dot carries the amber 'waiting' class, not the green 'live'.
+    const dot = container.querySelector('.session-status-dot')
+    expect(dot?.classList.contains('status-waiting')).toBe(true)
+    expect(dot?.classList.contains('status-live')).toBe(false)
+  })
+
+  it('renders "live" badge when running with zero background subagents', () => {
+    const session = makeSession({ running: true, working: false, backgroundSubagentCount: 0 })
+    const { container } = render(<SessionCard {...baseProps} session={session} />)
+    expect(container.textContent).toContain('live')
+    const dot = container.querySelector('.session-status-dot')
+    expect(dot?.classList.contains('status-live')).toBe(true)
+  })
+
+  it('prefers the "waiting" badge over "err" while a background subagent is in flight', () => {
+    // Precedence must match statusClass(): working > waiting > err. A running
+    // session with background work is "waiting" even if it also carries an
+    // error — the error text still renders in the card body below.
+    const session = makeSession({ running: true, working: false, error: 'Something failed', backgroundSubagentCount: 1 })
+    const { container } = render(<SessionCard {...baseProps} session={session} />)
+    expect(container.textContent).toContain('waiting')
+    expect(container.textContent).not.toContain('err')
+    const dot = container.querySelector('.session-status-dot')
+    expect(dot?.classList.contains('status-waiting')).toBe(true)
+  })
+
+  it('surfaces the waiting status label in the badge title tooltip', () => {
+    const session = makeSession({ running: true, working: false, backgroundSubagentCount: 1 })
+    const { container } = render(<SessionCard {...baseProps} session={session} />)
+    const badge = container.querySelector('.session-item-badge')
+    expect(badge?.getAttribute('title')).toBe('Waiting for a background subagent')
+  })
+
   it('renders error badge', () => {
     const session = makeSession({ error: 'Something failed' })
     const { container } = render(<SessionCard {...baseProps} session={session} />)

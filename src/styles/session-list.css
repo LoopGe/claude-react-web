@@ -1085,6 +1085,11 @@
   animation: session-working-pulse 1s ease-in-out infinite;
 }
 .session-item-badge.status-working .session-status-label { color: var(--accent); }
+/* waiting = parent turn done but a background (async) subagent is still
+   running → amber. Not the full working pulse — the main turn has ended and
+   the user can still type — but distinctly not the green "live"/idle dot. */
+.session-status-dot.status-waiting { background: var(--warn); }
+.session-item-badge.status-waiting .session-status-label { color: color-mix(in srgb, var(--warn) 70%, var(--fg-muted)); }
 /* err → danger */
 .session-status-dot.status-err { background: var(--danger); }
 .session-item-badge.status-err .session-status-label { color: var(--danger); }

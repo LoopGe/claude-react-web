@@ -244,8 +244,17 @@ export function watchBackgroundSubagent(opts: WatchOptions): () => void {
   }
   const timer = setInterval(tick, intervalMs)
   // The subagent may have already finished by the time the ack reaches us —
-  // check once immediately rather than waiting a full interval.
-  tick()
+  // check once immediately rather than waiting a full interval. Deferred to
+  // a microtask so onCompleted can NEVER fire synchronously before the caller
+  // has registered the watcher entry: startBackgroundSubagentWatcher sets the
+  // map entry AFTER watchBackgroundSubagent returns, and a synchronous
+  // completion would delete a not-yet-present entry and then re-add a stale
+  // one behind it (its interval is already cleared, so nothing would ever
+  // clean it up — backgroundSubagentCount would stick at 1 forever). A
+  // microtask runs after the current synchronous stack, so the entry is
+  // guaranteed present when the first poll fires; the `done` flag still lets
+  // stop() (session unload) cancel the poll before it runs.
+  queueMicrotask(tick)
   return () => {
     done = true
     clearInterval(timer)

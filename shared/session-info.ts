@@ -107,6 +107,15 @@ export interface SessionInfoBase<PM = string> {
   /** Epoch ms when the current turn started. Only set while `working` is
    *  true; allows the UI to compute an accurate elapsed timer. */
   workingSince?: number
+  /** Number of background (async) subagents currently in flight for this
+   *  session. The parent turn may have COMPLETED (`working` false, phase
+   *  'idle'-ish) while these are still running — the SDK's Agent tool acks
+   *  a `run_in_background` launch immediately and the main turn ends, but
+   *  the subagent keeps producing until a task_notification lands. Derived
+   *  server-side from the active subagent-transcript watchers, so the
+   *  sidebar can avoid showing a session as a plain green "live" while it
+   *  is actually waiting on background work. Undefined/0 when none. */
+  backgroundSubagentCount?: number
   /** Epoch ms of the last completed turn. Used to flag unread. */
   lastTurnAt?: number
   /** Snapshot of HEAD at session spawn time. Used by the GitPanel

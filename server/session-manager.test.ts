@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { rmRf } from './__test-utils__/index.js'
+import { subagentTranscriptPath } from './subagent-watcher.js'
 
 // --- SDK mock ---------------------------------------------------------------
 //
@@ -346,6 +347,88 @@ describe('SessionManager', () => {
     expect(after.working).toBe(false)
     expect(after.lastTurnAt).toBeDefined()
     expect(after.lastTurnAt!).toBeGreaterThanOrEqual(before)
+  })
+
+  it('reports backgroundSubagentCount + a working phase while a background subagent is in flight', async () => {
+    const info = sm.create({ cwd: '/tmp/workspace' })
+    expect(info.backgroundSubagentCount).toBe(0)
+    expect(info.phase).toBe('idle')
+
+    // Point the transcript watcher at the throwaway state dir so its poll
+    // never touches the real ~/.claude. No transcript exists there, so the
+    // watcher stays armed and the count holds at 1 (instead of completing
+    // synchronously on the watcher's immediate first poll).
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    try {
+      // Feed the pump an async launch ack: an Agent tool_result whose content
+      // starts with the anchored launch marker and carries an agentId line.
+      mockHandles[0].emit({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'tu_bg_1',
+            content: 'Async agent launched successfully.\nagentId: agent-1\n',
+          }],
+        },
+      })
+      await tick()
+
+      const waiting = sm.get(info.id)
+      // Parent turn is NOT running — only the background subagent is.
+      expect(waiting.working).toBe(false)
+      expect(waiting.backgroundSubagentCount).toBe(1)
+      expect(waiting.phase).toBe('working')
+    } finally {
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+    // Force-terminate so unload() clears the still-armed watcher's interval.
+    await sm.delete(info.id)
+  })
+
+  it('clears backgroundSubagentCount once the background subagent settles', async () => {
+    const info = sm.create({ cwd: '/tmp/workspace' })
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    try {
+      // Pre-write a terminal assistant frame to the subagent's transcript so
+      // the watcher's immediate first poll sees a completed subagent.
+      const txnPath = subagentTranscriptPath('/tmp/workspace', info.id, 'agent-1')
+      mkdirSync(dirname(txnPath), { recursive: true })
+      writeFileSync(
+        txnPath,
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            stop_reason: 'end_turn',
+            content: [{ type: 'text', text: 'subagent done' }],
+          },
+        }) + '\n',
+      )
+
+      mockHandles[0].emit({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'tu_bg_2',
+            content: 'Async agent launched successfully.\nagentId: agent-1\n',
+          }],
+        },
+      })
+      await tick()
+
+      const settled = sm.get(info.id)
+      expect(settled.backgroundSubagentCount).toBe(0)
+      expect(settled.phase).toBe('idle')
+    } finally {
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
   })
 
   it('rejects a user turn while autoResume is building resume options', async () => {

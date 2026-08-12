@@ -115,6 +115,12 @@ export const SessionCard = memo(function SessionCard({
 
   const dormant = !s.running && !s.terminated
   const working = s.running && s.working
+  // A running session whose parent turn has COMPLETED but which still has
+  // background (async) subagents in flight — the parent acked the launch,
+  // the main turn ended, but the subagent keeps producing until a
+  // task_notification lands. Show a distinct 'waiting' state instead of a
+  // plain green 'live' so the sidebar doesn't imply the session is idle.
+  const waiting = s.running && !s.working && (s.backgroundSubagentCount ?? 0) > 0
   const pendingCount = s.pendingPermissionCount ?? 0
   // Single source of truth for the status chip — drives the dot colour,
   // the short label, and the aria-label. A dormant session (!running &&
@@ -122,13 +128,14 @@ export const SessionCard = memo(function SessionCard({
   // spawn_failed whose binary is now fixed) — it's resumable, not dead, and
   // the card body already renders `s.error` below. 'err' is reserved for a
   // RUNNING session that has nonetheless errored.
-  const status: 'err' | 'ended' | 'resuming' | 'working' | 'live' | 'dormant' =
-    s.terminated ? 'ended' : isResuming ? 'resuming' : working ? 'working' : s.running ? (s.error ? 'err' : 'live') : 'dormant'
+  const status: 'err' | 'ended' | 'resuming' | 'working' | 'waiting' | 'live' | 'dormant' =
+    s.terminated ? 'ended' : isResuming ? 'resuming' : working ? 'working' : waiting ? 'waiting' : s.running ? (s.error ? 'err' : 'live') : 'dormant'
   const statusText: Record<typeof status, string> = {
     err: 'err',
     ended: 'ended',
     resuming: 'resuming…',
     working: 'working',
+    waiting: 'waiting',
     live: 'live',
     dormant: 'dormant',
   }
@@ -137,6 +144,7 @@ export const SessionCard = memo(function SessionCard({
     ended: 'ended',
     resuming: 'resuming',
     working: 'working',
+    waiting: 'waiting on background subagent',
     live: 'live',
     dormant: 'dormant',
   }
@@ -281,7 +289,17 @@ export const SessionCard = memo(function SessionCard({
         </strong>
         <span
           className={`session-item-badge status-${status}`}
-          title={s.error ?? (s.terminated && s.terminatedReason ? statusLabel(s) : '')}
+          title={
+            s.error
+            ?? (waiting
+              // A finished parent turn with a background subagent still in
+              // flight: explain the amber dot on hover ("Waiting for a
+              // background subagent") instead of leaving the title empty.
+              ? statusLabel(s)
+              : s.terminated && s.terminatedReason
+                ? statusLabel(s)
+                : '')
+          }
           aria-label={`Status: ${statusAria[status]}`}
         >
           {status === 'resuming' ? (
@@ -319,7 +337,9 @@ export const SessionCard = memo(function SessionCard({
               label={
                 s.phase === 'idle'
                   ? 'Sleep — release resources (resumable)'
-                  : 'Wait for the turn to finish before sleeping'
+                  : waiting
+                    ? 'Background subagent still running — wait for it to finish before sleeping'
+                    : 'Wait for the turn to finish before sleeping'
               }
               placement="left"
             >

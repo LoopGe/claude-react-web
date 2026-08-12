@@ -11,8 +11,14 @@ export function statusClass(s: SessionInfo): string {
   // it's resumable, not dead. 'err' is reserved for a RUNNING session that
   // has nonetheless errored (rare; usually caught by `recovering` above).
   if (!s.running) return 'dormant'
-  if (s.error) return 'err'
+  // Precedence deliberately matches the sidebar chip (SessionCard): an
+  // actively-working turn beats a background subagent beats a stale error.
+  // A running session with background work in flight is "waiting" even if it
+  // also carries an error — the amber is more informative than the red here,
+  // and the error text still surfaces in the card body / title tooltip.
   if (s.working) return 'working'
+  if ((s.backgroundSubagentCount ?? 0) > 0) return 'waiting'
+  if (s.error) return 'err'
   return 'live'
 }
 
@@ -38,6 +44,10 @@ export function statusLabel(s: SessionInfo): string {
   // the underlying cause (missing CLI binary, etc.).
   if (!s.running && s.error) return `Resume failed: ${s.error}`
   if (s.working) return 'Working on a turn'
+  if (s.running && (s.backgroundSubagentCount ?? 0) > 0) {
+    const n = s.backgroundSubagentCount!
+    return n === 1 ? 'Waiting for a background subagent' : `Waiting for ${n} background subagents`
+  }
   if (s.running) return s.error ? `Errored: ${s.error}` : 'Live'
   return 'Dormant'
 }
