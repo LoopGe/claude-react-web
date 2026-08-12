@@ -1183,6 +1183,12 @@
 }
 .todo-panel-working .todo-in_progress .todo-text-shimmer {
   display: inline-block;
+  /* An inline-block with overflow:hidden uses its BOTTOM EDGE as the
+     baseline (per CSS 2.1 §10.8.1), so with default vertical-align it sits
+     on the text baseline and the line box grows by the font descent, making
+     the running row ~4px taller than pending/completed rows. Pinning the
+     box to the line box bottom restores the 18.2px row height. */
+  vertical-align: bottom;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
