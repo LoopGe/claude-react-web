@@ -3,6 +3,7 @@
   --sidebar-width: 280px;
   display: grid;
   grid-template-columns: var(--sidebar-width) 1fr;
+  transition: grid-template-columns var(--motion-duration-moderate) var(--motion-ease-standard);
   /* dvh (dynamic viewport height) accounts for the mobile-browser URL bar
      collapse — 100vh on iOS/Android Safari/Chrome over-extends and clips
      content when the chrome retracts. The 100vh line is a fallback for
@@ -22,6 +23,7 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-width: 0;
   min-height: 0;
 }
 
@@ -49,6 +51,17 @@ body.resizing-col,
 body.resizing-col * {
   cursor: col-resize !important;
   user-select: none !important;
+}
+
+/* Sidebar hide/show (desktop only). Collapsing sets the grid column to 0 so
+   the chat panels fill the window. Scoped to ≥769px — the mobile drawer in
+   utilities.css is untouched. `.app.sidebar-collapsed` (0,2,0) outranks the
+   base `.app` and the tablet `.app` override (both 0,1,0), so it wins at
+   every desktop width. */
+@media (min-width: 769px) {
+  .app.sidebar-collapsed { grid-template-columns: 0 1fr; }
+  .app.sidebar-collapsed .sidebar { border-right: none; }
+  .app.sidebar-collapsed .sidebar-resizer { display: none; }
 }
 
 .brand {
@@ -81,7 +94,7 @@ body.resizing-col * {
   min-height: var(--app-header-height);
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   padding: 6px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev);
@@ -90,6 +103,7 @@ body.resizing-col * {
   display: flex;
   gap: 8px;
   align-items: center;
+  margin-left: auto;
 }
 
 /* main-body holds up to MAX_OPEN chat panels. The grid-template-columns
