@@ -147,6 +147,7 @@ function MarketplaceRow(props: {
       <div className="app-plugins-row-head">
         <button className="app-plugins-row-toggle" onClick={props.onToggle} aria-expanded={expanded}>
           <span className="app-plugins-name">{mp.displayName}</span>
+          {mp.sourceType === 'local' && <span className="app-plugins-state state-muted">Bundled</span>}
           <span className="app-plugins-state state-muted">{mp.pluginCount} plugins</span>
         </button>
         <div className="app-plugins-row-actions">
@@ -155,8 +156,8 @@ function MarketplaceRow(props: {
         </div>
       </div>
       <div className="app-plugins-meta">
-        <span>{mp.url}</span>
-        {mp.ref && <span>@ {mp.ref}</span>}
+        {mp.sourceType === 'local' ? <span>Bundled with app</span> : <span>{mp.url}{mp.subdir ? ` / ${mp.subdir}` : ''}</span>}
+        {mp.sourceType !== 'local' && mp.ref && <span>@ {mp.ref}</span>}
       </div>
       {expanded && (
         <ul className="app-plugins-mp-plugins">
