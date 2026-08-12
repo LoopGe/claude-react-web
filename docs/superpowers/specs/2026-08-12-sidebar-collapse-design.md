@@ -101,10 +101,14 @@ Scope the collapse to desktop so mobile is untouched:
 
 ### Accessibility
 
-- On the `<aside class="sidebar">`, set `inert={sidebarCollapsed}` and
-  `aria-hidden={sidebarCollapsed}` (React 19 supports `inert`). A collapsed
-  sidebar is removed from the tab order and the a11y tree, so keyboard users
-  can't Tab into an invisible list.
+- On the `<aside class="sidebar">`, set `inert={!isMobile && sidebarCollapsed}`
+  and `aria-hidden={!isMobile && sidebarCollapsed}` (React 19 supports `inert`).
+  A collapsed sidebar is removed from the tab order and the a11y tree, so
+  keyboard users can't Tab into an invisible list.
+- The `!isMobile` gate matters: `sidebarCollapsed` is persisted, so a user who
+  collapses on desktop then resizes to mobile must still get a fully
+  interactive drawer — the `inert`/`aria-hidden` must not follow the persisted
+  flag onto mobile.
 
 ## Edge cases
 
