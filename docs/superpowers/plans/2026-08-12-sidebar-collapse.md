@@ -159,11 +159,11 @@ className={`app${isMobile && drawerOpen ? ' drawer-open' : ''}${sidebarCollapsed
 In `src/App.tsx`, change the `<aside>` opening tag (currently `<aside className="sidebar" aria-label="Sessions" {...drawerSwipe}>`) to:
 
 ```tsx
+{/* Desktop-only: a persisted `sidebarCollapsed` must not inert the mobile
+    drawer (the user may collapse on desktop, then resize to mobile). */}
 <aside
   className="sidebar"
   aria-label="Sessions"
-  // Desktop-only: a persisted `sidebarCollapsed` must not inert the mobile
-  // drawer (the user may collapse on desktop, then resize to mobile).
   inert={!isMobile && sidebarCollapsed}
   aria-hidden={!isMobile && sidebarCollapsed}
   {...drawerSwipe}
