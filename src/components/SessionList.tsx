@@ -502,43 +502,50 @@ export const SessionList = memo(function SessionList({
   /** Render a SessionCard with all shared props pre-bound. Extracted from
    *  the 3 render sites (grouped, ungrouped-section, flat) to avoid
    *  duplicating 17+ props. */
-  const renderCard = useCallback((s: SessionInfo, containerGroupId?: string) => {
-    const isDeleting = deletingIds?.has(s.id) ?? false
-    return (
-      <div key={s.id} className={`session-item-shell${isDeleting ? ' deleting' : ''}`} data-session-card-id={s.id}>
-        <SessionCard
-          session={s}
-          slotIdx={openIdSlotMap.get(s.id) ?? -1}
-          isOpen={openIdSet.has(s.id)}
-          isFocused={s.id === focusedId}
-          isResuming={resumingIds?.has(s.id) ?? false}
-          hasUnread={!!unread?.[s.id]}
-          isDragging={draggingId === s.id}
-          isDeleting={isDeleting}
-          dropPosition={dropHint && dropHint.id === s.id ? dropHint.position : null}
-          isRenaming={renamingId === s.id}
-          accentStyle={accentStyleMap.get(s.id)}
-          containerGroupId={containerGroupId}
-          onSelect={onSelect}
-          onDelete={onDelete}
-          onSleep={onSleep}
-          onContextMenu={handleCardContextMenu}
-          onDragStart={handleCardDragStart}
-          onDragEnd={handleCardDragEnd}
-          onSetDropHint={handleSetDropHint}
-          onClearDropHint={handleClearDropHint}
-          onReorder={animatedReorder}
-          onReorderInGroup={animatedReorderInGroup}
-          renameDraft={renameDraft}
-          onRenameDraftChange={handleRenameDraftChange}
-          onCommitRename={commitRename}
-          onCancelRename={cancelRename}
-          onStartRename={startRename}
-          onAskConfirm={handleAskConfirm}
-        />
-      </div>
-    )
-  }, [openIdSlotMap, openIdSet, focusedId, resumingIds, unread, deletingIds, draggingId, dropHint, renamingId, accentStyleMap, onSelect, onDelete, onSleep, handleCardContextMenu, handleCardDragStart, handleCardDragEnd, handleSetDropHint, handleClearDropHint, animatedReorder, animatedReorderInGroup, renameDraft, handleRenameDraftChange, commitRename, cancelRename, startRename, handleAskConfirm])
+  const renderCard = useCallback(
+    (s: SessionInfo, containerGroupId?: string, isFirst = false, isLast = false) => {
+      const isDeleting = deletingIds?.has(s.id) ?? false
+      return (
+        <div
+          key={s.id}
+          className={`session-item-shell${isDeleting ? ' deleting' : ''}${isFirst ? ' list-first' : ''}${isLast ? ' list-last' : ''}`}
+          data-session-card-id={s.id}
+        >
+          <SessionCard
+            session={s}
+            slotIdx={openIdSlotMap.get(s.id) ?? -1}
+            isOpen={openIdSet.has(s.id)}
+            isFocused={s.id === focusedId}
+            isResuming={resumingIds?.has(s.id) ?? false}
+            hasUnread={!!unread?.[s.id]}
+            isDragging={draggingId === s.id}
+            isDeleting={isDeleting}
+            dropPosition={dropHint && dropHint.id === s.id ? dropHint.position : null}
+            isRenaming={renamingId === s.id}
+            accentStyle={accentStyleMap.get(s.id)}
+            containerGroupId={containerGroupId}
+            onSelect={onSelect}
+            onDelete={onDelete}
+            onSleep={onSleep}
+            onContextMenu={handleCardContextMenu}
+            onDragStart={handleCardDragStart}
+            onDragEnd={handleCardDragEnd}
+            onSetDropHint={handleSetDropHint}
+            onClearDropHint={handleClearDropHint}
+            onReorder={animatedReorder}
+            onReorderInGroup={animatedReorderInGroup}
+            renameDraft={renameDraft}
+            onRenameDraftChange={handleRenameDraftChange}
+            onCommitRename={commitRename}
+            onCancelRename={cancelRename}
+            onStartRename={startRename}
+            onAskConfirm={handleAskConfirm}
+          />
+        </div>
+      )
+    },
+    [openIdSlotMap, openIdSet, focusedId, resumingIds, unread, deletingIds, draggingId, dropHint, renamingId, accentStyleMap, onSelect, onDelete, onSleep, handleCardContextMenu, handleCardDragStart, handleCardDragEnd, handleSetDropHint, handleClearDropHint, animatedReorder, animatedReorderInGroup, renameDraft, handleRenameDraftChange, commitRename, cancelRename, startRename, handleAskConfirm],
+  )
 
   /** Resolve which ordered list a session belongs to and, when it lives in
    *  a group, that group's id. The flat view orders `visibleSessions`; the
@@ -888,7 +895,9 @@ export const SessionList = memo(function SessionList({
                           animatedAddToGroup(payload.id, sec.group.id)
                         }}
                       >
-                        {sec.sessions.map((s) => renderCard(s, sec.group.id))}
+                        {sec.sessions.map((s, i) =>
+                          renderCard(s, sec.group.id, i === 0, i === sec.sessions.length - 1),
+                        )}
                       </div>
                     ) : (
                       <div
@@ -929,7 +938,9 @@ export const SessionList = memo(function SessionList({
                     <span className="group-header-count">{sec.sessions.length}</span>
                   </div>
                   <div className="group-sessions">
-                    {sec.sessions.map((s) => renderCard(s))}
+                    {sec.sessions.map((s, i) =>
+                      renderCard(s, undefined, i === 0, i === sec.sessions.length - 1),
+                    )}
                   </div>
                 </div>
               )
@@ -946,7 +957,9 @@ export const SessionList = memo(function SessionList({
               data={visibleSessions}
               style={{ flex: 1 }}
               scrollerRef={virtuosoScrollerRef}
-              itemContent={(_index, s) => renderCard(s)}
+              itemContent={(index, s) =>
+                renderCard(s, undefined, index === 0, index === visibleSessions.length - 1)
+              }
             />
           )}
       </div>

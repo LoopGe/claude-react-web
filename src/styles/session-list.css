@@ -298,12 +298,32 @@
   flex-direction: column;
   gap: 4px;
   padding: 8px 10px;
-  border-radius: 8px;
+  /* Square by default — adjacent cards sit flush (no gap in
+     .group-sessions / Virtuoso), so rounding is applied only at the ends
+     of each contiguous run via .session-item-shell.list-first/.list-last. */
+  border-radius: 0;
   cursor: pointer;
-  border: 1px solid transparent;
-  background: transparent;
+  /* No real border — the hairline is an inset box-shadow (--row-hairline,
+     below), so it never occupies layout height: adjacent cards keep an
+     exact 8+8px text gap and the run's total height is pure content. */
+  border: none;
+  /* Resting surface: a very faint accent wash over a raised card so the
+     sidebar reads as a grid of cards that share the session accent — the
+     same color-mix language as the chat-panel header. Tinted cards (below)
+     strengthen this with their per-session accent. The hairline traces the
+     column edges and, on every card, a 1px bottom line that doubles as the
+     seam divider (flush cards make one 1px seam each) and the run's bottom
+     outline. list-first adds the run's top line; open/focused restyle the
+     variable without touching layout. */
+  --row-hairline:
+    inset 1px 0 0 0 var(--border),
+    inset -1px 0 0 0 var(--border),
+    inset 0 -1px 0 0 var(--border);
+  background: color-mix(in srgb, var(--accent) 4%, var(--bg-elev-1));
+  box-shadow: var(--row-hairline);
   text-align: left;
-  transition: background var(--motion-duration-fast) var(--motion-ease-standard), box-shadow var(--motion-duration-fast) var(--motion-ease-standard);
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard),
+              box-shadow var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .session-item-shell {
   display: grid;
@@ -320,6 +340,19 @@
   min-width: 0;
   min-height: 0;
 }
+/* Rounding and the run's top hairline live only at the ends of a
+   contiguous run of cards. No negative margins: the seam divider is a
+   box-shadow, so flush cards already collapse to one 1px line each. */
+.session-item-shell.list-first > .session-item {
+  border-radius: 8px 8px 0 0;
+  --row-hairline:
+    inset 1px 0 0 0 var(--border),
+    inset -1px 0 0 0 var(--border),
+    inset 0 1px 0 0 var(--border),
+    inset 0 -1px 0 0 var(--border);
+}
+.session-item-shell.list-last > .session-item { border-radius: 0 0 8px 8px; }
+.session-item-shell.list-first.list-last > .session-item { border-radius: 8px; }
 .session-item-shell.deleting {
   grid-template-rows: 0fr;
   opacity: 0;
@@ -330,7 +363,7 @@
 .session-item-shell.deleting > .session-item {
   overflow: hidden;
 }
-.session-item:hover { background: var(--bg-elev-2); }
+.session-item:hover { background: color-mix(in srgb, var(--accent) 5%, var(--bg-elev-2)); }
 .session-item.deleting { pointer-events: none; }
 @media (prefers-reduced-motion: reduce) {
   .session-item,
@@ -341,28 +374,19 @@
   .session-item.drop-after::after { animation: none; transform: scaleX(1); }
 }
 
-/* Idle tint for cards that have a per-session accent chosen. We paint a
-   3px coloured rail on the left edge and wash the card body with a very
-   faint accent tint so the colour is visible even when the card is
-   neither focused nor open. The focused / open / unread states layer on
-   top via their own box-shadow rules — those keep their precedence
-   because the rail uses `border-left` rather than `inset` shadow. */
+/* Idle tint for cards that have a per-session accent chosen. The left
+   rail is gone, so the accent is carried by a stronger body wash plus
+   the slot pill (which resolves --accent to this session's colour). */
 .session-item.tinted {
-  border-left: 3px solid var(--accent);
-  padding-left: 7px; /* 10 - 3, so the text baseline stays put */
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev-1));
 }
 .session-item.tinted:hover {
-  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev-2));
-}
-/* When a tinted card is also focused, keep the inset accent stripe
-   (which normally sits at the left edge) but nudge it off the same
-   pixel row as the border-left so both are visible. */
-.session-item.tinted.focused {
-  box-shadow: inset 3px 0 0 var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 13%, var(--bg-elev-2));
 }
 .session-item.terminated { opacity: 0.6; }
-.session-item.dormant { opacity: 0.75; border-style: dashed; }
+/* Dormant keeps reduced opacity + the hollow status dot as its identity
+   (no dashed border anymore — cards have no real border). */
+.session-item.dormant { opacity: 0.75; }
 .session-item.resuming { cursor: progress; opacity: 0.5; }
 .session-resuming-spinner {
   display: inline-block;
@@ -914,26 +938,33 @@
   to { transform: scaleX(1); }
 }
 
-/* Replace the old inset box-shadows for focused+drop states — keep the
-   accent rail but let the ::before/::after handle the insertion line. */
-.session-item.open.drop-before,
-.session-item.open.drop-after { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 45%, transparent); }
-.session-item.focused.drop-before,
-.session-item.focused.drop-after { box-shadow: inset 3px 0 0 var(--accent); }
-/* A session whose panel is currently open (but not the one focused) —
-   dashed accent border on the left + slightly raised background, so all
-   open sessions are obviously distinct from unopened ones even when none
-   of them is focused. */
+/* During drag-over, the focused/open card keeps its own shadows — the
+   ::before/::after insertion line is the only extra signal, so no
+   separate drop overrides. */
 .session-item.open {
   background: var(--bg-elev-2);
-  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
+  --row-hairline:
+    inset 2px 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent),
+    inset -1px 0 0 0 var(--border),
+    inset 0 -1px 0 0 var(--border);
 }
-/* The focused panel wins the strongest highlight — solid accent stripe
-   + accent border. Matches the accent border on the chat panel itself. */
+/* An open card that is also the first of a run needs the run's top line
+   as well as the accent-left marker. */
+.session-item-shell.list-first > .session-item.open {
+  --row-hairline:
+    inset 2px 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent),
+    inset -1px 0 0 0 var(--border),
+    inset 0 1px 0 0 var(--border),
+    inset 0 -1px 0 0 var(--border);
+}
+/* The focused panel wins the strongest highlight — solid accent border
+   with a soft outer glow, so focus reads as a halo rather than a
+   stripe. Composes with --row-hairline so the hairline keeps painting. */
 .session-item.focused {
   background: var(--bg-elev-2);
-  border-color: var(--accent);
-  box-shadow: inset 3px 0 0 var(--accent);
+  box-shadow: var(--row-hairline),
+              0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent),
+              0 2px 14px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 /* Slot pill: small square badge to the left of the title that shows
@@ -958,6 +989,20 @@
 .session-item-slot.focused {
   background: var(--accent);
   color: var(--on-accent);
+}
+/* Numeric badges in the title row are wrapped in a Tooltip `.tt-wrap`
+   (inline-flex, default baseline). A badge's 10px digit gives that
+   wrapper a low baseline, so baseline alignment pushes the pill below
+   the 14px title line box (~18.3px) and makes the card taller when the
+   badge appears (open cards ~2px, pending-permission cards ~1.7px).
+   Aligning the wrapper to the line-box top keeps the pill inside the
+   line height (16–18px < 18.3px), so card height is identical whether
+   or not the badge is present. The mode badge is left at baseline — its
+   SVG-derived baseline already sits inside the line box. Uses :has() to
+   touch only these two numeric wrappers, matching the existing
+   `.tt-wrap:has(...)` pattern elsewhere in the app. */
+.session-item-title > .tt-wrap:has(> .session-item-slot, > .session-item-perm-badge) {
+  vertical-align: top;
 }
 /* Unread sessions nudge the title right to make room for the dot. */
 .session-item-unread {

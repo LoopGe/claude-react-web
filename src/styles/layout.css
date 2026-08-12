@@ -835,13 +835,20 @@ body.resizing-col .app {
 }
 
 /* Sidebar mode marker: always rendered so permission modes keep identical
-   title spacing. Default uses a muted icon; non-default modes tint via
-   --mode-color for quick scanning without changing the card silhouette. */
+   title spacing. Now a small accent chip mirroring the chat-header mode
+   badge — tinted background + per-mode colour (--mode-color) so the mode
+   reads at a glance without changing the card silhouette. */
 .session-item-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
   margin-right: 4px;
-  font-size: 11px;
-  vertical-align: middle;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--mode-color, var(--fg-muted)) 15%, transparent);
   color: var(--mode-color, var(--fg-muted));
+  vertical-align: middle;
 }
 .session-item.mode-default { --mode-color: var(--fg-muted); }
 .session-item.mode-plan { --mode-color: var(--warn); }
