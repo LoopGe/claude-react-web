@@ -2284,6 +2284,14 @@ function apiRetryMsg(uuid: string, attempt = 1, retryDelayMs = 1000): SdkMessage
   } as unknown as SdkMessage
 }
 
+function streamEventMsg(uuid: string, text = 'delta'): SdkMessage {
+  return {
+    type: 'stream_event',
+    uuid,
+    event: { type: 'content_block_delta', delta: { type: 'text_delta', text } },
+  } as unknown as SdkMessage
+}
+
 function seedCache(messages: SdkMessage[]): ReturnType<typeof createInitialSessionState> {
   // Build a cache exactly as a full replay would, then return state.
   let state = createInitialSessionState('s')
@@ -2645,5 +2653,40 @@ describe('reducer: api_retry transient slot', () => {
     })
     expect(ids(state)).toEqual(['old-a', 'a1']) // old-r dropped, no slot set
     expect(state.mirror.apiRetry).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// stream_event deltas must NOT advance lastMessageUuid — the uuid-anchored WS
+// incremental replay (`sinceUuid`) relies on the cursor pointing at a durable
+// message the server ring still holds. A stream_event uuid is ephemeral (never
+// on the disk transcript, never in the ring), so a sinceUuid pointing at one
+// misses the ring and forces a full replay on every reconnect.
+// ---------------------------------------------------------------------------
+
+describe('reducer: stream_event does not advance lastMessageUuid', () => {
+  it('keeps the cursor on the last durable message when stream_event deltas land', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: asstMsg('a1', 'hi') })
+    expect(state.mirror.lastMessageUuid).toBe('a1')
+
+    state = reduceSessionState(state, { type: 'MESSAGE', message: streamEventMsg('se1', 'par') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: streamEventMsg('se2', 'tial') })
+
+    // Cursor stays at the durable anchor; no transcript item was created.
+    expect(state.mirror.lastMessageUuid).toBe('a1')
+    expect(ids(state)).toEqual(['a1'])
+    expect(state.mirror.messages.map((m) => m.uuid)).toEqual(['a1'])
+  })
+
+  it('advances again once a durable message lands after the deltas', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: asstMsg('a1', 'hi') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: streamEventMsg('se1') })
+    expect(state.mirror.lastMessageUuid).toBe('a1')
+
+    state = reduceSessionState(state, { type: 'MESSAGE', message: asstMsg('a2', 'done') })
+    expect(state.mirror.lastMessageUuid).toBe('a2')
+    expect(ids(state)).toEqual(['a1', 'a2'])
   })
 })

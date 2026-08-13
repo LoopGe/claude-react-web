@@ -83,3 +83,17 @@ export function shouldBroadcastMessage(msg: { type?: string; subtype?: string })
   if (msg.type !== 'system') return true
   return BROADCAST_SYSTEM_SUBTYPES.has(msg.subtype ?? '')
 }
+
+/** A message that belongs in the durable history ring (and therefore the
+ *  WS full-replay surface). Ephemeral `stream_event` deltas are excluded:
+ *  they are live-streaming fragments (one per content delta — hundreds per
+ *  heavy turn) that the SDK never persists to the on-disk transcript and the
+ *  client never renders as items (toTranscriptItem returns null). Keeping
+ *  them in the 500-cap ring let a streaming turn evict durable content — a
+ *  just-sent user message, an assistant message, a tool result — from the
+ *  replay surface within seconds, so a reload during/after the flood lost
+ *  recent durable messages. Everything the transcript model actually
+ *  represents (user / assistant / result / system frames) is retained. */
+export function isTranscriptMessage(msg: { type?: string }): boolean {
+  return msg.type !== 'stream_event'
+}

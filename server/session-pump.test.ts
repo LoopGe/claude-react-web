@@ -12,7 +12,7 @@ import {
   userMessageHasToolResult,
 } from './session-pump.js'
 import type { LiteContextUsage } from './session-pump.js'
-import { shouldBroadcastMessage } from './history-utils.js'
+import { isTranscriptMessage, shouldBroadcastMessage } from './history-utils.js'
 
 // ---------------------------------------------------------------------------
 // Drop-filter discriminators
@@ -57,6 +57,34 @@ describe('shouldBroadcastMessage', () => {
     expect(shouldBroadcastMessage({ type: 'assistant' })).toBe(true)
     expect(shouldBroadcastMessage({ type: 'system', subtype: 'error' })).toBe(true)
     expect(shouldBroadcastMessage({ type: 'system', subtype: 'api_retry' })).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// isTranscriptMessage — which SDK messages enter the durable history ring
+// (and therefore the WS full-replay surface).
+//
+// Regression coverage for the "reload loses a just-sent user message" bug: the
+// 500-cap ring used to store ephemeral `stream_event` deltas as if they were
+// transcript messages, so a heavy streaming turn (~200 deltas/s) evicted
+// durable content (a just-sent user message, assistant messages, tool results)
+// from the replay surface within seconds. Deltas are still LIVE-streamed to
+// subscribers; they just must never enter the ring.
+// ---------------------------------------------------------------------------
+describe('isTranscriptMessage', () => {
+  it('excludes ephemeral stream_event deltas from the durable ring', () => {
+    expect(isTranscriptMessage({ type: 'stream_event' })).toBe(false)
+  })
+
+  it('retains every durable message type (user / assistant / result / system)', () => {
+    expect(isTranscriptMessage({ type: 'user' })).toBe(true)
+    expect(isTranscriptMessage({ type: 'assistant' })).toBe(true)
+    expect(isTranscriptMessage({ type: 'result' })).toBe(true)
+    expect(isTranscriptMessage({ type: 'system' })).toBe(true)
+  })
+
+  it('is defensive when type is missing', () => {
+    expect(isTranscriptMessage({})).toBe(true)
   })
 })
 

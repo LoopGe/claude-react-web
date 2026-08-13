@@ -1037,11 +1037,20 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   // returns null), so it neither appends nor needs the old in-place
   // replace/strip logic.
   const isApiRetry = message.type === 'system' && message.subtype === 'api_retry'
+  // `stream_event` is a live-streaming delta (one per content chunk — hundreds
+  // per heavy turn). It must NOT advance lastMessageUuid: the uuid-anchored WS
+  // incremental replay (`sinceUuid`) relies on the cursor pointing at a durable
+  // message the server ring still holds. Stream_event uuids are ephemeral —
+  // never persisted to the disk transcript and (since the server ring fix)
+  // never in the ring — so a sinceUuid pointing at one misses the ring and
+  // forces a full replay on every reconnect. Anchoring on durable messages
+  // keeps the incremental path working.
+  const isStreamEvent = message.type === 'stream_event'
 
   const workingMirror: ServerMirror = {
     ...mirror,
     eventCount: mirror.eventCount + 1,
-    ...(messageUuid && !isApiRetry ? { lastMessageUuid: messageUuid } : {}),
+    ...(messageUuid && !isApiRetry && !isStreamEvent ? { lastMessageUuid: messageUuid } : {}),
     apiRetry: isApiRetry ? incomingMessage : null,
   }
 

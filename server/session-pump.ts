@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto'
 import type { FastModeState, SDKMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk'
 import type { Session, SessionBroadcaster } from './session-types.js'
 import { endAllSubscribers } from './session-types.js'
-import { pushBounded, stampReceivedAt, shouldBroadcastMessage } from './history-utils.js'
+import { isTranscriptMessage, pushBounded, stampReceivedAt, shouldBroadcastMessage } from './history-utils.js'
 import { mutatingToolUseId, scheduleGitBroadcast } from './git-broadcast.js'
 import { parseAckAgentId } from './subagent-watcher.js'
 
@@ -560,7 +560,16 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // localStorage.  In-place mutation ensures replay and live paths
         // see the same (trimmed) object.
         trimLargeToolResults(msg)
-        pushBounded(session.history, msg, deps.historyCap)
+        // Only durable transcript messages enter the bounded history ring
+        // (the WS full-replay surface). Ephemeral `stream_event` deltas are
+        // live-streamed to subscribers but never stored: a heavy streaming
+        // turn (~200 deltas/s) would otherwise evict durable content — a
+        // just-sent user message, an assistant message, a tool result — from
+        // the replay surface within seconds, so a reload during/after the
+        // flood loses recent durable messages.
+        if (isTranscriptMessage(msg)) {
+          pushBounded(session.history, msg, deps.historyCap)
+        }
 
         // Only broadcast system messages that the frontend actually needs.
         // Other system frames (init, status, — are kept in history for

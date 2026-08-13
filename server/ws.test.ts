@@ -225,6 +225,41 @@ describe('WebSocket multiplexer', () => {
     await client.close()
   })
 
+  it('excludes stream_event deltas from the replay (durable transcript only)', async () => {
+    // Regression: a heavy streaming turn emits many `stream_event` deltas
+    // before the final assistant message. They are live-streamed to
+    // subscribers but must NEVER enter the history ring — otherwise a
+    // 500-cap ring fills with deltas and evicts durable content (a just-sent
+    // user message, assistant messages, tool results) from the WS full-replay
+    // surface, so a reload during/after the flood loses recent messages.
+    const info = sm.create({})
+    sm.send(info.id, 'hello')
+    mockHandles[0].emit({
+      type: 'stream_event',
+      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'par' } },
+    })
+    mockHandles[0].emit({
+      type: 'stream_event',
+      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'tial' } },
+    })
+    mockHandles[0].emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } })
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+
+    const client = await connect()
+    await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
+    client.send({ kind: 'subscribe', sessionId: info.id })
+
+    const replay = await waitForFrame(client.frames, (f) => f.kind === 'replay')
+    if (replay.kind !== 'replay') throw new Error('narrowing')
+    const replayTypes = replay.messages.map((m) => (m as { type?: string }).type)
+    expect(replayTypes.filter((t) => t === 'stream_event')).toHaveLength(0)
+    // The durable content is all still there.
+    expect(replay.messages.length).toBeGreaterThanOrEqual(3) // user + assistant + result
+    await waitForFrame(client.frames, (f) => f.kind === 'replay-done')
+    await client.close()
+  })
+
   it('replays completed hook runs with completed kind and refreshes activity', async () => {
     const info = sm.create({})
     const before = sm.get(info.id).lastActivityAt
