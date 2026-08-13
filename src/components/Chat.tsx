@@ -112,6 +112,12 @@ interface Props {
   /** Reserved for future push updates ?currently unused because session
    *  state is tracked via the WebSocket hub + top-level session list poll. */
   onSessionUpdate: (s: SessionInfo) => void
+  /** Resume a terminated-but-recoverable session in place (the composer's
+   *  choice-banner Resume button). */
+  onResume?: (sessionId: string) => void
+  /** Fork a terminated session from its last completed turn (the composer's
+   *  choice-banner "Fork from last completed turn" button). */
+  onForkFromLastCompleted?: (sessionId: string) => void
   /** Open the resume picker scope to this panel — the chosen session
    *  replaces this panel's slot. Invoked by the `/resume` local command. */
   onRequestResumeForPanel: (panelSessionId: string) => void
@@ -259,6 +265,7 @@ export const Chat = memo(function Chat({
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
   recapOpen, onCloseRecap,
   onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, globalPrefs, onRegisterInterrupt, onRegisterRecap, historyOpen, onCloseHistory,
+  onResume, onForkFromLastCompleted,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, onDiscard, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
 }: Props) {
@@ -1623,14 +1630,16 @@ export const Chat = memo(function Chat({
       input={input}
       setInput={setInput}
       sending={sending}
-      // A transiently-terminated session (canRetryResume) is treated as
-      // recoverable, not ended: don't disable input or show the "session
-      // has ended" banner — the panel is attempting/eligible for resume.
-      // If resume fails the server flips it to hard-terminal
-      // (canRetryResume=false) and the banner appears then.
-      disabled={session.terminated && !session.canRetryResume}
-      terminated={session.terminated && !session.canRetryResume}
+      // Any terminated session shows the ended banner / choice UI and has its
+      // input disabled. A transiently-terminated (canRetryResume) one gets the
+      // Resume / Fork-from-last-completed choice banner — the user decides.
+      disabled={session.terminated}
+      terminated={session.terminated}
       terminatedReason={session.terminatedReason}
+      canRetryResume={session.canRetryResume}
+      error={session.error}
+      onResume={onResume ? () => onResume(session.id) : undefined}
+      onForkFromLastCompleted={onForkFromLastCompleted ? () => onForkFromLastCompleted(session.id) : undefined}
       canAttach={!!session.cwd}
       attachments={attachments.attachments}
       uploading={attachments.uploading}

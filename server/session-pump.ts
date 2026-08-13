@@ -221,15 +221,17 @@ export interface PumpDeps {
   autoResume?: (session: Session) => Promise<boolean>
   /** When true, a session whose CLI crashed (session.lastCrash set by
    *  handleProcessExit) is routed to `attemptCrashRecovery` instead of
-   *  immediate termination. The ladder re-resumes in-place (Step 1) or
-   *  forks from the last completed turn (Step 2). */
+   *  immediate termination. The ladder re-resumes in-place until
+   *  maxCrashRecovery is exhausted, then gives up (the client offers the
+   *  user Resume / Fork-from-last-completed — no automatic fork). */
   crashRecovery?: boolean
   /** Crash-recovery ladder. Called from cleanupPump when `session.lastCrash`
    *  is set and `crashRecovery` is enabled. Returns true if the session was
-   *  re-spawned in-place (Step 1) or forked-and-terminated (Step 2) d
-   *  cleanupPump then skips its termination tail. Returns false on give-up
-   *  (counter exhausted / no anchor / fork failed) dfall through to
-   *  terminate. */
+   *  re-spawned in-place or terminated via the give-up path (which broadcasts
+   *  the terminated update + pushes a terminal error), so cleanupPump skips
+   *  its generic termination tail. Returns false only when the session is
+   *  already gone / terminated / clearing — cleanupPump then runs its generic
+   *  tail (a no-op for a removed session). */
   attemptCrashRecovery?: (session: Session) => Promise<boolean>
   /** Record a successfully-completed turn's anchor (the uuid of its last
    *  main-thread assistant message) to the turn-anchor sidecar. Used by
@@ -477,10 +479,12 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             }
           }
           // Track the most recent assistant uuid so it can be promoted to
-          // lastSafeResumeUuid when the turn completes dthe crash-recovery
-          // ladder's Step 2 forks from this anchor to drop a poisonous
-          // trailing turn. Subagent assistant frames (parent_tool_use_id set)
-          // are NOT main-thread turns, so don't promote from them.
+          // lastSafeResumeUuid when the turn completes. The recovery ladder
+          // no longer forks from this anchor (no Step 2) — the manual
+          // Fork-from-last-completed button resolves anchors from the turn
+          // sidecar instead — but the pump still promotes it for history
+          // readers. Subagent assistant frames (parent_tool_use_id set) are
+          // NOT main-thread turns, so don't promote from them.
           if (getParentToolUseId(msg) == null) {
             const aUuid = (msg as { uuid?: string }).uuid
             if (aUuid) session.lastAssistantUuid = aUuid
@@ -617,10 +621,10 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // queued item is still in our Pushable when we observe `result`.
         if (msg.type === 'result') {
           // Promote the most recent main-thread assistant uuid to the
-          // safe-resume anchor: this turn completed successfully, so forking
-          // from here (Step 2 of crash recovery) would drop a *later* crashed
-          // turn while preserving this one. Only success counts — error_max_turns
-          // / error_max_budget leave the turn in an indeterminate state, so we
+          // safe-resume anchor: this turn completed successfully, so a later
+          // fork/cut from here would drop a *later* crashed turn while
+          // preserving this one. Only success counts — error_max_turns /
+          // error_max_budget leave the turn in an indeterminate state, so we
           // keep the previous anchor rather than trusting a failed turn.
           if ((msg as { subtype?: string }).subtype === 'success' && session.lastAssistantUuid) {
             session.lastSafeResumeUuid = session.lastAssistantUuid
@@ -722,9 +726,11 @@ async function cleanupPump(session: Session, deps: PumpDeps): Promise<void> {
     // likely exited due to idle timeout, not user intent.
     if (session.lastCrash && deps.crashRecovery && deps.attemptCrashRecovery) {
       // CLI crash (non-clean exit): try the recovery ladder before giving
-      // up. Step 1 re-resumes in-place (transient crashes + tail corruption);
-      // Step 2 forks from the last completed turn (deterministic poisonous
-      // last turn). Returns true if re-spawned/handled dskip termination.
+      // up. Every attempt re-resumes in-place (transient crashes + tail
+      // corruption); when the budget is exhausted the session terminates
+      // with the transient crash reason so the UI offers Resume /
+      // Fork-from-last-completed. Returns true if re-spawned/handled dskip
+      // termination.
       try {
         const recovered = await deps.attemptCrashRecovery(session)
         if (recovered) return

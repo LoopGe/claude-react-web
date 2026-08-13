@@ -117,6 +117,9 @@ export interface ChatPanelProps {
   /** Resume a dormant session directly from the panel's dormant empty-state
    *  (the "Resume" button). Mirrors the sidebar's click-to-resume path. */
   onResume?: (sessionId: string) => void
+  /** Fork a terminated session from its last completed turn (the composer's
+   *  choice-banner "Fork from last completed turn" button). */
+  onForkFromLastCompleted?: (sessionId: string) => void
   /** Name of the session's owning group, or undefined when ungrouped.
    *  Drives the panel context-menu's close-item label: "Remove from
    *  <group>" for grouped sessions (closing a group member removes it
@@ -229,6 +232,7 @@ export const ChatPanel = memo(function ChatPanel({
   onFocus,
   onClose,
   onResume,
+  onForkFromLastCompleted,
   groupLabel,
   onCloseGroupPanels,
   onDelete,
@@ -810,6 +814,8 @@ export const ChatPanel = memo(function ChatPanel({
             globalPrefs={globalPrefs}
             clearing={clearing}
             onSessionUpdate={onSessionUpdate}
+            onResume={onResume}
+            onForkFromLastCompleted={onForkFromLastCompleted}
             onRequestResumeForPanel={onRequestResumeForPanel}
             resumeOpen={resumeOpen}
             onResumeIntoPanel={onResumeIntoPanel}

@@ -769,12 +769,14 @@ body.resizing-col .app {
 }
 /* Meta strip that holds the model badge. Sits between the panel
    title (left-aligned) and the panel edge (right-aligned). The git chip
-   now lives on header row 2 (see the margin-left rule above). */
+   now lives on header row 2 (see the margin-left rule above). No right
+   margin — the strip's right edge falls on the row's 10px padding so the
+   model badge aligns exactly with the git chip on row 2. */
 .chat-panel-meta {
   display: flex;
   align-items: center;
   gap: 4px;
-  margin: 0 8px 0 auto;
+  margin: 0 0 0 auto;
   min-width: 0;
   flex-shrink: 1;
 }

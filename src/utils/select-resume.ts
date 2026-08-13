@@ -18,9 +18,10 @@ export function shouldAutoResumeOnSelect(
 ): boolean {
   // Running sessions are already live — nothing to resume.
   if (s.running) return false
-  // Hard-terminal sessions are dead; only transiently-terminated (crash /
-  // query error) ones may still recover via resume.
-  if (s.terminated && !s.canRetryResume) return false
+  // Terminated sessions are NEVER auto-resumed. Recoverable (canRetryResume)
+  // ones open to the composer's Resume / Fork-from-last-completed choice
+  // banner instead — the user decides how to continue, never the app.
+  if (s.terminated) return false
   // Automatic restores must not wake a deliberately-slept session.
   if (opts.auto === true && s.slept) return false
   return true

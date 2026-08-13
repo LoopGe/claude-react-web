@@ -29,6 +29,17 @@ interface Props {
   terminated?: boolean
   /** Why the session terminated (shown below the ended message). */
   terminatedReason?: string
+  /** True when terminated with a transient reason (crash / query error) —
+   *  recoverable. Renders a Resume / Fork-from-last-completed choice banner
+   *  instead of the dead-end "session ended" text, so the user decides. */
+  canRetryResume?: boolean
+  /** Crash detail, shown in the choice banner when present. */
+  error?: string
+  /** Retry the session in place (resume). Only wired when canRetryResume. */
+  onResume?: () => void
+  /** Fork from the last completed turn (replacesSource). Only wired when
+   *  canRetryResume. */
+  onForkFromLastCompleted?: () => void
   /** True when the session has no cwd — attach button greyed with a tooltip. */
   canAttach: boolean
 
@@ -83,6 +94,10 @@ export const Composer = memo(function Composer({
   disabled,
   terminated,
   terminatedReason,
+  canRetryResume,
+  error,
+  onResume,
+  onForkFromLastCompleted,
   canAttach,
   attachments,
   uploading,
@@ -377,6 +392,26 @@ export const Composer = memo(function Composer({
       : terminatedReason === 'no_data' ? 'No conversation data on disk'
       : terminatedReason === 'crash_recovered_fork' ? 'Recovered to a fork'
       : null
+    // Recoverable (transient) crash: the input is disabled (terminated
+    // branch), so offer the user the choice instead of a dead-end message.
+    if (canRetryResume) {
+      return (
+        <div className="session-ended">
+          <span>This session ended unexpectedly{reasonText ? `: ${reasonText}` : error ? `: ${error}` : ''}.</span>
+          <span className="session-ended-hint">
+            Resume to continue in place, or fork from your last completed turn.
+          </span>
+          <div className="session-ended-actions">
+            <button type="button" className="chat-panel-resume-btn" onClick={onResume}>
+              Resume
+            </button>
+            <button type="button" className="chat-panel-resume-btn" onClick={onForkFromLastCompleted}>
+              Fork from last completed turn
+            </button>
+          </div>
+        </div>
+      )
+    }
     return (
       <div className="session-ended">
         <span>This session has ended{reasonText ? `: ${reasonText}` : ''}.</span>

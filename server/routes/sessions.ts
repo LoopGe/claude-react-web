@@ -180,9 +180,20 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     return c.json({ session })
   })
 
-  // Fork a session.
+  // Fork a session. Optional body:
+  //   - resumeSessionAt?: branch from a specific assistant uuid
+  //   - forkFromLastSafe?: resolve the newest completed turn as the branch
+  //     point (the crash-recovery "Fork from last completed turn" button)
+  //   - replacesSource?: broadcast the created frame with replacesSource so
+  //     the client REPLACES the dead source's sidebar slot instead of appending
   app.post('/sessions/:id/fork', async (c) => {
-    const info = await sm.fork(c.req.param('id'))
+    const body = await safeJson<{ resumeSessionAt?: unknown; forkFromLastSafe?: unknown; replacesSource?: unknown }>(c.req)
+      .catch(() => ({ resumeSessionAt: undefined, forkFromLastSafe: undefined, replacesSource: undefined }))
+    const info = await sm.fork(c.req.param('id'), {
+      ...(typeof body.resumeSessionAt === 'string' && body.resumeSessionAt ? { resumeSessionAt: body.resumeSessionAt } : {}),
+      ...(body.forkFromLastSafe === true ? { forkFromLastSafe: true } : {}),
+      ...(body.replacesSource === true ? { replacesSource: true } : {}),
+    })
     return c.json({ session: info }, 201)
   })
 

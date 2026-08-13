@@ -746,6 +746,13 @@ mark.search-hl.search-hl-active {
   font-size: 12px;
   opacity: 0.7;
 }
+/* The choice-banner button row (Resume / Fork from last completed turn).
+   Pure layout — buttons reuse the themed .chat-panel-resume-btn. */
+.session-ended-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
 
 /* ── Global toast host ─────────────────────────────────────────────
    Fixed-position column anchored to the bottom-right. New toasts append

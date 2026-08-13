@@ -124,7 +124,7 @@ export function App() {
   /** Replacement sessions announced by the server before their source-group
    * membership has been applied locally. They must not flash under Ungrouped
    * while the independent UI-state store catches up. */
-  const [pendingGroupInheritance, setPendingGroupInheritance] = useState<Map<string, { sourceId: string; evicting: boolean }>>(new Map())
+  const [pendingGroupInheritance, setPendingGroupInheritance] = useState<Map<string, { sourceId: string; evicting: boolean; replaces?: boolean }>>(new Map())
   // False until the first sessions-snapshot frame arrives over WS. Drives a
   // sidebar skeleton so "No sessions yet" doesn't flash before the list loads.
   const [sessionsLoaded, setSessionsLoaded] = useState(false)
@@ -829,7 +829,11 @@ export function App() {
             // ungrouped).
             setPendingGroupInheritance((prev) => {
               const next = new Map(prev)
-              next.set(sid, { sourceId: joinGroupOf, evicting: frame.evictingSource === true })
+              next.set(sid, {
+                sourceId: joinGroupOf,
+                evicting: frame.evictingSource === true,
+                replaces: frame.replacesSource === true,
+              })
               return next
             })
             // For /clear + restart (`evictingSource` true): X is being evicted by
@@ -841,10 +845,23 @@ export function App() {
             // "Y first appears in the wrong place" teleport. The pending marker
             // above keeps Y hidden (not rendered as Ungrouped, not rendered at
             // the tail) until swapSession/teardown places it.
-            // For fork (`evictingSource` absent) X stays, so append now so the
-            // forked session lands in its source's group immediately; the
-            // maxGroupSize cap stands and handleAddToGroup can toast on overflow.
-            if (frame.evictingSource !== true) {
+            //
+            // For crash-recovery fork (`replacesSource` true): X is dead, Y is
+            // its continuation. REPLACE X with Y in the group and sidebar order
+            // so Y lands in X's exact slot — even when the group is full (X
+            // leaves, so the group never exceeds maxGroupSize). X stays in the
+            // sidebar as a dead artifact (ungrouped).
+            //
+            // For user fork (`evictingSource`/`replacesSource` absent) X stays,
+            // so append now so the forked session lands in its source's group
+            // immediately; the maxGroupSize cap stands and handleAddToGroup can
+            // toast on overflow.
+            if (frame.evictingSource === true) {
+              // /clear + restart: swapSession/teardown places Y — nothing to do here.
+            } else if (frame.replacesSource === true) {
+              setGroups((prev) => inheritGroupId(prev, joinGroupOf, sid))
+              setSidebarOrder((prev) => inheritSidebarOrderId(prev, joinGroupOf, sid))
+            } else {
               setGroups((prev) =>
                 joinGroupOfSource(prev, joinGroupOf, sid, {
                   evicting: false,
@@ -1452,6 +1469,35 @@ export function App() {
     [openSession, groups, handleAddToGroup, toast],
   )
 
+  /** Crash-recovery fork: fork a terminated session from its last completed
+   *  turn (the composer choice-banner button). Distinct from handleFork:
+   *  - forkFromLastSafe:true resolves the newest completed turn as the branch
+   *    point, dropping a poisonous trailing crash turn.
+   *  - replacesSource:true broadcasts the created frame with replacesSource so
+   *    the client REPLACES the dead source's sidebar slot (Y lands in X's
+   *    slot, X drops to Ungrouped) instead of the append-that-keeps-X of a
+   *    manual fork.
+   *  No handleAddToGroup here — the replacesSource frame drives group
+   *  placement client-side. */
+  const handleCrashFork = useCallback(
+    async (id: string) => {
+      try {
+        const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/fork`, {
+          forkFromLastSafe: true,
+          replacesSource: true,
+        })
+        // Add Y to `sessions` locally so openSession resolves it the instant
+        // openIds adopts it below, even if the session-created WS frame lags
+        // (session-created refreshes it in place — idempotent).
+        setSessions((prev) => (prev.some((s) => s.id === res.session.id) ? prev : [res.session, ...prev]))
+        openSession(res.session.id, res.session.lastTurnAt)
+      } catch (e) {
+        toast.error(`Couldn't fork session: ${(e as Error).message}`)
+      }
+    },
+    [openSession, toast],
+  )
+
   /** Close the Side Chat drawer and delete the ephemeral session.
    *  Accepts an optional sessionId to target a specific session (used by
    *  the drawer's unmount cleanup). Falls back to the current sideChat ref. */
@@ -1787,15 +1833,15 @@ export function App() {
       })
       // Resume dormant sessions in the background — but NOT ones the user
       // deliberately slept (slept:true). Those stay dormant until an explicit
-      // click / drop / Resume-button wakes them.
+      // click / drop / Resume-button wakes them. Terminated sessions are never
+      // auto-resumed here either: a recoverable (canRetryResume) one opens to
+      // the composer's Resume / Fork-from-last-completed choice banner.
       for (const id of valid) {
         const s = sessions.find((x) => x.id === id)
         // !s.slept: a deliberately-slept session isn't woken behind the
-        // user's back. `s.canRetryResume`: a transiently-terminated session
-        // (process crash / query error) may still be recoverable — let it
-        // try the resume POST; the server probes the transcript and 410s
-        // (flipping it back to hard-terminal) if it's truly gone.
-        if (s && !s.running && !s.slept && (!s.terminated || s.canRetryResume)) {
+        // user's back. !s.terminated: a crashed session must not silently
+        // re-run the poison turn — the user chooses via the banner.
+        if (s && !s.running && !s.slept && !s.terminated) {
           const pm = sessionsRef.current.find((s) => s.id === resumeTargetPanelIdRef.current)?.permissionMode
           void api.post(`/sessions/${id}/resume`, {
             permissionMode: pm,
@@ -1968,11 +2014,12 @@ export function App() {
         // (awaited) below — skipping it here avoids a double resume.
         // Skip siblings the user deliberately slept (slept:true): those stay
         // dormant until explicitly woken (their panel shows the dormant
-        // empty-state with a Resume button).
+        // empty-state with a Resume button). Skip terminated ones too — a
+        // crashed sibling opens to its choice banner, never auto-resumes.
         for (const gid of groupIds) {
           if (gid === id) continue
           const sib = sessionsRef.current.find((x) => x.id === gid)
-          if (sib && !sib.running && !sib.slept && (!sib.terminated || sib.canRetryResume) && !resumingRef.current.has(gid)) {
+          if (sib && !sib.running && !sib.slept && !sib.terminated && !resumingRef.current.has(gid)) {
             void resumeSession(gid, () => {}).catch(() => {})
           }
         }
@@ -2557,7 +2604,12 @@ export function App() {
   useEffect(() => {
     if (pendingGroupInheritance.size === 0 || uiStateLoading) return
     const completed = [...pendingGroupInheritance].filter(([newId, pending]) =>
-      groups.some((g) => g.sessionIds.includes(pending.sourceId) && g.sessionIds.includes(newId)),
+      pending.replaces
+        // Crash-recovery fork: once Y is placed in a group, X is gone from it
+        // (inheritGroupId replaced X with Y), so the two-ids-in-one-group test
+        // below can't fire. Y in any group means the replacement landed.
+        ? groups.some((g) => g.sessionIds.includes(newId))
+        : groups.some((g) => g.sessionIds.includes(pending.sourceId) && g.sessionIds.includes(newId)),
     )
     if (completed.length > 0) {
       const timer = window.setTimeout(() => {
@@ -2572,7 +2624,7 @@ export function App() {
     const updates = [...pendingGroupInheritance].flatMap(([newId, pending]) => {
       // Evicting replacements (clear/restart) are placed into X's exact slot by
       // swapSession — don't append them here, which would flash Y at the group
-      // tail. Only fork (non-evicting) replacements retry the append.
+      // tail. Only fork (non-evicting) replacements retry.
       if (pending.evicting) return []
       const sourceGroup = groups.find((g) => g.sessionIds.includes(pending.sourceId))
       if (!sourceGroup) return []
@@ -2581,14 +2633,22 @@ export function App() {
     if (updates.length === 0) return
     const timer = window.setTimeout(() => {
       for (const { newId, pending } of updates) {
-        setGroups((prev) => joinGroupOfSource(prev, pending.sourceId, newId, {
-          evicting: pending.evicting,
-          maxGroupSize: maxGroupSizeRef.current,
-        }))
+        if (pending.replaces) {
+          // Crash-recovery fork: Y replaces X — put Y in X's group/order slot
+          // once the source group hydrates (the direct replace in the
+          // session-created handler no-ops when groups weren't loaded yet).
+          setGroups((prev) => inheritGroupId(prev, pending.sourceId, newId))
+          setSidebarOrder((prev) => inheritSidebarOrderId(prev, pending.sourceId, newId))
+        } else {
+          setGroups((prev) => joinGroupOfSource(prev, pending.sourceId, newId, {
+            evicting: pending.evicting,
+            maxGroupSize: maxGroupSizeRef.current,
+          }))
+        }
       }
     }, 0)
     return () => window.clearTimeout(timer)
-  }, [groups, pendingGroupInheritance, setGroups, uiStateLoading])
+  }, [groups, pendingGroupInheritance, setGroups, setSidebarOrder, uiStateLoading])
 
   // Once a hydrated, live source is known to be ungrouped, release its
   // replacement in render-derived state on the next event rather than
@@ -3050,9 +3110,10 @@ export function App() {
   const handleAcceptSidebarDrop = useCallback(async (sidebarId: string, targetSlotId: string) => {
     const existing = sessionsRef.current.find((x) => x.id === sidebarId)
     let live = existing
-    // Transiently-terminated (canRetryResume) sessions are still worth
-    // resuming here — the server probes the transcript and 410s if gone.
-    if (existing && !existing.running && (!existing.terminated || existing.canRetryResume)) {
+    // Dormant sessions are resumed on drop. Terminated ones (including
+    // recoverable canRetryResume) are NOT — they open to the composer's
+    // Resume / Fork-from-last-completed choice banner instead.
+    if (existing && !existing.running && !existing.terminated) {
       try {
         const res = await api.post<{ session: SessionInfo }>(
           `/sessions/${sidebarId}/resume`,
@@ -3645,6 +3706,7 @@ export function App() {
                       onFocus={focusPanel}
                       onClose={closeSession}
                       onResume={(id) => { void resumeSession(id, () => {}) }}
+                      onForkFromLastCompleted={handleCrashFork}
                       groupLabel={owningGroup?.name}
                       onCloseGroupPanels={
                         owningGroup ? closeGroupPanelsHandlers.get(owningGroup.id) : undefined
@@ -3778,8 +3840,10 @@ export function App() {
               }
               const known = sessions.find((s) => s.id === id)
               if (known && !known.running && (!known.terminated || known.canRetryResume)) {
-                // Tracked dormant (or transiently-terminated) session —
-                // reuse the sidebar resume flow.
+                // Tracked dormant (or transiently-terminated) session — reuse
+                // the sidebar flow. Terminated ones now open to the composer's
+                // Resume / Fork-from-last-completed choice banner (handleSelect
+                // never auto-resumes a terminated session).
                 void handleSelect(id)
               } else if (known?.running) {
                 openSession(id, known.lastTurnAt)

@@ -28,11 +28,16 @@ describe('shouldAutoResumeOnSelect', () => {
     expect(shouldAutoResumeOnSelect({ running: false, terminated: true, canRetryResume: false })).toBe(false)
   })
 
-  it('retries a transiently-terminated session (canRetryResume)', () => {
-    expect(shouldAutoResumeOnSelect({ running: false, terminated: true, canRetryResume: true })).toBe(true)
+  it('does NOT auto-resume a transiently-terminated session (canRetryResume) either', () => {
+    // Terminated sessions are NEVER auto-resumed. Recoverable (canRetryResume)
+    // ones open to the composer's Resume / Fork-from-last-completed choice
+    // banner instead — the user decides how to continue, never the app.
+    expect(shouldAutoResumeOnSelect({ running: false, terminated: true, canRetryResume: true })).toBe(false)
   })
 
   it('keeps a transiently-terminated + slept session dormant on auto restore', () => {
+    // Now false for the same "terminated never auto-resumes" reason — the
+    // canRetryResume flag no longer grants an auto-resume on open.
     expect(
       shouldAutoResumeOnSelect(
         { running: false, terminated: true, canRetryResume: true, slept: true },

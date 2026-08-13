@@ -220,11 +220,13 @@ export interface Session {
   lastAssistantUuid?: string
   /** uuid of the last assistant message belonging to a *successfully
    *  completed* turn (promoted from `lastAssistantUuid` when a `result`
-   *  subtype==='success' lands). The anchor for crash-recovery Step 2's
-   *  `--fork-session --resume-session-at`: forking from here drops the
-   *  poisonous/crashed trailing turn while preserving everything before it.
-   *  undefined when no turn has completed (the first-turn-crash floor).
-   *  Runtime-only. */
+   *  subtype==='success' lands). Was the anchor for crash-recovery Step 2's
+   *  auto-fork; that auto-fork is gone, so nothing forks from here anymore —
+   *  the manual "Fork from last completed turn" button resolves its anchor
+   *  from the turn-anchor sidecar instead. Kept because the pump still
+   *  promotes it (cheap) and history-reader mirrors its success-only
+   *  semantics. undefined when no turn has completed (the first-turn-crash
+   *  floor). Runtime-only. */
   lastSafeResumeUuid?: string
   /** Snapshot of HEAD captured at session spawn. Used by the GitPanel
    *  "This session" view to scope diffs to this conversation. Mirrored
@@ -400,14 +402,22 @@ export interface SessionManagerOptions {
   autoResume?: boolean
   /** When true, a CLI subprocess crash (non-zero exit / signal / killed)
    *  triggers a bounded recovery ladder before marking the session
-   *  terminated: Step 1 re-resumes the same id (handles transient crashes
-   *  and tail corruption — the CLI self-heals partial trailing lines);
-   *  Step 2 forks from the last completed turn (`--fork-session
-   *  --resume-session-at`) to drop a poisonous trailing turn. spawn-failures
-   *  (missing binary) and first-turn crashes (no completed turn to resume
-   *  from) bypass the ladder and terminate. Default true in production,
-   *  false in tests. */
+   *  terminated: every attempt re-resumes the same id (handles transient
+   *  crashes and tail corruption — the CLI self-heals partial trailing
+   *  lines). When the attempt budget (`maxCrashRecovery`) is exhausted the
+   *  session terminates with the transient crash reason so the UI shows the
+   *  Resume / Fork-from-last-completed choice banner — there is no automatic
+   *  fork. spawn-failures (missing binary) and first-turn crashes (no
+   *  completed turn to resume from) bypass the ladder and terminate. Default
+   *  true in production, false in tests. */
   crashRecovery?: boolean
+  /** Max in-place resume attempts per crash episode before giving up. Every
+   *  attempt is Step 1 (re-resume the same session id); there is no auto-fork.
+   *  With N, the first N crashes in-place-resume and the (N+1)th terminates
+   *  with the transient crash reason (`canRetryResume`) so the UI offers the
+   *  user Resume / Fork-from-last-completed. Default 2 (two in-place resumes,
+   *  third crash shows the banner); raising it adds more in-place resumes. */
+  maxCrashRecovery?: number
 }
 
 /** Global session-list update event. Broadcast whenever a session's
@@ -415,7 +425,7 @@ export interface SessionManagerOptions {
  *  the frontend sidebar can replace 5-second polling with a push fee?. */
 export type GlobalSessionEvent =
   | { kind: 'update'; session: SessionInfo }
-  | { kind: 'created'; session: SessionInfo; joinGroupOf?: string; evictingSource?: boolean }
+  | { kind: 'created'; session: SessionInfo; joinGroupOf?: string; evictingSource?: boolean; replacesSource?: boolean }
   | { kind: 'removed'; id: string }
   /** A tool-permission request arrived for a session. Mirrored onto the
    *  global channel so that App-level code can fire a desktop notification

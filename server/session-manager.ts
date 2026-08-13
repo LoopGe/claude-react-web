@@ -126,8 +126,9 @@ function isTransientTerminatedReason(reason?: string): boolean {
 /** Extract the model name from the first assistant frame in a history seed.
  *  Used by resume() when the session's persisted meta has no model (e.g. a
  *  CLI-created session adopted from disk — the SDK's getSessionInfo doesn't
- *  return model). The on-disk assistant frame carries `message.model` (the
- *  SDK's internal model name), which the CLI accepts on resume. */
+ *  return model). The on-disk assistant frame carries `message.model`, which
+ *  is the CLI's SHORT internal name (e.g. `deepseek-v4-flash`) — see
+ *  resolveConfiguredModel() for why that is not a valid API model id. */
 function firstAssistantModel(seed: SDKMessage[] | undefined): string | undefined {
   if (!seed) return undefined
   for (const msg of seed) {
@@ -137,6 +138,31 @@ function firstAssistantModel(seed: SDKMessage[] | undefined): string | undefined
     }
   }
   return undefined
+}
+
+/** Resolve a model id to one the gateway actually accepts.
+ *
+ *  The on-disk transcript's `message.model` is the CLI's SHORT internal name
+ *  (`deepseek-v4-flash`), NOT the configured full id (`deepseek/deepseek-v4-flash`)
+ *  the gateway requires. resume() leans on that short name when the session's
+ *  persisted meta has no model (a disk-adopted session, e.g. one /clear'd and
+ *  then reopened), and it then gets persisted as the session's model — so the
+ *  NEXT /clear clones the short id into a fresh session, which the gateway
+ *  rejects with `400 Unsupported model`. Map a BARE short name (no provider
+ *  prefix) to the unique configured model whose last `/`-segment matches, so
+ *  resume/clear carry a valid API model. Values that already carry a provider
+ *  prefix, or that have no unambiguous configured match, are returned
+ *  unchanged. */
+function resolveConfiguredModel(model: string | undefined): string | undefined {
+  if (!model) return undefined
+  // A provider-prefixed id is a full model the user picked explicitly; never
+  // rewrite it (rewriting could redirect e.g. myprovider/gpt-5.6-sol to a
+  // differently-prefixed same-named model in the list).
+  if (model.includes('/')) return model
+  const list = defaultConfig.modelList
+  if (list.includes(model)) return model
+  const matches = list.filter((m) => m.slice(m.lastIndexOf('/') + 1) === model)
+  return matches.length === 1 ? matches[0] : model
 }
 
 /** Merge result frames from the sidecar back into a disk-read history seed.
@@ -315,6 +341,17 @@ export class SessionManager {
   private historyCap: number
   private autoResumeEnabled: boolean
   private crashRecoveryEnabled: boolean
+  /** Max crash-recovery attempts per crash episode before giving up.
+   *  Every attempt is Step 1: an in-place `--resume <id>`. There is no
+   *  automatic fork. When the counter reaches `maxCrashRecovery` the ladder
+   *  gives up: the session terminates with the (transient) crash reason and
+   *  the client shows a Resume / Fork-from-last-completed choice banner for
+   *  the USER to decide. Default 2 = two automatic in-place resumes, then
+   *  give-up. Raising it adds more in-place resumes before the banner, not
+   *  forks. Tighter than autoResume's 20 because each attempt spawns a CLI
+   *  that may crash again, and the user should take over after a couple of
+   *  failures. Configurable via SessionManagerOptions.maxCrashRecovery. */
+  private maxCrashRecovery: number
   private healthMonitor: SessionHealthMonitor
   private store: SessionStore
   private promptUuidStore: PromptUuidStore
@@ -340,6 +377,7 @@ export class SessionManager {
     this.permBroker = new PermissionBroker()
     this.autoResumeEnabled = opts.autoResume ?? false
     this.crashRecoveryEnabled = opts.crashRecovery ?? false
+    this.maxCrashRecovery = opts.maxCrashRecovery ?? 2
     this.store = opts.store ?? new SessionStore()
     this.promptUuidStore = new PromptUuidStore(this.store.getDir(), this.historyCap)
     this.turnAnchorStore = new TurnAnchorStore(this.store.getDir(), this.historyCap)
@@ -400,9 +438,10 @@ export class SessionManager {
    *    CLAUDE_CODE_BINARY). See unloadSpawnFailed.
    *  - Crash (non-zero code / killed): when crashRecovery is enabled,
    *    record the crash context and defer to cleanupPump's recovery
-   *    ladder (Step 1 in-place resume → Step 2 fork from last completed
-   *    turn → terminate). When disabled, terminate immediately (legacy
-   *    behavior). */
+   *    ladder (in-place resume until maxCrashRecovery is exhausted, then
+   *    terminate with the transient reason so the client offers Resume /
+   *    Fork-from-last-completed). When disabled, terminate immediately
+   *    (legacy behavior). */
   private handleProcessExit(info: ProcessExitInfo): void {
     const { sessionId, code, signal, killed, spawnError } = info
     const s = this.sessions.get(sessionId)
@@ -930,8 +969,8 @@ export class SessionManager {
     // transcript's first assistant frame when meta.model is missing (a
     // CLI-created session adopted from disk has no model in its meta — the
     // SDK's getSessionInfo doesn't return it). The on-disk assistant frame
-    // carries `message.model` (the SDK's internal name), which the CLI
-    // accepts on resume.
+    // carries the CLI's SHORT model id, which is NOT a valid API model id —
+    // resolveConfiguredModel below maps it back to the configured full id.
     let historySeed: SDKMessage[] | undefined
     try {
       const page = await this.readProviderHistoryPage(provider, id, {
@@ -944,7 +983,12 @@ export class SessionManager {
     } catch {
       /* disk read failed — fall back to an empty ring (pre-fix behaviour) */
     }
-    const resolvedModel = meta.model ?? firstAssistantModel(historySeed)
+    // resolveConfiguredModel maps a bare SHORT model id (what the CLI records
+    // in the transcript, e.g. `deepseek-v4-flash`) back to the configured
+    // FULL id (`deepseek/deepseek-v4-flash`) the gateway accepts. Without it,
+    // resume-after-/clear persisted the short id and the NEXT /clear spawned
+    // a fresh session the gateway rejected with `400 Unsupported model`.
+    const resolvedModel = resolveConfiguredModel(meta.model ?? firstAssistantModel(historySeed))
     const resumeOpts: Options & { provider?: string; enabledPlugins?: string[] } = {
       provider,
       resume: id,
@@ -1182,7 +1226,7 @@ export class SessionManager {
    *  `result` message, so forking earlier fails with `No conversation
    *  found with session ID: <uuid>` from the CLI. `lastTurnAt` is our
    *  ground-truth signal (set only by the pump on a real `result`). */
-  async fork(id: string, opts?: { resumeSessionAt?: string; historySeed?: SDKMessage[]; inheritIdentity?: boolean }): Promise<SessionInfo> {
+  async fork(id: string, opts?: { resumeSessionAt?: string; historySeed?: SDKMessage[]; inheritIdentity?: boolean; replacesSource?: boolean; forkFromLastSafe?: boolean }): Promise<SessionInfo> {
     const live = this.sessions.get(id)
     const meta = live ?? this.store.get(id)
     if (!meta) throw new HttpError(404, `session ${id} not found`)
@@ -1197,8 +1241,9 @@ export class SessionManager {
     // --fork-session is a no-op, because truncating the persisted history
     // is destructive on a same-id resume but safe on a fork copy). fork()
     // always sets forkSession, so passing resumeSessionAt here is honored.
-    // Used by crash-recovery Step 2 to fork from the last completed turn,
-    // dropping a poisonous trailing turn.
+    // forkFromLastSafe (the crash-recovery "Fork from last completed turn"
+    // button) resolves the newest successful turn below, dropping a
+    // poisonous trailing turn.
     // Side Chats are ephemeral, scoped to their parent's conversation, and
     // carry a non-mutating boundary prompt. Forking one would manufacture a
     // sibling-of-Side-Chat session whose `parentId` is dropped (forkOpts does
@@ -1206,6 +1251,21 @@ export class SessionManager {
     // Refuse at the entry point.
     if (meta.parentId) {
       throw new HttpError(400, `session ${id} is a Side Chat and cannot be forked.`)
+    }
+    // `forkFromLastSafe` (the crash-recovery "Fork from last completed turn"
+    // button): resolve the newest successfully-completed turn as the fork
+    // point, dropping any poisonous trailing turn. ensureAnchorsLoaded
+    // returns chronological anchors; the last entry is the newest. No anchor
+    // means no completed turn, which the lastTurnAt guard above already
+    // covers — keep the explicit error so the UI can explain why.
+    let resumeSessionAt = opts?.resumeSessionAt
+    if (!resumeSessionAt && opts?.forkFromLastSafe) {
+      const anchors = await this.ensureAnchorsLoaded(id)
+      const last = anchors[anchors.length - 1]
+      if (!last) {
+        throw new HttpError(400, `session ${id} has no completed turn to fork from`)
+      }
+      resumeSessionAt = last.assistantUuid
     }
     // The lastTurnAt guard above only proves we once saw a `result` in
     // memory; it doesn't prove the SDK's transcript file is still on
@@ -1257,10 +1317,11 @@ export class SessionManager {
       model: meta.model,
       permissionMode: meta.permissionMode,
       title,
-      // When branching from a specific point (crash-recovery Step 2),
-      // truncate the fork's loaded history to this assistant uuid. Only
-      // honored because forkSession is set (see method-header note).
-      resumeSessionAt: opts?.resumeSessionAt,
+      // When branching from a specific point (the "Fork from last completed
+      // turn" button / explicit resumeSessionAt), truncate the fork's loaded
+      // history to this assistant uuid. Only honored because forkSession is
+      // set (see method-header note).
+      resumeSessionAt,
       // Carry effort + beta flags forward so the fork matches the source.
       effort: meta.effortLevel,
       // Same as resume: preserve `context-1m-...` etc. so the fork has
@@ -1295,8 +1356,14 @@ export class SessionManager {
       // inherits global too.
       { showPinnedUserMessage: meta.showPinnedUserMessage, autoRecap: meta.autoRecap },
       // joinGroupOf: the source id — Y joins X's group (append semantics;
-      // X stays, since fork doesn't remove the source).
+      // X stays, since fork doesn't remove the source). The crash-recovery
+      // "Fork from last completed turn" button sets `replacesSource` so the
+      // client instead REPLACES X with Y (X is dead) — Y takes X's group
+      // slot, never overflowing the cap.
       id,
+      undefined, // evictingSource
+      undefined, // promptUuids
+      opts?.replacesSource,
     )
     if (parentOverride && parentOverride.kind !== 'inherit') {
       // Best-effort — the dynamic flag-layer pin matters mostly when the
@@ -1315,9 +1382,10 @@ export class SessionManager {
     // Options field spawn() reads (it only carries forward from an existing
     // persisted meta, which the fork's brand-new UUID lacks). Re-apply it on
     // the live fork so a fast-mode session stays fast after forking — same
-    // workaround clear() uses. Crash-recovery Step 2 forks automatically, so
-    // without this a double-crash of a fast-mode session silently drops fast
-    // mode. Best-effort: a failure is logged and the fork still completes.
+    // workaround clear() uses. The crash-recovery "Fork from last completed
+    // turn" button forks a fast-mode session, so without this the fork would
+    // silently drop fast mode. Best-effort: a failure is logged and the fork
+    // still completes.
     const sourceFastMode = live?.fastMode ?? meta.fastMode
     if (sourceFastMode) {
       const provider = this.providers.get(sourceProvider)
@@ -1688,6 +1756,13 @@ export class SessionManager {
      *  prompt uuids (SDK V → server U). Undefined for every other caller
      *  (fresh spawn / fork / clear start with an empty list). */
     promptUuids?: PromptUuidEntry[],
+    /** Set by the crash-recovery "Fork from last completed turn" button: the
+     *  source session X is dead and the fork Y is its continuation, so the
+     *  client should REPLACE X with Y in the sidebar group (instead of the
+     *  ordinary fork's append that X stays in the group). Lets Y land in X's
+     *  group slot even when the group is at `maxGroupSize` — X leaves the
+     *  group, so it never overflows. Undefined for every other caller. */
+    replacesSource?: boolean,
   ): SessionInfo {
     const providerName = opts.provider ?? this.defaultProvider
     const provider = this.providers.get(providerName)
@@ -1866,6 +1941,7 @@ export class SessionManager {
       session: this.info(session),
       ...(joinGroupOf ? { joinGroupOf } : {}),
       ...(evictingSource ? { evictingSource: true } : {}),
+      ...(replacesSource ? { replacesSource: true } : {}),
     })
     this.captureGitHead(session)
 
@@ -2011,12 +2087,12 @@ export class SessionManager {
     // future idle timeout gets fresh attempts.
     this.autoResumeCounts.delete(s)
     // NOTE: crash-recovery counts are intentionally NOT reset here. Resetting
-    // on every user message defeated escalation for a poisonous turn that
+    // on every user message would defeat the ladder for a poisonous turn that
     // crashes the CLI on the model's response (but loads fine on resume):
-    // each send reset the counter, so the cycle stayed at Step 1 forever and
-    // never reached the Step 2 fork that drops the poisonous content. The
-    // ladder resets only on proven health (a clean idle-autoResume after
-    // recovery — see autoResume()).
+    // each send would reset the counter, so the cycle stayed in-place forever
+    // and never exhausted into the give-up banner. The ladder resets only on
+    // proven health (a clean idle-autoResume after recovery — see
+    // autoResume()).
     // Invalidate the stored recap da new message means it's stale.
     // The next idle window triggers a fresh generation.
     this.recapManager.invalidate(s.id)
@@ -3984,13 +4060,14 @@ export class SessionManager {
   /** Tracks consecutive auto-resume attempts per session. */
   private autoResumeCounts = new WeakMap<Session, number>()
 
-  /** Max crash-recovery attempts before giving up. Step 1 (plain in-place
-   *  resume) + Step 2 (fork from last completed turn) = 2. Tighter than
-   *  autoResume's 20 because each attempt spawns a CLI that may crash again,
-   *  and only the rare deterministic-crash case reaches Step 2. */
-  private static MAX_CRASH_RECOVERY = 2
-  /** Tracks consecutive crash-recovery attempts per session. Resets to 0 on
-   *  every user message (pushToSession) so a fresh crash gets a fresh ladder. */
+  /** Tracks consecutive crash-recovery attempts per session. Every attempt is
+   *  Step 1 (in-place resume); once the count reaches `maxCrashRecovery` the
+   *  ladder gives up and terminates with the transient crash reason (the client
+   *  then offers Resume / Fork-from-last-completed). Does NOT reset on user
+   *  messages (pushToSession) — a poisonous turn that crashes on response (but
+   *  loads fine on resume) must keep consuming the budget rather than looping
+   *  in-place forever. It resets only on a clean autoResume, which proves the
+   *  session is healthy. */
   private crashRecoveryCounts = new WeakMap<Session, number>()
 
   /** Active background-subagent transcript watchers, keyed by session id →
@@ -4044,7 +4121,7 @@ export class SessionManager {
     this.autoResumeCounts.set(session, resumeCount + 1)
     // A clean idle-autoResume means the session was healthy (the prior
     // crash recovery, if any, succeeded) dreset the crash ladder so a
-    // future crash starts fresh at Step 1 instead of escalating to Step 2.
+    // future crash starts fresh with a full in-place budget.
     this.crashRecoveryCounts.delete(session)
     return true
   }
@@ -4147,30 +4224,28 @@ export class SessionManager {
    *  is set (a CLI subprocess crashed: non-zero exit / signal / killed).
    *
    *  Returns true if the session was re-spawned (Step 1, in-place) or
-   *  forked-and-terminated (Step 2) dcleanupPump then skips its termination
-   *  tail. Returns false on give-up (counter exhausted / no anchor / fork
-   *  failed) dfall through to terminate.
+   *  terminated via the give-up path (broadcast + terminal error) - cleanupPump
+   *  then skips its generic termination tail. Returns false only when the
+   *  session is already gone / terminated / clearing - cleanupPump runs its
+   *  generic tail (a no-op for a removed session).
    *
-   *  - Step 1 (attempt 0): plain `--resume <id>` in-place. Handles the
-   *    common cases: transient crashes (OOM, network) and tail corruption
-   *    (the CLI self-heals partial trailing lines dverified). Same id, no
-   *    sidebar corpse, subscribers stay attached.
-   *  - Step 2 (attempt 1): `--fork-session --resume-session-at
-   *    <lastSafeResumeUuid>`. For the rare deterministic crash where the
-   *    last turn's content poisons the CLI: fork from the last *completed*
-   *    turn, dropping the poisonous trailing turn. Creates a new session
-   *    id; the original terminates with its transcript preserved as an
-   *    artifact. resumeSessionAt only truncates under forkSession
-   *    (empirically verified dnon-fork resume-session-at is a no-op because
-   *    truncating persisted history is destructive on a same-id resume).
+   *  Every attempt is Step 1: plain `--resume <id>` in-place. Handles the
+   *  common cases: transient crashes (OOM, network) and tail corruption
+   *  (the CLI self-heals partial trailing lines - verified). Same id, no
+   *  sidebar corpse, subscribers stay attached. `maxCrashRecovery` (default
+   *  2) budgets the number of AUTOMATIC in-place resumes; when it is
+   *  exhausted the session is given up and terminates with the (transient)
+   *  crash reason - the client then shows a Resume / Fork-from-last-completed
+   *  choice banner and the USER decides how to continue. There is no
+   *  automatic fork.
    *
    *  Floor cases terminate via crashRecoveryGiveUp (terminateCrashedSession,
    *  which broadcasts + pushes a terminal error + denies pending + persists)
    *  and return true so cleanupPump skips its generic tail:
-   *    - counter >= MAX_CRASH_RECOVERY (ladder exhausted)
-   *    - no completed turn (no transcript to resume, no anchor to fork from)
+   *    - counter >= maxCrashRecovery (ladder exhausted)
+   *    - no on-disk transcript (nothing to resume / fork from)
    *    - provider doesn't support resume
-   *    - Step 1 spawn throws / Step 2 fork throws (e.g. Side Chat) */
+   *    - Step 1 spawn throws (e.g. Side Chat) */
   private async attemptCrashRecovery(session: Session): Promise<boolean> {
     // Guard: session must still be live and not explicitly stopped.
     if (!this.sessions.has(session.id)) return false
@@ -4179,29 +4254,31 @@ export class SessionManager {
     if (!caps?.supportsResume) return this.crashRecoveryGiveUp(session)
 
     const attempt = this.crashRecoveryCounts.get(session) ?? 0
-    if (attempt >= SessionManager.MAX_CRASH_RECOVERY) {
-      log.warn(`[session ${session.id}] crash-recovery exhausted (${attempt}/${SessionManager.MAX_CRASH_RECOVERY}), terminating`)
+    if (attempt >= this.maxCrashRecovery) {
+      log.warn(`[session ${session.id}] crash-recovery exhausted (${attempt}/${this.maxCrashRecovery}), terminating`)
       return this.crashRecoveryGiveUp(session)
     }
 
-    // Both steps need a completed turn on disk: the SDK only writes the
-    // transcript after the first `result`, so resume/fork would fail with
+    // Step 1 needs a completed turn on disk: the SDK only writes the
+    // transcript after the first `result`, so resume would fail with
     // "No conversation found" without one. Probe the disk AUTHORITATIVELY
     // (hasSdkTranscript) rather than the `lastTurnAt` in-memory proxy —
-    // mirrorring resume(). lastTurnAt is set only when THIS process observed
-    // a `result`, so a fork (Step 2) that inherits a valid on-disk transcript
-    // but has not yet produced a result of its own has lastTurnAt===undefined
-    // and would be wrongly given up here. The disk probe is the source of
-    // truth (see hasSdkTranscript / resume()).
+    // mirrorring resume(). If the transcript is genuinely gone (lastTurnAt
+    // set but no file), mark it hard: resume() and fork() would both 410, so
+    // the client must NOT show the Resume/Fork choice banner. If there was
+    // never a completed turn (lastTurnAt undefined), leave the transient
+    // reason: resume() respawns fresh and the banner's Resume still works.
     if (!(await this.hasSdkTranscript(session))) {
-      log.warn(`[session ${session.id}] crash-recovery skipped dno on-disk transcript to resume/fork from`)
+      log.warn(`[session ${session.id}] crash-recovery skipped: no on-disk transcript to resume from`)
+      if (session.lastTurnAt) return this.crashRecoveryGiveUp(session, 'transcript_missing')
       return this.crashRecoveryGiveUp(session)
     }
 
-    if (attempt === 0) {
-      return this.crashRecoveryStep1(session)
-    }
-    return this.crashRecoveryStep2(session)
+    // Every attempt is Step 1 (in-place resume). The counter-exhausted check
+    // above (attempt >= maxCrashRecovery) is the ladder's only terminal — the
+    // crash reason is preserved (transient) so the client can offer the user
+    // Resume / Fork-from-last-completed. There is no Step 2 auto-fork.
+    return this.crashRecoveryStep1(session)
   }
 
   /** Give up the recovery ladder: terminate via terminateCrashedSession
@@ -4226,7 +4303,7 @@ export class SessionManager {
    *  subsequent clean idle-exit routes to autoResume (not termination). */
   private async crashRecoveryStep1(session: Session): Promise<boolean> {
     const attempt = this.crashRecoveryCounts.get(session) ?? 0
-    log.info(`[session ${session.id}] crash-recovery Step 1: in-place resume (attempt ${attempt + 1}/${SessionManager.MAX_CRASH_RECOVERY})`)
+    log.info(`[session ${session.id}] crash-recovery Step 1: in-place resume (attempt ${attempt + 1}/${this.maxCrashRecovery})`)
 
     // Destroy the (already-aborted) old handle BEFORE the async
     // buildResumeOpts: if the MCP refresh throws, the handle is already
@@ -4260,57 +4337,6 @@ export class SessionManager {
     // transcript reflects that the in-place resume succeeded — otherwise
     // the "recovering" bubble lingers with no confirmation.
     this.broadcastSystemNotice(session, '已从崩溃恢复，继续对话。')
-    return true
-  }
-
-  /** Step 2: fork from the last completed turn, dropping the poisonous
-   *  trailing turn that crashed the CLI. The fork is a new session id; the
-   *  original terminates with its transcript preserved. Returns true
-   *  (original handled dfork is the recovered continuation). */
-  private async crashRecoveryStep2(session: Session): Promise<boolean> {
-    const attempt = this.crashRecoveryCounts.get(session) ?? 0
-    const anchor = session.lastSafeResumeUuid
-    // lastTurnAt is set on ANY result (success or error), but
-    // lastSafeResumeUuid is promoted only on a SUCCESS result (a known-good
-    // fork point). A session whose only turns ended in error_max_turns /
-    // error_max_budget has lastTurnAt but no anchor dforking would include
-    // the poisonous error turn, so give up rather than fork into a re-crash.
-    if (!anchor) {
-      log.warn(`[session ${session.id}] crash-recovery Step 2 skipped dno lastSafeResumeUuid anchor (no successfully completed turn)`)
-      return this.crashRecoveryGiveUp(session)
-    }
-    // Re-check liveness before the async fork (disk probe + MCP refresh).
-    // `clearing` → clear() is taking over (return true so cleanupPump skips
-    // its termination tail); missing/unloaded → session is gone.
-    if (!this.sessions.has(session.id) || session.terminated) return false
-    if (session.clearing) return true
-    log.info(`[session ${session.id}] crash-recovery Step 2: fork from anchor ${anchor} (attempt ${attempt + 1}/${SessionManager.MAX_CRASH_RECOVERY})`)
-
-    let forkInfo: SessionInfo
-    try {
-      forkInfo = await this.fork(session.id, { resumeSessionAt: anchor })
-    } catch (err) {
-      // Side Chats can't fork (parentId), and a missing transcript would
-      // trip here too. Either way, can't recover via fork dgive up.
-      // Preserve the original crash error (root cause) for the terminal
-      // state; log the fork-failure detail separately.
-      log.error(`[session ${session.id}] crash-recovery Step 2 fork failed:`, err)
-      return this.crashRecoveryGiveUp(session)
-    }
-    this.crashRecoveryCounts.set(session, attempt + 1)
-
-    // The original session's state is poisonous (its last turn crashed the
-    // CLI), so it can't be kept alive on the same id. Terminate it with a
-    // SINGLE synthetic notice pointing the user at the recovered fork —
-    // terminateCrashedSession pushes that notice (don't push a separate one
-    // too, which would double-broadcast and make a successful recovery look
-    // like a failure). The fork is an independent live session (fork()
-    // already spawned + pumped it).
-    this.terminateCrashedSession(
-      session,
-      'crash_recovered_fork',
-      `已从上一个完整 turn 处 fork 恢复到新会话 ${forkInfo.id}（崩溃的那一轮被丢弃）。`,
-    )
     return true
   }
 

@@ -77,6 +77,15 @@ export interface WsSessionCreated<Session> {
    *  swapSession. Absent for fork (X stays, so the cap stands and
    *  handleAddToGroup can toast on overflow). */
   evictingSource?: boolean
+  /** Set to `true` by the crash-recovery "Fork from last completed turn"
+   *  button: the source session X is dead and Y is its continuation. The
+   *  client should REPLACE X with Y in the sidebar group — put Y in X's exact
+   *  slot and drop X from the group (X stays in the sidebar as a dead
+   *  artifact) — instead of the ordinary fork's append-that-keeps-X. This is
+   *  what lets Y land in a FULL group: X leaves, so the group never exceeds
+   *  `maxGroupSize`. Absent for user-initiated forks (X lives on, so the cap
+   *  stands). */
+  replacesSource?: boolean
 }
 export interface WsSessionRemoved {
   kind: 'session-removed'

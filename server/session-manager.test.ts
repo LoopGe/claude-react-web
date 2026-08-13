@@ -596,6 +596,69 @@ describe('SessionManager', () => {
     expect(store.get(info.id)).toBeDefined()
   })
 
+  it('resume() after /clear maps the transcript SHORT model id back to the configured FULL id', async () => {
+    // Regression for "executing /clear reports a model error": the CLI writes
+    // the SHORT model id (deepseek-v4-flash) into the on-disk transcript's
+    // assistant frames, but the gateway only accepts the configured FULL id
+    // (deepseek/deepseek-v4-flash). Chain that bit us:
+    //   1. X runs with the full id; /clear removes X from the store.
+    //   2. Resume(X) → adoptDiskSession (store.get is undefined) → no
+    //      meta.model → resume falls back to firstAssistantModel(seed),
+    //      which reads the SHORT id out of the transcript.
+    //   3. The SHORT id is persisted as X's model and cloned into the NEXT
+    //      /clear's fresh session → "API Error: 400 Unsupported model".
+    // Resume must resolve the SHORT id back to the configured FULL id.
+    const FULL = 'anthropic/claude-sonnet-4-20250514'
+    const SHORT = 'claude-sonnet-4-20250514'
+
+    const info = sm.create({ cwd: '/tmp', model: FULL })
+    sm.send(info.id, 'hi')
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    await tick()
+    await sm.clear(info.id)
+    expect(store.get(info.id)).toBeUndefined() // X left the store
+
+    // The on-disk transcript records the SHORT model id in assistant frames.
+    const readPage = vi.spyOn(
+      sm as unknown as { readProviderHistoryPage: (provider: unknown, id: string, opts: { limit: number; afterUuid?: string }) => Promise<unknown> },
+      'readProviderHistoryPage',
+    ).mockResolvedValue({
+      messages: [{ type: 'assistant', message: { model: SHORT, content: 'hi' } }],
+      totalCount: 1,
+      startIndex: 0,
+      hasMore: false,
+    })
+
+    const resumed = await sm.resume(info.id)
+    readPage.mockRestore()
+
+    expect(resumed.id).toBe(info.id)
+    // The resumed Query must be spawned with the FULL configured id, not the
+    // SHORT transcript id the gateway rejects.
+    expect(mockHandles[mockHandles.length - 1].options.model).toBe(FULL)
+    // Persisted meta must carry the FULL id so the next /clear inherits it.
+    expect(store.get(info.id)?.model).toBe(FULL)
+  })
+
+  it('resume() heals a persisted SHORT model id back to the configured FULL id', async () => {
+    // A session whose persisted meta already carries the SHORT id (e.g. the
+    // corrupted 7142f1c8 entry) must be healed to the FULL id on resume — the
+    // fix must not only stop NEW corruption, it must repair existing entries.
+    const FULL = 'anthropic/claude-sonnet-4-20250514'
+    const SHORT = 'claude-sonnet-4-20250514'
+
+    const info = sm.create({ cwd: '/tmp', model: SHORT })
+    sm.send(info.id, 'hi')
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    await tick()
+    await sm.unload(info.id)
+    expect(store.get(info.id)?.model).toBe(SHORT) // corrupted, persisted as-is
+
+    await sm.resume(info.id)
+    expect(mockHandles[mockHandles.length - 1].options.model).toBe(FULL)
+    expect(store.get(info.id)?.model).toBe(FULL)
+  })
+
   it('clear() does not broadcast session-cleared (Y has no pre-clear content to hide)', async () => {
     const info = sm.create({})
     mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
@@ -1526,6 +1589,87 @@ describe('SessionManager', () => {
     expect(next.value).toMatchObject({ joinGroupOf: source.id })
     expect(next.value).not.toHaveProperty('evictingSource')
     sub.unsubscribe()
+  })
+
+  it('fork({ replacesSource: true }) broadcasts created tagged replacesSource (crash-recovery fork)', async () => {
+    const source = sm.create({})
+    sm.send(source.id, 'hi')
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    const sub = sm.subscribeGlobal()
+    const it = sub.iterable[Symbol.asyncIterator]()
+    const forked = await sm.fork(source.id, { replacesSource: true })
+    const next = await it.next()
+    expect(next.done).toBe(false)
+    expect(next.value).toMatchObject({ kind: 'created', session: { id: forked.id } })
+    // A crash-recovery fork REPLACES the dead source X, so the created
+    // broadcast carries replacesSource — but NOT evictingSource (which is
+    // the /clear/restart eviction signal; here X is terminated, not evicted).
+    expect(next.value).toMatchObject({ joinGroupOf: source.id, replacesSource: true })
+    expect(next.value).not.toHaveProperty('evictingSource')
+    sub.unsubscribe()
+  })
+
+  it('fork({ forkFromLastSafe: true }) resolves resumeSessionAt to the newest completed turn', async () => {
+    const source = sm.create({})
+    sm.send(source.id, 'hi')
+    // Complete one real turn so the fork() lastTurnAt guard passes.
+    mockHandles[0].emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'one' }] } })
+    mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: source.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+    // Poll for the pump's asst-1 anchor to land (it appends fire-and-forget).
+    const smAny = sm as unknown as {
+      turnAnchorStore: {
+        load: (id: string) => Promise<Array<{ assistantUuid: string; completedAt: number }> | null>
+        save: (id: string, entries: Array<{ assistantUuid: string; completedAt: number }>) => Promise<void>
+      }
+    }
+    for (let i = 0; i < 30 && ((await smAny.turnAnchorStore.load(source.id)) ?? []).length === 0; i++) await tick()
+    // Now seed TWO anchors deterministically (newest = asst-2) so "pick the
+    // newest completed turn" is exercised against two distinct points — the
+    // crash-recovery "Fork from last completed turn" button drops any
+    // poisonous trailing turn (no result) by anchoring at the newest
+    // successful one.
+    await smAny.turnAnchorStore.save(source.id, [
+      { assistantUuid: 'asst-1', completedAt: 1 },
+      { assistantUuid: 'asst-2', completedAt: 2 },
+    ])
+
+    const forked = await sm.fork(source.id, { forkFromLastSafe: true })
+    expect(forked.id).not.toBe(source.id)
+    const opts = mockHandles.at(-1)!.options
+    expect(opts.resume).toBe(source.id)
+    expect(opts.forkSession).toBe(true)
+    expect(opts.resumeSessionAt).toBe('asst-2')
+  })
+
+  it('fork({ forkFromLastSafe: true, replacesSource: true }) broadcasts created tagged replacesSource', async () => {
+    const source = sm.create({})
+    sm.send(source.id, 'hi')
+    mockHandles[0].emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
+    mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: source.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+    // Poll for the anchor to land (pump appends fire-and-forget) so
+    // forkFromLastSafe finds a completed turn to anchor on.
+    const smAny = sm as unknown as { turnAnchorStore: { load: (id: string) => Promise<Array<{ assistantUuid: string }> | null> } }
+    for (let i = 0; i < 30 && ((await smAny.turnAnchorStore.load(source.id)) ?? []).length === 0; i++) await tick()
+
+    const sub = sm.subscribeGlobal()
+    const it = sub.iterable[Symbol.asyncIterator]()
+    const forked = await sm.fork(source.id, { forkFromLastSafe: true, replacesSource: true })
+    const next = await it.next()
+    expect(next.done).toBe(false)
+    expect(next.value).toMatchObject({ kind: 'created', session: { id: forked.id } })
+    expect(next.value).toMatchObject({ joinGroupOf: source.id, replacesSource: true })
+    expect(next.value).not.toHaveProperty('evictingSource')
+    sub.unsubscribe()
+  })
+
+  it('fork({ forkFromLastSafe: true }) still refuses a source with no completed turn', async () => {
+    const source = sm.create({ title: 'fresh' })
+    // The lastTurnAt guard fires first: no result was ever emitted, so there
+    // is no completed turn (and no anchor) to fork from. Same 400 as the
+    // base path — forkFromLastSafe does not bypass it.
+    await expect(sm.fork(source.id, { forkFromLastSafe: true })).rejects.toThrow(/no completed turns yet/i)
+    expect(mockHandles).toHaveLength(1)
   })
 
   it('clear() broadcasts a created event for the fresh session tagged with joinGroupOf + evictingSource', async () => {
@@ -2550,7 +2694,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       expect(sm.get(info.id).error).toBeUndefined()
     })
 
-    it('Step 2: a second crash forks from the last completed turn and terminates the original', async () => {
+    it('ladder exhausted: a 3rd crash gives up transiently (no auto-fork) so the client can offer Resume/Fork', async () => {
       sm = new SessionManager({ store, crashRecovery: true })
       const info = sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
@@ -2559,29 +2703,70 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
 
-      // First crash → Step 1 in-place resume (counter 0 → 1).
+      // Every crash is Step 1 (in-place resume, same id) — there is NO Step 2
+      // auto-fork. maxCrashRecovery=2 budgets in-place resumes: crashes 1 & 2
+      // recover, the 3rd gives up.
       fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
       await waitFor(() => mockHandles.length >= 2)
+      expect(mockHandles[1].options.resume).toBe(info.id)
+      expect(mockHandles[1].options.forkSession).toBeUndefined()
+      expect(sm.get(info.id).terminated).toBe(false)
 
-      // Second crash → Step 2 fork from lastSafeResumeUuid (counter 1 → 2).
-      // The original terminates with 'crash_recovered_fork'; the fork is a
-      // new session.
       fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
-      const forked = await waitFor(() => mockHandles.length >= 3 && sm.get(info.id).terminated === true)
+      await waitFor(() => mockHandles.length >= 3)
+      // Still in-place: same id, no forkSession, alive.
+      expect(mockHandles[2].options.resume).toBe(info.id)
+      expect(mockHandles[2].options.forkSession).toBeUndefined()
+      expect(sm.get(info.id).terminated).toBe(false)
 
-      expect(forked).toBe(true)
+      // 3rd crash → ladder exhausted → give up with the (transient) crash
+      // reason: canRetryResume=true so the composer shows the choice banner.
+      fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+      await waitFor(() => sm.get(info.id).terminated === true)
+
       expect(sm.get(info.id).terminated).toBe(true)
-      expect(sm.get(info.id).terminatedReason).toBe('crash_recovered_fork')
-      expect(mockHandles.length).toBe(3) // original + Step1 resume + Step2 fork
-      // The Step-2 spawn is a fork: resume of the original id + forkSession,
-      // and resumeSessionAt pointing at the last completed assistant uuid.
-      const forkOpts = mockHandles[2].options
-      expect(forkOpts.resume).toBe(info.id)
-      expect(forkOpts.forkSession).toBe(true)
-      expect(forkOpts.resumeSessionAt).toBe('asst-1')
+      expect(sm.get(info.id).terminatedReason).toBe('process_exited')
+      expect(sm.get(info.id).canRetryResume).toBe(true)
+      // No fork happened: an auto-fork would have spawned a 4th handle (and a
+      // second session). 3 handles = original + 2 in-place resumes, and the
+      // original session object is still the only one (now terminated).
+      expect(mockHandles).toHaveLength(3)
+
+      // canRetryResume is real: a manual resume still works after give-up
+      // (the composer's [Resume] button path).
+      await sm.resume(info.id)
+      await waitFor(() => mockHandles.length >= 4 && sm.get(info.id).running === true)
+      expect(sm.get(info.id).terminated).toBe(false)
     })
 
-    it('recovery counter does NOT reset on user message (escalation preserved across re-engagement)', async () => {
+    it('MAX=3 gives three in-place resumes, then give-up on the 4th crash (no fork at any rung)', async () => {
+      sm = new SessionManager({ store, crashRecovery: true, maxCrashRecovery: 3 })
+      const info = sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
+      h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+
+      // Crashes 1-3 are ALL Step 1 in-place: same id, no forkSession, alive.
+      // maxCrashRecovery budgets AUTOMATIC resumes, so MAX=3 means three.
+      for (let i = 1; i <= 3; i++) {
+        fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+        await waitFor(() => mockHandles.length >= i + 1)
+        expect(mockHandles[i].options.resume).toBe(info.id)
+        expect(mockHandles[i].options.forkSession).toBeUndefined()
+        expect(sm.get(info.id).terminated).toBe(false)
+      }
+
+      // Crash 4 → ladder exhausted → transient give-up (NOT a fork).
+      fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+      await waitFor(() => sm.get(info.id).terminated === true)
+      expect(mockHandles).toHaveLength(4) // original + 3 resumes, no fork
+      expect(sm.get(info.id).terminatedReason).toBe('process_exited')
+      expect(sm.get(info.id).canRetryResume).toBe(true)
+    })
+
+    it('manual fork starts a fresh crash counter (its own first crash is Step 1 in-place)', async () => {
       sm = new SessionManager({ store, crashRecovery: true })
       const info = sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
@@ -2590,28 +2775,57 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
 
-      // Crash → Step 1 in-place resume (counter 0 → 1).
+      // User-initiated fork (the composer's "Fork from last completed turn"
+      // button triggers forkFromLastSafe + replacesSource). A fresh session.
+      const forkInfo = await sm.fork(info.id, { replacesSource: true })
+      expect(forkInfo.id).not.toBe(info.id)
+      expect(sm.get(forkInfo.id).running).toBe(true)
+
+      // The fork is a NEW Session object with NO crash counter, so its own
+      // first crash is Step 1 in-place on the fork id — not an immediate
+      // give-up (and not a fork-of-fork). Default mock → transcript exists.
+      fireCrash(sm, forkInfo.id, { code: 1, signal: null, killed: false })
+      await waitFor(() => mockHandles.length >= 3 && sm.get(forkInfo.id).running === true)
+      expect(mockHandles[2].options.resume).toBe(forkInfo.id)
+      expect(mockHandles[2].options.forkSession).toBeUndefined()
+      expect(sm.get(forkInfo.id).terminated).toBe(false)
+    })
+
+    it('recovery counter does NOT reset on user message (ladder still exhausts on the 3rd crash)', async () => {
+      sm = new SessionManager({ store, crashRecovery: true })
+      const info = sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
+      h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+
+      // Crash 1 → Step 1 in-place resume (counter 0 → 1).
       fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
       await waitFor(() => mockHandles.length >= 2)
 
       // User sends a new message on the recovered session. The counter must
       // NOT reset here: a poisonous turn that crashes the CLI on the model's
       // response (but loads fine on resume) would otherwise loop at Step 1
-      // forever, never reaching the Step 2 fork that drops the poisonous
-      // content. The ladder resets only on proven health (a clean idle-
-      // autoResume after recovery).
+      // forever, never exhausting the ladder.
       sm.send(info.id, 'again')
       await tick()
 
-      // A fresh crash escalates to Step 2 fork (counter 1 → 2), NOT back to
-      // Step 1. The original terminates with 'crash_recovered_fork'.
+      // Crash 2 → STILL Step 1 (counter 1 → 2), not a give-up.
       fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
-      await waitFor(() => mockHandles.length >= 3 && sm.get(info.id).terminated === true)
+      await waitFor(() => mockHandles.length >= 3)
+      expect(mockHandles[2].options.resume).toBe(info.id)
+      expect(mockHandles[2].options.forkSession).toBeUndefined()
+      expect(sm.get(info.id).terminated).toBe(false)
 
-      expect(sm.get(info.id).terminated).toBe(true)
-      expect(sm.get(info.id).terminatedReason).toBe('crash_recovered_fork')
-      const forkOpts = mockHandles[2].options
-      expect(forkOpts.forkSession).toBe(true) // Step 2 fork, not Step 1 resume
+      // Crash 3 → ladder exhausted → transient give-up. If the counter had
+      // reset on the user message, this would be Step 1 (counter 0) instead —
+      // the assertion that crash 3 terminates proves the counter survived.
+      fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+      await waitFor(() => sm.get(info.id).terminated === true)
+      expect(mockHandles).toHaveLength(3)
+      expect(sm.get(info.id).terminatedReason).toBe('process_exited')
+      expect(sm.get(info.id).canRetryResume).toBe(true)
     })
 
     it('Step 1 clears the crash error so the next clean idle-exit auto-resumes (not terminate)', async () => {
