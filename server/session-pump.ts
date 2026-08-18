@@ -857,17 +857,34 @@ function assembleLiteUsage(opts: {
    *  suspicious payload ('result' = end-of-turn, 'assistant' = mid-turn). */
   source?: 'result' | 'assistant'
 }): LiteContextUsage | null {
-  // Guard 1 — drop impossible cache buckets. A single prompt-side bucket can
+  // Guard 1 — reject impossible cache buckets. A single prompt-side bucket can
   // never exceed the context window in a valid Anthropic response (the full
   // prompt = input + cache_read + cache_creation must fit in the window), so
   // a bucket larger than the window is garbage. Some proxies return a
   // CUMULATIVE conversation counter in cache_read_input_tokens (millions of
   // tokens for a long chat); summing that against the window would make every
   // snapshot look >100% and get rejected below, leaving the ContextBar empty
-  // forever. Drop the bad bucket and recompute from the survivors.
-  let { cacheCreation, cacheRead } = opts
-  if (cacheCreation != null && cacheCreation > opts.contextWindow) cacheCreation = undefined
-  if (cacheRead != null && cacheRead > opts.contextWindow) cacheRead = undefined
+  // forever.
+  //
+  // When a bucket IS corrupt we cannot reconstruct the true prompt size from
+  // the survivors: `input_tokens` is only the NON-cached portion (Anthropic
+  // docs), so emitting `totalTokens = inputTokens` alone would under-report a
+  // cached conversation by orders of magnitude — the ContextBar collapses to
+  // ~0% in the middle of a 67% turn. Reject the whole snapshot and keep the
+  // last known good value instead.
+  const { cacheCreation, cacheRead } = opts
+  if (
+    (cacheCreation != null && cacheCreation > opts.contextWindow) ||
+    (cacheRead != null && cacheRead > opts.contextWindow)
+  ) {
+    log.debug(
+      `[context-usage] cache bucket > contextWindow → skipping update ` +
+      `(source=${opts.source ?? 'unknown'}, model=${opts.model}, ` +
+      `inputTokens=${opts.inputTokens}, cacheCreation=${cacheCreation}, ` +
+      `cacheRead=${cacheRead}, contextWindow=${opts.contextWindow})`,
+    )
+    return null
+  }
   const totalTokens = opts.inputTokens + (cacheCreation ?? 0) + (cacheRead ?? 0)
   if (totalTokens > opts.contextWindow) {
     log.debug(
@@ -904,8 +921,10 @@ function assembleLiteUsage(opts: {
     percentage: (totalTokens / opts.contextWindow) * 100,
     model: opts.model,
   }
-  // Forward the SANITIZED buckets so the UI never shows the fake cumulative
-  // cache figure (e.g. "cache 4M") that Guard 1 just dropped from the total.
+  // Forward the cache buckets only when the proxy reported a number, so
+  // "absent" stays distinguishable from "zero". Corrupt buckets never reach
+  // here — Guard 1 already rejected the whole snapshot if one exceeded the
+  // context window.
   if (typeof cacheCreation === 'number') out.cacheCreationTokens = cacheCreation
   if (typeof cacheRead === 'number') out.cacheReadTokens = cacheRead
   if (typeof opts.outputTokens === 'number') out.outputTokens = opts.outputTokens
