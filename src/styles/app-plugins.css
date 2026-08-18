@@ -38,7 +38,7 @@
 }
 .app-plugins-row {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 10px 12px;
   background: var(--bg-elev);
 }
@@ -66,7 +66,7 @@
 .app-plugins-state {
   font-size: var(--fs-xs);
   padding: 1px 6px;
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   border: 1px solid var(--border);
   color: var(--fg-muted);
 }
@@ -171,7 +171,7 @@
 
 .app-plugins-marketplace {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 10px 12px;
   background: var(--bg-elev);
   margin-bottom: 4px;
@@ -212,7 +212,7 @@
   gap: 8px;
   padding: 6px 8px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--bg);
 }
 .app-plugins-mp-plugin strong {
@@ -228,7 +228,7 @@
   max-width: calc(100vw - 16px);
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
   padding: 10px 12px;
   display: flex;
@@ -273,7 +273,7 @@
   height: 14px;
   border: 2px solid var(--border);
   border-top-color: var(--accent);
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   animation: plugin-spin 0.7s linear infinite;
   flex-shrink: 0;
 }
@@ -298,7 +298,7 @@
   max-width: 480px;
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-xl);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
   padding: 16px;
   display: flex;
@@ -356,6 +356,6 @@
   height: 20px;
   width: auto;
   vertical-align: middle;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   display: inline-block;
 }

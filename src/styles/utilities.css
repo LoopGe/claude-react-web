@@ -15,7 +15,7 @@
   background: var(--accent);
   color: var(--on-accent);
   text-decoration: none;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   font-weight: 600;
   font-size: 13px;
   /* Off-screen until focused. transform-based hide avoids `display: none`
@@ -44,10 +44,9 @@
  *
  * Note: we deliberately do NOT set `border-radius` here. Modern
  * browsers paint `outline` along the element's own border-radius, so
- * forcing a uniform radius would distort circular elements like
- * `.accent-swatch` (border-radius: 50%) and pill controls
- * (border-radius: 999px) into 3px-cornered squares whenever they
- * received keyboard focus.
+ * forcing a uniform radius would distort true circles (like
+ * `.accent-swatch`) and pill controls into squared corners whenever
+ * they received keyboard focus.
  */
 :focus-visible {
   outline: var(--focus-ring);
@@ -98,7 +97,7 @@
 .tool-card {
   margin-top: 6px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--bg-elev);
   overflow: hidden; /* clip children to the rounded corners */
   font-size: 13px;
@@ -146,7 +145,7 @@
   font-size: 12px;
   background: var(--bg);
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
 }
 .tool-card-spacer {
   flex: 1;
@@ -203,7 +202,7 @@
   margin: 0 -4px;
   color: inherit;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
 }
 .tool-card-filepath:hover {
   background: var(--btn-hover-bg);
@@ -233,7 +232,7 @@
   color: var(--fg-muted);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   padding: 0 6px;
   text-transform: lowercase;
   flex-shrink: 0;
@@ -257,7 +256,7 @@
   align-items: center;
   gap: 4px;
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   font-size: 10.5px;
   font-family: var(--mono);
   text-transform: lowercase;
@@ -313,7 +312,7 @@
   height: 26px;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   color: var(--fg-muted);
   cursor: pointer;
   flex-shrink: 0;
@@ -466,7 +465,7 @@
   color: var(--fg);
   background: var(--bg);
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   border: 1px solid var(--border);
   font-size: 12.5px;
   word-break: break-word;
@@ -521,7 +520,7 @@
   color: var(--fg);
   background: var(--bg);
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   border: 1px solid var(--border);
   font-size: 12.5px;
   word-break: break-word;
@@ -611,7 +610,7 @@
   color: var(--fg);
   background: var(--bg);
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   border: 1px solid var(--border);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -672,7 +671,7 @@
   color: var(--fg);
   background: var(--bg);
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   border: 1px solid var(--border);
   font-size: 12.5px;
   overflow: hidden;
@@ -814,7 +813,7 @@
   background: var(--bg-elev-3, var(--bg-elev-2));
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   font-size: 12px;
   line-height: 1.4;
   /* Allow long lines to wrap within max-width. Previously `nowrap`
@@ -906,7 +905,7 @@
 }
 .skeleton-row {
   height: 14px;
-  border-radius: 5px;
+  border-radius: var(--radius-xs);
   background: linear-gradient(
     90deg,
     var(--bg-elev-2) 0%,
@@ -1039,7 +1038,7 @@
 
 .settings-card {
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   margin-top: 8px;
   overflow: hidden;
 }
@@ -1053,7 +1052,7 @@
 .settings-card-dot {
   width: 8px;
   height: 8px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   background: var(--dot, var(--fg-muted));
   flex-shrink: 0;
 }
@@ -1080,7 +1079,7 @@
   color: var(--fg-muted);
   padding: 1px 4px;
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: var(--radius-3xs);
 }
 .settings-card-badge.global {
   color: var(--accent);
@@ -1150,7 +1149,7 @@
   justify-content: space-between;
   padding: 6px 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   margin-bottom: 4px;
 }
 .settings-mcp-available-name {
@@ -1243,7 +1242,7 @@
 .hooks-category[data-state="open"] > summary::before { transform: rotate(90deg); }
 .hooks-category-count {
   font-size: var(--fs-2xs); color: var(--fg-muted); font-weight: 400;
-  padding: 0 5px; border: 1px solid var(--border); border-radius: 999px;
+  padding: 0 5px; border: 1px solid var(--border); border-radius: var(--radius-pill);
 }
 .hooks-category-count.has-hooks { color: var(--accent); border-color: var(--accent); }
 .hooks-event-grid {
@@ -1251,7 +1250,7 @@
 }
 .hooks-event-badge {
   font-size: var(--fs-xs); font-family: var(--mono); padding: 2px 8px;
-  border: 1px solid var(--border); border-radius: 4px;
+  border: 1px solid var(--border); border-radius: var(--radius-xs);
   background: var(--bg); color: var(--fg-muted); cursor: pointer;
   transition: border-color var(--motion-duration-fast) var(--motion-ease-standard),
               color var(--motion-duration-fast) var(--motion-ease-standard),
@@ -1266,7 +1265,7 @@
 /* Configured hook cards */
 .hooks-config-list { display: flex; flex-direction: column; gap: 6px; }
 .hooks-config-card {
-  border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden;
 }
 .hooks-config-head {
   display: flex; align-items: center; gap: 6px; padding: 6px 10px;
@@ -1275,7 +1274,7 @@
 .hooks-event-tag {
   font-size: var(--fs-2xs); font-family: var(--mono); color: var(--accent);
   padding: 1px 5px; border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
-  border-radius: 3px; flex-shrink: 0;
+  border-radius: var(--radius-3xs); flex-shrink: 0;
 }
 .hooks-matcher {
   font-size: var(--fs-xs); font-family: var(--mono); color: var(--fg-muted);
@@ -1283,7 +1282,7 @@
 }
 .hooks-type-badge {
   font-size: var(--fs-2xs); padding: 1px 5px; border: 1px solid var(--border);
-  border-radius: 3px; color: var(--fg-muted); text-transform: uppercase;
+  border-radius: var(--radius-3xs); color: var(--fg-muted); text-transform: uppercase;
   letter-spacing: 0.03em; flex-shrink: 0;
 }
 .hooks-config-actions { margin-left: auto; display: flex; gap: 4px; }
@@ -1299,7 +1298,7 @@
 
 /* Hook activity cards */
 .hooks-activity-card {
-  border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden;
   margin-top: 6px;
 }
 .hooks-activity-head {
@@ -1307,7 +1306,7 @@
   background: var(--bg); font-size: var(--fs-sm);
 }
 .hooks-activity-dot {
-  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  width: 7px; height: 7px; border-radius: var(--radius-circle); flex-shrink: 0;
   background: var(--dot, var(--fg-muted));
 }
 .hooks-activity-name { font-weight: 500; font-size: var(--fs-sm); flex: 1; }
@@ -1346,7 +1345,7 @@
   gap: 6px;
   padding: 6px;
   border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   background: color-mix(in srgb, var(--bg) 70%, var(--bg-elev-2));
 }
 .settings-model-list-toolbar {
@@ -1355,7 +1354,7 @@
 }
 .settings-model-sort-btn,
 .settings-model-add-btn {
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   padding-inline: 10px;
   background: var(--bg-elev-1);
 }
@@ -1366,7 +1365,7 @@
   align-items: center;
   padding: 6px;
   border: 1px solid color-mix(in srgb, var(--border) 86%, transparent);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   background: color-mix(in srgb, var(--bg) 82%, var(--bg-elev-2));
   transition:
     border-color var(--motion-duration-fast) var(--motion-ease-standard),
@@ -1388,7 +1387,7 @@
   justify-self: stretch;
   text-align: center;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   padding: 2px 6px;
   color: var(--fg-muted);
   background: var(--bg-elev-1);
@@ -1406,7 +1405,7 @@
   min-width: 0;
   padding: 4px 8px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   color: var(--fg);
   background: var(--bg-elev-1);
   font-family: var(--mono);
@@ -1420,7 +1419,7 @@
   display: inline-flex;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--bg-elev-1);
 }
 .settings-model-action {
@@ -1441,7 +1440,7 @@
 }
 .settings-model-row > .settings-model-action {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--bg-elev-1);
 }
 .settings-model-action:hover:not(:disabled) {
@@ -1517,7 +1516,7 @@
   background: var(--bg);
   border: 1px solid var(--border);
   padding: 6px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--fg-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1608,7 +1607,7 @@
   .app-empty-state {
     width: min(420px, calc(100vw - 24px));
     padding: 24px;
-    border-radius: 14px;
+    border-radius: var(--radius-2xl);
   }
   .app-empty-state h2 {
     font-size: 22px;
@@ -1682,7 +1681,7 @@
   .panel-overlay > .panel-overlay-card {
     width: 100%;
     max-height: 100%;
-    border-radius: 12px 12px 0 0;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
   }
 
   /* Global settings modal → bottom sheet. .modal-backdrop is shared by every
@@ -1698,7 +1697,7 @@
     width: 100%;
     max-width: 100%;
     max-height: 90dvh;
-    border-radius: 12px 12px 0 0;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
     /* Clear the home-indicator at the sheet's bottom edge. */
     padding-bottom: env(safe-area-inset-bottom);
   }
@@ -1834,7 +1833,7 @@
   width: 220px;
   height: 220px;
   background: var(--qr-bg);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 10px;
   display: flex;
   align-items: center;
@@ -1863,7 +1862,7 @@
   flex: 1;
   background: var(--code-bg);
   border: 1px solid var(--code-block-border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 8px 10px;
   word-break: break-all;
   display: flex;
@@ -1890,7 +1889,7 @@
 .settings-skill-import-card {
   border: 1px solid var(--border);
   background: var(--panel-bg);
-  border-radius: 12px;
+  border-radius: var(--radius-xl);
   padding: 12px;
 }
 .settings-skill-hero {
@@ -1931,7 +1930,7 @@
   gap: 4px;
   align-items: baseline;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   padding: 4px 8px;
   color: var(--fg-muted);
   background: var(--code-bg);
@@ -1952,7 +1951,7 @@
   align-items: flex-start;
   gap: 8px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   padding: 10px;
   background: var(--code-bg);
   cursor: pointer;
@@ -1975,7 +1974,7 @@
   margin: 0;
   margin-top: 2px;
   border: 2px solid var(--border);
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   background: var(--bg-elev-1);
   cursor: pointer;
   transition: all var(--motion-duration-fast) var(--motion-ease-standard);
@@ -1997,7 +1996,7 @@
   transform: translate(-50%, -50%);
   width: 6px;
   height: 6px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   background: var(--bg);
 }
 .settings-skill-mode-card span {
@@ -2023,7 +2022,7 @@
   align-items: center;
   gap: 7px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   padding: 5px 9px;
   font-size: 12px;
   background: var(--code-bg);
@@ -2044,7 +2043,7 @@
   height: 16px;
   margin: 0;
   border: 2px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: var(--bg-elev-1);
   cursor: pointer;
   transition: all var(--motion-duration-fast) var(--motion-ease-standard);
@@ -2078,7 +2077,7 @@ input[type="checkbox"] {
   height: 16px;
   margin: 0;
   border: 2px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: var(--bg-elev-1);
   cursor: pointer;
   transition: all var(--motion-duration-fast) var(--motion-ease-standard);
@@ -2125,7 +2124,7 @@ input[type="checkbox"]:disabled {
 .settings-skill-import-icon {
   width: 30px;
   height: 30px;
-  border-radius: 9px;
+  border-radius: var(--radius-lg);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2143,7 +2142,7 @@ input[type="checkbox"]:disabled {
 .settings-scope-toggle {
   display: flex;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
   background: var(--bg-elev-1);
 }
@@ -2220,7 +2219,7 @@ input[type="checkbox"]:disabled {
   width: 100%;
   text-align: left;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   background: var(--panel-bg);
   color: var(--fg);
   padding: 10px;
@@ -2277,7 +2276,7 @@ input[type="checkbox"]:disabled {
 .settings-skill-frontmatter {
   margin: 8px 12px 0;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 .settings-skill-frontmatter-title {
@@ -2318,7 +2317,7 @@ input[type="checkbox"]:disabled {
   padding: 12px;
   background: var(--panel-bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.6;
@@ -2337,7 +2336,7 @@ input[type="checkbox"]:disabled {
 .settings-success {
   font-size: 12px;
   padding: 8px 10px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
 }
 .settings-error {

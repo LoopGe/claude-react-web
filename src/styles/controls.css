@@ -3,7 +3,7 @@
   border: 1px solid var(--border);
   color: var(--fg);
   padding: 6px 12px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   transition:
     background var(--motion-duration-fast) var(--motion-ease-standard),
     border-color var(--motion-duration-fast) var(--motion-ease-standard),
@@ -54,7 +54,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   transition:
     background var(--motion-duration-fast) var(--motion-ease-standard),
@@ -116,7 +116,7 @@
 .accent-swatch {
   width: 16px;
   height: 16px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   border: 2px solid transparent;
   background: var(--swatch);
   padding: 0;
@@ -194,7 +194,7 @@
   padding: 5px;
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .accent-trigger:not(.btn):hover {
   border-color: var(--fg-muted);
@@ -216,7 +216,7 @@
   padding: 10px;
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   box-shadow: var(--card-shadow);
   z-index: 1000;
   /* Pop in from the anchor button (chip header), matching the other
@@ -273,7 +273,7 @@
 .input, .textarea, .select {
   background-color: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 8px 10px;
   color: var(--fg);
   width: 100%;

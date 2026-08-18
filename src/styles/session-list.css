@@ -68,7 +68,7 @@
   color: var(--fg-muted);
   cursor: pointer;
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   font-size: 11px;
 }
 .session-filter-clear:hover { background: var(--bg-elev-2); color: var(--fg); }
@@ -85,7 +85,7 @@
   align-items: center;
   gap: 4px;
   padding: 2px 8px;
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   font-size: 11px;
   font-weight: 500;
   background: var(--bg-elev-2);
@@ -128,7 +128,7 @@
 .group-pill-input {
   font-size: 11px;
   padding: 2px 6px;
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   border: 1px solid var(--accent);
   background: var(--bg-elev-1);
   color: var(--fg);
@@ -208,7 +208,7 @@
   font-weight: 400;
   color: var(--fg-muted);
   background: var(--bg-elev-2);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 0 5px;
   min-width: 16px;
   text-align: center;
@@ -222,7 +222,7 @@
   font-size: 10px;
   font-weight: 600;
   line-height: 1;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 2px 6px;
   min-width: 16px;
   text-align: center;
@@ -250,7 +250,7 @@
      an empty group becomes impossible to drop into (the label line is
      so narrow that hitting it during a drag is finicky). */
   min-height: 28px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   transition:
     background var(--motion-duration-fast) var(--motion-ease-standard),
     border-color var(--motion-duration-fast) var(--motion-ease-standard);
@@ -269,7 +269,7 @@
   background: color-mix(in srgb, var(--accent) 8%, transparent);
   outline: 2px dashed color-mix(in srgb, var(--accent) 60%, transparent);
   outline-offset: -2px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .group-empty.drop-target {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
@@ -344,15 +344,15 @@
    contiguous run of cards. No negative margins: the seam divider is a
    box-shadow, so flush cards already collapse to one 1px line each. */
 .session-item-shell.list-first > .session-item {
-  border-radius: 8px 8px 0 0;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
   --row-hairline:
     inset 1px 0 0 0 var(--border),
     inset -1px 0 0 0 var(--border),
     inset 0 1px 0 0 var(--border),
     inset 0 -1px 0 0 var(--border);
 }
-.session-item-shell.list-last > .session-item { border-radius: 0 0 8px 8px; }
-.session-item-shell.list-first.list-last > .session-item { border-radius: 8px; }
+.session-item-shell.list-last > .session-item { border-radius: 0 0 var(--radius-md) var(--radius-md); }
+.session-item-shell.list-first.list-last > .session-item { border-radius: var(--radius-md); }
 .session-item-shell.deleting {
   grid-template-rows: 0fr;
   opacity: 0;
@@ -394,7 +394,7 @@
   height: 10px;
   border: 1.5px solid var(--fg-muted);
   border-top-color: var(--accent);
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   animation: msg-sending-spin 0.8s linear infinite;
   vertical-align: middle;
   margin-right: 4px;
@@ -461,7 +461,7 @@
   overflow: hidden;
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   box-shadow: var(--overlay-shadow);
   display: flex;
   flex-direction: column;
@@ -488,7 +488,7 @@
   color: var(--fg);
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .perm-feedback-input:focus {
   outline: none;
@@ -508,7 +508,7 @@
   height: 28px;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
@@ -529,7 +529,7 @@
   padding: 4px;
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   box-shadow: var(--card-shadow);
   z-index: 1000;
   font-size: 13px;
@@ -557,7 +557,7 @@
   color: var(--fg);
   cursor: pointer;
   text-align: left;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   font: inherit;
 }
 .ctx-menu-item:hover:not(:disabled) { background: var(--bg-elev-2); }
@@ -593,7 +593,7 @@
   max-height: min(420px, calc(100vh - 80px));
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   box-shadow: var(--card-shadow);
   z-index: 1000;
   overflow: hidden;
@@ -613,7 +613,7 @@
   padding: 14px;
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--card-shadow);
   z-index: 1000;
   transform-origin: top left;
@@ -642,7 +642,7 @@
 .appearance-accent-locked-swatch {
   width: 20px;
   height: 20px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   flex: none;
 }
@@ -665,7 +665,7 @@
   /* Reserve room on the right so the active check mark never overlaps the
      label/desc text — matters now that three skins share the row. */
   padding-right: 24px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--bg-elev-1);
   color: var(--fg);
@@ -712,7 +712,7 @@
   align-items: center;
   gap: 4px;
   padding: 8px 4px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--bg-elev-1);
   color: var(--fg-muted);
@@ -778,7 +778,7 @@
   padding: 7px 8px;
   background: transparent;
   border: none;
-  border-radius: 5px;
+  border-radius: var(--radius-xs);
   color: var(--fg);
   text-align: left;
   cursor: pointer;
@@ -829,7 +829,7 @@
   padding: 4px;
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   box-shadow: var(--card-shadow);
   z-index: 1000;
   font-size: 13px;
@@ -848,7 +848,7 @@
   color: var(--fg);
   cursor: pointer;
   text-align: left;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   font: inherit;
 }
 .cmd-picker-item.active {
@@ -925,7 +925,7 @@
   left: 8px;
   right: 8px;
   height: 2px;
-  border-radius: 1px;
+  border-radius: var(--radius-2xs);
   background: var(--accent);
   box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 50%, transparent);
   transform: scaleX(0);
@@ -977,7 +977,7 @@
   width: 18px;
   height: 18px;
   margin-right: 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   border: 1px solid var(--accent);
   color: var(--accent);
   background: transparent;
@@ -1009,7 +1009,7 @@
   display: inline-block;
   width: 8px;
   height: 8px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   background: var(--accent);
   margin-right: 6px;
   vertical-align: middle;
@@ -1028,7 +1028,7 @@
   min-width: 16px;
   height: 16px;
   padding: 0 4px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--warn);
   color: var(--bg);
   font-family: var(--mono);
@@ -1063,7 +1063,7 @@
   min-width: 0;
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--fg);
   -webkit-text-fill-color: var(--fg);
   caret-color: var(--accent);
@@ -1117,7 +1117,7 @@
 .session-status-dot {
   width: 7px;
   height: 7px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   flex-shrink: 0;
   background: var(--fg-muted);
 }

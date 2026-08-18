@@ -46,7 +46,7 @@
   opacity: 0;
   border: 1px solid transparent;
   background-clip: padding-box;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--fg-muted) 35%, transparent);
   transition: opacity 160ms ease;
   /* touch-action none so a thumb drag doesn't also trigger native scroll. */

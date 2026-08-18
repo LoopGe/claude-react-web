@@ -26,7 +26,7 @@
   max-height: min(480px, calc(100dvh - 240px));
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--modal-shadow);
   display: flex;
   flex-direction: column;
@@ -79,7 +79,7 @@
   width: 100%;
   padding: 9px 12px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--fg);
   font-size: 13.5px;
@@ -121,7 +121,7 @@
   font-size: 10px;
   line-height: 1.4;
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   border: 1px solid var(--border);
   color: var(--fg-muted);
   text-transform: uppercase;
@@ -163,7 +163,7 @@
   max-height: 100%;
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   box-shadow: var(--overlay-shadow);
   display: flex;
   flex-direction: column;
@@ -178,7 +178,7 @@
    shared with CommandPalette and styled below. */
 .panel-overlay > .panel-overlay-card.input-history-card {
   max-height: min(480px, 100%);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--modal-shadow);
 }
 
@@ -217,7 +217,7 @@
   display: block;
   flex: 1;
   height: 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-3xs);
   background: var(--bg-elev-2);
   overflow: hidden;
   position: relative;
@@ -247,7 +247,7 @@
   align-items: center;
   gap: 3px;
   padding: 2px 8px;
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   background: var(--bg-elev-2);
   font-size: 11.5px;
   color: var(--fg-muted);
@@ -268,7 +268,7 @@
   pointer-events: auto;
   display: flex;
   flex-direction: column;
-  border-radius: 12px;
+  border-radius: var(--radius-xl);
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg) 75%, transparent);
   backdrop-filter: var(--glass-blur);
@@ -311,7 +311,7 @@
      sits at the same horizontal position as the recap close button — the two
      are stacked vertically and a mismatch reads as misaligned. */
   padding: 0 12px 0 0;
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg) 82%, transparent);
   backdrop-filter: var(--glass-blur);
@@ -339,7 +339,7 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
-  border-radius: 10px 0 0 10px;
+  border-radius: var(--radius-lg) 0 0 var(--radius-lg);
 }
 /* Header row: body (label + text) + chevron toggle, on one line. */
 .pinned-user-message-header-row {
@@ -398,7 +398,7 @@
   background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   transition: background var(--motion-duration-fast) var(--motion-ease-standard),
               color var(--motion-duration-fast) var(--motion-ease-standard);
 }
@@ -449,7 +449,7 @@
   line-height: 1.4;
   text-align: left;
   cursor: pointer;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   /* Wrap the full question text (multi-line) instead of truncating — the
      whole point of the list is to read past questions, so ellipsis would
      hide exactly what the user came to see. */
@@ -499,7 +499,7 @@
   justify-content: center;
   width: 26px;
   height: 26px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   border: none;
   background: transparent;
   color: var(--fg-muted);
@@ -549,7 +549,7 @@
 .bash-msg {
   border: 1px solid var(--border);
   background: var(--bg-elev-2);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 .bash-msg-header {
@@ -579,7 +579,7 @@
   font-size: 11px;
   font-family: var(--mono);
   padding: 1px 7px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   white-space: nowrap;
 }
 .bash-msg-exit.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
@@ -595,7 +595,7 @@
   font-size: 11px;
   font-family: var(--mono);
   padding: 1px 7px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 10%, transparent);
@@ -627,7 +627,7 @@
   margin-top: 6px;
   border-left: 3px solid var(--out-accent);
   background: color-mix(in srgb, var(--out-accent) 8%, transparent);
-  border-radius: 0 4px 4px 0;
+  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
   overflow: hidden;
 }
 .bash-msg-out:first-child { margin-top: 0; }
@@ -687,7 +687,7 @@
   min-width: 0;
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   color: var(--fg);
   padding: 4px 8px;
   font-size: 13px;
@@ -720,7 +720,7 @@
 mark.search-hl {
   background: color-mix(in srgb, var(--warn) 40%, transparent);
   color: inherit;
-  border-radius: 2px;
+  border-radius: var(--radius-2xs);
   padding: 0 1px;
 }
 mark.search-hl.search-hl-active {
@@ -803,7 +803,7 @@ mark.search-hl.search-hl-active {
   gap: 8px;
   width: 100%;
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   font-size: 13px;
   line-height: 1.4;
   background: var(--bg-elev-2);
@@ -902,7 +902,7 @@ mark.search-hl.search-hl-active {
 .toast-message-button:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
   outline-offset: 2px;
-  border-radius: 2px;
+  border-radius: var(--radius-2xs);
 }
 
 /* Dedicated action button (used when both onClick and actionLabel are
@@ -912,7 +912,7 @@ mark.search-hl.search-hl-active {
 .toast-action {
   flex-shrink: 0;
   padding: 4px 10px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   border: 1px solid color-mix(in srgb, var(--kind-tint, var(--accent)) 50%, var(--border));
   background: color-mix(in srgb, var(--kind-tint, var(--accent)) 18%, transparent);
   color: var(--fg);

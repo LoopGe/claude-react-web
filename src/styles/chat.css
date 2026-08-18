@@ -321,7 +321,7 @@
 .chat-empty-icon {
   width: 36px;
   height: 36px;
-  border-radius: 9px;
+  border-radius: var(--radius-lg);
   border: 1px solid var(--border);
   display: flex;
   align-items: center;
@@ -371,7 +371,7 @@
   width: 100%;
   aspect-ratio: 3 / 1;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--bg);
   display: block;
   cursor: pointer;
@@ -386,7 +386,7 @@
 .easter-egg-game-btn {
   background: none;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--fg-muted);
   padding: 2px 8px;
   font-size: 12px;
@@ -447,7 +447,7 @@
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--accent);
   color: var(--on-accent);
   border: none;
@@ -476,7 +476,7 @@
   padding: 0 5px;
   background: var(--bg);
   color: var(--accent);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   font-size: 11px;
   font-weight: 700;
 }
@@ -525,7 +525,7 @@
 .ctx-bar-track {
   height: 4px;
   background: var(--bg);
-  border-radius: 2px;
+  border-radius: var(--radius-2xs);
   overflow: hidden;
 }
 .ctx-bar-fill {
@@ -563,7 +563,7 @@
   gap: 4px;
   padding: 3px 8px;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--fg-muted);
   font: inherit;
@@ -590,7 +590,7 @@
   height: 24px;
   margin-left: auto;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
@@ -608,7 +608,7 @@
   max-height: min(600px, 70vh);
   overflow-y: auto;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 10px 12px;
   background: var(--bg);
 }
@@ -659,7 +659,7 @@
   align-items: center;
   gap: 6px;
   padding: 3px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
   font-size: 11.5px;
@@ -671,7 +671,7 @@
   justify-content: center;
   width: 16px;
   height: 16px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: var(--accent);
   color: var(--on-accent);
   font-family: var(--mono);
@@ -753,7 +753,7 @@
   gap: 6px;
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-xl);
   padding: 3px 8px 3px 10px;
   font-size: 12px;
   font-family: var(--mono);
@@ -785,7 +785,7 @@
 .msg {
   position: relative;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 10px 14px;
   background: var(--bg-elev);
   /* Default: fill the centered reading column. User bubbles override
@@ -891,7 +891,7 @@
   color: var(--fg);
   background: var(--bg-elev-2);
   padding: 1px 5px;
-  border-radius: 3px;
+  border-radius: var(--radius-3xs);
 }
 
 /* Compact-summary card — the user-role "summary" frame that the SDK
@@ -902,7 +902,7 @@
   background: color-mix(in srgb, var(--accent) 6%, var(--bg-elev));
   border: 1px dashed color-mix(in srgb, var(--accent) 40%, var(--border));
   padding: 8px 12px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--fg-muted);
   align-self: stretch;
 }
@@ -915,7 +915,7 @@
   color: var(--accent);
   padding: 1px 8px;
   font-size: 10px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   cursor: pointer;
@@ -976,7 +976,7 @@
   padding: 10px 12px;
   background: var(--code-bg);
   border: 1px solid var(--code-block-border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   overflow-x: auto;
   font-family: var(--mono);
   font-size: 12.5px;
@@ -1031,7 +1031,7 @@
   height: 10px;
   border: 1.5px solid var(--border);
   border-top-color: var(--accent);
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   animation: msg-sending-spin 0.8s linear infinite;
 }
 .msg-sending-label {
@@ -1064,7 +1064,7 @@
   display: inline-block;
   width: 7px;
   height: 7px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   background: var(--accent);
   animation: msg-queued-pulse 1.4s ease-in-out infinite;
 }
@@ -1099,7 +1099,7 @@
   display: inline-block;
   width: 7px;
   height: 7px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   background: var(--accent);
   animation: msg-processing-pulse 1s ease-in-out infinite;
 }
@@ -1122,7 +1122,7 @@
   background: var(--msg-user-bg);
   border-color: var(--msg-user-border);
   color: var(--msg-user-fg);
-  border-bottom-right-radius: 3px;
+  border-bottom-right-radius: var(--radius-3xs);
 }
 .msg.user .msg-header { color: var(--msg-user-header-fg); font-weight: 600; }
 .msg.user .msg-header > span:first-child { display: inline-flex; align-items: center; gap: 4px; }
@@ -1142,7 +1142,7 @@
   width: auto;
   max-width: min(var(--chat-reading-max-width), 100%);
   background: var(--bg-elev);
-  border-bottom-left-radius: 3px;
+  border-bottom-left-radius: var(--radius-3xs);
 }
 .msg.assistant .msg-header { color: var(--assistant-header-fg); font-weight: 600; }
 
@@ -1166,7 +1166,7 @@
   width: 100%;
   max-width: min(var(--chat-reading-max-width), 100%);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--bg) 75%, transparent);
   backdrop-filter: var(--glass-blur);
   margin: 0 0 4px;
@@ -1395,7 +1395,7 @@
   position: relative;
   width: 80px;
   height: 80px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   overflow: hidden;
   border: 1px solid var(--border);
   flex-shrink: 0;
@@ -1415,7 +1415,7 @@
   color: var(--fg);
   min-width: 24px;
   min-height: 24px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   font-size: 11px;
   cursor: pointer;
   display: flex;
@@ -1439,7 +1439,7 @@
      <img> already lets the browser keep paint smooth; if the bubble
      "pops" by a few pixels at decode time, that's preferable to a
      screenshot of a small icon being padded with empty whitespace. */
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   margin: 4px 0;
   object-fit: contain;
 }
@@ -1493,7 +1493,7 @@
   font-variant-numeric: tabular-nums;
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   text-transform: none;
 }
 /* Live output token rate badge, shown next to the working timer.
@@ -1507,7 +1507,7 @@
   font-variant-numeric: tabular-nums;
   background: color-mix(in srgb, var(--fg-muted) 8%, transparent);
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   white-space: nowrap;
 }
 
@@ -1520,7 +1520,7 @@
 .working-dots > span {
   width: 6px;
   height: 6px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   background: var(--accent);
   opacity: 0.35;
   animation: working-dot-bounce 1.2s ease-in-out infinite;
@@ -1559,7 +1559,7 @@
   gap: 5px;
   background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev));
   border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   padding: 2px 10px 2px 7px;
   font-size: 12px;
   font-family: var(--mono);
@@ -1575,7 +1575,7 @@
 .subagent-chip-dots > span {
   width: 4px;
   height: 4px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   background: var(--accent);
   opacity: 0.5;
   animation: working-dot-bounce 1.2s ease-in-out infinite;
@@ -1631,7 +1631,7 @@
   color: var(--fg-muted);
   background: color-mix(in srgb, var(--fg-muted) 8%, transparent);
   padding: 2px 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   white-space: nowrap;
 }
 
@@ -1643,7 +1643,7 @@
   margin: 6px 0;
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--fg);
   overflow: hidden;
   transition: border-color var(--motion-duration-fast) var(--motion-ease-standard);
@@ -1805,7 +1805,7 @@
   cursor: pointer;
   font-size: 14px;
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   flex-shrink: 0;
 }
 .subagent-overlay-back:hover,
@@ -1887,7 +1887,7 @@
   margin: 6px 0;
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--fg);
   overflow: hidden;
   transition: border-color var(--motion-duration-fast) var(--motion-ease-standard);
@@ -1942,7 +1942,7 @@
 .workflow-card-agents {
   font-size: 11px;
   padding: 1px 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-3xs);
   background: var(--bg-elev-2);
   color: var(--fg-muted);
 }
@@ -1965,7 +1965,7 @@
 .workflow-card-remote {
   font-size: 11px;
   padding: 1px 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-3xs);
   background: var(--bg-elev-2);
   color: var(--accent);
   text-transform: uppercase;
@@ -2066,7 +2066,7 @@
   cursor: pointer;
   font-size: 14px;
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   flex-shrink: 0;
 }
 .workflow-overlay-close:hover {
@@ -2091,7 +2091,7 @@
   color: var(--fg-muted);
   cursor: pointer;
   padding: 2px 4px;
-  border-radius: 3px;
+  border-radius: var(--radius-3xs);
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2128,7 +2128,7 @@
 }
 .workflow-phase-group {
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: var(--radius-xs);
   background: var(--bg);
   overflow: hidden;
 }
@@ -2188,7 +2188,7 @@
   padding: 5px 8px;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   font: inherit;
   font-size: 12px;
   text-align: left;
@@ -2207,7 +2207,7 @@
 .workflow-child-status {
   width: 8px;
   height: 8px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   flex-shrink: 0;
   background: var(--fg-muted);
 }
@@ -2225,7 +2225,7 @@
   color: var(--accent);
   flex-shrink: 0;
   padding: 1px 4px;
-  border-radius: 3px;
+  border-radius: var(--radius-3xs);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 .workflow-child-label {
@@ -2344,7 +2344,7 @@
   position: relative;
   width: 56px;
   height: 56px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
   border: 1px solid var(--border);
   flex-shrink: 0;
@@ -2360,7 +2360,7 @@
   right: 2px;
   min-width: 24px;
   min-height: 24px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   background: color-mix(in srgb, var(--bg) 76%, transparent);
   color: var(--fg);
   display: flex;
@@ -2398,7 +2398,7 @@
   flex: 1;
   resize: none;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--bg-elev);
   color: var(--fg);
   font: inherit;

@@ -81,7 +81,7 @@ body.resizing-col .app {
   gap: 8px;
 }
 .brand-dot {
-  width: 10px; height: 10px; border-radius: 50%;
+  width: 10px; height: 10px; border-radius: var(--radius-circle);
   background: radial-gradient(circle at 30% 30%, color-mix(in srgb, var(--accent) 60%, white), var(--accent));
   box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 60%, transparent);
 }
@@ -244,7 +244,7 @@ body.resizing-col .app {
   justify-content: center;
   width: 18px;
   height: 18px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   border: 1px solid var(--accent);
   color: var(--accent);
   background: transparent;
@@ -264,7 +264,7 @@ body.resizing-col .app {
   display: inline-block;
   width: 8px;
   height: 8px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   flex-shrink: 0;
   background: var(--fg-muted);
 }
@@ -284,7 +284,7 @@ body.resizing-col .app {
   display: inline-block;
   width: 8px;
   height: 8px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   background: var(--accent);
   flex-shrink: 0;
   box-shadow: 0 0 0 2px var(--bg);
@@ -337,7 +337,7 @@ body.resizing-col .app {
 .chat-panel-mode-badge-wrap {
   position: relative;
   display: inline-flex;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   /* Width is set inline only during a mode switch (to reserve the wider
      label then glide to the new width) — this makes the trailing chips
      follow smoothly instead of teleporting. No-op when width is auto. */
@@ -358,7 +358,7 @@ body.resizing-col .app {
   color: var(--fg-muted);
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   flex-shrink: 0;
   user-select: none;
   line-height: 1.35;
@@ -416,7 +416,7 @@ body.resizing-col .app {
   color: var(--fg-muted);
   background: transparent;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   flex-shrink: 0;
   user-select: none;
   line-height: 1.35;
@@ -459,7 +459,7 @@ body.resizing-col .app {
   color: var(--fg-muted);
   background: transparent;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   flex-shrink: 0;
   user-select: none;
   line-height: 1.35;
@@ -497,7 +497,7 @@ body.resizing-col .app {
   padding: 12px 14px 10px;
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   box-shadow: var(--card-shadow);
   z-index: 1000;
   user-select: none;
@@ -530,7 +530,7 @@ body.resizing-col .app {
   appearance: none;
   width: 100%;
   height: 4px;
-  border-radius: 2px;
+  border-radius: var(--radius-2xs);
   background: var(--bg-elev-2);
   outline: none;
   cursor: pointer;
@@ -541,7 +541,7 @@ body.resizing-col .app {
   appearance: none;
   width: 14px;
   height: 14px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   background: var(--accent);
   border: 2px solid var(--bg-elev);
   box-shadow: 0 0 0 1px var(--accent);
@@ -550,7 +550,7 @@ body.resizing-col .app {
 .effort-slider-range::-moz-range-thumb {
   width: 14px;
   height: 14px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   background: var(--accent);
   border: 2px solid var(--bg-elev);
   cursor: pointer;
@@ -573,7 +573,7 @@ body.resizing-col .app {
   color: var(--fg-muted);
   background: transparent;
   border: none;
-  border-radius: 3px;
+  border-radius: var(--radius-3xs);
   cursor: pointer;
   text-transform: lowercase;
   text-align: center;
@@ -604,7 +604,7 @@ body.resizing-col .app {
   color: var(--fg-muted);
   background: transparent;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   flex-shrink: 1;
   min-width: 0;
   user-select: none;
@@ -680,7 +680,7 @@ body.resizing-col .app {
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-right: none;
-  border-radius: 6px 0 0 6px;
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
   color: var(--fg-muted);
   cursor: pointer;
   transition: background var(--motion-duration-fast) var(--motion-ease-standard),
@@ -706,7 +706,7 @@ body.resizing-col .app {
   right: 2px;
   width: 6px;
   height: 6px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   background: var(--accent);
   box-shadow: 0 0 0 2px var(--bg-elev);
   animation: side-chat-expand-tab-pulse 1.6s var(--motion-ease-standard) infinite;
@@ -748,7 +748,7 @@ body.resizing-col .app {
   display: inline-block;
   width: 6px;
   height: 6px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   background: var(--accent);
   animation: session-working-pulse 1s ease-in-out infinite;
 }
@@ -816,7 +816,7 @@ body.resizing-col .app {
   max-height: 100%;
   position: static;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   box-shadow: var(--overlay-shadow);
 }
 @keyframes overlay-backdrop-in {
@@ -847,7 +847,7 @@ body.resizing-col .app {
   width: 18px;
   height: 18px;
   margin-right: 4px;
-  border-radius: 5px;
+  border-radius: var(--radius-xs);
   background: color-mix(in srgb, var(--mode-color, var(--fg-muted)) 15%, transparent);
   color: var(--mode-color, var(--fg-muted));
   vertical-align: middle;
@@ -871,7 +871,7 @@ body.resizing-col .app {
 .chat-panel-resume-btn {
   margin-top: 16px;
   padding: 8px 18px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--btn-border, var(--border));
   background: var(--btn-bg);
   color: var(--fg);
@@ -902,7 +902,7 @@ body.resizing-col .app {
   background: color-mix(in srgb, var(--bg-elev) 74%, transparent);
   background-image: var(--surface-gradient);
   border: 1px solid var(--border-subtle, var(--border));
-  border-radius: 18px;
+  border-radius: var(--radius-3xl);
   box-shadow: var(--card-shadow);
   animation: app-empty-state-in var(--motion-duration-moderate) var(--motion-ease-enter) both;
 }
@@ -933,7 +933,7 @@ body.resizing-col .app {
   font-family: var(--mono);
   background: var(--bg-elev);
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
 }
 .empty-state-cta {
   min-width: 0;
@@ -950,7 +950,7 @@ body.resizing-col .app {
   font-size: 11px;
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   padding: 1px 5px;
 }
 
@@ -982,7 +982,7 @@ body.resizing-col .app {
   background: color-mix(in srgb, var(--bg-elev) 82%, transparent);
   background-image: var(--surface-gradient);
   border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
-  border-radius: 14px;
+  border-radius: var(--radius-2xl);
   box-shadow: var(--card-shadow);
   animation: app-loading-card-in var(--motion-duration-moderate) var(--motion-ease-enter) both;
 }
@@ -1009,7 +1009,7 @@ body.resizing-col .app {
   height: 22px;
   border: 2px solid var(--border);
   border-top-color: var(--accent);
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   animation: msg-sending-spin 0.8s linear infinite;
 }
 @keyframes app-loading-card-in {
@@ -1092,7 +1092,7 @@ body.resizing-col .app {
   justify-content: center;
   width: 20px;
   height: 20px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   background: var(--accent);
   color: var(--on-accent);
   font-weight: 700;
@@ -1109,7 +1109,7 @@ body.resizing-col .app {
   padding: 2px 8px;
   background: color-mix(in srgb, var(--bg) 65%, var(--accent));
   border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--bg));
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   white-space: nowrap;
 }
 .update-banner-btn {
@@ -1118,7 +1118,7 @@ body.resizing-col .app {
   background: var(--accent);
   color: var(--on-accent);
   border: 1px solid var(--accent-strong);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   cursor: pointer;
 }
 .update-banner-btn:hover {
@@ -1136,7 +1136,7 @@ body.resizing-col .app {
   background: transparent;
   color: var(--fg);
   border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--bg));
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   cursor: pointer;
 }
 .update-banner-btn-ghost:hover {
@@ -1150,7 +1150,7 @@ body.resizing-col .app {
   height: 22px;
   background: transparent;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   color: var(--fg-muted);
   cursor: pointer;
   font-size: 14px;

@@ -212,7 +212,7 @@ html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .appearan
 [data-skin="hc"] .msg-sending-spinner,
 [data-skin="hc"] .app-loading-spinner,
 [data-skin="hc"] .session-resuming-spinner {
-  border-radius: 50% !important;
+  border-radius: var(--radius-circle) !important;
 }
 
 /* ::-webkit-scrollbar-thumb is a non-element pseudo — the universal

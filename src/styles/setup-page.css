@@ -23,7 +23,7 @@
   background: var(--bg-elev);
   background-image: var(--surface-gradient);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-xl);
   box-shadow: var(--card-shadow);
   animation: setup-card-in var(--motion-duration-moderate) var(--motion-ease-enter) both;
 }
@@ -60,7 +60,7 @@
   height: 4px;
   padding: 0;
   border: 0;
-  border-radius: 2px;
+  border-radius: var(--radius-2xs);
   background: var(--border);
   transition:
     background var(--motion-duration-fast) var(--motion-ease-standard),
@@ -157,7 +157,7 @@
   padding: 10px 12px;
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   animation: setup-status-in var(--motion-duration-base) var(--motion-ease-enter) both;
   transition:
     border-color var(--motion-duration-fast) var(--motion-ease-standard),
@@ -181,7 +181,7 @@
   width: 20px;
   height: 20px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   background: var(--bg-elev);
   color: var(--fg);
   font-family: var(--mono);
@@ -197,7 +197,7 @@
   color: var(--fg);
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   font-family: var(--mono);
   font-size: 12px;
   white-space: pre;

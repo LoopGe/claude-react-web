@@ -968,7 +968,7 @@ html, body, #root { height: 100%; margin: 0; }
   background: color-mix(in srgb, var(--fg-muted) 35%, transparent);
   border: 2px solid transparent;
   background-clip: padding-box;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   min-height: 24px;
 }
 ::-webkit-scrollbar-thumb:hover {
