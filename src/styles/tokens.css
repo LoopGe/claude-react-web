@@ -78,6 +78,21 @@
   --motion-distance-lg: 14px;
   --motion-scale-enter: 0.98;
   --motion-scale-press: 0.97;
+  /* Radius tokens — canonical corner-rounding steps. The main scale is
+     pixel-identical to the values it replaces; --radius-3xs exists because
+     3px appears 18× (status chips, focus-ring inner corners). --radius-pill
+     is fully rounded pills (999px), --radius-circle true circles (50%). */
+  --radius-3xs: 3px;
+  --radius-2xs: 2px;
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 14px;
+  --radius-3xl: 18px;
+  --radius-pill: 999px;
+  --radius-circle: 50%;
   --app-header-height: 43px;
   --msg-tool-bg: #101820;
   --msg-tool-border: #1c2a36;
@@ -292,6 +307,22 @@
   --ok: #00ff00;
   --warn: #ffff00;
   --fast: #ff00ff;
+  /* HC squares corners via the radius tokens — no universal override needed
+     (the old `border-radius: 0 !important` in glass.css is removed in a later
+     task). --radius-circle stays 50%: loading spinners must keep rotating as
+     circles, and status dots / avatars / swatches staying circular is a
+     deliberate refinement over the old "square everything" behavior. */
+  --radius-3xs: 0;
+  --radius-2xs: 0;
+  --radius-xs: 0;
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --radius-xl: 0;
+  --radius-2xl: 0;
+  --radius-3xl: 0;
+  --radius-pill: 0;
+  --radius-circle: 50%;
   --msg-tool-bg: #000000;
   --msg-tool-border: #00ffff;
   --msg-tool-result-bg: #1a1a1a;
@@ -477,6 +508,65 @@
 [data-skin="hc"][data-theme="light"] mark.search-hl {
   background: #ffff80;
   color: #000000;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   SOFT HIGH CONTRAST — near-black/near-white with softer borders and
+   normal radii. The middle ground between the default theme and the stark
+   all-square HC skin: solid (no glass translucency), strong-but-not-white
+   borders, normal rounded corners, normal focus ring and card shadows.
+   Accent is locked (brand blue) for guaranteed contrast, like HC. */
+[data-skin="soft-hc"] {
+  --bg: #0e0e12;
+  --bg-elev: #131318;
+  --bg-elev-1: #18181e;
+  --bg-elev-2: #1e1e25;
+  --bg-elev-3: #26262e;
+  --border: #3a3a42;
+  --fg: #f2f2f5;
+  --fg-muted: #a3a3ad;
+  --accent: #7b8cde;
+  --accent-strong: #8a9ae6;
+  --on-accent: #0e0e12;
+  --danger: #ff6b6b;
+  --ok: #4ade80;
+  --warn: #facc15;
+  --fast: #c084fc;
+  --focus-ring: 2px solid #7b8cde;
+  /* No glass / translucency — solid surfaces; normal shadows stay default. */
+  --glass-blur: none;
+  --glass-surface-bg: var(--bg-elev);
+  --glass-surface-border: var(--border);
+  --glass-blur-strong: none;
+  --glass-edge-highlight: none;
+  --surface-gradient: none;
+  --backdrop-color: rgba(0, 0, 0, 0.7);
+}
+
+[data-skin="soft-hc"][data-theme="light"] {
+  --bg: #f5f5f7;
+  --bg-elev: #fafafa;
+  --bg-elev-1: #ffffff;
+  --bg-elev-2: #ececf0;
+  --bg-elev-3: #e0e0e6;
+  --border: #8a8a94;
+  --fg: #141419;
+  --fg-muted: #5c5c66;
+  --accent: #3b5bdb;
+  --accent-strong: #2f4bc4;
+  --on-accent: #ffffff;
+  --danger: #d64545;
+  --ok: #1f9d55;
+  --warn: #b8860b;
+  --fast: #7c3aed;
+  --focus-ring: 2px solid #3b5bdb;
+  --glass-blur: none;
+  --glass-surface-bg: var(--bg-elev);
+  --glass-surface-border: var(--border);
+  --glass-blur-strong: none;
+  --glass-edge-highlight: none;
+  --surface-gradient: none;
+  --backdrop-color: rgba(0, 0, 0, 0.4);
 }
 
 /* ════════════════════════════════════════════════════════════════════
