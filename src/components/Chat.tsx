@@ -37,6 +37,7 @@ import { useChatStream } from '../hooks/useChatStream'
 import { usePastedImages } from '../hooks/usePastedImages'
 import { useInputHistory } from '../hooks/useInputHistory'
 import { usePermissionChannel } from '../hooks/usePermissionChannel'
+import { usePhaseDwell } from '../hooks/usePhaseDwell'
 import { Composer } from './Composer'
 import { ContextBar } from './ContextBar'
 import { MessageList, WorkingBubble, type ScrollNavigator } from './MessageList'
@@ -563,6 +564,10 @@ export const Chat = memo(function Chat({
   // session; a terminated session has `working=false` and `terminated=true`,
   // so the gate drops the bubble exactly when it should.
   const turnActive = session.working || pendingTurnSince != null || (stream.activePhase != null && !session.terminated)
+  // Dwelled phase label for the WorkingBubble — transient sub-300ms blips
+  // between phases don't churn the label. `turnActive` above keeps the raw
+  // activePhase so turn-end detection stays immediate.
+  const displayPhase = usePhaseDwell(stream.activePhase)
   /** A background (async) subagent still in flight after the parent turn
    *  ended. The WorkingBubble stays mounted in a `Waiting` state while any
    *  such subagent exists, so the user sees that background work is ongoing
@@ -1631,7 +1636,7 @@ export const Chat = memo(function Chat({
           startedAt={turnStartedAt}
           activeSubagents={stream.activeSubagents}
           tokenRate={stream.tokenRate}
-          activePhase={stream.activePhase}
+          activePhase={displayPhase}
           waiting={waiting}
           onOpenSubagent={openSubagent}
         />
