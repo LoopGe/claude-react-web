@@ -1000,6 +1000,47 @@
   padding: 6px 0 0;
 }
 
+/* ── EmptyState (shared inline empty-state block) ────────────────────────
+ * Compact "no items yet" block used inside settings tabs / panels via the
+ * EmptyState component. Left-aligned to match .settings-empty-note; distinct
+ * from the chat first-run state and the landing .app-empty-state card. */
+.empty-state-ui {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 2px;
+}
+.empty-state-ui-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-bottom: 6px;
+  border-radius: var(--radius-md);
+  background: var(--bg-elev-2);
+  color: var(--fg-muted);
+}
+.empty-state-ui-icon svg {
+  width: 16px;
+  height: 16px;
+}
+.empty-state-ui-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.empty-state-ui-body {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+.empty-state-ui-action {
+  margin-top: 8px;
+}
+
 /* ── Settings panel cards (Plugin / MCP server) ────────────────────
  * Shared chrome extracted from inline styles. The status dot's colour
  * is dynamic (status-driven), passed via the --dot custom property so
