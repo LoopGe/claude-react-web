@@ -840,6 +840,17 @@
   visibility: visible;
   transform: translateY(0);
 }
+/* Hover tooltips delay ~150ms so rapid mouse traversal doesn't flash
+   bubbles; keyboard focus (focus-within) shows them instantly. Source order
+   matters: :focus-within is after :hover so a focused-and-hovered trigger
+   gets the 0ms delay. The hidden base rule keeps no delay, so hiding is
+   immediate. Reduced-motion zeroes transitions below, killing the delay. */
+.tt-wrap:hover > .tt-bubble {
+  transition-delay: 150ms;
+}
+.tt-wrap:focus-within > .tt-bubble {
+  transition-delay: 0ms;
+}
 /* Placement: top (default) — bubble above trigger */
 .tt-top > .tt-bubble {
   bottom: calc(100% + 6px);
