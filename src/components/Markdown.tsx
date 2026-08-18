@@ -217,7 +217,12 @@ const MarkdownInner = memo(function MarkdownInner({ text, searchQuery, activeMat
  *  parent MarkdownInner re-render (e.g. search-query change that doesn't
  *  touch this block's props) doesn't re-render every code block in the
  *  message. */
-const CodeBlock = memo(function CodeBlock({ lang, children, ...props }: { lang?: string } & ComponentPropsWithoutRef<'pre'>) {
+export const CodeBlock = memo(function CodeBlock({
+  lang,
+  children,
+  showCopy = true,
+  ...props
+}: { lang?: string; showCopy?: boolean } & ComponentPropsWithoutRef<'pre'>) {
   const [copied, setCopied] = useState(false)
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   const preRef = useRef<HTMLPreElement>(null)
@@ -238,9 +243,11 @@ const CodeBlock = memo(function CodeBlock({ lang, children, ...props }: { lang?:
     <div className="code-block">
       <div className="code-block-bar">
         <span className="code-block-lang">{lang ?? 'code'}</span>
-        <button type="button" className="code-block-copy" onClick={handleCopy}>
-          {copied ? 'Copied!' : 'Copy'}
-        </button>
+        {showCopy && (
+          <button type="button" className="code-block-copy" onClick={handleCopy}>
+            {copied ? 'Copied!' : 'Copy'}
+          </button>
+        )}
       </div>
       <pre ref={preRef} {...props}>{children}</pre>
     </div>

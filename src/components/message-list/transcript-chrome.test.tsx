@@ -19,4 +19,22 @@ describe('StreamingFooter', () => {
     const bubble = container.querySelector('.streaming-msg')
     expect(bubble?.querySelector('.os-track')).toBeTruthy()
   })
+
+  it('renders a fenced code block live and keeps prose as plain text', () => {
+    const { container } = render(
+      <StreamingFooter content={'explain\n```js\nconst x = 1\n```\ndone'} />,
+    )
+    const scroller = container.querySelector('.streaming-plain')
+    expect(scroller?.textContent).toContain('explain')
+    expect(scroller?.textContent).toContain('done')
+    expect(container.querySelector('.code-block-lang')?.textContent).toBe('js')
+    // The fence is closed → content is stable → the copy button is available.
+    expect(container.querySelector('.code-block-copy')).toBeTruthy()
+  })
+
+  it('renders an open streaming code block without a copy button', () => {
+    const { container } = render(<StreamingFooter content={'```js\nconst x = 1'} />)
+    expect(container.querySelector('.code-block')).toBeTruthy()
+    expect(container.querySelector('.code-block-copy')).toBeFalsy()
+  })
 })

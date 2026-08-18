@@ -1,8 +1,10 @@
-import { memo, useEffect, useRef } from 'react'
+import { Fragment, memo, useEffect, useMemo, useRef } from 'react'
 import { IconZap } from '../icons/ToolIcons'
 import { useLiquidGlass } from '../../hooks/useLiquidGlass'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../../utils/mergedRef'
+import { CodeBlock } from '../Markdown'
+import { splitStreamSegments } from '../../utils/stream-segments'
 
 /** Top-of-transcript affordance for reverse infinite scroll. Renders a
  *  spinner while a page is loading, or a thin idle marker when older
@@ -78,6 +80,12 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
   // the blur and the displacement url() are applied as one backdrop-filter.
   const glassFilter = `blur(2px) url(#${filterId})`
 
+  // Live markdown-ish split: fenced code blocks render as real blocks while
+  // prose stays as plain text until the turn completes. Re-parses the whole
+  // accumulated string per flush (one streaming turn's string is small).
+  const segments = useMemo(() => splitStreamSegments(content), [content])
+  const last = segments[segments.length - 1]
+
   return (
     <div className="streaming-footer-wrapper">
       {supported && (
@@ -120,8 +128,23 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
           />
         )}
         <div ref={setBodyRef} className="msg-body assistant-body streaming-plain" aria-live="polite" aria-atomic="false">
-          {content}
-          <span className="streaming-cursor" />
+          {segments.map((seg, i) => (
+            <Fragment key={i}>
+              {seg.type === 'text' ? (
+                <span>{seg.content}</span>
+              ) : (
+                <CodeBlock lang={seg.lang} showCopy={seg.closed}>
+                  <code>
+                    {seg.content}
+                    {i === segments.length - 1 && !seg.closed && <span className="streaming-cursor" />}
+                  </code>
+                </CodeBlock>
+              )}
+            </Fragment>
+          ))}
+          {(segments.length === 0 || last.type === 'text' || (last.type === 'code' && last.closed)) && (
+            <span className="streaming-cursor" />
+          )}
         </div>
       </div>
     </div>
