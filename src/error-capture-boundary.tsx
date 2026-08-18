@@ -46,7 +46,7 @@ export class RootErrorBoundary extends Component<RootErrorBoundaryProps, RootErr
 
 const btnStyle: CSSProperties = {
   padding: '6px 14px',
-  borderRadius: 8,
+  borderRadius: 'var(--radius-md)',
   border: '1px solid var(--border)',
   background: 'var(--bg-elev-3)',
   color: 'var(--fg)',
@@ -81,7 +81,7 @@ function CrashScreen({ crash, onReload }: { crash: CrashRecord; onReload: () => 
           maxWidth: 720,
           background: 'var(--bg-elev-2)',
           border: '1px solid var(--border)',
-          borderRadius: 12,
+          borderRadius: 'var(--radius-xl)',
           padding: 24,
           boxShadow: 'var(--card-shadow)',
           boxSizing: 'border-box',
@@ -112,7 +112,7 @@ function CrashScreen({ crash, onReload }: { crash: CrashRecord; onReload: () => 
             padding: 12,
             background: 'var(--bg)',
             border: '1px solid var(--border)',
-            borderRadius: 8,
+            borderRadius: 'var(--radius-md)',
             color: 'var(--fg)',
             fontSize: 'var(--fs-xs)',
             fontFamily: 'var(--mono)',

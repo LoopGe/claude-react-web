@@ -266,7 +266,7 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
     <div>
       {/* Add form ---------------------------------------------------- */}
       <div style={{
-        border: '1px solid var(--border)', borderRadius: 6, padding: 12, marginBottom: 16,
+        border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 12, marginBottom: 16,
         background: 'var(--bg-elev)',
       }}>
         <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginBottom: 6 }}>
@@ -377,7 +377,7 @@ function MarketplaceCard({
   )
   return (
     <div style={{
-      border: '1px solid var(--border)', borderRadius: 6, marginBottom: 6, overflow: 'hidden',
+      border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', marginBottom: 6, overflow: 'hidden',
       opacity: busy ? 0.7 : 1,
     }}>
       <div style={{
@@ -407,7 +407,7 @@ function MarketplaceCard({
         <span
           style={{
             fontSize: 11, color: 'var(--fg-muted)', background: 'var(--bg-elev-2)',
-            padding: '1px 6px', borderRadius: 3, flexShrink: 0,
+            padding: '1px 6px', borderRadius: 'var(--radius-3xs)', flexShrink: 0,
           }}
           title={`${item.enabledCount} enabled of ${item.pluginCount} plugin${item.pluginCount === 1 ? '' : 's'}`}
         >
@@ -428,7 +428,7 @@ function MarketplaceCard({
             <span
               aria-hidden
               style={{
-                width: 7, height: 7, borderRadius: '50%',
+                width: 7, height: 7, borderRadius: 'var(--radius-circle)',
                 background: 'var(--warn, var(--fg-muted))', flexShrink: 0,
               }}
             />
@@ -543,7 +543,7 @@ function MarketplaceCard({
               display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0',
             }}>
               <span style={{
-                width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+                width: 8, height: 8, borderRadius: 'var(--radius-circle)', flexShrink: 0,
                 background: p.enabled ? 'var(--plugin-active)' : 'var(--plugin-inactive)',
               }} />
               <div style={{ flex: 1, overflow: 'hidden' }}>

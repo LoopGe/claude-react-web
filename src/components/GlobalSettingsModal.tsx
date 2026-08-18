@@ -1916,7 +1916,7 @@ function AboutTab({
               style={{
                 fontSize: 11,
                 padding: '2px 8px',
-                borderRadius: 10,
+                borderRadius: 'var(--radius-lg)',
                 background: 'var(--danger)',
                 color: 'var(--bg)',
               }}
@@ -1939,7 +1939,7 @@ function AboutTab({
               style={{
                 fontSize: 11,
                 padding: '2px 8px',
-                borderRadius: 10,
+                borderRadius: 'var(--radius-lg)',
                 background: 'var(--ok)',
                 color: 'var(--on-accent)',
               }}
@@ -2014,7 +2014,7 @@ function AboutTab({
               style={{
                 fontSize: 11,
                 padding: '2px 8px',
-                borderRadius: 10,
+                borderRadius: 'var(--radius-lg)',
                 background: 'var(--accent)',
                 color: 'var(--on-accent)',
               }}

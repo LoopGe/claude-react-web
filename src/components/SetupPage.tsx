@@ -768,7 +768,7 @@ export function SetupPage({ onConfigured }: Props) {
                       </span>
                       <code style={{
                         flex: 1, fontSize: 12, padding: '4px 8px',
-                        background: 'var(--bg-elev-2)', border: '1px solid var(--border)', borderRadius: 4,
+                        background: 'var(--bg-elev-2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-xs)',
                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                       }}>
                         {m}
@@ -921,7 +921,7 @@ export function SetupPage({ onConfigured }: Props) {
                           display: 'flex', gap: 8, alignItems: 'flex-start',
                           padding: '6px 8px',
                           background: 'var(--bg-elev-2)',
-                          border: '1px solid var(--border)', borderRadius: 4,
+                          border: '1px solid var(--border)', borderRadius: 'var(--radius-xs)',
                           opacity: invalid ? 0.55 : 1,
                         }}
                       >
@@ -1260,7 +1260,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11,
     padding: '1px 5px',
     background: 'var(--bg-elev-2)',
-    borderRadius: 4,
+    borderRadius: 'var(--radius-xs)',
   },
   tokenRow: {
     display: 'flex',
@@ -1273,7 +1273,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'var(--mono)',
     background: 'var(--bg-elev-2)',
     border: '1px solid var(--border)',
-    borderRadius: 6,
+    borderRadius: 'var(--radius-sm)',
     color: 'var(--fg)',
     minHeight: 44,
     boxSizing: 'border-box',
@@ -1284,7 +1284,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'inherit',
     background: 'var(--bg-elev-2)',
     border: '1px solid var(--border)',
-    borderRadius: 6,
+    borderRadius: 'var(--radius-sm)',
     color: 'var(--fg-muted)',
     cursor: 'pointer',
     whiteSpace: 'nowrap',
@@ -1315,7 +1315,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'inherit',
     background: 'var(--accent)',
     border: 'none',
-    borderRadius: 6,
+    borderRadius: 'var(--radius-sm)',
     color: 'var(--on-accent)',
     cursor: 'pointer',
     transition: 'opacity var(--motion-duration-fast) var(--motion-ease-standard)',
@@ -1335,7 +1335,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'inherit',
     background: 'var(--bg-elev-2)',
     border: '1px solid var(--border)',
-    borderRadius: 6,
+    borderRadius: 'var(--radius-sm)',
     color: 'var(--fg)',
     cursor: 'pointer',
   },
@@ -1365,13 +1365,13 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--bg-elev-2)',
     border: '1px solid var(--border)',
     borderBottomWidth: 2,
-    borderRadius: 4,
+    borderRadius: 'var(--radius-xs)',
     color: 'var(--fg)',
   },
   spinner: {
     width: 14,
     height: 14,
-    borderRadius: '50%',
+    borderRadius: 'var(--radius-circle)',
     border: '2px solid color-mix(in srgb, var(--on-accent) 35%, transparent)',
     borderTopColor: 'var(--on-accent)',
     animation: 'setup-spin 0.8s linear infinite',
