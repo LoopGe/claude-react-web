@@ -258,6 +258,12 @@ interface SendMessageResponse {
   }
 }
 
+/** Safety net for the optimistic turn bridge: if a POST resolves but neither
+ *  `session.working` nor a stream phase ever arrives (a hung turn), clear the
+ *  bridge so the WorkingBubble can't stick forever. Far above the real
+ *  send→confirm latency (sub-second); it only ever applies to that window. */
+const PENDING_TURN_SAFETY_MS = 30_000
+
 export const Chat = memo(function Chat({
   session,
   clearing: clearingProp,
@@ -358,18 +364,36 @@ export const Chat = memo(function Chat({
    *  MessageList / MonitorBar. During a local `/clear` fade-in it comes from
    *  App via prop; during an SDK-emitted clear it comes from local state. */
   const effectiveClearing = (clearingProp ?? false) || localClearing
+
+  // Permissions first — its onRequest/onResolved are passed into the
+  // stream hook so SDK messages and permission events share one WebSocket.
+  // Moved here (before the pendingTurnSince effect) so stream.activePhase
+  // is available in the effect's closure and dep array.
+  const permissions = usePermissionChannel(session.id)
+  const stream = useChatStream(session.id, {
+    onRequest: permissions.onRequest,
+    onResolved: permissions.onResolved,
+    onCleared: () => {
+      permissions.reset()
+      setLocalClearing(false)
+    },
+  })
+
   // Clear the optimistic turn bridge once the real turn is confirmed
-  // (session.working rose) — otherwise a safety timeout clears it so a send
-  // that never produces a server turn can't leave the WorkingBubble stuck on.
+  // (session.working rose OR the first stream phase arrived). The old fixed 4s
+  // timeout cleared the bridge mid-turn for any turn longer than 4s, dropping
+  // the Working indicator and popping it back on the next stream event (the
+  // flicker). Now the bridge only survives the short send→confirm window; the
+  // safety net covers a hung turn (POST resolved, neither signal ever came).
   useEffect(() => {
     if (pendingTurnSince == null) return
-    if (session.working) {
+    if (session.working || stream.activePhase != null) {
       setPendingTurnSince(null)
       return
     }
-    const t = setTimeout(() => setPendingTurnSince(null), 4000)
+    const t = setTimeout(() => setPendingTurnSince(null), PENDING_TURN_SAFETY_MS)
     return () => clearTimeout(t)
-  }, [pendingTurnSince, session.working])
+  }, [pendingTurnSince, session.working, stream.activePhase])
   // Drop any pending bridge when switching the panel to another session.
   useEffect(() => {
     setPendingTurnSince(null)
@@ -521,17 +545,6 @@ export const Chat = memo(function Chat({
   )
   const history = useInputHistory(session.id, historyFilter)
 
-  // Permissions first ?its onRequest/onResolved are passed into the
-  // stream hook so SDK messages and permission events share one WebSocket.
-  const permissions = usePermissionChannel(session.id)
-  const stream = useChatStream(session.id, {
-    onRequest: permissions.onRequest,
-    onResolved: permissions.onResolved,
-    onCleared: () => {
-      permissions.reset()
-      setLocalClearing(false)
-    },
-  })
   const attachments = useAttachments(session.id, session.cwd)
   const pastedImages = usePastedImages()
   // Turn is "active" for layout purposes the instant the user sends, even
