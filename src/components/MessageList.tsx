@@ -314,6 +314,21 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
+/** Entrance-animation gate predicate. Arms when the list grew by a recent
+ *  live tail append: any incremental growth (prevLen > 0) animates every new
+ *  arrival; a fresh mount / bulk load (prevLen === 0) is capped at maxBatch so
+ *  replay / session-switch cascades don't all animate at once. */
+export function shouldArmEnterAnimation(
+  replayReady: boolean,
+  delta: number,
+  prevLen: number,
+  maxBatch: number,
+): boolean {
+  if (!replayReady || delta <= 0) return false
+  if (prevLen > 0) return true
+  return delta <= maxBatch
+}
+
 export const MessageList = memo(function MessageList({ items, working, clearing, replayReady = true, transcriptRevealKey, streamingContent, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, leadingItems, trailingItems, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
@@ -909,7 +924,7 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     // switch bulk loads from animating. A disk-restored single-message
     // session also won't animate (receivedAt is undefined).
     const delta = curLen - prevLen
-    const armed = replayReady && delta > 0 && delta <= MAX_ENTER_BATCH
+    const armed = shouldArmEnterAnimation(replayReady, delta, prevLen, MAX_ENTER_BATCH)
     if (armed) {
       // eslint-disable-next-line react-hooks/purity -- Date.now() gates animation recency; a stale value at worst skips one animation, never corrupts state.
       const now = Date.now()

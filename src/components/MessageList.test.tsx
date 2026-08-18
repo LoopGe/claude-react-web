@@ -151,7 +151,7 @@ vi.mock('react-virtuoso', async () => {
   }
 })
 // Import AFTER mock.
-import { MessageList } from './MessageList'
+import { MessageList, shouldArmEnterAnimation } from './MessageList'
 import { SubagentProvider } from '../hooks/useSubagentContext'
 import type { ActiveSubagent } from '../session-store/types'
 
@@ -1083,6 +1083,39 @@ describe('MessageList', () => {
     expect(wrappers[wrappers.length - 1]?.classList.contains('msg-enter')).toBe(true)
   })
 
+  it('animates every message in a live tail burst, not just the first MAX_ENTER_BATCH', () => {
+    // The old gate capped at `delta <= MAX_ENTER_BATCH`, so a fast live burst of
+    // 6+ arrivals animated only the first 4. With prevLen > 0 (incremental tail
+    // growth), every recent new arrival must animate.
+    const items = (msgs: SdkMessage[]): TranscriptItem[] =>
+      msgs.map((msg, i) => ({
+        id: typeof msg.uuid === 'string' ? msg.uuid : `item-${i}`,
+        msg,
+        plainText: null,
+        isCompactSummary: false,
+        hiddenByDefault: false,
+        receivedAt: typeof msg.receivedAt === 'number' ? msg.receivedAt : undefined,
+      }))
+    const burst = Array.from({ length: 7 }, (_, i) =>
+      makeMsg('assistant', {
+        uuid: `u-${i + 1}`,
+        message: { content: [{ type: 'text', text: `msg ${i + 1}` }] },
+        receivedAt: Date.now(),
+      }),
+    )
+    const { container, rerender } = render(
+      <MessageList items={items([burst[0]] as SdkMessage[])} />,
+    )
+    // Grow the list by 6 in one commit (mirrors a fast live burst landing
+    // between renders). prevLen is now 1 (> 0), so all six new rows animate.
+    rerender(<MessageList items={items(burst as SdkMessage[])} />)
+    const wrappers = container.querySelectorAll('.virtuoso-item-wrapper')
+    expect(wrappers.length).toBe(7)
+    for (let i = 1; i < 7; i++) {
+      expect(wrappers[i]?.classList.contains('msg-enter')).toBe(true)
+    }
+  })
+
   it('animates streaming content out before unmounting it', () => {
     vi.useFakeTimers()
     const msgs = [
@@ -2008,5 +2041,25 @@ describe('worktree markers', () => {
     expect(marker).toBeTruthy()
     expect(marker?.textContent).toContain('Exited worktree')
     expect(marker?.textContent).toContain('kept on disk')
+  })
+})
+
+describe('shouldArmEnterAnimation', () => {
+  it('requires replayReady and a positive delta', () => {
+    expect(shouldArmEnterAnimation(false, 1, 1, 4)).toBe(false)
+    expect(shouldArmEnterAnimation(true, 0, 1, 4)).toBe(false)
+    expect(shouldArmEnterAnimation(true, -3, 1, 4)).toBe(false)
+  })
+
+  it('arms every incremental tail arrival regardless of batch size', () => {
+    expect(shouldArmEnterAnimation(true, 1, 1, 4)).toBe(true)
+    expect(shouldArmEnterAnimation(true, 6, 1, 4)).toBe(true)
+    expect(shouldArmEnterAnimation(true, 50, 1, 4)).toBe(true)
+  })
+
+  it('caps fresh-mount bulk loads at maxBatch', () => {
+    expect(shouldArmEnterAnimation(true, 4, 0, 4)).toBe(true)
+    expect(shouldArmEnterAnimation(true, 5, 0, 4)).toBe(false)
+    expect(shouldArmEnterAnimation(true, 50, 0, 4)).toBe(false)
   })
 })
