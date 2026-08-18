@@ -162,6 +162,25 @@ describe('PermissionDialog plan approval', () => {
   })
 })
 
+describe('PermissionDialog overlay scrollbar', () => {
+  it('attaches the project overlay scrollbar to the modal-section scroll region (hides the native one)', () => {
+    const { container } = render(
+      <PermissionDialog request={planRequest()} onDecide={vi.fn()} currentMode={'default'} />,
+    )
+    const section = container.querySelector('.modal-section') as HTMLElement | null
+    expect(section).toBeTruthy()
+    // The overlay scrollbar hides the native scrollbar on the scroller it
+    // attaches to — this is the contract that replaces the native 10px bar
+    // with the project's self-built overlay thumb (matches the StreamingFooter
+    // scrollbar test in transcript-chrome.test.tsx).
+    expect(section!.classList.contains('os-native-hidden')).toBe(true)
+    // And it appends an overlay track as a sibling of the scroller inside the
+    // .perm-card, floating the thumb over the plan card body.
+    const card = container.querySelector('.perm-card')
+    expect(card?.querySelector('.os-track')).toBeTruthy()
+  })
+})
+
 describe('PermissionDialog Esc', () => {
   it('Esc on a plain tool dialog denies without interrupt (regression)', () => {
     const onDecide = vi.fn()

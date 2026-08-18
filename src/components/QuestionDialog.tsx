@@ -18,6 +18,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { Markdown } from './Markdown'
 import type { PermissionRequest, QuestionSpec } from '../types'
 import { useFocusTrap } from '../hooks/useFocusTrap'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { IconMessageCircle, IconCheckSquare, IconSquare, IconCircleDot, IconCircle, IconX } from './icons/ToolIcons'
 
 /** Narrowed to the question variant of the union. */
@@ -76,6 +77,11 @@ export function QuestionDialog({ open = true, request, onSubmit, onClarify, onSk
   const [feedback, setFeedback] = useState('')
   const feedbackRef = useRef<HTMLTextAreaElement>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
+  // Two scroll regions (questions list / clarification), one mounted at a
+  // time. Same overlay scrollbar every other dialog uses; without it these
+  // show the native 10px scrollbar instead of the project's floating thumb.
+  const setQuestionsOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const setClarifyingOs = useOverlayScrollbar({ autoHide: 'leave' })
   // Refs so the Escape effect (registered once on mount) always reads
   // current values without re-registering on every render.
   const busyRef = useRef(busy)
@@ -286,7 +292,7 @@ export function QuestionDialog({ open = true, request, onSubmit, onClarify, onSk
         </div>
 
         {clarifying ? (
-          <div className="modal-section question-body">
+          <div className="modal-section question-body" ref={setClarifyingOs}>
             <label className="hint" htmlFor="question-clarification">Ask a follow-up or provide context.</label>
             <textarea
               ref={feedbackRef}
@@ -301,7 +307,7 @@ export function QuestionDialog({ open = true, request, onSubmit, onClarify, onSk
             />
           </div>
         ) : (
-          <div className="modal-section question-body">
+          <div className="modal-section question-body" ref={setQuestionsOs}>
             {(request.questions ?? []).map((q, qIdx) => (
               <QuestionBlock
                 key={qIdx}

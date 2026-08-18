@@ -14,6 +14,7 @@ import type { PermissionRequest, PermissionMode } from '../types'
 import type { PlanTargetMode } from '../hooks/usePermissionChannel'
 import { Markdown } from './Markdown'
 import { useFocusTrap } from '../hooks/useFocusTrap'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { PLAN_TOOL_NAMES } from '../constants/toolNames'
 import { IconClipboardList, IconLock, IconX } from './icons/ToolIcons'
 
@@ -59,6 +60,10 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
   // can't slip through before React commits the state update.
   const busyRef = useRef(false)
   const dialogRef = useRef<HTMLDivElement>(null)
+  // Scroll region for the plan card / permission body. Same overlay scrollbar
+  // every other dialog/panel uses — without it a long plan shows the native
+  // 10px scrollbar instead of the project's 6px floating thumb.
+  const setModalSectionOs = useOverlayScrollbar({ autoHide: 'leave' })
 
   useFocusTrap(dialogRef, { escapeSelector: '.chat-panel' })
 
@@ -176,7 +181,7 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
           )}
         </div>
 
-        <div className="modal-section">
+        <div className="modal-section" ref={setModalSectionOs}>
           <div className="perm-headline">{headline}</div>
           {request.description && <div className="perm-sub">{request.description}</div>}
 
