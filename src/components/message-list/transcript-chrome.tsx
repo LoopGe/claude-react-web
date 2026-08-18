@@ -133,7 +133,7 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
               {seg.type === 'text' ? (
                 <span>{seg.content}</span>
               ) : (
-                <CodeBlock lang={seg.lang} showCopy={seg.closed}>
+                <CodeBlock lang={seg.lang ?? undefined} showCopy={seg.closed}>
                   <code>
                     {seg.content}
                     {i === segments.length - 1 && !seg.closed && <span className="streaming-cursor" />}
