@@ -293,9 +293,9 @@ Expected: **zero** matches. (The glass.css `border-radius: 0 !important` univers
 
 Run:
 ```bash
-grep -rnE "border-(top|bottom)-(left|right)-radius:\s*[0-9]" src/styles
+grep -rnE "border-(top|bottom)-(left|right)-radius:\s*[1-9]" src/styles
 ```
-Expected: **zero** matches (corner-specific longhands tokenized).
+Expected: **zero** matches (corner-specific longhands tokenized). The pattern starts at `[1-9]` deliberately: literal `border-*-radius: 0` values (e.g. the code-block `<pre>` top corners in messages.css) are intentional square corners and need no token.
 
 - [ ] **Step 4: Spot-check the diff**
 
@@ -928,10 +928,10 @@ Run:
 grep -rnE "border-radius:\s*(50%|[0-9]+px)" src/styles || true
 grep -rnE "border-radius:\s*(50%|[0-9]+)" src/components src/session-store || true
 grep -rnE "borderRadius:\s*([0-9]+|'50%')" src || true
-grep -rnE "border-(top|bottom)-(left|right)-radius:\s*[0-9]" src/styles || true
+grep -rnE "border-(top|bottom)-(left|right)-radius:\s*[1-9]" src/styles || true
 grep -c "border-radius" src/styles/glass.css || true
 ```
-Expected: every command prints nothing (or `0` for the last). Any literal radius remaining is a gap — fix it before continuing.
+Expected: every command prints nothing (or `0` for the last). The corner gate starts at `[1-9]` so intentional `border-*-radius: 0` values (code-block `<pre>` top corners) are not flagged. Any literal non-zero radius remaining is a gap — fix it before continuing.
 
 - [ ] **Step 3: Run the full verification suite**
 
