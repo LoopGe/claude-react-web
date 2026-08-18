@@ -185,41 +185,11 @@ html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .appearan
   );
 }
 
-/* ════════════════════════════════════════════════════════════════════
-   HIGH CONTRAST SKIN — square corners on ALL UI
-   ════════════════════════════════════════════════════════════════════
-   HC's stark aesthetic uses right angles everywhere — message bubbles,
-   popups, modals, buttons, inputs, cards, code blocks, the lot. A
-   per-class whitelist proved leaky (245 border-radius sites, more added
-   over time), so this is a UNIVERSAL override: every element under
-   [data-skin="hc"] gets border-radius:0. This file is imported LAST (see
-   index.css) and the rules use !important, so it wins against any
-   per-component radius regardless of source order or specificity.
-
-   The only elements that must STAY circular are loading spinners — a
-   rotating square reads as broken. They are restored to 50% below.
-   Everything else (status dots, avatars, swatches, scrollbar thumbs)
-   becoming square is intentional and consistent with the HC look.
-   ════════════════════════════════════════════════════════════════════ */
-[data-skin="hc"] *,
-[data-skin="hc"] *::before,
-[data-skin="hc"] *::after {
-  border-radius: 0 !important;
-}
-
-/* Restore circular spinners (rotation on a square is illegible). */
-[data-skin="hc"] .composer-send-spinner,
-[data-skin="hc"] .msg-sending-spinner,
-[data-skin="hc"] .app-loading-spinner,
-[data-skin="hc"] .session-resuming-spinner {
-  border-radius: var(--radius-circle) !important;
-}
-
-/* ::-webkit-scrollbar-thumb is a non-element pseudo — the universal
-   border-radius:0 rule above (which targets *::before/::after) can't
-   reach it, so it kept its 999px pill radius. Square it explicitly, and
-   drop the transparent-border + padding-box clip that insets the thumb
-   (HC wants a hard-edged fill that meets the track, not a floating pill).
+/* ::-webkit-scrollbar-thumb is a non-element pseudo — the
+   --radius-pill token override (→ 0) handles the radius, but we still
+   need to drop the transparent-border + padding-box clip that insets
+   the thumb (HC wants a hard-edged fill that meets the track, not a
+   floating pill).
 
    NOTE the selector shape: `html[data-skin="hc"]::-webkit-scrollbar-thumb`
    (NO space before ::-) — the document scrollbar lives on <html> itself,
@@ -233,7 +203,6 @@ html[data-skin="hc"]::-webkit-scrollbar-thumb:active,
 [data-skin="hc"] ::-webkit-scrollbar-thumb,
 [data-skin="hc"] ::-webkit-scrollbar-thumb:hover,
 [data-skin="hc"] ::-webkit-scrollbar-thumb:active {
-  border-radius: 0 !important;
   border: 0 !important;
   background-clip: border-box !important;
 }
