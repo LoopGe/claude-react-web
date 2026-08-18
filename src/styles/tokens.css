@@ -79,8 +79,12 @@
   --motion-scale-enter: 0.98;
   --motion-scale-press: 0.97;
   /* Radius tokens — canonical corner-rounding steps. The main scale is
-     pixel-identical to the values it replaces; --radius-3xs exists because
-     3px appears 18× (status chips, focus-ring inner corners). --radius-pill
+     pixel-identical to the values it replaces, with one caveat: the codemod
+     snapped off-scale literals to the nearest step (1px→2px, 5px→4px,
+     7px→6px, 9px→10px — ≤1px visual deviation). Names follow Tailwind's
+     ordinal convention but the sub-xs tier is non-monotonic: --radius-3xs
+     is 3px, LARGER than --radius-2xs 2px, because 3px appears 18× (status
+     chips, focus-ring inner corners) and needs its own step. --radius-pill
      is fully rounded pills (999px), --radius-circle true circles (50%). */
   --radius-3xs: 3px;
   --radius-2xs: 2px;
