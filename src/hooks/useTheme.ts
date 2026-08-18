@@ -115,13 +115,13 @@ export function useTheme(): UseThemeResult {
   // entire stylesheet picks up the change without any further wiring.
   useEffect(() => {
     const root = document.documentElement.style
-    // The Anthropic skin AND the High-Contrast skin lock the accent (brand
-    // terracotta / bright blue respectively). Remove any inline accent
-    // overrides so the values defined in styles.css's [data-skin="anthropic"]
-    // / [data-skin="hc"] blocks take effect — inline styles on <html> would
+    // The Anthropic, High-Contrast, and Soft High-Contrast skins lock the
+    // accent (brand terracotta / bright blue / indigo respectively). Remove
+    // any inline accent overrides so the values defined in the
+    // [data-skin="…"] blocks take effect — inline styles on <html> would
     // otherwise win. Switching back re-runs this effect and writes the
     // user's accent again.
-    if (skin === 'anthropic' || skin === 'hc') {
+    if (skin === 'anthropic' || skin === 'hc' || skin === 'soft-hc') {
       root.removeProperty('--accent')
       root.removeProperty('--accent-strong')
       root.removeProperty('--on-accent')

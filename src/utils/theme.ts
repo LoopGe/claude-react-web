@@ -13,7 +13,7 @@ export type Theme = 'dark' | 'light' | 'system'
  *  *feel* (depth, glow, gradients, or — for 'hc' — a VSCode-style high
  *  contrast accessibility treatment) while inheriting the colour tokens of
  *  whichever mode is active. 'default' is the original flat look. */
-export type Skin = 'default' | 'glow' | 'anthropic' | 'hc'
+export type Skin = 'default' | 'glow' | 'anthropic' | 'hc' | 'soft-hc'
 
 export function getStoredTheme(): Theme {
   try {
@@ -27,21 +27,21 @@ export function getStoredTheme(): Theme {
 export function getStoredSkin(): Skin {
   try {
     const v = window.localStorage.getItem(SKIN_KEY)
-    if (v === 'default' || v === 'glow' || v === 'anthropic' || v === 'hc') return v
+    if (v === 'default' || v === 'glow' || v === 'anthropic' || v === 'hc' || v === 'soft-hc') return v
   } catch { /* ignored */ }
   // Default skin keeps the original look for existing users.
   return 'default'
 }
 
 /** True for skins that lock the accent colour to a brand value (Anthropic
- *  terracotta / High-Contrast blue) defined in tokens.css's
- *  `[data-skin="…"]` blocks. When locked, the global accent picker, the
- *  per-session accent picker, and per-session inline `--accent` overrides
- *  are all suppressed so the skin's CSS-defined accent wins. Centralised
- *  here so every gating site (AppearancePanel, SessionList, buildSessionAccentMap)
- *  agrees on which skins lock the accent. */
+ *  terracotta / High-Contrast blue / Soft High-Contrast indigo) defined in
+ *  tokens.css's `[data-skin="…"]` blocks. When locked, the global accent
+ *  picker, the per-session accent picker, and per-session inline `--accent`
+ *  overrides are all suppressed so the skin's CSS-defined accent wins.
+ *  Centralised here so every gating site (AppearancePanel, SessionList,
+ *  buildSessionAccentMap) agrees on which skins lock the accent. */
 export function isAccentLocked(skin: Skin | undefined | null): boolean {
-  return skin === 'anthropic' || skin === 'hc'
+  return skin === 'anthropic' || skin === 'hc' || skin === 'soft-hc'
 }
 
 /** Apply a skin by toggling the `data-skin` attribute on <html>. The

@@ -156,6 +156,10 @@ describe('isAccentLocked', () => {
     expect(isAccentLocked('hc')).toBe(true)
   })
 
+  it('locks the accent for soft-hc', () => {
+    expect(isAccentLocked('soft-hc')).toBe(true)
+  })
+
   it('leaves the accent pickable for the default and glow skins', () => {
     expect(isAccentLocked('default')).toBe(false)
     expect(isAccentLocked('glow')).toBe(false)
