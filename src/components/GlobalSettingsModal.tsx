@@ -6,7 +6,8 @@ import { api } from '../hooks/useApi'
 import { parseSkillContent } from '../utils/skill-frontmatter'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { formatBytes } from '../utils/format'
-import { IconX, IconCheck, IconArrowUp, IconArrowDown, IconChevronDown, IconFolder, IconDownload, IconRefresh, IconFileText } from './icons/ToolIcons'
+import { IconX, IconCheck, IconArrowUp, IconArrowDown, IconChevronDown, IconFolder, IconDownload, IconRefresh, IconFileText, IconSparkles, IconTerminal } from './icons/ToolIcons'
+import { EmptyState } from './EmptyState'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
 import type { FullServerConfig } from '../types/config'
 import type { SkillImportFile, SkillImportResponse, SkillLoadMode, SkillRecord, SkillsListResponse } from '../../shared/skills'
@@ -1139,7 +1140,7 @@ function SkillsTab({
         </div>
         {skillLoadMode === 'allowlist' && (
           <div className="settings-skill-allowlist">
-            {skillNames.length === 0 && <div className="settings-empty-note">No skills discovered yet.</div>}
+            {skillNames.length === 0 && <EmptyState icon={<IconSparkles size={16} />} title="No skills discovered yet" />}
             {skillNames.map((name) => (
               <label key={name} className={`settings-skill-check${enabledSkills.includes(name) ? ' active' : ''}`}>
                 <input type="checkbox" checked={enabledSkills.includes(name)} onChange={() => toggleEnabled(name)} />
@@ -1214,7 +1215,7 @@ function SkillsTab({
 
       <div className="settings-skill-grid">
         <div className="settings-skill-list">
-          {skills.length === 0 && <div className="settings-empty-note">Create or import a project/user skill to get started.</div>}
+          {skills.length === 0 && <EmptyState icon={<IconSparkles size={16} />} title="Create or import a project/user skill to get started" />}
           {skills.map((skill) => (
             <button
               key={`${skill.scope}:${skill.name}`}
@@ -1311,9 +1312,11 @@ function McpTab({
         </button>
       </div>
       {servers.length === 0 && (
-        <div className="settings-empty-note settings-mcp-empty">
-          No MCP servers configured. Click "Add Server" to get started.
-        </div>
+        <EmptyState
+          icon={<IconTerminal size={16} />}
+          title="No MCP servers configured"
+          body='Click "Add Server" to get started.'
+        />
       )}
       {servers.map((srv) => (
         <McpCard key={srv.name} server={srv} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} onRefresh={onRefresh} />

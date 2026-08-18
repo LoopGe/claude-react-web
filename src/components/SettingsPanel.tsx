@@ -14,7 +14,8 @@ import { PERMISSION_MODES } from '../types'
 import type { SkillRecord } from '../../shared/skills'
 import { FlagSettingsEditor } from './FlagSettingsEditor'
 import { ContextBar } from './ContextBar'
-import { IconChevronUp, IconChevronDown, IconLoader } from './icons/ToolIcons'
+import { IconChevronUp, IconChevronDown, IconLoader, IconSparkles, IconTerminal } from './icons/ToolIcons'
+import { EmptyState } from './EmptyState'
 import { Skeleton } from './Skeleton'
 import { useExitPresence } from '../hooks/useExitPresence'
 import { AnimatedCollapse, AnimatedDetails } from './AnimatedCollapse'
@@ -935,7 +936,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
           </div>
         </div>
         {loadingMeta && effectiveMcpWithOverride.length === 0 && <Skeleton rows={2} />}
-        {!loadingMeta && effectiveMcpWithOverride.length === 0 && <div className="settings-empty-note">No MCP servers</div>}
+        {!loadingMeta && effectiveMcpWithOverride.length === 0 && <EmptyState icon={<IconTerminal size={16} />} title="No MCP servers" />}
         {effectiveMcpWithOverride.map((srv) => (
           <McpServerCard
             key={srv.name}
@@ -1190,7 +1191,7 @@ function SessionSkillPolicyCard({
           {!loaded && <div className="settings-empty-note">Loading skills…</div>}
           {loaded && error && <div className="settings-empty-note">Couldn't load skills: {error}</div>}
           {loaded && !error && skillNames.length === 0 && (
-            <div className="settings-empty-note">No skills discovered for this workspace.</div>
+            <EmptyState icon={<IconSparkles size={16} />} title="No skills discovered for this workspace" />
           )}
           {skillNames.map((name) => (
             <label

@@ -11,6 +11,8 @@ import {
   type SessionHooksConfig,
 } from '../../shared/hooks'
 import { AnimatedDetails } from './AnimatedCollapse'
+import { EmptyState } from './EmptyState'
+import { IconZap, IconClock } from './icons/ToolIcons'
 
 // ── Event categories ──────────────────────────────────────────────────
 interface EventCategory {
@@ -318,7 +320,7 @@ export function HooksPanel({ session, disabled, onSessionUpdate }: Props) {
             ))}
           </div>
         ) : (
-          <div className="settings-empty-note">No hooks configured</div>
+          <EmptyState icon={<IconZap size={16} />} title="No hooks configured" />
         )}
 
         {dirty && (
@@ -418,7 +420,7 @@ export function HooksPanel({ session, disabled, onSessionUpdate }: Props) {
         <div className="settings-section-head">
           <h4>Hook Activity</h4>
         </div>
-        {runs.length === 0 && <div className="settings-empty-note">No hook runs yet</div>}
+        {runs.length === 0 && <EmptyState icon={<IconClock size={16} />} title="No hook runs yet" />}
         {runs.map((run) => {
           const meta = STATUS_META[run.status] ?? STATUS_META.cancelled
           return (
