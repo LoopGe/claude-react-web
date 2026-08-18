@@ -38,7 +38,7 @@ const MarketplaceTab = lazy(() =>
 const AppPluginsTab = lazy(() =>
   import('./AppPluginsTab').then((m) => ({ default: m.AppPluginsTab })),
 )
-// ShareTab pulls in the `qrcode` dependency ? lazy-load it so that weight
+// ShareTab pulls in the `qrcode` dependency — lazy-load it so that weight
 // only lands when the user opens the "Open on phone" tab.
 const ShareTab = lazy(() =>
   import('./ShareTab').then((m) => ({ default: m.ShareTab })),
@@ -307,7 +307,7 @@ export function GlobalSettingsModal({
       // Send the token only when the user edited it (otherwise the server
       // falls back to the saved token — the client never holds the plaintext
       // of an already-saved token). Always send baseUrl so an unsaved URL
-      // edit is what gets validate?.
+      // edit is what gets validated.
       const r = await api.post<ConnectionTestResult>(
         '/config/test-connection',
         {
@@ -690,9 +690,9 @@ function ModelsTab({
               <button
                 className="btn btn-xs settings-model-sort-btn"
                 onClick={onSortModels}
-                title="Sort alphabetically (A-Z)"
+                title="Sort alphabetically (A→Z)"
               >
-                A-Z
+                A→Z
               </button>
             </div>
           )}
@@ -1312,7 +1312,7 @@ function McpTab({
       </div>
       {servers.length === 0 && (
         <div className="settings-empty-note settings-mcp-empty">
-          No MCP servers configure?. Click "Add Server" to get starte?.
+          No MCP servers configured. Click "Add Server" to get started.
         </div>
       )}
       {servers.map((srv) => (
@@ -1405,7 +1405,7 @@ function McpCard({
         success: false,
         status: 'needs-auth',
         authRequired: true,
-        error: 'Authorization window opene?. After finishing auth, this list refreshes automatically; click Test to verify.',
+        error: 'Authorization window opened. After finishing auth, this list refreshes automatically; click Test to verify.',
       })
     } catch (e) {
       setTestResult({ success: false, status: 'failed', error: (e as Error).message })
@@ -1627,7 +1627,7 @@ function LogsTab() {
     <div>
       <Field
         label="Level"
-        hint="Threshold - only messages at this level or higher get printe?. Affects all scopes."
+        hint="Threshold — only messages at this level or higher get printed. Affects all scopes."
       >
         <select
           className="input"
@@ -1784,7 +1784,7 @@ function AboutTab({
           // The on-disk package was verifiably upgraded — tell the user the
           // exact version that landed and that a restart applies it.
           toast.success(
-            `Installed ${res.installedVersion ?? res.latest ?? 'the latest version'} on disk - restart the server to apply.`,
+            `Installed ${res.installedVersion ?? res.latest ?? 'the latest version'} on disk — restart the server to apply.`,
           )
         } else {
           // Install ran but the on-disk version didn't advance — npm reported
@@ -2006,7 +2006,7 @@ function AboutTab({
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 13, fontFamily: 'var(--mono)' }}>
             {disabled
-              ? '?'
+              ? '—'
               : info?.latest ?? (info?.checking ? 'checking...' : '?')}
           </span>
           {hasUpdate && (
@@ -2055,7 +2055,7 @@ function AboutTab({
       <div style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
         <button
           className="btn"
-          // Probe the CURRENTLY-TYPED registry, not the saved value - the
+          // Probe the CURRENTLY-TYPED registry, not the saved value — the
           // user may be editing the field and wants to validate the new URL
           // before committing it with Save. We no longer gate on the saved
           // `disabled` snapshot; instead we gate on the live input being

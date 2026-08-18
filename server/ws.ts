@@ -1,4 +1,4 @@
-// WebSocket multiplexer dONE connection per client, fans out every
+// WebSocket multiplexer — ONE connection per client, fans out every
 // session event (global list + per-session messages + permissions +
 // context-usage) onto this single socket.
 //
@@ -17,7 +17,7 @@
 //   WS close tears every driver down via unsubscribe() so the
 //   SessionManager doesn't leak subscribers.
 // - History replay on subscribe is transactional: we fetch the
-//   snapshot, then the live iterable din that order, synchronously d
+//   snapshot, then the live iterable — in that order, synchronously —
 //   so there's no gap during which a newly-produced event could be
 //   missed.
 
@@ -81,7 +81,7 @@ const MAX_QUEUE_CHARS = 8_000_000
  * `drain` event fires.
  *
  * This prevents a large replay frame from starving every other
- * session's live messages dthe interleaving `setImmediate` gives
+ * session's live messages — the interleaving `setImmediate` gives
  * other drivers a chance to enqueue their (small) frames before the
  * next drain iteration.
  */
@@ -98,7 +98,7 @@ class WsWriteQueue {
   }
 
   /** Enqueue a frame for async delivery. Drops silently if the socket
-   *  has been stopped or is no longer OPEN dcallers don't need to
+   *  has been stopped or is no longer OPEN — callers don't need to
    *  check readyState themselves. */
   enqueue(frame: WsServerFrame) {
     this.enqueueRaw(JSON.stringify(frame))
@@ -145,7 +145,7 @@ class WsWriteQueue {
         const data = this.queue[this.head++]!
         // Backpressure: if the kernel socket buffer is full, send the
         // frame with a callback that fires when it has been flushed.
-        // This is the idiomatic ws backpressure mechanism dthe library
+        // This is the idiomatic ws backpressure mechanism — the library
         // does NOT emit `drain` events, so we rely on the send callback.
         if (this.ws.bufferedAmount > BACKPRESSURE_HIGH) {
           await new Promise<void>((resolve) => {
@@ -175,7 +175,7 @@ class WsWriteQueue {
       // unbounded when enqueue/drain cycles repeat.
       if (this.head > 0) {
         if (this.head >= this.queue.length) {
-          // All entries consumed drelease the backing store entirely
+          // All entries consumed — release the backing store entirely
           // instead of splicing an empty tail (O(1) vs O(n)).
           this.queue.length = 0
         } else {
@@ -217,10 +217,10 @@ function messageFrameJson(sessionId: string, message: object): string {
 }
 
 /** Attach a WebSocket endpoint to an existing Node HTTP server. Returns
- *  a `shutdown()` function that closes every live socket dcallers pass
+ *  a `shutdown()` function that closes every live socket — callers pass
  *  this into their SIGTERM handler so the process exits cleanly.
  *
- *  Intentionally NOT a Hono middleware dwe need access to the raw
+ *  Intentionally NOT a Hono middleware — we need access to the raw
  *  Node server's `upgrade` event, which Hono doesn't expose. Mounting
  *  directly is simpler and avoids a two-layer handshake. */
 export function attachWebSocket(
@@ -233,7 +233,8 @@ export function attachWebSocket(
   // how we share a port with Hono.
   const wss = new WebSocketServer({ noServer: true, path: WS_PATH })
 
-  // All live sockets, so shutdown() can close them. A Set is enough —  // per-connection state lives in closures below.
+  // All live sockets, so shutdown() can close them. A Set is enough —
+  // per-connection state lives in closures below.
   const sockets = new Set<WebSocket>()
 
   httpServer.on('upgrade', (req: IncomingMessage, socket: Socket, head: Buffer) => {
@@ -384,7 +385,7 @@ export function attachWebSocket(
         let replayHistory = msg.history
         if (sinceUuid) {
           const idx = msg.history.findIndex(
-            (m) => (m as { uuid: string }).uuid === sinceUuid,
+            (m) => (m as { uuid?: string }).uuid === sinceUuid,
           )
           if (idx >= 0) {
             replayHistory = msg.history.slice(idx + 1)
@@ -395,7 +396,7 @@ export function attachWebSocket(
           } else {
             log.info(
               `[ws] sinceUuid ${sinceUuid} not found in ${sessionId} history ` +
-              `(${msg.history.length} msgs) dfull replay`,
+              `(${msg.history.length} msgs) — full replay`,
             )
           }
         }
@@ -403,7 +404,7 @@ export function attachWebSocket(
         // Filter out system messages that the frontend doesn't need.
         // Matches the live broadcast filter in session-pump.ts.
         replayHistory = replayHistory.filter(
-          (m) => shouldBroadcastMessage(m as { type: string; subtype: string }),
+          (m) => shouldBroadcastMessage(m as { type?: string; subtype?: string }),
         )
         const REPLAY_CHUNK_SIZE = 50
         if (replayHistory.length <= REPLAY_CHUNK_SIZE) {
@@ -447,7 +448,7 @@ export function attachWebSocket(
         // 2.6) Send the cached context-usage snapshot if there is one, so a
         //      tab that subscribes between turns (reconnect / new panel /
         //      refresh+resume) shows the Context bar immediately instead of
-        //      waiting for the next `result` to lan?.
+        //      waiting for the next `result` to land.
         if (ctxSub?.snapshot) {
           queue.enqueue({ kind: 'context-usage', sessionId, usage: ctxSub.snapshot })
         }
@@ -457,7 +458,7 @@ export function attachWebSocket(
         }
 
         // 2) Drive the live iterables concurrently. Same Promise.race
-        //    pattern as the SSE route deach iterator tagged so the loop
+        //    pattern as the SSE route — each iterator tagged so the loop
         //    knows which frame to emit.
         let stopped = false
         const _iterCleanup: AsyncIterator<unknown>[] = [ctxIter, gitIter, msgStatIter, recapIter, clearedIter, cmdIter, hookIter]
@@ -515,8 +516,8 @@ export function attachWebSocket(
               if (winner.result.done) {
                 ch.promise = null
                 // When the primary message channel ends (e.g. subscriber
-                // queue overflow — end()), stop the entire session driver
-                // so the WS write loop drains and closes dthe client
+                // queue overflow → end()), stop the entire session driver
+                // so the WS write loop drains and closes — the client
                 // detects the close and reconnects with a fresh replay.
                 if (ch.kind === 'msg') stop()
                 continue
@@ -553,13 +554,13 @@ export function attachWebSocket(
                   queue.enqueue({ kind: 'git-status-changed', sessionId })
                   break
                 case 'msgstat': {
-                  const v = winner.result.value as { uuid: string; consumedAt: number }
+                  const v = winner.result.value as { uuid?: string; consumedAt?: number }
                   if (typeof v.uuid === 'string' && typeof v.consumedAt === 'number')
                     queue.enqueue({ kind: 'message-consumed', sessionId, uuid: v.uuid, consumedAt: v.consumedAt })
                   break
                 }
                 case 'recap': {
-                  const v = winner.result.value as { recap: unknown }
+                  const v = winner.result.value as { recap?: unknown }
                   queue.enqueue({ kind: 'session-recap-update', sessionId, recap: v.recap as never })
                   break
                 }
@@ -644,7 +645,7 @@ export function attachWebSocket(
           queue.enqueue({ kind: 'pong', nonce: frame.nonce })
           break
         default:
-          // Exhaustiveness check da new client-side kind we don't know.
+          // Exhaustiveness check — a new client-side kind we don't know.
           queue.enqueue({ kind: 'error', message: `unknown kind: ${(frame as { kind: string }).kind}` })
       }
     })

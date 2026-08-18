@@ -75,7 +75,7 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     return this.query.interrupt()
   }
 
-  setModel(model: string): Promise<void> {
+  setModel(model?: string): Promise<void> {
     return this.query.setModel(model)
   }
 

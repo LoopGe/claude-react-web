@@ -48,7 +48,7 @@ export interface SessionMeta {
   /** Structured hook configuration applied via Query.applyFlagSettings(). */
   hooks?: SessionHooksConfig
   /** Monotonic counter of user turns seen; used as a rough "is there
-   *  anything to resumed" hint for the UI. */
+   *  anything to resume?" hint for the UI. */
   messageCount: number
   /** Present once the underlying Query has finished or errored. Terminated
    *  sessions stay in the index (so the user can read the transcript), but

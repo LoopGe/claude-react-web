@@ -1,7 +1,7 @@
 // Verifies the interactive (clickable) toast paths added to ToastHost:
-//   1. `onClick` without `actionLabel` — message itself becomes a button
+//   1. `onClick` without `actionLabel` → message itself becomes a button
 //      that fires onClick AND auto-dismisses.
-//   2. `onClick` with `actionLabel` — dedicated action button; clicking
+//   2. `onClick` with `actionLabel` → dedicated action button; clicking
 //      it fires onClick AND auto-dismisses; the message stays plain text.
 //   3. Dismiss button still dismisses without firing onClick (so a user can
 //      kill the notification without triggering the jump action).
@@ -17,7 +17,7 @@ function Harness({ onMount }: { onMount: (toast: ReturnType<typeof useToast>) =>
   const toast = useToast()
   // Fire exactly once, AFTER the first render commits. Calling onMount
   // during render is NOT safe: onMount pushes a toast (setToasts in the
-  // provider), which re-renders this child, which calls onMount again ?
+  // provider), which re-renders this child, which calls onMount again →
   // an infinite render loop that pins the CPU and hangs the test worker.
   // A mount effect with a ref guard schedules the toast once and lets the
   // render settle. testing-library flushes effects inside act(), so the

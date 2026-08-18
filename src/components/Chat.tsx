@@ -1162,7 +1162,7 @@ export const Chat = memo(function Chat({
     clearError()
     const preamble =
       attachmentList.length > 0
-        ? `Attached file${attachmentList.length === 1 ? '' : 's'} (absolute path${attachmentList.length === 1 ? '' : 's'} - use the Read tool to open):\n` +
+        ? `Attached file${attachmentList.length === 1 ? '' : 's'} (absolute path${attachmentList.length === 1 ? '' : 's'} — use the Read tool to open):\n` +
           attachmentList.map((a) => `- ${a.path}`).join('\n') +
           '\n\n'
         : ''

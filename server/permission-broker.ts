@@ -40,7 +40,7 @@ const log = createLogger('broker')
 
 /** Read-only built-in tools that `dontAsk` mode auto-approves. Conservative
  *  first cut: only tools that purely read/inspect. WebFetch/WebSearch (network)
- *  and TodoWrite (mutates todo state) are intentionally excluded — they get
+ *  and TodoWrite (mutates todo state) are intentionally excluded → they get
  *  auto-denied under dontAsk. Bash is handled separately via isReadOnlyBash. */
 const READONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   'Read',
@@ -126,7 +126,7 @@ export class PermissionBroker {
       resolve: (result: PermissionResult) => void,
       abortHandler: () => void,
     ) => P,
-    label: string,
+    label?: string,
   ): Promise<PermissionResult> {
     return new Promise<PermissionResult>((resolve) => {
       const pid = randomUUID()
@@ -165,7 +165,7 @@ export class PermissionBroker {
    *  broadcast.)
    *
    *  IMPORTANT: `session` must be the fully-constructed Session object.
-   *  Calling this before the session is assigned would pass undefine?. */
+   *  Calling this before the session is assigned would pass undefined. */
   buildCanUseTool(
     session: Session,
     onPermissionRequest: (session: Session, snapshot: PermissionRequestSnapshot) => void,
@@ -187,7 +187,7 @@ export class PermissionBroker {
       //   LOG_LEVEL=debug LOG_SCOPES=broker
       // Used to investigate whether subagent tool calls actually route
       // through canUseTool (key signal: does `agentID=<uuid>` ever appear
-      // for a subagent's Bash, and does sessionMode reflect bypassd).
+      // for a subagent's Bash, and does sessionMode reflect bypass?).
       log.debug(
         `canUseTool fired ?tool=${toolName} ` +
         `agentID=${ctx.agentID ?? 'main'} ` +
@@ -244,7 +244,8 @@ export class PermissionBroker {
           toolUseID: ctx.toolUseID,
         }
       }
-      // ExitPlanMode is a plan PROPOSAL: "I'm done planning, here's the plan —      // should I start executing?" It requires human review of the proposed
+      // ExitPlanMode is a plan PROPOSAL: "I'm done planning, here's the plan —
+      // should I start executing?" It requires human review of the proposed
       // plan regardless of permission mode. This check MUST come before the
       // bypassPermissions early-return so that even in bypass mode the user
       // sees the plan card and can approve or reject it.
@@ -263,7 +264,7 @@ export class PermissionBroker {
           resolve,
           signal: ctx.signal,
           abortHandler,
-        }), `plan review request - ${toolName}`)
+        }), `plan review request — ${toolName}`)
       }
       // `acceptEdits` auto-approves pure file-editing tools so the user isn't
       // prompted for every Edit/Write. Non-edit tools (Bash, etc.) fall through
@@ -272,7 +273,7 @@ export class PermissionBroker {
       // bypassPermissions: with a canUseTool callback present the SDK routes
       // EVERY tool through us, so its built-in acceptEdits auto-allow never
       // fires. Placed AFTER the ExitPlanMode check so plan review is never
-      // skippe?.
+      // skipped.
       if (session.permissionMode === 'acceptEdits') {
         // When the global `allowSensitivePathEdits` opt-in is on, the
         // sensitive-path exclusion (.git/, .claude/, shell configs, …) is
@@ -480,7 +481,7 @@ export class PermissionBroker {
         resolve,
         signal: ctx.signal,
         abortHandler,
-      }), `tool permission request - ${toolName}`)
+      }), `tool permission request — ${toolName}`)
     }
 
     return canUseTool

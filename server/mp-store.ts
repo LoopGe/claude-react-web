@@ -12,7 +12,7 @@
 //
 // We extend JsonFileStore to inherit the debounced atomic write machinery,
 // using `index` as the marketplace map and tracking enabledPlugins as a
-// side fiel?. Serialisation merges both back into the on-disk shape;
+// side field. Serialisation merges both back into the on-disk shape;
 // parsing populates both in `load()`.
 
 import { promises as fs, existsSync } from 'node:fs'
@@ -47,10 +47,10 @@ export interface MpEntry {
   source: { type: 'https'; url: string; ref?: string }
   /** Absolute path to the cloned repo on disk. */
   cloneDir: string
-  /** Epoch ms when the marketplace was first adde?. */
+  /** Epoch ms when the marketplace was first added. */
   addedAt: number
   /** Epoch ms of the most recent successful refresh. Equals addedAt
-   *  immediately after ad?. */
+   *  immediately after add. */
   lastRefreshedAt: number
   /** HEAD SHA of the most recent successful clone/pull. */
   lastSha: string
@@ -97,7 +97,7 @@ export class MpStore extends JsonFileStore<MpEntry> {
   }
 
   /** Deterministic on-disk dir for an external repo pinned at `sha`. Same
-   *  (url, sha) — same dir, so multiple git-subdir plugins from one repo
+   *  (url, sha) → same dir, so multiple git-subdir plugins from one repo
    *  clone it once. */
   externalCloneDir(url: string, sha: string): string {
     const hash = createHash('sha256').update(`${url}\0${sha}`).digest('hex').slice(0, 16)
@@ -118,7 +118,7 @@ export class MpStore extends JsonFileStore<MpEntry> {
     // Pull enabledPlugins straight off the parsed object ?load() reads
     // both halves, but only entries[] flows back through the base class
     // template. Overwrite our side state in place rather than via a
-    // separate hook so we don't add a second template metho?.
+    // separate hook so we don't add a second template method.
     if (obj.enabledPlugins && typeof obj.enabledPlugins === 'object' && !Array.isArray(obj.enabledPlugins)) {
       this.enabled.clear()
       for (const [k, v] of Object.entries(obj.enabledPlugins)) {
@@ -145,7 +145,7 @@ export class MpStore extends JsonFileStore<MpEntry> {
   }
 
   /** Load both halves of the file into memory. Same shape as
-   *  McpConfigStore.load() — missing/corrupt — empty store. */
+   *  McpConfigStore.load() — missing/corrupt → empty store. */
   async load(): Promise<MpEntry[]> {
     try {
       const raw = await fs.readFile(this.file, 'utf8')
@@ -173,7 +173,7 @@ export class MpStore extends JsonFileStore<MpEntry> {
       const candidate = `${stem}-${i}`
       if (!this.has(candidate)) return candidate
     }
-    // Pathological fallback (1000 collisions for the same stemd something
+    // Pathological fallback (1000 collisions for the same stem? something
     // is very wrong) — append a timestamp to guarantee uniqueness.
     return `${stem}-${Date.now()}`
   }
@@ -250,7 +250,7 @@ export class MpStore extends JsonFileStore<MpEntry> {
     // The JsonFileStore base class only schedules flushes on
     // upsert/remove of items in `index`. Side-state mutations need a
     // manual nudge ?re-upserting is the cheapest way to set dirty
-    // without inventing a new template metho?.
+    // without inventing a new template method.
     const owner = this.get(marketplace)
     if (owner) this.upsert(owner)
     else void this.flush()
@@ -309,7 +309,8 @@ export class MpStore extends JsonFileStore<MpEntry> {
     // Dedupe: two enabled plugins can resolve to the same dir (e.g. a `url`
     // git-subdir plugin pointing at a repo root, or the same path reached via
     // two marketplaces). The SDK loads each entry of Options.plugins, so a
-    // duplicate path would register the plugin — and its commands/agents —    // twice. Collapse to a set.
+    // duplicate path would register the plugin — and its commands/agents —
+    // twice. Collapse to a set.
     const seen = new Set<string>()
     const push = (p: string) => {
       if (seen.has(p)) return
@@ -332,7 +333,8 @@ export class MpStore extends JsonFileStore<MpEntry> {
         )
         if (existsSync(abs)) push(abs)
       } else if (plugin.dir) {
-        // In-repo plugin. Left unguarded (no existsSync) intentionally —        // the dir was verified to exist at parse time.
+        // In-repo plugin. Left unguarded (no existsSync) intentionally —
+        // the dir was verified to exist at parse time.
         push(plugin.dir)
       }
     }
@@ -466,14 +468,14 @@ export class MpStore extends JsonFileStore<MpEntry> {
 // ---------------------------------------------------------------------------
 
 /** Derive a slug from a git URL. Examples:
- *    https://github.com/owner/repo.git — repo
- *    https://github.com/owner/repo     — repo
- *    https://example.com/foo/bar/      — bar
+ *    https://github.com/owner/repo.git → repo
+ *    https://github.com/owner/repo     → repo
+ *    https://example.com/foo/bar/      → bar
  *  Falls back to "marketplace" for un-parseable inputs. */
 function deriveSlug(url: string): string {
   let raw = url.trim()
   // Strip protocol + leading slashes so the last meaningful segment wins.
-  raw = raw.replace(/^https:\/\//, '').replace(/\/+$/, '')
+  raw = raw.replace(/^https?:\/\//, '').replace(/\/+$/, '')
   // Drop trailing .git so https://.../foo.git ?foo, not foo.git.
   raw = raw.replace(/\.git$/i, '')
   const segs = raw.split('/').filter(Boolean)

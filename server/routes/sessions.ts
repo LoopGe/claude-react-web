@@ -74,6 +74,60 @@ function validateEnv(value: unknown): string | null {
   return null
 }
 
+/** Effort levels accepted by POST /sessions and POST /sessions/:id/effort-level.
+ *  The SDK forwards these through applyFlagSettings; unsupported levels are
+ *  silently downgraded, so the route keeps the same 5-value surface the
+ *  in-app effort picker exposes. */
+const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
+
+/** Validate the shape-sensitive fields that flow from POST /sessions into the
+ *  SDK spawn (server/providers/claude/claude-provider.ts createSession copies
+ *  them into sdkOptions, which the SDK forwards to the CLI subprocess). The
+ *  manager historically accepted the whole body via a blind `as Options` cast,
+ *  so a malformed value (e.g. `maxTurns: "abc"`) leaked into the subprocess and
+ *  surfaced as a confusing spawn/runtime error. This narrows the known fields
+ *  to the SDK's documented shapes; unknown fields pass through untouched for
+ *  forward compatibility with newer SDK Options. */
+function narrowCreateBody(rest: Record<string, unknown>): { ok: true; value: Record<string, unknown> } | { ok: false; error: string } {
+  const stringFields = ['cwd', 'model', 'title', 'pathToClaudeCodeExecutable']
+  for (const name of stringFields) {
+    const v = rest[name]
+    if (v !== undefined && typeof v !== 'string') {
+      return { ok: false, error: `${name} must be a string` }
+    }
+  }
+  // `systemPrompt` accepts the SDK's three documented shapes: a plain string,
+  // a string[] (dynamic-boundary form), or the `{ type: 'preset', ... }`
+  // object form. Reject numbers/booleans/null that would otherwise reach the
+  // subprocess, but don't refuse valid documented options.
+  const sp = rest.systemPrompt
+  if (sp !== undefined && sp !== null
+    && typeof sp !== 'string'
+    && !(Array.isArray(sp) && sp.every((s) => typeof s === 'string'))
+    && !(typeof sp === 'object' && !Array.isArray(sp))) {
+    return { ok: false, error: 'systemPrompt must be a string, a string[], or a preset object' }
+  }
+  for (const name of ['betas', 'additionalDirectories']) {
+    const err = validateStringArray(name, rest[name])
+    if (err) return { ok: false, error: err }
+  }
+  for (const name of ['includePartialMessages', 'includeHookEvents']) {
+    const v = rest[name]
+    if (v !== undefined && typeof v !== 'boolean') {
+      return { ok: false, error: `${name} must be a boolean` }
+    }
+  }
+  const maxTurns = rest.maxTurns
+  if (maxTurns !== undefined && (typeof maxTurns !== 'number' || !Number.isFinite(maxTurns))) {
+    return { ok: false, error: 'maxTurns must be a finite number' }
+  }
+  const effort = rest.effortLevel
+  if (effort !== undefined && (typeof effort !== 'string' || !EFFORT_LEVELS.has(effort))) {
+    return { ok: false, error: 'effortLevel must be one of low, medium, high, xhigh, max' }
+  }
+  return { ok: true, value: rest }
+}
+
 export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono {
   const app = new Hono()
 
@@ -122,14 +176,16 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     const mergedMcp = await sm.mergeMcpServersAsync(enabledMcpServers, mcpServers)
     if (mergedMcp) rest.mcpServers = mergedMcp
     if (enabledPlugins !== undefined) (rest as { enabledPlugins?: string[] }).enabledPlugins = enabledPlugins
-    const info = sm.create(rest as Options & { provider?: string }, customEnv as Record<string, string> | undefined, joinGroupOf as string | undefined, evicting)
+    const narrowed = narrowCreateBody(rest)
+    if (!narrowed.ok) return c.json({ error: narrowed.error }, 400)
+    const info = sm.create(narrowed.value as Options & { provider?: string }, customEnv as Record<string, string> | undefined, joinGroupOf as string | undefined, evicting)
     return c.json({ session: info }, 201)
   })
 
   // List sessions resumable from disk (the /resume picker). Scans
   // ~/.claude/projects/ via the SDK, including CLI-created sessions this
   // app never tracked. Registered BEFORE /sessions/:id so "resumable" is
-  // not captured as an :id param. Optional ddir scopes to a project dir.
+  // not captured as an :id param. Optional ?dir scopes to a project dir.
   app.get('/sessions/resumable', async (c) => {
     const dir = c.req.query('dir') || undefined
     const sessions = await sm.listResumable({ dir })
@@ -151,7 +207,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   // Patch session metadata (title).
   app.patch('/sessions/:id', async (c) => {
     const id = c.req.param('id')
-    const body = await safeJson<{ title: string }>(c.req)
+    const body = await safeJson<{ title?: string }>(c.req)
     if (typeof body.title !== 'string') return c.json({ error: 'title is required' }, 400)
     const info = sm.rename(id, body.title)
     return c.json({ session: info })
@@ -327,7 +383,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
 
   // Change model
   app.post('/sessions/:id/model', async (c) => {
-    const body = await safeJson<{ model: string }>(c.req)
+    const body = await safeJson<{ model?: string }>(c.req)
     const info = await sm.setModel(c.req.param('id'), body.model)
     return c.json({ session: info })
   })
@@ -354,7 +410,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   // the SDK via applyFlagSettings; the SDK reports the real runtime state back
   // through messages (parsed by the pump into session.fastModeState).
   app.post('/sessions/:id/fast-mode', async (c) => {
-    const body = await safeJson<{ enabled: boolean }>(c.req)
+    const body = await safeJson<{ enabled?: boolean }>(c.req)
     const info = await sm.setFastMode(c.req.param('id'), body.enabled === true)
     return c.json({ session: info })
   })
@@ -439,7 +495,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
 
   // Enable or disable an MCP server
   app.post('/sessions/:id/mcp/:name/toggle', async (c) => {
-    const body = await safeJson<{ enabled: boolean }>(c.req)
+    const body = await safeJson<{ enabled?: boolean }>(c.req)
     if (typeof body.enabled !== 'boolean') return c.json({ error: 'enabled (boolean) is required' }, 400)
     await sm.toggleMcpServer(c.req.param('id'), c.req.param('name'), body.enabled)
     return c.json({ ok: true })
@@ -456,7 +512,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   // (see MpStore.keyOf). When an MpStore is available we resolve the bare
   // URL-segment name to that format so the control_request actually matches.
   app.post('/sessions/:id/plugins/:name/toggle', async (c) => {
-    const body = await safeJson<{ enabled: boolean }>(c.req)
+    const body = await safeJson<{ enabled?: boolean }>(c.req)
     if (typeof body.enabled !== 'boolean') return c.json({ error: 'enabled (boolean) is required' }, 400)
     const bare = c.req.param('name')
     const pluginKey = mpStore?.resolveCompoundKey(bare) ?? bare

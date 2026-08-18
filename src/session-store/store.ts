@@ -988,6 +988,7 @@ export class SessionStore {
 const debugStores = new Map<string, Set<SessionStore>>()
 
 function registerStoreForDebug(sessionId: string, store: SessionStore): void {
+  if (!import.meta.env.DEV) return
   let set = debugStores.get(sessionId)
   if (!set) {
     set = new Set()
@@ -997,12 +998,20 @@ function registerStoreForDebug(sessionId: string, store: SessionStore): void {
 }
 
 function unregisterStoreForDebug(sessionId: string, store: SessionStore): void {
+  if (!import.meta.env.DEV) return
   const set = debugStores.get(sessionId)
   if (!set) return
   set.delete(store)
   if (set.size === 0) debugStores.delete(sessionId)
 }
 
+// --- DEV-only on-demand dump infrastructure ---
+// Gated on import.meta.env.DEV so Vite tree-shakes it out of the production
+// bundle (matching __dumpGroupState in App.tsx). `debugStores` +
+// register/unregister stay live because the SessionStore constructor/destroy
+// paths call them, but they no-op outside dev. The block below is intentionally
+// NOT re-indented to keep the diff reviewable.
+if (import.meta.env.DEV) {
 interface ToolEntryDump {
   toolUseId: string
   status: string
@@ -1447,5 +1456,6 @@ if (typeof window !== 'undefined') {
       for (const [sid, stores] of debugStores) all.push(dumpOne(sid, stores))
       return all
     }
+}
 }
 

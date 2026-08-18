@@ -74,7 +74,7 @@ export function buildPermissionRouter(sm: SessionManager): Hono {
     const id = c.req.param('id')
     const pid = c.req.param('pid')
     log.info(`answer-question session=${id} pid=${pid}`)
-    const raw = await safeJson<{ answers: unknown }>(c.req)
+    const raw = await safeJson<{ answers?: unknown }>(c.req)
     if (!Array.isArray(raw.answers)) {
       return c.json({ error: 'answers must be an array' }, 400)
     }

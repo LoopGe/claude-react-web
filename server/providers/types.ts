@@ -64,21 +64,21 @@ export interface ProviderSessionHandle {
    *  ever spawned. Never rejects. */
   readonly processExited: Promise<unknown>
   abort(): void
-  destroy(reason: string): Promise<void> | void
-  interrupt(): Promise<void>
-  setModel(model?: string): Promise<void>
-  setPermissionMode(mode: string): Promise<void>
-  applyFlagSettings(settings: Record<string, unknown>): Promise<void>
-  supportedModels(): Promise<unknown>
-  supportedCommands(): Promise<unknown>
-  supportedAgents(): Promise<unknown>
-  mcpServerStatus(): Promise<unknown>
-  reconnectMcpServer(name: string): Promise<void>
-  toggleMcpServer(name: string, enabled: boolean): Promise<void>
-  setMcpServers(servers: Record<string, unknown>): Promise<unknown>
-  reloadPlugins(): Promise<unknown>
+  destroy(reason?: string): Promise<void> | void
+  interrupt?(): Promise<void>
+  setModel?(model?: string): Promise<void>
+  setPermissionMode?(mode: string): Promise<void>
+  applyFlagSettings?(settings: Record<string, unknown>): Promise<void>
+  supportedModels?(): Promise<unknown>
+  supportedCommands?(): Promise<unknown>
+  supportedAgents?(): Promise<unknown>
+  mcpServerStatus?(): Promise<unknown>
+  reconnectMcpServer?(name: string): Promise<void>
+  toggleMcpServer?(name: string, enabled: boolean): Promise<void>
+  setMcpServers?(servers: Record<string, unknown>): Promise<unknown>
+  reloadPlugins?(): Promise<unknown>
   reloadSkills(): Promise<unknown>
-  getContextUsage(): Promise<unknown>
+  getContextUsage?(): Promise<unknown>
 }
 
 export interface ProviderCapabilities {

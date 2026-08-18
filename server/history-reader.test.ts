@@ -55,7 +55,7 @@ describe('paginateJsonl — filtering', () => {
       {
         type: 'user',
         uuid: 'u1',
-        message: { role: 'user', content: 'why does [Request interrupted by user] show upd' },
+        message: { role: 'user', content: 'why does [Request interrupted by user] show up?' },
       },
     ])
     const page = paginateJsonl(raw, SID, { limit: 100 })

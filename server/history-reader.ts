@@ -64,14 +64,14 @@ export interface HistoryEntry {
 }
 
 interface RawLine {
-  type: string
-  subtype: string
-  uuid: string
-  sessionId: string
-  session_id: string
-  isMetad: boolean
-  isSidechaind: boolean
-  message: { roled: string; content: unknown }
+  type?: string
+  subtype?: string
+  uuid?: string
+  sessionId?: string
+  session_id?: string
+  isMeta?: boolean
+  isSidechain?: boolean
+  message?: { role?: string; content?: unknown }
   [k: string]: unknown
 }
 
@@ -97,7 +97,7 @@ function isInterruptPlaceholder(content: unknown): boolean {
   let sawText = false
   for (const block of content) {
     if (!block || typeof block !== 'object') return false
-    const b = block as { type: unknown; text?: unknown }
+    const b = block as { type?: unknown; text?: unknown }
     if (b.type !== 'text' || typeof b.text !== 'string') return false
     if (!INTERRUPT_PLACEHOLDER_RE.test(b.text)) return false
     sawText = true

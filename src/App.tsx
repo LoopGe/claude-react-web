@@ -259,7 +259,7 @@ export function App() {
 
   // Composer snippets — a SINGLE global instance shared by every panel
   // (previously each Chat panel owned its own copy). Backed by the server
-  // (/api/snippets — disk) so they survive reloads and never disagree
+  // (/api/snippets → disk) so they survive reloads and never disagree
   // between panels. The manager + save dialogs render once at this level.
   const snippets = useComposerSnippets()
   const [showSnippetsManager, setShowSnippetsManager] = useState(false)
@@ -287,7 +287,7 @@ export function App() {
   }, [])
   /** Max number of chat panels open at once, and max sessions per group.
    *  Shared setting because the main grid and groups should agree on
-   *  capacity. Server-driven via /api/config — config.json. */
+   *  capacity. Server-driven via /api/config → config.json. */
   const [serverMaxOpen, setServerMaxOpen] = useState<number>(3)
   // True at/below the mobile breakpoint (<=768px). Drives single-panel mode
   // and the drawer sidebar.
@@ -564,7 +564,7 @@ export function App() {
     }
   }, [])
 
-  // When the panel capacity shrinks (e.g. desktop — mobile resize/rotation
+  // When the panel capacity shrinks (e.g. desktop → mobile resize/rotation
   // drops maxOpen to 1), `openSession`'s eviction only gates NEW opens — it
   // never retroactively trims already-open panels. Without this, narrowing
   // the viewport would leave 3 panels crammed into one column. Trim down to
@@ -750,7 +750,8 @@ export function App() {
             return next
           })
           // If the update belongs to the currently-focused session AND
-          // the window is focused, the user is actively watching it —           // bump lastSeenTurn so a new turn doesn't render as unread
+          // the window is focused, the user is actively watching it —
+          // bump lastSeenTurn so a new turn doesn't render as unread
           // after the panel is closed, or in a non-focused open-panel
           // sibling. Mirrors maybeNotify's visibility gate so the two
           // behaviours stay consistent.
@@ -938,7 +939,7 @@ export function App() {
     return off
   }, [hub, maybeNotify, maybePermissionNotify, seedWorkingState, pruneSession, dismissPermissionToast, setLastSeenTurn, setSidebarOrder, setGroups])
 
-  // Hub status — reconnecting banner is derived inline (single ternary
+  // Hub status → reconnecting banner is derived inline (single ternary
   // above) — no effect needed.
 
   // When the window regains focus, bump the currently-focused session's
@@ -959,7 +960,7 @@ export function App() {
   }, [setLastSeenTurn])
 
   /** Push a session id onto the open list. Rules:
-   *  - Already open — just focus it, no reshuffle.
+   *  - Already open → just focus it, no reshuffle.
    *  - Not open but >= maxOpen already — evict the oldest non-focused id.
    *  - Append to the end and focus it.
    *  Also bumps the session's lastSeenTurn so opening clears unread. */
@@ -1570,7 +1571,7 @@ export function App() {
         permissionMode: source.permissionMode,
         title: source.title ? `${source.title} (copy)` : undefined,
         // Carry forward the beta flags so a 1M-context session stays 1M
-        // when copie?. Without this, "new like this" silently downgrades
+        // when copied. Without this, "new like this" silently downgrades
         // the window.
         betas: source.betas,
         groupId: sourceGroup?.id,
@@ -1670,7 +1671,7 @@ export function App() {
       const session = sessions.find((s) => s.id === id)
       const label = session?.title ?? id.slice(0, 8)
       // Play a short local exit animation first, then hide the card for
-      // the Undo grace window. The irreversible API call is still deferre?.
+      // the Undo grace window. The irreversible API call is still deferred.
       setDeletingSessionIds((prev) => new Set(prev).add(id))
       const EXIT_ANIMATION_MS = 260
       const UNDO_MS = 8000
@@ -1955,7 +1956,7 @@ export function App() {
 
       const sessionGroup = groups.find((g) => g.sessionIds.includes(id))
 
-      // Ungrouped session — single-panel mode (replace all open panels).
+      // Ungrouped session → single-panel mode (replace all open panels).
       if (!sessionGroup) {
         setLastSeenTurn((prev) => ({ ...prev, [id]: s.lastTurnAt ?? Date.now() }))
         // `s.canRetryResume`: a transiently-terminated session (crash /
@@ -2432,7 +2433,7 @@ export function App() {
           description: 'Browse input history',
         },
         {
-          combo: 'mod+x',
+          combo: 'mod+?',
           handler: () => toggleShortcutHelp(helpOpenRef.current),
           allowInInput: true,
           description: 'Keyboard shortcuts',
@@ -2541,7 +2542,7 @@ export function App() {
 
   /** Final sidebar order: sidebarOrder[] wins for ids it contains; anything
    *  not listed falls back to the server's lastActivityAt sort. Ids in the
-   *  saved order but no longer present on the server are droppe?. */
+   *  saved order but no longer present on the server are dropped. */
   const orderedSessions = useMemo(() => {
     // Side Chat sessions are ephemeral — they only exist in panels, never
     // in the sidebar.  Sessions in the Undo grace window are also hidden.
@@ -3401,7 +3402,7 @@ export function App() {
     // snapshot would still reflect the previous URL (or `disabled`)
     // until the cache TTL expires. A force refresh here makes "save"
     // feel responsive — the banner / About tab reflect the new URL
-    // before the modal is fully close?.
+    // before the modal is fully closed.
     updateInfo.refresh()
   }, [refreshConfigResponse, updateInfo])
 
@@ -3562,7 +3563,7 @@ export function App() {
           )}
           {/* The header used to echo the focused session's title / model /
               mode / cwd, but with up to three panels open that information
-              is already visible inside each ChatPanel header ? duplicating
+              is already visible inside each ChatPanel header — duplicating
               it at the top was both redundant and subtly wrong (it looked
               like "the active session" when all three are active). Now the
               row holds only the app-level toolbar. */}

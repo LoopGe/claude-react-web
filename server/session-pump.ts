@@ -2,7 +2,7 @@
 // every message to the bounded history ring, and fans out to all live
 // subscribers. Extracted from SessionManager.pump() for modularity.
 //
-// The pump is the session's main loop dit runs until the Query ends or
+// The pump is the session's main loop — it runs until the Query ends or
 // crashes, then performs cleanup (deny pending permissions, end subscribers,
 // mark session as terminated, persist final state).
 
@@ -87,25 +87,25 @@ export function trimLargeToolResults(msg: SDKMessage): void {
 
 /** Extract `parent_tool_use_id` from an SDK message defensively.
  *  Returns the value for user/assistant messages; undefined for types
- *  that don't carry the fiel?. Server-side SDKMessage is a discriminated
- *  union, so the cast is necessary dthe field is only guaranteed on
+ *  that don't carry the field. Server-side SDKMessage is a discriminated
+ *  union, so the cast is necessary — the field is only guaranteed on
  *  SDKUserMessage / SDKAssistantMessage variants. */
 export function getParentToolUseId(msg: SDKMessage): string | null | undefined {
-  return (msg as { parent_tool_use_id: string | null }).parent_tool_use_id
+  return (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id
 }
 
 const log = createLogger('pump')
 
 /** True when an SDK `user` message carries at least one `tool_result`
  *  content block. Used to distinguish a genuine top-level user-input echo
- *  (text/image blocks only ddrop it, we already broadcast our own copy)
+ *  (text/image blocks only — drop it, we already broadcast our own copy)
  *  from a tool_result frame (forward it, the UI needs it to resolve the
  *  tool card's status). Defensive against string content and odd shapes. */
 export function userMessageHasToolResult(msg: SDKMessage): boolean {
-  const content = (msg as { message: { content: unknown } }).message?.content
+  const content = (msg as { message?: { content?: unknown } }).message?.content
   if (!Array.isArray(content)) return false
   for (const block of content) {
-    if (block && typeof block === 'object' && (block as { type: unknown }).type === 'tool_result') {
+    if (block && typeof block === 'object' && (block as { type?: unknown }).type === 'tool_result') {
       return true
     }
   }
@@ -113,7 +113,7 @@ export function userMessageHasToolResult(msg: SDKMessage): boolean {
 }
 
 /** True when a top-level `user` message's leading text is a
- *  `<task-notification>` XML block dthe harness's background-subagent
+ *  `<task-notification>` XML block — the harness's background-subagent
  *  result injection (delivered as user-role text for the model to consume
  *  on its next turn). The pump's echo drop-filter must NOT drop these:
  *  they aren't echoes of server-broadcast human input, so forwarding them
@@ -146,12 +146,12 @@ export function isTaskNotificationUserMessage(msg: SDKMessage): boolean {
  *  originating tool_use id lives on the block, not on the message's
  *  `parent_tool_use_id` (null for main-thread results). */
 export function toolResultIds(msg: SDKMessage): string[] {
-  const content = (msg as { message: { content: unknown } }).message?.content
+  const content = (msg as { message?: { content?: unknown } }).message?.content
   if (!Array.isArray(content)) return []
   const ids: string[] = []
   for (const block of content) {
     if (!block || typeof block !== 'object') continue
-    const b = block as { type: unknown; tool_use_id?: unknown }
+    const b = block as { type?: unknown; tool_use_id?: unknown }
     if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') ids.push(b.tool_use_id)
   }
   return ids
@@ -168,7 +168,7 @@ export function backgroundSubagentLaunches(
   msg: SDKMessage,
 ): Array<{ toolUseId: string; agentId: string }> {
   if (msg.type !== 'user') return []
-  const content = (msg as { message: { content: unknown } }).message?.content
+  const content = (msg as { message?: { content?: unknown } }).message?.content
   if (!Array.isArray(content)) return []
   const out: Array<{ toolUseId: string; agentId: string }> = []
   for (const block of content) {
@@ -192,10 +192,10 @@ export function backgroundSubagentLaunches(
 
 /** Extract the SDK-reported `fast_mode_state` from a message, if present.
  *  The field rides on `system/init` and `result` (success + error) messages
- *  (see sdk.?.ts: SDKSystemMessage, SDKResultSuccess, SDKResultError). We
- *  probe every message defensively rather than branching on type da missing
- *  field is simply undefine?. Returns undefined when absent (which also means
- *  "the current model doesn't support fast mode"). Pure dexported for tests. */
+ *  (see sdk.d.ts: SDKSystemMessage, SDKResultSuccess, SDKResultError). We
+ *  probe every message defensively rather than branching on type — a missing
+ *  field is simply undefined. Returns undefined when absent (which also means
+ *  "the current model doesn't support fast mode"). Pure — exported for tests. */
 
 function commandsChanged(msg: SDKMessage): SlashCommand[] | undefined {
   const candidate = msg as { type: unknown; subtype: unknown; commands: unknown }
@@ -215,7 +215,7 @@ export interface PumpDeps {
    *  Used to avoid overwriting state after unload() has already removed it. */
   isLive: (id: string) => boolean
   /** Called when the Query exits cleanly (no error). If it returns true,
-   *  the session is being auto-resumed dskip full cleanup (don't mark
+   *  the session is being auto-resumed — skip full cleanup (don't mark
    *  terminated, don't end subscribers). If it returns false or throws,
    *  fall through to normal termination. */
   autoResume?: (session: Session) => Promise<boolean>
@@ -246,13 +246,13 @@ export interface PumpDeps {
    *  `assistantUuid` is the turn's last assistant uuid (positions the result
    *  in the seed). Fire-and-forget on the turn path. */
   recordResultFrame?: (sessionId: string, resultUuid: string, assistantUuid: string, result: SDKMessage) => void
-  /** Reference to the broadcaster dneeded by the mutating-tool detector
+  /** Reference to the broadcaster — needed by the mutating-tool detector
    *  to schedule a debounced `git-status-changed` frame after Claude
    *  runs Edit/Write/NotebookEdit/Bash. Optional so test fixtures that
    *  don't exercise tool-use behaviour can omit it. */
   broadcaster?: SessionBroadcaster
   /** Push a `session-update` frame (e.g. after the SDK-reported fast-mode
-   *  state changes). Distinct from `persist` dthis broadcasts WITHOUT
+   *  state changes). Distinct from `persist` — this broadcasts WITHOUT
    *  writing to disk, for transient runtime state that doesn't belong in
    *  persisted meta. Optional so test fixtures can omit it. */
   broadcastInfo?: (session: Session) => void
@@ -335,7 +335,8 @@ export function hookLifecycleMessage(msg: SDKMessage): HookRuntimeEvent | null {
  * Iterate the session's Query to completion, fanning each message out to
  * subscribers and managing the history ring and turn-state bookkeeping.
  *
- * Resolves when the Query ends (normally or with an error). Never throws — * errors are captured on `session.error` and broadcast as a synthetic
+ * Resolves when the Query ends (normally or with an error). Never throws —
+ * errors are captured on `session.error` and broadcast as a synthetic
  * system message so the frontend can surface them.
  */
 export async function pump(session: Session, deps: PumpDeps): Promise<void> {
@@ -345,7 +346,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
   // Populated when we see the assistant's tool_use, drained when the
   // matching tool_result lands (which is when we know git status may
   // actually have changed). Set rather than Map because we only need
-  // membership dthe name was already checked at insertion time.
+  // membership — the name was already checked at insertion time.
   const pendingMutatingToolUses = new Set<string>()
   try {
     const iter = session.handle.messages[Symbol.asyncIterator]()
@@ -392,24 +393,24 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           // close the async iterator so the SDK can clean up its subprocess
           // resources (stdin pipe, child process, etc.). Without this,
           // aborting the session may leave orphan CLI processes.
-          try { await iter.return?.() } catch { /* subprocess already dead dignore */ }
+          try { await iter.return?.() } catch { /* subprocess already dead — ignore */ }
           break
         }
         const msg = step.value
-        const msgSubtype = (msg as unknown as { subtype: string }).subtype
+        const msgSubtype = (msg as unknown as { subtype?: string }).subtype
         // The SDK may echo top-level user input back through the Query
         // stream (sometimes as SDKUserMessageReplay with isReplay=true,
-        // sometimes dnotably the very first turn after spawn das a plain
+        // sometimes — notably the very first turn after spawn — as a plain
         // SDKUserMessage with no replay marker). We already broadcast our
         // own user messages via SessionManager.send() / sendContent(), so
-        // forwarding the SDK's echo would paint the bubble twice dwe must
+        // forwarding the SDK's echo would paint the bubble twice — we must
         // drop it.
         //
         // We CANNOT key the drop on `parent_tool_use_id == null` alone:
         // SDK 0.3.143 emits MAIN-THREAD tool_results as user frames with
         // `parent_tool_use_id: null` too (only subagent-internal tool hops
         // carry a non-null parent). Dropping those strands the tool card on
-        // 'running' forever dthe frontend seeds 'running' from the
+        // 'running' forever — the frontend seeds 'running' from the
         // assistant's tool_use but never sees the result to flip it (the
         // "tool stuck running" bug). Verified against SDK 0.3.143: a Bash
         // tool_result arrives as { type:'user', parent_tool_use_id:null,
@@ -423,7 +424,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         //
         // EXCEPTION: a `<task-notification>` user message is also a null-
         // parent text-only user frame, but it is NOT an echo of something
-        // we broadcast dthe harness injects it as the background
+        // we broadcast — the harness injects it as the background
         // subagent's result delivery for the model to consume on its next
         // turn. Dropping it would silently lose the result from the
         // transcript; forwarding it lets the client render it as a
@@ -471,7 +472,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // Detect filesystem-mutating tool_use ids so we can fire a debounced
         // git-status-changed broadcast when the matching tool_result lands.
         if (msg.type === 'assistant') {
-          const content = (msg as { message: { content: unknown } }).message?.content
+          const content = (msg as { message?: { content?: unknown } }).message?.content
           if (Array.isArray(content)) {
             for (const block of content) {
               const id = mutatingToolUseId(block)
@@ -490,12 +491,12 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             if (aUuid) session.lastAssistantUuid = aUuid
           }
         }
-        // tool_result for a mutating tool — schedule a debounced
+        // tool_result for a mutating tool → schedule a debounced
         // git-status-changed broadcast. The SDK wraps tool_results in a
         // user message; the originating tool_use id is on each tool_result
         // BLOCK (`tool_use_id`), NOT on the message's `parent_tool_use_id`
-        // (which is null for main-thread results dsee the drop-filter note
-        // above). We don't care about the result content here djust that
+        // (which is null for main-thread results — see the drop-filter note
+        // above). We don't care about the result content here — just that
         // it landed (the worktree is now in its post-mutation state).
         if (msg.type === 'user') {
           for (const id of toolResultIds(msg)) {
@@ -520,14 +521,15 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // Track the SDK-reported fast-mode runtime state. It rides on
         // system/init and result messages; when it changes, broadcast a
         // session-update so the UI's fast-mode chip reflects reality
-        // (including the 'cooldown' rate-limited state). Not persisted —        // the SDK re-reports it after respawn. Only broadcast on a real
+        // (including the 'cooldown' rate-limited state). Not persisted —
+        // the SDK re-reports it after respawn. Only broadcast on a real
         // change to avoid a frame per message.
         {
           const fms = fastModeStateOf(msg)
           log.trace('fastModeState check', {
             sessionId: session.id,
             msgType: msg.type,
-            msgSubtype: (msg as { subtype: string }).subtype,
+            msgSubtype: (msg as { subtype?: string }).subtype,
             extracted: fms,
             current: session.fastModeState,
             changed: fms !== undefined && fms !== session.fastModeState,
@@ -544,14 +546,14 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           }
         }
         // The session has produced something since the last GC kick, so any
-        // pending auto-interrupt mark is no longer relevant dclear it so a
+        // pending auto-interrupt mark is no longer relevant — clear it so a
         // future silence triggers fresh detection rather than immediately
-        // escalating to unloa?.
+        // escalating to unload.
         session.autoInterruptedAt = undefined
         // Stamp the moment we first observed this message. Set once and only
         // if absent (the SDK type has no such field, so it's never preset)
         // so the value travels unchanged through both the history ring and
-        // live subscriber broadcast dreplay and live paths share this object.
+        // live subscriber broadcast — replay and live paths share this object.
         stampReceivedAt(msg)
         // Trim oversized tool_result content before it enters the history
         // ring and subscriber broadcast.  The SDK may forward the full MCP
@@ -575,14 +577,14 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // Other system frames (init, status, — are kept in history for
         // fastModeState extraction, but skip the broadcast to save
         // bandwidth and client memory.
-        if (shouldBroadcastMessage(msg as { type: string; subtype: string })) {
+        if (shouldBroadcastMessage(msg as { type?: string; subtype?: string })) {
           for (const sub of session.subscribers.values()) {
-            try { sub.push(msg) } catch { /* subscriber dead ddon't break broadcast to others */ }
+            try { sub.push(msg) } catch { /* subscriber dead — don't break broadcast to others */ }
           }
         }
         msgCount++
         // Derive a context-usage snapshot directly from the result's own
-        // `usage` + `modelUsage` payload dno IPC. The result message is
+        // `usage` + `modelUsage` payload — no IPC. The result message is
         // the SDK's authoritative tally for the API call that just landed,
         // so we get exact numbers for free instead of round-tripping into
         // the CLI subprocess for getContextUsage(). The full breakdown
@@ -597,7 +599,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             // snapshot, instead of waiting for the next `result`.
             session.lastContextUsage = usage
             for (const sub of session.contextUsageSubscribers) {
-              try { sub.push(usage) } catch { /* subscriber dead dskip */ }
+              try { sub.push(usage) } catch { /* subscriber dead — skip */ }
             }
           }
         }
@@ -613,7 +615,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           if (usage) {
             session.lastContextUsage = usage
             for (const sub of session.contextUsageSubscribers) {
-              try { sub.push(usage) } catch { /* subscriber dead dskip */ }
+              try { sub.push(usage) } catch { /* subscriber dead — skip */ }
             }
           }
         }
@@ -621,7 +623,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         //
         // If the user queued another message while this turn was running
         // (input.queueDepth > 0), the SDK is about to start the next turn
-        // immediately dclearing pendingTurns/workingSince here would make
+        // immediately — clearing pendingTurns/workingSince here would make
         // the UI flash to "not working" between turns and hide the
         // WorkingBubble until the next HTTP send() bump. Detecting more
         // pending input lets us keep the working state continuous across
@@ -658,7 +660,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           }
           const moreQueued = session.handle.queueDepth > 0
           log.debug(
-            `[session ${session.id}] result received dtotal msgs: ${msgCount}, ` +
+            `[session ${session.id}] result received — total msgs: ${msgCount}, ` +
             `input.queueDepth=${session.handle.queueDepth}, moreQueued=${moreQueued}`,
           )
           if (moreQueued) {
@@ -683,13 +685,13 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
   } catch (err) {
     // When the CLI crashed, handleProcessExit already recorded lastCrash,
     // set session.error, and broadcast a "recovering" notice. Don't overwrite
-    // that with the iterator's abort/exit error or double-broadcast dlet
+    // that with the iterator's abort/exit error or double-broadcast — let
     // cleanupPump drive the recovery ladder from the lastCrash marker.
     if (session.lastCrash) {
       log.warn(`[session ${session.id}] pump broke after CLI crash — deferring to recovery ladder`)
     } else {
       session.error = err instanceof Error ? err.message : String(err)
-      // Log with full context dthe message alone often omits the stack
+      // Log with full context — the message alone often omits the stack
       // frame that points at the real culprit (e.g. missing API key,
       // model name typo, CLI subprocess failed to spawn).
       log.error(`[session ${session.id}] pump error after ${msgCount} messages:`, err)
@@ -703,7 +705,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         receivedAt: Date.now(),
       } as unknown as SDKMessage
       for (const sub of session.subscribers.values()) {
-        try { sub.push(synthetic) } catch { /* subscriber dead dskip */ }
+        try { sub.push(synthetic) } catch { /* subscriber dead — skip */ }
       }
     }
   } finally {
@@ -731,14 +733,14 @@ async function cleanupPump(session: Session, deps: PumpDeps): Promise<void> {
     if (session.clearing) return
 
     // When the Query exits cleanly (no error), try auto-resume first.
-    // This keeps the session alive transparently dthe CLI subprocess
+    // This keeps the session alive transparently — the CLI subprocess
     // likely exited due to idle timeout, not user intent.
     if (session.lastCrash && deps.crashRecovery && deps.attemptCrashRecovery) {
       // CLI crash (non-clean exit): try the recovery ladder before giving
       // up. Every attempt re-resumes in-place (transient crashes + tail
       // corruption); when the budget is exhausted the session terminates
       // with the transient crash reason so the UI offers Resume /
-      // Fork-from-last-completed. Returns true if re-spawned/handled dskip
+      // Fork-from-last-completed. Returns true if re-spawned/handled — skip
       // termination.
       try {
         const recovered = await deps.attemptCrashRecovery(session)
@@ -751,7 +753,7 @@ async function cleanupPump(session: Session, deps: PumpDeps): Promise<void> {
     if (!session.error && deps.autoResume) {
       try {
         const resumed = await deps.autoResume(session)
-        if (resumed) return // Session re-spawned dskip full cleanup
+        if (resumed) return // Session re-spawned — skip full cleanup
       } catch (resumeErr) {
         log.error(`[session ${session.id}] auto-resume failed, falling back to termination:`, resumeErr)
       }
@@ -785,7 +787,7 @@ async function cleanupPump(session: Session, deps: PumpDeps): Promise<void> {
 }
 
 /** Subset of getContextUsage's response that ContextBar actually renders.
- *  See src/hooks/useChatStream.ts:ContextUsage dthese are the four fields
+ *  See src/hooks/useChatStream.ts:ContextUsage — these are the four fields
  *  the chat-side bar reads (totalTokens, maxTokens, percentage, model).
  *  rawMaxTokens is included because ContextBar prefers it over maxTokens. */
 export interface LiteContextUsage {
@@ -914,31 +916,31 @@ function assembleLiteUsage(opts: {
 /** Build a LiteContextUsage from a `result` SDK message. Returns null when
  *  the message lacks the expected fields (e.g. result errors before the
  *  API call landed).
- *  @internal dexported only for unit tests; not part of the module's
+ *  @internal — exported only for unit tests; not part of the module's
  *              public API. */
 export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | null {
   if (msg.type !== 'result') return null
   // The result message's `usage` and `modelUsage` shapes are SDK-specific
-  // and broader than what we read here dcast through unknown so we can
+  // and broader than what we read here — cast through unknown so we can
   // pick out only the numeric fields we care about. Missing fields fall
   // back to 0 below.
   type IterationUsage = {
-    type: string
-    input_tokens: number
-    cache_creation_input_tokens: number | null
-    cache_read_input_tokens: number | null
+    type?: string
+    input_tokens?: number
+    cache_creation_input_tokens?: number | null
+    cache_read_input_tokens?: number | null
     output_tokens?: number
   }
   const result = msg as unknown as {
-    usage: IterationUsage & { iterations: IterationUsage[] | null }
-    modelUsage: Record<string, { contextWindow: number; maxOutputTokens?: number }>
+    usage?: IterationUsage & { iterations?: IterationUsage[] | null }
+    modelUsage?: Record<string, { contextWindow?: number; maxOutputTokens?: number }>
   }
   const usage = result.usage
   const modelUsage = result.modelUsage
   if (!usage || !modelUsage) return null
 
   // Pick the model with a contextWindow set. In practice modelUsage has
-  // exactly one entry per turn dbut we iterate defensively.
+  // exactly one entry per turn — but we iterate defensively.
   let model = ''
   let contextWindow = 0
   let maxOutputTokens: number | undefined
@@ -974,13 +976,13 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
   // sampling iteration. We must:
   //   1. Skip non-'message' iteration types. 'compaction' iterations
   //      report the SIZE OF THE SUMMARIZED SOURCE MATERIAL in
-  //      `input_tokens` (can be many millions dfar past any model's
+  //      `input_tokens` (can be many millions — far past any model's
   //      window). 'advisor_message' iterations are internal sub-calls
   //      that don't reflect what the user-facing model "saw".
   //   2. Fall back to top-level `usage` only when iterations is absent
-  //      or empty (single-call turn dtop-level == that one call).
+  //      or empty (single-call turn — top-level == that one call).
   // Per Anthropic SDK docs: "Calculate the true context window size
-  // from the last iteration." dbut only the last `message` iteration.
+  // from the last iteration." — but only the last `message` iteration.
   let source: IterationUsage = usage
   if (usage.iterations && usage.iterations.length > 0) {
     let pickedMessage = false
@@ -992,7 +994,7 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
       }
     }
     // No 'message' iteration in this turn (e.g. a turn that's purely
-    // compaction). Return null rather than reporting a bogus 100% dthe
+    // compaction). Return null rather than reporting a bogus 100% — the
     // previous fallback to "last iteration of any kind" silently clamped
     // to contextWindow, producing the 1000k/1000k bug.
     if (!pickedMessage) {
@@ -1027,7 +1029,7 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
  *  before any `result` has landed), when the assistant message lacks a
  *  usable usage payload, or when it is a subagent frame (parent_tool_use_id
  *  set) whose own context window would misrepresent the main thread.
- *  @internal dexported only for unit tests; not part of the module's
+ *  @internal — exported only for unit tests; not part of the module's
  *              public API. */
 export function liteContextUsageFromAssistant(
   msg: SDKMessage,

@@ -206,7 +206,7 @@ describe('isInScopeEditTool', () => {
     expect(isInScopeEditTool('Write', {}, cwd)).toBe(false)
     expect(isInScopeEditTool('Write', { file_path: 123 }, cwd)).toBe(false)
     expect(isInScopeEditTool('Write', null, cwd)).toBe(false)
-    // NotebookEdit reads notebook_path, not file_path — missing — false
+    // NotebookEdit reads notebook_path, not file_path → missing → false
     expect(isInScopeEditTool('NotebookEdit', { file_path: fwd(join(cwd, 'x')) }, cwd)).toBe(false)
   })
 

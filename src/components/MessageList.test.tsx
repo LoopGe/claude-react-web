@@ -66,7 +66,7 @@ const virtuosoMockState = vi.hoisted(() => ({
   lastFollowOutput: undefined as string | false | undefined,
 }))
 
-// Mock Virtuoso to render all items directly - Virtuoso needs real
+// Mock Virtuoso to render all items directly — Virtuoso needs real
 // DOM dimensions to compute which items are visible, which jsdom
 // doesn't provide. This mock renders the full list so we can test
 // message filtering and rendering logic.

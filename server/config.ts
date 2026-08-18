@@ -22,46 +22,46 @@ const log = createLogger('config')
 
 /** Schema for config.json */
 interface ConfigFile {
-  modelList: string[]
-  recapModel: string
+  modelList?: string[]
+  recapModel?: string
   /** Model used by the AI commit-message generator under the GitPanel
    *  "This session" view. Defaults to the same haiku model as recap; pick
    *  a different one (e.g. opus for higher quality at much higher cost)
    *  per project preference. */
-  commitMessageModel: string
-  maxUploadBytes: number
-  historyCap: number
-  maxOpenPanels: number
+  commitMessageModel?: string
+  maxUploadBytes?: number
+  historyCap?: number
+  maxOpenPanels?: number
   /** Milliseconds of SDK silence before the session is considered stuck
    *  and auto-interrupted. Set to 0 to disable. Default: 1 hour. */
-  workingStuckMs: number
+  workingStuckMs?: number
   /** Bearer token sent as `Authorization: Bearer <token>` to the API
    *  (works for both the official endpoint and Anthropic-compatible proxies).
    *  Required — server refuses to start without it. */
-  authToken: string
+  authToken?: string
   /** API endpoint. Defaults to the official one. Override to point at a
    *  proxy / relay. No trailing slash expected; trimmed during load. */
-  baseUrl: string
+  baseUrl?: string
   /** Shared WEB ACCESS token (NOT the Anthropic key above). When set, the
    *  web UI requires this token to access REST + WebSocket. Used as the
    *  startup initial value; the effective auth state lives in auth.ts's
    *  holder, not in the frozen config. Intentionally NOT in
    *  WRITABLE_CONFIG_KEYS — the UI must not be able to rewrite it. */
-  accessToken: string
+  accessToken?: string
   /** Write logs to a file in `<stateDir>/logs/`. Default: false. */
-  logToFile: boolean
+  logToFile?: boolean
   /** Persisted runtime log level. Restored on boot UNLESS the LOG_LEVEL env
    *  var (or DEBUG_SESSION) is set, in which case env wins as a per-launch
    *  override. Written by PUT /api/log. */
-  logLevel: string
+  logLevel?: string
   /** Persisted runtime scope filter (null / [] = all scopes). Restored on
    *  boot unless the LOG_SCOPES env var is set. Written by PUT /api/log. */
-  logScopes: string[] | null
+  logScopes?: string[] | null
   /** npm registry URL the update checker probes. Defaults to the public
    *  npm registry (https://registry.npmjs.org). Set to empty string to
    *  disable the update check entirely (banner stays hidden, About tab
    *  shows "disabled"). Override to point at a private registry. */
-  updateCheckRegistry: string
+  updateCheckRegistry?: string
   skillLoadMode: string
   enabledSkills: string[]
   autoClassifierModel: string
@@ -162,7 +162,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   maxOutputTokens: 0,
 })
 
-/** Current server config. Frozen after loadConfig() dreads are safe,
+/** Current server config. Frozen after loadConfig() — reads are safe,
  *  writes throw at runtime. */
 export let config: ServerConfig = DEFAULTS
 
@@ -198,7 +198,7 @@ export async function loadConfig(stateDir: string): Promise<void> {
   try {
     raw = await fs.readFile(file, 'utf8')
   } catch {
-    // File doesn't exist dscaffold a starter config so the user has a
+    // File doesn't exist — scaffold a starter config so the user has a
     // concrete file to edit (fill in authToken, adjust models, etc.).
     try {
       await fs.mkdir(stateDir, { recursive: true })
@@ -291,8 +291,8 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): v
   }
 
   if (typeof file_.authToken === 'string' && file_.authToken.trim()) {
-    ;(merged as { authToken: string }).authToken = file_.authToken.trim()
-    // Never log the token itself djust confirm it's present.
+    ;(merged as { authToken?: string }).authToken = file_.authToken.trim()
+    // Never log the token itself — just confirm it's present.
     log.info('authToken: configured')
   }
 
@@ -305,7 +305,7 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): v
 
   if (typeof file_.accessToken === 'string' && file_.accessToken.trim()) {
     ;(merged as { accessToken: string }).accessToken = file_.accessToken.trim()
-    // Never log the token value djust confirm a web access token is set.
+    // Never log the token value — just confirm a web access token is set.
     log.info('accessToken (web access): configured')
   }
 
@@ -324,7 +324,7 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): v
   }
 
   if (typeof file_.updateCheckRegistry === 'string') {
-    // Don't normalize trailing slashes here dthe user may have a server
+    // Don't normalize trailing slashes here — the user may have a server
     // with a quirky path component (e.g. an artifactory path that ends
     // in `/api/npm/mi-npm`). We pass the value through to the fetcher
     // verbatim and let it concatenate `/<package>/latest`.
@@ -457,7 +457,7 @@ export function updateConfigFile(
   // return a separate promise that exposes the current write's outcome.
   const thisWrite = configWriteQueue.then(() => doUpdateConfigFile(stateDir, updates))
   configWriteQueue = thisWrite.catch(() => {
-    // Don't propagate dthe next caller's chained .then() must still run.
+    // Don't propagate — the next caller's chained .then() must still run.
   })
   return thisWrite
 }

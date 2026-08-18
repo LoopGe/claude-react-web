@@ -1,4 +1,4 @@
-import type { Block, PermissionRequest, SdkMessage } from '../types'
+import type { Block, SdkMessage } from '../types'
 import type {
   ActiveSubagent,
   PlanStatus,
@@ -697,12 +697,6 @@ function parsePlanFromResult(raw: string): string {
   if (m) return m[1].trim()
   // Anything else (short boilerplate, rejection, error) carries no plan.
   return ''
-}
-
-export function mapPendingPermissions(requests: PermissionRequest[]): Map<string, PermissionRequest> {
-  const map = new Map<string, PermissionRequest>()
-  for (const req of requests) map.set(req.id, req)
-  return map
 }
 
 function textOfContent(content: unknown): string {

@@ -218,7 +218,7 @@ describe('MpStore', () => {
     const s = new MpStore({ stateDir: dir })
     await s.load()
     // Stage an enabled flag for a marketplace that doesn't exist by
-    // hand-writing the JSON file, then reloa?.
+    // hand-writing the JSON file, then reload.
     mkdirSync(dir, { recursive: true })
     writeFileSync(
       join(dir, 'marketplaces.json'),

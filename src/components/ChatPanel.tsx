@@ -186,7 +186,7 @@ export interface ChatPanelProps {
   onCloseSideChat?: () => void
   /** Create a Side Chat from this session. */
   onSideChat?: (sessionId: string) => void
-  /** Nonce-stamped request to switch the settings tab (forwarded to <Chat> —
+  /** Nonce-stamped request to switch the settings tab (forwarded to <Chat> →
    *  SettingsPanel). Null when no request targets this panel. */
   settingsTabRequest?: { tab: SettingsTabName; nonce: number } | null
   messageJumpTarget?: MessageJumpTarget | null
@@ -424,9 +424,9 @@ export const ChatPanel = memo(function ChatPanel({
   }
   const effortLevel = session.effortLevel ?? DEFAULT_EFFORT_LEVEL
   // Effort chip gating from the model's reported capability (three-state):
-  //   undefined — capability unknown — offer all 5 (fallback, chip visible)
-  //   []        — model doesn't support effort — hide chip
-  //   [subset]  — offer only the supported levels
+  //   undefined → capability unknown → offer all 5 (fallback, chip visible)
+  //   []        → model doesn't support effort → hide chip
+  //   [subset]  → offer only the supported levels
   const effortCaps = session.effortLevels
   const effortVisible = effortCaps === undefined || effortCaps.length > 0
   const effortChoices = effortCaps && effortCaps.length > 0 ? effortCaps : EFFORT_LEVELS
@@ -610,8 +610,8 @@ export const ChatPanel = memo(function ChatPanel({
           </span>
         </Tooltip>
         {/* Fast-mode control. Only shown when the SDK reports a fast-mode
-            runtime state for the current model (undefined — model doesn't
-            support it — chip hidden). 'cooldown' means the speedup is
+            runtime state for the current model (undefined → model doesn't
+            support it → chip hidden). 'cooldown' means the speedup is
             rate-limited and temporarily inactive, so we disable the toggle
             and explain why. Clicking flips the persisted intent. */}
         {fastVisible && (
@@ -641,7 +641,7 @@ export const ChatPanel = memo(function ChatPanel({
           </Tooltip>
         )}
         {/* Effort-level control. Shown when the current model supports
-            effort (or its capability is unknown — fallback to offering all
+            effort (or its capability is unknown → fallback to offering all
             5). Hidden only when the SDK explicitly reports no effort support
             (effortLevels === []). The menu lists the supported subset, or all
             5 when capability is unknown. Chip shows the active level,

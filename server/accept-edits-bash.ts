@@ -250,7 +250,7 @@ export const EDIT_TOOL_PATH_FIELD: Record<string, string> = {
  * still prompt.
  *
  * Fail-closed: an unknown tool, a missing/non-string path field, or a path
- * that resolves outside cwd all return false (— the broker prompts).
+ * that resolves outside cwd all return false (→ the broker prompts).
  *
  * @param toolName  one of Edit/Write/MultiEdit/NotebookEdit
  * @param input     the tool's input object

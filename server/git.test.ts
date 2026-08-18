@@ -66,7 +66,7 @@ function gitCommitAll(cwd: string, message: string): string {
 }
 
 /** Build a Hono app wrapping the git router with the same onError hook
- *  the production app uses, so HttpError — JSON conversion is exercised. */
+ *  the production app uses, so HttpError → JSON conversion is exercised. */
 function buildApp(): Hono {
   const app = new Hono()
   app.onError(createErrorHandler('[test]'))

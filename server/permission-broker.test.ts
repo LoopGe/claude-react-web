@@ -199,7 +199,7 @@ describe('PermissionBroker', () => {
         updatedInput: input,
         toolUseID: 'tu-1',
       })
-      // No prompt was raise?.
+      // No prompt was raised.
       expect(session.pending.size).toBe(0)
     })
 
@@ -454,7 +454,7 @@ describe('PermissionBroker', () => {
       const canUseTool = broker.buildCanUseTool(session, vi.fn())
       const ac = new AbortController()
       canUseTool('AskUserQuestion', {
-        questions: [{ question: 'Colord', options: [{ label: 'Red' }] }],
+        questions: [{ question: 'Color?', options: [{ label: 'Red' }] }],
       }, {
         toolUseID: 'tu-q1',
         signal: ac.signal,
@@ -475,7 +475,7 @@ describe('PermissionBroker', () => {
       const ac = new AbortController()
 
       const promise = canUseTool('AskUserQuestion', {
-        questions: [{ question: 'Colord', options: [{ label: 'Red' }] }],
+        questions: [{ question: 'Color?', options: [{ label: 'Red' }] }],
       }, {
         toolUseID: 'tu-q1',
         signal: ac.signal,
@@ -497,7 +497,7 @@ describe('PermissionBroker', () => {
       const result = await promise
       expect(result.behavior).toBe('deny')
       if (result.behavior === 'deny') {
-        expect(result.message).toContain('Colord')
+        expect(result.message).toContain('Color?')
         expect(result.message).toContain('Red')
       }
       expect(session.pending.size).toBe(0)

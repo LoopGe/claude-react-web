@@ -10,7 +10,7 @@ import type { SessionRecap } from '../shared/session-info.js'
 import type { HookRuntimeEvent } from '../shared/hooks.js'
 import type * as shared from '../shared/ws-protocol.js'
 
-// --- inbound (client — server) -----------------------------------------------
+// --- inbound (client → server) -----------------------------------------------
 // These need no type parameters — re-export directly.
 export type {
   WsSubscribe,
@@ -19,7 +19,7 @@ export type {
   WsClientFrame,
 } from '../shared/ws-protocol.js'
 
-// --- outbound (server — client) ----------------------------------------------
+// --- outbound (server → client) ----------------------------------------------
 // Instantiate generic frames with the browser's payload types.
 
 export type WsSessionsSnapshot = shared.WsSessionsSnapshot<SessionInfo>

@@ -55,13 +55,13 @@ export function buildApiRouter(
   app.route('/', buildRecapRouter(sm))
   app.route('/', buildSearchRouter(sm))
   // Homegrown git-repo marketplace lives under /mp/*. Only mounted when an
-  // MpStore was provided ? other buildApp callers (tests, standalone
+  // MpStore was provided — other buildApp callers (tests, standalone
   // tooling) skip it cleanly.
   if (mpStore) {
     app.route('/', buildMpRouter(sm, mpStore))
   }
   app.route('/', buildGitWriteRouter(sm))
-  // Update checker ? exposes GET /update-info for the in-app upgrade
+  // Update checker — exposes GET /update-info for the in-app upgrade
   // prompt. Stateless, so no SessionManager or store dependency.
   // claudeBinary is threaded through so the About tab can surface the
   // CLI version alongside the npm-update info (single round-trip).

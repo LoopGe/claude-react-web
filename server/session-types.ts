@@ -21,7 +21,7 @@ import type { HookRunRecord, HookRuntimeEvent, SessionHooksConfig } from '../sha
 import type { SessionSkillOverride } from '../shared/skills.js'
 import type { PromptUuidEntry } from './prompt-uuid-store.js'
 
-/** Subscriber deach connected client gets one of these. */
+/** Subscriber — each connected client gets one of these. */
 export interface Subscriber {
   id: string
   push: (msg: SDKMessage) => void
@@ -29,7 +29,7 @@ export interface Subscriber {
   closed: boolean
 }
 
-/** Permission-channel subscriber dseparate from the SDK message channel so
+/** Permission-channel subscriber — separate from the SDK message channel so
  *  we don't have to widen the Subscriber type into a union. */
 export type PermissionEvent =
   | { kind: 'request'; payload: PermissionRequestSnapshot }
@@ -40,10 +40,10 @@ export interface PermissionSubscriber {
   end: () => void
 }
 
-// Re-export canonical QuestionSpec from share?.
+// Re-export canonical QuestionSpec from shared.
 export type { QuestionSpec } from '../shared/question-spec.js'
 
-// Re-export canonical PermissionRequestSnapshot from share?.
+// Re-export canonical PermissionRequestSnapshot from shared.
 // Server instantiates with the SDK's PermissionUpdate[] for suggestions.
 import type { PermissionRequestBase } from '../shared/permission-request.js'
 export type PermissionRequestSnapshot = PermissionRequestBase<PermissionUpdate[]>
@@ -76,16 +76,16 @@ export type SessionInfo = SessionInfoBase<PermissionMode>
 /** A session discoverable on disk via the SDK's `listSessions()`, surfaced
  *  to the frontend's /resume picker. Spans BOTH sessions this app created
  *  (`known: true`) and sessions created by the `claude` CLI directly in the
- *  same project dirs (`known: false`) dthe latter are the whole point of
+ *  same project dirs (`known: false`) — the latter are the whole point of
  *  the picker (they're invisible in the sidebar). `running` / `terminated`
  *  are annotated from this app's live + persisted state so the picker can
- *  dim/disable rows that can't be resume?. */
+ *  dim/disable rows that can't be resumed. */
 export interface ResumableSession {
   provider?: string
   sessionId: string
   /** Best display title: customTitle — summary — firstPrompt. */
   title?: string
-  /** First meaningful user prompt dshown as a preview/secondary line. */
+  /** First meaningful user prompt — shown as a preview/secondary line. */
   firstPrompt?: string
   cwd?: string
   /** The CLI's permission mode (default/acceptEdits/bypassPermissions/plan),
@@ -140,10 +140,11 @@ export interface Session {
    *  persisted so it survives resume/restart, and re-applied on respawn. */
   fastMode?: boolean
   /** SDK-reported runtime fast-mode state ('off' | 'cooldown' | 'on'),
-   *  parsed from system/init and result messages. Read-only dreflects what
+   *  parsed from system/init and result messages. Read-only — reflects what
    *  the backend is actually doing (e.g. 'cooldown' after a rate limit).
    *  undefined means the current model doesn't support fast mode (the SDK
-   *  omits the field), which the UI uses to hide the toggle. Not persisted —   *  the SDK re-reports it after respawn. */
+   *  omits the field), which the UI uses to hide the toggle. Not persisted —
+   *  the SDK re-reports it after respawn. */
   fastModeState?: FastModeState
   /** User intent: reasoning effort level ('low'|'medium'|'high'|'xhigh'|
    *  'max'). Controls how many tokens the model spends. Persisted, re-applied
@@ -154,10 +155,10 @@ export interface Session {
   /** Effort levels the CURRENT model supports, fetched from the SDK
    *  (supportedModels) at spawn / model-change. Three-state:
    *   - undefined: capability unknown (not fetched yet, model not matched,
-   *     or proxy didn't report it) — UI falls back to offering all 5.
-   *   - []        : model explicitly does NOT support effort — UI hides chip.
-   *   - [levels]  : the supported subset — UI offers only these.
-   *  Not persisted dre-fetched on every spawn (capability tracks the
+   *     or proxy didn't report it) → UI falls back to offering all 5.
+   *   - []        : model explicitly does NOT support effort → UI hides chip.
+   *   - [levels]  : the supported subset → UI offers only these.
+   *  Not persisted — re-fetched on every spawn (capability tracks the
    *  model + SDK version, not the conversation). */
   effortLevels?: EffortLevel[]
   handle: ProviderSessionHandle
@@ -178,7 +179,7 @@ export interface Session {
   error?: string
   /** Pending turns (user messages sent but no matching `result` yet). A
    *  simple counter rather than a set because we don't need to identify
-   *  which specific turn is outstanding djust whether ANY is. */
+   *  which specific turn is outstanding — just whether ANY is. */
   pendingTurns: number
   /** Set true while SessionManager.clear() is in flight: from the moment we
    *  begin tearing down the live Query through the fresh respawn of a brand
@@ -188,7 +189,7 @@ export interface Session {
    *  respawn). Cleared in clear()'s finally block once the new pump is up.
    *  Runtime-only; never persisted. */
   clearing?: boolean
-  /** Epoch ms when the first pending turn starte?. Cleared when all turns
+  /** Epoch ms when the first pending turn started. Cleared when all turns
    *  complete (pendingTurns drops to 0) or the session terminates. */
   workingSince?: number
   /** Epoch ms of the last auto-interrupt the GC fired against this session.
@@ -254,7 +255,7 @@ export interface Session {
   /** Compound keys of the plugin subset this session was spawned with.
    *  `undefined` = all enabled; `[]` = none. Persisted via SessionMeta. */
   enabledPlugins?: string[]
-  /** Per-subscriber pushables for context_usage events dseparate from
+  /** Per-subscriber pushables for context_usage events — separate from
    *  message history so reconnects don't replay stale usage snapshots.
    *  Each WS subscriber gets its own pushable to avoid waiter overwrite
    *  when multiple tabs are connected to the same session. */
@@ -262,11 +263,12 @@ export interface Session {
   /** Last context-usage snapshot pushed to subscribers. Cached so a freshly
    *  subscribed tab (reconnect / new panel / refresh+resume) gets the current
    *  value immediately via subscribeContextUsage's snapshot, instead of
-   *  waiting for the next `result`. Cleared on /clear. Not persisted —   *  re-derived from the next result after resume. */
+   *  waiting for the next `result`. Cleared on /clear. Not persisted —
+   *  re-derived from the next result after resume. */
   lastContextUsage?: import('./session-pump.js').LiteContextUsage
   /** Per-subscriber pushables for `git-status-changed` signal frames.
    *  Same shape as contextUsageSubscribers but carries a signal-only
-   *  payload (no GitStatus snapshot dclients refetch). Driven by
+   *  payload (no GitStatus snapshot — clients refetch). Driven by
    *  session-pump on mutating tool_results and by git-write routes on
    *  user-initiated mutations. */
   gitStatusSubscribers: Set<Pushable<unknown>>
@@ -308,7 +310,8 @@ export interface Session {
    *  in `history`) so it isn't subject to the 500-msg ring-buffer cap
    *  and so the WS frame can carry it as a type payload rather than
    *  as a synthetic SDK message. Reset to undefined on `invalidate`
-   *  (any user-initiated change to the conversation). Not persisted —   *  unloading the session drops it; resume regenerates on demand. */
+   *  (any user-initiated change to the conversation). Not persisted —
+   *  unloading the session drops it; resume regenerates on demand. */
   recap?: import('../shared/session-info.js').SessionRecap
   /** Per-session skill policy override. RAM-only by design:
    *   - Initial spawn applies the GLOBAL config via Options.skills.
@@ -346,19 +349,19 @@ export interface Session {
 }
 
 /** End every subscriber in a collection and clear it. Works on both
- *  `Set<Pushable<T>>` and `Map<K, V>` where values have an `end()` metho?. */
+ *  `Set<Pushable<T>>` and `Map<K, V>` where values have an `end()` method. */
 function endAndClear<T extends { end(): void }>(
   collection: { values(): Iterable<T>; clear(): void },
 ): void {
   for (const sub of collection.values()) {
-    try { sub.end() } catch { /* subscriber dead dskip */ }
+    try { sub.end() } catch { /* subscriber dead — skip */ }
   }
   collection.clear()
 }
 
 /** End every live subscriber (messages, permissions, context-usage, — and
  *  clear the collections so no dangling references prevent GC.
- *  Shared across handleProcessExit, cleanupPump, and unloa?. */
+ *  Shared across handleProcessExit, cleanupPump, and unload. */
 export function endAllSubscribers(s: Session): void {
   endAndClear(s.subscribers)
   endAndClear(s.permissionSubscribers)
@@ -395,7 +398,7 @@ export interface SessionManagerOptions {
    *  wrong libc variant on some systems. */
   claudeBinary?: string
   /** Maximum time (ms) a session can stay "working" before the GC
-   *  auto-interrupts it. 0 = disable?. */
+   *  auto-interrupts it. 0 = disabled. */
   workingStuckMs?: number
   /** When true, sessions automatically re-spawn their Query after a
    *  clean exit (idle timeout). Default true in production, false in tests. */
@@ -422,7 +425,7 @@ export interface SessionManagerOptions {
 
 /** Global session-list update event. Broadcast whenever a session's
  *  info changes (working toggled, turn completed, error set, etc.) so
- *  the frontend sidebar can replace 5-second polling with a push fee?. */
+ *  the frontend sidebar can replace 5-second polling with a push feed. */
 export type GlobalSessionEvent =
   | { kind: 'update'; session: SessionInfo }
   | { kind: 'created'; session: SessionInfo; joinGroupOf?: string; evictingSource?: boolean; replacesSource?: boolean }
@@ -441,7 +444,7 @@ export interface GlobalSubscriber {
 }
 
 /** Read-only subscription surface used by ws.ts.
- *  Narrower than the full SessionManager ddepends only on the fan-out
+ *  Narrower than the full SessionManager — depends only on the fan-out
  *  methods, not on any mutation or lifecycle operations. */
 export interface SessionBroadcaster {
   subscribeGlobal(): {

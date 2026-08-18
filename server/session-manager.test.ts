@@ -110,7 +110,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
           // message to start its next turn. Mirror that here so tests
           // exercising back-to-back turns see the input queue drain
           // between turns.
-          if ((msg as { type?: string }).type === 'result') drainOne()
+          if ((msg as { type?: string })?.type === 'result') drainOne()
         },
         finish: () => {
           done = true
@@ -1066,8 +1066,8 @@ describe('SessionManager', () => {
     const canUseTool = mockHandles[0].options.canUseTool as (
       tool: string,
       input: unknown,
-      ctx: { signal: AbortSignal; toolUseID: string; suggestions: unknown },
-    ) => Promise<{ behavior: string; message: string }>
+      ctx: { signal: AbortSignal; toolUseID: string; suggestions?: unknown },
+    ) => Promise<{ behavior: string; message?: string }>
     expect(canUseTool).toBeTypeOf('function')
     const ctrl = new AbortController()
     const permissionPromise = canUseTool(
@@ -1914,18 +1914,18 @@ describe('SessionManager', () => {
       tool: string,
       input: unknown,
       ctx: { signal: AbortSignal; toolUseID: string },
-    ) => Promise<{ behavior: string; message: string; interruptd: boolean; toolUseID: string }>
+    ) => Promise<{ behavior: string; message?: string; interrupt?: boolean; toolUseID?: string }>
     const ctrl = new AbortController()
     const promise = canUseTool(
       'AskUserQuestion',
       {
         questions: [
           {
-            question: 'Which languaged',
+            question: 'Which language?',
             options: [{ label: 'english' }, { label: 'chinese' }],
           },
           {
-            question: 'Which frameworksd',
+            question: 'Which frameworks?',
             multiSelect: true,
             options: [{ label: 'react' }, { label: 'vue' }, { label: 'svelte' }],
           },
@@ -1943,8 +1943,8 @@ describe('SessionManager', () => {
     // The message body is the JSON the model reads as tool_result.
     const parsed = JSON.parse(resolved.message!)
     expect(parsed.answers).toEqual([
-      { question: 'Which languaged', answer: 'chinese' },
-      { question: 'Which frameworksd', answer: ['react', 'svelte'] },
+      { question: 'Which language?', answer: 'chinese' },
+      { question: 'Which frameworks?', answer: ['react', 'svelte'] },
     ])
     // Pending cleared on answer.
     expect(sm.listPending(info.id)).toHaveLength(0)
@@ -1956,7 +1956,7 @@ describe('SessionManager', () => {
       tool: string,
       input: unknown,
       ctx: { signal: AbortSignal; toolUseID: string },
-    ) => Promise<{ behavior: string; message: string }>
+    ) => Promise<{ behavior: string; message?: string }>
     const ctrl = new AbortController()
     const promise = canUseTool(
       'AskUserQuestion',
@@ -2088,7 +2088,7 @@ describe('SessionManager', () => {
       tool: string,
       input: unknown,
       ctx: { signal: AbortSignal; toolUseID: string },
-    ) => Promise<{ behavior: string; message: string }>
+    ) => Promise<{ behavior: string; message?: string }>
     const ctrl = new AbortController()
     const promise = canUseTool(
       'AskUserQuestion',
@@ -2895,7 +2895,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     it('give-up preserves the crash reason (process_exited, not query_error)', async () => {
       sm = new SessionManager({ store, crashRecovery: true })
       const info = sm.create({ cwd: dir })
-      // No result emitted dno completed turn. The ladder probes the disk
+      // No result emitted — no completed turn. The ladder probes the disk
       // for a transcript (hasSdkTranscript); a session with no completed
       // turn has no jsonl on disk, so mock getSessionInfo to return
       // undefined → hasSdkTranscript false → give up immediately.
