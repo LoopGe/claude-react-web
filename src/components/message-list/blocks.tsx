@@ -5,6 +5,7 @@ import { ToolResultDetails } from '../ToolCard'
 import { AnimatedDetails } from '../AnimatedCollapse'
 import type { Block } from '../../types'
 import { formatJson } from '../../utils/format'
+import { imageBlockToDataUrl } from '../../utils/image-block'
 
 // Memoised because parent MessageView re-renders on every searchQuery
 // keystroke. MessageView keeps block references stable with useMemo([msg]),
@@ -21,12 +22,12 @@ export const BlockView = memo(function BlockView({ block, searchQuery, activeMat
     return <Markdown text={block.text} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />
   }
   if (block.type === 'image') {
-    const source = block.source as { type: string; data?: string; media_type?: string } | undefined
-    if (source?.type === 'base64' && source.data && source.media_type) {
+    const src = imageBlockToDataUrl(block)
+    if (src) {
       return (
         <img
           className="msg-image"
-          src={`data:${source.media_type};base64,${source.data}`}
+          src={src}
           alt="pasted image"
           decoding="async"
         />

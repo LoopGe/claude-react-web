@@ -1450,6 +1450,26 @@
   margin-bottom: 4px;
 }
 
+/* Fallback for markdown image references that can't be rendered as <img>
+   (src is neither data:image/* nor http(s) — e.g. the model writing
+   `![x](/api/placeholder)`). Muted mono text instead of a broken image. */
+.md-image-fallback {
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-family: var(--mono);
+  word-break: break-all;
+}
+
+/* Grid of image blocks inside an expanded tool-result body (screenshots from
+   mcp__chrome-devtools__take_screenshot etc.). Mirrors .msg-image-row but adds
+   a top gap so the images sit below any preceding result text. */
+.tool-result-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
 /* "Thinking" bar ?compact status strip shown above the context bar
    when the SDK is mid-turn. Pulses a subtle accent border and shows
    bouncing dots + elapsed time. */

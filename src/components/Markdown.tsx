@@ -9,7 +9,7 @@
 
 import { memo, useMemo, useState, useRef } from 'react'
 import type { ComponentPropsWithoutRef } from 'react'
-import ReactMarkdown, { type Components } from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
 import { ErrorBoundary } from './ErrorBoundary'
@@ -97,12 +97,44 @@ function rehypeHighlightLite() {
  * shell reserves <h1> (main region) and <h2> (empty state / panel headers),
  * so an assistant `# Foo` would otherwise inject an <h1> mid-document and
  * break the heading outline for screen-reader navigation. See A11y M4. */
+
+/** URL transform for markdown links/images.
+ *
+ * react-markdown's defaultUrlTransform strips `data:` URLs entirely (to keep
+ * `javascript:` etc. out of href/src), which blanked embedded base64 images in
+ * assistant replies. We let image `src` pass through UNCHANGED so the `img`
+ * override below can decide: it only ever puts `data:image/*` or http(s) into a
+ * real `src` — anything else renders as inert fallback text. Every other URL
+ * attribute (`href`, …) keeps delegating to defaultUrlTransform, so link
+ * sanitisation is byte-identical to today.
+ *
+ * react-markdown applies this to `img`'s `src` (html-url-attributes lists src
+ * for img) before the component renderer sees it — verified against the
+ * installed 9.1.0 source. */
+function mdUrlTransform(url: string, key: string): string {
+  if (key === 'src') return url
+  return defaultUrlTransform(url)
+}
+
 const MD_COMPONENTS: Components = {
   a: ({ href, children, ...props }) => (
     <a href={href} target="_blank" rel="noreferrer noopener" {...props}>
       {children}
     </a>
   ),
+  // Renders markdown image references defensively. `src` has already been
+  // through mdUrlTransform (unchanged), so this sees the raw URL. Only
+  // data:image/* and http(s) become a real <img>; anything else (e.g. the
+  // model's `/api/placeholder`) renders as muted fallback text instead of a
+  // broken image. No `{...props}` spread: react-markdown passes a `node` prop
+  // (passNode: true) that must not leak onto the DOM element.
+  img: ({ src, alt, title }: { src?: string; alt?: string; title?: string }) => {
+    const s = typeof src === 'string' ? src : ''
+    if (s.startsWith('data:image/') || /^https?:\/\//i.test(s)) {
+      return <img className="msg-image" src={s} alt={alt ?? ''} title={title} loading="lazy" decoding="async" />
+    }
+    return <span className="md-image-fallback" title={title}>[image{alt ? `: ${alt}` : ''} — {s}]</span>
+  },
   // Distinguish inline code from fenced blocks. react-markdown passes
   // an `inline` prop in v9 only through the `code` children prop layout,
   // so we detect block-ness by presence of `\n` or of the `language-*`
@@ -206,6 +238,7 @@ const MarkdownInner = memo(function MarkdownInner({ text, searchQuery, activeMat
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
         components={MD_COMPONENTS}
+        urlTransform={mdUrlTransform}
       >
         {text}
       </ReactMarkdown>
