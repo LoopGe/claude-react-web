@@ -85,6 +85,10 @@ export function PromptDialog({
             ref={inputRef}
             type="text"
             className="input prompt-dialog-input"
+            // placeholder is the only hint this field carries (the dialog
+            // title names the operation) — surface it as the accessible name
+            // so AT users get the same instruction sighted users see.
+            aria-label={placeholder || undefined}
             value={value}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={(e) => {

@@ -277,6 +277,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           <textarea
             ref={textareaRef}
             className="side-chat-drawer-input"
+            aria-label="Message"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {

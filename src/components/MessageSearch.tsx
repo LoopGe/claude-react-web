@@ -126,6 +126,7 @@ export function MessageSearch({ open, onClose, onNavigate, totalResults, onQuery
         ref={inputRef}
         className="message-search-input"
         type="text"
+        aria-label="Search messages"
         placeholder="Search messages…"
         value={query}
         onChange={(e) => setQuery(e.target.value)}

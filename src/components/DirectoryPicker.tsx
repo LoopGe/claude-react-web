@@ -246,6 +246,7 @@ export function DirectoryPicker({
                 gotoDraft()
               }
             }}
+            aria-label="Path"
             placeholder="/absolute/path"
             spellCheck={false}
           />
@@ -276,6 +277,7 @@ export function DirectoryPicker({
               <input
                 className="input modal-create-input"
                 autoFocus
+                aria-label="New folder name"
                 placeholder="Folder name"
                 value={createName}
                 disabled={creating}

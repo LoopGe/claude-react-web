@@ -5,7 +5,7 @@
 // The parent holds the canonical JSON string; this component parses it on
 // tab switch and serialises structured changes back on every edit.
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { PERMISSION_MODES } from '../types'
 import { IconX } from './icons/ToolIcons'
 
@@ -81,6 +81,10 @@ function syncFromObj(
 
 export function FlagSettingsEditor({ value, onChange, disabled }: Props) {
   const [tab, setTab] = useState<Tab>('permissions')
+  // Per-instance prefix for label↔control id linkage. FlagSettingsEditor
+  // renders inside each SettingsPanel (one per Chat panel, up to 3), so ids
+  // must stay document-unique across instances.
+  const uid = useId()
 
   // Local structured state — initialised from the parent's JSON.
   const [allowText, setAllowText] = useState('')
@@ -221,9 +225,10 @@ export function FlagSettingsEditor({ value, onChange, disabled }: Props) {
         {tab === 'permissions' && (
           <div className="fse-permissions">
             <div className="settings-field" style={{ marginBottom: 8 }}>
-              <label style={{ fontSize: 12 }}>Default mode</label>
+              <label style={{ fontSize: 12 }} htmlFor={uid + '-default-mode'}>Default mode</label>
               <select
                 className="select"
+                id={uid + '-default-mode'}
                 value={defaultMode}
                 onChange={(e) => handleDefaultModeChange(e.target.value)}
                 disabled={disabled}
@@ -235,12 +240,13 @@ export function FlagSettingsEditor({ value, onChange, disabled }: Props) {
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
               <div style={{ flex: 1 }}>
-                <label style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
+                <label style={{ fontSize: 12, display: 'block', marginBottom: 4 }} htmlFor={uid + '-allow'}>
                   Allow rules
                   <span className="hint" style={{ marginLeft: 6 }}>one per line</span>
                 </label>
                 <textarea
                   className="textarea"
+                  id={uid + '-allow'}
                   rows={5}
                   value={allowText}
                   onChange={(e) => handleAllowChange(e.target.value)}
@@ -250,12 +256,13 @@ export function FlagSettingsEditor({ value, onChange, disabled }: Props) {
                 />
               </div>
               <div style={{ flex: 1 }}>
-                <label style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
+                <label style={{ fontSize: 12, display: 'block', marginBottom: 4 }} htmlFor={uid + '-deny'}>
                   Deny rules
                   <span className="hint" style={{ marginLeft: 6 }}>one per line</span>
                 </label>
                 <textarea
                   className="textarea"
+                  id={uid + '-deny'}
                   rows={5}
                   value={denyText}
                   onChange={(e) => handleDenyChange(e.target.value)}
@@ -278,6 +285,7 @@ export function FlagSettingsEditor({ value, onChange, disabled }: Props) {
                   <input
                     className="input"
                     style={{ flex: 1, fontSize: 12 }}
+                    aria-label="Environment variable key"
                     placeholder="key"
                     value={row.key}
                     onChange={(e) => updateEnvRow(row.id, 'key', e.target.value)}
@@ -286,6 +294,7 @@ export function FlagSettingsEditor({ value, onChange, disabled }: Props) {
                   <input
                     className="input"
                     style={{ flex: 1, fontSize: 12 }}
+                    aria-label="Environment variable value"
                     placeholder="value"
                     value={row.value}
                     onChange={(e) => updateEnvRow(row.id, 'value', e.target.value)}
@@ -327,6 +336,7 @@ export function FlagSettingsEditor({ value, onChange, disabled }: Props) {
               value={value}
               onChange={(e) => onChange(e.target.value)}
               disabled={disabled}
+              aria-label="Flag settings JSON"
               placeholder={'{"permissions": {...}, "env": {...}}'}
               style={{ fontFamily: 'var(--mono)', fontSize: 12 }}
             />

@@ -162,6 +162,7 @@ export function SnippetsManagerDialog({ open = true, api, onClose }: Props) {
                         className="input"
                         value={editLabel}
                         onChange={(e) => setEditLabel(e.target.value)}
+                        aria-label="Snippet label"
                         placeholder="Label"
                         autoFocus
                       />
@@ -169,6 +170,7 @@ export function SnippetsManagerDialog({ open = true, api, onClose }: Props) {
                         className="textarea"
                         value={editContent}
                         onChange={(e) => setEditContent(e.target.value)}
+                        aria-label="Snippet content"
                         placeholder="Snippet content"
                         rows={4}
                       />
@@ -246,12 +248,14 @@ export function SnippetsManagerDialog({ open = true, api, onClose }: Props) {
             className="input"
             value={newLabel}
             onChange={(e) => setNewLabel(e.target.value)}
+            aria-label="Snippet label"
             placeholder="Label (shown in the menu)"
           />
           <textarea
             className="textarea"
             value={newContent}
             onChange={(e) => setNewContent(e.target.value)}
+            aria-label="Snippet content"
             placeholder="Snippet content (inserted at caret)"
             rows={3}
           />

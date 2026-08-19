@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useId, useRef, useState } from 'react'
 import { DirectoryPicker } from '../DirectoryPicker'
 import { IconX, IconFolder, IconPencil } from '../icons/ToolIcons'
 import { useFocusTrap } from '../../hooks/useFocusTrap'
@@ -46,6 +46,9 @@ export interface NewSessionDialogProps {
 }
 
 export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, onCancel, groups, serverModels, initialGroupId, maxGroupSize, accentLocked }: NewSessionDialogProps) {
+  // Per-instance prefix for label↔control id linkage. useId keeps the
+  // dialog's ids document-unique even if it ever mounts more than once.
+  const uid = useId()
   const [cwd, setCwd] = useState<string>(initialCwd ?? defaults.cwd ?? '')
   const [model, setModel] = useState<string>(defaults.model ?? '')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
@@ -319,10 +322,11 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
 
           <div className="modal-section">
             <div className="settings-field">
-              <label>Working directory</label>
+              <label htmlFor={uid + '-cwd'}>Working directory</label>
               <div style={{ display: 'flex', gap: 6 }}>
                 <input
                   className="input"
+                  id={uid + '-cwd'}
                   placeholder="/path/to/project"
                   list="recent-cwds"
                   value={cwd}
@@ -365,9 +369,10 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
             </div>
 
             <div className="settings-field">
-              <label>Title (optional)</label>
+              <label htmlFor={uid + '-title'}>Title (optional)</label>
               <input
                 className="input"
+                id={uid + '-title'}
                 placeholder="My session"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
@@ -375,9 +380,10 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
             </div>
 
             <div className="settings-field">
-              <label>Model</label>
+              <label htmlFor={uid + '-model'}>Model</label>
               <input
                 className="input"
+                id={uid + '-model'}
                 placeholder={serverModels?.[0] ?? defaults.model ?? ''}
                 list="model-options"
                 value={model}
@@ -431,9 +437,10 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
             </div>
 
             <div className="settings-field">
-              <label>Permission mode</label>
+              <label htmlFor={uid + '-permission-mode'}>Permission mode</label>
               <select
                 className="select"
+                id={uid + '-permission-mode'}
                 value={permissionMode}
                 onChange={(e) => setPermissionMode(e.target.value as PermissionMode)}
               >
@@ -446,9 +453,10 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
             </div>
 
             <div className="settings-field">
-              <label>Group</label>
+              <label htmlFor={uid + '-group'}>Group</label>
               <select
                 className="select"
+                id={uid + '-group'}
                 value={groupId}
                 onChange={(e) => setGroupId(e.target.value)}
               >
@@ -477,9 +485,10 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
             )}
 
             <div className="settings-field">
-              <label>System prompt (optional)</label>
+              <label htmlFor={uid + '-system-prompt'}>System prompt (optional)</label>
               <textarea
                 className="textarea"
+                id={uid + '-system-prompt'}
                 placeholder="You are a helpful assistant..."
                 value={systemPrompt}
                 onChange={(e) => setSystemPrompt(e.target.value)}
@@ -494,8 +503,8 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                   <div className="settings-field">
-                    <label>Effort</label>
-                    <select className="select" value={effort} onChange={(e) => setEffort(e.target.value)}>
+                    <label htmlFor={uid + '-effort'}>Effort</label>
+                    <select className="select" id={uid + '-effort'} value={effort} onChange={(e) => setEffort(e.target.value)}>
                       <option value="">(default)</option>
                       <option value="low">low</option>
                       <option value="medium">medium</option>
@@ -505,8 +514,8 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                     </select>
                   </div>
                   <div className="settings-field">
-                    <label>Thinking</label>
-                    <select className="select" value={thinkingMode} onChange={(e) => setThinkingMode(e.target.value)}>
+                    <label htmlFor={uid + '-thinking'}>Thinking</label>
+                    <select className="select" id={uid + '-thinking'} value={thinkingMode} onChange={(e) => setThinkingMode(e.target.value)}>
                       <option value="">(default)</option>
                       <option value="adaptive">adaptive</option>
                       <option value="enabled">enabled</option>
@@ -516,9 +525,10 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                 </div>
                 {thinkingMode === 'enabled' && (
                   <div className="settings-field">
-                    <label>Thinking budget (tokens)</label>
+                    <label htmlFor={uid + '-thinking-budget'}>Thinking budget (tokens)</label>
                     <input
                       className="input"
+                      id={uid + '-thinking-budget'}
                       type="number"
                       placeholder="10000"
                       value={thinkingBudget}
@@ -528,9 +538,10 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                 )}
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                   <div className="settings-field">
-                    <label>Max turns</label>
+                    <label htmlFor={uid + '-max-turns'}>Max turns</label>
                     <input
                       className="input"
+                      id={uid + '-max-turns'}
                       type="number"
                       placeholder="unlimited"
                       value={maxTurns}
@@ -538,9 +549,10 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                     />
                   </div>
                   <div className="settings-field">
-                    <label>Max budget (USD)</label>
+                    <label htmlFor={uid + '-max-budget'}>Max budget (USD)</label>
                     <input
                       className="input"
+                      id={uid + '-max-budget'}
                       type="number"
                       step="0.01"
                       placeholder="unlimited"
@@ -550,18 +562,20 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                   </div>
                 </div>
                 <div className="settings-field">
-                  <label>Fallback model</label>
+                  <label htmlFor={uid + '-fallback-model'}>Fallback model</label>
                   <input
                     className="input"
+                    id={uid + '-fallback-model'}
                     placeholder="model to use if primary fails"
                     value={fallbackModel}
                     onChange={(e) => setFallbackModel(e.target.value)}
                   />
                 </div>
                 <div className="settings-field">
-                  <label>Additional directories (comma-separated)</label>
+                  <label htmlFor={uid + '-additional-dirs'}>Additional directories (comma-separated)</label>
                   <input
                     className="input"
+                    id={uid + '-additional-dirs'}
                     placeholder="/path/a, /path/b"
                     value={additionalDirs}
                     onChange={(e) => setAdditionalDirs(e.target.value)}
@@ -569,27 +583,30 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                   <span className="hint">Extra paths the agent may read/write outside the working directory.</span>
                 </div>
                 <div className="settings-field">
-                  <label>Allowed tools (comma-separated)</label>
+                  <label htmlFor={uid + '-allowed-tools'}>Allowed tools (comma-separated)</label>
                   <input
                     className="input"
+                    id={uid + '-allowed-tools'}
                     placeholder="Read, Write, Bash"
                     value={allowedToolsStr}
                     onChange={(e) => setAllowedToolsStr(e.target.value)}
                   />
                 </div>
                 <div className="settings-field">
-                  <label>Disallowed tools (comma-separated)</label>
+                  <label htmlFor={uid + '-disallowed-tools'}>Disallowed tools (comma-separated)</label>
                   <input
                     className="input"
+                    id={uid + '-disallowed-tools'}
                     placeholder="WebFetch, Agent"
                     value={disallowedToolsStr}
                     onChange={(e) => setDisallowedToolsStr(e.target.value)}
                   />
                 </div>
                 <div className="settings-field">
-                  <label>Tools (comma-separated)</label>
+                  <label htmlFor={uid + '-tools'}>Tools (comma-separated)</label>
                   <input
                     className="input"
+                    id={uid + '-tools'}
                     placeholder="leave empty for defaults"
                     value={toolsStr}
                     onChange={(e) => setToolsStr(e.target.value)}
@@ -690,9 +707,10 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                   </div>
                 )}
                 <div className="settings-field">
-                  <label>Session MCP overrides (JSON)</label>
+                  <label htmlFor={uid + '-mcp-overrides'}>Session MCP overrides (JSON)</label>
                   <textarea
                     className="textarea"
+                    id={uid + '-mcp-overrides'}
                     rows={2}
                     placeholder='Optional — add session-only MCP servers as JSON'
                     value={mcpServersJson}
@@ -708,6 +726,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                         <input
                           className="input"
                           style={{ flex: 1, fontSize: 12 }}
+                          aria-label="Environment variable key"
                           placeholder="key"
                           value={row.key}
                           onChange={(e) => {
@@ -718,6 +737,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                         <input
                           className="input"
                           style={{ flex: 1, fontSize: 12 }}
+                          aria-label="Environment variable value"
                           placeholder="value"
                           value={row.value}
                           onChange={(e) => {

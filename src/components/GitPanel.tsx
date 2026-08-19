@@ -931,6 +931,7 @@ function CommitSection({
       <div className="git-panel-section-body git-commit-form">
         <textarea
           className="git-commit-textarea"
+          aria-label="Commit message"
           placeholder="Commit message…"
           value={message}
           onChange={(e) => setMessage(e.target.value)}
@@ -1088,6 +1089,7 @@ function BranchesSection({ sessionId, currentBranch, writeOps, onError, askConfi
             <input
               type="text"
               className="git-new-branch-input"
+              aria-label="New branch name"
               placeholder="branch name…"
               value={newName}
               onChange={(e) => setNewName(e.target.value)}

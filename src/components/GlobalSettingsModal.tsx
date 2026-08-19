@@ -1,7 +1,7 @@
 // Global application settings modal. Edits config.json fields and manages
 // MCP server configs. All changes are persisted server-side on Save.
 
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { cloneElement, isValidElement, lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { api } from '../hooks/useApi'
 import { parseSkillContent } from '../utils/skill-frontmatter'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
@@ -682,6 +682,8 @@ function ModelsTab({
   onMoveModel: (index: number, direction: -1 | 1) => void
   onSortModels: () => void
 }) {
+  // Per-instance prefix for the wrapped-select label↔control ids below.
+  const uid = useId()
   return (
     <>
       <Field label="Available Models" hint="First model is the default. Add model IDs one at a time.">
@@ -741,6 +743,7 @@ function ModelsTab({
               value={newModel}
               onChange={(e) => onNewModelChange(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') onAddModel() }}
+              aria-label="New model ID"
               placeholder="model-id (e.g. claude-sonnet-4-20250514)"
             />
             <button className="btn btn-xs settings-model-add-btn" onClick={onAddModel}>
@@ -749,10 +752,11 @@ function ModelsTab({
           </div>
         </div>
       </Field>
-      <Field label="Recap Model" hint="Model used for AI session summaries (lighter model recommended)">
+      <Field label="Recap Model" controlId={uid + '-recap-model'} hint="Model used for AI session summaries (lighter model recommended)">
         <div className="settings-model-select-wrap">
           <select
             className="input settings-model-select"
+            id={uid + '-recap-model'}
             value={recapModel}
             onChange={(e) => onRecapModelChange(e.target.value)}
           >
@@ -764,10 +768,11 @@ function ModelsTab({
           <IconChevronDown className="settings-model-select-icon" size={14} aria-hidden />
         </div>
       </Field>
-      <Field label="Commit Message Model" hint="Model used for AI-generated commit messages in Git panel">
+      <Field label="Commit Message Model" controlId={uid + '-commit-message-model'} hint="Model used for AI-generated commit messages in Git panel">
         <div className="settings-model-select-wrap">
           <select
             className="input settings-model-select"
+            id={uid + '-commit-message-model'}
             value={commitMessageModel}
             onChange={(e) => onCommitMessageModelChange(e.target.value)}
           >
@@ -2221,11 +2226,28 @@ function formatRelative(ms: number): string {
 
 // — Shared primitives ???????????
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({ label, hint, controlId, children }: { label: string; hint?: string; controlId?: string; children: React.ReactNode }) {
+  // Link the visible label to the field's control (WCAG 1.3.1 / 3.3.2).
+  // Field receives a single <input>/<select>/<textarea> child — give it a
+  // stable generated id and point <label htmlFor> at it so clicking the
+  // label focuses the control and ATs announce them as one unit.
+  // Controls wrapped in a styling div (e.g. the model-select chevron wrapper)
+  // aren't a direct child, so pass controlId and set id={controlId} on the
+  // real control yourself — Field points the label at it either way.
+  // Non-control children (a <div> model list, a toggle <button>, …) carry no
+  // id — there's nothing to focus, so the label renders without htmlFor.
+  const fieldId = useId()
+  const isControl =
+    isValidElement(children) &&
+    (children.type === 'input' || children.type === 'select' || children.type === 'textarea')
+  const linkedId = controlId ?? (isControl ? fieldId : undefined)
+  const control = isControl
+    ? cloneElement(children as React.ReactElement<{ id?: string }>, { id: fieldId })
+    : children
   return (
     <div className="settings-field" style={{ marginBottom: 12 }}>
-      <label>{label}</label>
-      {children}
+      <label htmlFor={linkedId}>{label}</label>
+      {control}
       {hint && <span className="hint">{hint}</span>}
     </div>
   )

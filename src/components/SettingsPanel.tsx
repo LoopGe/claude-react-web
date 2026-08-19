@@ -1,7 +1,7 @@
 // Right-side settings drawer. Focuses on mid-session controls — options that
 // can only be set at session creation are shown read-only at the top.
 
-import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from '../hooks/useApi'
@@ -62,6 +62,10 @@ interface Props {
 
 export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs, onClose, onSessionUpdate, commands = [], agents = [], contextUsage, tabRequest, onPluginsReloaded, onSkillsReloaded }: Props) {
   const [models, setModels] = useState<ModelInfo[]>([])
+  // Stable per-instance prefix for label/control id linkage. SettingsPanel
+  // mounts once per Chat panel (up to 3), so ids must not collide across
+  // instances — useId guarantees document-unique values.
+  const panelUid = useId()
   const [settingsText, setSettingsText] = useState('{}')
   // Full context-usage breakdown from the (blocking) REST endpoint. Null
   // until the user expands a detail section — see loadDetailedUsage().
@@ -655,8 +659,9 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
       <div className="settings-section">
         <h4>Live controls</h4>
         <div className="settings-field">
-          <label>Title</label>
+          <label htmlFor={panelUid + '-title'}>Title</label>
           <input
+            id={panelUid + '-title'}
             ref={titleInputRef}
             className="input"
             value={titleDraft}
@@ -683,8 +688,9 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
           />
         </div>
         <div className="settings-field">
-          <label>Model</label>
+          <label htmlFor={panelUid + '-model'}>Model</label>
           <select
+            id={panelUid + '-model'}
             className="select"
             value={session.model ?? ''}
             onChange={(e) => void changeModel(e.target.value)}
@@ -705,8 +711,9 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
         </div>
 
         <div className="settings-field">
-          <label>Permission mode</label>
+          <label htmlFor={panelUid + '-permission-mode'}>Permission mode</label>
           <select
+            id={panelUid + '-permission-mode'}
             className="select"
             value={session.permissionMode ?? 'default'}
             onChange={(e) => void changePermissionMode(e.target.value as PermissionMode)}

@@ -793,6 +793,7 @@ export function SetupPage({ onConfigured }: Props) {
                       value={newModel}
                       onChange={(e) => setNewModel(e.target.value)}
                       onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addModel() } }}
+                      aria-label="New model ID"
                       placeholder="model-id (e.g. claude-sonnet-4-20250514)"
                     />
                     <button
@@ -813,7 +814,7 @@ export function SetupPage({ onConfigured }: Props) {
               </div>
 
               <div className="setup-field">
-                <label className="setup-label">
+                <label className="setup-label" htmlFor="setup-recap-model">
                   Recap Model <span style={styles.optional}>(optional)</span>
                 </label>
                 <p className="setup-hint">
@@ -821,6 +822,7 @@ export function SetupPage({ onConfigured }: Props) {
                 </p>
                 <select
                   className="input"
+                  id="setup-recap-model"
                   value={recapModel}
                   onChange={(e) => setRecapModel(e.target.value)}
                 >
@@ -832,7 +834,7 @@ export function SetupPage({ onConfigured }: Props) {
               </div>
 
               <div className="setup-field">
-                <label className="setup-label">
+                <label className="setup-label" htmlFor="setup-commit-message-model">
                   Commit Message Model <span style={styles.optional}>(optional)</span>
                 </label>
                 <p className="setup-hint">
@@ -840,6 +842,7 @@ export function SetupPage({ onConfigured }: Props) {
                 </p>
                 <select
                   className="input"
+                  id="setup-commit-message-model"
                   value={commitMessageModel}
                   onChange={(e) => setCommitMessageModel(e.target.value)}
                 >

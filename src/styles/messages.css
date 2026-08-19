@@ -148,6 +148,9 @@
   transition: opacity var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .code-block:hover .code-block-copy { opacity: 1; }
+/* Keyboard users can't hover — reveal the copy button when any child of the
+   code block (the copy button itself, or the scrollable <pre>) has focus. */
+.code-block:focus-within .code-block-copy { opacity: 1; }
 .code-block-copy:hover { background: var(--bg-elev); color: var(--fg); }
 /* Remove top rounding from <pre> inside a code-block so it sits flush
    under the bar. */

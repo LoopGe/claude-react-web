@@ -324,6 +324,7 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
             style={{ flex: 1, fontSize: 12 }}
             value={newUrl}
             onChange={(e) => setNewUrl(e.target.value)}
+            aria-label="Repository URL"
             placeholder="https://github.com/owner/repo"
             disabled={addState.phase === 'busy'}
             onKeyDown={(e) => { if (e.key === 'Enter') void handleAdd() }}
@@ -333,6 +334,7 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
             style={{ width: 130, fontSize: 12 }}
             value={newRef}
             onChange={(e) => setNewRef(e.target.value)}
+            aria-label="Git ref (optional)"
             placeholder="ref (optional)"
             disabled={addState.phase === 'busy'}
             onKeyDown={(e) => { if (e.key === 'Enter') void handleAdd() }}

@@ -153,7 +153,7 @@ export function ResetConfigDialog({ open, onClose }: Props) {
             <button className="btn" onClick={onClose} disabled={clearing}>Cancel</button>
             {confirmGate ? (
               <>
-                <input className="input" placeholder="type reset to confirm" value={confirmText} onChange={(e) => setConfirmText(e.target.value)} style={{ width: 160 }} />
+                <input className="input" aria-label="Type reset to confirm" placeholder="type reset to confirm" value={confirmText} onChange={(e) => setConfirmText(e.target.value)} style={{ width: 160 }} />
                 <button className="btn btn-danger" disabled={confirmText !== 'reset' || clearing} onClick={doClear}>Confirm</button>
               </>
             ) : (
