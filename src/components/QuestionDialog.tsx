@@ -17,8 +17,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Markdown } from './Markdown'
 import type { PermissionRequest, QuestionSpec } from '../types'
-import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { Overlay } from './Overlay'
 import { IconMessageCircle, IconCheckSquare, IconSquare, IconCircleDot, IconCircle, IconX } from './icons/ToolIcons'
 
 /** Narrowed to the question variant of the union. */
@@ -76,23 +76,11 @@ export function QuestionDialog({ open = true, request, onSubmit, onClarify, onSk
   const [clarifying, setClarifying] = useState(false)
   const [feedback, setFeedback] = useState('')
   const feedbackRef = useRef<HTMLTextAreaElement>(null)
-  const dialogRef = useRef<HTMLDivElement>(null)
   // Two scroll regions (questions list / clarification), one mounted at a
   // time. Same overlay scrollbar every other dialog uses; without it these
   // show the native 10px scrollbar instead of the project's floating thumb.
   const setQuestionsOs = useOverlayScrollbar({ autoHide: 'leave' })
   const setClarifyingOs = useOverlayScrollbar({ autoHide: 'leave' })
-  // Refs so the Escape effect (registered once on mount) always reads
-  // current values without re-registering on every render.
-  const busyRef = useRef(busy)
-  const cancelRef = useRef<() => void>(() => {})
-  // Sync refs after commit so they're always current without triggering
-  // re-renders (the react-hooks/refs rule forbids writing during render).
-  useLayoutEffect(() => {
-    busyRef.current = busy
-  })
-
-  useFocusTrap(dialogRef, { escapeSelector: '.chat-panel' })
 
   // Persist the in-progress draft upward (keyed by request id in Chat) so
   // minimizing then re-opening restores the user's selections. Keep the
@@ -239,25 +227,11 @@ export function QuestionDialog({ open = true, request, onSubmit, onClarify, onSk
     setClarifying(true)
     requestAnimationFrame(() => feedbackRef.current?.focus())
   }, [busy])
-  useLayoutEffect(() => { cancelRef.current = cancel })
 
-  // Escape should cancel/skip — not fall through to the global Escape
-  // handler which would interrupt the session instead.
-  // Uses refs for busy/cancel so the listener is registered once on
-  // mount instead of on every render.
-  useEffect(() => {
-    const el = dialogRef.current
-    if (!el) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !busyRef.current) {
-        e.preventDefault()
-        e.stopPropagation()
-        cancelRef.current()
-      }
-    }
-    el.addEventListener('keydown', onKey)
-    return () => el.removeEventListener('keydown', onKey)
-  })
+  // Escape cancels/skips — routed through the Overlay (escapeBehavior=
+  // "custom" → onEscape=cancel, gated by canCloseOnEscape while busy) so it
+  // never falls through to the global handler that would interrupt the
+  // session instead. In clarifying mode Esc just backs out to the questions.
 
   // Require at least one question to have a non-null answer, otherwise
   // "Submit" is equivalent to "Cancel" and we'd rather the user hit the
@@ -265,97 +239,99 @@ export function QuestionDialog({ open = true, request, onSubmit, onClarify, onSk
   const hasAnyAnswer = choices.some((c) => c != null)
 
   return (
-    <div
-      className="perm-overlay"
-      data-state={open ? 'open' : 'closing'}
-      role="dialog"
-      aria-modal={open ? 'true' : 'false'}
-      aria-hidden={!open}
-      ref={dialogRef}
+    <Overlay
+      variant="perm"
+      ariaLabel="Claude is asking"
+      open={open}
+      onClose={cancel}
+      backdropDismiss={false}
+      escapeBehavior="custom"
+      onEscape={cancel}
+      canCloseOnEscape={() => !busy}
+      focusEscapeSelector=".chat-panel"
+      trapRefTarget="backdrop"
     >
-      <div className="perm-card">
-        <div className="modal-header">
-          <h3 style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span aria-hidden style={{ display: 'inline-flex' }}><IconMessageCircle size={16} /></span>
-            Claude is asking
-          </h3>
-          <button
-            type="button"
-            className="question-minimize-btn"
-            onClick={onMinimize}
+      <div className="modal-header">
+        <h3 style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span aria-hidden style={{ display: 'inline-flex' }}><IconMessageCircle size={16} /></span>
+          Claude is asking
+        </h3>
+        <button
+          type="button"
+          className="question-minimize-btn"
+          onClick={onMinimize}
+          disabled={busy}
+          aria-label="Minimize"
+          title="Minimize — reopen later from the question card in the transcript"
+        >
+          <IconX size={14} />
+        </button>
+      </div>
+
+      {clarifying ? (
+        <div className="modal-section question-body" ref={setClarifyingOs}>
+          <label className="hint" htmlFor="question-clarification">Ask a follow-up or provide context.</label>
+          <textarea
+            ref={feedbackRef}
+            id="question-clarification"
+            className="composer-textarea"
+            value={feedback}
+            onChange={(e) => setFeedback(e.target.value)}
+            placeholder="Ask a follow-up or provide context..."
+            maxLength={4000}
+            rows={5}
             disabled={busy}
-            aria-label="Minimize"
-            title="Minimize — reopen later from the question card in the transcript"
+          />
+        </div>
+      ) : (
+        <div className="modal-section question-body" ref={setQuestionsOs}>
+          {(request.questions ?? []).map((q, qIdx) => (
+            <QuestionBlock
+              key={qIdx}
+              index={qIdx}
+              question={q}
+              value={choices[qIdx]}
+              onSingle={(label) => setSingle(qIdx, label)}
+              onMulti={(label) => toggleMulti(qIdx, label)}
+              otherActive={otherActive[qIdx]}
+              otherText={otherTexts[qIdx]}
+              onOtherToggle={() => toggleOther(qIdx)}
+              onOtherTextChange={(text) => setOtherText(qIdx, text)}
+            />
+          ))}
+        </div>
+      )}
+
+      <div className="modal-footer" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            className="btn"
+            onClick={cancel}
+            disabled={busy}
+            style={{ flex: 1 }}
+            title={clarifying ? 'Back to the questions' : 'Skip every question — the model will continue with no guidance'}
           >
-            <IconX size={14} />
+            {clarifying ? 'Back' : 'Skip all'}
+          </button>
+          {!clarifying && (
+            <button className="btn" onClick={enterClarification} disabled={busy} style={{ flex: 1 }}>
+              Chat about this
+            </button>
+          )}
+          <button
+            className="btn btn-primary"
+            onClick={clarifying ? clarify : submit}
+            disabled={busy || (clarifying ? !feedback.trim() : !hasAnyAnswer)}
+            style={{ flex: 2 }}
+          >
+            {clarifying ? 'Send clarification' : 'Send answers'}
           </button>
         </div>
-
-        {clarifying ? (
-          <div className="modal-section question-body" ref={setClarifyingOs}>
-            <label className="hint" htmlFor="question-clarification">Ask a follow-up or provide context.</label>
-            <textarea
-              ref={feedbackRef}
-              id="question-clarification"
-              className="composer-textarea"
-              value={feedback}
-              onChange={(e) => setFeedback(e.target.value)}
-              placeholder="Ask a follow-up or provide context..."
-              maxLength={4000}
-              rows={5}
-              disabled={busy}
-            />
-          </div>
-        ) : (
-          <div className="modal-section question-body" ref={setQuestionsOs}>
-            {(request.questions ?? []).map((q, qIdx) => (
-              <QuestionBlock
-                key={qIdx}
-                index={qIdx}
-                question={q}
-                value={choices[qIdx]}
-                onSingle={(label) => setSingle(qIdx, label)}
-                onMulti={(label) => toggleMulti(qIdx, label)}
-                otherActive={otherActive[qIdx]}
-                otherText={otherTexts[qIdx]}
-                onOtherToggle={() => toggleOther(qIdx)}
-                onOtherTextChange={(text) => setOtherText(qIdx, text)}
-              />
-            ))}
-          </div>
-        )}
-
-        <div className="modal-footer" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button
-              className="btn"
-              onClick={cancel}
-              disabled={busy}
-              style={{ flex: 1 }}
-              title={clarifying ? 'Back to the questions' : 'Skip every question — the model will continue with no guidance'}
-            >
-              {clarifying ? 'Back' : 'Skip all'}
-            </button>
-            {!clarifying && (
-              <button className="btn" onClick={enterClarification} disabled={busy} style={{ flex: 1 }}>
-                Chat about this
-              </button>
-            )}
-            <button
-              className="btn btn-primary"
-              onClick={clarifying ? clarify : submit}
-              disabled={busy || (clarifying ? !feedback.trim() : !hasAnyAnswer)}
-              style={{ flex: 2 }}
-            >
-              {clarifying ? 'Send clarification' : 'Send answers'}
-            </button>
-          </div>
-          <span className="hint" style={{ textAlign: 'center' }}>
-            {clarifying ? 'Your message is sent back to the model as context.' : 'Your answers are sent back to the model as the tool result.'}
-          </span>
-        </div>
+        <span className="hint" style={{ textAlign: 'center' }}>
+          {clarifying ? 'Your message is sent back to the model as context.' : 'Your answers are sent back to the model as the tool result.'}
+        </span>
       </div>
-    </div>
+    </Overlay>
   )
 }
 
