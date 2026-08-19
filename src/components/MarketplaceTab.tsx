@@ -60,6 +60,12 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
   // `undefined` = not checked yet (no badge); an entry with hasUpdate=true
   // shows the "Update available" pill. Checked once on tab open.
   const [updateById, setUpdateById] = useState<Record<string, MpUpdateStatus>>({})
+  // Bulk "Update all" — one click refreshes every marketplace currently
+  // badged as having an update. `bulkProgress` drives the button label;
+  // `bulkResult` is the completion summary shown beside it.
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null)
+  const [bulkResult, setBulkResult] = useState<string | null>(null)
 
   // Add form
   const [newUrl, setNewUrl] = useState('')
@@ -135,6 +141,26 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
     }
   }, [])
 
+  // Refresh a single marketplace and fold the result into local state. Shared
+  // by the per-card Refresh button (handleRefresh) and the bulk "Update all"
+  // loop. Throws on failure so callers decide how to surface it.
+  const refreshMarketplace = useCallback(async (id: string): Promise<void> => {
+    const r = await api.post<RefreshResponse>(`/mp/marketplaces/${encodeURIComponent(id)}/refresh`)
+    setItems((prev) => prev.map((x) => (x.id === id ? r.entry : x)))
+    setWarningsById((w) => ({ ...w, [id]: r.warnings }))
+    // A refresh pulled local up to upstream HEAD — clear the update badge.
+    setUpdateById((prev) => ({ ...prev, [id]: { id, hasUpdate: false } }))
+    // Invalidate cached plugin list so a re-expand re-fetches.
+    setPlugins((prev) => {
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
+    if (expandedId === id) {
+      await fetchPlugins(id)
+    }
+  }, [expandedId, fetchPlugins])
+
   const handleAdd = async () => {
     const url = newUrl.trim()
     if (!url) return
@@ -168,25 +194,42 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
     setBusyId(id)
     setError(null)
     try {
-      const r = await api.post<RefreshResponse>(`/mp/marketplaces/${encodeURIComponent(id)}/refresh`)
-      setItems((prev) => prev.map((x) => (x.id === id ? r.entry : x)))
-      setWarningsById((w) => ({ ...w, [id]: r.warnings }))
-      // Refresh pulled local up to upstream HEAD — clear the update badge.
-      setUpdateById((prev) => ({ ...prev, [id]: { id, hasUpdate: false } }))
-      // Invalidate cached plugin list so a re-expand re-fetches.
-      setPlugins((prev) => {
-        const next = { ...prev }
-        delete next[id]
-        return next
-      })
-      if (expandedId === id) {
-        await fetchPlugins(id)
-      }
+      await refreshMarketplace(id)
     } catch (e) {
       setError((e as Error).message)
     } finally {
       setBusyId(null)
     }
+  }
+
+  const handleUpdateAll = async () => {
+    const targets = items.filter((it) => updateById[it.id]?.hasUpdate)
+    if (targets.length === 0) return
+    setBulkBusy(true)
+    setBulkResult(null)
+    setError(null)
+    const failed: string[] = []
+    try {
+      for (let i = 0; i < targets.length; i++) {
+        setBulkProgress({ done: i, total: targets.length })
+        try {
+          await refreshMarketplace(targets[i].id)
+        } catch (e) {
+          failed.push(`${targets[i].displayName}: ${(e as Error).message}`)
+        }
+      }
+      // Re-probe so badges reflect the freshly-pulled state.
+      await fetchUpdates()
+    } finally {
+      setBulkBusy(false)
+      setBulkProgress(null)
+    }
+    const ok = targets.length - failed.length
+    setBulkResult(
+      failed.length === 0
+        ? `Updated ${ok} marketplace${ok === 1 ? '' : 's'}.`
+        : `Updated ${ok}/${targets.length}. Failed: ${failed.join('; ')}`,
+    )
   }
 
   const handleRemove = async (id: string) => {
@@ -262,6 +305,9 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
     }
   }
 
+  const updateableCount = items.filter((it) => updateById[it.id]?.hasUpdate).length
+  const anyCheckError = items.some((it) => !!updateById[it.id]?.error)
+
   return (
     <div>
       {/* Add form ---------------------------------------------------- */}
@@ -312,6 +358,28 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
         </div>
       )}
 
+      {!loading && items.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          {updateableCount > 0 ? (
+            <button
+              className="btn btn-primary"
+              onClick={() => void handleUpdateAll()}
+              disabled={bulkBusy}
+              title="Refresh every marketplace that has an update available"
+            >
+              {bulkBusy && bulkProgress
+                ? `Updating ${bulkProgress.done}/${bulkProgress.total}…`
+                : `Update all (${updateableCount})`}
+            </button>
+          ) : !anyCheckError ? (
+            <span style={{ fontSize: 12, color: 'var(--ok)' }}>All marketplaces up to date</span>
+          ) : null}
+          {bulkResult && (
+            <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>{bulkResult}</span>
+          )}
+        </div>
+      )}
+
       {/* Marketplace list ------------------------------------------- */}
       {loading && (
         <div style={{ padding: 24, textAlign: 'center', color: 'var(--fg-muted)' }}>Loading…</div>
@@ -338,6 +406,7 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
             onConfirmRemove={() => void handleRemove(item.id)}
             onTogglePlugin={(name, enabled) => void handleTogglePlugin(item.id, name, enabled)}
             togglingPlugins={togglingKeys}
+            bulkBusy={bulkBusy}
           />
         </div>
       ))}
@@ -364,10 +433,12 @@ interface CardProps {
   onTogglePlugin: (name: string, enabled: boolean) => void
   /** Set of `<mpId>:<plugin>` keys with an in-flight toggle request. */
   togglingPlugins: Set<string>
+  /** True while the bulk "Update all" loop runs — disables card actions. */
+  bulkBusy: boolean
 }
 
 function MarketplaceCard({
-  item, warnings, plugins, expanded, busy, confirmRemove, updateStatus,
+  item, warnings, plugins, expanded, busy, confirmRemove, updateStatus, bulkBusy,
   onToggleExpand, onRefresh, onRequestRemove, onCancelRemove, onConfirmRemove, onTogglePlugin,
   togglingPlugins,
 }: CardProps) {
@@ -378,7 +449,7 @@ function MarketplaceCard({
   return (
     <div style={{
       border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', marginBottom: 6, overflow: 'hidden',
-      opacity: busy ? 0.7 : 1,
+      opacity: busy || bulkBusy ? 0.7 : 1,
     }}>
       <div style={{
         display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: 'var(--bg)',
@@ -447,7 +518,7 @@ function MarketplaceCard({
             <IconAlertTriangle size={12} />
           </span>
         )}
-        <button className="btn" onClick={onRefresh} disabled={busy} title="Pull from upstream">
+        <button className="btn" onClick={onRefresh} disabled={busy || bulkBusy} title="Pull from upstream">
           Refresh
         </button>
         {!confirmRemove ? (
@@ -455,7 +526,7 @@ function MarketplaceCard({
             className="btn"
             style={{ color: 'var(--danger)' }}
             onClick={onRequestRemove}
-            disabled={busy}
+            disabled={busy || bulkBusy}
           >
             Del
           </button>
@@ -465,7 +536,7 @@ function MarketplaceCard({
               className="btn"
               style={{ padding: '2px 6px', fontSize: 11, color: 'var(--danger)' }}
               onClick={onConfirmRemove}
-              disabled={busy}
+              disabled={busy || bulkBusy}
             >
               Confirm
             </button>
@@ -473,7 +544,7 @@ function MarketplaceCard({
               className="btn"
               style={{ padding: '2px 6px', fontSize: 11 }}
               onClick={onCancelRemove}
-              disabled={busy}
+              disabled={busy || bulkBusy}
               aria-label="Cancel"
             >
               <IconX size={12} />
