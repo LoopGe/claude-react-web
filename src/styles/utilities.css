@@ -1685,6 +1685,15 @@
     min-height: 44px;
   }
 
+  /* The image-preview remove × is a 24px corner badge — too small to hit
+     by touch. Lift it to the same 44px floor. The side-chat-drawer-footer
+     variant carries higher specificity, so list it explicitly. */
+  .image-preview-remove,
+  .side-chat-drawer-footer .image-preview-remove {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
   /* Kill the legacy 300ms double-tap-zoom delay on tappable controls so
      taps feel instant. `manipulation` only disables double-tap-zoom and
      double-tap-to-scroll — it still permits panning/pinch, so applying it

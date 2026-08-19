@@ -36,7 +36,10 @@
      enough that white would be unreadable (e.g. a near-white custom accent).
      Lives behind a token so components never reference a raw hex. */
   --on-accent: #ffffff;
+  /* Ink for text on top of --danger (destructive solid buttons). Dark red:
+     white on #f06363 is only ~3.1:1 (WCAG AA fail), dark ink ~5.4:1. */
   --danger: #f06363;
+  --on-danger: #3a0d0d;
   --ok: #6cc88b;
   --warn: #e6b450;
   /* Fast-mode accent — electric violet, distinct from accent/warn/ok so the
@@ -211,6 +214,7 @@
   --accent-strong: #3b4ea8;
   --on-accent: #ffffff;
   --danger: #d93b3b;
+  --on-danger: #ffffff;
   --ok: #2e9e56;
   --warn: #c79518;
   --fast: #8b3fd6;
@@ -308,6 +312,7 @@
   --accent-strong: #0080ff;
   --on-accent: #ffffff;
   --danger: #ff4040;
+  --on-danger: #1a0000;
   --ok: #00ff00;
   --warn: #ffff00;
   --fast: #ff00ff;
@@ -430,6 +435,7 @@
   --accent-strong: #0000ff;
   --on-accent: #ffffff;
   --danger: #cc0000;
+  --on-danger: #ffffff;
   --ok: #006600;
   --warn: #666600;
   --fast: #660066;
@@ -533,6 +539,7 @@
   --accent-strong: #8a9ae6;
   --on-accent: #0e0e12;
   --danger: #ff6b6b;
+  --on-danger: #3a0d0d;
   --ok: #4ade80;
   --warn: #facc15;
   --fast: #c084fc;
@@ -560,6 +567,7 @@
   --accent-strong: #2f4bc4;
   --on-accent: #ffffff;
   --danger: #d64545;
+  --on-danger: #1a0000;
   --ok: #1f9d55;
   --warn: #b8860b;
   --fast: #7c3aed;
@@ -888,6 +896,7 @@
   --ok: #97ab78;
   --warn: #d9a441;
   --danger: #cf6b5c;
+  --on-danger: #3a0d0d;
   /* Official typeface pairing. --font-head is consumed by the heading rule
      below; --sans is the body stack (Lora). Falls back gracefully offline. */
   --font-head: 'Poppins', system-ui, -apple-system, 'Segoe UI', sans-serif;
@@ -919,6 +928,7 @@
   --ok: #5c7040;
   --warn: #b5841f;
   --danger: #c0392b;
+  --on-danger: #ffffff;
   --code-bg: #f3f1e9;
   --code-block-border: #e3e0d6;
   /* Anthropic · light: warm-paper glass — keep the surface lifted enough

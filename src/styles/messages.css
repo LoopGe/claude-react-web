@@ -2144,7 +2144,7 @@ details.question-inline-card[data-state="open"] > summary {
   white-space: nowrap;
 }
 .question-inline-reopen:hover {
-  background: color-mix(in srgb, var(--accent) 85%, #000);
+  background: color-mix(in srgb, var(--accent) 85%, black);
 }
 /* A minimized card pulls focus — brighter left rail + subtle ring so the
    user can find their way back to the open question. */
@@ -2165,7 +2165,7 @@ details.question-inline-card-minimized {
   white-space: nowrap;
 }
 .plan-card-reopen:hover {
-  background: color-mix(in srgb, var(--warn) 85%, #000);
+  background: color-mix(in srgb, var(--warn) 85%, black);
 }
 /* "Review permission" pill on a ToolCard whose pending tool-permission dialog
    the user has minimized. Mirrors .plan-card-reopen — reuses --warn so no new
@@ -2182,7 +2182,7 @@ details.question-inline-card-minimized {
   white-space: nowrap;
 }
 .tool-card-perm-reopen:hover {
-  background: color-mix(in srgb, var(--warn) 85%, #000);
+  background: color-mix(in srgb, var(--warn) 85%, black);
 }
 details.plan-card-minimized {
   border-left-width: 3px;

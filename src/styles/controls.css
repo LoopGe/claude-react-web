@@ -32,14 +32,15 @@
    but in the danger colour — the ghost .btn-danger reads as low-weight
    (appropriate for secondary destructive actions like git "discard"), but
    a modal's confirm button is the focused action and should be as present
-   as a Save button. White text on every theme: --danger is a mid-dark red
-   everywhere, so #fff keeps contrast without needing an --on-danger token. */
+   as a Save button. Ink is per-skin via --on-danger: dark skins use a dark
+   red ink (white on #f06363 is ~3.1:1, a WCAG AA fail), while the light-mode
+   reds are dark enough that white passes and dark ink would not. */
 .btn-danger-solid {
   background: var(--danger);
   border-color: var(--danger);
-  color: #fff;
+  color: var(--on-danger);
 }
-.btn-danger-solid:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 88%, #000); }
+.btn-danger-solid:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 88%, black); }
 /* Square icon button for header toggles (bell, etc.). Same height as
    regular .btn but fixed-width and bigger glyph. */
 .btn-icon {
@@ -301,8 +302,12 @@ select.input:hover,
 select:hover {
   border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
 }
+/* Keyboard focus on inputs keeps the global :focus-visible ring. This rule
+   used to set `outline: none`, and because it outranks the global
+   :focus-visible (specificity 0,1,1 vs 0,1,0) it silently stripped the ring
+   from every input — WCAG 2.4.7 fail. Mouse focus still gets no ring via the
+   global :focus:not(:focus-visible) rule; the accent border stays for all. */
 .input:focus, .textarea:focus, .select:focus, select:focus {
-  outline: none;
   border-color: var(--accent);
 }
 .textarea { resize: vertical; min-height: 60px; font-family: var(--mono); font-size: 12.5px; }
