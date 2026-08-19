@@ -119,4 +119,39 @@ describe('AppPluginMarketplaceSection Update all', () => {
 
     await waitFor(() => expect(container.textContent).toContain('All plugins up to date.'))
   })
+
+  it('surfaces refresh failures even when no plugin has an update', async () => {
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/app-plugins/marketplaces') {
+        return Promise.resolve({ marketplaces: [mkMp('mp1', 'https')] })
+      }
+      if (url === '/app-plugins/marketplaces/mp1/plugins') {
+        return Promise.resolve({
+          plugins: [
+            { name: 'plugA', dir: 'plugA', version: '1.0', installed: true, installedVersion: '1.0' },
+          ],
+        })
+      }
+      return Promise.resolve({ plugins: [] })
+    })
+    ;(api.post as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/app-plugins/marketplaces/mp1/refresh') {
+        return Promise.reject(new Error('boom'))
+      }
+      return Promise.resolve({})
+    })
+    const { container } = render(<AppPluginMarketplaceSection />)
+    await waitFor(() => expect(container.textContent).toContain('MP mp1'))
+
+    const btn = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Update all'),
+    )!
+    fireEvent.click(btn)
+
+    await waitFor(() =>
+      expect(container.textContent).toContain(
+        "No updates found. 1 marketplace couldn't be refreshed: MP mp1: boom",
+      ),
+    )
+  })
 })

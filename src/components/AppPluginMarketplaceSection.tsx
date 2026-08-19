@@ -108,7 +108,15 @@ export function AppPluginMarketplaceSection() {
         }
       }
       if (installs.length === 0) {
-        setBulkResult(refreshErrors.length === 0 ? 'All plugins up to date.' : 'No updates found.')
+        await refreshList()
+        const parts: string[] = []
+        parts.push(refreshErrors.length === 0 ? 'All plugins up to date.' : 'No updates found.')
+        if (refreshErrors.length > 0) {
+          parts.push(
+            `${refreshErrors.length} marketplace${refreshErrors.length === 1 ? '' : 's'} couldn't be refreshed: ${refreshErrors.join('; ')}`,
+          )
+        }
+        setBulkResult(parts.join(' '))
         return
       }
       // Phase 3 — reinstall each changed plugin. This is what bumps the
