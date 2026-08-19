@@ -59,6 +59,18 @@ describe('ConfirmDialog', () => {
     expect(confirmBtn.disabled).toBe(true)
   })
 
+  it('auto-focuses Cancel for destructive dialogs, Confirm otherwise', () => {
+    // Non-destructive: the confirm button gets initial focus so Enter confirms.
+    const first = render(<ConfirmDialog {...baseProps()} />)
+    expect(document.activeElement).toBe(first.getByText('Delete'))
+    first.unmount()
+
+    // Destructive: the cancel button gets initial focus so a reflexive Enter
+    // can't fire the destructive action ("Discard", "Drop stash", "Abort", …).
+    const second = render(<ConfirmDialog {...baseProps({ destructive: true })} />)
+    expect(document.activeElement).toBe(second.getByText('Cancel'))
+  })
+
   it('keeps the dialog mounted through the exit animation, then unmounts (AnimatePresence)', async () => {
     const props = baseProps()
     function Harness({ open }: { open: boolean }) {

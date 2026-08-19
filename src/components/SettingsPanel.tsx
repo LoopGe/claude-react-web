@@ -145,6 +145,24 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     setTab(tabRequest.tab)
   }
 
+  // The marketplace overlay is portaled to <body>, so it lives OUTSIDE App's
+  // global Escape chain (which would otherwise close the settings panel
+  // underneath it, orphaning the portal on screen). Own Escape here in the
+  // CAPTURE phase — capture runs before App's bubble-phase shortcut handler,
+  // so stopPropagation() here means one Esc dismisses just the marketplace
+  // and leaves the settings panel open.
+  useEffect(() => {
+    if (!showMarketplace) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        setShowMarketplace(false)
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [showMarketplace])
+
   // Load the model list and MCP status when the panel opens. Parent
   // remounts this component on session switch (via `key={session.id}`),
   // so there's no need to imperatively reset state here. The MCP calls

@@ -8,8 +8,9 @@
 //
 // Behaviour:
 //   - Esc cancels (calls onCancel)
-//   - Enter on the confirm button confirms (browsers handle this
-//     natively because the button is auto-focused)
+//   - Enter on the confirm button confirms when NOT destructive. For
+//     destructive dialogs the initial focus lands on Cancel instead, so a
+//     reflexive Enter can't fire the destructive action.
 //   - Both buttons disabled while `busy` is true
 //   - The confirm button gains `.btn-danger` styling when destructive
 
@@ -122,6 +123,10 @@ export function ConfirmDialog({
             className="btn"
             onClick={onCancel}
             disabled={busy}
+            // Destructive dialogs focus Cancel — the first Enter must be a
+            // deliberate choice, never a reflex that fires the destructive
+            // action ("Discard", "Drop stash", "Abort merge", …).
+            autoFocus={destructive}
           >
             {cancelLabel}
           </button>
@@ -130,10 +135,8 @@ export function ConfirmDialog({
             className={destructive ? 'btn btn-danger-solid' : 'btn btn-primary'}
             onClick={() => { void onConfirm() }}
             disabled={busy}
-            // Auto-focus so Enter triggers confirm directly. Destructive
-            // dialogs still require a deliberate Enter because the
-            // button is the active element from the start.
-            autoFocus
+            // Non-destructive dialogs focus confirm so Enter confirms.
+            autoFocus={!destructive}
           >
             {busy ? 'Working...' : confirmLabel}
           </button>

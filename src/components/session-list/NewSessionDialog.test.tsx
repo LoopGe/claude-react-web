@@ -12,6 +12,15 @@ vi.mock('../../hooks/useApi', () => ({
 
 import { api } from '../../hooks/useApi'
 
+// jsdom doesn't implement matchMedia; useExitPresence probes it when a
+// nested modal closes (reduced-motion check). Report "no reduced motion" so
+// the exit-timer path runs normally. Same stub as FindingsCard/TodoChecklist.
+vi.stubGlobal('matchMedia', () => ({
+  matches: false,
+  addEventListener() {},
+  removeEventListener() {},
+}))
+
 // Supply minimal required props matching NewSessionDialogProps:
 //   defaults (required), onSubmit, onCancel, groups, maxGroupSize
 const baseProps = {
@@ -73,6 +82,25 @@ describe('NewSessionDialog plugin picker', () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalled())
     const form = onSubmit.mock.calls[0][0] as NewSessionForm
     expect(form.enabledPlugins).toEqual(['plugA@mp1'])
+  })
+
+  it('does not close the form when Esc dismisses the nested MCP installer', async () => {
+    const onCancel = vi.fn()
+    const { container } = render(<NewSessionDialog {...baseProps} onCancel={onCancel} />)
+    await waitFor(() => expect(container.textContent).toContain('plugA'))
+
+    // Open the MCP installer — a modal-on-top-of-modal. It is portaled to
+    // <body>, so assert against document.body, not the dialog container.
+    const addBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Add server'),
+    )!
+    fireEvent.click(addBtn)
+    await waitFor(() => expect(document.body.textContent).toContain('Add MCP Server'))
+
+    // One Escape dismisses ONLY the installer; the new-session form survives.
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    await waitFor(() => expect(document.body.textContent).not.toContain('Add MCP Server'))
+    expect(onCancel).not.toHaveBeenCalled()
   })
 
   it('sends enabledPlugins: [] when all unchecked', async () => {

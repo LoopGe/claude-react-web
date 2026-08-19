@@ -174,7 +174,10 @@ function McpInstallerForm({ open = true, server, onSave, onClose }: Props) {
       aria-labelledby={titleId}
       aria-hidden={!open}
       inert={!open || undefined}
-      onClick={() => { if (open) onClose() }}
+      // mousedown (not click) + target guard: a click fires on mouseup, so a
+      // user selecting text inside the card and releasing over the backdrop
+      // would otherwise close the modal and lose their form state.
+      onMouseDown={(e) => { if (open && e.target === e.currentTarget) onClose() }}
     >
       <div ref={dialogRef} className="modal" style={{ width: 'min(520px, 92vw)' }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">

@@ -222,16 +222,18 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
     })
   }
 
-  // Esc closes the dialog, but not when the directory picker is open — that
-  // picker has its own Esc handler and we don't want to collapse both modals
-  // with one keypress.
+  // Esc closes the dialog, but not when the directory picker OR the MCP
+  // installer is open — each is a modal-on-top-of-modal with its own Esc
+  // handler, and one keypress must collapse only the top layer (otherwise a
+  // stray Esc from dismissing the nested modal would discard the whole new-
+  // session form the user was filling in).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (open && e.key === 'Escape' && !showPicker) onCancel()
+      if (open && e.key === 'Escape' && !showPicker && !showMcpInstaller) onCancel()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onCancel, open, showPicker])
+  }, [onCancel, open, showPicker, showMcpInstaller])
 
   // Trap Tab focus inside the dialog and restore focus to the trigger on
   // close, matching PermissionDialog / QuestionDialog behaviour.
