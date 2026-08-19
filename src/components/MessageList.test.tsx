@@ -151,7 +151,8 @@ vi.mock('react-virtuoso', async () => {
   }
 })
 // Import AFTER mock.
-import { MessageList, shouldArmEnterAnimation } from './MessageList'
+import { MessageList } from './MessageList'
+import { shouldArmEnterAnimation } from '../utils/enter-animation'
 import { SubagentProvider } from '../hooks/useSubagentContext'
 import type { ActiveSubagent } from '../session-store/types'
 

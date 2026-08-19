@@ -18,6 +18,7 @@ import { SessionCwdProvider } from '../hooks/useSessionCwd'
 import type { SdkMessage } from '../types'
 import { formatTokens, formatElapsed, formatClockTime, formatFullTimestamp } from '../utils/format'
 import { buildTaskStateMap } from '../utils/task-events'
+import { shouldArmEnterAnimation } from '../utils/enter-animation'
 import { Tooltip } from './Tooltip'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
@@ -312,21 +313,6 @@ function useStableSet(candidate: Set<string>): Set<string> {
   prevRef.current = candidate
   return candidate
   /* eslint-enable react-hooks/refs */
-}
-
-/** Entrance-animation gate predicate. Arms when the list grew by a recent
- *  live tail append: any incremental growth (prevLen > 0) animates every new
- *  arrival; a fresh mount / bulk load (prevLen === 0) is capped at maxBatch so
- *  replay / session-switch cascades don't all animate at once. */
-export function shouldArmEnterAnimation(
-  replayReady: boolean,
-  delta: number,
-  prevLen: number,
-  maxBatch: number,
-): boolean {
-  if (!replayReady || delta <= 0) return false
-  if (prevLen > 0) return true
-  return delta <= maxBatch
 }
 
 export const MessageList = memo(function MessageList({ items, working, clearing, replayReady = true, transcriptRevealKey, streamingContent, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, leadingItems, trailingItems, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd }: Props) {

@@ -6,7 +6,15 @@ function rebuild(segments: StreamSegment[]): string {
     .map((s) =>
       s.type === 'text'
         ? s.content
-        : '```' + (s.lang ?? '') + '\n' + s.content + '\n' + '```' + '\n',
+        : '```' +
+          (s.lang ?? '') +
+          '\n' +
+          s.content +
+          // An empty code block has no interior line, so the blank line between
+          // opener and closer must be omitted for the round-trip to be exact.
+          (s.content ? '\n' : '') +
+          '```' +
+          '\n',
     )
     .join('')
 }
@@ -98,6 +106,20 @@ describe('splitStreamSegments', () => {
     }
   })
 
+  it('keeps an indented fence with no language as lang null', () => {
+    expect(splitStreamSegments('  ```\nx\n  ```\n')).toEqual([
+      { type: 'code', lang: null, content: 'x', closed: true },
+    ])
+  })
+
+  it('closes a fenced block under CRLF line endings (closer not swallowed)', () => {
+    expect(splitStreamSegments('a\r\n```js\r\nx\r\n```\r\nb')).toEqual([
+      { type: 'text', content: 'a\r\n' },
+      { type: 'code', lang: 'js', content: 'x\r', closed: true },
+      { type: 'text', content: 'b' },
+    ])
+  })
+
   it('honors the recovery invariant: rebuilding fully-closed inputs reproduces the input', () => {
     // NOTE: only triple-backtick fences round-trip byte-exactly. A
     // quadruple-backtick fence is elided and rebuilt as a triple fence (the
@@ -110,6 +132,7 @@ describe('splitStreamSegments', () => {
       'a\n```js\nx=1\n```\nb',
       '```\nx\n```\n',
       'plain text only',
+      '```js\n```\n',
     ]
     for (const f of fixtures) {
       expect(rebuild(splitStreamSegments(f))).toBe(f)

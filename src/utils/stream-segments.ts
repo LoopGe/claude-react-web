@@ -37,7 +37,12 @@ export function splitStreamSegments(content: string): StreamSegment[] {
     return m ? m[1].length : 0
   }
   const isCloser = (line: string) => {
-    const m = line.match(/^ {0,3}(`+)[ \t]*$/)
+    // Strip a trailing \r first: lines are split on \n and keep any CR from a
+    // CRLF input, but `[ \t]*$` would not match it — a closer line under CRLF
+    // would never be recognised and the rest of the turn would be swallowed
+    // into the still-open code segment. (The opener regex tolerates \r via
+    // `[^`]*`, hence the asymmetry this guard fixes.)
+    const m = line.replace(/\r$/, '').match(/^ {0,3}(`+)[ \t]*$/)
     return m !== null && m[1].length >= fenceRun
   }
 

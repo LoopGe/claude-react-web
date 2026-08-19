@@ -10,7 +10,7 @@
 //   ToolStatusBadge — running/success/error pill, also used standalone
 //                     by some tool views
 
-import { memo, useEffect, useRef, type ReactNode } from 'react'
+import { Fragment, memo, useEffect, useRef, type ReactNode } from 'react'
 import {
   IconAlertCircle,
   IconCheck,
@@ -25,6 +25,7 @@ import type { ToolResultEntry, ToolStatus } from '../session-store/types'
 import type { Block } from '../types'
 import { formatJson } from '../utils/format'
 import { truncate, stripAnsi } from '../utils/text'
+import { imageBlockToDataUrl } from '../utils/image-block'
 import { AnsiText } from './AnsiText'
 
 // ---------------------------------------------------------------------------
@@ -143,18 +144,12 @@ export const ToolResultDetails = memo(function ToolResultDetails({
 }) {
   const preview = toolResultPreview(content)
   const isString = typeof content === 'string'
-  const body = isString
-    ? truncate(content, 4000)
-    : (() => {
-        const blocks = Array.isArray(content) ? (content as Block[]) : []
-        const texts = blocks
-          .map((b) => {
-            if (b.type === 'text' && typeof b.text === 'string') return b.text
-            return formatJson(b)
-          })
-          .join('\n\n')
-        return truncate(texts || formatJson(content), 4000)
-      })()
+  const body = isString ? truncate(content, 4000) : buildToolResultBody(content)
+  // The "active" search-match index is global across the whole result, so it
+  // only maps cleanly onto a single text run. Multi-run (interleaved) bodies
+  // degrade to plain highlighting — no `.search-hl-active` marker.
+  const singleTextRun =
+    !Array.isArray(body) || body.filter((p): p is string => typeof p === 'string').length === 1
   const hasSearch = Boolean(searchQuery?.trim())
   const bodyRef = useRef<HTMLDivElement>(null)
 
@@ -176,11 +171,105 @@ export const ToolResultDetails = memo(function ToolResultDetails({
       open={hasSearch ? true : undefined}
     >
       <div className="tool-input" ref={bodyRef}>
-        {isString ? <AnsiText text={body} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} /> : body}
+        {typeof body === 'string' ? (
+          <AnsiText text={body} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />
+        ) : (
+          body.map((part, i) =>
+            typeof part === 'string' ? (
+              <AnsiText
+                key={i}
+                text={part}
+                searchQuery={searchQuery}
+                activeMatchIdx={singleTextRun ? activeMatchIdx : undefined}
+              />
+            ) : (
+              <Fragment key={i}>{part}</Fragment>
+            ),
+          )
+        )}
       </div>
     </AnimatedDetails>
   )
 })
+
+/** A rendered tool-result body: a single truncated string when the result is
+ *  text-only (so AnsiText stays ONE component over the whole body and search
+ *  match indexing is unchanged), or an ordered list of text runs and image
+ *  rows that preserves the original block order for interleaved
+ *  text + image results. */
+type ToolResultBody = string | Array<string | ReactNode>
+
+/** Build the expanded tool-result body from a (possibly non-array) content
+ *  value: text blocks are joined + truncated; image blocks are rendered as
+ *  `<img className="msg-image">` so screenshots show up instead of a base64
+ *  JSON blob. Text runs and image rows stay in source order — an
+ *  `[{text},{image},{text}]` result renders text → image → text, not all
+ *  images moved to the end. Consecutive images are grouped into one
+ *  `.tool-result-images` row (flex layout), text-only bodies collapse to a
+ *  single string. */
+function buildToolResultBody(content: unknown): ToolResultBody {
+  const raw = Array.isArray(content)
+    ? content
+    : content && typeof content === 'object'
+      ? [content]
+      : []
+  const blocks = raw as Block[]
+  const parts: Array<string | ReactNode> = []
+  let textBuf: string[] = []
+  let imgRun: ReactNode[] = []
+
+  const flushText = () => {
+    if (textBuf.length === 0) return
+    const text = truncate(textBuf.join('\n\n'), 4000)
+    if (text) parts.push(text)
+    textBuf = []
+  }
+  const flushImgs = () => {
+    if (imgRun.length === 0) return
+    parts.push(
+      <div key={`imgs-${parts.length}`} className="tool-result-images">
+        {imgRun}
+      </div>,
+    )
+    imgRun = []
+  }
+
+  for (const b of blocks) {
+    // Defensive: a null/undefined element in the content array must not crash
+    // the render (imageBlockToDataUrl handles it, but the type check below
+    // would dereference it).
+    if (b == null) continue
+    const src = imageBlockToDataUrl(b)
+    if (src) {
+      flushText()
+      imgRun.push(
+        <img
+          key={imgRun.length}
+          className="msg-image"
+          src={src}
+          alt="tool result image"
+          decoding="async"
+        />,
+      )
+    } else if (b.type === 'text' && typeof b.text === 'string') {
+      flushImgs()
+      textBuf.push(b.text)
+    } else {
+      flushImgs()
+      textBuf.push(formatJson(b))
+    }
+  }
+  flushText()
+  flushImgs()
+
+  // Text-only body → single string so the renderer keeps the one-AnsiText
+  // path (truncation + search match indexing identical to before).
+  if (parts.every((p) => typeof p === 'string')) {
+    const text = (parts as string[]).join('\n\n')
+    return text || formatJson(content)
+  }
+  return parts
+}
 
 /** One-line preview for the collapsed <summary>.
  *  Keeps the transcript scannable when many tool results are present. */
@@ -192,6 +281,7 @@ function toolResultPreview(content: unknown): string {
   const blocks = Array.isArray(content) ? (content as Block[]) : []
   if (blocks.length === 0) return '(empty)'
   const first = blocks[0]
+  if (first == null) return '(empty)'
   if (first.type === 'text' && typeof first.text === 'string') {
     const line = stripAnsi(first.text).split('\n')[0] ?? first.text
     return line ? truncate(line, 120) : '(empty result)'
