@@ -3,9 +3,10 @@
 // Renders a structured form instead of raw JSON. Dynamic key-value rows
 // for env vars and headers, type-specific fields, client + server validation.
 
-import { useEffect, useId, useRef, useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from '../hooks/useApi'
+import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import type { McpServerConfigMeta, McpServerInput } from '../types'
@@ -73,12 +74,16 @@ function McpInstallerForm({ open = true, server, onSave, onClose }: Props) {
 
   useFocusTrap(dialogRef, { restoreFocus: true, excludeDisabled: true, active: open })
 
-  // Esc closes
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (open && e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose, open])
+  // Esc closes. Registered in the escape stack so nesting resolves by
+  // containment: when this portal is open above the settings panel, Esc closes
+  // this dialog (topmost) instead of the settings overlay beneath it — and
+  // when it's open above a non-stack dialog (NewSessionDialog), the stack's
+  // stopPropagation keeps that dialog's own bubble handler from also firing.
+  useEscapeStack({
+    active: open,
+    onEscape: onClose,
+    getContainer: () => dialogRef.current,
+  })
 
   const updateRow = (rows: KvRow[], setter: (r: KvRow[]) => void, id: string, field: 'key' | 'value', val: string) => {
     setter(rows.map((r) => (r.id === id ? { ...r, [field]: val } : r)))

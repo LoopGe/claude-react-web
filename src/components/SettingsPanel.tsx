@@ -6,6 +6,7 @@ import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from '../hooks/useApi'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
+import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
 import { useToast } from '../hooks/useToast'
@@ -147,21 +148,16 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
 
   // The marketplace overlay is portaled to <body>, so it lives OUTSIDE App's
   // global Escape chain (which would otherwise close the settings panel
-  // underneath it, orphaning the portal on screen). Own Escape here in the
-  // CAPTURE phase — capture runs before App's bubble-phase shortcut handler,
-  // so stopPropagation() here means one Esc dismisses just the marketplace
-  // and leaves the settings panel open.
-  useEffect(() => {
-    if (!showMarketplace) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        setShowMarketplace(false)
-      }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [showMarketplace])
+  // underneath it, orphaning the portal on screen). Register it in the escape
+  // stack instead: the settings overlay (now also in the stack) is registered
+  // first, so the marketplace lands on top and wins by containment — one Esc
+  // dismisses just the marketplace and leaves the settings panel open.
+  const marketplaceOverlayRef = useRef<HTMLDivElement>(null)
+  useEscapeStack({
+    active: showMarketplace,
+    onEscape: () => setShowMarketplace(false),
+    getContainer: () => marketplaceOverlayRef.current,
+  })
 
   // Load the model list and MCP status when the panel opens. Parent
   // remounts this component on session switch (via `key={session.id}`),
@@ -999,6 +995,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
 
       {showMarketplace && createPortal(
         <div
+          ref={marketplaceOverlayRef}
           className="marketplace-overlay"
           onMouseDown={(e) => { if (e.target === e.currentTarget) setShowMarketplace(false) }}
         >
