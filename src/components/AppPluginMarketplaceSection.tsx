@@ -17,6 +17,14 @@ export function AppPluginMarketplaceSection() {
   const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
 
+  // Bulk "Update all" — refresh every https marketplace to discover new
+  // catalog versions, then reinstall each installed plugin whose version
+  // changed. `bulkProgress` shows the current phase; `bulkResult` is the
+  // completion summary.
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const [bulkProgress, setBulkProgress] = useState<string | null>(null)
+  const [bulkResult, setBulkResult] = useState<string | null>(null)
+
   const refreshList = useCallback(async () => {
     try {
       const res = await api.get<{ marketplaces: AppPluginMarketplaceInfo[] }>('/app-plugins/marketplaces')
@@ -59,6 +67,86 @@ export function AppPluginMarketplaceSection() {
     } catch (e) { setError((e as Error).message) } finally { setBusy(false) }
   }, [refreshList])
 
+  const handleUpdateAll = async () => {
+    const https = marketplaces.filter((m) => m.sourceType === 'https')
+    if (https.length === 0) return
+    setBulkBusy(true)
+    setError(null)
+    setBulkResult(null)
+    const refreshErrors: string[] = []
+    const installErrors: string[] = []
+    const installs: { mpId: string; name: string }[] = []
+    let permissionRequired = 0
+    try {
+      // Phase 1 — git-pull every https marketplace. This makes the new
+      // catalog (and plugin code) available on disk, and revalidates each
+      // installed plugin from that marketplace, but it does NOT bump the
+      // record's installedVersion.
+      setBulkProgress('Refreshing marketplaces…')
+      for (const m of https) {
+        try {
+          await api.post(`/app-plugins/marketplaces/${encodeURIComponent(m.id)}/refresh`)
+        } catch (e) {
+          refreshErrors.push(`${m.displayName}: ${(e as Error).message}`)
+        }
+      }
+      // Phase 2 — discover installed plugins with a newer catalog version.
+      setBulkProgress('Checking for updates…')
+      for (const m of https) {
+        try {
+          const res = await api.get<{ plugins: AppPluginMarketplacePlugin[] }>(
+            `/app-plugins/marketplaces/${encodeURIComponent(m.id)}/plugins`,
+          )
+          for (const p of res.plugins ?? []) {
+            if (p.installed && p.version && p.installedVersion && p.installedVersion !== p.version) {
+              installs.push({ mpId: m.id, name: p.name })
+            }
+          }
+        } catch {
+          // A marketplace whose plugin list can't be read is skipped; its
+          // per-plugin Update buttons remain available for manual updates.
+        }
+      }
+      if (installs.length === 0) {
+        setBulkResult(refreshErrors.length === 0 ? 'All plugins up to date.' : 'No updates found.')
+        return
+      }
+      // Phase 3 — reinstall each changed plugin. This is what bumps the
+      // record's installedVersion to the new version (the refresh above left
+      // it stale) and surfaces permission escalations.
+      for (let i = 0; i < installs.length; i++) {
+        const it = installs[i]
+        setBulkProgress(`Updating ${it.name} (${i + 1}/${installs.length})…`)
+        try {
+          const res = await api.post<{ ok: true; result: { permissionRequired: boolean } }>(
+            `/app-plugins/marketplaces/${encodeURIComponent(it.mpId)}/plugins/${encodeURIComponent(it.name)}/install`,
+          )
+          if (res.result?.permissionRequired) permissionRequired++
+        } catch (e) {
+          installErrors.push(`${it.name}: ${(e as Error).message}`)
+        }
+      }
+      await refreshList()
+      const parts: string[] = []
+      const ok = installs.length - installErrors.length
+      parts.push(
+        installErrors.length === 0
+          ? `Updated ${ok} plugin${ok === 1 ? '' : 's'}.`
+          : `Updated ${ok}/${installs.length}. Failed: ${installErrors.join('; ')}`,
+      )
+      if (permissionRequired > 0) {
+        parts.push(`${permissionRequired} need permission review (see Installed).`)
+      }
+      if (refreshErrors.length > 0) {
+        parts.push(`${refreshErrors.length} marketplace${refreshErrors.length === 1 ? '' : 's'} couldn't be refreshed: ${refreshErrors.join('; ')}`)
+      }
+      setBulkResult(parts.join(' '))
+    } finally {
+      setBulkBusy(false)
+      setBulkProgress(null)
+    }
+  }
+
   return (
     <div className="app-plugins-marketplace">
       <h4>Marketplace</h4>
@@ -72,10 +160,24 @@ export function AppPluginMarketplaceSection() {
           onChange={(e) => setAddUrl(e.target.value)}
           aria-label="Marketplace URL"
         />
-        <button className="btn btn-primary" disabled={busy || !addUrl.trim()} onClick={add}>Add</button>
+        <button className="btn btn-primary" disabled={busy || bulkBusy || !addUrl.trim()} onClick={add}>Add</button>
       </div>
 
       {error && <div className="modal-error">{error}</div>}
+
+      {marketplaces.length > 0 && (
+        <div className="app-plugins-update-all" style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <button
+            className="btn btn-primary"
+            onClick={() => void handleUpdateAll()}
+            disabled={bulkBusy}
+            title="Refresh marketplaces and update every installed plugin that has a new version"
+          >
+            {bulkBusy ? (bulkProgress ?? 'Updating…') : 'Update all'}
+          </button>
+          {bulkResult && <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>{bulkResult}</span>}
+        </div>
+      )}
 
       <ul className="app-plugins-list">
         {marketplaces.length === 0 && <li className="app-plugins-empty">No marketplaces added.</li>}
@@ -87,7 +189,7 @@ export function AppPluginMarketplaceSection() {
             onToggle={() => setExpanded(expanded === mp.id ? null : mp.id)}
             onRefresh={() => refreshMp(mp.id)}
             onRemove={() => removeMp(mp.id)}
-            busy={busy}
+            busy={busy || bulkBusy}
           />
         ))}
       </ul>
