@@ -1,4 +1,5 @@
 import { useEffect, type RefObject } from 'react'
+import { isFocusInsideOtherOverlay } from './useEscapeStack'
 
 const DEFAULT_SELECTOR =
   'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
@@ -74,10 +75,20 @@ export function useFocusTrap(
     const handleFocusIn = (e: FocusEvent) => {
       const target = e.target as Node | null
       if (target && el.contains(target)) return
-      // Allow focus to remain inside a portaled modal overlay. These sit
-      // at a higher z-index than the trap container and represent a
-      // deliberate user interaction with a child dialog.
-      if (target instanceof HTMLElement && target.closest('.modal-backdrop')) return
+      // Allow focus to remain inside a portaled child overlay. These render
+      // via createPortal to document.body (not a DOM descendant of this
+      // container) and sit at a higher z-index, representing a deliberate user
+      // interaction with a nested dialog — stealing focus back would make the
+      // child's inputs unusable. The stack check covers every overlay that has
+      // been migrated onto the useEscapeStack; the `.modal-backdrop` closest()
+      // stays as migration-period insurance for not-yet-migrated dialogs and is
+      // removed in the phase that migrates the last of them (PR-B Phase 4).
+      if (
+        (target != null && isFocusInsideOtherOverlay(target)) ||
+        (target instanceof HTMLElement && target.closest('.modal-backdrop'))
+      ) {
+        return
+      }
       // Allow focus to escape to a *different* element matching
       // `escapeSelector`. Typical use: a per-panel overlay (permission dialog,
       // question dialog) that should let the user click into a sibling panel
