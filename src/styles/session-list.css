@@ -120,6 +120,29 @@
   opacity: 0.7;
   margin-left: 1px;
 }
+/* Key-hint badge (Alt held): a solid accent keycap carrying the group's
+   alt+<n> number, so the shortcut mapping is discoverable. The halo pulse
+   mirrors the perm-badge's breathing glow; frozen under reduced-motion. */
+.group-pill-hint {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--on-accent);
+  background: var(--accent);
+  border-radius: var(--radius-xs);
+  padding: 2px 3px;
+  min-width: 13px;
+  text-align: center;
+  animation: group-pill-hint-pulse 1.2s ease-in-out infinite;
+}
+@keyframes group-pill-hint-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); }
+  50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 0%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .group-pill-hint { animation: none; }
+}
 .group-pill-new {
   border-style: dashed;
   opacity: 0.8;

@@ -63,10 +63,9 @@ import { usePluginCommands } from '../app-plugins/usePluginCommands'
 import { buildWhenContext, filterContributions } from '../app-plugins/when'
 import { IconSearch, IconFileText, IconFileCode, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconMessageCircle, IconArrowLeft, IconTrash, IconGlobe, IconScissors } from './icons/ToolIcons'
 import { PLAN_TOOL_NAMES } from '../constants/toolNames'
-import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
-import { useMergedRef } from '../utils/mergedRef'
 import { useToast } from '../hooks/useToast'
+import { Overlay } from './Overlay'
 import { useWsHub } from '../hooks/useWsHub'
 import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
 import { AnimatePresence } from 'motion/react'
@@ -166,6 +165,10 @@ interface Props {
   /** Whether this panel is the currently focused (active) one. Used by
    *  useSessionRecap to track last-viewed timestamps. */
   focused?: boolean
+  /** External composer-focus signal from App — bumped by the mod+1/2/3
+   *  slot shortcuts. Combined with the local composerFocusSignal so the
+   *  target panel's <Composer> refocuses after a slot switch. */
+  composerFocusSignal?: number
   /** Global UI-pref defaults (server-backed). Effective values are
    *  `session.<field> ?? globalPrefs.<field>` — a per-session override
    *  wins, otherwise the global default applies. Forwarded to
@@ -271,7 +274,7 @@ export const Chat = memo(function Chat({
   settingsOpen, onCloseSettings,
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
   recapOpen, onCloseRecap,
-  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, globalPrefs, onRegisterInterrupt, onRegisterRecap, historyOpen, onCloseHistory,
+  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, composerFocusSignal: externalComposerFocusSignal, globalPrefs, onRegisterInterrupt, onRegisterRecap, historyOpen, onCloseHistory,
   onResume, onForkFromLastCompleted,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, onDiscard, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
@@ -294,8 +297,6 @@ export const Chat = memo(function Chat({
   // section below) because it gates the recap/pinned presence hooks, which
   // hide those overlays while search is open so the search bar isn't covered.
   const [searchOpen, setSearchOpen] = useState(false)
-  const settingsPresence = useExitPresence(!!settingsOpen)
-  const gitPresence = useExitPresence(!!gitPanelOpen)
   // Effective UI prefs: a per-session override (session.<field>) wins,
   // otherwise the global default (globalPrefs.<field>, server-backed) applies.
   // Computed inline so a SettingsPanel override or a global-settings save
@@ -405,6 +406,10 @@ export const Chat = memo(function Chat({
    *  button would leave focus on the button, breaking the
    *  type-enter-type-enter flow. */
   const [composerFocusSignal, setComposerFocusSignal] = useState(0)
+  /** Sum of the local signal and App's external slot-switch signal. Composer
+   *  only cares that the value CHANGES to refocus; both counters are
+   *  monotonic, so the sum is a valid signal. */
+  const effectiveComposerFocusSignal = composerFocusSignal + (externalComposerFocusSignal ?? 0)
 
   // Slash commands ?cached per session so switching away and back
   // doesn't re-fetch. The SDK subprocess returns the list via a
@@ -1258,32 +1263,16 @@ export const Chat = memo(function Chat({
     }
   }, [input, attachmentList, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, pastedImages, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, requestClearSession, runBashCommand])
 
-  // Focus traps for the two in-panel overlays. The settings overlay is
-  // always mounted (toggled via CSS .hidden), so the trap is gated on
-  // `settingsOpen`; the git overlay only mounts when open. `active`
-  // arms/disarms the trap and restores focus to the trigger on close.
-  const settingsOverlayRef = useRef<HTMLDivElement>(null)
-  const gitOverlayRef = useRef<HTMLDivElement>(null)
   // Overlay scrollbars on the settings + git overlay backdrops (these scroll
-  // when the panel card exceeds the viewport). Merged with the focus-trap refs.
+  // when the panel card exceeds the viewport). Passed to the <Overlay>
+  // backdropRef so the scrollbar styles the same element the focus trap and
+  // Escape stack target. The Overlay primitive owns the focus traps and
+  // presence for both overlays; its `mounted && open` active gate reproduces
+  // the old `gitPresence.shouldRender && gitPanelOpen` fix (the trap engages
+  // only once the git overlay is actually mounted, so the chip's :focus
+  // tooltip doesn't stick open).
   const setSettingsOverlayOs = useOverlayScrollbar({ autoHide: 'leave' })
   const setGitOverlayOs = useOverlayScrollbar({ autoHide: 'leave' })
-  const settingsOverlayRefMerged = useMergedRef(settingsOverlayRef, setSettingsOverlayOs)
-  const gitOverlayRefMerged = useMergedRef(gitOverlayRef, setGitOverlayOs)
-  useFocusTrap(settingsOverlayRef, { restoreFocus: true, active: !!settingsOpen, escapeSelector: '.chat-panel' })
-  // `active` is gated on `gitPresence.shouldRender` (not just `gitPanelOpen`)
-  // because the git overlay is conditionally rendered via useExitPresence, which
-  // flips `shouldRender` one render *after* `gitPanelOpen` turns true (the
-  // presence state is updated in an effect). Without this gate the trap's effect
-  // runs on the first open frame when `gitOverlayRef.current` is still null and
-  // early-returns; `active` then never changes again, so the trap never engages
-  // and the triggering chip button retains :focus — leaving its tooltip stuck
-  // open via :focus-within after the mouse leaves. Gating on shouldRender makes
-  // active go false→true only once the overlay is actually mounted, so the trap
-  // re-runs and moves focus into the panel. `restoreFocus: true` returns focus
-  // to the chip on close (matching the settings overlay, and avoiding a
-  // regression where closing would strand focus on <body>).
-  useFocusTrap(gitOverlayRef, { restoreFocus: true, active: !!gitPanelOpen && gitPresence.shouldRender, escapeSelector: '.chat-panel' })
 
   const interrupt = useCallback(async () => {
     try {
@@ -1675,7 +1664,7 @@ export const Chat = memo(function Chat({
       onSend={handleSend}
       onInterrupt={handleInterrupt}
       canInterrupt={session.working}
-      focusSignal={composerFocusSignal}
+      focusSignal={effectiveComposerFocusSignal}
       onRecap={recap.refresh}
       canRecap={!!session.lastTurnAt}
       snippets={snippets}
@@ -1733,17 +1722,16 @@ export const Chat = memo(function Chat({
         return null
       })()}
 
-      <div
-        ref={settingsOverlayRefMerged}
-        className={`settings-overlay${settingsPresence.shouldRender ? '' : ' hidden'}`}
-        data-state={settingsOpen ? 'open' : settingsPresence.isExiting ? 'closing' : 'closed'}
-        role="dialog"
-        aria-modal={settingsOpen ? 'true' : 'false'}
-        aria-hidden={!settingsOpen}
-        aria-label="Session settings"
-        onMouseDown={(e) => {
-          if (settingsOpen && e.target === e.currentTarget) onCloseSettings?.()
-        }}
+      <Overlay
+        variant="settings"
+        ariaLabel="Session settings"
+        open={settingsOpen}
+        onClose={() => onCloseSettings?.()}
+        renderCard={false}
+        trapRefTarget="backdrop"
+        focusEscapeSelector=".chat-panel"
+        keepMounted={settingsEverOpened}
+        backdropRef={setSettingsOverlayOs}
       >
         {settingsEverOpened && (
           <Suspense fallback={null}>
@@ -1762,35 +1750,31 @@ export const Chat = memo(function Chat({
             />
           </Suspense>
         )}
-      </div>
+      </Overlay>
 
-      {gitPresence.shouldRender && (
-        <div
-          ref={gitOverlayRefMerged}
-          className="git-overlay"
-          data-state={gitPanelOpen ? 'open' : 'closing'}
-          role="dialog"
-          aria-modal={gitPanelOpen ? 'true' : 'false'}
-          aria-hidden={!gitPanelOpen}
-          aria-label="Git"
-          onMouseDown={(e) => {
-            if (gitPanelOpen && e.target === e.currentTarget) onCloseGitPanel?.()
-          }}
-        >
-          <Suspense fallback={null}>
-            <GitPanel
-              key={session.id}
-              sessionId={session.id}
-              cwd={session.cwd}
-              status={gitStatus ?? null}
-              loading={gitLoading ?? false}
-              error={gitError ?? null}
-              onRefresh={() => onGitRefresh?.()}
-              onClose={() => onCloseGitPanel?.()}
-            />
-          </Suspense>
-        </div>
-      )}
+      <Overlay
+        variant="git"
+        ariaLabel="Git"
+        open={gitPanelOpen}
+        onClose={() => onCloseGitPanel?.()}
+        renderCard={false}
+        trapRefTarget="backdrop"
+        focusEscapeSelector=".chat-panel"
+        backdropRef={setGitOverlayOs}
+      >
+        <Suspense fallback={null}>
+          <GitPanel
+            key={session.id}
+            sessionId={session.id}
+            cwd={session.cwd}
+            status={gitStatus ?? null}
+            loading={gitLoading ?? false}
+            error={gitError ?? null}
+            onRefresh={() => onGitRefresh?.()}
+            onClose={() => onCloseGitPanel?.()}
+          />
+        </Suspense>
+      </Overlay>
 
       {/* In-panel resume picker (variant="panel"). Column-scoped overlay
           mirroring the Settings/Git overlays: only covers this chat panel,

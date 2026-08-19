@@ -129,6 +129,9 @@ interface Props {
    *  panel-swap affordance) is meaningless. When true, group headers toggle
    *  collapse instead, and the group-pills quick-switch row is hidden. */
   isMobile?: boolean
+  /** True while Alt is held — renders a number badge on each group pill
+   *  (first 9 groups) so the alt+<n> shortcut mapping is discoverable. */
+  showGroupHints?: boolean
 }
 
 export const SessionList = memo(function SessionList({
@@ -169,6 +172,7 @@ export const SessionList = memo(function SessionList({
   activeGroupId,
   maxGroupSize,
   isMobile,
+  showGroupHints,
 }: Props) {
   const [uncontrolledShow, setUncontrolledShow] = useState(false)
   const showDialog = newSessionDialogOpen ?? uncontrolledShow
@@ -663,13 +667,13 @@ export const SessionList = memo(function SessionList({
             The "+ Group" create control stays available on all viewports; the
             groups themselves remain visible as collapsible sections below. */}
         <div className="group-pills">
-          {!isMobile && groups.map((g) => (
+          {!isMobile && groups.map((g, i) => (
             <button
               key={g.id}
               type="button"
               className={`group-pill ${g.id === activeGroupId ? 'active' : ''}`}
               aria-pressed={g.id === activeGroupId}
-              title={`Activate "${g.name}" (${g.sessionIds.length} sessions) · right-click for options`}
+              title={`Activate "${g.name}" (${g.sessionIds.length} sessions)${i < 9 ? ` · Alt+${i + 1}` : ''} · right-click for options`}
               onClick={() => onActivateGroup(g.id)}
               onContextMenu={(e) => {
                 e.preventDefault()
@@ -677,6 +681,9 @@ export const SessionList = memo(function SessionList({
                 setGroupMenuPos({ x: e.clientX, y: e.clientY })
               }}
             >
+              {showGroupHints && i < 9 && (
+                <span className="group-pill-hint" aria-hidden="true">{i + 1}</span>
+              )}
               {g.name}
               <span className="group-pill-count">{g.sessionIds.length}</span>
             </button>

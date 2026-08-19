@@ -12,7 +12,8 @@ import { isInAppDrag, readDragPayload } from './hooks/useDragPayload'
 import { useIsMobile } from './hooks/useIsMobile'
 import { useSwipeToClose } from './hooks/useSwipeToClose'
 import { useVisualViewportHeight } from './hooks/useVisualViewportHeight'
-import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
+import { useKeyboardShortcuts, type Shortcut } from './hooks/useKeyboardShortcuts'
+import { useHeldModifiers } from './hooks/useHeldModifiers'
 import { useLocalStorage } from './hooks/useLocalStorage'
 import { useComposerSnippets } from './hooks/useComposerSnippets'
 import { usePanelColumnResize } from './hooks/usePanelColumnResize'
@@ -163,6 +164,16 @@ export function App() {
   /** Which of the open panels is currently focused (controls settings
    *  panel target + clears unread when selected). */
   const [focusedId, setFocusedId] = useState<string | null>(null)
+  /** External composer-focus signals for the three main-grid slots. The
+   *  mod+1/2/3 shortcuts bump slot i's counter so the target panel's
+   *  <Composer> refocuses after switching (Composer refocuses whenever its
+   *  `focusSignal` prop changes). Monotonic counters — only the value
+   *  *changing* matters, never the value itself. */
+  const [panelFocusSignals, setPanelFocusSignals] = useState<[number, number, number]>([0, 0, 0])
+  /** Held key-hint modifiers. Ctrl/Cmd lights up the slot pills (mod+1/2/3),
+   *  Alt reveals the group-pill number badges (alt+1..9). Re-renders only on
+   *  actual modifier press/release. */
+  const heldModifiers = useHeldModifiers()
   /** Mobile drawer (sidebar) open state. Desktop ignores this — the sidebar
    *  is always a static grid column there. */
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -2352,24 +2363,51 @@ export function App() {
   //     the dialog covers the drawer, etc.).
   const shortcuts = useMemo(
     () => [
+      // Alt+1..Alt+9 activate the Nth group — keyboard equivalent of
+      // clicking a sidebar group pill. Generated dynamically so the
+      // ShortcutHelp panel only lists real groups (0 groups → none).
+      ...Array.from({ length: Math.min(groups.length, 9) }, (_, i): Shortcut => ({
+        combo: `alt+${i + 1}`,
+        allowInInput: true,
+        handler: () => {
+          const g = groupsRef.current[i]
+          if (g) handleActivateGroup(g.id)
+        },
+        description: `Activate group ${i + 1}`,
+      })),
         {
           combo: 'mod+1',
+          // allowInInput: the whole point is to switch panels while typing
+          // in the composer. Without it the input-safe dispatcher swallows
+          // the combo and the browser's native Ctrl+1 tab-switch fires.
+          allowInInput: true,
           handler: () => {
-            if (openIdsRef.current[0]) setFocusedId(openIdsRef.current[0])
+            const id = openIdsRef.current[0]
+            if (!id) return
+            setFocusedId(id)
+            setPanelFocusSignals((s) => [s[0] + 1, s[1], s[2]] as [number, number, number])
           },
           description: 'Focus slot 1',
         },
         {
           combo: 'mod+2',
+          allowInInput: true,
           handler: () => {
-            if (openIdsRef.current[1]) setFocusedId(openIdsRef.current[1])
+            const id = openIdsRef.current[1]
+            if (!id) return
+            setFocusedId(id)
+            setPanelFocusSignals((s) => [s[0], s[1] + 1, s[2]] as [number, number, number])
           },
           description: 'Focus slot 2',
         },
         {
           combo: 'mod+3',
+          allowInInput: true,
           handler: () => {
-            if (openIdsRef.current[2]) setFocusedId(openIdsRef.current[2])
+            const id = openIdsRef.current[2]
+            if (!id) return
+            setFocusedId(id)
+            setPanelFocusSignals((s) => [s[0], s[1], s[2] + 1] as [number, number, number])
           },
           description: 'Focus slot 3',
         },
@@ -2534,7 +2572,7 @@ export function App() {
           description: 'Close overlay / Interrupt / Double-tap for resume',
         },
       ],
-      [closeSession, setGitPanelOpenFor, setHelpOpen, setSettingsOpenFor, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel, setSidebarCollapsed],
+      [groups.length, handleActivateGroup, closeSession, setGitPanelOpenFor, setHelpOpen, setSettingsOpenFor, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel, setSidebarCollapsed],
       // requestResumeForPanel is intentionally omitted — it's declared after
       // this useMemo (line order) and is stable (useCallback with stable deps).
     )
@@ -3510,6 +3548,7 @@ export function App() {
           activeGroupId={activeGroupId}
           maxGroupSize={maxGroupSize}
           isMobile={isMobile}
+          showGroupHints={heldModifiers.alt}
         />
         <div
           className={`sidebar-resizer ${sidebarResize.dragging ? 'dragging' : ''}`}
@@ -3701,6 +3740,8 @@ export function App() {
                       clearing={clearing}
                       hasUnread={!!unread[s.id]}
                       slot={i + 1}
+                      composerFocusSignal={panelFocusSignals[i]}
+                      showSlotHints={heldModifiers.ctrlOrMeta}
                       entering={entering}
                       onAnimEnd={entering ? handlePanelAnimEnd : undefined}
                       accentStyle={sessionAccentMap.get(s.id)}

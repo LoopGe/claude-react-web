@@ -257,6 +257,21 @@ body.resizing-col .app {
   background: var(--accent);
   color: var(--on-accent);
 }
+/* Key-hint mode (Ctrl/Cmd held): a breathing accent halo around the slot
+   number so the mod+<n> focus shortcut is discoverable without permanent
+   chrome. Animates box-shadow only — never background/color — so the
+   focused/unfocused fill underneath is preserved. Mirrors the perm-badge
+   halo pulse; frozen under reduced-motion. */
+.chat-panel-slot.key-hint {
+  animation: chat-panel-slot-hint 1.2s ease-in-out infinite;
+}
+@keyframes chat-panel-slot-hint {
+  0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent); }
+  50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 55%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-panel-slot.key-hint { animation: none; }
+}
 
 /* Status dot — one of live/working/terminated/err/dormant. Colour and
    animation map to statusClass() in App.tsx. */

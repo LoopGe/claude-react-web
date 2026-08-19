@@ -109,6 +109,13 @@ export interface ChatPanelProps {
    *  header so the user can tell this panel apart from the sidebar card
    *  and map it to the Ctrl+<n> shortcut. */
   slot: number
+  /** External composer-focus signal from App — bumped by the mod+1/2/3
+   *  slot shortcuts. Forwarded to <Chat> → <Composer> so switching panels
+   *  also refocuses the target panel's composer. */
+  composerFocusSignal?: number
+  /** True while Ctrl/Cmd is held — paints the slot pill with a key-hint
+   *  highlight so the mod+<n> mapping is discoverable. */
+  showSlotHints?: boolean
   /** Per-session accent overrides (sets --accent / --accent-strong on the
    *  panel root so all child var() references pick up the session colour). */
   accentStyle?: CSSProperties
@@ -228,6 +235,8 @@ export const ChatPanel = memo(function ChatPanel({
   entering,
   onAnimEnd,
   slot,
+  composerFocusSignal,
+  showSlotHints,
   accentStyle,
   onFocus,
   onClose,
@@ -549,9 +558,9 @@ export const ChatPanel = memo(function ChatPanel({
         }}
       >
         <div className="chat-panel-header-row1">
-        <Tooltip label={`Slot ${slot} · Ctrl+${slot} to focus`} placement="bottom">
+        <Tooltip label={`Slot ${slot} · Ctrl/Cmd+${slot} to focus`} placement="bottom">
           <span
-            className={`chat-panel-slot ${focused ? 'focused' : ''}`}
+            className={`chat-panel-slot ${focused ? 'focused' : ''} ${showSlotHints ? 'key-hint' : ''}`}
             aria-label={`slot ${slot}`}
           >
             {slot}
@@ -811,6 +820,7 @@ export const ChatPanel = memo(function ChatPanel({
             key={session.id}
             session={session}
             focused={focused}
+            composerFocusSignal={composerFocusSignal}
             globalPrefs={globalPrefs}
             clearing={clearing}
             onSessionUpdate={onSessionUpdate}
