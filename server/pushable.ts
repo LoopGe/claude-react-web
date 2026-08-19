@@ -29,6 +29,18 @@ export interface Pushable<T> {
    *  by crash recovery to carry a pending user turn across a re-resume).
    *  Does not affect an item already handed to a waiting consumer. */
   drainQueue: () => T[]
+  /** Resolve a parked consumer (waiter) with `{ done: true }` WITHOUT ending
+   *  the pushable. The consumer's `for await` loop ends normally and stops
+   *  parking a waiter, but the queue stays open and `closed` stays false, so
+   *  subsequent push() calls queue instead of being handed to a dead consumer.
+   *  Used by the auto-resume path: the old SDK's streamInput parks a waiter
+   *  while idle, and after the CLI idle-exits the handle is aborted — without
+   *  this, the first message pushed during the resume window would be handed
+   *  to that parked waiter and dropped (the SDK's loop checks its abort
+   *  signal after each pull). Detaching the waiter first makes the message
+   *  queue, where drainQueue() can recover it for the resumed Query. No-op
+   *  when no waiter is parked. */
+  detachWaiter: () => void
   end: () => void
   closed: boolean
   /** Diagnostic: true when a consumer is blocked on next() waiting for data. */
@@ -104,6 +116,14 @@ export function createPushable<T>(
       }
       return items
     },
+    detachWaiter() {
+      if (waiter) {
+        const w = waiter
+        waiter = null
+        log.debug(`[${id}] detachWaiter() — resolved parked waiter with done=true (queue: ${queue.length}, ended: ${ended})`)
+        w({ value: undefined as unknown as T, done: true })
+      }
+    },
     end() {
       if (ended) return
       ended = true
@@ -167,6 +187,7 @@ export function createPushable<T>(
     push: (item) => state.push(item),
     clearQueue: () => state.clearQueue(),
     drainQueue: () => state.drainQueue(),
+    detachWaiter: () => state.detachWaiter(),
     end: () => state.end(),
     get closed() {
       return state.closed

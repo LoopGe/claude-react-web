@@ -317,6 +317,31 @@ function buildSnippet(text: string, query: string, maxLength = 180): string {
   return snippet
 }
 
+/** Produce a short human-readable summary of a queued user turn for the
+ *  ephemeral "undelivered" notices the auto-resume throw-path surfaces when a
+ *  window send can't be carried over. Text content is truncated; image blocks
+ *  collapse to a "[image]" marker so the notice stays one line. */
+function describeUserMessage(msg: SDKUserMessage): string {
+  const content = (msg.message as { content?: unknown } | undefined)?.content
+  if (typeof content === 'string') {
+    const t = content.trim()
+    return t.length > 120 ? `${t.slice(0, 120)}…` : t
+  }
+  if (Array.isArray(content)) {
+    const parts: string[] = []
+    for (const raw of content) {
+      const b = raw as { type?: unknown; text?: unknown } | null
+      if (!b || typeof b !== 'object') continue
+      if (b.type === 'text' && typeof b.text === 'string') parts.push(b.text)
+      else if (b.type === 'image') parts.push('[image]')
+      else parts.push(`[${String(b.type ?? 'block')}]`)
+    }
+    const joined = parts.join(' ').trim()
+    return joined.length > 120 ? `${joined.slice(0, 120)}…` : joined
+  }
+  return '(empty message)'
+}
+
 const log = createLogger('session')
 
 /** A user message after `stampReceivedAt` has stamped `receivedAt` on it.
@@ -3815,21 +3840,25 @@ export class SessionManager {
   }
 
   /** Reject user-input turns during a provider transition when the current
-   *  handle cannot safely accept them. `exiting` covers the clean-exit /
-   *  auto-resume gap: the old SDK may still own a parked input waiter, so a
-   *  push cannot be reliably recovered even before the handle is destroyed.
-   *  The closed-handle check is the final invariant: never acknowledge or
-   *  broadcast a user turn after its provider input has closed. Applied to
-   *  send()/sendContent() only — NOT clear() (the reset escape hatch must
-   *  stay usable during recovery) or execInSession (local !bash, doesn't
-   *  touch the SDK handle). */
+   *  handle cannot safely accept them. The closed-handle check is the
+   *  invariant: never acknowledge or broadcast a user turn after its provider
+   *  input has closed — a push to an ended Pushable is silently dropped, so
+   *  the UI would paint a bubble the SDK never sees.
+   *
+   *  `exiting` (the clean-exit / auto-resume gap) is deliberately NOT a
+   *  rejection reason: autoResume keeps the old handle's input queue OPEN
+   *  while it builds resume options, and respawnInPlace drains that queue
+   *  (drainQueuedInput) and re-enqueues onto the fresh handle — so a turn
+   *  sent during the resume window is carried to the new Query as its next
+   *  input, not lost. Rejecting every exiting send would degrade the normal
+   *  resume experience for the sake of a transient state the carryover
+   *  already handles. Applied to send()/sendContent() only — NOT clear() (the
+   *  reset escape hatch must stay usable during recovery) or execInSession
+   *  (local !bash, doesn't touch the SDK handle). */
   private requireSendable(id: string): Session {
     const s = this.requireRunnable(id)
     if (s.recovering) {
       throw new HttpError(409, `session ${id} is recovering from a crash; retry shortly`)
-    }
-    if (s.exiting) {
-      throw new HttpError(409, `session ${id} is restarting; retry shortly`)
     }
     if (s.handle.closed) {
       log.warn(`[session ${id}] send rejected — provider input is closed`)
@@ -4110,13 +4139,40 @@ export class SessionManager {
 
     log.info(`[session ${session.id}] auto-resuming (attempt ${resumeCount + 1}/${SessionManager.MAX_AUTO_RESUME})`)
 
-    // Destroy the old handle BEFORE the async buildResumeOpts: if the MCP
-    // OAuth refresh throws, the handle is already cleaned up (no
-    // ProcessMonitor/Pushable leak). Sends are rejected while `exiting` is
-    // true, so no user turn can be acknowledged against this closed input.
-    // respawnInPlace's destroy is a no-op (isClosed) when it runs.
-    session.handle.destroy('auto-resume')
-    const resumeOpts = await this.buildResumeOpts(session)
+    // Keep the old handle (and its input queue) OPEN while buildResumeOpts
+    // runs async (e.g. MCP OAuth refresh). A user turn sent during this
+    // resume window lands in the still-open queue; respawnInPlace then
+    // drains it (drainQueuedInput) and re-enqueues onto the fresh handle, so
+    // the turn survives as the new Query's next input instead of being
+    // dropped against an ended Pushable. Sends are no longer rejected on
+    // `exiting` alone — only once the handle is actually closed.
+    let resumeOpts: Options
+    try {
+      resumeOpts = await this.buildResumeOpts(session)
+    } catch (err) {
+      // No re-spawn will happen (the throw propagates to cleanupPump, which
+      // terminates the session). Surface any user turns that arrived during
+      // the resume window but can't be carried over: we kept the old handle's
+      // queue open precisely so a window send would queue, and a plain
+      // destroy() would abandon them silently. Drain and report each as an
+      // ephemeral notice (NOT history — the session is terminating anyway),
+      // then destroy the old handle so its ProcessMonitor/Pushable are
+      // cleaned up exactly as the pre-window destroy used to, instead of
+      // lingering on a terminated session.
+      const stranded = session.handle.drainQueuedInput?.() ?? []
+      for (const msg of stranded) {
+        this.broadcastSystemNotice(session, `自动恢复失败，消息未送达：${describeUserMessage(msg)}`)
+      }
+      session.handle.destroy('auto-resume-failed')
+      throw err
+    }
+    // Re-check liveness after the async buildResumeOpts — a concurrent
+    // unload() (Delete / shutdown) may have removed the session, and clear()
+    // may have set `clearing` to drive its own respawn. Mirroring
+    // crashRecoveryStep1: returning true makes cleanupPump skip its
+    // termination tail in both cases (the session is either gone or being
+    // taken over by clear()).
+    if (!this.sessions.has(session.id) || session.terminated || session.clearing) return true
     this.respawnInPlace(session, resumeOpts, 'auto-resume')
     this.autoResumeCounts.set(session, resumeCount + 1)
     // A clean idle-autoResume means the session was healthy (the prior

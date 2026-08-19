@@ -431,13 +431,17 @@ describe('SessionManager', () => {
     }
   })
 
-  it('rejects a user turn while autoResume is building resume options', async () => {
+  it('carries a user turn sent during the autoResume window to the resumed handle (parked SDK waiter detached on abort)', async () => {
     const info = sm.create({})
     const firstHandle = mockHandles[0]
+    // Complete a first turn so autoResume's `lastTurnAt` guard passes. The
+    // result re-arms the mock SDK's input waiter, so the SDK's streamInput is
+    // now parked in next() — exactly the idle state that precedes a clean exit.
     sm.send(info.id, 'first')
     await tick()
     firstHandle.emit({ type: 'result', session_id: info.id })
     await tick()
+    expect(mockHandles[0].consumed.map((m) => (m as { message?: { content?: unknown } }).message?.content)).toEqual(['first'])
 
     const internals = sm as unknown as {
       sessions: Map<string, unknown>
@@ -450,21 +454,116 @@ describe('SessionManager', () => {
       releaseResumeOpts = resolve
     }))
 
-    // A clean process exit marks the session as exiting before autoResume
-    // performs asynchronous setup. Input in this window must fail explicitly;
-    // accepting it would paint a bubble even though the old SDK can no longer
-    // guarantee delivery.
+    // Simulate the clean-exit path (handleProcessExit): mark the session
+    // exiting and abort the handle BEFORE autoResume. abort() now DETACHES the
+    // parked SDK input waiter (the fix for the message-loss finding), so the
+    // first window send QUEUES instead of being handed to that waiter and
+    // dropped — the SDK's streamInput checks its abort signal after each pull.
     ;(session as { exiting: boolean }).exiting = true
+    ;(session as { handle: { abort: () => void } }).handle.abort()
+
     const resuming = internals.autoResume(session)
-    expect(() => sm.send(info.id, 'sent-during-auto-resume')).toThrow(/restarting/i)
+
+    expect((session as { handle: { closed: boolean } }).handle.closed).toBe(false)
+    expect(() => sm.send(info.id, 'sent-during-auto-resume')).not.toThrow()
     expect(sm.getHistory(info.id)?.some((message) =>
       (message as { message?: { content?: unknown } }).message?.content === 'sent-during-auto-resume',
+    )).toBe(true)
+    // It sits in the old handle's input queue — NOT consumed by the old SDK
+    // (the waiter was detached, so push queued instead of direct hand-off).
+    expect((session as { handle: { queueDepth: number } }).handle.queueDepth).toBe(1)
+    expect(mockHandles[0].consumed.some((m) =>
+      (m as { message?: { content?: unknown } }).message?.content === 'sent-during-auto-resume',
     )).toBe(false)
 
+    // Release resume opts → respawnInPlace drains the old queue and
+    // re-enqueues onto the fresh handle, which the mock consumes as its first
+    // input.
     releaseResumeOpts({ resume: info.id })
     await resuming
     expect(mockHandles).toHaveLength(2)
     expect(mockHandles[1].options.resume).toBe(info.id)
+    expect(mockHandles[1].consumed.some((m) =>
+      (m as { message?: { content?: unknown } }).message?.content === 'sent-during-auto-resume',
+    )).toBe(true)
+  })
+
+  it('drains and surfaces a user turn stranded when buildResumeOpts throws during autoResume', async () => {
+    const info = sm.create({})
+    const internals = sm as unknown as {
+      sessions: Map<string, unknown>
+      autoResume: (session: unknown) => Promise<boolean>
+      buildResumeOpts: (session: unknown) => Promise<Record<string, unknown>>
+    }
+    const session = internals.sessions.get(info.id)!
+    // Establish the autoResume precondition (a completed turn).
+    ;(session as { lastTurnAt?: number }).lastTurnAt = Date.now()
+
+    // Subscribe so we can observe the ephemeral "undelivered" notice.
+    const sub = sm.subscribe(info.id)
+    const it = sub.iterable[Symbol.asyncIterator]()
+
+    // Park buildResumeOpts so we can send during the resume window, then fail
+    // the resume — the stranded turn must be surfaced, not silently abandoned.
+    let rejectBuildResumeOpts!: (err: unknown) => void
+    internals.buildResumeOpts = vi.fn(
+      (): Promise<Record<string, unknown>> => new Promise((_, reject) => {
+        rejectBuildResumeOpts = reject
+      }),
+    )
+    ;(session as { exiting: boolean }).exiting = true
+    // Clean-exit path (handleProcessExit) aborts the handle, detaching the
+    // parked SDK input waiter so the window send QUEUES (drainable) instead of
+    // being handed straight to the waiter.
+    ;(session as { handle: { abort: () => void } }).handle.abort()
+
+    const resuming = internals.autoResume(session)
+    // First frame: the window send itself (broadcast to history/subscribers).
+    const firstFrame = it.next()
+    sm.send(info.id, 'stranded-during-window')
+    expect((session as { handle: { queueDepth: number } }).handle.queueDepth).toBe(1)
+    // Second frame: the ephemeral undelivered notice.
+    const noticeFrame = it.next()
+
+    rejectBuildResumeOpts(new Error('mcp refresh failed'))
+    await expect(resuming).rejects.toThrow('mcp refresh failed')
+
+    expect((await firstFrame).value).toMatchObject({ type: 'user' })
+    const notice = (await noticeFrame).value as { type?: string; error?: string }
+    expect(notice.type).toBe('system')
+    expect(notice.error).toContain('stranded-during-window')
+    // The stranded turn was drained (not abandoned) and the handle destroyed.
+    expect((session as { handle: { queueDepth: number } }).handle.queueDepth).toBe(0)
+    expect((session as { handle: { closed: boolean } }).handle.closed).toBe(true)
+    sub.unsubscribe()
+  })
+
+  it('autoResume bails (no respawn) if the session is unloaded while buildResumeOpts is pending', async () => {
+    const info = sm.create({})
+    const internals = sm as unknown as {
+      sessions: Map<string, unknown>
+      autoResume: (session: unknown) => Promise<boolean>
+      buildResumeOpts: (session: unknown) => Promise<Record<string, unknown>>
+    }
+    const session = internals.sessions.get(info.id)!
+    // Establish the autoResume precondition (a completed turn).
+    ;(session as { lastTurnAt?: number }).lastTurnAt = Date.now()
+    let releaseResumeOpts!: (opts: Record<string, unknown>) => void
+    internals.buildResumeOpts = vi.fn((): Promise<Record<string, unknown>> => new Promise((resolve) => {
+      releaseResumeOpts = resolve
+    }))
+    ;(session as { exiting: boolean }).exiting = true
+
+    const resuming = internals.autoResume(session)
+    // A concurrent unload() (Delete / shutdown) removes the session from the
+    // live map while the resume setup is still pending.
+    await sm.unload(info.id)
+    // Release resume opts — the post-await liveness re-check must see the
+    // session is gone and return WITHOUT respawning a Query for a dead session.
+    releaseResumeOpts({ resume: info.id })
+    await expect(resuming).resolves.toBe(true)
+    // No respawn happened: still exactly one mock handle (the original).
+    expect(mockHandles).toHaveLength(1)
   })
 
   it('rejects a user turn when the provider input is already closed', () => {

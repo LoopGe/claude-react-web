@@ -74,6 +74,58 @@ describe('createPushable', () => {
     expect(p.closed).toBe(true)
   })
 
+  describe('detachWaiter', () => {
+    it('resolves a parked next() with done:true without ending the pushable', async () => {
+      const p = createPushable<number>()
+      const it = p.iterable[Symbol.asyncIterator]()
+      // Park a consumer in next() (the SDK's streamInput does this while idle).
+      const pending = it.next()
+      expect(p.hasWaiter).toBe(true)
+      p.detachWaiter()
+      expect(await pending).toEqual({ value: undefined, done: true })
+      // detachWaiter is NOT end() — the producer stays open.
+      expect(p.closed).toBe(false)
+    })
+
+    it('queues pushes after detaching (no dead consumer to swallow them)', async () => {
+      const p = createPushable<number>()
+      const it = p.iterable[Symbol.asyncIterator]()
+      const pending = it.next()
+      p.detachWaiter()
+      await pending
+      // With the waiter gone, push queues instead of direct hand-off.
+      p.push(7)
+      expect(p.queueDepth).toBe(1)
+      // A fresh iterator consumes the queued item.
+      const it2 = p.iterable[Symbol.asyncIterator]()
+      expect(await it2.next()).toEqual({ value: 7, done: false })
+    })
+
+    it('is a no-op when no waiter is parked', () => {
+      const p = createPushable<number>()
+      p.push(1)
+      expect(p.hasWaiter).toBe(false)
+      expect(() => p.detachWaiter()).not.toThrow()
+      // Queue intact, pushable open.
+      expect(p.queueDepth).toBe(1)
+      expect(p.closed).toBe(false)
+    })
+
+    it('allows a later end() to terminate the pushable', async () => {
+      const p = createPushable<number>()
+      const it = p.iterable[Symbol.asyncIterator]()
+      const pending = it.next()
+      p.detachWaiter()
+      await pending
+      expect(p.closed).toBe(false)
+      p.end()
+      expect(p.closed).toBe(true)
+      // After end, a fresh iterator sees done.
+      const it2 = p.iterable[Symbol.asyncIterator]()
+      expect(await it2.next()).toEqual({ value: undefined, done: true })
+    })
+  })
+
   describe('onConsume hook', () => {
     it('fires on the queue-shift path (item buffered, then read)', async () => {
       const consumed: number[] = []

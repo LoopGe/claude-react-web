@@ -60,6 +60,15 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
   }
 
   abort(): void {
+    // Detach any parked SDK input waiter BEFORE aborting the controller.
+    // The CLI idle-exited and autoResume keeps this handle's input queue open
+    // while it builds resume options; the SDK's streamInput is parked in
+    // next() awaiting the next prompt message. Without this, the first message
+    // pushed during the resume window would be handed to that parked waiter
+    // and dropped (the SDK's loop checks its abort signal after each pull).
+    // Detaching first makes the message queue, where respawnInPlace's
+    // drainQueuedInput can recover it for the resumed Query.
+    this.input.detachWaiter()
     this.abortController.abort()
   }
 
