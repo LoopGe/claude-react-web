@@ -74,7 +74,7 @@ export function splitStreamSegments(content: string): StreamSegment[] {
       if (!complete) continue // partial opener at tail — held, no flash
       flushText()
       fenceRun = fenceLength(text)
-      lang = text.slice(fenceRun).trim() || null
+      lang = (text.match(/^ {0,3}`{3,}([^`]*)$/)?.[1].trim() || null)
       inFence = true
       continue
     }

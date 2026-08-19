@@ -90,11 +90,21 @@ describe('splitStreamSegments', () => {
     ])
   })
 
+  it('extracts the language for 1-3 space indented fence openers', () => {
+    for (const indent of [' ', '  ', '   ']) {
+      expect(splitStreamSegments(`${indent}\`\`\`js\nx=1\n${indent}\`\`\`\n`)).toEqual([
+        { type: 'code', lang: 'js', content: 'x=1', closed: true },
+      ])
+    }
+  })
+
   it('honors the recovery invariant: rebuilding fully-closed inputs reproduces the input', () => {
     // NOTE: only triple-backtick fences round-trip byte-exactly. A
     // quadruple-backtick fence is elided and rebuilt as a triple fence (the
     // segment does not carry fenceRun), so it is deliberately excluded here —
-    // its own test above covers the run-length rule instead.
+    // its own test above covers the run-length rule instead. Likewise 1–3 space
+    // indented fences are normalized away on rebuild (covered by their own
+    // shape test above).
     const fixtures = [
       '',
       'a\n```js\nx=1\n```\nb',
