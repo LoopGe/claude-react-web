@@ -32,7 +32,7 @@ export function ShortcutHelp({ open, onClose, shortcuts, commands = [] }: Props)
   const [tab, setTab] = useState<Tab>(commands.length > 0 ? 'commands' : 'shortcuts')
 
   return (
-    <Overlay variant="modal" open={open} onClose={onClose} cardStyle={{ maxWidth: 440 }}>
+    <Overlay variant="modal" ariaLabel={showCommands ? 'Help' : 'Keyboard shortcuts'} open={open} onClose={onClose} cardStyle={{ maxWidth: 440 }}>
         <div className="modal-header">
           <h3>{showCommands ? 'Help' : 'Keyboard shortcuts'}</h3>
         </div>

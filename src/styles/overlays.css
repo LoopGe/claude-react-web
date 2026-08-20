@@ -601,6 +601,15 @@
   background: color-mix(in srgb, var(--danger) 10%, transparent);
   cursor: pointer;
   white-space: nowrap;
+  position: relative;
+}
+/* Extend the ~17px-tall stop button's hit area to the WCAG 2.5.8 24px
+   floor without changing its visual size (vertical only — the header is a
+   flex row, so vertical growth can't overlap a neighbouring control). */
+.bash-msg-abort::after {
+  content: '';
+  position: absolute;
+  inset: -4px 0;
 }
 .bash-msg-abort:hover { background: color-mix(in srgb, var(--danger) 20%, transparent); }
 .bash-msg-body { padding: 8px 10px; }
@@ -704,15 +713,20 @@
   min-width: 48px;
   text-align: center;
 }
-.message-search-nav {
-  padding: 2px 8px;
-  font-size: 14px;
-  line-height: 1;
-}
+.message-search-nav,
 .message-search-close {
   padding: 2px 8px;
   font-size: 14px;
   line-height: 1;
+  position: relative;
+}
+/* Extend the ~18px arrow/close buttons to the WCAG 2.5.8 24px floor.
+   Vertical only — the nav buttons sit side by side in the search bar. */
+.message-search-nav::after,
+.message-search-close::after {
+  content: '';
+  position: absolute;
+  inset: -3px 0;
 }
 
 /* ── Search result highlighting ──────────────────────────────────── */
@@ -948,6 +962,15 @@ mark.search-hl.search-hl-active {
   font-size: 13px;
   line-height: 1.4;
   opacity: 0.7;
+  position: relative;
+}
+/* Extend the ~18px ✕ to the WCAG 2.5.8 24px floor. The horizontal 4px
+   expansion is safe because .toast's 8px flex gap to the action button
+   (when present) absorbs it — don't widen this inset beyond the gap. */
+.toast-dismiss::after {
+  content: '';
+  position: absolute;
+  inset: -3px -4px;
 }
 .toast-dismiss:hover {
   opacity: 1;

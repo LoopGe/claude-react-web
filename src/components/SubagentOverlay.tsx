@@ -7,6 +7,7 @@
 import { memo, useEffect, useMemo, useRef } from 'react'
 import { MessageList } from './MessageList'
 import { useEscapeStack } from '../hooks/useEscapeStack'
+import { useFocusTrap } from '../hooks/useFocusTrap'
 import { formatElapsed } from '../utils/format'
 import { IconX, IconArrowLeft } from './icons/ToolIcons'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
@@ -195,6 +196,23 @@ export const SubagentOverlay = memo(function SubagentOverlay({
     canClose: () => !isExiting,
     getContainer: () => overlayRef.current,
   })
+
+  // Focus trap + restore, mirroring the Settings/Git overlays' Overlay
+  // configuration (trapRefTarget="backdrop", focusEscapeSelector=".chat-panel").
+  // Before this, closing the overlay left keyboard focus on <body>: every
+  // other overlay in the app restores focus to its trigger on close. The
+  // escapeSelector lets focus move to a sibling chat panel while this column's
+  // overlay is open (same semantics as Settings/Git), and the trap stays
+  // engaged through the exit animation — focus is restored on unmount.
+  //
+  // `active: !!current` (not constant true): this component renders null when
+  // the index entry is missing, and useFocusTrap's effect binds the ref-based
+  // listeners once per `active` flip. With a constant true, a first commit
+  // where the entry isn't in the index yet (stack persisted across resume,
+  // index still rebuilding from replay) would leave the trap bound to a null
+  // ref forever — open overlay, unmanaged keyboard focus. Gating on `current`
+  // re-arms the trap when content actually appears.
+  useFocusTrap(overlayRef, { active: !!current, restoreFocus: true, escapeSelector: '.chat-panel' })
 
   // If the referenced subagent vanishes from the index (session reset,
   // fork, etc.) the overlay would render null and the stack would be

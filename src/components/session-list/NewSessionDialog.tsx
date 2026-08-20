@@ -291,6 +291,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
       <Overlay
         variant="modal"
         cardClassName="modal-new-session"
+        ariaLabel="New session"
         open={open}
         onClose={onCancel}
         // Esc closes the dialog, but not when the directory picker OR the MCP

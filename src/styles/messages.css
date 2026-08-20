@@ -592,7 +592,9 @@
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
-  overflow: hidden;
+  /* No overflow:hidden — it would clip the forget button's expanded hit
+     area (see .recent-chip-forget::after). The children round their own
+     outer corners instead, so hover backgrounds stay within the chip. */
   font-size: 11.5px;
 }
 .recent-chip-use {
@@ -602,8 +604,11 @@
   font-family: var(--mono);
   padding: 3px 6px;
   cursor: pointer;
+  border-radius: var(--radius-xs) 0 0 var(--radius-xs);
 }
 .recent-chip-use:hover { background: var(--bg); }
+/* Chip with no forget button: round the right side too. */
+.recent-chip-use:last-child { border-radius: var(--radius-xs); }
 .recent-chip-forget {
   background: transparent;
   border: none;
@@ -611,6 +616,19 @@
   color: var(--fg-muted);
   padding: 3px 6px;
   cursor: pointer;
+  position: relative;
+  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+}
+/* Extend the ~20px × to the WCAG 2.5.8 24px floor. Vertical only — the
+   adjacent "use" half of the chip is also a touch target. Capped at -2px:
+   the chips row's 4px flex gap (between wrapped rows) and the 2px
+   margin-top (to the Model input above) only absorb 2px each way, so a
+   larger inset would overlap the input or a neighbouring row's × — a
+   click in that band forgets the WRONG model, with no undo. */
+.recent-chip-forget::after {
+  content: '';
+  position: absolute;
+  inset: -2px 0;
 }
 .recent-chip-forget:hover { color: var(--danger); background: var(--bg); }
 

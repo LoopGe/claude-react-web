@@ -143,7 +143,10 @@
   --hljs-blue: #61aeee;
   --hljs-yellow: #e6c07b;
   --plugin-active: var(--ok);
-  --plugin-inactive: #636873;
+  /* Inactive status-dot ink. Non-text UI, so the bar is WCAG 1.4.11 (3:1)
+     against every bg it can sit on (--bg/--bg-elev/--bg-elev-2) — the old
+     #636873 was ~2.9:1 on --bg-elev-2. See plugin-inactive-contrast.test.ts. */
+  --plugin-inactive: #7d8894;
   /* Drop-shadow for floating overlays (Git/Settings panels, modals).
      Defined here so light theme can flatten the alpha — dark needs a
      deeper shadow against the elevated bg, light needs a softer one. */
@@ -252,7 +255,10 @@
   --hljs-blue: #4078f2;
   --hljs-yellow: #c18401;
   --plugin-active: var(--ok);
-  --plugin-inactive: #9e9e9e;
+  /* Inactive status-dot ink, light theme. The old #9e9e9e was ~2.6:1 on
+     white — below WCAG 1.4.11's 3:1 floor for non-text UI. #767676 is
+     4.5:1 on white and ~3.8:1 on --bg-elev-2. */
+  --plugin-inactive: #767676;
   --overlay-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
   --qr-bg: #ffffff;
   /* Effect tokens — light theme softens shadow alphas and lightens the

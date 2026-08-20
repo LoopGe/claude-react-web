@@ -21,6 +21,7 @@
 import { memo, useMemo, useRef, useState } from 'react'
 import { MessageList } from './MessageList'
 import { useEscapeStack } from '../hooks/useEscapeStack'
+import { useFocusTrap } from '../hooks/useFocusTrap'
 import { formatElapsed } from '../utils/format'
 import { IconX, IconWorkflow, IconChevronRight } from './icons/ToolIcons'
 import { AnimatedDetails } from './AnimatedCollapse'
@@ -95,6 +96,11 @@ export const WorkflowOverlay = memo(function WorkflowOverlay({
     canClose: () => !isExiting,
     getContainer: () => overlayRef.current,
   })
+
+  // Focus trap + restore, mirroring SubagentOverlay and the Settings/Git
+  // overlays (focusEscapeSelector=".chat-panel"): closes the gap where
+  // dismissing the overlay left keyboard focus on <body>.
+  useFocusTrap(overlayRef, { restoreFocus: true, escapeSelector: '.chat-panel' })
 
   const startedAt = record.startedAt
   const endedAt = record.endedAt

@@ -106,7 +106,7 @@ export function ResetConfigDialog({ open, onClose }: Props) {
   const normalServer = (SERVER_RESET_ITEMS.filter((it) => !(DANGER_ITEMS as readonly string[]).includes(it)) as ServerResetItem[])
 
   return (
-    <Overlay variant="modal" cardClassName="modal-reset-config" open={open} onClose={onClose} canCloseOnBackdrop={() => !clearing} inertOnExit>
+    <Overlay variant="modal" cardClassName="modal-reset-config" ariaLabel="Clear configuration & data" open={open} onClose={onClose} canCloseOnBackdrop={() => !clearing} inertOnExit>
         <div className="modal-header">
           <h3>Clear configuration &amp; data</h3>
           <button className="btn btn-icon-sm" onClick={onClose} disabled={clearing} aria-label="Close"><IconX size={14} /></button>

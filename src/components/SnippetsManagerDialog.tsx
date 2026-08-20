@@ -197,6 +197,7 @@ export function SnippetsManagerDialog({ open = true, api, onClose }: Props) {
                         type="button"
                         className="btn btn-icon"
                         title="Edit"
+                        aria-label="Edit"
                         onClick={() => startEdit(s)}
                       >
                         <IconPencil size={14} />
@@ -205,6 +206,7 @@ export function SnippetsManagerDialog({ open = true, api, onClose }: Props) {
                         type="button"
                         className="btn btn-icon btn-danger"
                         title="Delete"
+                        aria-label="Delete"
                         onClick={() => api.remove(s.id)}
                       >
                         <IconTrash size={14} />

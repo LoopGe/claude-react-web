@@ -378,7 +378,7 @@ function ContributionsSection({ plugin }: { plugin: AppPluginClientInfo }) {
       )}
       {c.diagnostics.length > 0 && (
         <div className="app-plugins-diag">
-          {c.diagnostics.map((d, i) => <div key={i}>⚠ {d}</div>)}
+          {c.diagnostics.map((d, i) => <div key={i}><span aria-hidden="true">⚠ </span>{d}</div>)}
         </div>
       )}
       <p className="app-plugins-hosts-ref">Permission catalog: {ALL_PERMISSIONS.length} capabilities.</p>

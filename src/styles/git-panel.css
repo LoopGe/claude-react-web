@@ -68,6 +68,16 @@
   font-weight: 600;
   width: 22px;
   height: 22px;
+  position: relative;
+}
+/* Extend the 22px sync buttons' hit area to the WCAG 2.5.8 24px floor
+   without changing their visual size. The 2px flex gap between the two
+   buttons absorbs the ±1px horizontal expansion, so the hit areas never
+   overlap. */
+.git-panel-sync-actions .git-panel-icon-btn::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
 }
 .git-panel-spacer { flex: 1; }
 .git-panel-icon-btn {

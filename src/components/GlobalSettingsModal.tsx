@@ -1208,6 +1208,7 @@ function SkillsTab({
           <Overlay
             variant="modal"
             cardClassName="settings-skill-preview-modal"
+            ariaLabel={`Skill preview: ${ps.name}`}
             open={previewIsOpen}
             onClose={() => setPreviewSkill(null)}
           >

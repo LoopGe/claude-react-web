@@ -155,6 +155,7 @@ export function DirectoryPicker({
   return (
     <Overlay
       variant="modal"
+      ariaLabel={title}
       open={open}
       onClose={onClose}
       // The create row is the topmost layer: one Escape dismisses it before

@@ -990,6 +990,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
       <Overlay
         variant="marketplace"
         portal
+        ariaLabel="Plugin Marketplace"
         open={showMarketplace}
         onClose={() => setShowMarketplace(false)}
         trapFocus
