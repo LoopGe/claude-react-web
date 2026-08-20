@@ -3,6 +3,7 @@
 
 import { useLayoutEffect, useMemo, useRef } from 'react'
 import type { SlashCommand } from '../types'
+import { useEscapeStack } from '../hooks/useEscapeStack'
 import { pluginTagOf } from '../utils/text'
 
 interface Props {
@@ -88,27 +89,27 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
     el.style.top = `${top}px`
   }, [anchorRef, filtered.length])
 
-  // --- Outside-click + Escape dismissal ---
+  // --- Outside-click dismissal (Escape is owned by the shared stack below) ---
   useLayoutEffect(() => {
     const handleMouseDown = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
         onClose()
       }
     }
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        e.stopPropagation()
-        onClose()
-      }
-    }
     window.addEventListener('mousedown', handleMouseDown, true)
-    window.addEventListener('keydown', handleKeyDown, true)
     return () => {
       window.removeEventListener('mousedown', handleMouseDown, true)
-      window.removeEventListener('keydown', handleKeyDown, true)
     }
   }, [onClose])
+
+  // Esc closes via the shared escape stack (its dispatch already prevents
+  // default + stops propagation), so a typed "/" never bubbles Escape to the
+  // composer's App-level handlers.
+  useEscapeStack({
+    active: true,
+    onEscape: onClose,
+    getContainer: () => rootRef.current,
+  })
 
   // Clamp selectedIndex to valid range.
   const idx = Math.max(0, Math.min(selectedIndex, filtered.length - 1))

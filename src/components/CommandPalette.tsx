@@ -5,11 +5,11 @@ import type { MessageSearchHit, MessageSearchResponse } from '../../shared/searc
 import type { Shortcut } from '../hooks/useKeyboardShortcuts'
 import { api } from '../hooks/useApi'
 import { useExitPresence } from '../hooks/useExitPresence'
-import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
 import type { SessionInfo } from '../types'
 import { formatCombo } from '../utils/format-combo'
+import { Overlay } from './Overlay'
 
 interface Props {
   open: boolean
@@ -48,12 +48,10 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
   const listRef = useRef<HTMLDivElement>(null)
   const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
   const listRefMerged = useMergedRef(listRef, setListOs)
-  const paletteRef = useRef<HTMLDivElement>(null)
-  // Focus trap + restore: the palette is opened from the toolbar / Mod+K and
-  // closed by Esc / pick / backdrop. Without restore, focus fell to <body>
-  // on close, stranding keyboard users. `active: open` releases the trap
-  // during the exit animation so the input can unmount cleanly.
-  useFocusTrap(paletteRef, { restoreFocus: true, active: open })
+  // <Overlay variant="palette"> owns the focus trap + restore (opened from the
+  // toolbar / Mod+K, closed by Esc / pick / backdrop) and the escape-stack
+  // registration. Without restore, focus fell to <body> on close, stranding
+  // keyboard users.
   const presence = useExitPresence(open)
   const trimmedQuery = query.trim()
 
@@ -169,18 +167,6 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
     el?.scrollIntoView({ block: 'nearest' })
   }, [clampedSelectedIndex])
 
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        onClose()
-      }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [open, onClose])
-
   if (!presence.shouldRender) return null
 
   const runSelected = () => {
@@ -209,12 +195,15 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
   const showSearchError = trimmedQuery.length >= 2 && messageSearchError && messageHits.length === 0
 
   return (
-    <div
-      className="palette-backdrop"
-      data-state={open ? 'open' : 'closing'}
-      onMouseDown={(e) => { if (open && e.target === e.currentTarget) onClose() }}
+    <Overlay
+      variant="palette"
+      ariaLabel="Command palette"
+      open={open}
+      onClose={onClose}
+      onKeyDown={handleKeyDown}
+      trapFocus
+      restoreFocus
     >
-      <div ref={paletteRef} className="palette" role="dialog" aria-modal={open ? 'true' : 'false'} aria-label="Command palette" onKeyDown={handleKeyDown}>
         <input
           ref={inputRef}
           className="palette-input"
@@ -258,7 +247,6 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
           {showSearching && <div className="palette-empty">Searching messages...</div>}
           {showSearchError && <div className="palette-empty">Message search failed</div>}
         </div>
-      </div>
-    </div>
+    </Overlay>
   )
 }

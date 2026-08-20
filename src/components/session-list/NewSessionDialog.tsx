@@ -1,7 +1,6 @@
-import { lazy, Suspense, useEffect, useId, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useId, useState } from 'react'
 import { DirectoryPicker } from '../DirectoryPicker'
 import { IconX, IconFolder, IconPencil } from '../icons/ToolIcons'
-import { useFocusTrap } from '../../hooks/useFocusTrap'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { api } from '../../hooks/useApi'
 import { shortenPath } from '../../utils/paths'
@@ -9,6 +8,7 @@ import { AccentPicker } from '../AccentPicker'
 import type { McpServerConfigMeta, NewSessionForm, PermissionMode, SessionGroup } from '../../types'
 import { PERMISSION_MODES } from '../../types'
 import { useExitPresence } from '../../hooks/useExitPresence'
+import { Overlay } from '../Overlay'
 
 // McpInstaller is only opened when the user clicks "Add MCP" from inside
 // this dialog. Lazy-load to keep NewSessionDialog itself lean.
@@ -74,7 +74,6 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   // success, but a slow create call would otherwise let an impatient
   // user click "Create" twice and spawn duplicate sessions.
   const [submitting, setSubmitting] = useState(false)
-  const dialogRef = useRef<HTMLDivElement>(null)
 
   // Advanced options
   const [effort, setEffort] = useState('')
@@ -222,23 +221,6 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
     })
   }
 
-  // Esc closes the dialog, but not when the directory picker OR the MCP
-  // installer is open — each is a modal-on-top-of-modal with its own Esc
-  // handler, and one keypress must collapse only the top layer (otherwise a
-  // stray Esc from dismissing the nested modal would discard the whole new-
-  // session form the user was filling in).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (open && e.key === 'Escape' && !showPicker && !showMcpInstaller) onCancel()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onCancel, open, showPicker, showMcpInstaller])
-
-  // Trap Tab focus inside the dialog and restore focus to the trigger on
-  // close, matching PermissionDialog / QuestionDialog behaviour.
-  useFocusTrap(dialogRef, { restoreFocus: true })
-
   // Fetch global MCP servers when dialog opens
   useEffect(() => {
     const ac = new AbortController()
@@ -306,15 +288,18 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
 
   return (
     <>
-      <div
-        className="modal-backdrop"
-        data-state={open ? 'open' : 'closing'}
-        role="dialog"
-        aria-modal={open ? 'true' : 'false'}
-        aria-hidden={!open}
-        onMouseDown={(e) => open && e.target === e.currentTarget && onCancel()}
+      <Overlay
+        variant="modal"
+        cardClassName="modal-new-session"
+        open={open}
+        onClose={onCancel}
+        // Esc closes the dialog, but not when the directory picker OR the MCP
+        // installer is open — each is a modal-on-top-of-modal with its own Esc
+        // handler, and one keypress must collapse only the top layer (otherwise
+        // a stray Esc from dismissing the nested modal would discard the whole
+        // new-session form the user was filling in).
+        canCloseOnEscape={() => !showPicker && !showMcpInstaller}
       >
-        <div className="modal modal-new-session" ref={dialogRef}>
           <div className="modal-header">
             <h3>New session</h3>
             <button className="btn btn-icon-sm" onClick={onCancel} aria-label="Close dialog">
@@ -788,8 +773,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
               </button>
             </div>
           </div>
-        </div>
-      </div>
+      </Overlay>
 
       {pickerPresence.shouldRender && (
         <DirectoryPicker

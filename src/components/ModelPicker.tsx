@@ -16,6 +16,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'motion/react'
 import type { ModelOptions } from '../hooks/useModelOptions'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useMergedRef } from '../utils/mergedRef'
 import { MENU_ENTER_TRANSITION, EXIT_TRANSITION, useMotionTransition } from '../utils/transitions'
 import { IconCheck, IconSearch } from './icons/ToolIcons'
@@ -160,25 +161,22 @@ export function ModelPicker({ anchor, current, options, disabled, onSelect, onCl
     el?.scrollIntoView({ block: 'nearest' })
   }, [activeIndex])
 
-  // Outside-click + capture-phase Escape (so it wins even with the input
-  // focused and doesn't bubble to other Escape handlers).
+  // Outside-click dismissal (Escape is owned by the shared stack below).
   useEffect(() => {
     const onDocMouseDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose()
     }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        onClose()
-      }
-    }
     window.addEventListener('mousedown', onDocMouseDown)
-    window.addEventListener('keydown', onKey, true)
-    return () => {
-      window.removeEventListener('mousedown', onDocMouseDown)
-      window.removeEventListener('keydown', onKey, true)
-    }
+    return () => window.removeEventListener('mousedown', onDocMouseDown)
   }, [onClose])
+
+  // Esc closes via the shared escape stack, so it wins over the chat panel's
+  // handlers and never closes the panel beneath this popover.
+  useEscapeStack({
+    active: true,
+    onEscape: onClose,
+    getContainer: () => ref.current,
+  })
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {

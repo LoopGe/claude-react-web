@@ -13,6 +13,7 @@ import { useMergedRef } from '../utils/mergedRef'
 import { buildCrumbs } from '../utils/paths'
 import { IconFolder, IconX } from './icons/ToolIcons'
 import { AnimatedCollapse } from './AnimatedCollapse'
+import { Overlay } from './Overlay'
 
 interface DirEntry {
   name: string
@@ -149,43 +150,26 @@ export function DirectoryPicker({
     }
   }, [createName, list, creating, showHidden, loadList])
 
-  // Close on Escape. Registered in the CAPTURE phase + stopImmediatePropagation
-  // so the picker wins the Escape regardless of listener registration order.
-  // Without this, App's global Escape chain (registered at mount, i.e. before
-  // this picker) fires first and closes the whole NewSessionDialog underneath
-  // instead of just dismissing the picker. Capture beats bubble, so we get the
-  // event first and stop it from reaching the dialog's local handler and the
-  // global chain. This makes Escape ownership consistent: the topmost open
-  // overlay always handles it.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (open && e.key === 'Escape') {
-        e.stopImmediatePropagation()
-        e.preventDefault()
-        // The create row is the topmost overlay: consume one Escape to
-        // dismiss it before falling through to close the whole picker.
+  const crumbs = buildCrumbs(path)
+
+  return (
+    <Overlay
+      variant="modal"
+      open={open}
+      onClose={onClose}
+      // The create row is the topmost layer: one Escape dismisses it before
+      // falling through to close the whole picker.
+      escapeBehavior="custom"
+      onEscape={() => {
         if (showCreateRow) {
           setShowCreateRow(false)
           setCreateName('')
           return
         }
         onClose()
-      }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [onClose, open, showCreateRow])
-
-  const crumbs = buildCrumbs(path)
-
-  return (
-    <div
-      className="modal-backdrop"
-      data-state={open ? 'open' : 'closing'}
-      aria-hidden={!open}
-      onMouseDown={(e) => open && e.target === e.currentTarget && onClose()}
+      }}
+      inertOnExit
     >
-      <div className="modal">
         <div className="modal-header">
           <h3>{title}</h3>
           <button className="btn" onClick={onClose} style={{ padding: '2px 10px' }} aria-label="Close">
@@ -344,7 +328,6 @@ export function DirectoryPicker({
             </button>
           </div>
         </div>
-      </div>
-    </div>
+    </Overlay>
   )
 }

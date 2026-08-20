@@ -1,10 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { useExitPresence } from '../hooks/useExitPresence'
-import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
 import { useResetConfig } from '../hooks/useResetConfig'
 import { IconX } from './icons/ToolIcons'
 import { SERVER_RESET_ITEMS, DANGER_ITEMS, type ServerResetItem, type BrowserDataItem } from '../../shared/reset'
+import { Overlay } from './Overlay'
 
 const BROWSER_CHILDREN: BrowserDataItem[] = ['input-history', 'drafts', 'appearance']
 const SERVER_LABELS: Record<ServerResetItem, string> = {
@@ -26,9 +25,6 @@ const BROWSER_LABELS: Record<BrowserDataItem, string> = {
 interface Props { open: boolean; onClose: () => void }
 
 export function ResetConfigDialog({ open, onClose }: Props) {
-  const presence = useExitPresence(open)
-  const dialogRef = useRef<HTMLDivElement>(null)
-  useFocusTrap(dialogRef, { restoreFocus: true })
   // Handle for the post-reset page reload. Cleared on unmount so the timer
   // can't fire after the dialog (or a test environment) is torn down.
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -49,12 +45,6 @@ export function ResetConfigDialog({ open, onClose }: Props) {
     }
   }, [open])
   /* eslint-enable react-hooks/set-state-in-effect */
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onClose() } }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [open, onClose])
   // Cancel a pending post-reset reload when the dialog actually unmounts.
   // (Not when `open` goes false — the 400ms reload is the intended behavior
   // after a successful reset; it must only be cancelled if the component is
@@ -62,8 +52,6 @@ export function ResetConfigDialog({ open, onClose }: Props) {
   useEffect(() => () => {
     if (reloadTimer.current !== null) { clearTimeout(reloadTimer.current); reloadTimer.current = null }
   }, [])
-
-  if (!presence.shouldRender) return null
 
   const toggleServer = (it: ServerResetItem) => setServer((s) => {
     const n = new Set(s); if (n.has(it)) { n.delete(it) } else { n.add(it) }; return n
@@ -118,9 +106,7 @@ export function ResetConfigDialog({ open, onClose }: Props) {
   const normalServer = (SERVER_RESET_ITEMS.filter((it) => !(DANGER_ITEMS as readonly string[]).includes(it)) as ServerResetItem[])
 
   return (
-    <div className="modal-backdrop" data-state={open ? 'open' : 'closing'} role="dialog" aria-modal={open ? 'true' : 'false'} aria-hidden={!open}
-      onMouseDown={(e) => open && !clearing && e.target === e.currentTarget && onClose()}>
-      <div className="modal modal-reset-config" ref={dialogRef}>
+    <Overlay variant="modal" cardClassName="modal-reset-config" open={open} onClose={onClose} canCloseOnBackdrop={() => !clearing} inertOnExit>
         <div className="modal-header">
           <h3>Clear configuration &amp; data</h3>
           <button className="btn btn-icon-sm" onClick={onClose} disabled={clearing} aria-label="Close"><IconX size={14} /></button>
@@ -161,8 +147,7 @@ export function ResetConfigDialog({ open, onClose }: Props) {
             )}
           </div>
         </div>
-      </div>
-    </div>
+    </Overlay>
   )
 }
 

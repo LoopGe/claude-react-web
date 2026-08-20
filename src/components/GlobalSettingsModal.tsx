@@ -12,12 +12,12 @@ import { buildUpgradeCommand } from '../utils/upgrade-command'
 import type { FullServerConfig } from '../types/config'
 import type { SkillImportFile, SkillImportResponse, SkillLoadMode, SkillRecord, SkillsListResponse } from '../../shared/skills'
 import type { McpConnectionTestResult, McpServerConfigMeta, McpServerTool } from '../types'
-import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
 import { useToast } from '../hooks/useToast'
 import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
 import { DirectoryPicker } from './DirectoryPicker'
+import { Overlay } from './Overlay'
 import type { PublishedVersions, UpdateActionResult, UpdateInfo } from '../../shared/update-info'
 import { isUpdateNagNeeded, isVersionNewer } from '../../shared/update-info'
 
@@ -181,20 +181,6 @@ export function GlobalSettingsModal({
   const mcpInstallerPresence = useExitPresence(showMcpInstaller)
   const [showResetConfig, setShowResetConfig] = useState(false)
   const resetConfigPresence = useExitPresence(showResetConfig)
-
-  const dialogRef = useRef<HTMLDivElement>(null)
-
-  // Esc to close
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (open && e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose, open])
-
-  // Focus management: trap Tab inside the dialog, autofocus the first
-  // focusable element on open, and restore focus to the trigger element
-  // on close so keyboard navigation isn't lost in the void.
-  useFocusTrap(dialogRef, { restoreFocus: true, excludeDisabled: true })
 
   // Load full config on mount
   useEffect(() => {
@@ -418,26 +404,15 @@ export function GlobalSettingsModal({
   }, [captureSettingsBodyHeight, tab])
 
   return (
-    <div
-      className="modal-backdrop"
-      data-state={open ? 'open' : 'closing'}
-      onClick={() => { if (open) onClose() }}
+    <Overlay
+      variant="globalSettings"
+      ariaLabel="Settings"
+      open={open}
+      onClose={onClose}
+      // The card carries `inert` while closed (it stays mounted through the
+      // exit animation); `inertOnExit` applies the same flag for that window.
+      inertOnExit
     >
-      <div
-        ref={dialogRef}
-        className="global-settings-modal"
-        role="dialog"
-        aria-modal={open ? 'true' : 'false'}
-        // `inert` (not `aria-hidden`) while closing: the modal stays mounted
-        // through its exit animation (useExitPresence), so aria-hidden=true
-        // would hide a still-focused descendant from AT and trip the browser's
-        // "Blocked aria-hidden" warning. `inert` removes focus from the
-        // subtree and excludes it from the tab order — the desired behaviour
-        // during the close transition. React 19 supports `inert` natively.
-        inert={!open || undefined}
-        aria-label="Settings"
-        onClick={(e) => e.stopPropagation()}
-      >
         <div className="modal-header">
           <h3>Settings</h3>
           <button className="btn" onClick={onClose} style={{ padding: '2px 10px' }} aria-label="Close"><IconX size={14} /></button>
@@ -593,8 +568,7 @@ export function GlobalSettingsModal({
             <ResetConfigDialog open={showResetConfig} onClose={() => setShowResetConfig(false)} />
           </Suspense>
         )}
-      </div>
-    </div>
+    </Overlay>
   )
 }
 
@@ -958,15 +932,6 @@ function SkillsTab({
   const previewPresence = usePresenceValue(previewSkill)
   const previewIsOpen = previewSkill !== null
 
-  useEffect(() => {
-    if (!previewIsOpen) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { e.stopImmediatePropagation(); setPreviewSkill(null) }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [previewIsOpen])
-
   const skillNames = useMemo(() => Array.from(new Set(skills.map((s) => s.name))).sort((a, b) => a.localeCompare(b)), [skills])
   const userSkills = skills.filter((skill) => skill.scope === 'user')
   const projectSkills = skills.filter((skill) => skill.scope === 'project')
@@ -1240,12 +1205,12 @@ function SkillsTab({
       {previewPresence.value != null && (() => {
         const ps = previewPresence.value!
         return (
-          <div
-            className="modal-backdrop"
-            data-state={previewIsOpen ? 'open' : 'closing'}
-            onMouseDown={(e) => { if (e.target === e.currentTarget && previewIsOpen) setPreviewSkill(null) }}
+          <Overlay
+            variant="modal"
+            cardClassName="settings-skill-preview-modal"
+            open={previewIsOpen}
+            onClose={() => setPreviewSkill(null)}
           >
-            <div className="modal settings-skill-preview-modal">
               <div className="modal-header">
                 <div className="settings-skill-preview-title">
                   <span className="settings-card-name">{ps.name}</span>
@@ -1274,8 +1239,7 @@ function SkillsTab({
                 </div>
               )}
               <pre className="settings-skill-preview-content">{parsed ? parsed.body : (ps.content || '')}</pre>
-            </div>
-          </div>
+          </Overlay>
         )
       })()}
 

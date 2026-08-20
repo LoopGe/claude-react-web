@@ -3,10 +3,11 @@
 // the `/help` slash command (with commands) or Shift+/ / the command palette
 // (shortcuts only).
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import type { Shortcut } from '../hooks/useKeyboardShortcuts'
 import type { SlashCommand } from '../types'
 import { formatCombo } from '../utils/format-combo'
+import { Overlay } from './Overlay'
 
 type Tab = 'commands' | 'shortcuts'
 
@@ -30,28 +31,8 @@ export function ShortcutHelp({ open, onClose, shortcuts, commands = [] }: Props)
   // close) so useState re-initializes fresh each time the dialog opens.
   const [tab, setTab] = useState<Tab>(commands.length > 0 ? 'commands' : 'shortcuts')
 
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        onClose()
-      }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [open, onClose])
-
   return (
-    <div
-      className="modal-backdrop"
-      data-state={open ? 'open' : 'closing'}
-      aria-hidden={!open}
-      onMouseDown={(e) => {
-        if (open && e.target === e.currentTarget) onClose()
-      }}
-    >
-      <div className="modal" style={{ maxWidth: 440 }}>
+    <Overlay variant="modal" open={open} onClose={onClose} cardStyle={{ maxWidth: 440 }}>
         <div className="modal-header">
           <h3>{showCommands ? 'Help' : 'Keyboard shortcuts'}</h3>
         </div>
@@ -116,7 +97,6 @@ export function ShortcutHelp({ open, onClose, shortcuts, commands = [] }: Props)
         <div className="modal-footer" style={{ justifyContent: 'flex-end' }}>
           <button className="btn" onClick={onClose}>Close</button>
         </div>
-      </div>
-    </div>
+    </Overlay>
   )
 }

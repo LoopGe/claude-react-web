@@ -10,13 +10,13 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { IconX } from '../icons/ToolIcons'
-import { useFocusTrap } from '../../hooks/useFocusTrap'
 import { api } from '../../hooks/useApi'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../../utils/mergedRef'
 import { shortenPath } from '../../utils/paths'
 import type { ResumableSession } from '../../types'
 import { PanelOverlay } from '../PanelOverlay'
+import { Overlay } from '../Overlay'
 
 export interface ResumeSessionDialogProps {
   open?: boolean
@@ -61,17 +61,10 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selectedIndex, setSelectedIndex] = useState(0)
-  const dialogRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
   const listRefMerged = useMergedRef(listRef, setListOs)
-
-  // The panel variant delegates its chrome (backdrop, Esc, focus trap, exit
-  // animation) to <PanelOverlay>, so this trap is active only for the modal
-  // variant. dialogRef attaches to the modal card; for the panel variant it
-  // attaches to nothing and the trap stays inert.
-  useFocusTrap(dialogRef, { restoreFocus: true, active: variant === 'modal' && open })
 
   // Fetch the resumable list whenever the scope toggles. Aborts in-flight
   // requests so a fast toggle doesn't race a stale response onto the list.
@@ -147,13 +140,6 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
     } else if (e.key === 'Enter' && filtered.length > 0) {
       e.preventDefault()
       choose(filtered[selectedIndex])
-    } else if (open && e.key === 'Escape') {
-      // Stop the bubble so App's window-level Esc handler doesn't also fire
-      // (it would redundantly close this same dialog, or worse fall through
-      // to interrupt the focused session if our state ref lagged a tick).
-      e.preventDefault()
-      e.stopPropagation()
-      onCancel()
     }
   }
 
@@ -294,17 +280,15 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
   }
 
   return (
-    <div
-      className="modal-backdrop"
-      data-state={open ? 'open' : 'closing'}
-      role="dialog"
-      aria-modal={open ? 'true' : 'false'}
-      aria-hidden={!open}
-      onMouseDown={(e) => open && e.target === e.currentTarget && onCancel()}
+    <Overlay
+      variant="modal"
+      cardClassName="modal-resume-session"
+      ariaLabel="Resume session"
+      open={open}
+      onClose={onCancel}
+      onKeyDown={handleKeyDown}
     >
-      <div className="modal modal-resume-session" ref={dialogRef} onKeyDown={handleKeyDown}>
-        {content}
-      </div>
-    </div>
+      {content}
+    </Overlay>
   )
 }

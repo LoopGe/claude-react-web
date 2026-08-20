@@ -3,10 +3,8 @@
 
 import { lazy, memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { createPortal } from 'react-dom'
 import { api } from '../hooks/useApi'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
-import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
 import { useToast } from '../hooks/useToast'
@@ -21,6 +19,7 @@ import { Skeleton } from './Skeleton'
 import { useExitPresence } from '../hooks/useExitPresence'
 import { AnimatedCollapse, AnimatedDetails } from './AnimatedCollapse'
 import { HooksPanel } from './HooksPanel'
+import { Overlay } from './Overlay'
 
 // MarketplaceTab and McpInstaller are heavy modal-within-modal
 // components opened only on user intent (Browse plugins / Add MCP).
@@ -148,16 +147,11 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
 
   // The marketplace overlay is portaled to <body>, so it lives OUTSIDE App's
   // global Escape chain (which would otherwise close the settings panel
-  // underneath it, orphaning the portal on screen). Register it in the escape
-  // stack instead: the settings overlay (now also in the stack) is registered
-  // first, so the marketplace lands on top and wins by containment — one Esc
-  // dismisses just the marketplace and leaves the settings panel open.
-  const marketplaceOverlayRef = useRef<HTMLDivElement>(null)
-  useEscapeStack({
-    active: showMarketplace,
-    onEscape: () => setShowMarketplace(false),
-    getContainer: () => marketplaceOverlayRef.current,
-  })
+  // underneath it, orphaning the portal on screen). It's rendered as
+  // <Overlay variant="marketplace" portal>, which registers in the escape
+  // stack: the settings overlay is registered first, so the marketplace lands
+  // on top and wins by containment — one Esc dismisses just the marketplace
+  // and leaves the settings panel open.
 
   // Load the model list and MCP status when the panel opens. Parent
   // remounts this component on session switch (via `key={session.id}`),
@@ -993,26 +987,26 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
         </div>
       </div>
 
-      {showMarketplace && createPortal(
-        <div
-          ref={marketplaceOverlayRef}
-          className="marketplace-overlay"
-          onMouseDown={(e) => { if (e.target === e.currentTarget) setShowMarketplace(false) }}
-        >
-          <div className="marketplace-card">
-            <div className="modal-header">
-              <h3>Plugin Marketplace</h3>
-              <button className="btn btn-sm" onClick={() => setShowMarketplace(false)}>Close</button>
-            </div>
-            <div style={{ overflowY: 'auto', padding: 16 }}>
-              <Suspense fallback={<div className="lazy-tab-loading">Loading marketplace…</div>}>
-                <MarketplaceTab onPluginToggled={() => { onPluginsReloaded?.() }} />
-              </Suspense>
-            </div>
-          </div>
-        </div>,
-        document.body,
-      )}
+      <Overlay
+        variant="marketplace"
+        portal
+        open={showMarketplace}
+        onClose={() => setShowMarketplace(false)}
+        trapFocus
+        // The `.marketplace-overlay` has no CSS transition, so match the old
+        // immediate unmount behavior with a zero-length exit window.
+        exitDurationMs={0}
+      >
+        <div className="modal-header">
+          <h3>Plugin Marketplace</h3>
+          <button className="btn btn-sm" onClick={() => setShowMarketplace(false)}>Close</button>
+        </div>
+        <div style={{ overflowY: 'auto', padding: 16 }}>
+          <Suspense fallback={<div className="lazy-tab-loading">Loading marketplace…</div>}>
+            <MarketplaceTab onPluginToggled={() => { onPluginsReloaded?.() }} />
+          </Suspense>
+        </div>
+      </Overlay>
 
       {mcpInstallerPresence.shouldRender && (
         <Suspense fallback={null}>

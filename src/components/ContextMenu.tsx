@@ -9,6 +9,7 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { motion } from 'motion/react'
 import { MENU_ENTER_TRANSITION, EXIT_TRANSITION, useMotionTransition } from '../utils/transitions'
+import { useEscapeStack } from '../hooks/useEscapeStack'
 
 export interface ContextMenuItem {
   /** Shown in the menu. Falsy = render a separator instead. */
@@ -63,21 +64,21 @@ export const ContextMenu = memo(function ContextMenu({ x, y, items, onClose }: P
       if (e.button !== 0) return
       if (ref.current && !ref.current.contains(e.target as Node)) onClose()
     }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        onClose()
-      }
-    }
     // `mousedown` beats `click` — feels snappier and avoids swallowing
     // a subsequent click on another interactive element.
     window.addEventListener('mousedown', onDocMouseDown)
-    window.addEventListener('keydown', onKey, true)
     return () => {
       window.removeEventListener('mousedown', onDocMouseDown)
-      window.removeEventListener('keydown', onKey, true)
     }
   }, [onClose])
+
+  // Esc closes via the shared escape stack, so a context menu above a modal
+  // or panel collapses only itself on the first keypress.
+  useEscapeStack({
+    active: true,
+    onEscape: onClose,
+    getContainer: () => ref.current,
+  })
 
   return (
     <motion.div

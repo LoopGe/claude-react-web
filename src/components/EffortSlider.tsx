@@ -13,6 +13,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { motion } from 'motion/react'
 import { MENU_ENTER_TRANSITION, EXIT_TRANSITION, useMotionTransition } from '../utils/transitions'
+import { useEscapeStack } from '../hooks/useEscapeStack'
 import type { EffortLevel } from '../types'
 
 interface Props {
@@ -68,24 +69,22 @@ export function EffortSlider({ anchor, levels, current, disabled, onSelect, onCl
     setPos({ x: Math.max(4, nx), y: Math.max(4, ny) })
   }, [anchor.x, anchor.y])
 
-  // Outside-click + capture-phase Escape (matches ContextMenu / ModelPicker).
+  // Outside-click dismissal (Escape is owned by the shared stack below).
   useEffect(() => {
     const onDocMouseDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose()
     }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        onClose()
-      }
-    }
     window.addEventListener('mousedown', onDocMouseDown)
-    window.addEventListener('keydown', onKey, true)
-    return () => {
-      window.removeEventListener('mousedown', onDocMouseDown)
-      window.removeEventListener('keydown', onKey, true)
-    }
+    return () => window.removeEventListener('mousedown', onDocMouseDown)
   }, [onClose])
+
+  // Esc closes via the shared escape stack, so one keypress collapses just the
+  // slider — never the panel beneath it.
+  useEscapeStack({
+    active: true,
+    onEscape: onClose,
+    getContainer: () => ref.current,
+  })
 
   const selectIndex = (idx: number) => {
     const clamped = Math.min(maxIndex, Math.max(0, idx))

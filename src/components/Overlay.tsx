@@ -1,4 +1,4 @@
-import { useRef, type HTMLAttributes, type ReactNode } from 'react'
+import { useRef, type CSSProperties, type HTMLAttributes, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { motion } from 'motion/react'
 import { useExitPresence } from '../hooks/useExitPresence'
@@ -75,6 +75,9 @@ export interface OverlayProps {
   variant?: OverlayVariant
   /** Extra class(es) on the card element (e.g. `modal-new-session`). */
   cardClassName?: string
+  /** Inline style on the card element (e.g. ShortcutHelp's maxWidth, the MCP
+   *  installer's width). Applied only when `renderCard` is true. */
+  cardStyle?: CSSProperties
   /** Extra class(es) on the backdrop element. */
   backdropClassName?: string
   /** Render into a portal on document.body (McpInstaller, marketplace). */
@@ -134,6 +137,7 @@ export function Overlay(props: OverlayProps) {
     ariaLabel,
     variant = 'modal',
     cardClassName,
+    cardStyle,
     backdropClassName,
     portal = false,
     renderCard,
@@ -165,13 +169,37 @@ export function Overlay(props: OverlayProps) {
   // caller-controlled. In css mode useExitPresence delays unmount through the
   // ~180ms exit animation.
   const presence = useExitPresence(cssMode ? open : true, exitDurationMs)
-  const shouldRender = presence.shouldRender
+  // `exitDurationMs === 0` means the caller has no exit transition (e.g. the
+  // marketplace overlay, which has no `[data-state]` CSS) — unmount in the
+  // same render open flips false instead of holding a one-frame closing flash.
+  const shouldRender = exitDurationMs === 0 ? open : presence.shouldRender
   const isExiting = presence.isExiting
   const mounted = keepMounted ? true : shouldRender
 
   const backdropElRef = useRef<HTMLDivElement>(null)
   const cardElRef = useRef<HTMLDivElement>(null)
   const mergedBackdropRef = useMergedRef(backdropElRef, backdropRef)
+
+  // Register in the Escape stack while open. The getContainer is the backdrop
+  // (it contains the card + focus), so the stack's containment scan resolves
+  // nesting correctly regardless of portal.
+  //
+  // This MUST run before the focus trap below. On the render where an overlay
+  // opens, the trap's activation effect focuses the card, which synchronously
+  // fires a document focusin observed by every parent trap's re-guard handler.
+  // If this overlay weren't in the stack yet, a parent trap whose `el.contains`
+  // is false for a portaled/sibling card would see `isFocusInsideOtherOverlay`
+  // return false and steal focus back — the exact gap the old `.modal-backdrop`
+  // closest() hardcode in useFocusTrap was masking.
+  useEscapeStack({
+    active: open,
+    onEscape: (e) => {
+      if (escapeBehavior === 'custom') onEscape?.(e)
+      else onClose()
+    },
+    canClose: canCloseOnEscape,
+    getContainer: () => backdropElRef.current,
+  })
 
   // `mounted` (not just `open`) gates the trap so it only engages once the
   // overlay is actually in the DOM: useExitPresence flips shouldRender one
@@ -182,19 +210,6 @@ export function Overlay(props: OverlayProps) {
     restoreFocus,
     active: mounted && open && trapFocus,
     escapeSelector: focusEscapeSelector,
-  })
-
-  // Register in the Escape stack while open. The getContainer is the backdrop
-  // (it contains the card + focus), so the stack's containment scan resolves
-  // nesting correctly regardless of portal.
-  useEscapeStack({
-    active: open,
-    onEscape: (e) => {
-      if (escapeBehavior === 'custom') onEscape?.(e)
-      else onClose()
-    },
-    canClose: canCloseOnEscape,
-    getContainer: () => backdropElRef.current,
   })
 
   if (!keepMounted && !shouldRender) return null
@@ -224,6 +239,7 @@ export function Overlay(props: OverlayProps) {
 
   const cardProps: OverlayDivProps<React.Ref<HTMLDivElement>> = {
     className: `${classes.card}${cardClassName ? ' ' + cardClassName : ''}`,
+    style: cardStyle,
     ref: cardElRef,
     ...(!roleOnBackdrop ? { role: 'dialog', 'aria-modal': modal, 'aria-label': ariaLabel } : {}),
     onKeyDown,

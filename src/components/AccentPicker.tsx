@@ -21,6 +21,7 @@ import { createPortal } from 'react-dom'
 import type { CSSProperties } from 'react'
 import { ACCENT_COLORS, isPresetAccent } from '../theme'
 import { useRecentColors } from '../hooks/useRecentColors'
+import { useEscapeStack } from '../hooks/useEscapeStack'
 
 // --- Custom-colour swatch ---------------------------------------------------
 
@@ -217,23 +218,23 @@ export function AccentPickerPanel({
     target?.focus()
   }, [])
 
+  // Outside-click dismissal (Escape is owned by the shared stack below).
   useEffect(() => {
     const onDocMouseDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose()
     }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        onClose()
-      }
-    }
     window.addEventListener('mousedown', onDocMouseDown)
-    window.addEventListener('keydown', onKey, true)
-    return () => {
-      window.removeEventListener('mousedown', onDocMouseDown)
-      window.removeEventListener('keydown', onKey, true)
-    }
+    return () => window.removeEventListener('mousedown', onDocMouseDown)
   }, [onClose])
+
+  // Esc closes via the shared escape stack. The popover's container is this
+  // root, so while it is the topmost layer whose container holds focus, one
+  // Esc collapses just the popover — never the modal/panel beneath it.
+  useEscapeStack({
+    active: true,
+    onEscape: onClose,
+    getContainer: () => ref.current,
+  })
 
   return createPortal(
     <div

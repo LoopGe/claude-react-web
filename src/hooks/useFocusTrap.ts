@@ -79,14 +79,9 @@ export function useFocusTrap(
       // via createPortal to document.body (not a DOM descendant of this
       // container) and sit at a higher z-index, representing a deliberate user
       // interaction with a nested dialog — stealing focus back would make the
-      // child's inputs unusable. The stack check covers every overlay that has
-      // been migrated onto the useEscapeStack; the `.modal-backdrop` closest()
-      // stays as migration-period insurance for not-yet-migrated dialogs and is
-      // removed in the phase that migrates the last of them (PR-B Phase 4).
-      if (
-        (target != null && isFocusInsideOtherOverlay(target)) ||
-        (target instanceof HTMLElement && target.closest('.modal-backdrop'))
-      ) {
+      // child's inputs unusable. Every such dialog is registered in the
+      // useEscapeStack, so the stack's containment check covers all of them.
+      if (target != null && isFocusInsideOtherOverlay(target)) {
         return
       }
       // Allow focus to escape to a *different* element matching

@@ -3,14 +3,12 @@
 // Renders a structured form instead of raw JSON. Dynamic key-value rows
 // for env vars and headers, type-specific fields, client + server validation.
 
-import { useId, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { useId, useState } from 'react'
 import { api } from '../hooks/useApi'
-import { useEscapeStack } from '../hooks/useEscapeStack'
-import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import type { McpServerConfigMeta, McpServerInput } from '../types'
 import { IconX } from './icons/ToolIcons'
+import { Overlay } from './Overlay'
 
 interface Props {
   open?: boolean
@@ -50,7 +48,6 @@ export function McpInstaller(props: Props) {
 
 function McpInstallerForm({ open = true, server, onSave, onClose }: Props) {
   const isEdit = !!server
-  const dialogRef = useRef<HTMLDivElement>(null)
   const setBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
   const titleId = useId()
   const nameId = useId()
@@ -71,19 +68,6 @@ function McpInstallerForm({ open = true, server, onSave, onClose }: Props) {
   const [headerRows, setHeaderRows] = useState<KvRow[]>(() => initialKvRows(server?.headerKeys))
   const [errors, setErrors] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
-
-  useFocusTrap(dialogRef, { restoreFocus: true, excludeDisabled: true, active: open })
-
-  // Esc closes. Registered in the escape stack so nesting resolves by
-  // containment: when this portal is open above the settings panel, Esc closes
-  // this dialog (topmost) instead of the settings overlay beneath it — and
-  // when it's open above a non-stack dialog (NewSessionDialog), the stack's
-  // stopPropagation keeps that dialog's own bubble handler from also firing.
-  useEscapeStack({
-    active: open,
-    onEscape: onClose,
-    getContainer: () => dialogRef.current,
-  })
 
   const updateRow = (rows: KvRow[], setter: (r: KvRow[]) => void, id: string, field: 'key' | 'value', val: string) => {
     setter(rows.map((r) => (r.id === id ? { ...r, [field]: val } : r)))
@@ -170,21 +154,16 @@ function McpInstallerForm({ open = true, server, onSave, onClose }: Props) {
   // which makes it the containing block for position:fixed descendants —
   // without the portal this modal's `inset:0` resolves against the narrow
   // chat-panel column instead of the viewport, rendering it tiny.
-  return createPortal(
-    <div
-      className="modal-backdrop"
-      data-state={open ? 'open' : 'closing'}
-      role="dialog"
-      aria-modal={open ? 'true' : 'false'}
-      aria-labelledby={titleId}
-      aria-hidden={!open}
-      inert={!open || undefined}
-      // mousedown (not click) + target guard: a click fires on mouseup, so a
-      // user selecting text inside the card and releasing over the backdrop
-      // would otherwise close the modal and lose their form state.
-      onMouseDown={(e) => { if (open && e.target === e.currentTarget) onClose() }}
+  return (
+    <Overlay
+      variant="modal"
+      portal
+      open={open}
+      onClose={onClose}
+      inertOnExit
+      cardStyle={{ width: 'min(520px, 92vw)' }}
+      ariaLabel={isEdit ? `Edit: ${server!.name}` : 'Add MCP Server'}
     >
-      <div ref={dialogRef} className="modal" style={{ width: 'min(520px, 92vw)' }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h3 id={titleId}>{isEdit ? `Edit: ${server!.name}` : 'Add MCP Server'}</h3>
           <button className="btn" onClick={onClose} style={{ padding: '2px 10px' }} aria-label="Close"><IconX size={14} /></button>
@@ -312,9 +291,7 @@ function McpInstallerForm({ open = true, server, onSave, onClose }: Props) {
             </button>
           </div>
         </div>
-      </div>
-    </div>,
-    document.body,
+    </Overlay>
   )
 }
 
