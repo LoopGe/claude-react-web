@@ -4,7 +4,9 @@
 import type {
   CanUseTool,
   EffortLevel,
+  ElicitationResult,
   FastModeState,
+  OnElicitation,
   PermissionMode,
   PermissionResult,
   PermissionUpdate,
@@ -20,6 +22,7 @@ import type { ProviderSessionHandle } from './providers/types.js'
 import type { HookRunRecord, HookRuntimeEvent, SessionHooksConfig } from '../shared/hooks.js'
 import type { SessionSkillOverride } from '../shared/skills.js'
 import type { PromptUuidEntry } from './prompt-uuid-store.js'
+import type { ElicitationDecision, ElicitationRequestUi } from '../shared/elicitation.js'
 
 /** Subscriber — each connected client gets one of these. */
 export interface Subscriber {
@@ -39,6 +42,21 @@ export interface PermissionSubscriber {
   push: (ev: PermissionEvent) => void
   end: () => void
 }
+
+/** Elicitation-channel subscriber — mirrors PermissionSubscriber but for
+ *  MCP elicitation (auth) events, on its own subscriber set so the two
+ *  fan-outs never mix. */
+export type ElicitationEvent =
+  | { kind: 'request'; payload: ElicitationRequestUi }
+  | { kind: 'resolved'; eid: string; decision: ElicitationDecision }
+export interface ElicitationSubscriber {
+  id: string
+  push: (ev: ElicitationEvent) => void
+  end: () => void
+}
+
+// Re-export canonical MCP elicitation shapes from shared.
+export type { ElicitationRequestUi, ElicitationDecision }
 
 // Re-export canonical QuestionSpec from shared.
 export type { QuestionSpec } from '../shared/question-spec.js'
@@ -65,6 +83,16 @@ export type QuestionAnswer = string | string[] | null
  *  single `pending` map can hold both flavours. */
 export type PendingPermission = PermissionRequestSnapshot & {
   resolve: (r: PermissionResult) => void
+  signal: AbortSignal
+  abortHandler: () => void
+}
+
+/** Internal server-side state per pending MCP elicitation. Carries the SDK
+ *  resolver + signal alongside the JSON-serializable snapshot, mirroring
+ *  PendingPermission. Resolving with an ElicitationResult IS the answer to
+ *  the SDK's `await onElicitation(...)` — no id-based correlation needed. */
+export type PendingElicitation = ElicitationRequestUi & {
+  resolve: (r: ElicitationResult) => void
   signal: AbortSignal
   abortHandler: () => void
 }
@@ -166,6 +194,9 @@ export interface Session {
   permissionSubscribers: Map<string, PermissionSubscriber>
   /** Pending tool-use permission requests awaiting a user decision. */
   pending: Map<string, PendingPermission>
+  elicitationSubscribers: Map<string, ElicitationSubscriber>
+  /** Pending MCP elicitation (auth) requests awaiting a user decision. */
+  elicitationPending: Map<string, PendingElicitation>
   history: SDKMessage[]
   pumpTask: Promise<void>
   running: boolean
@@ -298,6 +329,13 @@ export interface Session {
    *  exits cleanly and needs to be re-spawned without recreating the
    *  permission handling logic. */
   canUseTool?: CanUseTool
+  /** Stored onElicitation callback (MCP elicitation / OAuth auth prompts).
+   *  Mirrors canUseTool: rebuilt by ElicitationBroker.buildOnElicitation at
+   *  spawn, persisted on the Session (runtime-only), and re-applied by
+   *  buildResumeOpts / respawnInPlace so idle-exit auto-resume and crash
+   *  recovery keep elicitation handling alive. Without it the SDK
+   *  auto-declines every elicitation on the resumed Query. */
+  onElicitation?: OnElicitation
   /** Abort handle for the current in-flight `!`/`!!` exec, if any. `!` is
    *  serial (the client's sendingRef blocks concurrent commands), so at most
    *  one exec runs per session at a time — no exec-id tracking needed.
@@ -365,6 +403,7 @@ function endAndClear<T extends { end(): void }>(
 export function endAllSubscribers(s: Session): void {
   endAndClear(s.subscribers)
   endAndClear(s.permissionSubscribers)
+  endAndClear(s.elicitationSubscribers)
   endAndClear(s.contextUsageSubscribers)
   endAndClear(s.gitStatusSubscribers)
   endAndClear(s.messageStatusSubscribers)
@@ -460,6 +499,11 @@ export interface SessionBroadcaster {
   subscribePermissions(sessionId: string): {
     iterable: AsyncIterable<PermissionEvent>
     snapshot: PermissionRequestSnapshot[]
+    unsubscribe: () => void
+  }
+  subscribeElicitation(sessionId: string): {
+    iterable: AsyncIterable<ElicitationEvent>
+    snapshot: ElicitationRequestUi[]
     unsubscribe: () => void
   }
   subscribeContextUsage(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot?: import('./session-pump.js').LiteContextUsage | undefined; unsubscribe: () => void } | null

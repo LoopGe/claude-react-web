@@ -332,6 +332,7 @@ export function attachWebSocket(
       if (subs.has(sessionId)) return
       let msgSub: { unsubscribe: () => void } | null = null
       let permSub: { unsubscribe: () => void } | null = null
+      let elicitSub: { unsubscribe: () => void } | null = null
       let ctxSub: { iterable: AsyncIterable<unknown>; snapshot?: unknown; unsubscribe: () => void } | null = null
       let ctxIter: AsyncIterator<unknown> | null = null
       let gitSub: { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null = null
@@ -356,6 +357,9 @@ export function attachWebSocket(
         step = 'subscribePermissions'
         const perms = sm.subscribePermissions(sessionId)
         permSub = perms
+        step = 'subscribeElicitation'
+        const elicits = sm.subscribeElicitation(sessionId)
+        elicitSub = elicits
         step = 'subscribeContextUsage'
         ctxSub = sm.subscribeContextUsage(sessionId)
         ctxIter = ctxSub?.iterable[Symbol.asyncIterator]() ?? null
@@ -413,6 +417,7 @@ export function attachWebSocket(
             sessionId,
             messages: replayHistory,
             permissions: perms.snapshot,
+            elicitations: elicits.snapshot,
           })
           queue.enqueue({ kind: 'replay-done', sessionId })
         } else {
@@ -430,6 +435,7 @@ export function attachWebSocket(
             kind: 'replay-done',
             sessionId,
             permissions: perms.snapshot,
+            elicitations: elicits.snapshot,
           })
         }
 
@@ -466,17 +472,19 @@ export function attachWebSocket(
         const stop = () => {
           if (stopped) return
           stopped = true
-          for (const sub of [msgSub, permSub, ctxSub, gitSub, msgStatSub, recapSub, clearedSub, cmdSub, hookSub]) sub?.unsubscribe()
+          for (const sub of [msgSub, permSub, elicitSub, ctxSub, gitSub, msgStatSub, recapSub, clearedSub, cmdSub, hookSub]) sub?.unsubscribe()
           for (const iter of _iterCleanup) void iter.return?.()
         }
 
         void (async () => {
           const msgIter = msg.iterable[Symbol.asyncIterator]()
           const permIter = perms.iterable[Symbol.asyncIterator]()
+          const elicitIter = elicits.iterable[Symbol.asyncIterator]()
 
           type Tagged =
             | { kind: 'msg'; result: IteratorResult<unknown> }
             | { kind: 'perm'; result: IteratorResult<unknown> }
+            | { kind: 'elicit'; result: IteratorResult<unknown> }
             | { kind: 'ctx'; result: IteratorResult<unknown> }
             | { kind: 'git'; result: IteratorResult<unknown> }
             | { kind: 'msgstat'; result: IteratorResult<unknown> }
@@ -497,6 +505,7 @@ export function attachWebSocket(
           const channels: Channel[] = [
             { kind: 'msg', iter: msgIter, promise: tag('msg', msgIter) },
             { kind: 'perm', iter: permIter, promise: tag('perm', permIter) },
+            { kind: 'elicit', iter: elicitIter, promise: tag('elicit', elicitIter) },
             ...(ctxIter ? [{ kind: 'ctx' as const, iter: ctxIter, promise: tag('ctx', ctxIter) }] : []),
             ...(gitIter ? [{ kind: 'git' as const, iter: gitIter, promise: tag('git', gitIter) }] : []),
             ...(msgStatIter ? [{ kind: 'msgstat' as const, iter: msgStatIter, promise: tag('msgstat', msgStatIter) }] : []),
@@ -545,6 +554,16 @@ export function attachWebSocket(
                     queue.enqueue({ kind: 'permission-request', sessionId, payload: ev.payload })
                   else
                     queue.enqueue({ kind: 'permission-resolved', sessionId, id: ev.pid, decision: ev.decision })
+                  break
+                }
+                case 'elicit': {
+                  const ev = winner.result.value as
+                    | { kind: 'request'; payload: never }
+                    | { kind: 'resolved'; eid: string; decision: never }
+                  if (ev.kind === 'request')
+                    queue.enqueue({ kind: 'elicitation-request', sessionId, payload: ev.payload })
+                  else
+                    queue.enqueue({ kind: 'elicitation-resolved', sessionId, id: ev.eid, decision: ev.decision })
                   break
                 }
                 case 'ctx':
@@ -600,6 +619,7 @@ export function attachWebSocket(
         log.error(`startSession(${sessionId}) failed at step "${step}":`, err)
         msgSub?.unsubscribe()
         permSub?.unsubscribe()
+        elicitSub?.unsubscribe()
         ctxSub?.unsubscribe()
         gitSub?.unsubscribe()
         msgStatSub?.unsubscribe()

@@ -50,6 +50,8 @@ function makeFakeSession(overrides: Partial<Session> = {}): Session {
     subscribers: new Map(),
     permissionSubscribers: new Map(),
     pending: new Map(),
+    elicitationSubscribers: new Map(),
+    elicitationPending: new Map(),
     history: [],
     contextUsageSubscribers: new Set(),
     gitStatusSubscribers: new Set(),

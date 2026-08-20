@@ -37,12 +37,14 @@ import { useChatStream } from '../hooks/useChatStream'
 import { usePastedImages } from '../hooks/usePastedImages'
 import { useInputHistory } from '../hooks/useInputHistory'
 import { usePermissionChannel } from '../hooks/usePermissionChannel'
+import { useElicitationChannel } from '../hooks/useElicitationChannel'
 import { usePhaseDwell } from '../hooks/usePhaseDwell'
 import { Composer } from './Composer'
 import { ContextBar } from './ContextBar'
 import { MessageList, WorkingBubble, type ScrollNavigator } from './MessageList'
 import { PermissionDialog } from './PermissionDialog'
 import { QuestionDialog, type QuestionDraft } from './QuestionDialog'
+import { ElicitationDialog } from './ElicitationDialog'
 import { SubagentOverlay } from './SubagentOverlay'
 import { SubagentProvider } from '../hooks/useSubagentContext'
 import { WorkflowOverlay } from './WorkflowOverlay'
@@ -372,6 +374,7 @@ export const Chat = memo(function Chat({
   // Moved here (before the pendingTurnSince effect) so stream.activePhase
   // is available in the effect's closure and dep array.
   const permissions = usePermissionChannel(session.id)
+  const elicitations = useElicitationChannel(session.id)
   const stream = useChatStream(session.id, {
     onRequest: permissions.onRequest,
     onResolved: permissions.onResolved,
@@ -379,6 +382,8 @@ export const Chat = memo(function Chat({
       permissions.reset()
       setLocalClearing(false)
     },
+    onElicitationRequest: elicitations.onRequest,
+    onElicitationResolved: elicitations.onResolved,
   })
 
   // Clear the optimistic turn bridge once the real turn is confirmed
@@ -698,6 +703,12 @@ export const Chat = memo(function Chat({
   const isMinimizedPermission = activePendingRequest?.kind === 'permission' && !PLAN_TOOL_NAMES.has(activePendingRequest.toolName) && minimizedPermission.has(activePendingRequest.id)
   const activeVisiblePendingRequest = (isMinimizedQuestion || isMinimizedPlan || isMinimizedPermission) ? null : activePendingRequest
   const pendingDialogPresence = usePresenceValue(activeVisiblePendingRequest)
+  // Elicitation (MCP auth) dialog state. Kept separate from the permission
+  // presence machine: the elicitation dialog yields to any permission/
+  // question dialog (see the second dialog IIFE below) rather than stacking
+  // two perm-variant overlays at once.
+  const activeElicitation = elicitations.pending[0] ?? null
+  const elicitationPresence = usePresenceValue(activeElicitation)
   // Drop persisted draft entries once a question resolves so questionDrafts
   // doesn't accumulate stale ids over a long session. The corresponding
   // minimize state is derived on read (see `minimizedQ` above), so we no
@@ -1720,6 +1731,25 @@ export const Chat = memo(function Chat({
         }
 
         return null
+      })()}
+
+      {/* Pending MCP elicitation (auth) dialog. Yields to any permission/
+          question dialog above — two simultaneous perm-variant overlays is
+          worse UX than a short wait; when the permission dialog clears (or
+          is minimized), this one appears. usePresenceValue keeps the dialog
+          mounted through its exit animation when the head changes. */}
+      {(() => {
+        if (pendingDialogPresence.value != null) return null
+        const head = elicitationPresence.value
+        if (!head) return null
+        return (
+          <ElicitationDialog
+            key={head.id}
+            open={activeElicitation?.id === head.id}
+            request={head}
+            onDecide={(d) => void elicitations.decide(head.id, d)}
+          />
+        )
       })()}
 
       <Overlay

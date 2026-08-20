@@ -1421,6 +1421,11 @@ function McpServerCard({
       {server.error && (
         <div className="settings-card-error">{server.error}</div>
       )}
+      {server.status === 'needs-auth' && (
+        <div className="settings-card-desc">
+          Authorization required — clicking Reconnect opens an authorization prompt in the chat panel.
+        </div>
+      )}
       <AnimatedCollapse open={expanded && !!server.tools}>
         <div className="settings-card-body">
           {server.tools?.map((t) => (

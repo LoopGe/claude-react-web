@@ -49,12 +49,16 @@ import {
   type GlobalSessionEvent,
   type GlobalSubscriber,
   type ResumableSession,
+  type ElicitationDecision,
+  type ElicitationEvent,
+  type ElicitationRequestUi,
   endAllSubscribers,
 } from './session-types.js'
 import { HttpError } from './errors.js'
 import { effortLevelsForModel } from './effort-capability.js'
 import type { ModelInfo } from '../shared/model-info.js'
 import { PermissionBroker } from './permission-broker.js'
+import { ElicitationBroker } from './elicitation-broker.js'
 import { SessionHealthMonitor } from './session-health.js'
 import { pushBounded, stampReceivedAt, stampConsumedAt } from './history-utils.js'
 import { watchBackgroundSubagent, type SubagentCompletion } from './subagent-watcher.js'
@@ -387,6 +391,10 @@ export class SessionManager {
   private defaultProvider: string
   private globalSubscribers = new Map<string, GlobalSubscriber>()
   private permBroker: PermissionBroker
+  /** MCP elicitation (OAuth auth / server-initiated form) arbitration.
+   *  Mirrors permBroker: owns the onElicitation callback construction,
+   *  pending registry, decide/cancelAll, and per-session broadcast. */
+  private elicitBroker: ElicitationBroker
   /** Owns recap lifecycle for every session. Public so the recap route
    *  can call requestGenerate() without going through a wrapper method —
    *  the route is the only HTTP surface for recap, and proxying through
@@ -400,6 +408,7 @@ export class SessionManager {
   constructor(opts: SessionManagerOptions = {}) {
     this.historyCap = opts.historyCap ?? defaultConfig.historyCap
     this.permBroker = new PermissionBroker()
+    this.elicitBroker = new ElicitationBroker()
     this.autoResumeEnabled = opts.autoResume ?? false
     this.crashRecoveryEnabled = opts.crashRecovery ?? false
     this.maxCrashRecovery = opts.maxCrashRecovery ?? 2
@@ -573,6 +582,7 @@ export class SessionManager {
     s.pendingTurns = 0
     s.workingSince = undefined
     this.permBroker.denyAll(s)
+    this.elicitBroker.cancelAll(s)
     s.handle.abort()
 
     this.broadcastSystemNotice(s, `${errorMsg} — 正在尝试自动恢复…`)
@@ -736,6 +746,7 @@ export class SessionManager {
     s.pendingTurns = 0
     s.workingSince = undefined
     this.permBroker.denyAll(s)
+    this.elicitBroker.cancelAll(s)
     this.broadcastSystemNotice(s, errorMsg)
     endAllSubscribers(s)
     this.persist(s)
@@ -1820,6 +1831,8 @@ export class SessionManager {
       subscribers: new Map(),
       permissionSubscribers: new Map(),
       pending: new Map(),
+      elicitationSubscribers: new Map(),
+      elicitationPending: new Map(),
       // Seed the in-memory ring with the on-disk transcript tail on resume.
       // A normally-running session maintains the invariant "history holds the
       // session's recent messages"; a resumed session starts with an empty
@@ -1914,6 +1927,27 @@ export class SessionManager {
       session.canUseTool = fullOpts.canUseTool as Session['canUseTool']
     }
 
+    // Elicitation (MCP OAuth auth / server-initiated forms). Mirrors the
+    // canUseTool wiring above. No global-broadcast consumer for now —
+    // elicitation is inherently interactive; the dialog appears in the
+    // session's Chat panel via the per-session channel + REST snapshot.
+    // Pending-changed rebroadcast is kept so SessionInfo updates ride the
+    // same fan-out if we later surface a pending-elicitation badge.
+    if (!fullOpts.onElicitation) {
+      const onElicitation = this.elicitBroker.buildOnElicitation(
+        session,
+        undefined,
+        (s) => {
+          if (!this.sessions.has(s.id)) return
+          this.broadcastGlobal({ kind: 'update', session: this.info(s) })
+        },
+      )
+      session.onElicitation = onElicitation
+      fullOpts.onElicitation = onElicitation
+    } else {
+      session.onElicitation = fullOpts.onElicitation as Session['onElicitation']
+    }
+
     const sdkOptions = { ...applySkillPolicyToOptions(fullOpts, skillOverride) } as Options & { provider?: string }
     delete sdkOptions.provider
     // Strip the app-level plugin selection so it doesn't reach the SDK:
@@ -1942,6 +1976,7 @@ export class SessionManager {
       resumeSessionAt: (fullOpts as { resumeSessionAt?: string }).resumeSessionAt,
       onUserMessageConsumed: (msg) => this.onInputConsumed(id, msg as SDKUserMessage),
       canUseTool: fullOpts.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
+      onElicitation: fullOpts.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,
       providerExtras: { sdkOptions },
     })
     session.handle = handle
@@ -2287,6 +2322,7 @@ export class SessionManager {
       // Resolve any pending tool-permission requests so SDK awaiters
       // don't hang once we destroy the handle.
       this.permBroker.denyAll(s)
+      this.elicitBroker.cancelAll(s)
 
       // Drain any in-flight assistant turn or queued user input. The
       // interrupt lands against the OLD Query; its result frame won't
@@ -3203,6 +3239,28 @@ export class SessionManager {
     return this.permBroker.subscribePermissions(this.require(id))
   }
 
+  /** List pending MCP elicitation (auth) requests for a session. */
+  listPendingElicitation(id: string): ElicitationRequestUi[] {
+    return this.elicitBroker.listPendingElicitation(this.require(id))
+  }
+
+  /** Resolve a pending MCP elicitation with the user's decision. */
+  decideElicitation(id: string, eid: string, decision: ElicitationDecision): void {
+    const s = this.require(id)
+    this.elicitBroker.decideElicitation(s, eid, decision)
+    s.lastActivityAt = Date.now()
+    this.persist(s)
+  }
+
+  /** Subscription for elicitation-channel events. */
+  subscribeElicitation(id: string): {
+    iterable: AsyncIterable<ElicitationEvent>
+    snapshot: ElicitationRequestUi[]
+    unsubscribe: () => void
+  } {
+    return this.elicitBroker.subscribeElicitation(this.require(id))
+  }
+
   /** AsyncIterable of context-usage snapshots for one session.
    *  Returns null if the session doesn't exist (caller should treat
    *  as "no context data available").
@@ -3510,6 +3568,7 @@ export class SessionManager {
       } catch { /* pump swallows errors internally */ }
     }
     this.permBroker.denyAll(s)
+    this.elicitBroker.cancelAll(s)
     // Cancel any pending git-status broadcast — without this, a timer
     // scheduled by the last mutating tool_use could still fire after the
     // session is removed (the broadcast itself is a no-op then, but the
@@ -4032,7 +4091,7 @@ export class SessionManager {
       this.cachedPumpDeps = {
         historyCap: this.historyCap,
         persist: (s) => this.persist(s),
-        denyPendingPermissions: (s) => this.permBroker.denyAll(s),
+        denyPendingPermissions: (s) => { this.permBroker.denyAll(s); this.elicitBroker.cancelAll(s) },
         isLive: (id) => this.sessions.has(id),
         autoResume: this.autoResumeEnabled ? (s) => this.autoResume(s) : undefined,
         crashRecovery: this.crashRecoveryEnabled,
@@ -4218,6 +4277,9 @@ export class SessionManager {
       resumeOpts.mcpServers = this.mcpStore?.toSdkConfig()
     }
     if (session.canUseTool) resumeOpts.canUseTool = session.canUseTool
+    // Re-apply the elicitation callback too — without it the resumed Query
+    // auto-declines every MCP elicitation (OAuth auth prompts included).
+    if (session.onElicitation) resumeOpts.onElicitation = session.onElicitation
     return resumeOpts
   }
 
@@ -4261,6 +4323,7 @@ export class SessionManager {
       resume: session.id,
       onUserMessageConsumed: (msg) => this.onInputConsumed(session.id, msg as SDKUserMessage),
       canUseTool: session.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
+      onElicitation: session.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,
       providerExtras: { sdkOptions: applySkillPolicyToOptions(resumeOpts, session.skillOverride) },
     })
     // Re-enqueue recovered turns onto the fresh handle, oldest first.

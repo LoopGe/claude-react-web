@@ -9,6 +9,7 @@ import { HttpError, createErrorHandler } from '../errors.js'
 import type { MpStore } from '../mp-store.js'
 import { buildSessionRouter } from './sessions.js'
 import { buildPermissionRouter } from './permissions.js'
+import { buildElicitationRouter } from './elicitation.js'
 import { buildUploadRouter } from './uploads.js'
 import { buildRecapRouter } from './recap.js'
 import { buildConfigRouter } from './config-routes.js'
@@ -52,6 +53,7 @@ export function buildApiRouter(
   app.route('/', buildSkillsRouter(sm))
   app.route('/', buildUploadRouter(sm))
   app.route('/', buildPermissionRouter(sm))
+  app.route('/', buildElicitationRouter(sm))
   app.route('/', buildRecapRouter(sm))
   app.route('/', buildSearchRouter(sm))
   // Homegrown git-repo marketplace lives under /mp/*. Only mounted when an

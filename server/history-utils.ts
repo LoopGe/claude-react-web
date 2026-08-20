@@ -73,6 +73,10 @@ export const BROADCAST_SYSTEM_SUBTYPES = new Set([
   'compact_boundary',
   'api_retry',
   'task_notification',
+  // SDK signal that an MCP URL-mode elicitation completed (the user
+  // finished auth in the browser). Surfacing it lets the transcript show
+  // the auth round-trip instead of silently resuming.
+  'elicitation_complete',
 ])
 
 /** Check if a message should be broadcast to frontend clients.

@@ -173,6 +173,18 @@ export type { QuestionSpec } from '../shared/question-spec.js'
 import type { PermissionRequestBase } from '../shared/permission-request.js'
 export type PermissionRequest = PermissionRequestBase<unknown[]>
 
+// Re-export canonical MCP elicitation shapes from shared.
+// Used by ElicitationDialog and useElicitationChannel; payload types are
+// browser-safe (no SDK dependency) so they need no per-client instantiation.
+import type { ElicitationDecision, ElicitationRequestUi } from '../shared/elicitation.js'
+export type { ElicitationRequestUi, ElicitationDecision }
+
+/** Broadcast envelope for a resolved elicitation. */
+export interface ElicitationResolved {
+  id: string
+  decision: ElicitationDecision
+}
+
 /** Broadcast envelope for a resolved permission. */
 export interface PermissionResolved {
   id: string

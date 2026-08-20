@@ -8,7 +8,7 @@ import { useWsHub, useWsHubStatus } from './useWsHub'
 import { api } from './useApi'
 import { randomId } from '../utils/uuid'
 import type { WsServerFrame } from '../ws-types'
-import type { PermissionRequest, PermissionResolved, SdkMessage, SkillFrontmatter } from '../types'
+import type { ElicitationRequestUi, ElicitationResolved, PermissionRequest, PermissionResolved, SdkMessage, SkillFrontmatter } from '../types'
 
 /** The disk-stable uuid of a message, or null. A message whose uuid matches
  *  between the in-memory ring and the on-disk transcript can anchor the first
@@ -124,6 +124,11 @@ export interface PermissionHandlers {
   onRequest: (req: PermissionRequest) => void
   onResolved: (res: PermissionResolved) => void
   onCleared?: () => void
+  /** MCP elicitation (OAuth auth / server-initiated form) callbacks.
+   *  Optional so existing callers/tests that don't care about
+   *  elicitations keep compiling unchanged. */
+  onElicitationRequest?: (req: ElicitationRequestUi) => void
+  onElicitationResolved?: (res: ElicitationResolved) => void
 }
 
 /** Clear all cached session state. Used in tests to avoid cross-test leaks. */
@@ -223,12 +228,20 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
             replayPermissions.push(...frame.permissions)
             for (const req of frame.permissions) permsRef.current.onRequest(req)
           }
+          // Pending elicitations ride the same replay burst — this is the
+          // reconnect/refresh recovery path for auth dialogs.
+          if (frame.elicitations?.length) {
+            for (const req of frame.elicitations) permsRef.current.onElicitationRequest?.(req)
+          }
           break
         }
         case 'replay-done': {
           if (frame.permissions?.length) {
             replayPermissions.push(...frame.permissions)
             for (const req of frame.permissions) permsRef.current.onRequest(req)
+          }
+          if (frame.elicitations?.length) {
+            for (const req of frame.elicitations) permsRef.current.onElicitationRequest?.(req)
           }
           store.dispatch({ type: 'REPLAY_REPLACE', messages: replayMessages, permissions: replayPermissions })
           const lastUuid = getSessionLastMessageUuid(sessionId)
@@ -261,6 +274,17 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
           }
           permsRef.current.onResolved(resolved)
           store.dispatch({ type: 'PERMISSION_RESOLVED', id: frame.id, decision: frame.decision })
+          break
+        }
+        case 'elicitation-request': {
+          // External handler drives the auth dialog's local state; unlike
+          // permissions there is no transcript-side store action because
+          // elicitations render no inline cards.
+          permsRef.current.onElicitationRequest?.(frame.payload)
+          break
+        }
+        case 'elicitation-resolved': {
+          permsRef.current.onElicitationResolved?.({ id: frame.id, decision: frame.decision })
           break
         }
         case 'context-usage': {

@@ -29,6 +29,10 @@ export interface CreateSessionOptions {
   resumeSessionAt?: string
   onUserMessageConsumed?: (message: AgentUserMessage) => void
   canUseTool?: (...args: unknown[]) => Promise<unknown>
+  /** MCP elicitation (OAuth auth / server-initiated form) callback.
+   *  SDK-agnostic loose signature mirroring canUseTool — the claude provider
+   *  casts it to the SDK's OnElicitation when forwarding to query(). */
+  onElicitation?: (...args: unknown[]) => Promise<unknown>
   providerExtras?: Record<string, unknown>
 }
 

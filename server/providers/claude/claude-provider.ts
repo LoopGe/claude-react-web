@@ -91,6 +91,9 @@ export class ClaudeProvider implements AgentProvider {
     if (opts.canUseTool && !sdkOptions.canUseTool) {
       sdkOptions.canUseTool = opts.canUseTool as Options['canUseTool']
     }
+    if (opts.onElicitation && !sdkOptions.onElicitation) {
+      sdkOptions.onElicitation = opts.onElicitation as Options['onElicitation']
+    }
 
     // Cap the input queue as an OOM backstop. In normal operation the SDK
     // consumes each user turn immediately and depth stays at 0–1; the cap

@@ -221,6 +221,76 @@ describe('useChatStream', () => {
     )
   })
 
+  it('dispatches elicitation-request to handler', () => {
+    const onElicitationRequest = vi.fn()
+    renderHook(
+      () => useChatStream('s1', { ...noopPerms, onElicitationRequest }),
+    )
+
+    act(() => {
+      dispatchToSession('s1', {
+        kind: 'elicitation-request',
+        sessionId: 's1',
+        payload: { id: 'e1', serverName: 'github', message: 'Sign in', mode: 'url', createdAt: 1 },
+      })
+    })
+
+    expect(onElicitationRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'e1', serverName: 'github', mode: 'url' }),
+    )
+  })
+
+  it('dispatches elicitation-resolved to handler', () => {
+    const onElicitationResolved = vi.fn()
+    renderHook(
+      () => useChatStream('s1', { ...noopPerms, onElicitationResolved }),
+    )
+
+    act(() => {
+      dispatchToSession('s1', {
+        kind: 'elicitation-resolved',
+        sessionId: 's1',
+        id: 'e1',
+        decision: { action: 'accept' },
+      })
+    })
+
+    expect(onElicitationResolved).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'e1', decision: { action: 'accept' } }),
+    )
+  })
+
+  it('seeds elicitations from replay frames', () => {
+    const onElicitationRequest = vi.fn()
+    renderHook(
+      () => useChatStream('s1', { ...noopPerms, onElicitationRequest }),
+    )
+
+    act(() => {
+      dispatchToSession('s1', {
+        kind: 'replay',
+        sessionId: 's1',
+        messages: [],
+        elicitations: [
+          { id: 'e1', serverName: 'github', message: 'Sign in', createdAt: 1 },
+          { id: 'e2', serverName: 'linear', message: 'Form', createdAt: 2 },
+        ],
+      })
+      dispatchToSession('s1', {
+        kind: 'replay-done',
+        sessionId: 's1',
+        elicitations: [
+          { id: 'e2', serverName: 'linear', message: 'Form', createdAt: 2 },
+        ],
+      })
+    })
+
+    expect(onElicitationRequest).toHaveBeenCalledTimes(3)
+    expect(onElicitationRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'e1' }),
+    )
+  })
+
   it('updates context-usage', () => {
     const { result } = renderHook(
       () => useChatStream('s1', noopPerms),

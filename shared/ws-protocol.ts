@@ -109,6 +109,9 @@ export interface WsReplay<Msg, Perm> {
   messages: Msg[]
   /** Still-outstanding permission requests for this session. */
   permissions: Perm[]
+  /** Still-outstanding MCP elicitation (auth) requests. Optional so older
+   *  payloads / clients without elicitation support simply omit it. */
+  elicitations?: ElicitationRequestUi[]
 }
 export interface WsReplayDone<Perm> {
   kind: 'replay-done'
@@ -117,6 +120,9 @@ export interface WsReplayDone<Perm> {
    *  ride on the final replay-done frame instead of the first replay
    *  chunk. Older clients ignore unknown fields, so this is safe. */
   permissions?: Perm[]
+  /** Same chunked-replay rule as `permissions`: elicitations ride on the
+   *  final replay-done frame when the replay is chunked. */
+  elicitations?: ElicitationRequestUi[]
 }
 
 /** Live SDK message. */
@@ -148,6 +154,26 @@ export interface WsPermissionResolved<Decision> {
   sessionId: string
   id: string
   decision: Decision
+}
+
+/** New MCP elicitation (auth) request — an MCP server needs user input
+ *  (OAuth URL authorization or form fields) before its connection can
+ *  complete. Mirrors the permission-request frame; payload types come from
+ *  shared/elicitation.ts (browser-safe), so these frames take no generic
+ *  parameters. */
+export interface WsElicitationRequest {
+  kind: 'elicitation-request'
+  sessionId: string
+  payload: ElicitationRequestUi
+}
+
+/** An elicitation request was resolved (by this tab or another). The
+ *  decision shape is ElicitationDecision, shared verbatim with the SDK. */
+export interface WsElicitationResolved {
+  kind: 'elicitation-resolved'
+  sessionId: string
+  id: string
+  decision: ElicitationDecision
 }
 /** Fresh context-usage snapshot pushed from the server. Shape is
  *  deliberately `unknown` — the frontend treats it as opaque JSON. */
@@ -233,6 +259,7 @@ export interface WsHookRunEvent<HookEvent> {
 
 import type { AppPluginClientInfo } from './app-plugins/runtime-state.js'
 import type { ResolvedPluginContributions } from './app-plugins/contributions.js'
+import type { ElicitationRequestUi, ElicitationDecision } from './elicitation.js'
 
 /** Heartbeat reply. */
 export interface WsPong {
@@ -281,6 +308,8 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsMessage<Msg>
   | WsPermissionRequest<Perm>
   | WsPermissionResolved<Decision>
+  | WsElicitationRequest
+  | WsElicitationResolved
   | WsContextUsage
   | WsGitStatusChanged
   | WsMessageConsumed
