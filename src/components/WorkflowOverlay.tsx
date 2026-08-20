@@ -18,8 +18,9 @@
 //   the primary view; the right column shows the work for whichever branch
 //   the user selects (defaulting to the Workflow's own direct children).
 
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useMemo, useRef, useState } from 'react'
 import { MessageList } from './MessageList'
+import { useEscapeStack } from '../hooks/useEscapeStack'
 import { formatElapsed } from '../utils/format'
 import { IconX, IconWorkflow, IconChevronRight } from './icons/ToolIcons'
 import { AnimatedDetails } from './AnimatedCollapse'
@@ -76,16 +77,24 @@ export const WorkflowOverlay = memo(function WorkflowOverlay({
   // Workflow → child. Nested-drill beyond a child is out of scope here
   // (a child's own nested subagents surface as SubagentCards in the right
   // column and open the SubagentOverlay via the shared stack).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
-      if (isExiting) return
+  //
+  // Registered in the escape stack (window CAPTURE + stopPropagation) so the
+  // keypress is consumed here and CANNOT fall through to App's bubble-phase
+  // interrupt branch — the old bubble listener had no stopPropagation, so Esc
+  // while a workflow overlay was open closed it AND interrupted the running
+  // session. canClose gates the exit window (swallowed but not acted on during
+  // the closing animation). focusedChild is read from the latest render via the
+  // hook's opts-ref, so no rebinding is needed as the drill state changes.
+  const overlayRef = useRef<HTMLDivElement>(null)
+  useEscapeStack({
+    active: true,
+    onEscape: () => {
       if (focusedChild) setFocusedChild(null)
       else onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [isExiting, focusedChild, onClose])
+    },
+    canClose: () => !isExiting,
+    getContainer: () => overlayRef.current,
+  })
 
   const startedAt = record.startedAt
   const endedAt = record.endedAt
@@ -130,6 +139,7 @@ export const WorkflowOverlay = memo(function WorkflowOverlay({
 
   return (
     <div
+      ref={overlayRef}
       className="workflow-overlay"
       role="dialog"
       aria-modal="false"

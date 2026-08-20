@@ -4,8 +4,9 @@
 // covers this column. ESC or backdrop click closes; the breadcrumb
 // supports nested drill-down (a Task spawned inside an Agent etc.).
 
-import { memo, useEffect, useMemo } from 'react'
+import { memo, useEffect, useMemo, useRef } from 'react'
 import { MessageList } from './MessageList'
+import { useEscapeStack } from '../hooks/useEscapeStack'
 import { formatElapsed } from '../utils/format'
 import { IconX, IconArrowLeft } from './icons/ToolIcons'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
@@ -175,17 +176,25 @@ export const SubagentOverlay = memo(function SubagentOverlay({
     }]
   }, [currentId, current])
 
-  // ESC closes (or pops one level if nested).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
-      if (isExiting) return
+  // ESC closes (or pops one level if nested). Registered in the escape stack
+  // (window CAPTURE + stopPropagation) so the keypress is consumed here and
+  // CANNOT fall through to App's bubble-phase interrupt branch. The old bubble
+  // listener had no stopPropagation, so Esc while a subagent overlay was open
+  // closed it AND interrupted the running session — the exact bug this fixes.
+  // canClose gates the exit window: while the overlay is animating out the
+  // keypress is still swallowed, just not acted on. The container is the root
+  // (.subagent-overlay), so the stack's containment scan resolves nesting with
+  // any other overlay regardless of which element holds focus.
+  const overlayRef = useRef<HTMLDivElement>(null)
+  useEscapeStack({
+    active: true,
+    onEscape: () => {
       if (stack.length > 1) onPop()
       else onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [isExiting, stack.length, onClose, onPop])
+    },
+    canClose: () => !isExiting,
+    getContainer: () => overlayRef.current,
+  })
 
   // If the referenced subagent vanishes from the index (session reset,
   // fork, etc.) the overlay would render null and the stack would be
@@ -217,6 +226,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
 
   return (
     <div
+      ref={overlayRef}
       className="subagent-overlay"
       role="dialog"
       aria-modal="false"
