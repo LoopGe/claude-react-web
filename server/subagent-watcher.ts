@@ -107,6 +107,16 @@ function extractTextBlocks(content: unknown): string {
  *  long backstop window. */
 const NON_TERMINAL_STOP_REASONS = new Set(['tool_use', 'pause_turn'])
 
+/** The CLI assigns `stop_sequence` to a response the API cut off mid-stream
+ *  — the assistant message carries an error notice like "API Error: Connection
+ *  lost mid-response. The response above may be incomplete." The subagent then
+ *  recovers and keeps producing on its next turn, so this is NOT a completion.
+ *  A genuine stop_sequence (the model hit a configured stop sequence and
+ *  returned its final output) does NOT carry this marker — its text is the
+ *  real final answer. We match the marker against the assistant message's full
+ *  text, so the two are distinguished precisely. */
+const API_ERROR_TRUNCATION_RE = /API Error: .*mid-response/i
+
 /** Read the subagent's transcript and, if it contains a final assistant
  *  message (one with a terminal `message.stop_reason`), return the completion.
  *  Returns null if the transcript doesn't exist yet, is mid-write, or hasn't
@@ -134,10 +144,18 @@ export function readSubagentCompletion(filePath: string): SubagentCompletion | n
     const sr = obj.message.stop_reason
     if (typeof sr !== 'string') continue
     if (NON_TERMINAL_STOP_REASONS.has(sr)) continue // mid-tool-call — keep polling
+    // A response truncated by a transient API/connection error is NOT a
+    // completion — the subagent recovers and keeps producing on its next
+    // turn. The CLI writes the error notice as the whole text of the
+    // stop_sequence message, so a text match distinguishes it from a genuine
+    // stop_sequence (the model hit a configured stop sequence and returned
+    // its final output), which stays a normal completion.
+    const blockText = extractTextBlocks(obj.message.content)
+    if (API_ERROR_TRUNCATION_RE.test(blockText)) continue // transient error — keep polling
     // The last terminal assistant message is the subagent's final response.
     // A later one (if any) overwrites.
     lastStopReason = sr
-    lastText = extractTextBlocks(obj.message.content)
+    lastText = blockText
   }
   if (lastStopReason === null) return null
   // Any terminal stop_reason means the subagent stopped producing and

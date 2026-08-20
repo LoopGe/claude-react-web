@@ -2690,3 +2690,56 @@ describe('reducer: stream_event does not advance lastMessageUuid', () => {
     expect(ids(state)).toEqual(['a1', 'a2'])
   })
 })
+
+describe('reducer: a task_notification for ONE async agent leaves the OTHER background agent untouched', () => {
+  const agentToolUse = (id: string, uuid: string): SdkMessage => ({
+    type: 'assistant',
+    uuid,
+    receivedAt: 0,
+    message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Agent', input: { description: 'do work' } }] },
+  }) as unknown as SdkMessage
+  const agentAck = (toolUseId: string, uuid: string): SdkMessage => ({
+    type: 'user',
+    uuid,
+    parent_tool_use_id: null,
+    receivedAt: 1_000,
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: 'Async agent launched successfully' }] },
+  }) as unknown as SdkMessage
+  const result = (uuid: string): SdkMessage => ({ type: 'result', subtype: 'success', uuid, receivedAt: 2_000 }) as unknown as SdkMessage
+  const notif = (toolUseId: string, uuid: string): SdkMessage => ({
+    type: 'system',
+    subtype: 'task_notification',
+    uuid,
+    task_id: 't-1',
+    tool_use_id: toolUseId,
+    status: 'completed',
+    summary: 'done',
+    output_file: '',
+    receivedAt: 3_000,
+  }) as unknown as SdkMessage
+
+  it('keeps the second agent pending after the first completes', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentAck('tu_a', 'u1') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_b', 'a2') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentAck('tu_b', 'u2') })
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('background')
+    expect(state.mirror.activeSubagents.get('tu_b')?.status).toBe('background')
+
+    // Parent turn ends → both sweep to pending.
+    state = reduceSessionState(state, { type: 'MESSAGE', message: result('r1') })
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('pending')
+    expect(state.mirror.activeSubagents.get('tu_b')?.status).toBe('pending')
+
+    // Agent A completes → its record flips to done; B must STAY pending.
+    state = reduceSessionState(state, { type: 'MESSAGE', message: notif('tu_a', 'n1') })
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('done')
+    expect(state.mirror.activeSubagents.get('tu_b')?.status).toBe('pending')
+
+    // WorkingBubble waiting = any pending/background subagent still present.
+    const stillRunning = Array.from(state.mirror.activeSubagents.values())
+      .filter((s) => s.status === 'pending' || s.status === 'background')
+    expect(stillRunning.map((s) => s.toolUseId)).toContain('tu_b')
+  })
+})

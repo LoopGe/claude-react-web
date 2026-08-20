@@ -92,6 +92,42 @@ describe('subagent-watcher', () => {
       expect(c?.status).toBe('completed')
       expect(c?.summary).toBe('here is my result')
     })
+    it('does NOT complete on a stop_sequence that is an API-error truncation (subagent still running)', () => {
+      // A transient API/connection error mid-run makes the CLI write an
+      // assistant message with stop_reason:'stop_sequence' and an error
+      // notice; the subagent then recovers and keeps producing on its next
+      // turn. Treating that as completion false-completes a still-running
+      // subagent and drops backgroundSubagentCount while the sidebar is
+      // still 'waiting' (the waiting→live regression). The watcher must
+      // keep polling (return null) until a REAL terminal message lands.
+      const f = path.join(mkdtempSync(path.join(os.tmpdir(), 'sw-')), 'agent.jsonl')
+      writeFileSync(
+        f,
+        JSON.stringify({
+          type: 'assistant',
+          message: { role: 'assistant', content: [{ type: 'text', text: 'API Error: Connection lost mid-response. The response above may be incomplete.' }], stop_reason: 'stop_sequence' },
+        }) + '\n',
+      )
+      expect(readSubagentCompletion(f)).toBeNull()
+    })
+    it('completes with the REAL end_turn after an API-error-truncated stop_sequence', () => {
+      // The full mid-run shape seen in production transcripts: an error-
+      // truncated stop_sequence, then the subagent recovers, keeps working,
+      // and finally lands an end_turn. The completion summary must be the
+      // real final text, not the error notice.
+      const f = path.join(mkdtempSync(path.join(os.tmpdir(), 'sw-')), 'agent.jsonl')
+      writeFileSync(
+        f,
+        [
+          JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'API Error: Server error mid-response. The response above may be incomplete.' }], stop_reason: 'stop_sequence' } }),
+          JSON.stringify({ type: 'user', message: { role: 'user', content: 'continue' } }),
+          JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'done for real' }], stop_reason: 'end_turn' } }),
+        ].join('\n'),
+      )
+      const c = readSubagentCompletion(f)
+      expect(c?.status).toBe('completed')
+      expect(c?.summary).toBe('done for real')
+    })
     it('does NOT false-complete on tool_use stop_reason (intermediate tool-call response)', () => {
       // A tool-using subagent emits stop_reason:'tool_use' on every intermediate
       // tool-calling response — this is NOT completion. The watcher must keep

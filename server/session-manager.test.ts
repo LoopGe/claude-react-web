@@ -431,6 +431,57 @@ describe('SessionManager', () => {
     }
   })
 
+  it('keeps backgroundSubagentCount at 1 when the only terminal-looking frame is an API-error-truncated stop_sequence', async () => {
+    // Regression for the sidebar 'waiting'→'live' flip: a transient API error
+    // mid-run makes the CLI write an assistant message with
+    // stop_reason:'stop_sequence' and an error notice — the subagent then
+    // recovers and keeps producing. If the watcher treated that as completion,
+    // backgroundSubagentCount would drop to 0 (sidebar 'live') while the
+    // subagent is still running. It must stay at 1 ('waiting').
+    const info = sm.create({ cwd: '/tmp/workspace' })
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    try {
+      // Pre-write a transcript whose only terminal-looking stop_reason is the
+      // error-truncated stop_sequence (no real end_turn yet).
+      const txnPath = subagentTranscriptPath('/tmp/workspace', info.id, 'agent-err')
+      mkdirSync(dirname(txnPath), { recursive: true })
+      writeFileSync(
+        txnPath,
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            stop_reason: 'stop_sequence',
+            content: [{ type: 'text', text: 'API Error: Connection lost mid-response. The response above may be incomplete.' }],
+          },
+        }) + '\n',
+      )
+
+      mockHandles[0].emit({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'tu_bg_err',
+            content: 'Async agent launched successfully.\nagentId: agent-err\n',
+          }],
+        },
+      })
+      await tick()
+
+      const waiting = sm.get(info.id)
+      // NOT false-completed: the watcher is still polling the transcript.
+      expect(waiting.backgroundSubagentCount).toBe(1)
+      expect(waiting.phase).toBe('working')
+    } finally {
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+    // Force-terminate so unload() clears the still-armed watcher's interval.
+    await sm.delete(info.id)
+  })
+
   it('carries a user turn sent during the autoResume window to the resumed handle (parked SDK waiter detached on abort)', async () => {
     const info = sm.create({})
     const firstHandle = mockHandles[0]
