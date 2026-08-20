@@ -199,10 +199,8 @@ export function App() {
   )
   const {
     settingsOpenFor,
-    setSettingsOpenFor,
     settingsTabRequest,
     gitPanelOpenFor,
-    setGitPanelOpenFor,
     helpOpen,
     setHelpOpen,
     helpCommands,
@@ -215,14 +213,14 @@ export function App() {
     toggleShortcutHelp,
   } = useAppOverlays()
   const [newSessionDialogOpen, setNewSessionDialogOpen] = useState(false)
-  const newSessionDialogOpenRef = useRef(newSessionDialogOpen)
   const [resumeDialogOpen, setResumeDialogOpen] = useState(false)
-  const resumeDialogOpenRef = useRef(resumeDialogOpen)
-  // Double-tap Escape detection: timestamp of the last Escape press +
-  // whether an overlay was open on that press (so a "clean" double-tap
-  // — no overlay was open on the first press — opens resume).
+  // Double-tap Escape detection: timestamp of the last Escape press that
+  // reached this chain. Every overlay is registered in the escape stack
+  // (window CAPTURE + stopPropagation), so a press that closes an overlay
+  // never reaches this bubble-phase handler — only "clean" presses (no
+  // overlay open) update this ref, which is exactly what makes a double-tap
+  // mean "resume".
   const lastEscapeAtRef = useRef(0)
-  const overlayWasOpenOnFirstPressRef = useRef(false)
   // When set, the resume picker was opened from a panel's `/resume` local
   // command: the chosen session should REPLACE this panel's slot rather than
   // open in a new panel. Null = the global (Mod+Shift+O) resume flow.
@@ -432,11 +430,7 @@ export function App() {
    *  down. Bridging through a ref keeps the related code grouped without
    *  causing TDZ violations. */
   const animatePanelsRef = useRef<((...ids: string[]) => void) | null>(null)
-  const paletteOpenRef = useRef(paletteOpen)
   const helpOpenRef = useRef(helpOpen)
-  const historyPanelOpenRef = useRef(historyPanelOpen)
-  const settingsOpenForRef = useRef(settingsOpenFor)
-  const gitPanelOpenForRef = useRef(gitPanelOpenFor)
   const handleSelectRef = useRef<(id: string, opts?: { auto?: boolean }) => void>(() => {})
   const handleDeleteRef = useRef<(id: string) => void>(() => {})
   const jumpNonceRef = useRef(0)
@@ -509,9 +503,7 @@ export function App() {
   resumingRef.current = resuming
   maxOpenRef.current = maxOpen
   maxGroupSizeRef.current = maxGroupSize
-  paletteOpenRef.current = paletteOpen
   helpOpenRef.current = helpOpen
-  historyPanelOpenRef.current = historyPanelOpen
 
   // Close the in-panel history overlay when its host panel goes away (no
   // focused panel can render it). Without this, closing the focused panel
@@ -523,10 +515,6 @@ export function App() {
     if (focusedId == null) setHistoryPanelOpen(false)
   }, [focusedId])
   /* eslint-enable react-hooks/set-state-in-effect */
-  settingsOpenForRef.current = settingsOpenFor
-  gitPanelOpenForRef.current = gitPanelOpenFor
-  newSessionDialogOpenRef.current = newSessionDialogOpen
-  resumeDialogOpenRef.current = resumeDialogOpen
   /* eslint-enable react-hooks/refs */
 
   // DEBUG: expose a runtime group-state dump on window for console use.
@@ -2501,16 +2489,18 @@ export function App() {
         {
           combo: 'escape',
           handler: () => {
-            // Double-tap Escape detection: if the user presses Escape twice
-            // within 400ms AND no overlay was open on the first press (so
-            // the first press was a no-op or an interrupt), open resume.
-            // Date.now() is called at event-dispatch time, not during render
-            // — the handler is defined in useMemo but invoked later by the
-            // keyboard dispatcher.
+            // Double-tap Escape opens the resume picker: two "clean" presses
+            // within 400ms. Clean is automatic here — every overlay is
+            // registered in the escape stack (window CAPTURE +
+            // stopPropagation), so if ANY overlay were open this bubble-phase
+            // handler would never run. Reaching this chain means the stack was
+            // empty, so the previous counted press was clean too. Date.now()
+            // is called at event-dispatch time, not during render — the
+            // handler is defined in useMemo but invoked later by the keyboard
+            // dispatcher.
             // eslint-disable-next-line react-hooks/purity
             const now = Date.now()
             const isDoubleTap = now - lastEscapeAtRef.current < 400
-              && !overlayWasOpenOnFirstPressRef.current
             lastEscapeAtRef.current = now
 
             if (isDoubleTap && focusedIdRef.current) {
@@ -2518,40 +2508,12 @@ export function App() {
               return
             }
 
-            // Escape ownership is two-tier:
-            //   1. Focus-trapped dialogs (PermissionDialog, QuestionDialog) and
-            //      nested overlays (DirectoryPicker) handle Escape LOCALLY and
-            //      stop propagation — they need custom semantics (deny / skip /
-            //      dismiss-just-this-layer) and must NOT fall through to the
-            //      "interrupt session" branch below.
-            //   2. Every other non-trapping overlay routes through this single
-            //      ordered chain so there's one place that defines precedence.
-            // Priority: CommandPalette > ShortcutHelp > NewSessionDialog > per-panel Git overlay > Settings overlay > Interrupt.
-            // Git is checked before Settings because it's the more recently
-            // introduced overlay and tends to be what the user wants to
-            // close when they press Esc with both possible.
-
-            // Record whether an overlay is open right now, so the next
-            // Escape press knows if this was a "clean" single press.
-            const overlayWasOpen = !!(
-              paletteOpenRef.current
-              || historyPanelOpenRef.current
-              || helpOpenRef.current
-              || resumeDialogOpenRef.current
-              || newSessionDialogOpenRef.current
-              || gitPanelOpenForRef.current
-              || settingsOpenForRef.current
-            )
-            overlayWasOpenOnFirstPressRef.current = overlayWasOpen
-
-            if (paletteOpenRef.current) setPaletteOpen(false)
-            else if (historyPanelOpenRef.current) setHistoryPanelOpen(false)
-            else if (helpOpenRef.current) setHelpOpen(false)
-            else if (resumeDialogOpenRef.current) { setResumeDialogOpen(false); setResumeTargetPanelId(null) }
-            else if (newSessionDialogOpenRef.current) setNewSessionDialogOpen(false)
-            else if (gitPanelOpenForRef.current) setGitPanelOpenFor(null)
-            else if (settingsOpenForRef.current) setSettingsOpenFor(null)
-            else if (focusedIdRef.current) {
+            // The escape stack already consumed Esc for every overlay
+            // (palette, history, help, resume, new-session, git, settings,
+            // subagent, workflow, permission dialogs…). Reaching here means
+            // none was open, so the only remaining job is the session
+            // interrupt — no overlay-open bookkeeping needed.
+            if (focusedIdRef.current) {
               const focused = sessionsRef.current.find((s) => s.id === focusedIdRef.current)
               if (focused?.working) {
                 // Use the registered interrupt callback (set by <Chat>).
@@ -2572,7 +2534,7 @@ export function App() {
           description: 'Close overlay / Interrupt / Double-tap for resume',
         },
       ],
-      [groups.length, handleActivateGroup, closeSession, setGitPanelOpenFor, setHelpOpen, setSettingsOpenFor, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel, setSidebarCollapsed],
+      [groups.length, handleActivateGroup, closeSession, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel, setSidebarCollapsed],
       // requestResumeForPanel is intentionally omitted — it's declared after
       // this useMemo (line order) and is stable (useCallback with stable deps).
     )
