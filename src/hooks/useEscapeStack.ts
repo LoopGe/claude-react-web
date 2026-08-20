@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useLayoutEffect, useRef } from 'react'
 
 /**
  * Escape-key ownership stack for overlays.
@@ -116,7 +116,17 @@ export function useEscapeStack(opts: {
   /* eslint-enable react-hooks/refs */
 
   const active = opts.active ?? true
-  useEffect(() => {
+  // useLayoutEffect, not useEffect: the stack entry must exist BEFORE the
+  // owning overlay moves focus into itself, or a parent focus trap observing
+  // the resulting `focusin` will find isFocusInsideOtherOverlay(target) false
+  // and steal focus back. That mis-location is then read by the Escape
+  // dispatch's containment scan, so Esc closes the wrong layer (a parent
+  // modal instead of the popover on top). Layout-phase registration runs
+  // before every passive effect (autofocus, trap activation, a popover
+  // focusing its first item), so the "register before focusing" invariant
+  // holds for all consumers. Layout effects that move focus must additionally
+  // be declared AFTER this hook call.
+  useLayoutEffect(() => {
     if (!active) return
     const entry: EscapeStackEntry = {
       getContainer: () => optsRef.current.getContainer?.() ?? null,

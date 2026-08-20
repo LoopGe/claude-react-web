@@ -148,6 +148,19 @@ export function ModelPicker({ anchor, current, options, disabled, onSelect, onCl
     setPos({ x: Math.max(4, nx), y: Math.max(4, ny) })
   }, [anchor.x, anchor.y, rows.length])
 
+  // Esc closes via the shared escape stack, so it wins over the chat panel's
+  // handlers and never closes the panel beneath this popover. Must be called
+  // BEFORE the autofocus layout effect below: the search box is portaled to
+  // body (not a descendant of any parent trap), so unless this entry is
+  // registered first, a parent trap's focusin re-guard sees isFocusInside-
+  // OtherOverlay() false and steals focus back — and the Escape dispatch then
+  // resolves by containment to the parent layer instead of this popover.
+  useEscapeStack({
+    active: true,
+    onEscape: onClose,
+    getContainer: () => ref.current,
+  })
+
   // Autofocus the search box on open.
   useLayoutEffect(() => {
     inputRef.current?.focus()
@@ -161,7 +174,7 @@ export function ModelPicker({ anchor, current, options, disabled, onSelect, onCl
     el?.scrollIntoView({ block: 'nearest' })
   }, [activeIndex])
 
-  // Outside-click dismissal (Escape is owned by the shared stack below).
+  // Outside-click dismissal (Escape is owned by the shared stack above).
   useEffect(() => {
     const onDocMouseDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose()
@@ -169,14 +182,6 @@ export function ModelPicker({ anchor, current, options, disabled, onSelect, onCl
     window.addEventListener('mousedown', onDocMouseDown)
     return () => window.removeEventListener('mousedown', onDocMouseDown)
   }, [onClose])
-
-  // Esc closes via the shared escape stack, so it wins over the chat panel's
-  // handlers and never closes the panel beneath this popover.
-  useEscapeStack({
-    active: true,
-    onEscape: onClose,
-    getContainer: () => ref.current,
-  })
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {

@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { Overlay } from './Overlay'
-import { __resetForTests, getEscapeStackCount } from '../hooks/useEscapeStack'
+import { __resetForTests, getEscapeStackCount, useEscapeStack } from '../hooks/useEscapeStack'
 
 // Conventions follow PanelOverlay.test.tsx: backdrop clicks are exercised via a
 // native MouseEvent dispatch (fireEvent.mouseDown on the backdrop trips the
@@ -157,6 +159,53 @@ describe('Overlay', () => {
     fireEvent.keyDown(cardB, { key: 'Escape' })
     expect(closeB).toHaveBeenCalledTimes(1)
     expect(closeA).not.toHaveBeenCalled()
+  })
+
+  it('does not let a parent trap steal focus from a portaled popover that focuses itself (register-before-focus)', () => {
+    // Regression: the AccentPicker-over-NewSessionDialog bug. A popover that
+    // moves focus into itself (its first swatch / search box) must be
+    // registered in the escape stack BEFORE that focus lands — otherwise the
+    // parent modal's trap observes the resulting focusin, sees
+    // isFocusInsideOtherOverlay() false, steals focus back, and the Escape
+    // dispatch then resolves by containment to the MODAL, closing the wrong
+    // layer.
+    const closeParent = vi.fn()
+    const closeChild = vi.fn()
+
+    function Popover() {
+      const ref = useRef<HTMLDivElement>(null)
+      // Registered first (useEscapeStack uses useLayoutEffect)…
+      useEscapeStack({ active: true, onEscape: closeChild, getContainer: () => ref.current })
+      // …then focus moves into the popover in a passive effect.
+      useEffect(() => {
+        ref.current?.querySelector<HTMLButtonElement>('button')?.focus()
+      }, [])
+      return createPortal(
+        <div ref={ref} className="test-popover">
+          <button>swatch</button>
+        </div>,
+        document.body,
+      )
+    }
+
+    render(
+      <>
+        <Overlay variant="modal" open onClose={closeParent} ariaLabel="Parent">
+          <button>inside</button>
+        </Overlay>
+        <Popover />
+      </>,
+    )
+
+    // The popover's own focus effect must win — the parent trap must NOT yank
+    // focus back into the modal.
+    const swatch = screen.getByText('swatch')
+    expect(document.activeElement).toBe(swatch)
+
+    // Esc closes the popover (the layer holding focus), never the modal.
+    fireEvent.keyDown(swatch, { key: 'Escape' })
+    expect(closeChild).toHaveBeenCalledTimes(1)
+    expect(closeParent).not.toHaveBeenCalled()
   })
 
   it('traps focus in the card by default, and releases it when trapFocus=false', () => {
