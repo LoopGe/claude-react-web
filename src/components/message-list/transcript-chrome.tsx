@@ -25,6 +25,36 @@ export const OlderHistoryHeader = memo(function OlderHistoryHeader({ loading }: 
   )
 })
 
+/** One fenced-code segment of the live turn, with primitive-only props so
+ *  memo actually bails out. Passing the <code> children JSX directly to the
+ *  memoized CodeBlock defeated its shallow compare (a fresh element per
+ *  render), re-rendering every closed code block on each ~80ms streaming
+ *  flush — reconciliation cost that grows linearly with the number of code
+ *  blocks in the turn. With this wrapper only the still-growing open tail
+ *  segment re-renders; closed segments bail on identical (string | boolean)
+ *  props. Text segments stay inline: a bare <span> render costs about as
+ *  much as the memo compare itself. */
+const StreamCodeSegment = memo(function StreamCodeSegment({
+  lang,
+  content,
+  closed,
+  showCursor,
+}: {
+  lang: string | null
+  content: string
+  closed: boolean
+  showCursor: boolean
+}) {
+  return (
+    <CodeBlock lang={lang ?? undefined} showCopy={closed}>
+      <code>
+        {content}
+        {showCursor && <span className="streaming-cursor" />}
+      </code>
+    </CodeBlock>
+  )
+})
+
 export const StreamingFooter = memo(function StreamingFooter({ content }: { content: string }) {
   // Render the in-progress turn as PLAIN TEXT, not Markdown. The live turn
   // flushes a growing string many times per second; running Markdown and
@@ -133,12 +163,12 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
               {seg.type === 'text' ? (
                 <span>{seg.content}</span>
               ) : (
-                <CodeBlock lang={seg.lang ?? undefined} showCopy={seg.closed}>
-                  <code>
-                    {seg.content}
-                    {i === segments.length - 1 && !seg.closed && <span className="streaming-cursor" />}
-                  </code>
-                </CodeBlock>
+                <StreamCodeSegment
+                  lang={seg.lang}
+                  content={seg.content}
+                  closed={seg.closed}
+                  showCursor={i === segments.length - 1 && !seg.closed}
+                />
               )}
             </Fragment>
           ))}
