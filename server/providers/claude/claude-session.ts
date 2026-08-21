@@ -135,4 +135,12 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
   getContextUsage(): Promise<unknown> {
     return this.query.getContextUsage()
   }
+
+  /** Structured /usage data (session cost/usage totals + claude.ai plan
+   *  rate-limit windows). The SDK method is EXPERIMENTAL and its name will
+   *  change when stabilized — this wrapper is the single call site, so the
+   *  rename is a one-line edit here. */
+  getUsage(): Promise<unknown> {
+    return this.query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()
+  }
 }

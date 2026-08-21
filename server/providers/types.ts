@@ -83,6 +83,7 @@ export interface ProviderSessionHandle {
   reloadPlugins?(): Promise<unknown>
   reloadSkills(): Promise<unknown>
   getContextUsage?(): Promise<unknown>
+  getUsage?(): Promise<unknown>
 }
 
 export interface ProviderCapabilities {
@@ -98,6 +99,7 @@ export interface ProviderCapabilities {
   supportsCommands: boolean
   supportsAgents: boolean
   supportsContextUsage: boolean
+  supportsUsage: boolean
 }
 
 export interface ListResumableOptions {

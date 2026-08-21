@@ -82,6 +82,44 @@
   text-overflow: ellipsis;   /* .result-meta already sets white-space: nowrap */
 }
 
+/* rate_limit_event: a plan rate-limit state transition. Same divider
+   vocabulary as retry/error; tone follows the event status — ok (within
+   limit) / warn (near limit) / danger (rejected, requests blocked). */
+.msg.result.rate-limit-card--ok .result-mark { color: var(--ok, var(--accent)); }
+.msg.result.rate-limit-card--warn { color: var(--msg-rate-limit-fg); }
+.msg.result.rate-limit-card--warn::before,
+.msg.result.rate-limit-card--warn::after { background: color-mix(in srgb, var(--warn) 45%, var(--border)); }
+.msg.result.rate-limit-card--warn .result-mark { color: var(--warn); }
+.msg.result.rate-limit-card--danger { color: var(--msg-error-fg); }
+.msg.result.rate-limit-card--danger::before,
+.msg.result.rate-limit-card--danger::after { background: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.msg.result.rate-limit-card--danger .result-mark { color: var(--danger); }
+.msg.result.rate-limit-card .result-meta {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* CLI-local command output (/usage, /voice, …): a system-role card whose
+   body is assistant-style Markdown. Reuses the .msg.system silhouette but
+   with a readable (non-mono, non-muted) body so tables / lists in /usage
+   output land properly. */
+.msg.local-command-output { padding: 8px 10px; }
+.msg.local-command-output .msg-header {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+.local-command-output-body {
+  font-size: 13px;
+  color: var(--fg);
+  word-wrap: break-word;
+}
+
 .msg-body { word-wrap: break-word; }
 /* Inline code + fenced <pre> base for rendered Markdown. `.md` is the root
    <div> Markdown.tsx always wraps its output in, so this covers every

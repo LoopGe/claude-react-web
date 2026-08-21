@@ -1895,6 +1895,108 @@ describe('system error divider', () => {
   })
 })
 
+describe('rate_limit_event inline card', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useRealTimers()
+  })
+
+  it.each([
+    ['allowed', 'ok', 'within limit'],
+    ['allowed_warning', 'warn', 'near limit'],
+    ['rejected', 'danger', 'rate limited'],
+  ] as const)('renders status %s with the %s tone', (status, tone, markText) => {
+    const items = toItems([
+      makeMsg('rate_limit_event', {
+        rate_limit_info: {
+          status,
+          rateLimitType: 'five_hour',
+          utilization: 84,
+        },
+      }),
+    ])
+    const { container } = render(<MessageList items={items} />)
+
+    const card = container.querySelector(`.msg.result.rate-limit-card--${tone}`)
+    expect(card).toBeTruthy()
+    expect(card?.querySelector('.result-mark')?.textContent).toContain(markText)
+    // Meta carries the mapped window label + utilization.
+    const meta = card?.querySelector('.result-meta')
+    expect(meta?.textContent).toContain('5-hour window')
+    expect(meta?.textContent).toContain('84% used')
+  })
+
+  it('shows "blocked until" copy for rejected with resetsAt, "resets" otherwise', () => {
+    const rejected = toItems([
+      makeMsg('rate_limit_event', {
+        rate_limit_info: { status: 'rejected', rateLimitType: 'seven_day', resetsAt: 1755900000 },
+      }),
+    ])
+    const { container, rerender } = render(<MessageList items={rejected} />)
+    expect(container.querySelector('.rate-limit-card--danger .result-meta')?.textContent).toContain('blocked until')
+
+    const warning = toItems([
+      makeMsg('rate_limit_event', {
+        rate_limit_info: { status: 'allowed_warning', rateLimitType: 'seven_day_opus', resetsAt: 1755900000 },
+      }),
+    ])
+    rerender(<MessageList items={warning} />)
+    expect(container.querySelector('.rate-limit-card--warn .result-meta')?.textContent).toContain('resets')
+  })
+
+  it('surfaces unknown rateLimitType values via the raw string', () => {
+    const items = toItems([
+      makeMsg('rate_limit_event', {
+        rate_limit_info: { status: 'allowed', rateLimitType: 'some_new_window' },
+      }),
+    ])
+    const { container } = render(<MessageList items={items} />)
+    expect(container.querySelector('.rate-limit-card--ok .result-meta')?.textContent).toContain('some_new_window')
+  })
+
+  it('no longer falls into the bare-type fallback branch', () => {
+    const items = toItems([
+      makeMsg('rate_limit_event', { rate_limit_info: { status: 'allowed' } }),
+    ])
+    const { container } = render(<MessageList items={items} />)
+    // The fallback renders `.msg.system` with the raw type string as header.
+    expect(container.querySelector('.msg.system')).toBeNull()
+    expect(container.querySelector('.rate-limit-card')).toBeTruthy()
+  })
+})
+
+describe('local_command_output rendering', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('renders the command output body as a markdown card', () => {
+    const items = toItems([
+      makeMsg('system', { subtype: 'local_command_output', content: 'Total cost: **$0.02**' }),
+    ])
+    const { container } = render(<MessageList items={items} />)
+
+    const card = container.querySelector('.msg.local-command-output')
+    expect(card).toBeTruthy()
+    expect(card?.textContent).toContain('Total cost')
+    // Markdown rendered (bold survives as an element, not raw asterisks).
+    expect(card?.querySelector('.local-command-output-body strong')).toBeTruthy()
+  })
+
+  it('renders nothing when the body is missing or not a string', () => {
+    // Defensive branch: a future SDK shape change must not crash or render
+    // an empty card shell.
+    const noBody = toItems([makeMsg('system', { subtype: 'local_command_output' })])
+    const { container, rerender } = render(<MessageList items={noBody} />)
+    expect(container.querySelector('.msg.local-command-output')).toBeNull()
+
+    const weirdBody = toItems([makeMsg('system', { subtype: 'local_command_output', content: { odd: true } })])
+    rerender(<MessageList items={weirdBody} />)
+    expect(container.querySelector('.msg.local-command-output')).toBeNull()
+  })
+})
+
 describe('file-path click-to-copy', () => {
   beforeEach(() => {
     vi.clearAllMocks()

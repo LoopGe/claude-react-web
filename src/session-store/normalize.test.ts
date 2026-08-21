@@ -116,6 +116,12 @@ describe('shouldHideByDefault', () => {
     expect(shouldHideByDefault({ type: 'system', subtype: 'api_retry' } as unknown as SdkMessage)).toBe(false)
   })
 
+  it('keeps local_command_output system frames visible (CLI /usage etc. output)', () => {
+    expect(
+      shouldHideByDefault({ type: 'system', subtype: 'local_command_output', content: 'cost: $0.01' } as unknown as SdkMessage),
+    ).toBe(false)
+  })
+
   it('keeps assistant messages visible', () => {
     expect(shouldHideByDefault({ type: 'assistant', uuid: 'a1' } as unknown as SdkMessage)).toBe(false)
   })

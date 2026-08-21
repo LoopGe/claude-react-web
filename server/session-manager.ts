@@ -3163,6 +3163,20 @@ export class SessionManager {
     return this.timeSdkControl(id, 'getContextUsage', fn)
   }
 
+  /** Structured /usage data for one session: cost/usage totals plus
+   *  claude.ai plan rate-limit windows when available. Mirrors
+   *  contextUsage — a capability-gated passthrough to the provider handle. */
+  async usage(id: string) {
+    const s = this.requireLive(id)
+    const fn = this.requireHandleMethod<() => Promise<unknown>>(
+      s,
+      'getUsage',
+      'session usage',
+      'supportsUsage',
+    )
+    return this.timeSdkControl(id, 'getUsage', fn)
+  }
+
   /** List pending tool-permission requests for a session. */
   listPending(id: string): PermissionRequestSnapshot[] {
     return this.permBroker.listPending(this.require(id))

@@ -179,6 +179,19 @@ export type PermissionRequest = PermissionRequestBase<unknown[]>
 import type { ElicitationDecision, ElicitationRequestUi } from '../shared/elicitation.js'
 export type { ElicitationRequestUi, ElicitationDecision }
 
+// Structured /usage data (session cost/token totals + claude.ai plan
+// rate-limit windows) — loose shapes shared with the server. EXPERIMENTAL
+// SDK API; every field optional, render defensively.
+export type {
+  SessionUsageData,
+  UsageSessionTotals,
+  UsageModelEntry,
+  UsageRateLimitWindow,
+  UsageRateLimits,
+  UsageExtraUsage,
+  UsageWindowKey,
+} from '../shared/usage'
+
 /** Broadcast envelope for a resolved elicitation. */
 export interface ElicitationResolved {
   id: string
@@ -249,6 +262,21 @@ export interface SdkMessage {
   // `stream_event` partials have `event`
   event?: unknown
   error?: string
+  // `system/local_command_output` carries its text body at the top level
+  // (unlike user/assistant, whose text lives under `message.content`).
+  content?: unknown
+  /** `rate_limit_event` frames: the plan rate-limit state transition that
+   *  triggered the event. Loosely typed — the SDK may add/remove fields. */
+  rate_limit_info?: {
+    status?: 'allowed' | 'allowed_warning' | 'rejected'
+    /** Unix seconds. */
+    resetsAt?: number
+    rateLimitType?: string
+    utilization?: number
+    overageStatus?: string
+    isUsingOverage?: boolean
+    overageInUse?: boolean
+  }
   // result messages
   total_cost_usd?: number
   num_turns?: number

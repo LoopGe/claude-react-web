@@ -461,6 +461,13 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     return c.json({ usage })
   })
 
+  // Session usage — cost/token totals + claude.ai plan rate-limit windows
+  // (the structured data behind the CLI's /usage command).
+  app.get('/sessions/:id/usage', async (c) => {
+    const usage = await sm.usage(c.req.param('id'))
+    return c.json({ usage })
+  })
+
   // Supported models — the manager translates the SDK's camelCase ModelInfo
   // to the snake_case wire `ModelInfo` (shared/model-info.ts) and filters
   // entries with no identifier, so the route is a passthrough.

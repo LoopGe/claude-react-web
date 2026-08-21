@@ -77,6 +77,9 @@ export const BROADCAST_SYSTEM_SUBTYPES = new Set([
   // finished auth in the browser). Surfacing it lets the transcript show
   // the auth round-trip instead of silently resuming.
   'elicitation_complete',
+  // Text output of CLI-local commands (/usage, /voice, …). Without this the
+  // pump drops the frame and the user sees nothing after running the command.
+  'local_command_output',
 ])
 
 /** Check if a message should be broadcast to frontend clients.

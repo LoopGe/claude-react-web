@@ -2298,6 +2298,14 @@ const MessageView = memo(function MessageView({
     return <ApiRetryView msg={msg} />
   }
 
+  if (type === 'system' && msg.subtype === 'local_command_output') {
+    return <LocalCommandOutputView msg={msg} />
+  }
+
+  if (type === 'rate_limit_event') {
+    return <RateLimitView msg={msg} />
+  }
+
   return (
     <div className="msg system">
       <div className="msg-header">
@@ -2652,6 +2660,78 @@ function ApiRetryView({ msg }: { msg: SdkMessage }) {
     <div className="msg result retry" aria-label="api retry">
       <span className="result-mark" aria-hidden="true"><IconClock size={12} /> {label}</span>
       <span className="result-meta">{phase} · {attemptText}</span>
+    </div>
+  )
+}
+
+/** Renders `system/local_command_output` — the text output of CLI-local
+ *  commands typed by the user in the composer (`/usage`, `/voice`, …).
+ *  The body is a plain string at the top level (`msg.content`), rendered
+ *  assistant-style via Markdown per the SDK docs. Defensive: a non-string
+ *  body (future SDK shape change) renders a muted fallback instead of
+ *  crashing. */
+function LocalCommandOutputView({ msg }: { msg: SdkMessage }) {
+  const body = typeof msg.content === 'string' ? msg.content : ''
+  if (!body) return null
+  return (
+    <div className="msg local-command-output" aria-label="command output">
+      <div className="msg-header">
+        <span>command output</span>
+      </div>
+      <div className="local-command-output-body">
+        <Markdown text={body} />
+      </div>
+    </div>
+  )
+}
+
+/** Display names for `rate_limit_event.rateLimitType`. Unknown values fall
+ *  back to the raw string — new SDK enum members should still read OK. */
+const RATE_LIMIT_TYPE_LABELS: Record<string, string> = {
+  five_hour: '5-hour window',
+  seven_day: '7-day limit',
+  seven_day_opus: 'Opus 7-day',
+  seven_day_sonnet: 'Sonnet 7-day',
+  overage: 'Overage',
+}
+
+/** Inline card for `rate_limit_event` frames — a plan rate-limit state
+ *  transition (`allowed` → `allowed_warning` → `rejected`). Static by
+ *  design (unlike ApiRetryView): these windows reset on hour scales, so
+ *  there is nothing meaningful to tick. `resetsAt` is Unix seconds. */
+function RateLimitView({ msg }: { msg: SdkMessage }) {
+  const info = msg.rate_limit_info ?? {}
+  const status = info.status ?? 'allowed'
+  const kind = info.rateLimitType ? RATE_LIMIT_TYPE_LABELS[info.rateLimitType] ?? info.rateLimitType : undefined
+  const util =
+    typeof info.utilization === 'number' && Number.isFinite(info.utilization)
+      ? Math.round(info.utilization)
+      : undefined
+  // `resetsAt` unit isn't documented (experimental API). Epoch seconds is
+  // the Anthropic convention for rate-limit resets, but sniffs for ms
+  // (≥1e12) too so a unit change degrades to a still-sane clock time
+  // instead of year 55000+.
+  const resetsMs =
+    typeof info.resetsAt === 'number' && Number.isFinite(info.resetsAt) && info.resetsAt > 0
+      ? info.resetsAt >= 1e12
+        ? info.resetsAt
+        : info.resetsAt * 1000
+      : undefined
+  const resets = resetsMs != null ? formatClockTime(resetsMs) : undefined
+
+  const tone = status === 'rejected' ? 'danger' : status === 'allowed_warning' ? 'warn' : 'ok'
+  const mark = status === 'rejected' ? '⛔ rate limited' : status === 'allowed_warning' ? '⚠ near limit' : '✓ within limit'
+  const parts: string[] = []
+  if (kind) parts.push(kind)
+  if (util !== undefined) parts.push(`${util}% used`)
+  if (resets) parts.push(status === 'rejected' ? `blocked until ${resets}` : `resets ${resets}`)
+  if (info.isUsingOverage || info.overageInUse) parts.push('using extra usage')
+  if (info.overageStatus) parts.push(String(info.overageStatus))
+
+  return (
+    <div className={`msg result rate-limit-card rate-limit-card--${tone}`} aria-label="rate limit status">
+      <span className="result-mark" aria-hidden="true">{mark}</span>
+      {parts.length > 0 && <span className="result-meta">{parts.join(' · ')}</span>}
     </div>
   )
 }

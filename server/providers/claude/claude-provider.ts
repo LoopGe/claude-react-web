@@ -57,6 +57,7 @@ export class ClaudeProvider implements AgentProvider {
     supportsCommands: true,
     supportsAgents: true,
     supportsContextUsage: true,
+    supportsUsage: true,
   }
 
   private readonly processMonitor: ProcessMonitor
