@@ -208,4 +208,51 @@ describe('SessionStore', () => {
     expect(loaded).toHaveLength(1)
     expect(loaded[0].gitStartSha).toBeUndefined()
   })
+
+  it('round-trips a valid memory object', async () => {
+    writeFileSync(
+      join(dir, 'sessions.json'),
+      JSON.stringify([
+        {
+          id: 'a', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false,
+          memory: { autoMemoryEnabled: true, autoMemoryDirectory: ' ~/mem ', autoDreamEnabled: false },
+        },
+      ]),
+    )
+    const store = new SessionStore({ stateDir: dir })
+    const loaded = await store.load()
+    // Directory is trimmed; booleans pass through.
+    expect(loaded[0].memory).toEqual({ autoMemoryEnabled: true, autoMemoryDirectory: '~/mem', autoDreamEnabled: false })
+  })
+
+  it('drops invalid memory keys and empty directories during coerce', async () => {
+    writeFileSync(
+      join(dir, 'sessions.json'),
+      JSON.stringify([
+        {
+          id: 'a', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false,
+          memory: { autoMemoryEnabled: 'yes', autoMemoryDirectory: '   ', autoDreamEnabled: true },
+        },
+      ]),
+    )
+    const store = new SessionStore({ stateDir: dir })
+    const loaded = await store.load()
+    expect(loaded[0].memory).toEqual({ autoDreamEnabled: true })
+  })
+
+  it('coerces an all-invalid / empty memory object to undefined', async () => {
+    writeFileSync(
+      join(dir, 'sessions.json'),
+      JSON.stringify([
+        { id: 'a', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, memory: { autoMemoryEnabled: 1 } },
+        { id: 'b', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, memory: {} },
+        { id: 'c', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, memory: 'nope' },
+      ]),
+    )
+    const store = new SessionStore({ stateDir: dir })
+    const loaded = await store.load()
+    expect(loaded[0].memory).toBeUndefined()
+    expect(loaded[1].memory).toBeUndefined()
+    expect(loaded[2].memory).toBeUndefined()
+  })
 })

@@ -80,11 +80,16 @@ export const BROADCAST_SYSTEM_SUBTYPES = new Set([
   // Text output of CLI-local commands (/usage, /voice, …). Without this the
   // pump drops the frame and the user sees nothing after running the command.
   'local_command_output',
+  // Auto-memory recall: the memory supervisor surfaced memories into the
+  // turn. Renders as a "Recalled from memory" card; without the broadcast
+  // the frame never reaches the client and the user can't see what context
+  // was injected.
+  'memory_recall',
 ])
 
 /** Check if a message should be broadcast to frontend clients.
  *  Returns true for all non-system messages, and for system messages with
- *  subtypes in BROADCAST_SYSTEM_SUBTYPES (error, compact_boundary, api_retry).
+ *  subtypes in BROADCAST_SYSTEM_SUBTYPES.
  *  System init/status messages return false. */
 export function shouldBroadcastMessage(msg: { type?: string; subtype?: string }): boolean {
   if (msg.type !== 'system') return true

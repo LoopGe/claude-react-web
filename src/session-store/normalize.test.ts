@@ -122,6 +122,12 @@ describe('shouldHideByDefault', () => {
     ).toBe(false)
   })
 
+  it('keeps memory_recall system frames visible (auto-memory recall card)', () => {
+    expect(
+      shouldHideByDefault({ type: 'system', subtype: 'memory_recall', mode: 'select', memories: [] } as unknown as SdkMessage),
+    ).toBe(false)
+  })
+
   it('keeps assistant messages visible', () => {
     expect(shouldHideByDefault({ type: 'assistant', uuid: 'a1' } as unknown as SdkMessage)).toBe(false)
   })

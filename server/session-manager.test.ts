@@ -1560,6 +1560,81 @@ describe('SessionManager', () => {
     expect(store.get(info.id)?.effortLevel).toBe('xhigh')
   })
 
+  it('setMemorySettings() forwards only present keys and records them on the session', async () => {
+    const info = sm.create({})
+    expect(info.memory).toBeUndefined()
+    const updated = await sm.setMemorySettings(info.id, { autoMemoryEnabled: true, autoMemoryDirectory: '~/mem' })
+    expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({
+      autoMemoryEnabled: true,
+      autoMemoryDirectory: '~/mem',
+    })
+    expect(updated.memory).toEqual({ autoMemoryEnabled: true, autoMemoryDirectory: '~/mem' })
+    expect(sm.get(info.id).memory).toEqual({ autoMemoryEnabled: true, autoMemoryDirectory: '~/mem' })
+  })
+
+  it('setMemorySettings() treats an empty partial as a no-op', async () => {
+    const info = sm.create({})
+    const updated = await sm.setMemorySettings(info.id, {})
+    expect(mockHandles[0].applyFlagSettings).not.toHaveBeenCalled()
+    expect(updated.memory).toBeUndefined()
+  })
+
+  it('setMemorySettings() null clears a key; clearing the last key drops the object', async () => {
+    const info = sm.create({})
+    await sm.setMemorySettings(info.id, { autoMemoryEnabled: true })
+    await sm.setMemorySettings(info.id, { autoMemoryEnabled: null })
+    // null forwards to the SDK so the flag tier clears too.
+    expect(mockHandles[0].applyFlagSettings).toHaveBeenLastCalledWith({ autoMemoryEnabled: null })
+    expect(sm.get(info.id).memory).toBeUndefined()
+  })
+
+  it('setMemorySettings() forwards a trimmed directory and null-normalises whitespace-only', async () => {
+    const info = sm.create({})
+    await sm.setMemorySettings(info.id, { autoMemoryDirectory: '  ~/mem  ' })
+    // The SDK must see the trimmed value — matching what gets recorded.
+    expect(mockHandles[0].applyFlagSettings).toHaveBeenLastCalledWith({ autoMemoryDirectory: '~/mem' })
+    expect(sm.get(info.id).memory).toEqual({ autoMemoryDirectory: '~/mem' })
+
+    // A whitespace-only directory forwards as null (clear), not a literal " "
+    // dir — the SDK's view and the persisted record must agree.
+    await sm.setMemorySettings(info.id, { autoMemoryDirectory: '   ' })
+    expect(mockHandles[0].applyFlagSettings).toHaveBeenLastCalledWith({ autoMemoryDirectory: null })
+    expect(sm.get(info.id).memory).toBeUndefined()
+  })
+
+  it('setMemorySettings() persists the intent so it survives resume', async () => {
+    const info = sm.create({})
+    await sm.setMemorySettings(info.id, { autoMemoryEnabled: true, autoDreamEnabled: false })
+    await store.flush()
+    expect(store.get(info.id)?.memory).toEqual({ autoMemoryEnabled: true, autoDreamEnabled: false })
+  })
+
+  it('create({ memory }) seeds the session intent and re-applies it at spawn', async () => {
+    // `memory` is an app-level create-body field (not an SDK Options key), so
+    // cast through unknown the same way the route does.
+    const info = sm.create({ memory: { autoMemoryEnabled: true } } as unknown as Parameters<typeof sm.create>[0])
+    expect(info.memory).toEqual({ autoMemoryEnabled: true })
+    // The provider re-applies the intent post-spawn (spawn-time values are
+    // never null — nulls only arrive via the live route).
+    expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ autoMemoryEnabled: true })
+    // And the app-level field must NOT leak into the SDK Options.
+    expect(mockHandles[0].options.memory).toBeUndefined()
+  })
+
+  it('fork() carries the auto-memory intent onto the new session', async () => {
+    const source = sm.create({})
+    await sm.setMemorySettings(source.id, { autoMemoryEnabled: true, autoMemoryDirectory: '~/mem' })
+    sm.send(source.id, 'hi')
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    const forked = await sm.fork(source.id)
+    expect(forked.memory).toEqual({ autoMemoryEnabled: true, autoMemoryDirectory: '~/mem' })
+    expect(mockHandles[1].applyFlagSettings).toHaveBeenCalledWith({
+      autoMemoryEnabled: true,
+      autoMemoryDirectory: '~/mem',
+    })
+  })
+
   it('applyHooks() forwards, records, and persists structured hooks', async () => {
     const info = sm.create({})
     const hooks = {

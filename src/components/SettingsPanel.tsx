@@ -334,6 +334,47 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     )
   }
 
+  // ── Auto-memory (enable / directory / auto-dream) ──────────────────
+  // Persisted per-session intent: forwarded to the SDK via
+  // applyFlagSettings and re-applied on every re-spawn, so unlike the
+  // FlagSettingsEditor above these survive resume / fork / clear.
+  // Dormant sessions have no live Query (setMemorySettings 404s), so the
+  // controls are disabled until resumed.
+  const memoryDisabled = busy || session.terminated || !session.running
+
+  const changeMemory = (
+    partial: { autoMemoryEnabled?: boolean | null; autoMemoryDirectory?: string | null; autoDreamEnabled?: boolean | null },
+  ) =>
+    runAndRefresh(() => api.post<{ session: SessionInfo }>(`/sessions/${session.id}/memory`, partial))
+
+  // Editable memory directory — same draft pattern as the title input:
+  // seeded from the server value, re-synced while unfocused, commits on
+  // Enter / blur, Escape cancels. Clearing the input commits null (back
+  // to the default directory).
+  const [memoryDirDraft, setMemoryDirDraft] = useState(session.memory?.autoMemoryDirectory ?? '')
+  const memoryDirInputRef = useRef<HTMLInputElement>(null)
+  const memoryDirSkipCommitRef = useRef(false)
+  useEffect(() => {
+    if (memoryDirInputRef.current && document.activeElement === memoryDirInputRef.current) return
+    setMemoryDirDraft(session.memory?.autoMemoryDirectory ?? '')
+  }, [session.memory?.autoMemoryDirectory])
+
+  const commitMemoryDir = async () => {
+    if (memoryDirSkipCommitRef.current) {
+      memoryDirSkipCommitRef.current = false
+      setMemoryDirDraft(session.memory?.autoMemoryDirectory ?? '')
+      return
+    }
+    const dir = memoryDirDraft.trim()
+    if (dir === (session.memory?.autoMemoryDirectory ?? '')) {
+      setMemoryDirDraft(session.memory?.autoMemoryDirectory ?? '')
+      return
+    }
+    await runAndRefresh(() =>
+      api.post<{ session: SessionInfo }>(`/sessions/${session.id}/memory`, { autoMemoryDirectory: dir || null }),
+    )
+  }
+
   const refreshMcp = async () => {
     try {
       const r = await api.get<{ mcp: McpServerStatus[] }>(`/sessions/${session.id}/mcp-status`)
@@ -748,6 +789,116 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
         <button className="btn btn-primary settings-apply-btn" onClick={applySettings} disabled={busy || session.terminated}>
           Apply settings
         </button>
+      </div>
+
+      <div className="settings-section">
+        <h4>Memory</h4>
+        {!session.running && !session.terminated && (
+          <span className="hint">Resume the session to change memory settings.</span>
+        )}
+        <div className="settings-field">
+          <label className="settings-toggle">
+            <input
+              type="checkbox"
+              checked={session.memory?.autoMemoryEnabled === true}
+              disabled={memoryDisabled}
+              onChange={() =>
+                void changeMemory({ autoMemoryEnabled: session.memory?.autoMemoryEnabled === true ? false : true })
+              }
+            />
+            <span>Auto-memory</span>
+          </label>
+          <span className="hint">
+            Lets Claude read from and write to this project's auto-memory directory; recalled
+            memories appear in the transcript.{' '}
+            {session.memory?.autoMemoryEnabled === undefined
+              ? 'Not set (following project default).'
+              : session.memory.autoMemoryEnabled
+                ? 'Enabled.'
+                : 'Disabled.'}
+            {session.memory?.autoMemoryEnabled !== undefined && (
+              <button
+                type="button"
+                className="settings-reset-link"
+                disabled={memoryDisabled}
+                onClick={() => void changeMemory({ autoMemoryEnabled: null })}
+              >
+                Reset (use default)
+              </button>
+            )}
+          </span>
+        </div>
+
+        <div className="settings-field">
+          <label htmlFor={panelUid + '-memory-dir'}>Memory directory</label>
+          <input
+            id={panelUid + '-memory-dir'}
+            ref={memoryDirInputRef}
+            type="text"
+            className="input"
+            value={memoryDirDraft}
+            placeholder="~/.claude/projects/<this project>/memory/ (default)"
+            disabled={memoryDisabled}
+            onChange={(e) => setMemoryDirDraft(e.target.value)}
+            onBlur={() => void commitMemoryDir()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                memoryDirInputRef.current?.blur()
+              } else if (e.key === 'Escape') {
+                memoryDirSkipCommitRef.current = true
+                memoryDirInputRef.current?.blur()
+              }
+            }}
+          />
+          <span className="hint">
+            Overrides the default memory directory (supports <code>~/</code>). Ignored when pinned
+            in project settings. Clearing the field restores the default.
+            {session.memory?.autoMemoryDirectory !== undefined && (
+              <button
+                type="button"
+                className="settings-reset-link"
+                disabled={memoryDisabled}
+                onClick={() => void changeMemory({ autoMemoryDirectory: null })}
+              >
+                Reset (use default)
+              </button>
+            )}
+          </span>
+        </div>
+
+        <div className="settings-field">
+          <label className="settings-toggle">
+            <input
+              type="checkbox"
+              checked={session.memory?.autoDreamEnabled === true}
+              disabled={memoryDisabled}
+              onChange={() =>
+                void changeMemory({ autoDreamEnabled: session.memory?.autoDreamEnabled === true ? false : true })
+              }
+            />
+            <span>Background memory consolidation</span>
+          </label>
+          <span className="hint">
+            Auto-dream: consolidates accumulated memories in the background so recall stays
+            relevant.{' '}
+            {session.memory?.autoDreamEnabled === undefined
+              ? 'Not set (following server default).'
+              : session.memory.autoDreamEnabled
+                ? 'Enabled.'
+                : 'Disabled.'}
+            {session.memory?.autoDreamEnabled !== undefined && (
+              <button
+                type="button"
+                className="settings-reset-link"
+                disabled={memoryDisabled}
+                onClick={() => void changeMemory({ autoDreamEnabled: null })}
+              >
+                Reset (use default)
+              </button>
+            )}
+          </span>
+        </div>
       </div>
 
       <div className="settings-section">

@@ -16,7 +16,7 @@ import type { Pushable } from './pushable.js'
 import type { SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
 import type { MpStore } from './mp-store.js'
-import type { SessionInfoBase } from '../shared/session-info.js'
+import type { SessionInfoBase, SessionMemorySettings } from '../shared/session-info.js'
 import type { ProviderRegistry } from './providers/registry.js'
 import type { ProviderSessionHandle } from './providers/types.js'
 import type { HookRunRecord, HookRuntimeEvent, SessionHooksConfig } from '../shared/hooks.js'
@@ -167,6 +167,11 @@ export interface Session {
    *  setFastMode (forwarded to the SDK as applyFlagSettings({ fastMode })),
    *  persisted so it survives resume/restart, and re-applied on respawn. */
   fastMode?: boolean
+  /** Per-session auto-memory settings (enable / directory / auto-dream).
+   *  Set via setMemorySettings (forwarded to the SDK as applyFlagSettings
+   *  memory keys), persisted so it survives resume/restart, and re-applied
+   *  on respawn. Undefined when no memory key has been pinned. */
+  memory?: SessionMemorySettings
   /** SDK-reported runtime fast-mode state ('off' | 'cooldown' | 'on'),
    *  parsed from system/init and result messages. Read-only — reflects what
    *  the backend is actually doing (e.g. 'cooldown' after a rate limit).

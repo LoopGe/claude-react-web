@@ -2,6 +2,7 @@ import type { AgentMessage, AgentUserMessage } from '../agent-message.js'
 import type { HistoryEntry, HistoryPage } from '../history-reader.js'
 import type { SessionMeta } from '../persistence.js'
 import type { ResumableSession } from '../session-types.js'
+import type { SessionMemorySettings } from '../../shared/session-info.js'
 
 export interface CreateSessionOptions {
   id: string
@@ -13,6 +14,9 @@ export interface CreateSessionOptions {
   betas?: string[]
   effortLevel?: string
   fastMode?: boolean
+  /** Per-session auto-memory intent (SDK Settings keys applied post-spawn
+   *  via applyFlagSettings — the SDK has no spawn-time Options.memory). */
+  memory?: SessionMemorySettings
   env?: Record<string, string>
   mcpServers?: Record<string, unknown>
   enabledMcpServers?: string[]

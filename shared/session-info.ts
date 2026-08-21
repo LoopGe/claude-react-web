@@ -49,6 +49,18 @@ export interface SessionRecap {
   generatedAt?: number
 }
 
+/** Per-session auto-memory intent (SDK Settings.autoMemoryEnabled /
+ *  autoMemoryDirectory / autoDreamEnabled). Applied via
+ *  Query.applyFlagSettings and re-applied on every re-spawn. A key that
+ *  is undefined means "not set" (inherit the project/SDK default); the
+ *  whole object is undefined when no memory setting has been pinned.
+ *  Persisted via SessionMeta so it survives resume / fork / clear. */
+export interface SessionMemorySettings {
+  autoMemoryEnabled?: boolean
+  autoMemoryDirectory?: string
+  autoDreamEnabled?: boolean
+}
+
 export interface SessionInfoBase<PM = string> {
   id: string
   provider?: string
@@ -68,6 +80,8 @@ export interface SessionInfoBase<PM = string> {
   /** User intent: whether fast mode is requested for this session.
    *  Persisted; survives resume/restart. */
   fastMode?: boolean
+  /** Per-session auto-memory settings; see SessionMemorySettings. */
+  memory?: SessionMemorySettings
   /** SDK-reported runtime fast-mode state. undefined means the current
    *  model doesn't support fast mode — the UI uses this to hide the
    *  toggle entirely. 'cooldown' means fast mode is rate-limited and

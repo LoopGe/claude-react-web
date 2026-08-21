@@ -2302,6 +2302,10 @@ const MessageView = memo(function MessageView({
     return <LocalCommandOutputView msg={msg} />
   }
 
+  if (type === 'system' && msg.subtype === 'memory_recall') {
+    return <MemoryRecallView msg={msg} />
+  }
+
   if (type === 'rate_limit_event') {
     return <RateLimitView msg={msg} />
   }
@@ -2681,6 +2685,106 @@ function LocalCommandOutputView({ msg }: { msg: SdkMessage }) {
       <div className="local-command-output-body">
         <Markdown text={body} />
       </div>
+    </div>
+  )
+}
+
+/** Renders `system/memory_recall` — the auto-memory supervisor surfaced
+ *  relevant memories into the current turn. Mirrors the CLI's
+ *  "Recalled from memory" attachment so users can see what context was
+ *  injected.
+ *
+ *  Select-mode file-backed entries carry only a path (the CLI lazy-loads
+ *  bodies); this app deliberately has no memory-file read API, so those
+ *  render as filename + scope badge with the full path on hover.
+ *  Synthesize-mode entries and organization-scope URLs carry `content`,
+ *  which renders as markdown. The `<synthesis:DIR>` sentinel path is shown
+ *  as a "Synthesized summary" card with DIR as the source — never as a
+ *  path. */
+const MEMORY_RECALL_COLLAPSE_LIMIT = 4
+const MEMORY_RECALL_PEEK = 3
+const SYNTHESIS_PATH_RE = /^<synthesis:(.+)>$/
+
+function memoryRecallPathLabel(path: string): { label: string; synthesisDir?: string } {
+  const m = SYNTHESIS_PATH_RE.exec(path)
+  if (m) return { label: m[1], synthesisDir: m[1] }
+  // Organization-scope memories are https URLs — show the host, not the
+  // (often very long) full URL.
+  if (/^https:\/\//.test(path)) {
+    try {
+      return { label: new URL(path).hostname }
+    } catch {
+      /* fall through to basename handling */
+    }
+  }
+  const idx = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+  return { label: idx >= 0 ? path.slice(idx + 1) : path }
+}
+
+function MemoryRecallEntry({ entry }: { entry: { path: string; scope: string; content?: string } }) {
+  const path = typeof entry.path === 'string' ? entry.path : String(entry?.path ?? '')
+  const { label, synthesisDir } = memoryRecallPathLabel(path)
+  const scope = String(entry?.scope ?? '')
+  const content = typeof entry?.content === 'string' && entry.content ? entry.content : undefined
+  if (synthesisDir !== undefined) {
+    return (
+      <li className="memory-recall-entry memory-recall-entry--synthesis">
+        <div className="memory-recall-entry-head">
+          <span className="memory-recall-name">Synthesized summary</span>
+          {scope && <span className={`memory-recall-scope memory-recall-scope--${scope}`}>{scope}</span>}
+        </div>
+        <div className="memory-recall-source">{synthesisDir}</div>
+        {content && (
+          <div className="memory-recall-body">
+            <Markdown text={content} />
+          </div>
+        )}
+      </li>
+    )
+  }
+  return (
+    <li className="memory-recall-entry" title={path}>
+      <div className="memory-recall-entry-head">
+        <span className="memory-recall-name">{label || path}</span>
+        {scope && <span className={`memory-recall-scope memory-recall-scope--${scope}`}>{scope}</span>}
+      </div>
+      {content && (
+        <div className="memory-recall-body">
+          <Markdown text={content} />
+        </div>
+      )}
+    </li>
+  )
+}
+
+function MemoryRecallView({ msg }: { msg: SdkMessage }) {
+  const memories = Array.isArray(msg.memories) ? msg.memories : []
+  const [expanded, setExpanded] = useState(false)
+  const collapsible = memories.length > MEMORY_RECALL_COLLAPSE_LIMIT
+  const visible = collapsible && !expanded ? memories.slice(0, MEMORY_RECALL_PEEK) : memories
+  const modeLabel = msg.mode === 'synthesize' ? 'synthesized' : 'selected files'
+  return (
+    <div className="msg memory-recall" aria-label="recalled from memory">
+      <div className="msg-header">
+        <span>Recalled from memory · {modeLabel}</span>
+      </div>
+      {visible.length > 0 && (
+        <ul className="memory-recall-list">
+          {visible.map((entry, i) => (
+            <MemoryRecallEntry key={`${i}-${typeof entry?.path === 'string' ? entry.path : i}`} entry={entry} />
+          ))}
+        </ul>
+      )}
+      {collapsible && (
+        <button
+          type="button"
+          className="memory-recall-more"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded ? 'Show less' : `+${memories.length - MEMORY_RECALL_PEEK} more`}
+        </button>
+      )}
     </div>
   )
 }

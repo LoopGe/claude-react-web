@@ -141,6 +141,25 @@ export class ClaudeProvider implements AgentProvider {
         log.warn(`[${opts.id}] applying effortLevel on spawn failed:`, err)
       })
     }
+    // Auto-memory intent (enable / directory / auto-dream). These are SDK
+    // Settings keys with no spawn-time Options equivalent, so they're
+    // re-applied post-spawn exactly like fastMode above. Spawn-time values
+    // are never null — nulls only arrive via the live setMemorySettings
+    // route, which goes straight to the handle.
+    if (
+      opts.memory &&
+      (opts.memory.autoMemoryEnabled !== undefined ||
+        opts.memory.autoMemoryDirectory !== undefined ||
+        opts.memory.autoDreamEnabled !== undefined)
+    ) {
+      const memoryFlags: Record<string, boolean | string> = {}
+      if (opts.memory.autoMemoryEnabled !== undefined) memoryFlags.autoMemoryEnabled = opts.memory.autoMemoryEnabled
+      if (opts.memory.autoMemoryDirectory !== undefined) memoryFlags.autoMemoryDirectory = opts.memory.autoMemoryDirectory
+      if (opts.memory.autoDreamEnabled !== undefined) memoryFlags.autoDreamEnabled = opts.memory.autoDreamEnabled
+      void q.applyFlagSettings(memoryFlags).catch((err) => {
+        log.warn(`[${opts.id}] re-applying memory settings on spawn failed:`, err)
+      })
+    }
 
     return handle
   }

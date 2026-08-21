@@ -277,6 +277,15 @@ export interface SdkMessage {
     isUsingOverage?: boolean
     overageInUse?: boolean
   }
+  /** `system/memory_recall` frames: how memories were surfaced. 'select'
+   *  returns full file bodies chosen by a parallel selector; 'synthesize'
+   *  returns a distilled paragraph. */
+  mode?: 'select' | 'synthesize'
+  /** `system/memory_recall` frames: the surfaced memories. `content` is
+   *  present only for synthesize-mode / organization-scope entries;
+   *  select-mode file-backed entries are path-only (the CLI lazy-loads
+   *  bodies — the browser deliberately cannot read memory files). */
+  memories?: { path: string; scope: 'personal' | 'team' | 'organization'; content?: string }[]
   // result messages
   total_cost_usd?: number
   num_turns?: number

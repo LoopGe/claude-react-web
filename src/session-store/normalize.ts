@@ -29,7 +29,9 @@ export function shouldHideByDefault(msg: SdkMessage): boolean {
     msg.subtype !== 'compact_boundary' &&
     msg.subtype !== 'api_retry' &&
     // CLI-local command output (/usage, /voice, …) — renderable text body.
-    msg.subtype !== 'local_command_output'
+    msg.subtype !== 'local_command_output' &&
+    // Auto-memory recall — renders as a "Recalled from memory" card.
+    msg.subtype !== 'memory_recall'
   ) return true
   if (msg.type === 'user' && isLocalCommandLogUserMessage(msg)) return true
   // `command_lifecycle` is a top-level lifecycle marker the `claude` CLI emits

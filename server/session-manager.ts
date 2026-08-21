@@ -23,7 +23,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk'
 import type { ProcessExitInfo } from './process-monitor.js'
 import { randomUUID } from 'node:crypto'
-import { SessionStore, type SessionMeta } from './persistence.js'
+import { SessionStore, coerceMemory, type SessionMeta } from './persistence.js'
 import { PromptUuidStore, rewriteSeedPromptUuids, retainPromptUuidEntries, type PromptUuidEntry } from './prompt-uuid-store.js'
 import { TurnAnchorStore, type TurnAnchorEntry } from './turn-anchor-store.js'
 import { ResultFrameStore, type ResultFrameEntry } from './result-frame-store.js'
@@ -57,6 +57,7 @@ import {
 import { HttpError } from './errors.js'
 import { effortLevelsForModel } from './effort-capability.js'
 import type { ModelInfo } from '../shared/model-info.js'
+import type { SessionMemorySettings } from '../shared/session-info.js'
 import { PermissionBroker } from './permission-broker.js'
 import { ElicitationBroker } from './elicitation-broker.js'
 import { SessionHealthMonitor } from './session-health.js'
@@ -794,6 +795,7 @@ export class SessionManager {
       title: s.title,
       betas: s.betas,
       fastMode: s.fastMode,
+      memory: s.memory,
       effortLevel: s.effortLevel,
       hooks: s.hooks,
       messageCount: s.history.length,
@@ -843,7 +845,7 @@ export class SessionManager {
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
-  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; effortLevel?: EffortLevel; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[] } {
+  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[] } {
     const settingsHooks = typeof opts.settings === 'object' && opts.settings && !Array.isArray(opts.settings)
       ? (opts.settings as { hooks?: SessionHooksConfig }).hooks
       : undefined
@@ -857,6 +859,10 @@ export class SessionManager {
       // model's context window. Must survive restart / resume / fork
       // or the user's 1M session silently downgrades to 200k.
       betas: Array.isArray(opts.betas) ? opts.betas : undefined,
+      // Memory passed at create time (app-level `memory` body field) is the
+      // session's initial memory intent; coerced through the same gate as
+      // persisted metadata.
+      memory: coerceMemory((opts as { memory?: unknown }).memory),
       // Effort passed at create time (Options.effort) becomes the session's
       // initial effortLevel so a create-time choice persists like the others.
       effortLevel: opts.effort,
@@ -1345,7 +1351,7 @@ export class SessionManager {
     // same name, not a renamed fork.
     const title = opts?.inheritIdentity ? meta.title : (meta.title ? `${meta.title} (fork)` : undefined)
     const sourceProvider = meta.provider ?? this.defaultProvider
-    const forkOpts: Options & { provider?: string; enabledPlugins?: string[] } = {
+    const forkOpts: Options & { provider?: string; enabledPlugins?: string[]; memory?: unknown } = {
       provider: sourceProvider,
       resume: id,
       forkSession: true,
@@ -1365,6 +1371,10 @@ export class SessionManager {
       betas: meta.betas as Options['betas'],
       settings: meta.hooks ? ({ hooks: toSdkHooksSettings(meta.hooks) } as Settings) : undefined,
       enabledPlugins: meta.enabledPlugins,
+      // Carry the auto-memory intent onto the new id (fork has no
+      // existingMeta — snapshotMeta captures it from here). meta already
+      // prefers the live session over the persisted store entry.
+      memory: coerceMemory(meta.memory),
     }
     // Re-apply globally configured MCP servers (same as resume).
     const allGlobalMcpNames = Object.keys(this.mcpStore?.toSdkConfig() ?? {})
@@ -1714,6 +1724,7 @@ export class SessionManager {
       parentId?: string
       forkBoundaryUuid?: string
       enabledPlugins?: string[]
+      memory?: unknown
     } = {
       provider: sourceProvider,
       resume: parentId,
@@ -1726,6 +1737,8 @@ export class SessionManager {
       betas: meta.betas as Options['betas'],
       enabledPlugins: meta.enabledPlugins,
       settings: meta.hooks ? ({ hooks: toSdkHooksSettings(meta.hooks) } as Settings) : undefined,
+      // New id (same as fork): carry the auto-memory intent via opts.
+      memory: meta.memory,
       parentId,
       forkBoundaryUuid,
       // Inject side-chat instructions via the system prompt so the model
@@ -1864,6 +1877,10 @@ export class SessionManager {
       // server restarts. New sessions get a fresh capture below.
       gitStartSha: existingMeta?.gitStartSha,
       fastMode: existingMeta?.fastMode,
+      // Auto-memory intent. Resume paths (same id) restore from the
+      // persisted meta; create/fork/clear pass the intent on opts where
+      // snapshotMeta captured it. `??` so an explicit intent survives.
+      memory: existingMeta?.memory ?? metaSnapshot.memory,
       // Pure-UI pref overrides. An explicit `prefs` arg (fork / clear
       // carrying the source's overrides onto a new id) wins; otherwise
       // restore from the persisted meta so a resumed session keeps its
@@ -1956,6 +1973,11 @@ export class SessionManager {
     // for our own subset resolution. The SDK only needs Options.plugins
     // (resolved paths, set by applyStandardQueryOpts via the provider).
     delete (sdkOptions as { enabledPlugins?: unknown }).enabledPlugins
+    // Strip the app-level memory intent (same reason as enabledPlugins):
+    // the SDK has no `Options.memory` — it's re-applied post-spawn via
+    // applyFlagSettings by the provider. Leaving it in would hand the CLI
+    // arg builder an unknown key.
+    delete (sdkOptions as { memory?: unknown }).memory
     const handle = provider.createSession({
       id,
       provider: providerName,
@@ -1966,6 +1988,7 @@ export class SessionManager {
       betas: Array.isArray(fullOpts.betas) ? fullOpts.betas : undefined,
       effortLevel: session.effortLevel,
       fastMode: session.fastMode,
+      memory: session.memory,
       env: customEnv,
       mcpServers: fullOpts.mcpServers as Record<string, unknown> | undefined,
       enabledPlugins: (fullOpts as { enabledPlugins?: string[] }).enabledPlugins ?? existingMeta?.enabledPlugins,
@@ -2356,6 +2379,7 @@ export class SessionManager {
         fastMode: s.fastMode,
         enabledPlugins: s.enabledPlugins,
         parentId: s.parentId,
+        memory: s.memory,
         // Carry X's session-level skill override onto Y so a pinned restrictive
         // policy survives /clear. fork() forwards this via its 5th spawn() arg;
         // clear() must do the same or Y silently falls back to the global
@@ -2367,7 +2391,7 @@ export class SessionManager {
       // spawn() persists Y, broadcasts `created`, and starts its pump. Side
       // Chat sessions re-inject SIDE_DEVELOPER_INSTRUCTIONS so the boundary
       // survives — same logic as the old respawn.
-      const freshOpts: Options & { provider?: string; enabledPlugins?: string[] } = {
+      const freshOpts: Options & { provider?: string; enabledPlugins?: string[]; memory?: unknown } = {
         provider: settings.provider,
         cwd: settings.cwd,
         model: settings.model,
@@ -2377,6 +2401,9 @@ export class SessionManager {
         betas: settings.betas as Options['betas'],
         settings: settings.hooks ? ({ hooks: toSdkHooksSettings(settings.hooks) } as Settings) : undefined,
         enabledPlugins: settings.enabledPlugins,
+        // Carry the auto-memory intent onto the fresh session (new id —
+        // snapshotMeta captures it from here, same as fork).
+        memory: settings.memory,
       }
       if (settings.parentId) {
         freshOpts.systemPrompt = {
@@ -2755,6 +2782,47 @@ export class SessionManager {
       'supportsFastMode',
     )({ fastMode: enabled })
     s.fastMode = enabled
+    s.lastActivityAt = Date.now()
+    this.persist(s)
+    return this.info(s)
+  }
+
+  /** Set per-session auto-memory settings (enable / directory / auto-dream).
+   *  Forwards the intent to the SDK via applyFlagSettings — a `null` value
+   *  clears the key back to its project/SDK default — and records it locally
+   *  so it survives resume/restart (re-applied on respawn). Only the keys
+   *  present in `partial` are touched; when the last key is cleared the
+   *  whole `memory` object becomes undefined ("never pinned"). The SDK
+   *  silently ignores autoMemoryDirectory when projectSettings pins it —
+   *  no error surfaces here. */
+  async setMemorySettings(
+    id: string,
+    partial: { autoMemoryEnabled?: boolean | null; autoMemoryDirectory?: string | null; autoDreamEnabled?: boolean | null },
+  ): Promise<SessionInfo> {
+    const s = this.requireLive(id)
+    const flags: Record<string, boolean | string | null> = {}
+    if ('autoMemoryEnabled' in partial) flags.autoMemoryEnabled = partial.autoMemoryEnabled ?? null
+    if ('autoDreamEnabled' in partial) flags.autoDreamEnabled = partial.autoDreamEnabled ?? null
+    // Forward the directory trimmed / null-normalised so the SDK's view
+    // matches the persisted record below (a whitespace-only string would
+    // otherwise set a literal " " dir in the SDK while the UI shows "not set").
+    if ('autoMemoryDirectory' in partial) {
+      flags.autoMemoryDirectory = (partial.autoMemoryDirectory ?? '').trim() || null
+    }
+    if (Object.keys(flags).length === 0) return this.info(s)
+    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
+      s,
+      'applyFlagSettings',
+      'memory settings',
+    )(flags)
+    const next: SessionMemorySettings = { ...(s.memory ?? {}) }
+    for (const [key, value] of Object.entries(partial)) {
+      const k = key as keyof SessionMemorySettings
+      if (value == null || (k === 'autoMemoryDirectory' && !String(value).trim())) delete next[k]
+      else if (k === 'autoMemoryDirectory') next[k] = String(value).trim()
+      else next[k] = value as boolean
+    }
+    s.memory = Object.keys(next).length > 0 ? next : undefined
     s.lastActivityAt = Date.now()
     this.persist(s)
     return this.info(s)
@@ -3999,6 +4067,7 @@ export class SessionManager {
       title: s.title,
       betas: s.betas,
       fastMode: s.fastMode,
+      memory: s.memory,
       fastModeState: s.fastModeState,
       effortLevel: s.effortLevel,
       effortLevels: s.effortLevels,
@@ -4066,6 +4135,7 @@ export class SessionManager {
       permissionMode: meta.permissionMode,
       title: meta.title,
       fastMode: meta.fastMode,
+      memory: meta.memory,
       effortLevel: meta.effortLevel,
       // Dormant: no live Query, so the SDK isn't reporting a runtime state.
       // Leave fastModeState undefined — the UI hides the chip until resume.
@@ -4332,6 +4402,7 @@ export class SessionManager {
       betas: session.betas,
       effortLevel: session.effortLevel,
       fastMode: session.fastMode,
+      memory: session.memory,
       enabledPlugins: session.enabledPlugins,
       includeHookEvents: true,
       resume: session.id,

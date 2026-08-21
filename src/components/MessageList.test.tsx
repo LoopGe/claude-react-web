@@ -1997,6 +1997,136 @@ describe('local_command_output rendering', () => {
   })
 })
 
+describe('memory_recall rendering', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('renders select-mode entries with content as basename + scope badge + markdown body', () => {
+    const items = toItems([
+      makeMsg('system', {
+        subtype: 'memory_recall',
+        mode: 'select',
+        memories: [
+          { path: '/home/u/.claude/projects/x/memory/prefs.md', scope: 'personal', content: 'Likes **dark** mode' },
+        ],
+      }),
+    ])
+    const { container } = render(<MessageList items={items} />)
+    const card = container.querySelector('.msg.memory-recall')
+    expect(card).toBeTruthy()
+    expect(card?.querySelector('.msg-header')?.textContent).toContain('Recalled from memory')
+    expect(card?.textContent).toContain('selected files')
+    const name = card?.querySelector('.memory-recall-name')
+    expect(name?.textContent).toBe('prefs.md')
+    // Full path available on hover via title.
+    expect(card?.querySelector('.memory-recall-entry')?.getAttribute('title')).toBe(
+      '/home/u/.claude/projects/x/memory/prefs.md',
+    )
+    expect(card?.querySelector('.memory-recall-scope')?.textContent).toBe('personal')
+    expect(card?.querySelector('.memory-recall-body strong')).toBeTruthy()
+  })
+
+  it('renders select-mode path-only entries as basename-only (no fetch, no body)', () => {
+    const items = toItems([
+      makeMsg('system', {
+        subtype: 'memory_recall',
+        mode: 'select',
+        memories: [{ path: 'C:\\mem\\coding-style.md', scope: 'personal' }],
+      }),
+    ])
+    const { container } = render(<MessageList items={items} />)
+    const card = container.querySelector('.msg.memory-recall')
+    expect(card).toBeTruthy()
+    expect(card?.querySelectorAll('.memory-recall-entry')).toHaveLength(1)
+    expect(card?.querySelector('.memory-recall-name')?.textContent).toBe('coding-style.md')
+    // Path-only entries have no body element.
+    expect(card?.querySelector('.memory-recall-body')).toBeNull()
+    // Windows backslash path kept whole in the hover title.
+    expect(card?.querySelector('.memory-recall-entry')?.getAttribute('title')).toBe('C:\\mem\\coding-style.md')
+  })
+
+  it('renders the synthesize-mode sentinel as a synthesized card, never as a path', () => {
+    const items = toItems([
+      makeMsg('system', {
+        subtype: 'memory_recall',
+        mode: 'synthesize',
+        memories: [
+          { path: '<synthesis:/home/u/.claude/projects/x/memory>', scope: 'personal', content: 'Distilled memory paragraph.' },
+        ],
+      }),
+    ])
+    const { container } = render(<MessageList items={items} />)
+    const card = container.querySelector('.msg.memory-recall')
+    expect(card).toBeTruthy()
+    expect(card?.textContent).toContain('synthesized')
+    const entry = card?.querySelector('.memory-recall-entry--synthesis')
+    expect(entry).toBeTruthy()
+    expect(entry?.querySelector('.memory-recall-name')?.textContent).toBe('Synthesized summary')
+    // The sentinel path itself must never be shown as a name/title.
+    expect(entry?.getAttribute('title')).toBeNull()
+    // Source dir shown as muted line; body markdown rendered.
+    expect(entry?.querySelector('.memory-recall-source')?.textContent).toContain(
+      '/home/u/.claude/projects/x/memory',
+    )
+    expect(entry?.querySelector('.memory-recall-body')?.textContent).toContain('Distilled memory paragraph.')
+  })
+
+  it('renders organization-scope https URLs as the hostname', () => {
+    const items = toItems([
+      makeMsg('system', {
+        subtype: 'memory_recall',
+        mode: 'select',
+        memories: [
+          { path: 'https://mem.example.com/org/notes.md', scope: 'organization', content: 'Org memory body' },
+        ],
+      }),
+    ])
+    const { container } = render(<MessageList items={items} />)
+    const card = container.querySelector('.msg.memory-recall')
+    expect(card?.querySelector('.memory-recall-name')?.textContent).toBe('mem.example.com')
+    expect(card?.querySelector('.memory-recall-scope--organization')?.textContent).toBe('organization')
+    expect(card?.querySelector('.memory-recall-body')?.textContent).toContain('Org memory body')
+  })
+
+  it('collapses entries beyond 4 behind a "+N more" toggle and expands on click', async () => {
+    const memories = Array.from({ length: 7 }, (_, i) => ({ path: `/mem/file-${i}.md`, scope: 'personal' as const }))
+    const items = toItems([makeMsg('system', { subtype: 'memory_recall', mode: 'select', memories })])
+    const { container } = render(<MessageList items={items} />)
+    const card = container.querySelector('.msg.memory-recall')
+    expect(card?.querySelectorAll('.memory-recall-entry')).toHaveLength(3)
+    const toggle = card?.querySelector('.memory-recall-more')
+    expect(toggle?.textContent).toBe('+4 more')
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(card?.querySelectorAll('.memory-recall-entry')).toHaveLength(7)
+  })
+
+  it('renders a header-only card for missing/empty memories (defensive)', () => {
+    const noMemories = toItems([makeMsg('system', { subtype: 'memory_recall', mode: 'select' })])
+    const { container, rerender } = render(<MessageList items={noMemories} />)
+    expect(container.querySelector('.msg.memory-recall')).toBeTruthy()
+    expect(container.querySelector('.memory-recall-list')).toBeNull()
+
+    const emptyMemories = toItems([
+      makeMsg('system', { subtype: 'memory_recall', mode: 'select', memories: [] }),
+    ])
+    rerender(<MessageList items={emptyMemories} />)
+    expect(container.querySelector('.memory-recall-list')).toBeNull()
+  })
+
+  it('does not fall into the generic system fallback branch', () => {
+    const items = toItems([
+      makeMsg('system', { subtype: 'memory_recall', mode: 'select', memories: [{ path: '/m/a.md', scope: 'personal' }] }),
+    ])
+    const { container } = render(<MessageList items={items} />)
+    expect(container.querySelector('.msg.system')).toBeNull()
+    expect(container.querySelector('.msg.memory-recall')).toBeTruthy()
+  })
+})
+
 describe('file-path click-to-copy', () => {
   beforeEach(() => {
     vi.clearAllMocks()

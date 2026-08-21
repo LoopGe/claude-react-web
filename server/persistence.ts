@@ -19,6 +19,7 @@ import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import type { JsonFileStoreOptions } from './json-file-store.js'
 import { createLogger } from './log.js'
 import { validateSessionHooksConfig, type SessionHooksConfig } from '../shared/hooks.js'
+import type { SessionMemorySettings } from '../shared/session-info.js'
 
 const log = createLogger('persistence')
 
@@ -42,6 +43,10 @@ export interface SessionMeta {
    *  on re-spawn (resume / restart). Only the intent is persisted — the
    *  SDK's runtime fast_mode_state is re-reported after respawn. */
   fastMode?: boolean
+  /** Per-session auto-memory settings (enable / directory / auto-dream).
+   *  Re-applied to the SDK via applyFlagSettings on every re-spawn. The
+   *  whole object is undefined when no memory key has been pinned. */
+  memory?: SessionMemorySettings
   /** User intent: reasoning effort level. Re-applied to the SDK on
    *  re-spawn (resume / restart / fork). */
   effortLevel?: EffortLevel
@@ -184,6 +189,7 @@ function coerceMeta(raw: unknown): SessionMeta | null {
       ? (r.betas as string[])
       : undefined,
     fastMode: typeof r.fastMode === 'boolean' ? r.fastMode : undefined,
+    memory: coerceMemory(r.memory),
     effortLevel:
       r.effortLevel === 'low' || r.effortLevel === 'medium' || r.effortLevel === 'high' ||
       r.effortLevel === 'xhigh' || r.effortLevel === 'max'
@@ -214,4 +220,21 @@ function coerceHooks(raw: unknown): SessionHooksConfig | undefined {
   if (raw == null) return undefined
   const result = validateSessionHooksConfig(raw)
   return result.ok ? result.value : undefined
+}
+
+/** Narrow untrusted JSON into SessionMemorySettings. Returns undefined
+ *  when nothing usable remains — "all keys cleared" and "field absent"
+ *  are the same state, so the wholesale upsert in writeStore can never
+ *  resurrect a stale value. Exported for session-manager's snapshotMeta,
+ *  which normalises the create-body `memory` through the same gate. */
+export function coerceMemory(raw: unknown): SessionMemorySettings | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const r = raw as Record<string, unknown>
+  const out: SessionMemorySettings = {}
+  if (typeof r.autoMemoryEnabled === 'boolean') out.autoMemoryEnabled = r.autoMemoryEnabled
+  if (typeof r.autoDreamEnabled === 'boolean') out.autoDreamEnabled = r.autoDreamEnabled
+  if (typeof r.autoMemoryDirectory === 'string' && r.autoMemoryDirectory.trim()) {
+    out.autoMemoryDirectory = r.autoMemoryDirectory.trim()
+  }
+  return Object.keys(out).length > 0 ? out : undefined
 }

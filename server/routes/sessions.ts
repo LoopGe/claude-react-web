@@ -125,6 +125,30 @@ function narrowCreateBody(rest: Record<string, unknown>): { ok: true; value: Rec
   if (effort !== undefined && (typeof effort !== 'string' || !EFFORT_LEVELS.has(effort))) {
     return { ok: false, error: 'effortLevel must be one of low, medium, high, xhigh, max' }
   }
+  // App-level `memory` field (auto-memory intent — NOT an SDK Options key;
+  // snapshotMeta captures it onto the session and the provider re-applies it
+  // via applyFlagSettings). Strict validation: this is our own surface, so
+  // unknown keys are rejected rather than ignored.
+  if (rest.memory !== undefined && rest.memory !== null) {
+    const m = rest.memory as Record<string, unknown>
+    if (typeof m !== 'object' || Array.isArray(m)) {
+      return { ok: false, error: 'memory must be { autoMemoryEnabled?: boolean, autoMemoryDirectory?: string, autoDreamEnabled?: boolean }' }
+    }
+    const known = new Set(['autoMemoryEnabled', 'autoMemoryDirectory', 'autoDreamEnabled'])
+    for (const key of Object.keys(m)) {
+      if (!known.has(key)) {
+        return { ok: false, error: `memory.${key} is not a recognized memory setting` }
+      }
+    }
+    for (const key of ['autoMemoryEnabled', 'autoDreamEnabled']) {
+      if (m[key] !== undefined && typeof m[key] !== 'boolean') {
+        return { ok: false, error: `memory.${key} must be a boolean` }
+      }
+    }
+    if (m.autoMemoryDirectory !== undefined && (typeof m.autoMemoryDirectory !== 'string' || !m.autoMemoryDirectory.trim())) {
+      return { ok: false, error: 'memory.autoMemoryDirectory must be a non-empty string' }
+    }
+  }
   return { ok: true, value: rest }
 }
 
@@ -459,6 +483,43 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   app.get('/sessions/:id/context-usage', async (c) => {
     const usage = await sm.contextUsage(c.req.param('id'))
     return c.json({ usage })
+  })
+
+  // Set per-session auto-memory options (enable / directory / auto-dream).
+  // Body keys are optional; a `null` value clears a key back to its
+  // project/SDK default (forwards as null to applyFlagSettings). Persisted
+  // on the session so it survives resume / fork / clear / restart. No
+  // filesystem validation of autoMemoryDirectory: `~/`-prefixed paths can't
+  // be probed meaningfully from the server, the dir is created on demand,
+  // and the SDK silently ignores it when projectSettings pins one.
+  app.post('/sessions/:id/memory', async (c) => {
+    const body = await safeJson<{
+      autoMemoryEnabled?: boolean | null
+      autoMemoryDirectory?: string | null
+      autoDreamEnabled?: boolean | null
+    }>(c.req)
+    const partial: Parameters<SessionManager['setMemorySettings']>[1] = {}
+    for (const key of ['autoMemoryEnabled', 'autoDreamEnabled'] as const) {
+      if (body && Object.prototype.hasOwnProperty.call(body, key)) {
+        const v = body[key]
+        if (v !== null && typeof v !== 'boolean') {
+          return c.json({ error: `${key} must be a boolean or null` }, 400)
+        }
+        partial[key] = v
+      }
+    }
+    if (body && Object.prototype.hasOwnProperty.call(body, 'autoMemoryDirectory')) {
+      const v = body.autoMemoryDirectory
+      if (v !== null && typeof v !== 'string') {
+        return c.json({ error: 'autoMemoryDirectory must be a string or null' }, 400)
+      }
+      if (typeof v === 'string' && /[\0\n\r]/.test(v)) {
+        return c.json({ error: 'autoMemoryDirectory contains invalid characters' }, 400)
+      }
+      partial.autoMemoryDirectory = v
+    }
+    const info = await sm.setMemorySettings(c.req.param('id'), partial)
+    return c.json({ session: info })
   })
 
   // Session usage — cost/token totals + claude.ai plan rate-limit windows
