@@ -346,7 +346,11 @@
   box-shadow: var(--row-hairline);
   text-align: left;
   transition: background var(--motion-duration-fast) var(--motion-ease-standard),
-              box-shadow var(--motion-duration-fast) var(--motion-ease-standard);
+              box-shadow var(--motion-duration-fast) var(--motion-ease-standard),
+              /* Sleep → dormant: dim smoothly (and brighten back on resume)
+                 instead of snapping. Same transition serves the terminated /
+                 resuming opacity states, so every state flip reads as motion. */
+              opacity var(--motion-duration-moderate) var(--motion-ease-standard);
 }
 .session-item-shell {
   display: grid;
@@ -1143,6 +1147,10 @@
   border-radius: var(--radius-circle);
   flex-shrink: 0;
   background: var(--fg-muted);
+  /* Morph between status colours — most visibly live (solid) → dormant
+     (hollow ring) on sleep, and back on resume. */
+  transition: background var(--motion-duration-moderate) var(--motion-ease-standard),
+              box-shadow var(--motion-duration-moderate) var(--motion-ease-standard);
 }
 /* live = healthy/running → semantic green */
 .session-status-dot.status-live { background: var(--ok); }
@@ -1170,6 +1178,7 @@
 .session-status-dot.status-ended { background: var(--fg-muted); }
 @media (prefers-reduced-motion: reduce) {
   .session-status-dot.status-working { animation: none; }
+  .session-status-dot { transition: none; }
 }
 .session-item-delete {
   opacity: 0;
