@@ -2139,6 +2139,16 @@ export function App() {
     setSessions((prev) => prev.map((p) => (p.id === s.id ? s : p)))
   }, [])
 
+  // Stable wrappers for ChatPanel.memo — inline arrows would create a new
+  // function identity on every App render and bust the shallow comparison.
+  const handleResumePanel = useCallback(
+    (id: string) => {
+      void resumeSession(id, () => {})
+    },
+    [resumeSession],
+  )
+  const handleCloseHistory = useCallback(() => setHistoryPanelOpen(false), [])
+
   // ── Panel exit animation + entering DOM class ───────────────────────
   // Entering IDs are already computed during render (enteringSetRef).
   // This effect applies the `.entering` class to the real DOM and
@@ -3709,7 +3719,7 @@ export function App() {
                       accentStyle={sessionAccentMap.get(s.id)}
                       onFocus={focusPanel}
                       onClose={closeSession}
-                      onResume={(id) => { void resumeSession(id, () => {}) }}
+                      onResume={handleResumePanel}
                       onForkFromLastCompleted={handleCrashFork}
                       groupLabel={owningGroup?.name}
                       onCloseGroupPanels={
@@ -3733,7 +3743,7 @@ export function App() {
                       onResumeIntoPanel={handlePanelResume}
                       onCloseResume={closeResume}
                       historyOpen={historyPanelOpen && focusedId === s.id}
-                      onCloseHistory={() => setHistoryPanelOpen(false)}
+                      onCloseHistory={handleCloseHistory}
                       onClearSession={handleClear}
                       onDiscard={handleDiscard}
                       onOpenSettingsTab={openSettingsTab}
