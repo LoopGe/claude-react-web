@@ -489,31 +489,12 @@
   background: var(--bg-elev);
   border-top: 1px solid var(--border);
 }
-/* ContextBar takes the full width; the usage ($) button rides its right
-   edge inside the same row so the top border stays a single hairline. */
+/* ContextBar takes the full width of the row; it owns the single hairline
+   top border. */
 .ctx-bar-row .ctx-bar {
   flex: 1;
   min-width: 0;
   border-top: none;
-}
-.ctx-bar-usage-btn {
-  flex-shrink: 0;
-  align-self: center;
-  margin: 0 6px;
-  border: none;
-  background: transparent;
-  color: var(--fg-muted);
-  width: 22px;
-  height: 22px;
-  border-radius: var(--radius-xs);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.ctx-bar-usage-btn:hover {
-  background: var(--btn-hover-bg);
-  color: var(--fg);
 }
 .ctx-bar {
   padding: 6px var(--chat-reading-inset) 4px;
@@ -672,8 +653,7 @@
   background: var(--drag-over-bg);
   outline-color: var(--accent);
 }
-/* When a ContextBar is present just above, it owns the divider. The
-   ctx-bar-row variant covers the usage-($)-button wrapper. */
+/* When a ContextBar is present just above, it owns the divider. */
 .ctx-bar + .chat-composer,
 .ctx-bar-row + .chat-composer { border-top: none; }
 /* Main column holds attachment chips + textarea; actions column holds the
@@ -1528,8 +1508,7 @@
 .working-bar-with-agents {
   row-gap: 6px;
 }
-/* When immediately followed by ctx-bar, collapse the double border. The
-   ctx-bar-row variant covers the usage-($)-button wrapper. */
+/* When immediately followed by ctx-bar, collapse the double border. */
 .working-bar + .ctx-bar,
 .working-bar + .ctx-bar-row { border-top: none; }
 .working-bar-label {

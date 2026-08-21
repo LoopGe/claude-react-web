@@ -8,6 +8,7 @@ import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
 import { useToast } from '../hooks/useToast'
+import { useSessionUsage } from '../hooks/useSessionUsage'
 import type { AgentInfo, McpServerConfigMeta, McpServerStatus, ModelInfo, PermissionMode, Plugin, SessionInfo, SessionSkillOverride, SkillLoadMode, SlashCommand } from '../types'
 import { PERMISSION_MODES } from '../types'
 import type { SkillRecord } from '../../shared/skills'
@@ -19,6 +20,7 @@ import { Skeleton } from './Skeleton'
 import { useExitPresence } from '../hooks/useExitPresence'
 import { AnimatedCollapse, AnimatedDetails } from './AnimatedCollapse'
 import { HooksPanel } from './HooksPanel'
+import { UsagePanel } from './UsagePanel'
 import { Overlay } from './Overlay'
 
 // MarketplaceTab and McpInstaller are heavy modal-within-modal
@@ -34,7 +36,7 @@ import { formatTokens, formatJson } from '../utils/format'
 import { pluginTagOf } from '../utils/text'
 import type { ContextUsage } from '../hooks/useChatStream'
 
-type SettingsTab = 'general' | 'context' | 'hooks' | 'plugins' | 'mcp'
+type SettingsTab = 'general' | 'context' | 'hooks' | 'plugins' | 'mcp' | 'usage'
 
 interface Props {
   session: SessionInfo
@@ -75,6 +77,10 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   const [loadingUsage, setLoadingUsage] = useState(false)
   // One-shot guard so re-opening a <details> doesn't re-fire the request.
   const usageFetchedRef = useRef(false)
+  // Session usage (cost / duration / rate limits) — pull-only, fetched on
+  // demand when the Usage tab mounts (UsagePanel's mount effect calls
+  // refresh()). The hook itself never fires a request by itself.
+  const sessionUsage = useSessionUsage(session.id)
   const [mcp, setMcp] = useState<McpServerStatus[]>([])
   const [globalMcpNames, setGlobalMcpNames] = useState<Set<string>>(new Set())
   const [showMcpInstaller, setShowMcpInstaller] = useState(false)
@@ -625,6 +631,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     { key: 'hooks', label: 'Hooks' },
     { key: 'plugins', label: 'Plugins' },
     { key: 'mcp', label: 'MCP Servers' },
+    { key: 'usage', label: 'Usage' },
   ]
 
   const panelBodyRef = useRef<HTMLDivElement | null>(null)
@@ -644,6 +651,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     reloadedPlugins.length,
     detailedUsage ? 'detailed' : 'summary',
     usage?.totalTokens ?? 0,
+    sessionUsage.loading ? 'usage-loading' : sessionUsage.data ? 'usage-loaded' : 'usage-empty',
   ].join('|')
   const measureSettingsBodyHeight = useCallback(() => {
     const body = panelBodyRef.current
@@ -1134,6 +1142,17 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
           </div>
         )}
       </div>
+      )}
+
+      {tab === 'usage' && (
+        <UsagePanel
+          sessionId={session.id}
+          data={sessionUsage.data}
+          loading={sessionUsage.loading}
+          error={sessionUsage.error}
+          onRefresh={sessionUsage.refresh}
+          available={session.running && !session.terminated}
+        />
       )}
         </div>
       </div>

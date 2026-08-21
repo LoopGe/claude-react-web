@@ -17,7 +17,6 @@ import { useDebouncedValue } from '../hooks/useDebouncedValue'
 // gate its first mount on `settingsEverOpened` rather than `settingsOpen`.
 const SettingsPanel = lazy(() => import('./SettingsPanel').then((m) => ({ default: m.SettingsPanel })))
 const GitPanel = lazy(() => import('./GitPanel').then((m) => ({ default: m.GitPanel })))
-const UsagePanel = lazy(() => import('./UsagePanel').then((m) => ({ default: m.UsagePanel })))
 // ResumeSessionDialog is also a per-panel overlay (its 'panel' variant,
 // rendered here) — lazy so the picker code stays out of the main bundle for
 // sessions that never resume via the keyboard shortcut / `/resume`.
@@ -40,7 +39,6 @@ import { useInputHistory } from '../hooks/useInputHistory'
 import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { useElicitationChannel } from '../hooks/useElicitationChannel'
 import { useUserDialogChannel } from '../hooks/useUserDialogChannel'
-import { useSessionUsage } from '../hooks/useSessionUsage'
 import { usePhaseDwell } from '../hooks/usePhaseDwell'
 import { Composer } from './Composer'
 import { ContextBar } from './ContextBar'
@@ -62,13 +60,12 @@ import { useSessionRecap } from '../hooks/useSessionRecap'
 import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
-import { Tooltip } from './Tooltip'
 import { ConfirmDialog } from './ConfirmDialog'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
 import { useAllContributions } from '../app-plugins/PluginRegistryProvider'
 import { usePluginCommands } from '../app-plugins/usePluginCommands'
 import { buildWhenContext, filterContributions } from '../app-plugins/when'
-import { IconSearch, IconFileText, IconFileCode, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconMessageCircle, IconArrowLeft, IconTrash, IconGlobe, IconScissors, IconDollar } from './icons/ToolIcons'
+import { IconSearch, IconFileText, IconFileCode, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconMessageCircle, IconArrowLeft, IconTrash, IconGlobe, IconScissors } from './icons/ToolIcons'
 import { PLAN_TOOL_NAMES } from '../constants/toolNames'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useToast } from '../hooks/useToast'
@@ -1303,13 +1300,6 @@ export const Chat = memo(function Chat({
   // tooltip doesn't stick open).
   const setSettingsOverlayOs = useOverlayScrollbar({ autoHide: 'leave' })
   const setGitOverlayOs = useOverlayScrollbar({ autoHide: 'leave' })
-  const setUsageOverlayOs = useOverlayScrollbar({ autoHide: 'leave' })
-
-  // Usage panel — purely local open state + on-demand fetch (the data is
-  // self-contained; no parent wiring needed, unlike settings/git which the
-  // ChatPanel header chips also drive).
-  const [usageOpen, setUsageOpen] = useState(false)
-  const usage = useSessionUsage(session.id)
 
   const interrupt = useCallback(async () => {
     try {
@@ -1670,17 +1660,6 @@ export const Chat = memo(function Chat({
 
       <div className="ctx-bar-row">
         <ContextBar usage={stream.contextUsage} />
-        {!session.terminated && (
-          <Tooltip label="Session usage" placement="top">
-            <button
-              className="ctx-bar-usage-btn"
-              onClick={() => setUsageOpen(true)}
-              aria-label="Open session usage panel"
-            >
-              <IconDollar size={13} />
-            </button>
-          </Tooltip>
-        )}
       </div>
 
       <Composer
@@ -1861,32 +1840,6 @@ export const Chat = memo(function Chat({
             error={gitError ?? null}
             onRefresh={() => onGitRefresh?.()}
             onClose={() => onCloseGitPanel?.()}
-          />
-        </Suspense>
-      </Overlay>
-
-      {/* Session usage overlay — same column-scoped mount pattern as Git
-          above; the panel fetches on mount, so no keepMounted ever-opened
-          tracking is needed. */}
-      <Overlay
-        variant="git"
-        ariaLabel="Session usage"
-        open={usageOpen}
-        onClose={() => setUsageOpen(false)}
-        renderCard={false}
-        trapRefTarget="backdrop"
-        focusEscapeSelector=".chat-panel"
-        backdropRef={setUsageOverlayOs}
-      >
-        <Suspense fallback={null}>
-          <UsagePanel
-            key={session.id}
-            sessionId={session.id}
-            data={usage.data}
-            loading={usage.loading}
-            error={usage.error}
-            onRefresh={usage.refresh}
-            onClose={() => setUsageOpen(false)}
           />
         </Suspense>
       </Overlay>

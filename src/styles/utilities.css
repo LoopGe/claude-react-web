@@ -1051,6 +1051,9 @@
   align-items: center;
 }
 .settings-section-head h4 { margin: 0; }
+/* Head title row wraps the <h4> plus any inline badge (e.g. the usage
+   subscription badge) so they sit on one baseline. */
+.settings-section-head-title { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
 .settings-section-head-actions { display: flex; gap: 6px; }
 .settings-apply-btn { align-self: flex-start; }
 .settings-note {

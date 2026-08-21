@@ -1,18 +1,15 @@
-// Per-session Usage overlay — the structured data behind the CLI's
+// Per-session usage content — the structured data behind the CLI's
 // `/usage` command: session cost / duration / line totals, a per-model
 // token+cost table, and (for claude.ai plan sessions) rate-limit window
-// meters. Mounted like GitPanel: Chat.tsx wraps us in a `.git-overlay`
-// backdrop (variant="git"), so we reuse the `.git-panel` chrome classes
-// and only define `.usage-*` content styles.
+// meters. Rendered inside the Session Settings "Usage" tab as a
+// `.settings-section` whose head carries the refresh action.
 //
 // The backing SDK API is EXPERIMENTAL — every read is defensive
 // (`typeof` checks, optional chaining) and unknown fields are ignored.
 
 import { memo, useEffect } from 'react'
-import { Tooltip } from './Tooltip'
-import { IconX, IconRefresh, IconDollar, IconLoader } from './icons/ToolIcons'
+import { IconLoader } from './icons/ToolIcons'
 import { formatTokens, formatElapsed } from '../utils/format'
-import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import {
   USAGE_WINDOW_KEYS,
   USAGE_WINDOW_LABELS,
@@ -26,7 +23,11 @@ interface Props {
   loading: boolean
   error: string | null
   onRefresh: () => void
-  onClose: () => void
+  /** The server can serve `/usage` right now (session is running and not
+   *  terminated). It's a live-Query-only control read, so when unavailable
+   *  skip the auto-fetch and show a note instead of an error. Data loaded
+   *  before the session went dormant/terminated stays visible. */
+  available?: boolean
 }
 
 const SUBSCRIPTION_LABELS: Record<string, string> = {
@@ -81,16 +82,21 @@ function WindowMeter({ label, window }: { label: string; window: UsageRateLimitW
 }
 
 export const UsagePanel = memo(function UsagePanel({
-  sessionId, data, loading, error, onRefresh, onClose,
+  sessionId,
+  data,
+  loading,
+  error,
+  onRefresh,
+  available,
 }: Props) {
-  const setPanelOs = useOverlayScrollbar({ autoHide: 'leave' })
-
   // Refetch whenever the panel mounts with a session id (the panel is
-  // unmounted when closed, so open == mount == fresh data).
+  // unmounted when closed, so open == mount == fresh data). Sessions that
+  // aren't running (dormant / terminated) can't serve /usage (a live-Query
+  // control read), so skip the auto-fetch and let the muted note explain.
   useEffect(() => {
-    if (sessionId) onRefresh()
+    if (sessionId && available) onRefresh()
     // eslint-disable-next-line react-hooks/exhaustive-deps -- onRefresh is stable per sessionId; re-running on identity changes would double-fetch.
-  }, [sessionId])
+  }, [sessionId, available])
 
   const totals = data?.session
   const cost = fmtCost(totals?.total_cost_usd)
@@ -103,115 +109,136 @@ export const UsagePanel = memo(function UsagePanel({
   const modelEntries = Object.entries(totals?.model_usage ?? {}) as [string, Record<string, unknown>][]
   const extra = rateLimits?.extra_usage
 
+  const content = (
+    <>
+      {!available && !data ? (
+        <p className="usage-muted">Usage data is only available for live sessions.</p>
+      ) : (
+        <>
+          {/* Only offer a retry when /usage can actually be served — a
+              stale error left over from a live-session refresh shouldn't
+              surface once the session has gone dormant/terminated. */}
+          {error && available && (
+            <div className="usage-error">
+              <p>{error}</p>
+              <button className="usage-action" onClick={onRefresh}>
+                Try again
+              </button>
+            </div>
+          )}
+
+          {!error && !data && (
+            <div className="usage-empty">
+              <p>{loading ? 'Loading usage…' : 'No usage data yet.'}</p>
+            </div>
+          )}
+
+          {data && (
+            <>
+              <section className="usage-section">
+                <div className="usage-cost-row">
+                  <span className="usage-cost">{cost ?? '$0.0000'}</span>
+                  <span className="usage-cost-caption">session total</span>
+                </div>
+                <div className="usage-totals">
+                  {wallDur && <span title="Wall-clock session duration">{wallDur} total</span>}
+                  {apiDur && <span title="Time spent on API calls">{apiDur} api</span>}
+                  {added != null && removed != null && (
+                    <span title="Lines added / removed this session">
+                      +{added} −{removed} lines
+                    </span>
+                  )}
+                </div>
+              </section>
+
+              {modelEntries.length > 0 && (
+                <section className="usage-section">
+                  <h3 className="usage-section-title">By model</h3>
+                  <table className="usage-model-table">
+                    <thead>
+                      <tr>
+                        <th>model</th>
+                        <th>in</th>
+                        <th>out</th>
+                        <th>cache</th>
+                        <th>cost</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {modelEntries.map(([model, m]) => {
+                        const get = (k: string): number | null =>
+                          typeof m[k] === 'number' && Number.isFinite(m[k] as number)
+                            ? (m[k] as number)
+                            : null
+                        const inTok = get('inputTokens')
+                        const outTok = get('outputTokens')
+                        const cacheTok =
+                          (get('cacheReadInputTokens') ?? 0) + (get('cacheCreationInputTokens') ?? 0)
+                        const mCost = fmtCost(m.costUSD)
+                        return (
+                          <tr key={model}>
+                            <td className="usage-model-name" title={model}>
+                              {model}
+                            </td>
+                            <td>{inTok != null ? formatTokens(inTok) : '—'}</td>
+                            <td>{outTok != null ? formatTokens(outTok) : '—'}</td>
+                            <td>{cacheTok > 0 ? formatTokens(cacheTok) : '—'}</td>
+                            <td>{mCost ?? '—'}</td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </section>
+              )}
+
+              <section className="usage-section">
+                <h3 className="usage-section-title">Plan rate limits</h3>
+                {data.rate_limits_available ? (
+                  <>
+                    {USAGE_WINDOW_KEYS.map((key) => (
+                      <WindowMeter key={key} label={USAGE_WINDOW_LABELS[key]} window={rateLimits?.[key]} />
+                    ))}
+                    {extra && (extra.is_enabled ?? true) && (
+                      <div className="usage-extra">
+                        extra usage: {fmtNum(extra.used_credits) ?? '—'} /{' '}
+                        {fmtNum(extra.monthly_limit) ?? '—'} {extra.currency ?? ''}
+                        {typeof extra.utilization === 'number' && ` (${Math.round(extra.utilization)}%)`}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <p className="usage-muted">
+                    Plan rate limits are not available for API-key / third-party sessions.
+                  </p>
+                )}
+              </section>
+            </>
+          )}
+        </>
+      )}
+    </>
+  )
+
   return (
-    <aside className="git-panel usage-panel" role="region" aria-label="Usage" ref={setPanelOs}>
-      <header className="git-panel-header">
-        <span className="git-panel-branch"><IconDollar size={13} /> usage</span>
-        {subLabel && <span className="usage-sub-badge">{subLabel}</span>}
-        <span className="git-panel-spacer" />
-        <Tooltip label="Refresh" placement="bottom">
+    <div className="settings-section">
+      <div className="settings-section-head">
+        <span className="settings-section-head-title">
+          <h4>Session usage</h4>
+          {subLabel && <span className="usage-sub-badge">{subLabel}</span>}
+        </span>
+        <span className="settings-section-head-actions">
           <button
-            className="git-panel-icon-btn"
+            className="btn btn-sm"
             onClick={onRefresh}
-            disabled={loading}
+            disabled={loading || !available}
             aria-label="Refresh usage"
           >
-            {loading
-              ? <IconLoader size={14} className="git-panel-spin" />
-              : <IconRefresh size={14} />}
+            {loading ? <IconLoader size={12} className="settings-card-spin" /> : 'Refresh'}
           </button>
-        </Tooltip>
-        <Tooltip label="Close" placement="bottom">
-          <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close usage panel"><IconX size={14} /></button>
-        </Tooltip>
-      </header>
-
-      <div className="usage-body">
-        {error && (
-          <div className="usage-error">
-            <p>{error}</p>
-            <button className="usage-action" onClick={onRefresh}>Try again</button>
-          </div>
-        )}
-
-        {!error && !data && (
-          <div className="usage-empty"><p>{loading ? 'Loading usage…' : 'No usage data yet.'}</p></div>
-        )}
-
-        {data && (
-          <>
-            <section className="usage-section">
-              <div className="usage-cost-row">
-                <span className="usage-cost">{cost ?? '$0.0000'}</span>
-                <span className="usage-cost-caption">session total</span>
-              </div>
-              <div className="usage-totals">
-                {wallDur && <span title="Wall-clock session duration">{wallDur} total</span>}
-                {apiDur && <span title="Time spent on API calls">{apiDur} api</span>}
-                {added != null && removed != null && (
-                  <span title="Lines added / removed this session">+{added} −{removed} lines</span>
-                )}
-              </div>
-            </section>
-
-            {modelEntries.length > 0 && (
-              <section className="usage-section">
-                <h3 className="usage-section-title">By model</h3>
-                <table className="usage-model-table">
-                  <thead>
-                    <tr><th>model</th><th>in</th><th>out</th><th>cache</th><th>cost</th></tr>
-                  </thead>
-                  <tbody>
-                    {modelEntries.map(([model, m]) => {
-                      const get = (k: string): number | null =>
-                        typeof m[k] === 'number' && Number.isFinite(m[k] as number) ? (m[k] as number) : null
-                      const inTok = get('inputTokens')
-                      const outTok = get('outputTokens')
-                      const cacheTok = (get('cacheReadInputTokens') ?? 0) + (get('cacheCreationInputTokens') ?? 0)
-                      const mCost = fmtCost(m.costUSD)
-                      return (
-                        <tr key={model}>
-                          <td className="usage-model-name" title={model}>{model}</td>
-                          <td>{inTok != null ? formatTokens(inTok) : '—'}</td>
-                          <td>{outTok != null ? formatTokens(outTok) : '—'}</td>
-                          <td>{cacheTok > 0 ? formatTokens(cacheTok) : '—'}</td>
-                          <td>{mCost ?? '—'}</td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </section>
-            )}
-
-            <section className="usage-section">
-              <h3 className="usage-section-title">Plan rate limits</h3>
-              {data.rate_limits_available ? (
-                <>
-                  {USAGE_WINDOW_KEYS.map((key) => (
-                    <WindowMeter
-                      key={key}
-                      label={USAGE_WINDOW_LABELS[key]}
-                      window={rateLimits?.[key]}
-                    />
-                  ))}
-                  {extra && (extra.is_enabled ?? true) && (
-                    <div className="usage-extra">
-                      extra usage: {fmtNum(extra.used_credits) ?? '—'} / {fmtNum(extra.monthly_limit) ?? '—'}{' '}
-                      {extra.currency ?? ''}
-                      {typeof extra.utilization === 'number' && ` (${Math.round(extra.utilization)}%)`}
-                    </div>
-                  )}
-                </>
-              ) : (
-                <p className="usage-muted">
-                  Plan rate limits are not available for API-key / third-party sessions.
-                </p>
-              )}
-            </section>
-          </>
-        )}
+        </span>
       </div>
-    </aside>
+      <div className="usage-body">{content}</div>
+    </div>
   )
 })

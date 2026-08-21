@@ -1,11 +1,10 @@
-/* Usage panel content styles. The panel chrome (backdrop, header, icon
-   buttons, scroll) reuses the `.git-panel` classes from git-panel.css —
-   UsagePanel mounts inside the same variant="git" Overlay as GitPanel.
-   Only the `.usage-*` content below is specific. All colors come from
-   theme variables so light/dark both work. */
+/* Usage content styles. The `.usage-*` content is rendered inside the
+   Session Settings "Usage" tab, within a `.settings-section` that already
+   provides its own inset — so `.usage-body` carries no extra padding here.
+   All colors come from theme variables so light/dark both work. */
 
 .usage-body {
-  padding: 12px;
+  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 14px;
