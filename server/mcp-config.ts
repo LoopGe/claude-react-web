@@ -110,6 +110,7 @@ export interface StoredMcpOAuthState {
 export type McpConfigFile = Record<string, StoredMcpServer>
 
 export type { McpServerInput } from '../shared/mcp-types'
+import type { McpExportFile, McpExportServer } from '../shared/mcp-types'
 
 /** API-safe version of StoredMcpServer with secrets stripped. */
 export interface MaskedMcpServer {
@@ -319,6 +320,37 @@ export function validateMcpServer(server: Partial<StoredMcpServer>): string[] {
   if (server.env !== undefined && !isStringRecord(server.env)) errors.push('env must be a record of strings')
   if (server.headers !== undefined && !isStringRecord(server.headers)) errors.push('headers must be a record of strings')
   return errors
+}
+
+/** Serialize stored servers into export entries. In masked mode every
+ *  env/header value becomes ''; oauth and timestamps are never included. */
+export function toExportServers(servers: StoredMcpServer[], includeSecrets: boolean): McpExportServer[] {
+  return servers.map((s) => {
+    const out: McpExportServer = { name: s.name, type: s.type }
+    if (s.command !== undefined) out.command = s.command
+    if (s.args !== undefined) out.args = s.args
+    if (s.url !== undefined) out.url = s.url
+    if (s.alwaysLoad !== undefined) out.alwaysLoad = s.alwaysLoad
+    if (s.enabled !== undefined) out.enabled = s.enabled
+    if (s.env && Object.keys(s.env).length > 0) {
+      out.env = includeSecrets ? { ...s.env } : Object.fromEntries(Object.keys(s.env).map((k) => [k, '']))
+    }
+    if (s.headers && Object.keys(s.headers).length > 0) {
+      out.headers = includeSecrets ? { ...s.headers } : Object.fromEntries(Object.keys(s.headers).map((k) => [k, '']))
+    }
+    return out
+  })
+}
+
+/** Build a versioned export file envelope from stored servers. */
+export function buildExportFile(servers: StoredMcpServer[], includeSecrets: boolean): McpExportFile {
+  return {
+    format: 'claude-react-web-mcp',
+    version: 1,
+    exportedAt: Date.now(),
+    secretScope: includeSecrets ? 'full' : 'masked',
+    servers: toExportServers(servers, includeSecrets),
+  }
 }
 
 // ---------------------------------------------------------------------------

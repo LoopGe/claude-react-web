@@ -6,6 +6,7 @@ import {
   maskSecrets,
   coerceStoredMcpServer,
   validateMcpServer,
+  buildExportFile,
   type StoredMcpServer,
 } from './mcp-config.js'
 import { tempDir } from './__test-utils__/index.js'
@@ -460,5 +461,34 @@ describe('McpConfigStore.clearAll', () => {
     await store.load()
     await store.clearAll()
     expect(store.list()).toHaveLength(0)
+  })
+})
+
+describe('buildExportFile / toExportServers', () => {
+  it('strips oauth and metadata, blanking secret values in masked mode', () => {
+    const server: StoredMcpServer = {
+      name: 's', type: 'stdio', command: 'npx', args: ['-y', 'x'],
+      env: { K: 'v' }, alwaysLoad: true, enabled: false,
+      createdAt: 1, updatedAt: 2,
+      oauth: { tokens: { access_token: 't', token_type: 'Bearer' } },
+    }
+    const file = buildExportFile([server], false)
+    expect(file.format).toBe('claude-react-web-mcp')
+    expect(file.secretScope).toBe('masked')
+    expect(file.servers[0]).toEqual({
+      name: 's', type: 'stdio', command: 'npx', args: ['-y', 'x'],
+      env: { K: '' }, alwaysLoad: true, enabled: false,
+    })
+    expect(file.servers[0]).not.toHaveProperty('oauth')
+    expect(file.servers[0]).not.toHaveProperty('createdAt')
+  })
+
+  it('keeps real env/headers in full mode', () => {
+    const server: StoredMcpServer = {
+      name: 's', type: 'sse', url: 'http://x', headers: { Auth: 'Bearer z' }, createdAt: 1, updatedAt: 1,
+    }
+    const file = buildExportFile([server], true)
+    expect(file.secretScope).toBe('full')
+    expect(file.servers[0].headers).toEqual({ Auth: 'Bearer z' })
   })
 })

@@ -360,6 +360,65 @@ describe('mcp-config routes', () => {
   })
 
   // -------------------------------------------------------------------
+  // GET /export
+  // -------------------------------------------------------------------
+  describe('GET /export', () => {
+    it('masks env/headers by default and never includes oauth', async () => {
+      store.upsert(makeServer({
+        name: 'git', command: 'npx', args: ['-y', 'server-git'],
+        env: { TOKEN: 'secret' },
+      }))
+      store.upsert(makeServer({
+        name: 'remote', type: 'http', url: 'http://localhost:9999',
+        headers: { Auth: 'Bearer xyz' },
+        oauth: { tokens: { access_token: 'tok', token_type: 'Bearer' } },
+      }))
+      await store.flush()
+
+      const res = await app().request('/export')
+      expect(res.status).toBe(200)
+      const body = await json(res) as Record<string, unknown>
+      expect(body.format).toBe('claude-react-web-mcp')
+      expect(body.version).toBe(1)
+      expect(body.secretScope).toBe('masked')
+      const servers = body.servers as Array<Record<string, unknown>>
+      expect(servers).toHaveLength(2)
+      const git = servers.find((s) => s.name === 'git')!
+      expect(git.env).toEqual({ TOKEN: '' })
+      expect(git).not.toHaveProperty('oauth')
+      expect(git).not.toHaveProperty('createdAt')
+      const remote = servers.find((s) => s.name === 'remote')!
+      expect(remote.headers).toEqual({ Auth: '' })
+      expect(remote).not.toHaveProperty('oauth')
+    })
+
+    it('includes real env/headers when includeSecrets=1', async () => {
+      store.upsert(makeServer({ name: 'git', command: 'npx', env: { TOKEN: 'secret' } }))
+      await store.flush()
+
+      const res = await app().request('/export?includeSecrets=1')
+      const body = await json(res) as Record<string, unknown>
+      expect(body.secretScope).toBe('full')
+      const git = (body.servers as Array<Record<string, unknown>>).find((s) => s.name === 'git')!
+      expect(git.env).toEqual({ TOKEN: 'secret' })
+    })
+
+    it('filters by names and includes all when names omitted', async () => {
+      store.upsert(makeServer({ name: 'a', command: 'node', args: ['a.js'] }))
+      store.upsert(makeServer({ name: 'b', command: 'node', args: ['b.js'] }))
+      await store.flush()
+
+      const res = await app().request('/export?names=a')
+      const body = await json(res) as Record<string, unknown>
+      expect((body.servers as Array<Record<string, unknown>>).map((s) => s.name)).toEqual(['a'])
+
+      const all = await app().request('/export')
+      const allBody = await json(all) as Record<string, unknown>
+      expect((allBody.servers as Array<Record<string, unknown>>).map((s) => s.name)).toEqual(['a', 'b'])
+    })
+  })
+
+  // -------------------------------------------------------------------
   // POST /validate
   // -------------------------------------------------------------------
   describe('POST /validate', () => {

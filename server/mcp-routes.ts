@@ -11,6 +11,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
   McpConfigStore,
+  buildExportFile,
   clearMcpOAuth,
   coerceStoredMcpServer,
   finishMcpOAuth,
@@ -183,6 +184,22 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
     // servers. Import is a deliberate user action expecting durability.
     if (dirty) await store.flush()
     return c.json({ imported, skipped, failed })
+  })
+
+  // ── Export ───────────────────────────────────────────────────────
+  /** GET /export — serialize the configured servers as a versioned JSON
+   *  envelope. `includeSecrets=1` keeps real env/header values; oauth is
+   *  never exported. Optional `names=a,b,c` filters. */
+  app.get('/export', (c) => {
+    const rawNames = c.req.query('names')
+    const names = rawNames ? rawNames.split(',').map((n) => n.trim()).filter(Boolean) : undefined
+    const includeSecrets = c.req.query('includeSecrets') === '1'
+    let servers = store.list()
+    if (names && names.length > 0) {
+      const set = new Set(names)
+      servers = servers.filter((s) => set.has(s.name))
+    }
+    return c.json(buildExportFile(servers, includeSecrets))
   })
 
   // OAuth redirect target. Completes token exchange and shows a tiny close page.
