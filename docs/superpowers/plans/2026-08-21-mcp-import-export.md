@@ -695,7 +695,7 @@ export function applyImportedOverwrite(existing: StoredMcpServer, incoming: Stor
 
 - [ ] **Step 4: Add the import route to `server/mcp-routes.ts`**
 
-Extend the import from `./mcp-config.js` to add `applyImportedOverwrite`. Add `McpImportResult` to the shared-types import. Add the route after the preview route:
+Extend the import from `./mcp-config.js` to add **both** `coerceImportServer` and `applyImportedOverwrite` (the route calls both). Add `McpImportResult` to the shared-types import. Add the route after the preview route:
 
 ```ts
   // ── Import ───────────────────────────────────────────────────────
