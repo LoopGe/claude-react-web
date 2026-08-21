@@ -419,6 +419,73 @@ describe('mcp-config routes', () => {
   })
 
   // -------------------------------------------------------------------
+  // POST /import/preview
+  // -------------------------------------------------------------------
+  describe('POST /import/preview', () => {
+    it('parses a bare array and flags exists + invalid entries', async () => {
+      store.upsert(makeServer({ name: 'already', command: 'node' }))
+      await store.flush()
+
+      const file = JSON.stringify([
+        { name: 'fresh', type: 'stdio', command: 'npx', args: ['-y', 'x'] },
+        { name: 'already', type: 'stdio', command: 'node' },
+        { name: 'bad', type: 'stdio' }, // no command
+      ])
+      const res = await app().request('/import/preview', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ file }),
+      })
+      expect(res.status).toBe(200)
+      const body = await json(res)
+      const servers = body.servers as Array<Record<string, unknown>>
+      expect(servers).toHaveLength(3)
+      const fresh = servers.find((s) => s.name === 'fresh')!
+      expect(fresh.exists).toBe(false)
+      expect(fresh.errors).toEqual([])
+      const already = servers.find((s) => s.name === 'already')!
+      expect(already.exists).toBe(true)
+      const bad = servers.find((s) => s.name === 'bad')!
+      expect((bad.errors as string[]).length).toBeGreaterThan(0)
+      // preview never returns secret values
+      expect(fresh).not.toHaveProperty('env')
+    })
+
+    it('parses the app envelope and a keyed object', async () => {
+      const envelope = JSON.stringify({
+        format: 'claude-react-web-mcp', version: 1, exportedAt: 1, secretScope: 'masked',
+        servers: [{ name: 'env-srv', type: 'stdio', command: 'node', env: { K: '' } }],
+      })
+      const res1 = await app().request('/import/preview', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ file: envelope }),
+      })
+      const body1 = await json(res1)
+      expect((body1.servers as Array<Record<string, unknown>>)[0].name).toBe('env-srv')
+      // masked env values keep their KEYS visible so the UI can hint re-entry
+      expect((body1.servers as Array<Record<string, unknown>>)[0].envKeys).toEqual(['K'])
+
+      const keyed = JSON.stringify({ 'kv-srv': { type: 'sse', url: 'http://x' } })
+      const res2 = await app().request('/import/preview', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ file: keyed }),
+      })
+      const body2 = await json(res2)
+      expect((body2.servers as Array<Record<string, unknown>>)[0].name).toBe('kv-srv')
+    })
+
+    it('returns 400 for malformed JSON or an empty file', async () => {
+      const res = await app().request('/import/preview', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ file: 'not json' }),
+      })
+      expect(res.status).toBe(400)
+
+      const empty = await app().request('/import/preview', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ file: '{}' }),
+      })
+      expect(empty.status).toBe(400)
+    })
+  })
+
+  // -------------------------------------------------------------------
   // POST /validate
   // -------------------------------------------------------------------
   describe('POST /validate', () => {

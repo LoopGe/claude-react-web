@@ -25,6 +25,7 @@ import {
 } from './mcp-config.js'
 import { HttpError, createErrorHandler } from './errors.js'
 import { safeJson } from './routes/index.js'
+import type { McpImportPreviewServer } from '../shared/mcp-types'
 
 const OAUTH_CALLBACK_PATH = '/api/mcp-config/oauth/callback'
 
@@ -97,6 +98,59 @@ async function readClaudeMcpServers(): Promise<Record<string, unknown>> {
   const data = mcpServers as Record<string, unknown>
   claudeMcpCache = { mtimeMs: st.mtimeMs, data }
   return data
+}
+
+/** Parse an import file into { key, raw } entries. Accepts three shapes:
+ *  the app envelope ({ format | servers }), a bare array, or a keyed
+ *  object. Throws HttpError(400) for unparseable/empty input. */
+function parseImportFile(file: string): Array<{ key: string; raw: unknown }> {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(file)
+  } catch {
+    throw new HttpError(400, 'Not valid JSON')
+  }
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const rec = parsed as Record<string, unknown>
+    if ('format' in rec || 'servers' in rec) {
+      if (!Array.isArray(rec.servers)) throw new HttpError(400, 'Envelope "servers" must be an array')
+      return rec.servers.map((raw, i) => ({ key: `server[${i}]`, raw }))
+    }
+    return Object.entries(rec).map(([key, raw]) => ({ key, raw }))
+  }
+  if (Array.isArray(parsed)) {
+    return parsed.map((raw, i) => ({ key: `server[${i}]`, raw }))
+  }
+  throw new HttpError(400, 'Expected an array or object of MCP servers')
+}
+
+/** Build a preview entry (masked) for one parsed import entry. Masks the raw
+ *  coerced server BEFORE empty-value dropping, so env/header KEYS from a
+ *  masked export stay visible (the UI hints which secrets need re-entry).
+ *  Error set matches what POST /import will report (coerceImportServer's
+ *  empty-drop adds no errors). */
+function previewImportEntry(
+  entry: { key: string; raw: unknown },
+  store: McpConfigStore,
+): McpImportPreviewServer {
+  const maybe = coerceStoredMcpServer(entry.raw, entry.key)
+  if (!maybe) {
+    return { name: entry.key, type: 'stdio', errors: ['could not parse server entry'], exists: false }
+  }
+  const base = maskSecrets(maybe)
+  return {
+    name: base.name,
+    type: base.type,
+    command: base.command,
+    args: base.args,
+    url: base.url,
+    alwaysLoad: base.alwaysLoad,
+    enabled: base.enabled,
+    envKeys: base.envKeys,
+    headerKeys: base.headerKeys,
+    errors: validateMcpServer(maybe),
+    exists: !!store.get(base.name),
+  }
 }
 
 export function buildMcpConfigRouter(store: McpConfigStore): Hono {
@@ -200,6 +254,17 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
       servers = servers.filter((s) => set.has(s.name))
     }
     return c.json(buildExportFile(servers, includeSecrets))
+  })
+
+  // ── Import preview ───────────────────────────────────────────────
+  /** POST /import/preview — parse + validate an import file and return a
+   *  masked preview so the UI can render new / conflict / invalid sections. */
+  app.post('/import/preview', async (c) => {
+    const body = await safeJson<{ file?: unknown }>(c.req)
+    if (typeof body?.file !== 'string') throw new HttpError(400, 'file must be a string')
+    const entries = parseImportFile(body.file)
+    if (entries.length === 0) throw new HttpError(400, 'No MCP servers found in file')
+    return c.json({ servers: entries.map((entry) => previewImportEntry(entry, store)) })
   })
 
   // OAuth redirect target. Completes token exchange and shows a tiny close page.
