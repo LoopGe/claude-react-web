@@ -135,4 +135,68 @@ describe('Composer', () => {
     fireEvent.change(ta, { target: { value: 'new text' } })
     expect(setInput).toHaveBeenCalledWith('new text')
   })
+
+  describe('prompt suggestion placeholder + Tab', () => {
+    it('shows the suggestion as placeholder when input is empty', () => {
+      const { container } = render(
+        <Composer {...defaultProps} suggestion="Explain this code" />,
+      )
+      const ta = container.querySelector('textarea')!
+      expect(ta.getAttribute('placeholder')).toBe('Explain this code')
+    })
+
+    it('shows the default placeholder when there is no suggestion', () => {
+      const { container } = render(<Composer {...defaultProps} />)
+      const ta = container.querySelector('textarea')!
+      expect(ta.getAttribute('placeholder')).toMatch(/^Send a message/)
+    })
+
+    it('shows the default placeholder when input is non-empty even with a suggestion', () => {
+      const { container } = render(
+        <Composer {...defaultProps} input="partial" suggestion="Explain this code" />,
+      )
+      const ta = container.querySelector('textarea')!
+      expect(ta.getAttribute('placeholder')).toMatch(/^Send a message/)
+    })
+
+    it('fills the suggestion on bare Tab when input is empty', () => {
+      const setInput = vi.fn()
+      const { container } = render(
+        <Composer {...defaultProps} suggestion="Explain this code" setInput={setInput} />,
+      )
+      const ta = container.querySelector('textarea')!
+      fireEvent.keyDown(ta, { key: 'Tab' })
+      expect(setInput).toHaveBeenCalledWith('Explain this code')
+    })
+
+    it('does not fill the suggestion on Tab when input is non-empty', () => {
+      const setInput = vi.fn()
+      const { container } = render(
+        <Composer {...defaultProps} input="hello" suggestion="Explain this code" setInput={setInput} />,
+      )
+      const ta = container.querySelector('textarea')!
+      fireEvent.keyDown(ta, { key: 'Tab' })
+      expect(setInput).not.toHaveBeenCalled()
+    })
+
+    it('does not fill the suggestion on Shift+Tab even when input is empty', () => {
+      const setInput = vi.fn()
+      const { container } = render(
+        <Composer {...defaultProps} suggestion="Explain this code" setInput={setInput} />,
+      )
+      const ta = container.querySelector('textarea')!
+      fireEvent.keyDown(ta, { key: 'Tab', shiftKey: true })
+      expect(setInput).not.toHaveBeenCalled()
+    })
+
+    it('does not fill the suggestion on Tab during IME composition', () => {
+      const setInput = vi.fn()
+      const { container } = render(
+        <Composer {...defaultProps} suggestion="Explain this code" setInput={setInput} />,
+      )
+      const ta = container.querySelector('textarea')!
+      fireEvent.keyDown(ta, { key: 'Tab', isComposing: true })
+      expect(setInput).not.toHaveBeenCalled()
+    })
+  })
 })

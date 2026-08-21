@@ -85,6 +85,11 @@ interface Props {
   /** Capture the current composer text and ask the parent to prompt
    *  for a label. Only called when the input is non-empty. */
   onSaveCurrentAsSnippet: (content: string) => void
+
+  /** Predicted next-user-prompt from the SDK (`promptSuggestions`). Shown
+   *  as the placeholder while the input is empty; a bare Tab fills the
+   *  input with it. Replaces the old above-composer chip. */
+  suggestion?: string | null
 }
 
 export const Composer = memo(function Composer({
@@ -121,6 +126,7 @@ export const Composer = memo(function Composer({
   snippets,
   onOpenSnippetsManager,
   onSaveCurrentAsSnippet,
+  suggestion,
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -522,7 +528,9 @@ export const Composer = memo(function Composer({
               ? 'Drop files to attach…'
               : bashMode
                 ? 'Run a shell command in the session cwd (Enter = run)'
-                : 'Send a message (Enter = send, Shift/Ctrl+Enter = newline, ↑/↓ history)'
+                : suggestion && input === ''
+                  ? suggestion
+                  : 'Send a message (Enter = send, Shift/Ctrl+Enter = newline, ↑/↓ history)'
           }
           value={input}
           onContextMenu={handleTextareaContextMenu}
@@ -586,6 +594,20 @@ export const Composer = memo(function Composer({
               }
               // All other keys (letters, backspace, etc.) fall through to
               // onChange which will re-filter or close the picker.
+            }
+            // Bare Tab with an empty input fills the predicted prompt
+            // suggestion (if any). Modifiers keep the default behaviour
+            // (focus traversal / shift-tab). `recall` sets the input and
+            // moves the caret to the end, keeping focus in the textarea.
+            if (
+              e.key === 'Tab' &&
+              !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey &&
+              input === '' && suggestion &&
+              !e.nativeEvent.isComposing
+            ) {
+              e.preventDefault()
+              recall(suggestion)
+              return
             }
             // Ctrl/Cmd+Enter inserts a newline (same as Shift+Enter). The
             // browser doesn't do this for us, so we insert '\n' at the caret.

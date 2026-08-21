@@ -258,3 +258,30 @@ promptSuggestion: mirror.promptSuggestion ?? null,
 | `src/styles/chat.css` | +`.prompt-suggestions` / `.prompt-suggestion-chip` 样式 |
 | `server/permission-broker.test.ts` | +`promptSuggestionSubscribers` in mock |
 | `server/git-broadcast.test.ts` | +`subscribePromptSuggestion` in mock |
+
+---
+
+## 🎨 UI 变更：chip → placeholder + Tab 填充（2026-08）
+
+原方案将预测建议渲染为输入框上方的可点击 chip（`PromptSuggestions.tsx`）。后改为 **placeholder 方案**：
+
+### 新交互
+
+- 输入框为空且有预测建议时，**placeholder 直接显示建议文本**（如 `Explain this code`）
+- 输入为空时按 **Tab** → 填充建议到输入框（光标移到末尾，焦点留在 textarea）
+- 输入非空 / 无建议时 placeholder 回落到默认提示
+
+### 实现改动
+
+| 文件 | 改动 |
+|------|------|
+| `src/components/Composer.tsx` | +`suggestion` prop；placeholder 三态（dragOver / bashMode / 建议 / 默认）；onKeyDown 加 bare-Tab 填充（仅 `input === '' && suggestion`，修饰键保持默认行为） |
+| `src/components/Chat.tsx` | 移除 `<PromptSuggestions>` 渲染与 import；向 Composer 传 `suggestion={stream.promptSuggestion}` |
+| `src/components/PromptSuggestions.tsx` | **删除**（被 placeholder 方案取代） |
+| `src/styles/chat.css` | **删除** `.prompt-suggestions` / `.prompt-suggestion-chip` 样式 |
+
+### 设计要点
+
+- **瞬态性不变**：建议仍走 `psug` 专用频道、不进 history ring、发送新消息时清除
+- **Tab 语义**：仅在输入为空时拦截 bare Tab（避免干扰 focus 遍历 / shift-tab）；slash 命令 picker 打开时 Tab 仍优先确认命令（已有分支在 suggestion 判断之前）
+- **不因 Tab 填充而清除建议**：填充后若用户清空输入，placeholder 会再次显示同一建议（可复用）

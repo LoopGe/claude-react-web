@@ -43,7 +43,6 @@ import { useUserDialogChannel } from '../hooks/useUserDialogChannel'
 import { useSessionUsage } from '../hooks/useSessionUsage'
 import { usePhaseDwell } from '../hooks/usePhaseDwell'
 import { Composer } from './Composer'
-import { PromptSuggestions } from './PromptSuggestions'
 import { ContextBar } from './ContextBar'
 import { MessageList, WorkingBubble, type ScrollNavigator } from './MessageList'
 import { PermissionDialog } from './PermissionDialog'
@@ -1684,11 +1683,8 @@ export const Chat = memo(function Chat({
         )}
       </div>
 
-      <PromptSuggestions
-        suggestion={stream.promptSuggestion}
-        onSelect={setInput}
-      />
       <Composer
+      suggestion={stream.promptSuggestion}
       input={input}
       setInput={setInput}
       sending={sending}
