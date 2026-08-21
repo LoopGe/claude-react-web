@@ -2603,6 +2603,74 @@ describe('reducer: CLEAR_TRANSCRIPT', () => {
 // no supersession tracking).
 // ---------------------------------------------------------------------------
 
+describe('reducer: EVICT_MESSAGES (refusal-fallback retraction)', () => {
+  function toolUseMsg(uuid: string, toolUseId: string): SdkMessage {
+    return {
+      type: 'assistant',
+      uuid,
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: toolUseId, name: 'Read', input: {} }] },
+      parent_tool_use_id: null,
+    } as unknown as SdkMessage
+  }
+
+  it('removes the listed uuids from items and messages', () => {
+    let state = seedCache([userMsg('u1', 'hi'), asstMsg('a1', 'partial'), asstMsg('a2', 'more partial')])
+    expect(ids(state)).toEqual(['u1', 'a1', 'a2'])
+    state = reduceSessionState(state, { type: 'EVICT_MESSAGES', uuids: ['a1', 'a2'] })
+    expect(ids(state)).toEqual(['u1'])
+    expect(state.mirror.messages.map((m) => m.uuid)).toEqual(['u1'])
+  })
+
+  it('drops toolUseId-keyed indexes whose owner frames were evicted, keeps the rest', () => {
+    // Live turn: tool t1 (keep) + tool t2 (evicted with its frames).
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('u1', 'go') })
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: toolUseMsg('a1', 't1'),
+    })
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: {
+        type: 'user',
+        uuid: 'r1',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] },
+        parent_tool_use_id: 't1',
+      } as unknown as SdkMessage,
+    })
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: toolUseMsg('a2', 't2'),
+    })
+    expect(state.mirror.toolStatus.has('t2')).toBe(true)
+
+    // The refused leg = [a2] (t2's tool_use). Evicting it must drop t2's
+    // indexes while t1's survive.
+    state = reduceSessionState(state, { type: 'EVICT_MESSAGES', uuids: ['a2'] })
+    expect(ids(state)).toEqual(['u1', 'a1', 'r1'])
+    expect(state.mirror.toolStatus.has('t1')).toBe(true)
+    expect(state.mirror.toolStatus.has('t2')).toBe(false)
+  })
+
+  it('rewinds lastMessageUuid when its owner was evicted', () => {
+    let state = seedCache([userMsg('u1', 'hi'), asstMsg('a1', 'partial')])
+    expect(state.mirror.lastMessageUuid).toBe('a1')
+    state = reduceSessionState(state, { type: 'EVICT_MESSAGES', uuids: ['a1'] })
+    expect(state.mirror.lastMessageUuid).toBe('u1')
+  })
+
+  it('is identity-stable for absent uuids (late/duplicate frames)', () => {
+    const state = seedCache([userMsg('u1', 'hi')])
+    const after = reduceSessionState(state, { type: 'EVICT_MESSAGES', uuids: ['nope'] })
+    expect(after).toBe(state)
+  })
+
+  it('empty uuid list is a no-op', () => {
+    const state = seedCache([userMsg('u1', 'hi')])
+    expect(reduceSessionState(state, { type: 'EVICT_MESSAGES', uuids: [] })).toBe(state)
+  })
+})
+
 describe('reducer: api_retry transient slot', () => {
   it('routes api_retry to the slot, not items/messages, and does not advance lastMessageUuid', () => {
     let state = createInitialSessionState('s')

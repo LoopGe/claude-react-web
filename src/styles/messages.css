@@ -2238,6 +2238,23 @@ details.plan-card-collapsible > summary > .plan-card-header {
 .elicit-url-link:focus-visible {
   text-decoration: underline;
 }
+/* UserDialog (refusal fallback): the original → fallback model migration
+   line rendered inside the shared box styles. */
+.elicit-model-migration {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.elicit-model-name {
+  padding: 2px 8px;
+  background: var(--btn-hover-bg);
+  border-radius: var(--radius-xs);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg);
+  word-break: break-all;
+}
 .elicit-form {
   display: flex;
   flex-direction: column;

@@ -333,6 +333,7 @@ export function attachWebSocket(
       let msgSub: { unsubscribe: () => void } | null = null
       let permSub: { unsubscribe: () => void } | null = null
       let elicitSub: { unsubscribe: () => void } | null = null
+      let dialogSub: { unsubscribe: () => void } | null = null
       let ctxSub: { iterable: AsyncIterable<unknown>; snapshot?: unknown; unsubscribe: () => void } | null = null
       let ctxIter: AsyncIterator<unknown> | null = null
       let gitSub: { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null = null
@@ -349,6 +350,8 @@ export function attachWebSocket(
       let cmdIter: AsyncIterator<unknown> | null = null
       let hookSub: { iterable: AsyncIterable<unknown>; snapshot: unknown[]; unsubscribe: () => void } | null = null
       let hookIter: AsyncIterator<unknown> | null = null
+      let psugSub: { iterable: AsyncIterable<unknown>; snapshot?: string | null; unsubscribe: () => void } | null = null
+      let psugIter: AsyncIterator<unknown> | null = null
       let step = ''
       try {
         step = 'subscribe'
@@ -360,6 +363,9 @@ export function attachWebSocket(
         step = 'subscribeElicitation'
         const elicits = sm.subscribeElicitation(sessionId)
         elicitSub = elicits
+        step = 'subscribeDialog'
+        const dialogs = sm.subscribeDialog(sessionId)
+        dialogSub = dialogs
         step = 'subscribeContextUsage'
         ctxSub = sm.subscribeContextUsage(sessionId)
         ctxIter = ctxSub?.iterable[Symbol.asyncIterator]() ?? null
@@ -381,6 +387,9 @@ export function attachWebSocket(
         step = 'subscribeHookRuns'
         hookSub = sm.subscribeHookRuns(sessionId)
         hookIter = hookSub?.iterable[Symbol.asyncIterator]() ?? null
+        step = 'subscribePromptSuggestion'
+        psugSub = sm.subscribePromptSuggestion(sessionId)
+        psugIter = psugSub?.iterable[Symbol.asyncIterator]() ?? null
 
         // 1) Send replay. If the client supplied `sinceUuid`, try to
         //    send only messages after that point (incremental sync).
@@ -418,6 +427,7 @@ export function attachWebSocket(
             messages: replayHistory,
             permissions: perms.snapshot,
             elicitations: elicits.snapshot,
+            dialogs: dialogs.snapshot,
           })
           queue.enqueue({ kind: 'replay-done', sessionId })
         } else {
@@ -436,6 +446,7 @@ export function attachWebSocket(
             sessionId,
             permissions: perms.snapshot,
             elicitations: elicits.snapshot,
+            dialogs: dialogs.snapshot,
           })
         }
 
@@ -459,6 +470,11 @@ export function attachWebSocket(
           queue.enqueue({ kind: 'context-usage', sessionId, usage: ctxSub.snapshot })
         }
 
+        // 2.7) Send the cached prompt-suggestion snapshot if there is one.
+        if (psugSub?.snapshot) {
+          queue.enqueue({ kind: 'prompt-suggestion', sessionId, suggestion: psugSub.snapshot })
+        }
+
         for (const run of hookSub?.snapshot ?? []) {
           queue.enqueue({ kind: 'hook-run', sessionId, event: hookSnapshotEvent(run as HookRunRecord) as never })
         }
@@ -467,12 +483,12 @@ export function attachWebSocket(
         //    pattern as the SSE route — each iterator tagged so the loop
         //    knows which frame to emit.
         let stopped = false
-        const _iterCleanup: AsyncIterator<unknown>[] = [ctxIter, gitIter, msgStatIter, recapIter, clearedIter, cmdIter, hookIter]
+        const _iterCleanup: AsyncIterator<unknown>[] = [ctxIter, gitIter, msgStatIter, recapIter, clearedIter, cmdIter, hookIter, psugIter]
           .filter((it): it is AsyncIterator<unknown> => !!it)
         const stop = () => {
           if (stopped) return
           stopped = true
-          for (const sub of [msgSub, permSub, elicitSub, ctxSub, gitSub, msgStatSub, recapSub, clearedSub, cmdSub, hookSub]) sub?.unsubscribe()
+          for (const sub of [msgSub, permSub, elicitSub, dialogSub, ctxSub, gitSub, msgStatSub, recapSub, clearedSub, cmdSub, hookSub, psugSub]) sub?.unsubscribe()
           for (const iter of _iterCleanup) void iter.return?.()
         }
 
@@ -480,11 +496,13 @@ export function attachWebSocket(
           const msgIter = msg.iterable[Symbol.asyncIterator]()
           const permIter = perms.iterable[Symbol.asyncIterator]()
           const elicitIter = elicits.iterable[Symbol.asyncIterator]()
+          const dialogIter = dialogs.iterable[Symbol.asyncIterator]()
 
           type Tagged =
             | { kind: 'msg'; result: IteratorResult<unknown> }
             | { kind: 'perm'; result: IteratorResult<unknown> }
             | { kind: 'elicit'; result: IteratorResult<unknown> }
+            | { kind: 'dialog'; result: IteratorResult<unknown> }
             | { kind: 'ctx'; result: IteratorResult<unknown> }
             | { kind: 'git'; result: IteratorResult<unknown> }
             | { kind: 'msgstat'; result: IteratorResult<unknown> }
@@ -492,6 +510,7 @@ export function attachWebSocket(
             | { kind: 'cleared'; result: IteratorResult<unknown> }
             | { kind: 'cmd'; result: IteratorResult<unknown> }
             | { kind: 'hook'; result: IteratorResult<unknown> }
+            | { kind: 'psug'; result: IteratorResult<unknown> }
 
           const tag = async (kind: Tagged['kind'], it: AsyncIterator<unknown>): Promise<Tagged> =>
             ({ kind, result: await it.next() })
@@ -506,6 +525,7 @@ export function attachWebSocket(
             { kind: 'msg', iter: msgIter, promise: tag('msg', msgIter) },
             { kind: 'perm', iter: permIter, promise: tag('perm', permIter) },
             { kind: 'elicit', iter: elicitIter, promise: tag('elicit', elicitIter) },
+            { kind: 'dialog', iter: dialogIter, promise: tag('dialog', dialogIter) },
             ...(ctxIter ? [{ kind: 'ctx' as const, iter: ctxIter, promise: tag('ctx', ctxIter) }] : []),
             ...(gitIter ? [{ kind: 'git' as const, iter: gitIter, promise: tag('git', gitIter) }] : []),
             ...(msgStatIter ? [{ kind: 'msgstat' as const, iter: msgStatIter, promise: tag('msgstat', msgStatIter) }] : []),
@@ -513,6 +533,7 @@ export function attachWebSocket(
             ...(clearedIter ? [{ kind: 'cleared' as const, iter: clearedIter, promise: tag('cleared', clearedIter) }] : []),
             ...(cmdIter ? [{ kind: 'cmd' as const, iter: cmdIter, promise: tag('cmd', cmdIter) }] : []),
             ...(hookIter ? [{ kind: 'hook' as const, iter: hookIter, promise: tag('hook', hookIter) }] : []),
+            ...(psugIter ? [{ kind: 'psug' as const, iter: psugIter, promise: tag('psug', psugIter) }] : []),
           ]
 
           try {
@@ -566,6 +587,22 @@ export function attachWebSocket(
                     queue.enqueue({ kind: 'elicitation-resolved', sessionId, id: ev.eid, decision: ev.decision })
                   break
                 }
+                case 'dialog': {
+                  const ev = winner.result.value as
+                    | { kind: 'request'; payload: never }
+                    | { kind: 'resolved'; did: string; decision: never; retractedMessageUuids?: string[] }
+                  if (ev.kind === 'request')
+                    queue.enqueue({ kind: 'dialog-request', sessionId, payload: ev.payload })
+                  else
+                    queue.enqueue({
+                      kind: 'dialog-resolved',
+                      sessionId,
+                      id: ev.did,
+                      decision: ev.decision,
+                      ...(ev.retractedMessageUuids ? { retractedMessageUuids: ev.retractedMessageUuids } : {}),
+                    })
+                  break
+                }
                 case 'ctx':
                   queue.enqueue({ kind: 'context-usage', sessionId, usage: winner.result.value })
                   break
@@ -594,6 +631,9 @@ export function attachWebSocket(
                 case 'hook':
                   queue.enqueue({ kind: 'hook-run', sessionId, event: winner.result.value as never })
                   break
+                case 'psug':
+                  queue.enqueue({ kind: 'prompt-suggestion', sessionId, suggestion: winner.result.value as string })
+                  break
               }
               ch.promise = tag(ch.kind, ch.iter)
             }
@@ -620,6 +660,7 @@ export function attachWebSocket(
         msgSub?.unsubscribe()
         permSub?.unsubscribe()
         elicitSub?.unsubscribe()
+        dialogSub?.unsubscribe()
         ctxSub?.unsubscribe()
         gitSub?.unsubscribe()
         msgStatSub?.unsubscribe()
@@ -627,6 +668,7 @@ export function attachWebSocket(
         clearedSub?.unsubscribe()
         cmdSub?.unsubscribe()
         hookSub?.unsubscribe()
+        psugSub?.unsubscribe()
         queue.enqueue({ kind: 'error', sessionId, message: (err as Error).message })
         // Always send replay-done so the client's replay state machine
         // terminates — without this, replayReady stays false forever and

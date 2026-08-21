@@ -42,6 +42,17 @@ export interface CreateSessionOptions {
    *  SDK-agnostic loose signature mirroring canUseTool — the claude provider
    *  casts it to the SDK's OnElicitation when forwarding to query(). */
   onElicitation?: (...args: unknown[]) => Promise<unknown>
+  /** User-dialog (blocking CLI prompt, e.g. refusal fallback) callback.
+   *  Loose signature mirroring onElicitation — the claude provider casts it
+   *  to the SDK's OnUserDialog when forwarding to query(). */
+  onUserDialog?: (...args: unknown[]) => Promise<unknown>
+  /** Dialog kinds to declare via Options.supportedDialogKinds. Must travel
+   *  atomically with onUserDialog: the SDK's spawn-time check rejects
+   *  non-empty kinds with no callback. Ignored when onUserDialog is absent. */
+  supportedDialogKinds?: string[]
+  /** Enable predicted next-user-prompt suggestions (SDK Options.promptSuggestions).
+   *  When true, the SDK emits a prompt_suggestion message after each turn. */
+  promptSuggestions?: boolean
   providerExtras?: Record<string, unknown>
 }
 

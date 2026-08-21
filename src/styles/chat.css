@@ -2486,3 +2486,38 @@
     min-width: 0;
   }
 }
+
+/* Prompt suggestions — predicted next-user-prompt chips above the composer */
+.prompt-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 12px 4px;
+}
+.prompt-suggestion-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 4px 10px;
+  border-radius: var(--radius-md);
+  background: var(--surface-2, var(--btn-bg));
+  border: 1px solid var(--border-subtle, var(--border));
+  color: var(--fg-muted, var(--fg-secondary));
+  font-size: 12.5px;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard),
+              color var(--motion-duration-fast) var(--motion-ease-standard),
+              border-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.prompt-suggestion-chip:hover {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+  border-color: var(--border);
+}
+.prompt-suggestion-chip:active {
+  background: var(--btn-active-bg, var(--btn-hover-bg));
+}

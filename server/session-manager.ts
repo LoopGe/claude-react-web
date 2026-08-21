@@ -52,6 +52,9 @@ import {
   type ElicitationDecision,
   type ElicitationEvent,
   type ElicitationRequestUi,
+  type UserDialogDecision,
+  type DialogEvent,
+  type UserDialogRequestUi,
   endAllSubscribers,
 } from './session-types.js'
 import { HttpError } from './errors.js'
@@ -60,6 +63,7 @@ import type { ModelInfo } from '../shared/model-info.js'
 import type { SessionMemorySettings } from '../shared/session-info.js'
 import { PermissionBroker } from './permission-broker.js'
 import { ElicitationBroker } from './elicitation-broker.js'
+import { DialogBroker } from './user-dialog-broker.js'
 import { SessionHealthMonitor } from './session-health.js'
 import { pushBounded, stampReceivedAt, stampConsumedAt } from './history-utils.js'
 import { watchBackgroundSubagent, type SubagentCompletion } from './subagent-watcher.js'
@@ -91,6 +95,7 @@ import {
   type SessionSkillOverride,
 } from '../shared/skills.js'
 import { listSkills } from './skills.js'
+import { SUPPORTED_DIALOG_KINDS } from '../shared/user-dialog.js'
 
 // Re-export types so existing importers continue to work.
 export {
@@ -398,6 +403,10 @@ export class SessionManager {
    *  Mirrors permBroker: owns the onElicitation callback construction,
    *  pending registry, decide/cancelAll, and per-session broadcast. */
   private elicitBroker: ElicitationBroker
+  /** User-dialog (blocking CLI prompt, e.g. refusal fallback) arbitration.
+   *  Mirrors elicitBroker: owns the onUserDialog callback construction,
+   *  pending registry, decide/cancelAll, and per-session broadcast. */
+  private dialogBroker: DialogBroker
   /** Owns recap lifecycle for every session. Public so the recap route
    *  can call requestGenerate() without going through a wrapper method —
    *  the route is the only HTTP surface for recap, and proxying through
@@ -414,6 +423,7 @@ export class SessionManager {
     this.forwardSubagentText = opts.forwardSubagentText ?? defaultConfig.forwardSubagentText
     this.permBroker = new PermissionBroker()
     this.elicitBroker = new ElicitationBroker()
+    this.dialogBroker = new DialogBroker()
     this.autoResumeEnabled = opts.autoResume ?? false
     this.crashRecoveryEnabled = opts.crashRecovery ?? false
     this.maxCrashRecovery = opts.maxCrashRecovery ?? 2
@@ -588,6 +598,7 @@ export class SessionManager {
     s.workingSince = undefined
     this.permBroker.denyAll(s)
     this.elicitBroker.cancelAll(s)
+    this.dialogBroker.cancelAll(s)
     s.handle.abort()
 
     this.broadcastSystemNotice(s, `${errorMsg} — 正在尝试自动恢复…`)
@@ -752,6 +763,7 @@ export class SessionManager {
     s.workingSince = undefined
     this.permBroker.denyAll(s)
     this.elicitBroker.cancelAll(s)
+    this.dialogBroker.cancelAll(s)
     this.broadcastSystemNotice(s, errorMsg)
     endAllSubscribers(s)
     this.persist(s)
@@ -1868,6 +1880,8 @@ export class SessionManager {
       pending: new Map(),
       elicitationSubscribers: new Map(),
       elicitationPending: new Map(),
+      dialogSubscribers: new Map(),
+      dialogPending: new Map(),
       // Seed the in-memory ring with the on-disk transcript tail on resume.
       // A normally-running session maintains the invariant "history holds the
       // session's recent messages"; a resumed session starts with an empty
@@ -1891,6 +1905,8 @@ export class SessionManager {
       subagentHistory: seedSub.slice(-this.subagentHistoryCap),
       contextUsageSubscribers: new Set(),
       lastContextUsage: undefined,
+      promptSuggestionSubscribers: new Set(),
+      lastPromptSuggestion: undefined,
       gitStatusSubscribers: new Set(),
       messageStatusSubscribers: new Set(),
       commandSubscribers: new Set(),
@@ -1995,6 +2011,29 @@ export class SessionManager {
       session.onElicitation = fullOpts.onElicitation as Session['onElicitation']
     }
 
+    // User dialogs (blocking CLI prompts, e.g. refusal fallback). Mirrors the
+    // elicitation wiring above, plus the atomic pair: `supportedDialogKinds`
+    // is handed to the SDK ALONGSIDE the callback (non-empty kinds without a
+    // callback make the SDK spawn throw; a callback without kinds is dead
+    // code because the CLI fails closed).
+    if (!fullOpts.onUserDialog) {
+      const onUserDialog = this.dialogBroker.buildOnUserDialog(
+        session,
+        undefined,
+        (s) => {
+          if (!this.sessions.has(s.id)) return
+          this.broadcastGlobal({ kind: 'update', session: this.info(s) })
+        },
+      )
+      session.onUserDialog = onUserDialog
+      fullOpts.onUserDialog = onUserDialog
+      ;(fullOpts as { supportedDialogKinds?: string[] }).supportedDialogKinds = [
+        ...SUPPORTED_DIALOG_KINDS,
+      ]
+    } else {
+      session.onUserDialog = fullOpts.onUserDialog as Session['onUserDialog']
+    }
+
     const sdkOptions = { ...applySkillPolicyToOptions(fullOpts, skillOverride) } as Options & { provider?: string }
     delete sdkOptions.provider
     // Strip the app-level plugin selection so it doesn't reach the SDK:
@@ -2034,6 +2073,10 @@ export class SessionManager {
       onUserMessageConsumed: (msg) => this.onInputConsumed(id, msg as SDKUserMessage),
       canUseTool: fullOpts.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
       onElicitation: fullOpts.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,
+      // Atomic pair: the SDK requires onUserDialog whenever
+      // supportedDialogKinds is non-empty, so the two always travel together.
+      onUserDialog: fullOpts.onUserDialog as ((...args: unknown[]) => Promise<unknown>) | undefined,
+      supportedDialogKinds: (fullOpts as { supportedDialogKinds?: string[] }).supportedDialogKinds,
       providerExtras: { sdkOptions },
     })
     session.handle = handle
@@ -2380,6 +2423,7 @@ export class SessionManager {
       // don't hang once we destroy the handle.
       this.permBroker.denyAll(s)
       this.elicitBroker.cancelAll(s)
+      this.dialogBroker.cancelAll(s)
 
       // Drain any in-flight assistant turn or queued user input. The
       // interrupt lands against the OLD Query; its result frame won't
@@ -3381,6 +3425,28 @@ export class SessionManager {
     return this.elicitBroker.subscribeElicitation(this.require(id))
   }
 
+  /** List pending user dialogs (e.g. refusal fallback) for a session. */
+  listPendingDialogs(id: string): UserDialogRequestUi[] {
+    return this.dialogBroker.listPendingDialogs(this.require(id))
+  }
+
+  /** Resolve a pending user dialog with the user's decision. */
+  decideDialog(id: string, did: string, decision: UserDialogDecision): void {
+    const s = this.require(id)
+    this.dialogBroker.decideDialog(s, did, decision)
+    s.lastActivityAt = Date.now()
+    this.persist(s)
+  }
+
+  /** Subscription for dialog-channel events. */
+  subscribeDialog(id: string): {
+    iterable: AsyncIterable<DialogEvent>
+    snapshot: UserDialogRequestUi[]
+    unsubscribe: () => void
+  } {
+    return this.dialogBroker.subscribeDialog(this.require(id))
+  }
+
   /** AsyncIterable of context-usage snapshots for one session.
    *  Returns null if the session doesn't exist (caller should treat
    *  as "no context data available").
@@ -3391,6 +3457,16 @@ export class SessionManager {
     if (!s) return null
     const sub = this.subscribePushableSet(s, s.contextUsageSubscribers, 'ctx', 50)
     return { iterable: sub.iterable, snapshot: s.lastContextUsage, unsubscribe: sub.unsubscribe }
+  }
+
+  /** AsyncIterable of prompt-suggestion strings for one session.
+   *  Mirrors subscribeContextUsage. Returns null when the session is
+   *  unknown. Each subscriber gets its own pushable. */
+  subscribePromptSuggestion(id: string): { iterable: AsyncIterable<unknown>; snapshot?: string | null; unsubscribe: () => void } | null {
+    const s = this.sessions.get(id)
+    if (!s) return null
+    const sub = this.subscribePushableSet(s, s.promptSuggestionSubscribers, 'psug', 10)
+    return { iterable: sub.iterable, snapshot: s.lastPromptSuggestion, unsubscribe: sub.unsubscribe }
   }
 
   /** AsyncIterable of `git-status-changed` signal frames for one session.
@@ -3707,6 +3783,7 @@ export class SessionManager {
     }
     this.permBroker.denyAll(s)
     this.elicitBroker.cancelAll(s)
+    this.dialogBroker.cancelAll(s)
     // Cancel any pending git-status broadcast — without this, a timer
     // scheduled by the last mutating tool_use could still fire after the
     // session is removed (the broadcast itself is a no-op then, but the
@@ -4232,7 +4309,11 @@ export class SessionManager {
         historyCap: this.historyCap,
         subagentHistoryCap: this.subagentHistoryCap,
         persist: (s) => this.persist(s),
-        denyPendingPermissions: (s) => { this.permBroker.denyAll(s); this.elicitBroker.cancelAll(s) },
+        denyPendingPermissions: (s) => {
+          this.permBroker.denyAll(s)
+          this.elicitBroker.cancelAll(s)
+          this.dialogBroker.cancelAll(s)
+        },
         isLive: (id) => this.sessions.has(id),
         autoResume: this.autoResumeEnabled ? (s) => this.autoResume(s) : undefined,
         crashRecovery: this.crashRecoveryEnabled,
@@ -4421,6 +4502,12 @@ export class SessionManager {
     // Re-apply the elicitation callback too — without it the resumed Query
     // auto-declines every MCP elicitation (OAuth auth prompts included).
     if (session.onElicitation) resumeOpts.onElicitation = session.onElicitation
+    // Same for the user-dialog callback + kinds: both keys travel together,
+    // otherwise the resumed Query loses the refusal-fallback dialog.
+    if (session.onUserDialog) {
+      resumeOpts.onUserDialog = session.onUserDialog
+      resumeOpts.supportedDialogKinds = [...SUPPORTED_DIALOG_KINDS]
+    }
     return resumeOpts
   }
 
@@ -4467,6 +4554,8 @@ export class SessionManager {
       onUserMessageConsumed: (msg) => this.onInputConsumed(session.id, msg as SDKUserMessage),
       canUseTool: session.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
       onElicitation: session.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,
+      onUserDialog: session.onUserDialog as ((...args: unknown[]) => Promise<unknown>) | undefined,
+      supportedDialogKinds: session.onUserDialog ? [...SUPPORTED_DIALOG_KINDS] : undefined,
       providerExtras: { sdkOptions: applySkillPolicyToOptions(resumeOpts, session.skillOverride) },
     })
     // Re-enqueue recovered turns onto the fresh handle, oldest first.

@@ -179,6 +179,11 @@ export type PermissionRequest = PermissionRequestBase<unknown[]>
 import type { ElicitationDecision, ElicitationRequestUi } from '../shared/elicitation.js'
 export type { ElicitationRequestUi, ElicitationDecision }
 
+// Re-export canonical user-dialog shapes from shared. Used by UserDialog and
+// useUserDialogChannel; payload types are browser-safe (no SDK dependency).
+import type { UserDialogDecision, UserDialogRequestUi } from '../shared/user-dialog.js'
+export type { UserDialogRequestUi, UserDialogDecision }
+
 // Structured /usage data (session cost/token totals + claude.ai plan
 // rate-limit windows) — loose shapes shared with the server. EXPERIMENTAL
 // SDK API; every field optional, render defensively.
@@ -196,6 +201,16 @@ export type {
 export interface ElicitationResolved {
   id: string
   decision: ElicitationDecision
+}
+
+/** Broadcast envelope for a resolved user dialog. `retractedMessageUuids`
+ *  (from the dialog payload) rides on the resolved frame so every tab evicts
+ *  the refused leg's already-streamed messages — the CLI's contract is evict
+ *  on ANY resolution, never on receipt. */
+export interface DialogResolved {
+  id: string
+  decision: UserDialogDecision
+  retractedMessageUuids?: string[]
 }
 
 /** Broadcast envelope for a resolved permission. */

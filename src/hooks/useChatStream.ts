@@ -8,7 +8,8 @@ import { useWsHub, useWsHubStatus } from './useWsHub'
 import { api } from './useApi'
 import { randomId } from '../utils/uuid'
 import type { WsServerFrame } from '../ws-types'
-import type { ElicitationRequestUi, ElicitationResolved, PermissionRequest, PermissionResolved, SdkMessage, SkillFrontmatter } from '../types'
+import type { ElicitationRequestUi, ElicitationResolved, PermissionRequest, PermissionResolved, SdkMessage, SkillFrontmatter, UserDialogRequestUi, DialogResolved } from '../types'
+import { extractMessagePlainText } from '../../shared/search/extract'
 
 /** The disk-stable uuid of a message, or null. A message whose uuid matches
  *  between the in-memory ring and the on-disk transcript can anchor the first
@@ -69,6 +70,8 @@ export interface ChatStream {
   messages: SdkMessage[]
   error: string | null
   contextUsage: ContextUsage | null
+  /** Predicted next-user-prompt from the SDK. Cleared on new user message. */
+  promptSuggestion: string | null
   /** Transient `api_retry` frame (rate-limit retry indicator), or null when
    *  no retry is in flight. Routed to a dedicated slot (not items/messages) —
    *  MessageList renders it as a tail divider. */
@@ -129,6 +132,14 @@ export interface PermissionHandlers {
    *  elicitations keep compiling unchanged. */
   onElicitationRequest?: (req: ElicitationRequestUi) => void
   onElicitationResolved?: (res: ElicitationResolved) => void
+  /** User-dialog (blocking CLI prompt, e.g. refusal fallback) callbacks.
+   *  Optional for the same forward-compat reason as elicitation. */
+  onDialogRequest?: (req: UserDialogRequestUi) => void
+  onDialogResolved?: (res: DialogResolved) => void
+  /** Fired when a refusal-fallback dialog is resolved with `edit_prompt`:
+   *  receives the plain text of the evicted leg's last user message so the
+   *  Chat can prefill the composer. */
+  onEditPrompt?: (text: string) => void
 }
 
 /** Clear all cached session state. Used in tests to avoid cross-test leaks. */
@@ -153,6 +164,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   const activePhase = useSessionField(sessionId, 'activePhase')
   const tokenRate = useSessionField(sessionId, 'tokenRate')
   const contextUsage = useSessionField(sessionId, 'contextUsage')
+  const promptSuggestion = useSessionField(sessionId, 'promptSuggestion')
   const apiRetry = useSessionField(sessionId, 'apiRetry')
   const error = useSessionField(sessionId, 'error')
   const permissionDecisions = useSessionField(sessionId, 'permissionDecisions')
@@ -233,6 +245,10 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
           if (frame.elicitations?.length) {
             for (const req of frame.elicitations) permsRef.current.onElicitationRequest?.(req)
           }
+          // Pending user dialogs ride the same burst (refusal fallback etc).
+          if (frame.dialogs?.length) {
+            for (const req of frame.dialogs) permsRef.current.onDialogRequest?.(req)
+          }
           break
         }
         case 'replay-done': {
@@ -242,6 +258,9 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
           }
           if (frame.elicitations?.length) {
             for (const req of frame.elicitations) permsRef.current.onElicitationRequest?.(req)
+          }
+          if (frame.dialogs?.length) {
+            for (const req of frame.dialogs) permsRef.current.onDialogRequest?.(req)
           }
           store.dispatch({ type: 'REPLAY_REPLACE', messages: replayMessages, permissions: replayPermissions })
           const lastUuid = getSessionLastMessageUuid(sessionId)
@@ -287,9 +306,53 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
           permsRef.current.onElicitationResolved?.({ id: frame.id, decision: frame.decision })
           break
         }
+        case 'dialog-request': {
+          // External handler drives the dialog's local state; dialogs render
+          // no inline transcript cards (same as elicitations).
+          permsRef.current.onDialogRequest?.(frame.payload)
+          break
+        }
+        case 'dialog-resolved': {
+          // Eviction is resolution-driven (CLI contract: any choice evicts
+          // the refused leg's already-streamed messages) and runs in ONE
+          // place — here — so decide/abort/cross-tab all behave the same.
+          // For edit_prompt we first lift the evicted leg's last user
+          // message text so Chat can prefill the composer with the original
+          // question.
+          if (frame.retractedMessageUuids?.length) {
+            const uuidSet = new Set(frame.retractedMessageUuids)
+            if (
+              frame.decision.behavior === 'completed' &&
+              frame.decision.result === 'edit_prompt'
+            ) {
+              const lastUserText = store
+                .getSnapshot()
+                .messages.filter(
+                  (m) =>
+                    uuidSet.has((m as { uuid?: string }).uuid ?? '') &&
+                    (m as { type?: string }).type === 'user',
+                )
+                .map((m) => extractMessagePlainText(m as Parameters<typeof extractMessagePlainText>[0]))
+                .filter((t): t is string => !!t)
+                .at(-1)
+              if (lastUserText) permsRef.current.onEditPrompt?.(lastUserText)
+            }
+            store.dispatch({ type: 'EVICT_MESSAGES', uuids: frame.retractedMessageUuids })
+          }
+          permsRef.current.onDialogResolved?.({
+            id: frame.id,
+            decision: frame.decision,
+            retractedMessageUuids: frame.retractedMessageUuids,
+          })
+          break
+        }
         case 'context-usage': {
           const usage = frame.usage as ContextUsage
           store.dispatch({ type: 'CONTEXT_USAGE', usage })
+          break
+        }
+        case 'prompt-suggestion': {
+          store.dispatch({ type: 'PROMPT_SUGGESTION', suggestion: (frame as { suggestion: string }).suggestion })
           break
         }
         case 'message-consumed': {
@@ -379,6 +442,8 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       uuid: pendingId,
       message: { role: 'user', content: text },
     }
+    // Clear any prompt suggestion when the user sends a new message
+    store.dispatch({ type: 'PROMPT_SUGGESTION', suggestion: null })
     store.dispatch({ type: 'OPTIMISTIC_USER_MESSAGE', message })
     return pendingId
   }, [store])
@@ -506,6 +571,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       messages,
       error: displayedError,
       contextUsage,
+      promptSuggestion,
       apiRetry,
       tokenRate,
       streamingContent,
@@ -530,6 +596,6 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       hasOlder,
       loadingOlder,
     }),
-    [items, messages, displayedError, contextUsage, apiRetry, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, replayReady, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder],
+    [items, messages, displayedError, contextUsage, promptSuggestion, apiRetry, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, replayReady, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder],
   )
 }

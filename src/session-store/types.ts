@@ -302,6 +302,9 @@ export interface ServerMirror {
   eventCount: number
   liveTurn: LiveTurnState | null
   contextUsage: ContextUsage | null
+  /** Predicted next-user-prompt from the SDK. Ephemeral — cleared when the
+   *  user sends a new message or the transcript is cleared. */
+  promptSuggestion: string | null
   lastMessageUuid: string | null
   /** Transient `api_retry` system frame (rate-limit retry indicator). Lives
    *  OUTSIDE items/messages/IDB — it is purely transient (only meaningful
@@ -421,6 +424,8 @@ export type SessionAction =
       decision: { behavior: 'allow' | 'deny'; persisted: boolean; message?: string; questionResolution?: 'clarified' }
     }
   | { type: 'CONTEXT_USAGE'; usage: ContextUsage }
+  /** Predicted next-user-prompt from the SDK, or null to clear. */
+  | { type: 'PROMPT_SUGGESTION'; suggestion: string | null }
   /** The SDK read a queued user turn off its input queue. Flips the
    *  matching message's deliveryStatus from 'queued' to 'consumed'. */
   | { type: 'MESSAGE_CONSUMED'; uuid: string; consumedAt: number }
@@ -444,6 +449,15 @@ export type SessionAction =
    *  (replayReady=false) is set by createInitialServerMirror at construction,
    *  not by an action. */
   | { type: 'CLEAR_TRANSCRIPT' }
+  /** Evict specific messages from the transcript by uuid — used when a
+   *  refusal-fallback dialog resolves: the CLI reports the wire uuids of the
+   *  refused leg's already-streamed partial messages (`retractedMessageUuids`)
+   *  and they must disappear from the transcript on ANY resolution (retry,
+   *  edit-prompt, or cancel). Mirrors trimFront's index pruning: after the
+   *  items/messages arrays shrink, every tool-status/result/plan/question
+   *  index keyed by tool_use_ids that lived only in the evicted frames is
+   *  dropped so no orphan card lingers. */
+  | { type: 'EVICT_MESSAGES'; uuids: string[] }
 
 export interface SessionSnapshot {
   replayReady: boolean
@@ -453,6 +467,7 @@ export interface SessionSnapshot {
   activePhase: ActivePhase
   tokenRate: number | null
   contextUsage: ContextUsage | null
+  promptSuggestion: string | null
   error: string | null
   permissionDecisions: ReadonlyMap<string, 'allow' | 'deny'>
   planStatus: ReadonlyMap<string, PlanStatus>
@@ -496,6 +511,7 @@ export function createInitialServerMirror(): ServerMirror {
     eventCount: 0,
     liveTurn: null,
     contextUsage: null,
+    promptSuggestion: null,
     lastMessageUuid: null,
     apiRetry: null,
     pendingConsumedMessages: new Map<string, number>(),
