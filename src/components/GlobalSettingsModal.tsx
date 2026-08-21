@@ -42,6 +42,9 @@ const AppPluginsTab = lazy(() =>
 const McpExportDialog = lazy(() =>
   import('./McpExportDialog').then((m) => ({ default: m.McpExportDialog })),
 )
+const McpImportDialog = lazy(() =>
+  import('./McpImportDialog').then((m) => ({ default: m.McpImportDialog })),
+)
 // ShareTab pulls in the `qrcode` dependency — lazy-load it so that weight
 // only lands when the user opens the "Open on phone" tab.
 const ShareTab = lazy(() =>
@@ -182,6 +185,9 @@ export function GlobalSettingsModal({
   const [showMcpInstaller, setShowMcpInstaller] = useState(false)
   const [mcpInstallerEdit, setMcpInstallerEdit] = useState<McpServerConfigMeta | undefined>()
   const [showMcpExport, setShowMcpExport] = useState(false)
+  const [showMcpImport, setShowMcpImport] = useState(false)
+  const [mcpImportFile, setMcpImportFile] = useState<File | null>(null)
+  const mcpImportInputRef = useRef<HTMLInputElement>(null)
   const mcpInstallerPresence = useExitPresence(showMcpInstaller)
   const [showResetConfig, setShowResetConfig] = useState(false)
   const resetConfigPresence = useExitPresence(showResetConfig)
@@ -506,6 +512,7 @@ export function GlobalSettingsModal({
                   onDelete={deleteMcpServer}
                   onToggle={toggleMcpServer}
                   onRefresh={refreshMcp}
+                  onImport={() => mcpImportInputRef.current?.click()}
                   onExport={() => setShowMcpExport(true)}
                 />
               )}
@@ -574,6 +581,28 @@ export function GlobalSettingsModal({
               open={showMcpExport}
               servers={mcpServers}
               onClose={() => setShowMcpExport(false)}
+            />
+          </Suspense>
+        )}
+
+        <input
+          ref={mcpImportInputRef}
+          type="file"
+          accept=".json,application/json"
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            const f = e.target.files?.[0]
+            if (f) { setMcpImportFile(f); setShowMcpImport(true) }
+            e.target.value = ''
+          }}
+        />
+        {showMcpImport && (
+          <Suspense fallback={null}>
+            <McpImportDialog
+              open={showMcpImport}
+              file={mcpImportFile}
+              onClose={() => setShowMcpImport(false)}
+              onImported={() => void refreshMcp()}
             />
           </Suspense>
         )}
@@ -1277,7 +1306,7 @@ function SkillsTab({
   )
 }
 function McpTab({
-  servers, onAdd, onEdit, onDelete, onToggle, onRefresh, onExport,
+  servers, onAdd, onEdit, onDelete, onToggle, onRefresh, onImport, onExport,
 }: {
   servers: McpServerConfigMeta[]
   onAdd: () => void
@@ -1285,6 +1314,7 @@ function McpTab({
   onDelete: (name: string) => void
   onToggle: (name: string, enabled: boolean) => void
   onRefresh: () => void | Promise<void>
+  onImport: () => void
   onExport: () => void
 }) {
   return (
@@ -1294,6 +1324,7 @@ function McpTab({
           {servers.length} server{servers.length !== 1 ? 's' : ''} configured
         </span>
         <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn" onClick={onImport}>Import</button>
           <button className="btn" onClick={onExport}>Export</button>
           <button className="btn" onClick={onAdd}>+ Add Server</button>
         </div>
