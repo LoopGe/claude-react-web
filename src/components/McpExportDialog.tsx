@@ -97,7 +97,7 @@ export function McpExportDialog({ open = true, servers, onClose }: Props) {
       <div className="modal-footer">
         <span className="hint">Press Esc to cancel.</span>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn" onClick={onClose} disabled={exporting}>Cancel</button>
           <button className="btn btn-primary" onClick={() => void download()} disabled={exporting || selectedCount === 0}>
             {exporting ? 'Exporting…' : 'Download'}
           </button>

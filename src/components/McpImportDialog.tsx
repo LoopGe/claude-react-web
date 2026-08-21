@@ -104,6 +104,7 @@ export function McpImportDialog({ open = true, file, onClose, onImported }: Prop
 
       <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 12, maxHeight: '62vh', overflowY: 'auto' }}>
         {phase === 'loading' && <div className="hint">Reading file…</div>}
+        {phase === 'importing' && <div className="hint">Importing…</div>}
 
         {phase === 'preview' && error && <div style={{ color: 'var(--danger)', fontSize: 13 }}>{error}</div>}
 
@@ -170,7 +171,7 @@ export function McpImportDialog({ open = true, file, onClose, onImported }: Prop
       <div className="modal-footer">
         <span className="hint">Press Esc to cancel.</span>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn" onClick={onClose}>
+          <button className="btn" onClick={onClose} disabled={phase === 'importing'}>
             {phase === 'summary' ? 'Done' : 'Cancel'}
           </button>
           {phase === 'preview' && !error && (

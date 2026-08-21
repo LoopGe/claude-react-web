@@ -85,9 +85,9 @@ export interface McpExportFile {
 - 语义：
   - 解析/校验失败 → `failed: [{ name, error }]`。
   - 已存在且 `!overwrite` → `skipped`。
-  - 已存在且 `overwrite` → `updated`：非密钥标量字段（type/command/args/url/alwaysLoad/enabled）整体替换；`env`/`headers` 按 PUT 同款**合并**语义 —— 文件里非空值覆盖，空串忽略（保住已有密钥）。保留原 `createdAt`，`updatedAt` 刷新。
+  - 已存在且 `overwrite` → `updated`：非密钥标量字段（type/command/args/url/alwaysLoad/enabled）整体替换；`env`/`headers` 以文件键集为准（file-authoritative）—— 文件里非空值覆盖，空串视为哨兵（回落到该键已有值，保住已有密钥），**文件未出现的键被删除**。保留原 `createdAt`，`updatedAt` 刷新。
   - 新增 → `imported`：`createdAt`/`updatedAt` 置 now，`enabled` 默认 `true`。
-  - **导入时丢弃值为空串的 `env`/`headers` 条目**（masked 文件的空值不产生无意义条目，也不在 overwrite 时覆盖已有密钥）。
+  - **新增服务器导入时丢弃值为空串的 `env`/`headers` 条目**（masked 文件的空值不产生无意义条目）；overwrite 路径下空串作为哨兵保留该键的已有值。
 - 落盘立即 `store.flush()`（与 `claude-import` 一致，防未 ref 的 debounce 定时器丢数据）。
 - 响应：`{ imported: string[], updated: string[], skipped: string[], failed: [{ name, error }] }`。
 

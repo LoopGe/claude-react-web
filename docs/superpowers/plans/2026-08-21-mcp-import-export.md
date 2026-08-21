@@ -14,8 +14,8 @@
 
 - OAuth tokens are **never** exported — the export serializer builds a fresh object picking only known fields, so `oauth` cannot leak.
 - Export defaults to `secretScope: 'masked'` — `env`/`headers` values become `''`; `includeSecrets=1` keeps real values.
-- Import **drops `env`/`headers` entries whose value is `''`** (masked files don't create empty entries, and don't clobber existing secrets on overwrite).
-- Import overwrite semantics: scalar fields (type/command/args/url/alwaysLoad/enabled) fully replaced; `env`/`headers` merged with non-empty file values winning; `createdAt` preserved, `updatedAt` bumped.
+- Import of a **new** server drops `env`/`headers` entries whose value is `''` (masked files don't create empty entries).
+- Import overwrite semantics: scalar fields (type/command/args/url/alwaysLoad/enabled) fully replaced; `env`/`headers` use a **file-authoritative key set** — non-empty file values win, `''` sentinels fall back to the existing value for that key, and keys absent from the file are dropped; `createdAt` preserved, `updatedAt` bumped.
 - Import validates every entry server-side via `validateMcpServer` (command allowlist enforced) — invalid entries land in `failed`, never imported.
 - Import accepts three input shapes: our envelope, a bare array, or a keyed object `{ name: {...} }`.
 - `~/.claude.json` is never written.
