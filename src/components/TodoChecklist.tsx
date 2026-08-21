@@ -246,7 +246,7 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
           </button>
         </div>
       )}
-      <AnimatedCollapse open={!collapsed}>
+      <AnimatedCollapse open={!collapsed} animateResize>
         <ul ref={setListScroller} id="todo-panel-list" className="todo-panel-list">
           {visibleTodos.map((t, i) => (
             <li

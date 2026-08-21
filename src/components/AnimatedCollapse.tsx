@@ -24,6 +24,12 @@ interface AnimatedCollapseProps {
   appear?: boolean
   durationMs?: number
   onExitComplete?: () => void
+  /** Animate intrinsic content-size changes while open (default: snap).
+   *  When true, a ResizeObserver-driven height change tweens instead of
+   *  jumping, so e.g. a task row appending to an open TaskList grows the
+   *  panel smoothly. The open/close fold always takes precedence — a resize
+   *  that lands mid-open/close lets that animation finish first. */
+  animateResize?: boolean
 }
 
 export function AnimatedCollapse({
@@ -35,6 +41,7 @@ export function AnimatedCollapse({
   appear = false,
   durationMs = DEFAULT_DURATION_MS,
   onExitComplete,
+  animateResize = false,
 }: AnimatedCollapseProps) {
   const [mounted, setMounted] = useState(open || !unmountOnExit)
   const bodyRef = useRef<HTMLDivElement | null>(null)
@@ -188,19 +195,15 @@ export function AnimatedCollapse({
     const content = contentRef.current
     if (!body || !content) return
 
-    // Snap-only: AnimatedCollapse animates the OPEN/CLOSE transition; intrinsic
-    // content size changes after open are NOT animated. Animating content
-    // growth (e.g. an async fetch landing inside an opened collapse) would
-    // either fight an in-flight open animation (visible "two-step" jitter as
-    // the new animateHeight cancels and restarts) or stack a second 240 ms
-    // transition immediately after the first — both are jarring. The
-    // open/close moment is the only useful animated beat; everything else is
-    // layout, which the browser handles for free.
-    //
-    // If the content grows while an open animation is still in flight, we
-    // tear down that animation FIRST (clear the transition + cancel its
-    // transitionend handler so it can't reset height to the original `to`)
-    // then snap to the new height in a single frame.
+    // Default (animateResize=false) is snap-only: the open/close moment is the
+    // only useful animated beat; intrinsic content growth after open is plain
+    // layout and snaps in place. With animateResize=true we tween those changes
+    // so a list that grows while open (e.g. a TaskList row appending) eases
+    // open instead of jumping. Either way, never fight an in-flight open/close
+    // animation — let it play out (finishOpen re-measures the true height at
+    // the end, so growth during the animation is still reconciled) — and a
+    // rapid run of resize events cancels-and-replaces, so a streaming list
+    // follows smoothly instead of stacking a new 240ms tween per row.
     const observer = new ResizeObserver(() => {
       if (!previousOpenRef.current) return
       // Measure the content's RENDERED height, not scrollHeight. Under
@@ -215,23 +218,26 @@ export function AnimatedCollapse({
       if (Math.abs(nextHeight - currentHeight) < 1) return
       lastHeightRef.current = nextHeight
       if (animatingRef.current) {
-        // The open/close animation is in flight. This event is the open
-        // transition's OWN 0->natural size change -- a <details> doesn't lay
-        // out its content while closed, so opening fires the observer. Let
-        // the animation play to its target instead of tearing it down and
-        // snapping (which made every open instant / animation-less). A
-        // genuine content-size change AFTER the animation settles -- when
-        // animatingRef is false -- is corrected by the snap below, and
-        // finishOpen re-measures at animation end so growth during the
-        // animation is still reconciled.
+        // An open/close animation is in flight — let it play to its target
+        // rather than tearing it down (which made every open instant /
+        // animation-less). finishOpen re-measures at animation end so any
+        // growth during the animation is still reconciled.
         return
       }
-      body.style.height = `${nextHeight}px`
+      if (animateResize) {
+        // Resize tween: from the current rendered height to the content's new
+        // natural height. fade=false — opacity belongs to the open/close beat,
+        // not layout motion. Rapid successive events call animateHeight again,
+        // which cancels the in-flight tween and restarts from the live height.
+        animateHeight(currentHeight, nextHeight, true, false)
+      } else {
+        body.style.height = `${nextHeight}px`
+      }
     })
 
     observer.observe(content)
     return () => observer.disconnect()
-  }, [cleanupAnimation, open, rendered, unmountOnExit])
+  }, [animateHeight, animateResize, open, rendered, unmountOnExit])
 
   useEffect(() => () => cleanupAnimation(), [cleanupAnimation])
 
