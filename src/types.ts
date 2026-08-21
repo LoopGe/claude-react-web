@@ -390,6 +390,12 @@ export interface McpConnectionTestResult {
 }
 
 export type { McpServerInput } from '../shared/mcp-types'
+export type {
+  McpExportFile,
+  McpExportServer,
+  McpImportPreviewServer,
+  McpImportResult,
+} from '../shared/mcp-types'
 
 // ── Session Recap ─────────────────────────────────────────────────
 

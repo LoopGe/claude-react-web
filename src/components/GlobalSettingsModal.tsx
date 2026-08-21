@@ -39,6 +39,9 @@ const MarketplaceTab = lazy(() =>
 const AppPluginsTab = lazy(() =>
   import('./AppPluginsTab').then((m) => ({ default: m.AppPluginsTab })),
 )
+const McpExportDialog = lazy(() =>
+  import('./McpExportDialog').then((m) => ({ default: m.McpExportDialog })),
+)
 // ShareTab pulls in the `qrcode` dependency — lazy-load it so that weight
 // only lands when the user opens the "Open on phone" tab.
 const ShareTab = lazy(() =>
@@ -178,6 +181,7 @@ export function GlobalSettingsModal({
   const [mcpServers, setMcpServers] = useState<McpServerConfigMeta[]>([])
   const [showMcpInstaller, setShowMcpInstaller] = useState(false)
   const [mcpInstallerEdit, setMcpInstallerEdit] = useState<McpServerConfigMeta | undefined>()
+  const [showMcpExport, setShowMcpExport] = useState(false)
   const mcpInstallerPresence = useExitPresence(showMcpInstaller)
   const [showResetConfig, setShowResetConfig] = useState(false)
   const resetConfigPresence = useExitPresence(showResetConfig)
@@ -502,6 +506,7 @@ export function GlobalSettingsModal({
                   onDelete={deleteMcpServer}
                   onToggle={toggleMcpServer}
                   onRefresh={refreshMcp}
+                  onExport={() => setShowMcpExport(true)}
                 />
               )}
               {tab === 'marketplace' && (
@@ -559,6 +564,16 @@ export function GlobalSettingsModal({
               server={mcpInstallerEdit}
               onSave={() => { setShowMcpInstaller(false); setMcpInstallerEdit(undefined); void refreshMcp() }}
               onClose={() => { setShowMcpInstaller(false); setMcpInstallerEdit(undefined) }}
+            />
+          </Suspense>
+        )}
+
+        {showMcpExport && (
+          <Suspense fallback={null}>
+            <McpExportDialog
+              open={showMcpExport}
+              servers={mcpServers}
+              onClose={() => setShowMcpExport(false)}
             />
           </Suspense>
         )}
@@ -1262,7 +1277,7 @@ function SkillsTab({
   )
 }
 function McpTab({
-  servers, onAdd, onEdit, onDelete, onToggle, onRefresh,
+  servers, onAdd, onEdit, onDelete, onToggle, onRefresh, onExport,
 }: {
   servers: McpServerConfigMeta[]
   onAdd: () => void
@@ -1270,6 +1285,7 @@ function McpTab({
   onDelete: (name: string) => void
   onToggle: (name: string, enabled: boolean) => void
   onRefresh: () => void | Promise<void>
+  onExport: () => void
 }) {
   return (
     <>
@@ -1277,9 +1293,10 @@ function McpTab({
         <span className="settings-note settings-mcp-count">
           {servers.length} server{servers.length !== 1 ? 's' : ''} configured
         </span>
-        <button className="btn" onClick={onAdd}>
-          + Add Server
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn" onClick={onExport}>Export</button>
+          <button className="btn" onClick={onAdd}>+ Add Server</button>
+        </div>
       </div>
       {servers.length === 0 && (
         <EmptyState
