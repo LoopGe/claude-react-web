@@ -322,6 +322,57 @@ export function validateMcpServer(server: Partial<StoredMcpServer>): string[] {
   return errors
 }
 
+/** Coerce + validate a raw import entry into a StoredMcpServer ready to
+ *  store. Preserves empty-string env/header values as sentinels so that
+ *  {@link applyImportedOverwrite} can distinguish "not in file" from
+ *  "explicitly empty (masked)" — callers creating NEW servers should
+ *  strip empties from the result before upserting. */
+export function coerceImportServer(
+  raw: unknown,
+  fallbackName?: string,
+): { server: StoredMcpServer } | { error: string } {
+  const server = coerceStoredMcpServer(raw, fallbackName)
+  if (!server) return { error: 'could not parse server entry' }
+  const errors = validateMcpServer(server)
+  if (errors.length > 0) return { error: errors.join('; ') }
+  return { server }
+}
+
+/** Apply an imported server onto an existing stored server for overwrite.
+ *  Scalar fields are replaced; env/headers merge — non-empty incoming values
+ *  win, empty-string values (masked exports) fall back to existing values,
+ *  and existing keys not present in the incoming file are dropped.
+ *  createdAt preserved; updatedAt bumped. */
+export function applyImportedOverwrite(existing: StoredMcpServer, incoming: StoredMcpServer): StoredMcpServer {
+  const merged: StoredMcpServer = {
+    ...existing,
+    type: incoming.type,
+    updatedAt: Date.now(),
+  }
+  if (incoming.command !== undefined) merged.command = incoming.command
+  if (incoming.args !== undefined) merged.args = incoming.args
+  if (incoming.url !== undefined) merged.url = incoming.url
+  if (incoming.alwaysLoad !== undefined) merged.alwaysLoad = incoming.alwaysLoad
+  if (incoming.enabled !== undefined) merged.enabled = incoming.enabled
+  if (incoming.env) {
+    const env: Record<string, string> = {}
+    for (const [k, v] of Object.entries(incoming.env)) {
+      if (v !== '') env[k] = v
+      else if (existing.env?.[k]) env[k] = existing.env[k]
+    }
+    merged.env = Object.keys(env).length > 0 ? env : undefined
+  }
+  if (incoming.headers) {
+    const hdrs: Record<string, string> = {}
+    for (const [k, v] of Object.entries(incoming.headers)) {
+      if (v !== '') hdrs[k] = v
+      else if (existing.headers?.[k]) hdrs[k] = existing.headers[k]
+    }
+    merged.headers = Object.keys(hdrs).length > 0 ? hdrs : undefined
+  }
+  return merged
+}
+
 /** Serialize stored servers into export entries. In masked mode every
  *  env/header value becomes ''; oauth and timestamps are never included. */
 export function toExportServers(servers: StoredMcpServer[], includeSecrets: boolean): McpExportServer[] {

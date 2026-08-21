@@ -11,8 +11,10 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
   McpConfigStore,
+  applyImportedOverwrite,
   buildExportFile,
   clearMcpOAuth,
+  coerceImportServer,
   coerceStoredMcpServer,
   finishMcpOAuth,
   maskSecrets,
@@ -25,7 +27,7 @@ import {
 } from './mcp-config.js'
 import { HttpError, createErrorHandler } from './errors.js'
 import { safeJson } from './routes/index.js'
-import type { McpImportPreviewServer } from '../shared/mcp-types'
+import type { McpImportPreviewServer, McpImportResult } from '../shared/mcp-types'
 
 const OAUTH_CALLBACK_PATH = '/api/mcp-config/oauth/callback'
 
@@ -265,6 +267,77 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
     const entries = parseImportFile(body.file)
     if (entries.length === 0) throw new HttpError(400, 'No MCP servers found in file')
     return c.json({ servers: entries.map((entry) => previewImportEntry(entry, store)) })
+  })
+
+  // ── Import ───────────────────────────────────────────────────────
+  /** POST /import — import selected servers from an import file. Re-parses
+   *  the file server-side (never trusts the client), validates each entry,
+   *  skips existing names unless overwrite, and persists immediately. */
+  app.post('/import', async (c) => {
+    const body = await safeJson<{ file?: unknown; names?: unknown; overwrite?: unknown }>(c.req)
+    if (typeof body?.file !== 'string') throw new HttpError(400, 'file must be a string')
+    if (!Array.isArray(body.names) || !body.names.every((n) => typeof n === 'string')) {
+      throw new HttpError(400, 'names must be an array of strings')
+    }
+    const overwrite = body.overwrite === true
+    const requested = new Set((body.names as string[]).filter((n) => n.trim().length > 0))
+
+    const entries = parseImportFile(body.file)
+    const byName = new Map<string, { key: string; raw: unknown }>()
+    for (const entry of entries) {
+      const server = coerceStoredMcpServer(entry.raw, entry.key)
+      if (server && !byName.has(server.name)) byName.set(server.name, entry)
+    }
+
+    const imported: string[] = []
+    const updated: string[] = []
+    const skipped: string[] = []
+    const failed: { name: string; error: string }[] = []
+    let dirty = false
+    for (const name of requested) {
+      const entry = byName.get(name)
+      if (!entry) {
+        failed.push({ name, error: 'not found in import file' })
+        continue
+      }
+      const res = coerceImportServer(entry.raw, entry.key)
+      if ('error' in res) {
+        failed.push({ name, error: res.error })
+        continue
+      }
+      const incoming = res.server
+      const existing = store.get(name)
+      if (existing) {
+        if (!overwrite) {
+          skipped.push(name)
+          continue
+        }
+        store.upsert(applyImportedOverwrite(existing, incoming))
+        updated.push(name)
+      } else {
+        // Strip empty-string env/header values (masked exports) for new servers
+        const { env: rawEnv, headers: rawHeaders, ...rest } = incoming
+        const env = rawEnv
+          ? Object.fromEntries(Object.entries(rawEnv).filter(([, v]) => v !== ''))
+          : undefined
+        const headers = rawHeaders
+          ? Object.fromEntries(Object.entries(rawHeaders).filter(([, v]) => v !== ''))
+          : undefined
+        store.upsert({
+          ...rest,
+          name,
+          enabled: incoming.enabled ?? true,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          ...(env && Object.keys(env).length > 0 ? { env } : {}),
+          ...(headers && Object.keys(headers).length > 0 ? { headers } : {}),
+        })
+        imported.push(name)
+      }
+      dirty = true
+    }
+    if (dirty) await store.flush()
+    return c.json({ imported, updated, skipped, failed } satisfies McpImportResult)
   })
 
   // OAuth redirect target. Completes token exchange and shows a tiny close page.

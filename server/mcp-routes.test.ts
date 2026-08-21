@@ -522,4 +522,109 @@ describe('mcp-config routes', () => {
       expect(res.status).toBe(400)
     })
   })
+
+  // -------------------------------------------------------------------
+  // POST /import
+  // -------------------------------------------------------------------
+  describe('POST /import', () => {
+    it('imports new servers, dropping empty env values, enabled default true', async () => {
+      const file = JSON.stringify([
+        { name: 'a', type: 'stdio', command: 'npx', args: ['-y', 'x'], env: { KEEP: 'v', BLANK: '' } },
+      ])
+      const res = await app().request('/import', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ file, names: ['a'], overwrite: false }),
+      })
+      expect(res.status).toBe(200)
+      const body = await json(res)
+      expect(body.imported).toEqual(['a'])
+      const stored = store.get('a')!
+      expect(stored.enabled).toBe(true)
+      expect(stored.env).toEqual({ KEEP: 'v' })
+    })
+
+    it('skips existing servers unless overwrite, and reports failed invalid entries', async () => {
+      store.upsert(makeServer({ name: 'exists', command: 'node', args: ['old'] }))
+      await store.flush()
+
+      const file = JSON.stringify([
+        { name: 'exists', type: 'stdio', command: 'python', args: ['new.py'] },
+        { name: 'bad', type: 'stdio' },
+        { name: 'ghost', type: 'stdio', command: 'node' },
+      ])
+      const res = await app().request('/import', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ file, names: ['exists', 'bad', 'ghost'], overwrite: false }),
+      })
+      const body = await json(res)
+      expect(body.skipped).toEqual(['exists'])
+      expect((body.failed as Array<{ name: string }>)[0].name).toBe('bad')
+      expect(body.imported).toEqual(['ghost'])
+      // skipped entry untouched
+      expect(store.get('exists')?.args).toEqual(['old'])
+    })
+
+    it('overwrite replaces scalars and merges env/headers without clobbering masked blanks', async () => {
+      store.upsert(makeServer({
+        name: 's', command: 'node', args: ['old'], env: { SECRET: 'keepme', OLD: 'gone' }, enabled: false,
+      }))
+      await store.flush()
+
+      // masked-style file: env has SECRET blanked to '' (must not clobber)
+      const file = JSON.stringify([
+        { name: 's', type: 'stdio', command: 'python', args: ['new.py'], env: { SECRET: '', NEW: 'added' }, enabled: true },
+      ])
+      const res = await app().request('/import', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ file, names: ['s'], overwrite: true }),
+      })
+      expect(res.status).toBe(200)
+      const body = await json(res)
+      expect(body.updated).toEqual(['s'])
+      const stored = store.get('s')!
+      expect(stored.command).toBe('python')
+      expect(stored.args).toEqual(['new.py'])
+      expect(stored.enabled).toBe(true)
+      expect(stored.env).toEqual({ SECRET: 'keepme', NEW: 'added' })
+      expect(stored.createdAt).toBe(1_700_000_000_000) // preserved
+    })
+
+    it('rejects non-allowlisted commands', async () => {
+      const file = JSON.stringify([{ name: 'evil', type: 'stdio', command: 'rm' }])
+      const res = await app().request('/import', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ file, names: ['evil'], overwrite: false }),
+      })
+      expect(res.status).toBe(200)
+      const body = await json(res)
+      expect((body.failed as Array<{ name: string }>)[0].name).toBe('evil')
+      expect(store.get('evil')).toBeUndefined()
+    })
+
+    it('round-trips a masked export through a fresh store import', async () => {
+      store.upsert(makeServer({ name: 'git', command: 'npx', args: ['-y', 'server-git'], env: { TOKEN: 'secret' } }))
+      await store.flush()
+      const expRes = await app().request('/export')
+      const file = await json(expRes)
+
+      const dir2 = tempDir('mcp-roundtrip')
+      const store2 = new McpConfigStore({ stateDir: dir2 })
+      await store2.load()
+      const app2 = buildMcpConfigRouter(store2)
+      try {
+        const res = await app2.request('/import', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ file: JSON.stringify(file), names: ['git'], overwrite: false }),
+        })
+        const body = await json(res)
+        expect(body.imported).toEqual(['git'])
+        const imported = store2.get('git')!
+        expect(imported.name).toBe('git')
+        expect(imported.command).toBe('npx')
+        expect(imported.env).toBeUndefined() // masked values dropped
+      } finally {
+        rmSync(dir2, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+      }
+    })
+  })
 })
