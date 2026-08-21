@@ -112,6 +112,9 @@ export interface WsReplay<Msg, Perm> {
   /** Still-outstanding MCP elicitation (auth) requests. Optional so older
    *  payloads / clients without elicitation support simply omit it. */
   elicitations?: ElicitationRequestUi[]
+  /** Still-outstanding user dialogs (e.g. refusal fallback). Optional for
+   *  the same forward-compat reason as `elicitations`. */
+  dialogs?: UserDialogRequestUi[]
 }
 export interface WsReplayDone<Perm> {
   kind: 'replay-done'
@@ -123,6 +126,9 @@ export interface WsReplayDone<Perm> {
   /** Same chunked-replay rule as `permissions`: elicitations ride on the
    *  final replay-done frame when the replay is chunked. */
   elicitations?: ElicitationRequestUi[]
+  /** Same chunked-replay rule: pending user dialogs ride the final
+   *  replay-done frame when the replay is chunked. */
+  dialogs?: UserDialogRequestUi[]
 }
 
 /** Live SDK message. */
@@ -175,12 +181,44 @@ export interface WsElicitationResolved {
   id: string
   decision: ElicitationDecision
 }
+
+/** New user dialog (blocking CLI prompt, e.g. refusal fallback). Mirrors the
+ *  elicitation frames; payload types come from shared/user-dialog.ts
+ *  (browser-safe), so these frames take no generic parameters. */
+export interface WsDialogRequest {
+  kind: 'dialog-request'
+  sessionId: string
+  payload: UserDialogRequestUi
+}
+
+/** A user dialog was resolved (by this tab or another). `decision` mirrors
+ *  the SDK's UserDialogResult. `retractedMessageUuids` (from the dialog's
+ *  payload) rides along so every tab evicts the refused leg's already-
+ *  streamed partial messages on resolution — the CLI's contract is evict on
+ *  ANY resolution, never on receipt. */
+export interface WsDialogResolved {
+  kind: 'dialog-resolved'
+  sessionId: string
+  id: string
+  decision: UserDialogDecision
+  retractedMessageUuids?: string[]
+}
+
 /** Fresh context-usage snapshot pushed from the server. Shape is
  *  deliberately `unknown` — the frontend treats it as opaque JSON. */
 export interface WsContextUsage {
   kind: 'context-usage'
   sessionId: string
   usage: unknown
+}
+
+/** Predicted next user prompt pushed after each turn when the SDK's
+ *  `promptSuggestions` option is enabled. Ephemeral — not persisted in
+ *  the history ring; reconnects do not replay stale suggestions. */
+export interface WsPromptSuggestion {
+  kind: 'prompt-suggestion'
+  sessionId: string
+  suggestion: string
 }
 
 /** Signal-only frame: "git status for this session changed, please
@@ -260,6 +298,7 @@ export interface WsHookRunEvent<HookEvent> {
 import type { AppPluginClientInfo } from './app-plugins/runtime-state.js'
 import type { ResolvedPluginContributions } from './app-plugins/contributions.js'
 import type { ElicitationRequestUi, ElicitationDecision } from './elicitation.js'
+import type { UserDialogRequestUi, UserDialogDecision } from './user-dialog.js'
 
 /** Heartbeat reply. */
 export interface WsPong {
@@ -310,7 +349,10 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsPermissionResolved<Decision>
   | WsElicitationRequest
   | WsElicitationResolved
+  | WsDialogRequest
+  | WsDialogResolved
   | WsContextUsage
+  | WsPromptSuggestion
   | WsGitStatusChanged
   | WsMessageConsumed
   | WsSessionRecapUpdate<Recap>

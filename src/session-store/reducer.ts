@@ -148,6 +148,8 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
     }
     case 'CONTEXT_USAGE':
       return withMirror(state, { ...state.mirror, contextUsage: action.usage })
+    case 'PROMPT_SUGGESTION':
+      return withMirror(state, { ...state.mirror, promptSuggestion: action.suggestion })
     case 'MESSAGE_CONSUMED':
       return applyMessageConsumed(state, action.uuid, action.consumedAt)
     case 'ERROR':
@@ -210,6 +212,8 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
         intent: createInitialClientIntent(),
       }
     }
+    case 'EVICT_MESSAGES':
+      return evictMessages(state, action.uuids)
     default:
       return state
   }
@@ -864,6 +868,47 @@ function trimFront(state: SessionState): SessionState {
     ...mirror,
     items,
     messages,
+    toolStatus: pruneMapToLive(mirror.toolStatus, live),
+    toolResults: pruneMapToLive(mirror.toolResults, live),
+    planStatus: pruneMapToLive(mirror.planStatus, live),
+    planContent: pruneMapToLive(mirror.planContent, live),
+    questionAnswers: pruneMapToLive(mirror.questionAnswers, live),
+  })
+}
+
+/** Remove the given uuids from the transcript (refusal-fallback retraction:
+ *  the CLI already-streamed partial messages of the refused leg). Mirrors
+ *  trimFront's index pruning — after items/messages shrink, every
+ *  toolUseId-keyed map entry whose owner frame was evicted is dropped so no
+ *  orphan tool/plan/question card lingers.
+ *
+ *  Identity-stable when no listed uuid is present (late/duplicate
+ *  dialog-resolved frames are a no-op). */
+function evictMessages(state: SessionState, uuids: string[]): SessionState {
+  if (!uuids?.length) return state
+  const mirror = state.mirror
+  const uuidSet = new Set(uuids)
+  const items = mirror.items.filter((it) => !uuidSet.has(it.id))
+  if (items.length === mirror.items.length) return state
+  const messages = mirror.messages.filter(
+    (m) => !uuidSet.has((m as { uuid?: string }).uuid ?? ''),
+  )
+  // Clear the consumed-timestamp cache for evicted user turns too, and drop
+  // lastMessageUuid if its owner was evicted (the next MESSAGE rebuilds it).
+  const pendingConsumedMessages = new Map(mirror.pendingConsumedMessages)
+  for (const [uuid] of pendingConsumedMessages) {
+    if (uuidSet.has(uuid)) pendingConsumedMessages.delete(uuid)
+  }
+  const live = collectLiveToolUseIds(items)
+  return withMirror(state, {
+    ...mirror,
+    items,
+    messages,
+    pendingConsumedMessages,
+    lastMessageUuid:
+      mirror.lastMessageUuid && uuidSet.has(mirror.lastMessageUuid)
+        ? (items.at(-1)?.id ?? null)
+        : mirror.lastMessageUuid,
     toolStatus: pruneMapToLive(mirror.toolStatus, live),
     toolResults: pruneMapToLive(mirror.toolResults, live),
     planStatus: pruneMapToLive(mirror.planStatus, live),

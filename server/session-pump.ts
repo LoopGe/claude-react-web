@@ -566,6 +566,18 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // localStorage.  In-place mutation ensures replay and live paths
         // see the same (trimmed) object.
         trimLargeToolResults(msg)
+        // prompt_suggestion is ephemeral — not conversation content. Push
+        // to dedicated subscribers and skip the history ring + broadcast.
+        if (msg.type === 'prompt_suggestion') {
+          const suggestion = (msg as { suggestion?: string }).suggestion
+          if (typeof suggestion === 'string' && suggestion) {
+            session.lastPromptSuggestion = suggestion
+            for (const sub of session.promptSuggestionSubscribers) {
+              try { sub.push(suggestion) } catch { /* subscriber dead — skip */ }
+            }
+          }
+          continue
+        }
         // Only durable transcript messages enter the bounded history ring
         // (the WS full-replay surface). Ephemeral `stream_event` deltas are
         // live-streamed to subscribers but never stored: a heavy streaming

@@ -39,14 +39,17 @@ import { usePastedImages } from '../hooks/usePastedImages'
 import { useInputHistory } from '../hooks/useInputHistory'
 import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { useElicitationChannel } from '../hooks/useElicitationChannel'
+import { useUserDialogChannel } from '../hooks/useUserDialogChannel'
 import { useSessionUsage } from '../hooks/useSessionUsage'
 import { usePhaseDwell } from '../hooks/usePhaseDwell'
 import { Composer } from './Composer'
+import { PromptSuggestions } from './PromptSuggestions'
 import { ContextBar } from './ContextBar'
 import { MessageList, WorkingBubble, type ScrollNavigator } from './MessageList'
 import { PermissionDialog } from './PermissionDialog'
 import { QuestionDialog, type QuestionDraft } from './QuestionDialog'
 import { ElicitationDialog } from './ElicitationDialog'
+import { UserDialog } from './UserDialog'
 import { SubagentOverlay } from './SubagentOverlay'
 import { SubagentProvider } from '../hooks/useSubagentContext'
 import { WorkflowOverlay } from './WorkflowOverlay'
@@ -378,6 +381,7 @@ export const Chat = memo(function Chat({
   // is available in the effect's closure and dep array.
   const permissions = usePermissionChannel(session.id)
   const elicitations = useElicitationChannel(session.id)
+  const dialogs = useUserDialogChannel(session.id)
   const stream = useChatStream(session.id, {
     onRequest: permissions.onRequest,
     onResolved: permissions.onResolved,
@@ -387,6 +391,14 @@ export const Chat = memo(function Chat({
     },
     onElicitationRequest: elicitations.onRequest,
     onElicitationResolved: elicitations.onResolved,
+    onDialogRequest: dialogs.onRequest,
+    onDialogResolved: dialogs.onResolved,
+    // Refusal-fallback "edit prompt": prefill the composer with the evicted
+    // leg's original user message so the user edits it rather than retyping.
+    onEditPrompt: (text) => {
+      setInput(text)
+      setComposerFocusSignal((n) => n + 1)
+    },
   })
 
   // Clear the optimistic turn bridge once the real turn is confirmed
@@ -712,6 +724,11 @@ export const Chat = memo(function Chat({
   // two perm-variant overlays at once.
   const activeElicitation = elicitations.pending[0] ?? null
   const elicitationPresence = usePresenceValue(activeElicitation)
+  // User dialog (refusal fallback) state. Same yielding chain: permission/
+  // question first, then elicitation, then this — one perm-variant overlay
+  // at a time.
+  const activeDialog = dialogs.pending[0] ?? null
+  const dialogPresence = usePresenceValue(activeDialog)
   // Drop persisted draft entries once a question resolves so questionDrafts
   // doesn't accumulate stale ids over a long session. The corresponding
   // minimize state is derived on read (see `minimizedQ` above), so we no
@@ -1667,6 +1684,10 @@ export const Chat = memo(function Chat({
         )}
       </div>
 
+      <PromptSuggestions
+        suggestion={stream.promptSuggestion}
+        onSelect={setInput}
+      />
       <Composer
       input={input}
       setInput={setInput}
@@ -1771,6 +1792,25 @@ export const Chat = memo(function Chat({
             open={activeElicitation?.id === head.id}
             request={head}
             onDecide={(d) => void elicitations.decide(head.id, d)}
+          />
+        )
+      })()}
+
+      {/* Pending user dialog (refusal fallback). Yields to permission/
+          question AND elicitation dialogs — last in the one-overlay-at-a-
+          time chain. usePresenceValue keeps the dialog mounted through its
+          exit animation when the head changes. */}
+      {(() => {
+        if (pendingDialogPresence.value != null) return null
+        if (elicitationPresence.value != null) return null
+        const head = dialogPresence.value
+        if (!head) return null
+        return (
+          <UserDialog
+            key={head.id}
+            open={activeDialog?.id === head.id}
+            request={head}
+            onDecide={(d) => void dialogs.decide(head.id, d)}
           />
         )
       })()}

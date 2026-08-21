@@ -83,6 +83,9 @@ export class ClaudeProvider implements AgentProvider {
     if (opts.includeHookEvents !== undefined) sdkOptions.includeHookEvents = opts.includeHookEvents
     if (opts.forwardSubagentText !== undefined) sdkOptions.forwardSubagentText = opts.forwardSubagentText
     if (opts.effortLevel !== undefined) sdkOptions.effort = opts.effortLevel as Options['effort']
+    // Enable prompt suggestions by default — nearly free (piggybacks on
+    // prompt cache) and provides a useful UX affordance.
+    sdkOptions.promptSuggestions = opts.promptSuggestions ?? true
 
     const requestedMode = (opts.permissionMode ?? sdkOptions.permissionMode) as PermissionMode | undefined
     this.applyStandardQueryOpts(sdkOptions, opts.env, opts.enabledPlugins)
@@ -95,6 +98,12 @@ export class ClaudeProvider implements AgentProvider {
     }
     if (opts.onElicitation && !sdkOptions.onElicitation) {
       sdkOptions.onElicitation = opts.onElicitation as Options['onElicitation']
+    }
+    // Atomic pair: only forward supportedDialogKinds when the callback is
+    // present — non-empty kinds without onUserDialog make the SDK spawn throw.
+    if (opts.onUserDialog && !sdkOptions.onUserDialog) {
+      sdkOptions.onUserDialog = opts.onUserDialog as Options['onUserDialog']
+      sdkOptions.supportedDialogKinds = opts.supportedDialogKinds
     }
 
     // Cap the input queue as an OOM backstop. In normal operation the SDK

@@ -7,10 +7,12 @@ import type {
   ElicitationResult,
   FastModeState,
   OnElicitation,
+  OnUserDialog,
   PermissionMode,
   PermissionResult,
   PermissionUpdate,
   SDKMessage,
+  UserDialogResult,
 } from '@anthropic-ai/claude-agent-sdk'
 import type { Pushable } from './pushable.js'
 import type { SessionStore } from './persistence.js'
@@ -23,6 +25,7 @@ import type { HookRunRecord, HookRuntimeEvent, SessionHooksConfig } from '../sha
 import type { SessionSkillOverride } from '../shared/skills.js'
 import type { PromptUuidEntry } from './prompt-uuid-store.js'
 import type { ElicitationDecision, ElicitationRequestUi } from '../shared/elicitation.js'
+import type { UserDialogDecision, UserDialogRequestUi } from '../shared/user-dialog.js'
 
 /** Subscriber — each connected client gets one of these. */
 export interface Subscriber {
@@ -55,8 +58,22 @@ export interface ElicitationSubscriber {
   end: () => void
 }
 
+/** User-dialog-channel subscriber — mirrors ElicitationSubscriber but for
+ *  blocking CLI dialogs (e.g. the refusal-fallback prompt), on its own
+ *  subscriber set. */
+export type DialogEvent =
+  | { kind: 'request'; payload: UserDialogRequestUi }
+  | { kind: 'resolved'; did: string; decision: UserDialogDecision; retractedMessageUuids?: string[] }
+export interface DialogSubscriber {
+  id: string
+  push: (ev: DialogEvent) => void
+  end: () => void
+}
+
 // Re-export canonical MCP elicitation shapes from shared.
 export type { ElicitationRequestUi, ElicitationDecision }
+// Re-export canonical user-dialog shapes from shared.
+export type { UserDialogRequestUi, UserDialogDecision }
 
 // Re-export canonical QuestionSpec from shared.
 export type { QuestionSpec } from '../shared/question-spec.js'
@@ -93,6 +110,16 @@ export type PendingPermission = PermissionRequestSnapshot & {
  *  the SDK's `await onElicitation(...)` — no id-based correlation needed. */
 export type PendingElicitation = ElicitationRequestUi & {
   resolve: (r: ElicitationResult) => void
+  signal: AbortSignal
+  abortHandler: () => void
+}
+
+/** Internal server-side state per pending user dialog. Carries the SDK
+ *  resolver + signal alongside the JSON-serializable snapshot, mirroring
+ *  PendingElicitation. Resolving with a UserDialogResult IS the answer to
+ *  the SDK's `await onUserDialog(...)` — no id-based correlation needed. */
+export type PendingUserDialog = UserDialogRequestUi & {
+  resolve: (r: UserDialogResult) => void
   signal: AbortSignal
   abortHandler: () => void
 }
@@ -202,6 +229,9 @@ export interface Session {
   elicitationSubscribers: Map<string, ElicitationSubscriber>
   /** Pending MCP elicitation (auth) requests awaiting a user decision. */
   elicitationPending: Map<string, PendingElicitation>
+  dialogSubscribers: Map<string, DialogSubscriber>
+  /** Pending user dialogs (e.g. refusal fallback) awaiting a user decision. */
+  dialogPending: Map<string, PendingUserDialog>
   history: SDKMessage[]
   /** Subagent frames only (parent_tool_use_id != null) — a separate FIFO
    *  budget (config subagentHistoryCap) so subagent volume can never evict
@@ -310,6 +340,14 @@ export interface Session {
    *  waiting for the next `result`. Cleared on /clear. Not persisted —
    *  re-derived from the next result after resume. */
   lastContextUsage?: import('./session-pump.js').LiteContextUsage
+  /** Per-subscriber pushables for prompt_suggestion events — separate from
+   *  message history (suggestions are ephemeral, not conversation content).
+   *  Same shape as contextUsageSubscribers. */
+  promptSuggestionSubscribers: Set<Pushable<unknown>>
+  /** Last predicted next-user-prompt from the SDK. Cached so a freshly
+   *  subscribed tab gets the current suggestion immediately. Cleared on
+   *  /clear. Not persisted. */
+  lastPromptSuggestion?: string | null
   /** Per-subscriber pushables for `git-status-changed` signal frames.
    *  Same shape as contextUsageSubscribers but carries a signal-only
    *  payload (no GitStatus snapshot — clients refetch). Driven by
@@ -349,6 +387,14 @@ export interface Session {
    *  recovery keep elicitation handling alive. Without it the SDK
    *  auto-declines every elicitation on the resumed Query. */
   onElicitation?: OnElicitation
+  /** Stored onUserDialog callback (blocking CLI dialogs, e.g. refusal
+   *  fallback). Mirrors onElicitation: rebuilt by DialogBroker.buildOnUserDialog
+   *  at spawn, persisted on the Session (runtime-only), and re-applied by
+   *  buildResumeOpts / respawnInPlace so idle-exit auto-resume and crash
+   *  recovery keep dialog handling alive. Without it the SDK never sees
+   *  supportedDialogKinds on the resumed Query and the flow degrades to its
+   *  no-dialog behavior. */
+  onUserDialog?: OnUserDialog
   /** Abort handle for the current in-flight `!`/`!!` exec, if any. `!` is
    *  serial (the client's sendingRef blocks concurrent commands), so at most
    *  one exec runs per session at a time — no exec-id tracking needed.
@@ -417,6 +463,7 @@ export function endAllSubscribers(s: Session): void {
   endAndClear(s.subscribers)
   endAndClear(s.permissionSubscribers)
   endAndClear(s.elicitationSubscribers)
+  endAndClear(s.dialogSubscribers)
   endAndClear(s.contextUsageSubscribers)
   endAndClear(s.gitStatusSubscribers)
   endAndClear(s.messageStatusSubscribers)
@@ -527,7 +574,13 @@ export interface SessionBroadcaster {
     snapshot: ElicitationRequestUi[]
     unsubscribe: () => void
   }
+  subscribeDialog(sessionId: string): {
+    iterable: AsyncIterable<DialogEvent>
+    snapshot: UserDialogRequestUi[]
+    unsubscribe: () => void
+  }
   subscribeContextUsage(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot?: import('./session-pump.js').LiteContextUsage | undefined; unsubscribe: () => void } | null
+  subscribePromptSuggestion(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot?: string | null; unsubscribe: () => void } | null
   subscribeGitStatus(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null
   /** Per-session subscription for `message-consumed` signal frames.
    *  Returns null when the session is unknown (callers short-circuit).

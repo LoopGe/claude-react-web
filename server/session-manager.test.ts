@@ -805,6 +805,71 @@ describe('SessionManager', () => {
     })
   })
 
+  describe('user dialogs (onUserDialog / supportedDialogKinds)', () => {
+    const sessionOf = (manager: SessionManager, id: string) => {
+      const internals = manager as unknown as {
+        sessions: Map<string, { dialogPending: Map<string, unknown> }>
+      }
+      const s = internals.sessions.get(id)
+      if (!s) throw new Error(`session ${id} not live`)
+      return s
+    }
+
+    it('spawns with the atomic onUserDialog + supportedDialogKinds pair', () => {
+      sm.create({})
+      const opts = mockHandles.at(-1)!.options as {
+        onUserDialog?: unknown
+        supportedDialogKinds?: string[]
+      }
+      expect(typeof opts.onUserDialog).toBe('function')
+      expect(opts.supportedDialogKinds).toEqual(['refusal_fallback_prompt'])
+    })
+
+    it('parks a known-kind dialog via the SDK callback and resolves it via decideDialog', async () => {
+      const info = sm.create({})
+      const opts = mockHandles.at(-1)!.options as {
+        onUserDialog?: (
+          req: { dialogKind: string; payload: Record<string, unknown> },
+          ctx: { signal: AbortSignal },
+        ) => Promise<{ behavior: string; result?: unknown }>
+      }
+      const promise = opts.onUserDialog!(
+        {
+          dialogKind: 'refusal_fallback_prompt',
+          payload: {
+            originalModel: 'model-a',
+            fallbackModel: 'model-b',
+            guidanceText: 'refused',
+            retractedMessageUuids: ['u1', 'u2'],
+          },
+        },
+        { signal: new AbortController().signal },
+      )
+      const s = sessionOf(sm, info.id)
+      expect(s.dialogPending.size).toBe(1)
+      const id = [...s.dialogPending.keys()][0]!
+      sm.decideDialog(info.id, id, { behavior: 'completed', result: 'retry_fallback' })
+      await expect(promise).resolves.toEqual({ behavior: 'completed', result: 'retry_fallback' })
+      expect(s.dialogPending.size).toBe(0)
+    })
+
+    it('auto-cancels unknown dialog kinds without parking', async () => {
+      const info = sm.create({})
+      const opts = mockHandles.at(-1)!.options as {
+        onUserDialog?: (
+          req: { dialogKind: string; payload: Record<string, unknown> },
+          ctx: { signal: AbortSignal },
+        ) => Promise<{ behavior: string; result?: unknown }>
+      }
+      const result = await opts.onUserDialog!(
+        { dialogKind: 'future_kind', payload: {} },
+        { signal: new AbortController().signal },
+      )
+      expect(result).toEqual({ behavior: 'cancelled' })
+      expect(sessionOf(sm, info.id).dialogPending.size).toBe(0)
+    })
+  })
+
   it('clear() removes the pre-clear session from the sidebar and returns a fresh session under a new id', async () => {
     const info = sm.create({})
     expect(mockHandles).toHaveLength(1)
