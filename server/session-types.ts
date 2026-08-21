@@ -203,6 +203,14 @@ export interface Session {
   /** Pending MCP elicitation (auth) requests awaiting a user decision. */
   elicitationPending: Map<string, PendingElicitation>
   history: SDKMessage[]
+  /** Subagent frames only (parent_tool_use_id != null) — a separate FIFO
+   *  budget (config subagentHistoryCap) so subagent volume can never evict
+   *  main-thread frames from `history`. Every read surface (replay, getHistory,
+   *  fork seeds, compact input) goes through SessionManager.mergedHistory(),
+   *  which merges both rings in receivedAt order. Not persisted to disk —
+   *  history-reader drops isSidechain lines, so after a server restart the
+   *  subagent transcript is gone (same as before the split). */
+  subagentHistory: SDKMessage[]
   pumpTask: Promise<void>
   running: boolean
   terminated: boolean
@@ -422,6 +430,14 @@ export interface SessionManagerOptions {
   providers?: ProviderRegistry
   defaultProvider?: string
   historyCap?: number
+  /** FIFO budget for the subagent ring — see ServerConfig.subagentHistoryCap.
+   *  Boot-time only (lives in the cached PumpDeps and existing rings), so it
+   *  is not in WRITABLE_CONFIG_KEYS. */
+  subagentHistoryCap?: number
+  /** Forward subagent text/thinking frames — see ServerConfig.forwardSubagentText.
+   *  Spawn-time SDK Options key, so it only takes effect for sessions created
+   *  after boot; not runtime-writable. */
+  forwardSubagentText?: boolean
   /** State directory. Used as the parent for the per-session
    *  prompt-uuid sidecar store (<stateDir>/prompt-uuids/<id>.json).
    *  Required in production (cli passes it); omitted in tests that

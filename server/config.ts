@@ -31,6 +31,15 @@ interface ConfigFile {
   commitMessageModel?: string
   maxUploadBytes?: number
   historyCap?: number
+  /** Separate FIFO budget for subagent frames (parent_tool_use_id != null)
+   *  in the in-memory replay ring. Independent of historyCap so subagent
+   *  volume never evicts main-thread frames. Default: 300. */
+  subagentHistoryCap?: number
+  /** Forward subagent text/thinking blocks into the message stream so the
+   *  client's SubagentOverlay can render the full nested transcript.
+   *  SDK Options key (spawn-time only — NOT a Settings key, so it cannot
+   *  be flipped at runtime). Default: true. */
+  forwardSubagentText?: boolean
   maxOpenPanels?: number
   /** Milliseconds of SDK silence before the session is considered stuck
    *  and auto-interrupted. Set to 0 to disable. Default: 1 hour. */
@@ -93,6 +102,10 @@ export interface ServerConfig {
   readonly commitMessageModel: string
   readonly maxUploadBytes: number
   readonly historyCap: number
+  /** FIFO budget for subagent frames — see ConfigFile.subagentHistoryCap. */
+  readonly subagentHistoryCap: number
+  /** Forward subagent text/thinking — see ConfigFile.forwardSubagentText. */
+  readonly forwardSubagentText: boolean
   readonly workingStuckMs: number
   readonly maxOpenPanels: number
   /** Undefined until config.json is loaded and `authToken` is populated.
@@ -145,6 +158,8 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   commitMessageModel: 'claude-haiku-4-5-20251001',
   maxUploadBytes: 25 * 1024 * 1024,
   historyCap: 500,
+  subagentHistoryCap: 300,
+  forwardSubagentText: true,
   workingStuckMs: 60 * 60 * 1000,
   maxOpenPanels: 3,
   authToken: undefined,
@@ -278,6 +293,16 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): v
   if (typeof file_.historyCap === 'number' && file_.historyCap > 0) {
     ;(merged as { historyCap: number }).historyCap = Math.round(file_.historyCap)
     log.info(`historyCap: ${merged.historyCap}`)
+  }
+
+  if (typeof file_.subagentHistoryCap === 'number' && file_.subagentHistoryCap > 0) {
+    ;(merged as { subagentHistoryCap: number }).subagentHistoryCap = Math.round(file_.subagentHistoryCap)
+    log.info(`subagentHistoryCap: ${merged.subagentHistoryCap}`)
+  }
+
+  if (typeof file_.forwardSubagentText === 'boolean') {
+    ;(merged as { forwardSubagentText: boolean }).forwardSubagentText = file_.forwardSubagentText
+    log.info(`forwardSubagentText: ${merged.forwardSubagentText}`)
   }
 
   if (typeof file_.maxOpenPanels === 'number' && file_.maxOpenPanels !== 0) {

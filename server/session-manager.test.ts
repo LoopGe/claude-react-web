@@ -693,6 +693,118 @@ describe('SessionManager', () => {
     sub.unsubscribe()
   })
 
+  describe('two-ring history split (main vs subagent)', () => {
+    const sessionOf = (manager: SessionManager, id: string) => {
+      const internals = manager as unknown as {
+        sessions: Map<string, { history: Array<{ uuid?: string }>; subagentHistory: Array<{ uuid?: string }> }>
+      }
+      const s = internals.sessions.get(id)
+      if (!s) throw new Error(`session ${id} not live`)
+      return s
+    }
+    const uuids = (frames: Array<{ uuid?: string }>) => frames.map((m) => m.uuid)
+
+    it('routes frames by parent_tool_use_id into separate rings', async () => {
+      const info = sm.create({})
+      mockHandles[0].emit({ type: 'assistant', uuid: 'm1', parent_tool_use_id: null, message: { content: 'main' } })
+      mockHandles[0].emit({ type: 'assistant', uuid: 's1', parent_tool_use_id: 'tu_task', message: { content: 'subagent text' } })
+      await tick()
+      const s = sessionOf(sm, info.id)
+      expect(uuids(s.history)).toEqual(['m1'])
+      expect(uuids(s.subagentHistory)).toEqual(['s1'])
+    })
+
+    it('subagent volume evicts only subagent frames — the main ring is untouched', async () => {
+      const smSmall = new SessionManager({ store, historyCap: 3, subagentHistoryCap: 2 })
+      const info = smSmall.create({})
+      const h = mockHandles.at(-1)!
+      // Fill the main ring to its cap…
+      for (let i = 0; i < 3; i++) {
+        h.emit({ type: 'assistant', uuid: `m${i}`, parent_tool_use_id: null, message: { content: 'x' } })
+      }
+      // …then flood past the subagent cap. Before the split this would have
+      // evicted main-thread frames out of the replay surface.
+      for (let i = 0; i < 5; i++) {
+        h.emit({ type: 'assistant', uuid: `s${i}`, parent_tool_use_id: 'tu_t', message: { content: 'x' } })
+      }
+      await tick()
+      const s = sessionOf(smSmall, info.id)
+      expect(uuids(s.history)).toEqual(['m0', 'm1', 'm2'])
+      expect(uuids(s.subagentHistory)).toEqual(['s3', 's4'])
+      await smSmall.shutdown()
+    })
+
+    it('subscribe() returns the merged chronological view of both rings', async () => {
+      const info = sm.create({})
+      // Pre-stamp receivedAt (stampReceivedAt is set-only-if-absent, so the
+      // pump keeps these) to force a deterministic interleaved order.
+      mockHandles[0].emit({ type: 'assistant', uuid: 'm1', parent_tool_use_id: null, receivedAt: 1, message: { content: 'x' } })
+      mockHandles[0].emit({ type: 'assistant', uuid: 's1', parent_tool_use_id: 'tu_t', receivedAt: 2, message: { content: 'x' } })
+      mockHandles[0].emit({ type: 'assistant', uuid: 'm2', parent_tool_use_id: null, receivedAt: 3, message: { content: 'x' } })
+      await tick()
+      const sub = sm.subscribe(info.id)
+      expect(uuids(sub.history as Array<{ uuid?: string }>)).toEqual(['m1', 's1', 'm2'])
+      sub.unsubscribe()
+    })
+
+    it('discard() seeds the fork with subagent frames re-split by origin', async () => {
+      const info = sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'go investigate')
+      // Subagent frames arrive between the main user prompt and the anchor
+      // assistant message — merged view order [user, s1, asst-1].
+      h0.emit({ type: 'assistant', uuid: 's1', parent_tool_use_id: 'tu_task', message: { role: 'assistant', content: [{ type: 'text', text: 'subagent thinking' }] } })
+      h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'final answer' }] } })
+      h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+      // Wait for the turn to land (lastTurnAt) and the anchor sidecar write
+      // (discard validates the anchor against the sidecar).
+      const smAny = sm as unknown as { turnAnchorStore: { load: (id: string) => Promise<Array<{ assistantUuid: string }>> | null } }
+      for (let i = 0; i < 60 && (sm.get(info.id).lastTurnAt === undefined || (((await smAny.turnAnchorStore.load(info.id)) ?? []).length === 0)); i++) await tick()
+
+      const y = await sm.discard(info.id, 'asst-1')
+
+      // Y's seed was the merged view [user, s1, asst-1]; spawn() re-split it
+      // by origin — main ring keeps the (uuid-rewritten) user prompt + the
+      // anchor, the subagent ring keeps s1.
+      const sY = sessionOf(sm, y.id)
+      const mainUuids = uuids(sY.history)
+      expect(mainUuids).toHaveLength(2)
+      expect(mainUuids[mainUuids.length - 1]).toBe('asst-1')
+      expect(uuids(sY.subagentHistory)).toEqual(['s1'])
+      // Merged replay of Y shows the subagent frame in its chronological slot.
+      const sub = sm.subscribe(y.id)
+      const merged = uuids(sub.history as Array<{ uuid?: string }>)
+      expect(merged).toHaveLength(3)
+      expect(merged[1]).toBe('s1')
+      expect(merged[2]).toBe('asst-1')
+      sub.unsubscribe()
+    })
+
+    it('messageCount counts both rings', async () => {
+      const info = sm.create({})
+      mockHandles[0].emit({ type: 'assistant', uuid: 'm1', parent_tool_use_id: null, message: { content: 'x' } })
+      mockHandles[0].emit({ type: 'assistant', uuid: 's1', parent_tool_use_id: 'tu_t', message: { content: 'x' } })
+      mockHandles[0].emit({ type: 'assistant', uuid: 's2', parent_tool_use_id: 'tu_t', message: { content: 'x' } })
+      await tick()
+      expect(sm.get(info.id).messageCount).toBe(3)
+    })
+
+    it('passes forwardSubagentText (resolved from config default) to the SDK Options', async () => {
+      sm.create({})
+      // Compare against defaultConfig, not literal true: the test process
+      // shares the machine's real ~/.claude-react-web/config.json, and the
+      // wiring under test is config → manager → provider → sdkOptions.
+      expect(mockHandles.at(-1)!.options.forwardSubagentText).toBe(defaultConfig.forwardSubagentText)
+    })
+
+    it('forwards an explicit forwardSubagentText: false override', async () => {
+      const smOff = new SessionManager({ store, forwardSubagentText: false })
+      smOff.create({})
+      expect(mockHandles.at(-1)!.options.forwardSubagentText).toBe(false)
+      await smOff.shutdown()
+    })
+  })
+
   it('clear() removes the pre-clear session from the sidebar and returns a fresh session under a new id', async () => {
     const info = sm.create({})
     expect(mockHandles).toHaveLength(1)

@@ -39,6 +39,7 @@ function makeFakeSession(overrides: Partial<Session> = {}): Session {
     elicitationSubscribers: new Map(),
     elicitationPending: new Map(),
     history: [],
+    subagentHistory: [],
     pumpTask: Promise.resolve(),
     running: true,
     terminated: false,

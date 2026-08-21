@@ -106,6 +106,45 @@ Must be a positive integer. Higher values use more memory but allow the UI to sc
 
 ---
 
+### `subagentHistoryCap`
+
+| | |
+|---|---|
+| Type | `number` (messages) |
+| Default | `300` |
+
+Maximum number of **subagent frames** (messages with `parent_tool_use_id` set — subagent tool hops plus the text/thinking frames forwarded when `forwardSubagentText` is on) kept in memory per session. These live in a separate ring from `historyCap`, so a long subagent turn can only evict older subagent frames — it can never push main-thread messages out of the replay window.
+
+```json
+{
+  "subagentHistoryCap": 300
+}
+```
+
+Must be a positive integer. Boot-time only (requires a server restart); not writable via the runtime config API. Like `historyCap`, this only bounds the in-memory replay surface — disk history is unaffected.
+
+---
+
+### `forwardSubagentText`
+
+| | |
+|---|---|
+| Type | `boolean` |
+| Default | `true` |
+
+Forward subagent text/thinking blocks into the message stream (SDK `Options.forwardSubagentText`) so the client's SubagentOverlay can render the full nested transcript — thinking, text, and tool calls interleaved — instead of only tool cards.
+
+```json
+{
+  "forwardSubagentText": true
+}
+```
+
+Spawn-time only: the flag is applied when each session's SDK subprocess starts, so flipping it requires a server restart and only affects sessions created afterward (existing sessions keep their spawn-time behavior until re-resumed). It is an SDK `Options` key, not a `Settings` key, so it cannot be toggled at runtime through the settings panel.
+
+---
+
+
 ### `workingStuckMs`
 
 | | |

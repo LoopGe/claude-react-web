@@ -28,10 +28,26 @@ export function pushBounded<T>(arr: T[], item: T, cap: number): void {
  * `receivedAt` is added defensively (only when absent) so a message that
  * somehow flows through twice keeps its original time. Typed loosely because
  * the field isn't part of the upstream SDKMessage shape.
+ *
+ * Stamps are MONOTONIC across the process: when the wall clock hasn't ticked
+ * since the previous stamp (frames of one burst routinely land in the same
+ * millisecond), the value is last+1. This keeps `receivedAt` order strictly
+ * equal to arrival order, which mergedHistory() relies on — a plain
+ * Date.now() would tie a subagent frame with the main-thread frames around
+ * it, and the merge sort (stable, over `[...main, ...sub]`) would then float
+ * the subagent frame after every same-ms main frame, corrupting the
+ * single-ring arrival-order contract that replay, discard seeds, and the
+ * client's uuid-anchored dedup all assume. The counter only ever leads the
+ * wall clock by the size of a same-ms burst (a few ms), so the value stays a
+ * faithful "when received" timestamp for display.
  */
+let lastReceivedAtStamp = 0
+
 export function stampReceivedAt(msg: unknown): void {
   if (msg && typeof msg === 'object' && (msg as { receivedAt?: number }).receivedAt == null) {
-    ;(msg as { receivedAt?: number }).receivedAt = Date.now()
+    const now = Date.now()
+    lastReceivedAtStamp = now > lastReceivedAtStamp ? now : lastReceivedAtStamp + 1
+    ;(msg as { receivedAt?: number }).receivedAt = lastReceivedAtStamp
   }
 }
 

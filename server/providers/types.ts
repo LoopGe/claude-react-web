@@ -25,6 +25,11 @@ export interface CreateSessionOptions {
   enabledPlugins?: string[]
   includePartialMessages?: boolean
   includeHookEvents?: boolean
+  /** Forward subagent text/thinking blocks as assistant/user frames with
+   *  parent_tool_use_id set (SDK Options.forwardSubagentText). Resolved by
+   *  the session-manager from config and passed explicitly on every spawn /
+   *  respawn — the provider just forwards it. */
+  forwardSubagentText?: boolean
   resume?: string
   forkSession?: boolean
   /** When forking (forkSession + resume), truncate the fork's loaded history

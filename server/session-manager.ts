@@ -37,7 +37,7 @@ import { execCommand, escapeXml } from './exec.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig } from './config.js'
 import { createAsyncSubscription } from './async-subscription.js'
-import { pump as pumpSession, type PumpDeps } from './session-pump.js'
+import { pump as pumpSession, getParentToolUseId, type PumpDeps } from './session-pump.js'
 import {
   type Subscriber,
   type PermissionEvent,
@@ -369,6 +369,8 @@ type SdkModelInfo = {
 export class SessionManager {
   private sessions = new Map<string, Session>()
   private historyCap: number
+  private subagentHistoryCap: number
+  private forwardSubagentText: boolean
   private autoResumeEnabled: boolean
   private crashRecoveryEnabled: boolean
   /** Max crash-recovery attempts per crash episode before giving up.
@@ -408,6 +410,8 @@ export class SessionManager {
   private cachedPumpDeps?: PumpDeps
   constructor(opts: SessionManagerOptions = {}) {
     this.historyCap = opts.historyCap ?? defaultConfig.historyCap
+    this.subagentHistoryCap = opts.subagentHistoryCap ?? defaultConfig.subagentHistoryCap
+    this.forwardSubagentText = opts.forwardSubagentText ?? defaultConfig.forwardSubagentText
     this.permBroker = new PermissionBroker()
     this.elicitBroker = new ElicitationBroker()
     this.autoResumeEnabled = opts.autoResume ?? false
@@ -798,7 +802,8 @@ export class SessionManager {
       memory: s.memory,
       effortLevel: s.effortLevel,
       hooks: s.hooks,
-      messageCount: s.history.length,
+      // Both rings count — parity with the old single mixed ring.
+      messageCount: s.history.length + s.subagentHistory.length,
       terminated: s.terminated,
       terminatedReason: s.terminatedReason,
       error: s.error,
@@ -1333,7 +1338,7 @@ export class SessionManager {
         betas: meta.betas,
         // SessionMeta tracks messageCount; the live Session tracks
         // history. Use whichever applies. (`meta` is one or the other.)
-        messageCount: live ? live.history.length : (meta as SessionMeta).messageCount,
+        messageCount: live ? live.history.length + live.subagentHistory.length : (meta as SessionMeta).messageCount,
         terminated: true,
         terminatedReason: 'transcript_missing',
         lastTurnAt: meta.lastTurnAt,
@@ -1504,14 +1509,16 @@ export class SessionManager {
     let historySeed: SDKMessage[] | undefined
     let seedSource = 'none'
     try {
-      // Prefer X's in-memory history ring: it contains result frames (the
-      // SDK doesn't persist result to disk). Using the ring preserves the
-      // per-turn result summaries (cost/duration/turns) the client renders,
-      // which a disk-only seed would drop.
-      if (liveX && liveX.history.length > 0) {
-        const ringAnchor = liveX.history.findIndex((m) => (m as { uuid?: string }).uuid === fromAssistantUuid)
+      // Prefer X's in-memory history rings (merged view): they contain result
+      // frames (the SDK doesn't persist result to disk) plus subagent frames
+      // the disk reader drops. Using the rings preserves the per-turn result
+      // summaries (cost/duration/turns) the client renders, which a disk-only
+      // seed would drop. The mixed seed is re-split by frame origin in spawn().
+      const mergedX = liveX ? this.mergedHistory(liveX) : []
+      if (liveX && mergedX.length > 0) {
+        const ringAnchor = mergedX.findIndex((m) => (m as { uuid?: string }).uuid === fromAssistantUuid)
         if (ringAnchor >= 0) {
-          historySeed = liveX.history.slice(0, ringAnchor + 1) as SDKMessage[]
+          historySeed = mergedX.slice(0, ringAnchor + 1) as SDKMessage[]
           seedSource = 'ring'
         }
       }
@@ -1572,9 +1579,13 @@ export class SessionManager {
     if (opts?.deleteOriginal) {
       await this.unload(id, { terminated: true, reason: 'discarded', removeFromStore: true })
       await deleteTranscriptFile(id)
-      void this.turnAnchorStore.remove(id)
-      void this.resultFrameStore.remove(id)
-      void this.promptUuidStore.remove(id)
+      // Await the sidecar removals (not fire-and-forget): callers — the REST
+      // route and tests — read them immediately after discard returns, so a
+      // pending remove races the read (observed as a flaky "sidecar gone"
+      // assertion under full-suite load).
+      await this.turnAnchorStore.remove(id)
+      await this.resultFrameStore.remove(id)
+      await this.promptUuidStore.remove(id)
     } else {
       await this.unload(id, { removeFromStore: true })
     }
@@ -1690,7 +1701,7 @@ export class SessionManager {
         permissionMode: meta.permissionMode,
         title: meta.title,
         betas: meta.betas,
-        messageCount: live ? live.history.length : (meta as SessionMeta).messageCount,
+        messageCount: live ? live.history.length + live.subagentHistory.length : (meta as SessionMeta).messageCount,
         terminated: true,
         terminatedReason: 'transcript_missing',
         lastTurnAt: meta.lastTurnAt,
@@ -1833,6 +1844,17 @@ export class SessionManager {
     const createdAt = existingMeta?.createdAt ?? Date.now()
     const metaSnapshot = this.snapshotMeta(fullOpts, providerName)
 
+    // Split the resume/discard seed by frame origin (see the Session literal
+    // below for why). stampReceivedAt is set-only-if-absent, so frames that
+    // already carry a timestamp (the normal case) keep it.
+    const seedMain: SDKMessage[] = []
+    const seedSub: SDKMessage[] = []
+    for (const m of historySeed ?? []) {
+      stampReceivedAt(m)
+      if (getParentToolUseId(m) != null) seedSub.push(m)
+      else seedMain.push(m)
+    }
+
     const session: Session = {
       id,
       createdAt,
@@ -1858,7 +1880,15 @@ export class SessionManager {
       // special-casing. readHistoryPage already normalizes to the live wire
       // shape (see history-reader.ts), so seeded and live frames are
       // indistinguishable downstream.
-      history: historySeed ? historySeed.slice(-this.historyCap) : [],
+      // Seed split by frame origin: main-thread frames go to `history`,
+      // subagent frames (parent_tool_use_id != null — only present in seeds
+      // built from a live session's merged view, e.g. discard(); the disk
+      // reader drops isSidechain lines) to `subagentHistory`. Each ring takes
+      // its own tail, so neither budget can crowd the other at seed time.
+      // stampReceivedAt fills in any frame that lacks a timestamp (a disk
+      // line without one) so the mergedHistory sort stays a total order.
+      history: seedMain.slice(-this.historyCap),
+      subagentHistory: seedSub.slice(-this.subagentHistoryCap),
       contextUsageSubscribers: new Set(),
       lastContextUsage: undefined,
       gitStatusSubscribers: new Set(),
@@ -1994,6 +2024,10 @@ export class SessionManager {
       enabledPlugins: (fullOpts as { enabledPlugins?: string[] }).enabledPlugins ?? existingMeta?.enabledPlugins,
       includePartialMessages: fullOpts.includePartialMessages,
       includeHookEvents: true,
+      // Forward subagent text/thinking frames so SubagentOverlay can render
+      // the nested transcript. Spawn-time SDK Options key (config-gated;
+      // not runtime-switchable — it's not a Settings key).
+      forwardSubagentText: this.forwardSubagentText,
       resume: fullOpts.resume,
       forkSession: fullOpts.forkSession,
       resumeSessionAt: (fullOpts as { resumeSessionAt?: string }).resumeSessionAt,
@@ -2528,12 +2562,16 @@ export class SessionManager {
       case 'working':
         throw new HttpError(409, `session ${id} is working; retry when idle`)
     }
-    const summary = await summarizeForCompact(s.history.slice(), s.model)
+    // Merged view — behavior parity with the old single mixed ring (the
+    // summarizer always saw subagent tool frames; it still sees subagent
+    // frames, including the now-forwarded text/thinking ones).
+    const merged = this.mergedHistory(s)
+    const summary = await summarizeForCompact(merged, s.model)
     if (!summary) {
       log.info(`[session ${id}] compact: no compressible content, falling back to plain clear`)
       return this.clear(id)
     }
-    log.info(`[session ${id}] compact: summarised ${s.history.length} messages, seeding fresh session`)
+    log.info(`[session ${id}] compact: summarised ${merged.length} messages, seeding fresh session`)
     return this.clear(id, { seedText: summary })
   }
 
@@ -3560,6 +3598,24 @@ export class SessionManager {
     this.broadcastGlobal({ kind: 'update', session: this.info(s) })
   }
 
+  /** Chronological merged view of both history rings (sort by receivedAt).
+   *  This is the ONLY read surface for the rings — replay (subscribe),
+   *  snapshots (getHistory), fork/discard seeds, and the compact summarizer
+   *  input all go through it, preserving the exact ordering contract the old
+   *  single mixed ring had. Every frame in either ring is stamped (pump
+   *  stamps before pushing; the spawn seed split stamps), and the stamps are
+   *  monotonic (see stampReceivedAt) — so the sort is a strict total order
+   *  equal to arrival order. A plain Date.now() here would NOT suffice:
+   *  same-ms frames tie, and a stable sort over `[...main, ...sub]` would
+   *  float same-ms subagent frames after every main frame. */
+  private mergedHistory(s: Session): SDKMessage[] {
+    return [...s.history, ...s.subagentHistory].sort(
+      (a, b) =>
+        ((a as { receivedAt?: number }).receivedAt ?? 0) -
+        ((b as { receivedAt?: number }).receivedAt ?? 0),
+    )
+  }
+
   /**
    * Subscribe to live events. Returns (1) an AsyncIterable the caller can
    * stream to clients, and (2) a snapshot of history so the caller can replay
@@ -3581,7 +3637,7 @@ export class SessionManager {
 
     return {
       iterable: sub.iterable,
-      history: s.history.slice(),
+      history: this.mergedHistory(s),
       unsubscribe: () => {
         sub.end()
         s.subscribers.delete(subId)
@@ -3734,7 +3790,7 @@ export class SessionManager {
         pendingPermissions: s.pending.size,
         lastActivityAt: s.lastActivityAt,
         workingSince: isWorking ? s.workingSince : undefined,
-        historyLength: s.history.length,
+        historyLength: s.history.length + s.subagentHistory.length,
       })
     }
     return out
@@ -3818,7 +3874,7 @@ export class SessionManager {
    *  Returns null for dormant (not-in-memory) sessions. */
   getHistory(id: string): SDKMessage[] | null {
     const s = this.sessions.get(id)
-    return s ? s.history.slice() : null
+    return s ? this.mergedHistory(s) : null
   }
 
   /** Cached context-usage snapshot for a session, or null when the session is
@@ -4060,7 +4116,7 @@ export class SessionManager {
       createdAt: s.createdAt,
       lastActivityAt: s.lastActivityAt,
       subscribers: s.subscribers.size,
-      messageCount: s.history.length,
+      messageCount: s.history.length + s.subagentHistory.length,
       cwd: s.cwd,
       model: s.model,
       permissionMode: s.permissionMode,
@@ -4174,6 +4230,7 @@ export class SessionManager {
     if (!this.cachedPumpDeps) {
       this.cachedPumpDeps = {
         historyCap: this.historyCap,
+        subagentHistoryCap: this.subagentHistoryCap,
         persist: (s) => this.persist(s),
         denyPendingPermissions: (s) => { this.permBroker.denyAll(s); this.elicitBroker.cancelAll(s) },
         isLive: (id) => this.sessions.has(id),
@@ -4405,6 +4462,7 @@ export class SessionManager {
       memory: session.memory,
       enabledPlugins: session.enabledPlugins,
       includeHookEvents: true,
+      forwardSubagentText: this.forwardSubagentText,
       resume: session.id,
       onUserMessageConsumed: (msg) => this.onInputConsumed(session.id, msg as SDKUserMessage),
       canUseTool: session.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,

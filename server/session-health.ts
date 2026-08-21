@@ -92,8 +92,10 @@ export class SessionHealthMonitor {
     if (idleSince <= this.deps.workingStuckMs) return
 
     // Init never landed: no point sending interrupt control frames into a
-    // half-spawned subprocess. Schedule unload directly.
-    if (s.history.length === 0) {
+    // half-spawned subprocess. Schedule unload directly. (Both rings — frame
+    // arrival order guarantees main frames precede subagent ones, but summing
+    // keeps the check equivalent to the pre-split single ring.)
+    if (s.history.length + s.subagentHistory.length === 0) {
       log.warn(
         `[session ${id}] init never completed — no messages after ${idleSince}ms ` +
         `(pendingTurns=${s.pendingTurns}, subscribers=${s.subscribers.size}). Force-unloading.`,
@@ -124,7 +126,7 @@ export class SessionHealthMonitor {
     log.warn(
       `[session ${id}] no SDK message for ${idleSince}ms — auto-interrupting ` +
       `(pendingTurns=${s.pendingTurns}, pending perms=${s.pending.size}, ` +
-      `subscribers=${s.subscribers.size}, history=${s.history.length})`,
+      `subscribers=${s.subscribers.size}, history=${s.history.length + s.subagentHistory.length})`,
     )
     s.autoInterruptedAt = now
     if (!s.handle.interrupt) {

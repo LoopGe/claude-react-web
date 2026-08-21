@@ -209,6 +209,10 @@ export function fastModeStateOf(msg: SDKMessage): FastModeState | undefined {
 
 export interface PumpDeps {
   historyCap: number
+  /** Separate FIFO budget for subagent frames (parent_tool_use_id != null).
+   *  Independent of historyCap so subagent volume never evicts main-thread
+   *  frames from the replay surface. */
+  subagentHistoryCap: number
   persist: (session: Session) => void
   denyPendingPermissions: (session: Session) => void
   /** Return true if the session is still tracked in the manager's live map.
@@ -570,7 +574,18 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // the replay surface within seconds, so a reload during/after the
         // flood loses recent durable messages.
         if (isTranscriptMessage(msg)) {
-          pushBounded(session.history, msg, deps.historyCap)
+          // Split by frame origin: subagent frames (parent_tool_use_id
+          // set — tool hops plus the text/thinking frames forwarded when
+          // Options.forwardSubagentText is on) live in their own FIFO ring
+          // with a separate budget, so a long subagent turn can evict only
+          // older subagent frames, never main-thread ones. Read surfaces
+          // see the two rings through SessionManager.mergedHistory().
+          const isSubagentFrame = getParentToolUseId(msg) != null
+          pushBounded(
+            isSubagentFrame ? session.subagentHistory : session.history,
+            msg,
+            isSubagentFrame ? deps.subagentHistoryCap : deps.historyCap,
+          )
         }
 
         // Only broadcast system messages that the frontend actually needs.
