@@ -465,6 +465,7 @@ export function endAllSubscribers(s: Session): void {
   endAndClear(s.elicitationSubscribers)
   endAndClear(s.dialogSubscribers)
   endAndClear(s.contextUsageSubscribers)
+  endAndClear(s.promptSuggestionSubscribers)
   endAndClear(s.gitStatusSubscribers)
   endAndClear(s.messageStatusSubscribers)
   endAndClear(s.commandSubscribers)

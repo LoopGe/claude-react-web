@@ -54,6 +54,7 @@ The server uses a single WebSocket connection per browser tab (`server/ws.ts`) t
 - `session-cleared` — a `/clear` completed and the server truncated its history ring; clients reset their transcript store
 - `global-permission-request` — cross-session permission notification (for sidebar badge)
 - `context-usage` — per-session context window usage
+- `prompt-suggestion` — predicted next-user-prompt pushed after each turn when the SDK's `promptSuggestions` option is on (default). Ephemeral: it bypasses the history ring entirely (pump early-`continue`s on `prompt_suggestion` messages), rides a dedicated psug channel mirroring context-usage, and is cleared client-side when the user sends a message or the transcript is cleared
 - `session-recap-update` — a recap state transition (pending / ready / error / cleared) for this session
 - `hook-run` — a hook lifecycle event fired during the turn
 - `commands-changed` — the supported slash-command set changed (e.g. after dynamic skill/command discovery)
