@@ -164,7 +164,12 @@ async function getGitDir(cwd: string): Promise<string | null> {
 /** Detect in-progress merge/rebase/cherry-pick/etc by looking for the
  *  marker files git drops in $GIT_DIR. The order matters slightly —
  *  rebase markers can coexist with cherry-pick markers, and we surface
- *  whichever the user is most likely to need to abort first. */
+ *  whichever the user is most likely to need to abort first.
+ *
+ *  REBASE_HEAD is deliberately NOT checked: it can linger after a rebase
+ *  is aborted or its process is killed, and git itself only reports a
+ *  rebase in progress via the rebase-apply/ or rebase-merge/ dirs — a
+ *  lone REBASE_HEAD is stale residue, not an active rebase. */
 async function detectInProgressState(cwd: string): Promise<GitRepoState | null> {
   const gitDir = await getGitDir(cwd)
   if (!gitDir) return null
@@ -176,7 +181,6 @@ async function detectInProgressState(cwd: string): Promise<GitRepoState | null> 
   const results = await Promise.all([
     check('rebase-apply', 'rebasing'),
     check('rebase-merge', 'rebasing'),
-    check('REBASE_HEAD', 'rebasing'),
     check('MERGE_HEAD', 'merging'),
     check('CHERRY_PICK_HEAD', 'cherry-picking'),
     check('REVERT_HEAD', 'reverting'),

@@ -231,6 +231,21 @@ describe('git-routes', () => {
       const body = await json<{ state: string }>(res)
       expect(body.state).toBe('rebasing')
     })
+
+    it.skipIf(!gitOk)('ignores a stale REBASE_HEAD left behind by an aborted rebase', async () => {
+      gitInit(dir)
+      writeFileSync(join(dir, 'a.txt'), 'a\n')
+      const sha = gitCommitAll(dir, 'init')
+      // REBASE_HEAD can linger after a rebase is aborted / the process is
+      // killed. git itself does not report a rebase in progress from a lone
+      // REBASE_HEAD (only rebase-apply/ or rebase-merge/ count), so neither
+      // should we.
+      writeFileSync(join(dir, '.git', 'REBASE_HEAD'), `${sha}\n`)
+      const app = buildApp()
+      const res = await app.request(`/api/git/status?cwd=${encodeURIComponent(dir)}`)
+      const body = await json<{ state: string }>(res)
+      expect(body.state).toBe('clean')
+    })
   })
 
   describe('GET /api/git/diff', () => {
