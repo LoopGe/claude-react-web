@@ -67,9 +67,15 @@ interface Props {
   canInterrupt: boolean
   /** Background every in-flight foreground task (the CLI's Ctrl+B
    *  semantics): the model immediately receives a "running in background"
-   *  tool_result and the turn continues. Shown only while canInterrupt —
-   *  there's nothing to background without an in-flight turn. */
+   *  tool_result and the turn continues. The Send/Interrupt control morphs
+   *  into this action while `canBackground` is true (see below) — no extra
+   *  button slot, so the composer's height never changes. */
   onBackground?: () => void
+  /** True only while a blocking tool call is actually executing (the
+   *  tool_use stream phase) — the one state where backgrounding has any
+   *  effect. During thinking/writing phases the control stays Interrupt;
+   *  Esc always interrupts regardless of the button's current mode. */
+  canBackground?: boolean
   /** Bump this number whenever the parent wants the textarea refocused
    *  (e.g. after a successful send, where the click on the Send button
    *  would otherwise leave focus on the button). */
@@ -126,6 +132,7 @@ export const Composer = memo(function Composer({
   onInterrupt,
   canInterrupt,
   onBackground,
+  canBackground,
   focusSignal,
   onRecap,
   canRecap,
@@ -389,6 +396,12 @@ export const Composer = memo(function Composer({
   ])
 
   const canSend = !disabled && !sending && (input.trim() !== '' || attachments.length > 0 || pastedImages.length > 0)
+  // Background mode: the Send/Interrupt control morphs into the Background
+  // action only when a turn is running AND the parent reports a blocking
+  // tool call actually in flight. `canBackground` alone (without the turn)
+  // must not flip the control — the parent derives it from the stream phase
+  // which can lag a turn's true start/end by the dwell window.
+  const backgroundMode = canInterrupt && canBackground === true && onBackground != null
 
   if (terminated) {
     const reasonText =
@@ -745,34 +758,25 @@ export const Composer = memo(function Composer({
         >
           <IconPaperclip size={18} />
         </button>
-        {/* Background in-flight tasks (Ctrl+B semantics) — only while a turn
-            is running and the parent wired the handler. Distinct from
-            Interrupt: the turn continues, the running command/subagent just
-            detaches to the background task list. */}
-        {canInterrupt && onBackground && (
-          <button
-            className="btn btn-icon"
-            type="button"
-            onClick={onBackground}
-            title="Background current tasks"
-            aria-label="Background current tasks"
-          >
-            <IconArrowDown size={18} />
-          </button>
-        )}
-        {/* Send / Interrupt share one stable control; the SVG morphs between
-            arrow and stop-square so the state change reads as an in-icon
-            transition instead of a whole-button swap. */}
+        {/* Send / Interrupt / Background share one stable control — a
+            three-state morph (arrow → stop-square → arrow-down) so every
+            state change reads as an in-icon transition and the composer's
+            height never changes. Background mode (Ctrl+B semantics) appears
+            only while a blocking tool call is actually executing
+            (`canBackground`): clicking detaches it to the background task
+            list and the turn continues; Esc still interrupts at any time. */}
         <button
-          className={'btn btn-icon ' + (canInterrupt ? 'btn-danger' : 'btn-primary')}
+          className={'btn btn-icon ' + (canInterrupt && !backgroundMode ? 'btn-danger' : 'btn-primary')}
           type="button"
-          onClick={canInterrupt ? onInterrupt : onSend}
+          onClick={backgroundMode ? onBackground : canInterrupt ? onInterrupt : onSend}
           disabled={!canInterrupt && !canSend}
-          title={canInterrupt ? 'Interrupt the current turn' : 'Send message (Enter)'}
-          aria-label={canInterrupt ? 'Interrupt the current turn' : 'Send message'}
+          title={backgroundMode ? 'Background current tasks (Esc interrupts)' : canInterrupt ? 'Interrupt the current turn' : 'Send message (Enter)'}
+          aria-label={backgroundMode ? 'Background current tasks' : canInterrupt ? 'Interrupt the current turn' : 'Send message'}
         >
           {sending && !canInterrupt ? (
             <IconLoader size={18} className="composer-send-spinner" />
+          ) : backgroundMode ? (
+            <IconArrowDown size={18} />
           ) : (
             <IconSendInterruptToggle
               size={canInterrupt ? 16 : 18}

@@ -596,6 +596,12 @@ export const Chat = memo(function Chat({
   // between phases don't churn the label. `turnActive` above keeps the raw
   // activePhase so turn-end detection stays immediate.
   const displayPhase = usePhaseDwell(stream.activePhase)
+  // A blocking tool call is actually executing — the only state where
+  // backgrounding (Ctrl+B) has any effect. Derived from the dwell-smoothed
+  // phase so per-block flicker doesn't ripple into the Composer control.
+  // The object branch of ActivePhase is the tool_use phase; the string
+  // branches ('thinking' / 'writing') have nothing to detach.
+  const canBackground = session.working && displayPhase != null && typeof displayPhase === 'object'
   /** A background (async) subagent still in flight after the parent turn
    *  ended. The WorkingBubble stays mounted in a `Waiting` state while any
    *  such subagent exists, so the user sees that background work is ongoing
@@ -1351,15 +1357,18 @@ export const Chat = memo(function Chat({
 
   /** Background every in-flight foreground task (Ctrl+B semantics) — the
    *  turn continues while the running command/subagent detaches to the
-   *  background task list. The server's `backgrounded: false` response
-   *  (nothing to background) is benign; no error surface needed. */
+   *  background task list. The response is surfaced as a toast either way:
+   *  without it the action reads as a silent no-op when nothing was
+   *  backgroundable (e.g. the phase flipped between render and click). */
   const backgroundTasks = useCallback(async () => {
     try {
-      await api.post(`/sessions/${session.id}/tasks/background`, {})
+      const res = await api.post<{ backgrounded?: boolean }>(`/sessions/${session.id}/tasks/background`, {})
+      if (res.backgrounded) toast.success('Backgrounded — the turn continues')
+      else toast.info('No running task to background')
     } catch (e) {
       setLocalError((e as Error).message)
     }
-  }, [session.id])
+  }, [session.id, toast])
 
   /** Force-stop the current in-flight `!`/`!!` command (SIGKILL the child),
    *  like Ctrl+C. The server then completes execInSession with
@@ -1829,6 +1838,7 @@ export const Chat = memo(function Chat({
       onInterrupt={handleInterrupt}
       canInterrupt={session.working}
       onBackground={handleBackground}
+      canBackground={canBackground}
       focusSignal={effectiveComposerFocusSignal}
       onRecap={recap.refresh}
       canRecap={!!session.lastTurnAt}

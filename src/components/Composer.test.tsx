@@ -117,6 +117,48 @@ describe('Composer', () => {
     expect(container.querySelector('[aria-label="Interrupt the current turn"]')).toBeNull()
   })
 
+  it('morphs the control into Background while a turn runs in tool_use phase', () => {
+    const { container } = render(
+      <Composer {...defaultProps} canInterrupt canBackground onBackground={noop} />,
+    )
+    // Background replaces Interrupt on the SAME control (three-state morph)
+    // — no extra button slot, so the composer layout never changes.
+    expect(container.querySelector('[aria-label="Background current tasks"]')).not.toBeNull()
+    expect(container.querySelector('[aria-label="Interrupt the current turn"]')).toBeNull()
+    expect(container.querySelector('[aria-label="Send message"]')).toBeNull()
+  })
+
+  it('keeps Interrupt (not Background) while a turn runs without a blocking tool', () => {
+    const { container } = render(
+      <Composer {...defaultProps} canInterrupt canBackground={false} onBackground={noop} />,
+    )
+    // thinking/writing phases have nothing to detach — the control stays
+    // Interrupt; Esc remains the always-on interrupt path.
+    expect(container.querySelector('[aria-label="Interrupt the current turn"]')).not.toBeNull()
+    expect(container.querySelector('[aria-label="Background current tasks"]')).toBeNull()
+  })
+
+  it('ignores canBackground without an in-flight turn (parent phase lag)', () => {
+    const { container } = render(
+      <Composer {...defaultProps} canInterrupt={false} canBackground onBackground={noop} />,
+    )
+    // The dwell-smoothed phase can outlive the turn by a beat — the control
+    // must fall back to Send, never show Background on an idle session.
+    expect(container.querySelector('[aria-label="Send message"]')).not.toBeNull()
+    expect(container.querySelector('[aria-label="Background current tasks"]')).toBeNull()
+  })
+
+  it('routes a click in Background mode to onBackground, not onInterrupt', () => {
+    const onBackground = vi.fn()
+    const onInterrupt = vi.fn()
+    const { container } = render(
+      <Composer {...defaultProps} canInterrupt canBackground onBackground={onBackground} onInterrupt={onInterrupt} />,
+    )
+    fireEvent.click(container.querySelector('[aria-label="Background current tasks"]')!)
+    expect(onBackground).toHaveBeenCalledOnce()
+    expect(onInterrupt).not.toHaveBeenCalled()
+  })
+
   it('shows session ended instead of textarea when terminated', () => {
     const { container } = render(
       <Composer {...defaultProps} terminated />,
