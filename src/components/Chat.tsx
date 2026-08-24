@@ -622,22 +622,6 @@ export const Chat = memo(function Chat({
   // between phases don't churn the label. `turnActive` above keeps the raw
   // activePhase so turn-end detection stays immediate.
   const displayPhase = usePhaseDwell(stream.activePhase)
-  // A blocking tool call may be executing — Background is offered whenever
-  // the turn is running AND the phase isn't a KNOWN nothing-to-detach state.
-  // Known detachable: the tool_use phase (ActivePhase's object branch). Known
-  // empty: 'thinking' / 'writing'. Unknown (phase null): optimistic — show
-  // Background and let the toast cover a miss. Phase is unknown in three
-  // real cases: a store rebuild mid-tool-run (replay never carries
-  // stream_event deltas), sessions created with includePartialMessages:false
-  // (phase is null for the whole lifetime), and the beat before the first
-  // content_block_start. Uses the RAW stream phase, not the dwell-smoothed
-  // `displayPhase`: dwell exists to stop label flicker, and feeding it into
-  // a control decision makes the button lag phase reality by the dwell
-  // window. phase→null commits immediately, so no post-turn leak.
-  const canBackground =
-    session.working &&
-    (stream.activePhase == null ||
-      (typeof stream.activePhase === 'object' && stream.activePhase.type === 'tool_use'))
   /** A background (async) subagent still in flight after the parent turn
    *  ended. The WorkingBubble stays mounted in a `Waiting` state while any
    *  such subagent exists, so the user sees that background work is ongoing
@@ -1481,6 +1465,9 @@ export const Chat = memo(function Chat({
   // Stable wrappers so Composer's React.memo isn't defeated by inline arrows.
   const handleSend = useCallback(() => void send(), [send])
   const handleInterrupt = useCallback(() => void interrupt(), [interrupt])
+  // Alt+B-only entry: the Composer's shared control no longer morphs into
+  // Background (phase-keyed morph flickered on every phase transition), so
+  // this callback's only consumer is the App-level shortcut registry.
   const handleBackground = useCallback(() => void backgroundTasks(), [backgroundTasks])
 
   // Expose the backgroundTasks callback to the parent so the Alt+B shortcut
@@ -1897,8 +1884,6 @@ export const Chat = memo(function Chat({
       onSend={handleSend}
       onInterrupt={handleInterrupt}
       canInterrupt={session.working}
-      onBackground={handleBackground}
-      canBackground={canBackground}
       focusSignal={effectiveComposerFocusSignal}
       onRecap={recap.refresh}
       canRecap={!!session.lastTurnAt}

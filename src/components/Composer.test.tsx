@@ -117,15 +117,20 @@ describe('Composer', () => {
     expect(container.querySelector('[aria-label="Interrupt the current turn"]')).toBeNull()
   })
 
-  it('morphs the control into Background while a turn runs in tool_use phase', () => {
-    const { container } = render(
-      <Composer {...defaultProps} canInterrupt canBackground onBackground={noop} />,
-    )
-    // Background replaces Interrupt on the SAME control (three-state morph)
-    // — no extra button slot, so the composer layout never changes.
-    expect(container.querySelector('[aria-label="Background current tasks"]')).not.toBeNull()
-    expect(container.querySelector('[aria-label="Interrupt the current turn"]')).toBeNull()
-    expect(container.querySelector('[aria-label="Send message"]')).toBeNull()
+  it('never shows a Background state on the shared control (Alt+B-only entry)', () => {
+    // The control is a strict two-state morph: Send (idle) / Interrupt
+    // (working). Backgrounding used to be a third button state keyed on the
+    // streaming phase, which flickered the control between Interrupt and
+    // Background on every phase transition (thinking ↔ writing ↔ tool_use ↔
+    // null). It's now reachable only via Alt+B, advertised in the Interrupt
+    // tooltip — this test locks in that the button state never reappears.
+    const { container } = render(<Composer {...defaultProps} canInterrupt />)
+    expect(container.querySelector('[aria-label="Interrupt the current turn"]')).not.toBeNull()
+    expect(container.querySelector('[aria-label="Background current tasks"]')).toBeNull()
+    const btn = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Interrupt the current turn"]',
+    )!
+    expect(btn.title).toContain('Alt+B')
   })
 
   it('slash-picker Escape is consumed by the escape stack and never reaches window', () => {
@@ -156,37 +161,6 @@ describe('Composer', () => {
     } finally {
       window.removeEventListener('keydown', windowKeydown)
     }
-  })
-
-  it('keeps Interrupt (not Background) while a turn runs without a blocking tool', () => {
-    const { container } = render(
-      <Composer {...defaultProps} canInterrupt canBackground={false} onBackground={noop} />,
-    )
-    // thinking/writing phases have nothing to detach — the control stays
-    // Interrupt; Esc remains the always-on interrupt path.
-    expect(container.querySelector('[aria-label="Interrupt the current turn"]')).not.toBeNull()
-    expect(container.querySelector('[aria-label="Background current tasks"]')).toBeNull()
-  })
-
-  it('ignores canBackground without an in-flight turn (parent phase lag)', () => {
-    const { container } = render(
-      <Composer {...defaultProps} canInterrupt={false} canBackground onBackground={noop} />,
-    )
-    // The dwell-smoothed phase can outlive the turn by a beat — the control
-    // must fall back to Send, never show Background on an idle session.
-    expect(container.querySelector('[aria-label="Send message"]')).not.toBeNull()
-    expect(container.querySelector('[aria-label="Background current tasks"]')).toBeNull()
-  })
-
-  it('routes a click in Background mode to onBackground, not onInterrupt', () => {
-    const onBackground = vi.fn()
-    const onInterrupt = vi.fn()
-    const { container } = render(
-      <Composer {...defaultProps} canInterrupt canBackground onBackground={onBackground} onInterrupt={onInterrupt} />,
-    )
-    fireEvent.click(container.querySelector('[aria-label="Background current tasks"]')!)
-    expect(onBackground).toHaveBeenCalledOnce()
-    expect(onInterrupt).not.toHaveBeenCalled()
   })
 
   it('shows session ended instead of textarea when terminated', () => {

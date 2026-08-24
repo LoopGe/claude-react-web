@@ -17,7 +17,7 @@ import { CommandPicker } from './CommandPicker'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { Markdown } from './Markdown'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
-import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconSendInterruptToggle, IconLoader, IconFileText, IconArrowDown } from './icons/ToolIcons'
+import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconSendInterruptToggle, IconLoader, IconFileText } from './icons/ToolIcons'
 
 interface Props {
   input: string
@@ -65,17 +65,6 @@ interface Props {
    *  When no turn is in flight, Interrupt is a no-op, and leaving the
    *  button active just confuses users. */
   canInterrupt: boolean
-  /** Background every in-flight foreground task (the CLI's Ctrl+B
-   *  semantics): the model immediately receives a "running in background"
-   *  tool_result and the turn continues. The Send/Interrupt control morphs
-   *  into this action while `canBackground` is true (see below) — no extra
-   *  button slot, so the composer's height never changes. */
-  onBackground?: () => void
-  /** True only while a blocking tool call is actually executing (the
-   *  tool_use stream phase) — the one state where backgrounding has any
-   *  effect. During thinking/writing phases the control stays Interrupt;
-   *  Esc always interrupts regardless of the button's current mode. */
-  canBackground?: boolean
   /** Bump this number whenever the parent wants the textarea refocused
    *  (e.g. after a successful send, where the click on the Send button
    *  would otherwise leave focus on the button). */
@@ -131,8 +120,6 @@ export const Composer = memo(function Composer({
   onSend,
   onInterrupt,
   canInterrupt,
-  onBackground,
-  canBackground,
   focusSignal,
   onRecap,
   canRecap,
@@ -396,13 +383,6 @@ export const Composer = memo(function Composer({
   ])
 
   const canSend = !disabled && !sending && (input.trim() !== '' || attachments.length > 0 || pastedImages.length > 0)
-  // Background mode: the Send/Interrupt control morphs into the Background
-  // action only when a turn is running AND the parent reports a blocking
-  // tool call actually in flight. `canBackground` alone (without the turn)
-  // must not flip the control — the parent's phase signal is cleared by the
-  // result frame, but transient phase frames can still straddle the
-  // working=false transition.
-  const backgroundMode = canInterrupt && canBackground === true && onBackground != null
 
   if (terminated) {
     const reasonText =
@@ -759,25 +739,23 @@ export const Composer = memo(function Composer({
         >
           <IconPaperclip size={18} />
         </button>
-        {/* Send / Interrupt / Background share one stable control — a
-            three-state morph (arrow → stop-square → arrow-down) so every
-            state change reads as an in-icon transition and the composer's
-            height never changes. Background mode (Ctrl+B semantics) appears
-            only while a blocking tool call is actually executing
-            (`canBackground`): clicking detaches it to the background task
-            list and the turn continues; Esc still interrupts at any time. */}
+        {/* Send / Interrupt share one stable control — a two-state morph
+            (arrow → stop-square) so the composer's height never changes.
+            Background (Ctrl+B semantics) is NOT a button state: keying it on
+            the streaming phase made the control flicker between
+            Interrupt/Background on every phase transition. Backgrounding
+            stays reachable via the Alt+B shortcut, advertised in the
+            Interrupt tooltip. */}
         <button
-          className={'btn btn-icon ' + (canInterrupt && !backgroundMode ? 'btn-danger' : 'btn-primary')}
+          className={'btn btn-icon ' + (canInterrupt ? 'btn-danger' : 'btn-primary')}
           type="button"
-          onClick={backgroundMode ? onBackground : canInterrupt ? onInterrupt : onSend}
+          onClick={canInterrupt ? onInterrupt : onSend}
           disabled={!canInterrupt && !canSend}
-          title={backgroundMode ? 'Background current tasks (Alt+B · Esc interrupts)' : canInterrupt ? 'Interrupt the current turn' : 'Send message (Enter)'}
-          aria-label={backgroundMode ? 'Background current tasks' : canInterrupt ? 'Interrupt the current turn' : 'Send message'}
+          title={canInterrupt ? 'Interrupt the current turn (Alt+B backgrounds it)' : 'Send message (Enter)'}
+          aria-label={canInterrupt ? 'Interrupt the current turn' : 'Send message'}
         >
           {sending && !canInterrupt ? (
             <IconLoader size={18} className="composer-send-spinner" />
-          ) : backgroundMode ? (
-            <IconArrowDown size={18} />
           ) : (
             <IconSendInterruptToggle
               size={canInterrupt ? 16 : 18}

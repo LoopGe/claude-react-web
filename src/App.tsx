@@ -2542,11 +2542,13 @@ export function App() {
         },
         {
           // Background in-flight tasks for the focused session (Ctrl+B
-          // semantics). The keyboard path also covers sessions where the
-          // stream phase is missing (includePartialMessages off, store
-          // rebuilt mid-run) — there the Composer morph can't key off the
-          // phase, but this always works. NOT mod+b: that toggles the
-          // sidebar. NOT ctrl+esc / shift+esc: OS / browser-reserved.
+          // semantics). This is the ONLY UI entry point: the Composer's
+          // shared Send/Interrupt control used to morph into a third
+          // Background state keyed on the streaming phase, which flickered
+          // on every phase transition, so the morph was removed — Alt+B
+          // (advertised in the Interrupt tooltip) covers it. NOT mod+b:
+          // that toggles the sidebar. NOT ctrl+esc / shift+esc: OS /
+          // browser-reserved.
           combo: 'alt+b',
           handler: () => {
             const fid = focusedIdRef.current
@@ -2554,8 +2556,7 @@ export function App() {
             // Guard on turn activity (server working OR Chat's optimistic
             // signal): with nothing in flight the POST either 410s on a
             // terminated session (setLocalError renders a persistent red
-            // banner) or just toasts noise on an idle one. The Composer
-            // morph is gated the same way.
+            // banner) or just toasts noise on an idle one.
             const focused = sessionsRef.current.find((s) => s.id === fid)
             if (!focused?.working && !turnActiveFnsRef.current.get(fid)?.()) return
             backgroundFnsRef.current.get(fid)?.()
