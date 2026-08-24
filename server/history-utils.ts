@@ -101,6 +101,23 @@ export const BROADCAST_SYSTEM_SUBTYPES = new Set([
   // the frame never reaches the client and the user can't see what context
   // was injected.
   'memory_recall',
+  // A tool call was auto-denied WITHOUT an interactive permission prompt
+  // (dontAsk/auto-mode classifier, deny rules, headless auto-deny). The
+  // interactive 'ask' path surfaces via permission-request frames; without
+  // this broadcast the non-interactive deny path is invisible — the user
+  // only sees an is_error tool_result with no explanation of WHY.
+  'permission_denied',
+  // Generic text banners from the loop (hook block reasons, slash-command
+  // output, non-error status lines). Rendered at the frame's `level` —
+  // warnings/suggestions deserve transcript visibility; `info` level
+  // renders muted.
+  'informational',
+  // The primary model refused and the turn was retried once on the fallback
+  // model (made persistent for the session). The refused leg's partial
+  // messages were already streamed to the client and are retracted via
+  // `retracted_message_uuids` — the client must see this frame to render
+  // the fallback notice AND evict the retracted uuids.
+  'model_refusal_fallback',
 ])
 
 /** Check if a message should be broadcast to frontend clients.

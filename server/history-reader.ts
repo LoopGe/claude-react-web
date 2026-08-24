@@ -181,7 +181,35 @@ function isRenderable(o: RawLine): boolean {
   if (o.type === 'system' && typeof o.subtype === 'string' && BROADCAST_SYSTEM_SUBTYPES.has(o.subtype)) {
     return true
   }
+  // `tool_use_summary` is a top-level type (not a system subtype): a compact
+  // "what just happened" summary the CLI emits after a tool cascade, meant
+  // for transcript display. The live path broadcasts it unconditionally
+  // (shouldBroadcastMessage only gates `system` frames); mirror that here so
+  // disk pages render it the same way. `tool_progress` lines (per-tool
+  // liveness pings) stay non-renderable on both paths.
+  if (o.type === 'tool_use_summary') return true
   return false
+}
+
+/** Copy whitelisted TOP-LEVEL fields from a raw line through to the wire
+ *  shape, keeping only primitive / string-array values. Several frames carry
+ *  their payload at the top level (NOT inside `message`); normalize()'s base
+ *  object drops those, so disk-loaded frames would reach the client missing
+ *  the fields the renderer / eviction logic needs. Fields absent or of an
+ *  unexpected shape are skipped — defensive against SDK drift. */
+function pickTopLevel(o: RawLine, fields: string[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  const raw = o as Record<string, unknown>
+  for (const f of fields) {
+    const v = raw[f]
+    if (
+      typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' ||
+      (Array.isArray(v) && v.every((x) => typeof x === 'string'))
+    ) {
+      out[f] = v
+    }
+  }
+  return out
 }
 
 /** Normalize a raw JSONL line into the live SDKMessage wire shape. */
@@ -222,6 +250,31 @@ function normalize(o: RawLine, sessionId: string): unknown {
       ...(typeof o.task_id === 'string' ? { task_id: o.task_id } : {}),
       ...(typeof o.output_file === 'string' ? { output_file: o.output_file } : {}),
     } : {}),
+    // permission_denied / informational / model_refusal_fallback frames carry
+    // their payloads at the TOP LEVEL (`message` on permission_denied already
+    // flows via the generic `message: o.message` passthrough above — it is a
+    // plain string there, which the client renders defensively).
+    ...(o.type === 'system' && o.subtype === 'permission_denied'
+      ? pickTopLevel(o, ['tool_name', 'tool_use_id', 'agent_id', 'decision_reason_type', 'decision_reason'])
+      : {}),
+    ...(o.type === 'system' && o.subtype === 'informational'
+      ? pickTopLevel(o, ['content', 'level', 'tool_use_id', 'prevent_continuation'])
+      : {}),
+    ...(o.type === 'system' && o.subtype === 'model_refusal_fallback'
+      ? pickTopLevel(o, [
+        'trigger', 'direction', 'original_model', 'fallback_model',
+        'api_refusal_category', 'api_refusal_explanation', 'content',
+        'retracted_message_uuids',
+      ])
+      : {}),
+    // The refusal-fallback supersede list on assistant frames: evict-on-arrival
+    // uuids for the refused leg. Needed so a disk-replayed transcript applies
+    // the same eviction the live path does (evictMessages is idempotent).
+    ...(o.type === 'assistant' ? pickTopLevel(o, ['supersedes']) : {}),
+    // tool_use_summary carries its whole payload at the top level.
+    ...(o.type === 'tool_use_summary'
+      ? pickTopLevel(o, ['summary', 'preceding_tool_use_ids'])
+      : {}),
   }
 }
 

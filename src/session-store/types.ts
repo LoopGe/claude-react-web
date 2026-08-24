@@ -330,6 +330,13 @@ export interface ServerMirror {
    *  in-place replace, no IDB supersession tracking). Null when no retry is
    *  in progress. */
   apiRetry: SdkMessage | null
+  /** Transient thinking-token estimate for the CURRENT thinking block
+   *  (`system/thinking_tokens` frames — mirrored like `apiRetry`). Lives
+   *  outside items/messages/IDB: purely a WorkingBubble progress hint.
+   *  Updated per frame during the redacted-thinking phase; cleared on the
+   *  `result` (turn end) or `user` (new turn) message. Null when no
+   *  estimate is in flight. */
+  thinkingTokens: number | null
   /** message-consumed frames that arrived before the matching message row.
    *  The WS channels are independent, so an idle session can deliver the
    *  consumed signal before the user-message broadcast. Cache it here and
@@ -523,6 +530,9 @@ export interface SessionSnapshot {
   lastMessageUuid: string | null
   /** Transient `api_retry` frame mirrored from ServerMirror (see there). */
   apiRetry: SdkMessage | null
+  /** Transient thinking-token estimate mirrored from ServerMirror
+   *  (see there) — drives the WorkingBubble's token hint. */
+  thinkingTokens: number | null
 }
 
 /** Build a fresh ServerMirror. Used by createInitialSessionState and by any
@@ -540,6 +550,7 @@ export function createInitialServerMirror(): ServerMirror {
     tasks: [],
     lastMessageUuid: null,
     apiRetry: null,
+    thinkingTokens: null,
     pendingConsumedMessages: new Map<string, number>(),
     permissionPending: new Map(),
     permissionDecisions: new Map(),

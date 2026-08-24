@@ -437,6 +437,69 @@ describe('MessageList', () => {
     expect(container.textContent).toContain('Hello world')
   })
 
+  it('renders system/permission_denied with tool + reason (not the raw-type fallback)', () => {
+    const msgs = [
+      makeMsg('system', {
+        subtype: 'permission_denied',
+        tool_name: 'Bash',
+        tool_use_id: 'tu1',
+        decision_reason_type: 'rule',
+        decision_reason: 'denied by settings',
+        message: 'Bash is not allowed',
+      }),
+    ]
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
+    )
+    const text = container.textContent ?? ''
+    expect(text).toContain('Bash')
+    expect(text).toContain('rule: denied by settings')
+    // Not the bare "system · permission_denied" fallback header.
+    expect(text).not.toContain('permission_denied\n')
+    expect(container.querySelector('.permission-denied')).not.toBeNull()
+  })
+
+  it('renders system/informational at the given level', () => {
+    const msgs = [
+      makeMsg('system', { subtype: 'informational', content: 'hook blocked the prompt', level: 'warning' }),
+    ]
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
+    )
+    expect(container.textContent).toContain('hook blocked the prompt')
+    expect(container.querySelector('.informational--warning')).not.toBeNull()
+  })
+
+  it('renders system/model_refusal_fallback as the fallback notice', () => {
+    const msgs = [
+      makeMsg('system', {
+        subtype: 'model_refusal_fallback',
+        original_model: 'claude-opus-5',
+        fallback_model: 'claude-sonnet-5',
+        retracted_message_uuids: ['a1'],
+        content: 'refused; retrying',
+      }),
+    ]
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
+    )
+    const text = container.textContent ?? ''
+    expect(text).toContain('refused by claude-opus-5')
+    expect(text).toContain('retrying on claude-sonnet-5')
+    expect(container.querySelector('.refusal-fallback')).not.toBeNull()
+  })
+
+  it('renders tool_use_summary as a compact summary line', () => {
+    const msgs = [
+      makeMsg('tool_use_summary', { summary: 'ran 3 searches', preceding_tool_use_ids: ['a', 'b'] }),
+    ]
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
+    )
+    expect(container.textContent).toContain('ran 3 searches')
+    expect(container.querySelector('.tool-use-summary')).not.toBeNull()
+  })
+
   it('marks renderable first and last rows for symmetric outer spacing', () => {
     const msgs = [
       makeMsg('system', { subtype: 'status' }),

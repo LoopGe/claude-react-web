@@ -2292,6 +2292,16 @@ function streamEventMsg(uuid: string, text = 'delta'): SdkMessage {
   } as unknown as SdkMessage
 }
 
+function thinkingTokensMsg(uuid: string, estimatedTokens: number): SdkMessage {
+  return {
+    type: 'system',
+    subtype: 'thinking_tokens',
+    uuid,
+    estimated_tokens: estimatedTokens,
+    estimated_tokens_delta: 10,
+  } as unknown as SdkMessage
+}
+
 function seedCache(messages: SdkMessage[]): ReturnType<typeof createInitialSessionState> {
   // Build a cache exactly as a full replay would, then return state.
   let state = createInitialSessionState('s')
@@ -2308,6 +2318,16 @@ function replay(
   messages: SdkMessage[],
 ): ReturnType<typeof createInitialSessionState> {
   return reduceSessionState(state, { type: 'REPLAY_REPLACE', messages, permissions: [] })
+}
+
+/** Seed a cached transcript, then push one stream_event delta and flush it so
+ *  `mirror.liveTurn.flushedText` holds `streamText` — the shape a session is in
+ *  mid-turn, right before a reconnect / panel-switch-back REPLAY_REPLACE. */
+function seedWithLiveTurn(messages: SdkMessage[], streamText = 'partial'): ReturnType<typeof createInitialSessionState> {
+  let state = seedCache(messages)
+  state = reduceSessionState(state, { type: 'MESSAGE', message: streamEventMsg('se-live', streamText) })
+  state = reduceSessionState(state, { type: 'LIVE_TURN_FLUSH' })
+  return state
 }
 
 const ids = (state: ReturnType<typeof createInitialSessionState>) => state.mirror.items.map((i) => i.id)
@@ -2412,6 +2432,42 @@ describe('reducer: REPLAY_REPLACE on top of a cache', () => {
     ]
     const after = replay(cache, seed)
     expect(ids(after)).toEqual(['a1', 'a2', 'a3', 'a4', 'a5'])
+  })
+
+  it('preserves an in-progress liveTurn across a benign replay merge (no result in newer)', () => {
+    // Switching panels mid-stream unmounts the Chat → unsubscribe → resubscribe
+    // → REPLAY_REPLACE. The live turn's partial text lives ONLY in liveTurn
+    // (stream_event deltas never enter the history ring, so the replay cannot
+    // carry it). Nulling liveTurn on every merge wiped the StreamingFooter even
+    // though the turn was still running server-side. A replay whose newer slice
+    // has no `result` cannot mean the turn ended — keep the accumulated text.
+    const state = seedWithLiveTurn([userMsg('u1', 'hi'), asstMsg('a1', 'hello')])
+    const after = replay(state, [userMsg('u1-disk', 'hi'), asstMsg('a1', 'hello')])
+    expect(after.mirror.liveTurn?.flushedText).toBe('partial')
+  })
+
+  it('still clears liveTurn when the replay newer slice carries a result (turn ended)', () => {
+    const state = seedWithLiveTurn([userMsg('u1', 'hi'), asstMsg('a1', 'hello')])
+    const after = replay(state, [
+      userMsg('u1-disk', 'hi'),
+      asstMsg('a1', 'hello'),
+      resultMsg('r1'),
+    ])
+    expect(after.mirror.liveTurn).toBeNull()
+  })
+
+  it('does NOT clear a current liveTurn on a result in the OLDER (prepended) slice', () => {
+    // Cache was trimmed below the seed: the replay reaches back into a PREVIOUS
+    // turn whose result lands in the older slice. That result predates the
+    // current turn — clearing liveTurn for it would drop the in-progress text.
+    const state = seedWithLiveTurn([asstMsg('a2', 'two'), asstMsg('a3', 'three')])
+    const after = replay(state, [
+      asstMsg('a1', 'one'),
+      resultMsg('r1'),
+      asstMsg('a2', 'two'),
+      asstMsg('a3', 'three'),
+    ])
+    expect(after.mirror.liveTurn?.flushedText).toBe('partial')
   })
 })
 
@@ -2721,6 +2777,156 @@ describe('reducer: api_retry transient slot', () => {
     })
     expect(ids(state)).toEqual(['old-a', 'a1']) // old-r dropped, no slot set
     expect(state.mirror.apiRetry).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// thinking_tokens is a TRANSIENT live progress signal (thinking-block token
+// estimate), routed to `mirror.thinkingTokens` for the WorkingBubble — same
+// discipline as api_retry: never an item, never advancing lastMessageUuid.
+// Unlike api_retry it is NOT cleared by every other message (stream_event
+// deltas interleave with the estimates during the same thinking phase —
+// clearing on them would flicker); it clears on `result` / `user`.
+// ---------------------------------------------------------------------------
+
+describe('reducer: thinking_tokens transient slot', () => {
+  it('routes thinking_tokens to the slot, not items, and does not advance lastMessageUuid', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: asstMsg('a1', 'hi') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: thinkingTokensMsg('tt1', 4200) })
+    expect(state.mirror.thinkingTokens).toBe(4200)
+    expect(ids(state)).toEqual(['a1'])
+    expect(state.mirror.lastMessageUuid).toBe('a1')
+  })
+
+  it('overwrites the slot on consecutive estimates (latest wins)', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: thinkingTokensMsg('tt1', 100) })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: thinkingTokensMsg('tt2', 250) })
+    expect(state.mirror.thinkingTokens).toBe(250)
+    expect(ids(state)).toEqual([])
+  })
+
+  it('keeps the estimate across interleaved stream_event deltas (no flicker)', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: thinkingTokensMsg('tt1', 500) })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: streamEventMsg('se1', 'delta') })
+    expect(state.mirror.thinkingTokens).toBe(500)
+  })
+
+  it('keeps the estimate across assistant frames mid-turn (only result/user clear it)', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: thinkingTokensMsg('tt1', 500) })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: asstMsg('a1', 'text') })
+    expect(state.mirror.thinkingTokens).toBe(500)
+  })
+
+  it('clears the slot on the result frame (turn end) and on a new user turn', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: thinkingTokensMsg('tt1', 500) })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: resultMsg('r1') })
+    expect(state.mirror.thinkingTokens).toBeNull()
+    state = reduceSessionState(state, { type: 'MESSAGE', message: thinkingTokensMsg('tt2', 700) })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('u1', 'again') })
+    expect(state.mirror.thinkingTokens).toBeNull()
+  })
+
+  it('ignores malformed estimates (non-numeric) instead of crashing', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: { type: 'system', subtype: 'thinking_tokens', uuid: 'tt1', estimated_tokens: 'many' } as unknown as SdkMessage,
+    })
+    expect(state.mirror.thinkingTokens).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// tool_progress is a per-tool liveness ping — never a transcript item, on
+// either the live or the replay path.
+// ---------------------------------------------------------------------------
+
+describe('reducer: tool_progress dropped', () => {
+  it('never creates an item for tool_progress frames', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: { type: 'tool_progress', uuid: 'tp1', tool_use_id: 'tu1', tool_name: 'Bash', elapsed_time_seconds: 3 } as unknown as SdkMessage,
+    })
+    expect(ids(state)).toEqual([])
+    expect(state.mirror.messages).toEqual([])
+    // Defensive: the ephemeral uuid must not become the replay cursor either.
+    expect(state.mirror.lastMessageUuid).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Refusal-fallback retraction runs INSIDE applyMessage: assistant
+// `supersedes` and system `model_refusal_fallback.retracted_message_uuids`
+// both evict the refused leg's already-streamed partials on arrival, so the
+// live path AND replay/disk-loaded transcripts stay consistent.
+// ---------------------------------------------------------------------------
+
+describe('reducer: refusal-fallback eviction on message arrival', () => {
+  it('model_refusal_fallback evicts retracted uuids but keeps the fallback frame itself', () => {
+    let state = seedCache([userMsg('u1', 'hi'), asstMsg('a1', 'refused partial'), asstMsg('a2', 'more partial')])
+    expect(ids(state)).toEqual(['u1', 'a1', 'a2'])
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: {
+        type: 'system',
+        subtype: 'model_refusal_fallback',
+        uuid: 'mrf1',
+        trigger: 'refusal',
+        direction: 'retry',
+        original_model: 'claude-opus-5',
+        fallback_model: 'claude-sonnet-5',
+        retracted_message_uuids: ['a1', 'a2'],
+        content: 'refused; retrying',
+      } as unknown as SdkMessage,
+    })
+    // The notice stays as the canonical record; the refused leg is gone.
+    expect(ids(state)).toEqual(['u1', 'mrf1'])
+    expect(state.mirror.lastMessageUuid).toBe('mrf1')
+  })
+
+  it('assistant supersedes evicts the superseded uuids on arrival', () => {
+    let state = seedCache([userMsg('u1', 'hi'), asstMsg('a1', 'refused partial')])
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: {
+        type: 'assistant',
+        uuid: 'a2',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'replacement' }] },
+        parent_tool_use_id: null,
+        supersedes: ['a1'],
+      } as unknown as SdkMessage,
+    })
+    expect(ids(state)).toEqual(['u1', 'a2'])
+  })
+
+  it('model_refusal_fallback without retracted uuids is a pure render item (no eviction)', () => {
+    let state = seedCache([userMsg('u1', 'hi'), asstMsg('a1', 'partial')])
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: {
+        type: 'system', subtype: 'model_refusal_fallback', uuid: 'mrf1',
+        original_model: 'm-a', fallback_model: 'm-b', content: 'older CLI, no uuids',
+      } as unknown as SdkMessage,
+    })
+    expect(ids(state)).toEqual(['u1', 'a1', 'mrf1'])
+  })
+
+  it('unknown retracted uuids are a no-op (idempotent eviction)', () => {
+    const state = seedCache([userMsg('u1', 'hi')])
+    const after = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: {
+        type: 'system', subtype: 'model_refusal_fallback', uuid: 'mrf1',
+        retracted_message_uuids: ['nope-1', 'nope-2'], content: 'x',
+      } as unknown as SdkMessage,
+    })
+    expect(ids(after)).toEqual(['u1', 'mrf1'])
   })
 })
 

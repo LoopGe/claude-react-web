@@ -63,6 +63,12 @@ describe('shouldBroadcastMessage', () => {
     expect(shouldBroadcastMessage({ type: 'system', subtype: 'error' })).toBe(true)
     expect(shouldBroadcastMessage({ type: 'system', subtype: 'api_retry' })).toBe(true)
   })
+
+  it('broadcasts permission_denied / informational / model_refusal_fallback (render + eviction signals)', () => {
+    expect(shouldBroadcastMessage({ type: 'system', subtype: 'permission_denied' })).toBe(true)
+    expect(shouldBroadcastMessage({ type: 'system', subtype: 'informational' })).toBe(true)
+    expect(shouldBroadcastMessage({ type: 'system', subtype: 'model_refusal_fallback' })).toBe(true)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -1301,6 +1307,90 @@ describe('pump: task lifecycle frames', () => {
     expect(onTaskNotification).not.toHaveBeenCalled()
     // The frame itself still folded + broadcast as usual.
     expect(session.tasks.get('t1')?.status).toBe('completed')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// pump: thinking_tokens / tool_progress / refusal-fallback system frames
+//
+// thinking_tokens is a transient live-only progress signal (thinking-block
+// token estimate): forwarded to live subscribers, never stored in the ring
+// (a long thinking phase emits one frame per delta — ring slots are for
+// durable content) and never replayed. tool_progress is a per-tool liveness
+// ping nothing renders — dropped entirely. permission_denied /
+// informational / model_refusal_fallback are DURABLE: ring + broadcast, so
+// they render and (for the fallback) drive client-side eviction of the
+// refused leg's retracted uuids.
+// ---------------------------------------------------------------------------
+
+describe('pump: thinking_tokens + tool_progress + refusal frames', () => {
+  it('forwards thinking_tokens live-only: broadcast but never ring', async () => {
+    const { session, broadcasts } = makePumpSession([
+      sysFrame('thinking_tokens', { estimated_tokens: 4200, estimated_tokens_delta: 120 }),
+      { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage,
+    ])
+    await pump(session, makePumpDeps())
+    expect(broadcasts.map((m) => (m as { subtype?: string }).subtype)).toEqual([
+      'thinking_tokens',
+      'success',
+    ])
+    // Live-only: the ring holds just the result.
+    expect(session.history.map((m) => (m as { subtype?: string }).subtype)).toEqual(['success'])
+  })
+
+  it('drops tool_progress entirely: no broadcast, no ring slot', async () => {
+    const { session, broadcasts } = makePumpSession([
+      { type: 'tool_progress', tool_use_id: 'tu1', tool_name: 'Bash', elapsed_time_seconds: 3 } as unknown as SDKMessage,
+      { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage,
+    ])
+    await pump(session, makePumpDeps())
+    expect(broadcasts.map((m) => (m as { subtype?: string }).subtype)).toEqual(['success'])
+    expect(session.history).toHaveLength(1)
+  })
+
+  it('rings + broadcasts tool_use_summary (compact recap line)', async () => {
+    const { session, broadcasts } = makePumpSession([
+      { type: 'tool_use_summary', summary: 'ran 3 searches', preceding_tool_use_ids: ['a', 'b'] } as unknown as SDKMessage,
+    ])
+    await pump(session, makePumpDeps())
+    expect(broadcasts.map((m) => (m as { type?: string }).type)).toEqual(['tool_use_summary'])
+    expect(session.history).toHaveLength(1)
+  })
+
+  it('rings + broadcasts permission_denied / informational / model_refusal_fallback with top-level payloads intact', async () => {
+    const frames: SDKMessage[] = [
+      sysFrame('permission_denied', {
+        tool_name: 'Bash', tool_use_id: 'tu1', decision_reason_type: 'rule',
+        decision_reason: 'denied by settings', message: 'Bash is not allowed',
+      }),
+      sysFrame('informational', { content: 'hook blocked the prompt', level: 'warning' }),
+      sysFrame('model_refusal_fallback', {
+        trigger: 'refusal', direction: 'retry',
+        original_model: 'claude-opus-5', fallback_model: 'claude-sonnet-5',
+        retracted_message_uuids: ['u1', 'u2'], content: 'refused; retrying',
+      }),
+    ]
+    const { session, broadcasts } = makePumpSession(frames)
+    await pump(session, makePumpDeps())
+    // All three broadcast in order...
+    expect(broadcasts.map((m) => (m as { subtype?: string }).subtype)).toEqual([
+      'permission_denied',
+      'informational',
+      'model_refusal_fallback',
+    ])
+    // ...and all three are durable ring content (replay + disk parity).
+    expect(session.history.map((m) => (m as { subtype?: string }).subtype)).toEqual([
+      'permission_denied',
+      'informational',
+      'model_refusal_fallback',
+    ])
+    // The frames pass through UNMUTATED — the top-level payloads the client
+    // renders/evicts on ride along verbatim.
+    expect(session.history[2]).toMatchObject({
+      retracted_message_uuids: ['u1', 'u2'],
+      original_model: 'claude-opus-5',
+      fallback_model: 'claude-sonnet-5',
+    })
   })
 })
 

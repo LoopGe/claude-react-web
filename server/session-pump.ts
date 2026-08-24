@@ -782,6 +782,23 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           }
           continue
         }
+        // `system/thinking_tokens`: live thinking-token estimate for the
+        // current thinking block (redacted-thinking phase progress). Purely
+        // transient — forwarded to live subscribers only, never entering the
+        // history ring (a long thinking phase emits one frame per delta, and
+        // these must not evict durable content) nor surviving replay. The
+        // client mirrors it into a transient WorkingBubble slot.
+        if (msg.type === 'system' && (msg as { subtype?: string }).subtype === 'thinking_tokens') {
+          for (const sub of session.subscribers.values()) {
+            try { sub.push(msg) } catch { /* subscriber dead — skip */ }
+          }
+          continue
+        }
+        // `tool_progress` is a high-frequency per-tool liveness ping
+        // (elapsed seconds for the running tool call). Nothing renders it —
+        // the ToolCards already show their own elapsed state — so drop it
+        // entirely: no ring slot, no broadcast.
+        if (msg.type === 'tool_progress') continue
         // Task lifecycle events fold into the dedicated task-state cache and
         // ride the `tasks` channel as full snapshots. task_started /
         // task_updated / task_progress are EPHEMERAL (high-frequency update

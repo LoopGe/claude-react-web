@@ -31,7 +31,17 @@ export function shouldHideByDefault(msg: SdkMessage): boolean {
     // CLI-local command output (/usage, /voice, …) — renderable text body.
     msg.subtype !== 'local_command_output' &&
     // Auto-memory recall — renders as a "Recalled from memory" card.
-    msg.subtype !== 'memory_recall'
+    msg.subtype !== 'memory_recall' &&
+    // Tool call auto-denied without an interactive prompt (dontAsk / deny
+    // rules / auto-mode classifier) — renders as a denial card so the user
+    // sees WHY a tool never ran.
+    msg.subtype !== 'permission_denied' &&
+    // Loop text banners (hook block reasons, slash-command output, status
+    // lines) — rendered at the frame's `level`.
+    msg.subtype !== 'informational' &&
+    // Primary model refused, turn retried on the fallback model. Renders as
+    // a fallback notice; the reducer also evicts the retracted uuids.
+    msg.subtype !== 'model_refusal_fallback'
   ) return true
   if (msg.type === 'user' && isLocalCommandLogUserMessage(msg)) return true
   // `command_lifecycle` is a top-level lifecycle marker the `claude` CLI emits
@@ -93,6 +103,15 @@ export function toTranscriptItem(msg: SdkMessage, prev: TranscriptItem | undefin
   // `mirror.apiRetry` (see reducer applyMessage) — it never becomes a
   // TranscriptItem, keeping items/messages/IDB append-only.
   if (msg.type === 'system' && msg.subtype === 'api_retry') return null
+  // `thinking_tokens` is the same kind of transient progress signal: a live
+  // thinking-token estimate routed to `mirror.thinkingTokens` (the
+  // WorkingBubble slot). The server never puts it in the ring, but a stale
+  // frame could still ride an out-of-order WS delivery — route, don't item.
+  if (msg.type === 'system' && msg.subtype === 'thinking_tokens') return null
+  // `tool_progress` is a per-tool liveness ping with no renderable content.
+  // The server drops it in the pump; keep the client side defensive so a
+  // frame that slips through (older server, replay cache) never renders.
+  if (msg.type === 'tool_progress') return null
 
   const hiddenByDefault = shouldHideByDefault(msg)
   const id = typeof msg.uuid === 'string'

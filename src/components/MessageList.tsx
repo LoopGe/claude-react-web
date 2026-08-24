@@ -2306,6 +2306,25 @@ const MessageView = memo(function MessageView({
     return <MemoryRecallView msg={msg} />
   }
 
+  if (type === 'system' && msg.subtype === 'permission_denied') {
+    return <PermissionDeniedView msg={msg} />
+  }
+
+  if (type === 'system' && msg.subtype === 'informational') {
+    return <InformationalView msg={msg} />
+  }
+
+  if (type === 'system' && msg.subtype === 'model_refusal_fallback') {
+    return <ModelRefusalFallbackView msg={msg} />
+  }
+
+  // `tool_use_summary` is a top-level type: a compact "what just happened"
+  // one-liner the CLI emits after a tool cascade. Rendered as a subdued
+  // summary line — the detailed tool cards above it stay untouched.
+  if (type === 'tool_use_summary') {
+    return <ToolUseSummaryView msg={msg} />
+  }
+
   if (type === 'rate_limit_event') {
     return <RateLimitView msg={msg} />
   }
@@ -2689,6 +2708,111 @@ function LocalCommandOutputView({ msg }: { msg: SdkMessage }) {
   )
 }
 
+/** Renders `system/permission_denied` — a tool call was auto-denied WITHOUT
+ *  an interactive permission prompt (dontAsk / auto-mode classifier, deny
+ *  rules, headless auto-deny). The interactive 'ask' path surfaces via the
+ *  permission dialog; this card is the only visibility the non-interactive
+ *  deny path gets. Single subdued line (result-divider style) so a cascade
+ *  of denied calls doesn't flood the transcript; the full rejection message
+ *  the model saw rides on hover. */
+function PermissionDeniedView({ msg }: { msg: SdkMessage }) {
+  const m = msg as {
+    tool_name?: unknown
+    tool_use_id?: unknown
+    agent_id?: unknown
+    decision_reason_type?: unknown
+    decision_reason?: unknown
+    message?: unknown
+  }
+  const tool = typeof m.tool_name === 'string' && m.tool_name ? m.tool_name : 'tool'
+  const reasonType = typeof m.decision_reason_type === 'string' ? m.decision_reason_type : undefined
+  const reason = typeof m.decision_reason === 'string' ? m.decision_reason : undefined
+  const detail = typeof m.message === 'string' ? m.message : undefined
+  // 'rule' / 'mode' / 'classifier' / 'asyncAgent' — the deciding component.
+  const reasonParts = [reasonType, reason].filter(Boolean).join(': ')
+  return (
+    <div className="msg result permission-denied" aria-label="tool call denied">
+      <span className="result-mark" aria-hidden="true">✕ denied</span>
+      <span className="result-meta" title={detail ?? undefined}>
+        {tool}
+        {reasonParts ? ` — ${reasonParts}` : ''}
+      </span>
+    </div>
+  )
+}
+
+/** Renders `system/informational` — a generic text banner from the loop
+ *  (hook block reason, slash-command output, non-error status line). Level
+ *  drives prominence: 'info'/'notice' render as muted single lines;
+ *  'suggestion'/'warning' get the stronger card treatment. `content` is
+ *  plaintext per the SDK contract — render as text, not markdown. */
+function InformationalView({ msg }: { msg: SdkMessage }) {
+  const m = msg as { content?: unknown; level?: unknown; prevent_continuation?: unknown }
+  const body = typeof m.content === 'string' ? m.content : ''
+  if (!body) return null
+  const level = typeof m.level === 'string' ? m.level : 'info'
+  const prominent = level === 'warning' || level === 'suggestion'
+  return (
+    <div
+      className={`msg informational${prominent ? ` informational--${level}` : ''}`}
+      aria-label={`informational (${level})`}
+    >
+      {level === 'warning' && <span className="result-mark" aria-hidden="true">⚠</span>}
+      <span className="informational-body">{body}</span>
+    </div>
+  )
+}
+
+/** Renders `system/model_refusal_fallback` — the primary model refused and
+ *  the turn was retried once on the fallback model (the swap persists for
+ *  the session). The refused leg's already-streamed partial messages are
+ *  evicted by the reducer (retracted_message_uuids / assistant supersedes),
+ *  so this card is the canonical record of what happened. `content` is the
+ *  CLI's banner text; api_refusal_explanation is unstable prose shown as the
+ *  detail line. */
+function ModelRefusalFallbackView({ msg }: { msg: SdkMessage }) {
+  const m = msg as {
+    original_model?: unknown
+    fallback_model?: unknown
+    content?: unknown
+    api_refusal_explanation?: unknown
+    api_refusal_category?: unknown
+  }
+  const from = typeof m.original_model === 'string' && m.original_model ? m.original_model : 'primary model'
+  const to = typeof m.fallback_model === 'string' && m.fallback_model ? m.fallback_model : 'fallback model'
+  const body = typeof m.content === 'string' ? m.content : ''
+  const explanation = typeof m.api_refusal_explanation === 'string' ? m.api_refusal_explanation : undefined
+  const category = typeof m.api_refusal_category === 'string' ? m.api_refusal_category : undefined
+  return (
+    <div className="msg refusal-fallback" aria-label="model refusal fallback">
+      <div className="msg-header">
+        <span>
+          refused by {from} — retrying on {to}
+          {category ? ` (${category})` : ''}
+        </span>
+      </div>
+      {body && <div className="refusal-fallback-body">{body}</div>}
+      {explanation && (
+        <div className="refusal-fallback-detail" title={explanation}>{explanation}</div>
+      )}
+    </div>
+  )
+}
+
+/** Renders `tool_use_summary` — a compact one-line recap the CLI emits
+ *  after a tool cascade (transcript compression). Subdued single line; the
+ *  detailed tool cards above it are unaffected. */
+function ToolUseSummaryView({ msg }: { msg: SdkMessage }) {
+  const summary = typeof msg.summary === 'string' ? msg.summary : ''
+  if (!summary) return null
+  return (
+    <div className="msg tool-use-summary" aria-label="tool use summary">
+      <span className="tool-use-summary-mark" aria-hidden="true">Σ</span>
+      <span className="tool-use-summary-body">{summary}</span>
+    </div>
+  )
+}
+
 /** Renders `system/memory_recall` — the auto-memory supervisor surfaced
  *  relevant memories into the current turn. Mirrors the CLI's
  *  "Recalled from memory" attachment so users can see what context was
@@ -2929,6 +3053,7 @@ export const WorkingBubble = memo(function WorkingBubble({
   startedAt,
   activeSubagents,
   tokenRate,
+  thinkingTokens,
   activePhase,
   waiting,
   onOpenSubagent,
@@ -2936,6 +3061,11 @@ export const WorkingBubble = memo(function WorkingBubble({
   startedAt?: number
   activeSubagents?: ActiveSubagent[]
   tokenRate?: number | null
+  /** Live thinking-token estimate for the current thinking block
+   *  (`system/thinking_tokens` frames — redacted-thinking progress, where
+   *  tokenRate stays silent because no text deltas stream). Approximate;
+   *  cleared at turn end. */
+  thinkingTokens?: number | null
   activePhase?: import('../hooks/useChatStream').ActivePhase
   /** True when the parent turn has ended but `pending` background subagents
    *  are still in flight. The bubble stays mounted and shows "Waiting..."
@@ -2978,6 +3108,14 @@ export const WorkingBubble = memo(function WorkingBubble({
       {!waiting && tokenRate != null && tokenRate > 0 && (
         <span className="working-rate">
           <IconZap size={12} aria-hidden /> {tokenRate} tok/s
+        </span>
+      )}
+      {/* Redacted-thinking progress: no text deltas stream (tokenRate stays
+          silent), so the SDK's own token estimate is the only signal. "~"
+          marks it as an approximation of the current thinking block. */}
+      {!waiting && thinkingTokens != null && thinkingTokens > 0 && tokenRate == null && (
+        <span className="working-rate">
+          <IconZap size={12} aria-hidden /> ~{formatTokens(thinkingTokens)} tok
         </span>
       )}
       {hasSubagents && (

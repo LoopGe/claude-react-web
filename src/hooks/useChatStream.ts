@@ -80,6 +80,10 @@ export interface ChatStream {
    *  no retry is in flight. Routed to a dedicated slot (not items/messages) —
    *  MessageList renders it as a tail divider. */
   apiRetry: SdkMessage | null
+  /** Live thinking-token estimate for the current thinking block
+   *  (`system/thinking_tokens` frames), or null when none is in flight.
+   *  Drives the WorkingBubble's token hint. */
+  thinkingTokens: number | null
   tokenRate: number | null
   streamingContent: string | null
   activePhase: ActivePhase
@@ -171,6 +175,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   const promptSuggestion = useSessionField(sessionId, 'promptSuggestion')
   const tasks = useSessionField(sessionId, 'tasks')
   const apiRetry = useSessionField(sessionId, 'apiRetry')
+  const thinkingTokens = useSessionField(sessionId, 'thinkingTokens')
   const error = useSessionField(sessionId, 'error')
   const permissionDecisions = useSessionField(sessionId, 'permissionDecisions')
   const planStatus = useSessionField(sessionId, 'planStatus')
@@ -586,6 +591,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       promptSuggestion,
       tasks,
       apiRetry,
+      thinkingTokens,
       tokenRate,
       streamingContent,
       activePhase,
@@ -609,6 +615,6 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       hasOlder,
       loadingOlder,
     }),
-    [items, messages, displayedError, contextUsage, promptSuggestion, tasks, apiRetry, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, replayReady, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder],
+    [items, messages, displayedError, contextUsage, promptSuggestion, tasks, apiRetry, thinkingTokens, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, replayReady, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder],
   )
 }

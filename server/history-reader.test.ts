@@ -139,6 +139,78 @@ describe('paginateJsonl — normalization', () => {
     const page = paginateJsonl(raw, SID, { limit: 100 })
     expect('receivedAt' in (page.messages[0] as object)).toBe(false)
   })
+
+  it('passes top-level payloads through for permission_denied / informational / model_refusal_fallback lines', () => {
+    const raw = jsonl([
+      {
+        type: 'system', subtype: 'permission_denied', uuid: 'pd1',
+        tool_name: 'Bash', tool_use_id: 'tu1', decision_reason_type: 'rule',
+        decision_reason: 'denied by settings', message: 'Bash is not allowed',
+      },
+      {
+        type: 'system', subtype: 'informational', uuid: 'inf1',
+        content: 'hook blocked the prompt', level: 'warning', prevent_continuation: true,
+      },
+      {
+        type: 'system', subtype: 'model_refusal_fallback', uuid: 'mrf1',
+        trigger: 'refusal', direction: 'retry',
+        original_model: 'claude-opus-5', fallback_model: 'claude-sonnet-5',
+        retracted_message_uuids: ['u1', 'u2'], content: 'refused; retrying',
+      },
+    ])
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    expect(page.messages).toHaveLength(3)
+    expect(page.messages[0]).toMatchObject({
+      type: 'system', subtype: 'permission_denied', tool_name: 'Bash',
+      decision_reason_type: 'rule', decision_reason: 'denied by settings',
+      message: 'Bash is not allowed',
+    })
+    expect(page.messages[1]).toMatchObject({
+      type: 'system', subtype: 'informational',
+      content: 'hook blocked the prompt', level: 'warning', prevent_continuation: true,
+    })
+    expect(page.messages[2]).toMatchObject({
+      type: 'system', subtype: 'model_refusal_fallback',
+      original_model: 'claude-opus-5', fallback_model: 'claude-sonnet-5',
+      retracted_message_uuids: ['u1', 'u2'],
+    })
+  })
+
+  it('drops malformed top-level payload values (wrong shape) instead of passing them through', () => {
+    const raw = jsonl([
+      {
+        type: 'system', subtype: 'model_refusal_fallback', uuid: 'mrf1',
+        original_model: { nested: true }, retracted_message_uuids: [1, 2], content: { x: 1 },
+      },
+    ])
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    // The frame itself survives (renderable) but the malformed fields don't.
+    expect(page.messages).toHaveLength(1)
+    const m = page.messages[0] as Record<string, unknown>
+    expect('original_model' in m).toBe(false)
+    expect('retracted_message_uuids' in m).toBe(false)
+    expect('content' in m).toBe(false)
+  })
+
+  it('renders tool_use_summary lines and carries their summary; skips tool_progress', () => {
+    const raw = jsonl([
+      { type: 'tool_use_summary', uuid: 'tus1', summary: 'ran 3 searches', preceding_tool_use_ids: ['a', 'b'] },
+      { type: 'tool_progress', uuid: 'tp1', tool_use_id: 'tu1', tool_name: 'Bash', elapsed_time_seconds: 3 },
+    ])
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    expect(page.messages).toHaveLength(1)
+    expect(page.messages[0]).toMatchObject({
+      type: 'tool_use_summary', summary: 'ran 3 searches', preceding_tool_use_ids: ['a', 'b'],
+    })
+  })
+
+  it('carries assistant supersedes through so disk replay evicts the refused leg', () => {
+    const raw = jsonl([
+      { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [] }, supersedes: ['x1', 'x2'] },
+    ])
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    expect(page.messages[0]).toMatchObject({ type: 'assistant', supersedes: ['x1', 'x2'] })
+  })
 })
 
 describe('paginateJsonl — pagination', () => {

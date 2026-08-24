@@ -198,6 +198,88 @@
 }
 .memory-recall-more:hover { color: var(--fg); text-decoration: underline; }
 
+/* system/permission_denied: tool call auto-denied without an interactive
+   prompt (dontAsk / deny rule / auto-mode classifier). Rides the shared
+   `.msg.result` divider row — only the mark + meta text are ours. */
+.msg.result.permission-denied .result-mark { color: var(--warn); }
+
+/* system/informational: loop text banner (hook block reason, slash-command
+   output, status line). 'info'/'notice' are muted single lines;
+   'suggestion'/'warning' get the prominent card treatment. */
+.msg.informational {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 10px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  word-wrap: break-word;
+}
+.msg.informational .informational-body { min-width: 0; }
+.msg.informational.informational--warning,
+.msg.informational.informational--suggestion {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius-2xs);
+  background: var(--bg-elev-2);
+  color: var(--fg);
+}
+.msg.informational.informational--warning .result-mark { color: var(--warn); }
+
+/* system/model_refusal_fallback: the primary model refused, the turn was
+   retried once on the fallback model. Card treatment — this frame is the
+   canonical record of the swap (the refused leg's messages are evicted). */
+.msg.refusal-fallback {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius-2xs);
+  background: var(--bg-elev-2);
+}
+.msg.refusal-fallback .msg-header {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+.refusal-fallback-body {
+  font-size: 13px;
+  color: var(--fg);
+  word-wrap: break-word;
+}
+.refusal-fallback-detail {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+/* tool_use_summary: compact one-line recap after a tool cascade. */
+.msg.tool-use-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 10px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  word-wrap: break-word;
+}
+.tool-use-summary-mark {
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+.tool-use-summary-body { min-width: 0; }
+
 .msg-body { word-wrap: break-word; }
 /* Inline code + fenced <pre> base for rendered Markdown. `.md` is the root
    <div> Markdown.tsx always wraps its output in, so this covers every

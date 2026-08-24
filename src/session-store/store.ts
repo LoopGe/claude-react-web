@@ -932,6 +932,7 @@ export class SessionStore {
       promptSuggestion: mirror.promptSuggestion ?? null,
       tasks: mirror.tasks,
       apiRetry: mirror.apiRetry,
+      thinkingTokens: mirror.thinkingTokens,
       error: intent.error,
       permissionDecisions: mirror.permissionDecisions,
       planStatus: mirror.planStatus,

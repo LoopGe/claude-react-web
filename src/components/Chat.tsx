@@ -1785,6 +1785,7 @@ export const Chat = memo(function Chat({
           startedAt={turnStartedAt}
           activeSubagents={stream.activeSubagents}
           tokenRate={stream.tokenRate}
+          thinkingTokens={stream.thinkingTokens}
           activePhase={displayPhase}
           waiting={waiting}
           onOpenSubagent={openSubagent}

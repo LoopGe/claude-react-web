@@ -286,15 +286,27 @@ function replayReplace(
   // newer, drop the overlap). This makes the merge correct regardless of how
   // the server happened to slice — no reliance on sinceUuid landing cleanly.
   if (messages.length > 0 && prevMirror.items.length > 0) {
+    const { older, newer } = splitReplayAgainstCache(messages, prevMirror.items)
+    // Preserve an in-progress turn's accumulated text across a benign
+    // reconnect / panel-switch-back replay. The live turn's partial text lives
+    // ONLY in `liveTurn` — stream_event deltas never enter the history ring
+    // (the replay cannot carry them), so nulling liveTurn here made the
+    // StreamingFooter vanish even though the turn was still running server-side.
+    // A `result` in the replay's NEWER slice is the one reliable "the turn
+    // ended" signal: it always sits chronologically after the cache (a
+    // liveTurn can only belong to a turn started after the cache's last item),
+    // and applyMessage also nulls liveTurn on it below. A result in the
+    // OLDER/prepended slice predates the cache window and must NOT clear a
+    // still-current liveTurn.
+    const turnEnded = newer.some((m) => m.type === 'result')
     let state: SessionState = withMirror(prevState, {
       ...prevMirror,
-      liveTurn: null,
+      liveTurn: turnEnded ? null : prevMirror.liveTurn,
       replayReady: true,
     })
     for (const permission of permissions) {
       state = reduceSessionState(state, { type: 'PERMISSION_REQUEST', request: permission })
     }
-    const { older, newer } = splitReplayAgainstCache(messages, prevMirror.items)
     if (older.length > 0) state = prependMessages(state, older)
     for (const message of newer) {
       state = applyMessage(state, message)
@@ -1118,6 +1130,17 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   // returns null), so it neither appends nor needs the old in-place
   // replace/strip logic.
   const isApiRetry = message.type === 'system' && message.subtype === 'api_retry'
+  // `thinking_tokens` is a transient live estimate of the current thinking
+  // block's token count (see toTranscriptItem — never a TranscriptItem). It
+  // routes to `mirror.thinkingTokens` for the WorkingBubble, exactly like
+  // api_retry routes to its slot. Unlike api_retry it is NOT cleared by every
+  // other message: stream_event deltas interleave with thinking_tokens frames
+  // during the same thinking phase, and clearing on them would flicker the
+  // display off between estimates. It clears on `result` (turn end) and on
+  // `user` (a new turn starts). It also must not advance lastMessageUuid —
+  // the server never stores it in the ring, so a sinceUuid pointing at it
+  // would miss the ring and force full replays.
+  const isThinkingTokens = message.type === 'system' && message.subtype === 'thinking_tokens'
   // `stream_event` is a live-streaming delta (one per content chunk — hundreds
   // per heavy turn). It must NOT advance lastMessageUuid: the uuid-anchored WS
   // incremental replay (`sinceUuid`) relies on the cursor pointing at a durable
@@ -1127,12 +1150,27 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   // forces a full replay on every reconnect. Anchoring on durable messages
   // keeps the incremental path working.
   const isStreamEvent = message.type === 'stream_event'
+  // `tool_progress` is a per-tool liveness ping (no renderable content — see
+  // toTranscriptItem's null return). The server drops it in the pump, but a
+  // frame from an older server / stale replay cache must not advance the
+  // cursor either: its uuid is never in the ring, so anchoring on it would
+  // break the sinceUuid incremental replay path.
+  const isToolProgress = message.type === 'tool_progress'
+
+  let thinkingTokens: number | null = mirror.thinkingTokens
+  if (isThinkingTokens) {
+    const estimate = (incomingMessage as { estimated_tokens?: unknown }).estimated_tokens
+    thinkingTokens = typeof estimate === 'number' && Number.isFinite(estimate) ? estimate : null
+  } else if (incomingMessage.type === 'result' || incomingMessage.type === 'user') {
+    thinkingTokens = null
+  }
 
   const workingMirror: ServerMirror = {
     ...mirror,
     eventCount: mirror.eventCount + 1,
-    ...(messageUuid && !isApiRetry && !isStreamEvent ? { lastMessageUuid: messageUuid } : {}),
+    ...(messageUuid && !isApiRetry && !isThinkingTokens && !isStreamEvent && !isToolProgress ? { lastMessageUuid: messageUuid } : {}),
     apiRetry: isApiRetry ? incomingMessage : null,
+    thinkingTokens,
   }
 
   let working: SessionState = {
@@ -1166,6 +1204,27 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   // Bound in-memory growth. No-op until the transcript exceeds CAP + SLACK,
   // so the common append path stays allocation-free.
   working = trimFront(working)
+
+  // Refusal-fallback retraction: evict the refused leg's already-streamed
+  // partial messages. Two carriers, both idempotent (evictMessages no-ops on
+  // unknown uuids):
+  //   - assistant `supersedes` — evict-on-arrival for the replacement frame
+  //     the CLI streams mid-turn;
+  //   - system `model_refusal_fallback.retracted_message_uuids` — the
+  //     end-of-turn audit record (this frame itself stays: it renders as the
+  //     fallback notice and is the canonical replacement).
+  // Runs through applyMessage so replay/disk-loaded transcripts evict too.
+  const supersedes = incomingMessage.type === 'assistant'
+    ? (incomingMessage as { supersedes?: unknown }).supersedes
+    : undefined
+  const retracted = incomingMessage.type === 'system' && incomingMessage.subtype === 'model_refusal_fallback'
+    ? (incomingMessage as { retracted_message_uuids?: unknown }).retracted_message_uuids
+    : undefined
+  const evictUuids = [...(Array.isArray(supersedes) ? supersedes : []), ...(Array.isArray(retracted) ? retracted : [])]
+    .filter((u): u is string => typeof u === 'string' && u.length > 0)
+  if (evictUuids.length > 0) {
+    working = evictMessages(working, evictUuids)
+  }
 
   return working
 }
