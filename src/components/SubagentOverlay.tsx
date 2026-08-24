@@ -286,6 +286,13 @@ export const SubagentOverlay = memo(function SubagentOverlay({
               {statusText}
               {elapsedMs != null && ` · ${formatElapsed(elapsedMs)}`}
             </span>
+            {/* Live progress summary (agentProgressSummaries) — shown only
+                while the subagent is in flight; cleared on terminal. */}
+            {current.progressSummary && (current.status === 'running' || current.status === 'background' || current.status === 'pending') && (
+              <span className="subagent-overlay-progress" title={current.progressSummary}>
+                {current.progressSummary}
+              </span>
+            )}
           </div>
           <button
             type="button"

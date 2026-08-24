@@ -150,6 +150,42 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
       return withMirror(state, { ...state.mirror, contextUsage: action.usage })
     case 'PROMPT_SUGGESTION':
       return withMirror(state, { ...state.mirror, promptSuggestion: action.suggestion })
+    case 'TASKS_SNAPSHOT': {
+      // Replace the whole task list, then enrich matching subagent records.
+      // Joining by toolUseId (not taskId) because activeSubagents are keyed
+      // by the Agent tool_use id — TaskRecordUi carries that id on subagent
+      // tasks. Terminal task records clear the summary so a done chip
+      // doesn't show stale progress text.
+      let activeSubagents = state.mirror.activeSubagents
+      for (const task of action.tasks) {
+        if (!task.toolUseId) continue
+        const record = activeSubagents.get(task.toolUseId)
+        if (!record) continue
+        if (activeSubagents === state.mirror.activeSubagents) {
+          activeSubagents = new Map(activeSubagents)
+        }
+        const isTerminal =
+          task.status === 'completed' || task.status === 'failed' ||
+          task.status === 'killed' || task.status === 'stopped'
+        activeSubagents.set(task.toolUseId, {
+          ...record,
+          taskId: task.taskId,
+          progressSummary: isTerminal ? undefined : task.progressSummary ?? record.progressSummary,
+          lastToolName: isTerminal ? undefined : task.lastToolName ?? record.lastToolName,
+          // The SDK backgrounds a foreground task via is_backgrounded —
+          // flip the chip to `background` so it stays visible (same
+          // semantics as a run_in_background launch ack).
+          ...(task.isBackgrounded && record.status === 'running'
+            ? { status: 'background' as const }
+            : {}),
+        })
+      }
+      if (
+        activeSubagents === state.mirror.activeSubagents &&
+        state.mirror.tasks === action.tasks
+      ) return state
+      return withMirror(state, { ...state.mirror, tasks: action.tasks, activeSubagents })
+    }
     case 'MESSAGE_CONSUMED':
       return applyMessageConsumed(state, action.uuid, action.consumedAt)
     case 'ERROR':

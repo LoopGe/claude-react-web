@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { reduceSessionState, splitReplayAgainstCache, rebuildIndexesFromMessages, reapplyDismissed } from './reducer'
 import { createInitialSessionState, type SessionState, type ServerMirror } from './types'
 import { isTrimBoundary } from './normalize'
-import type { PermissionRequest, SdkMessage } from '../types'
+import type { PermissionRequest, SdkMessage, TaskRecordUi } from '../types'
 
 const hasId = (ids: ReadonlyMap<string, unknown>, id: string) => ids.has(id)
 const isEmpty = (ids: ReadonlyMap<string, unknown>) => ids.size === 0
@@ -2809,5 +2809,106 @@ describe('reducer: a task_notification for ONE async agent leaves the OTHER back
     const stillRunning = Array.from(state.mirror.activeSubagents.values())
       .filter((s) => s.status === 'pending' || s.status === 'background')
     expect(stillRunning.map((s) => s.toolUseId)).toContain('tu_b')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// TASKS_SNAPSHOT — the dedicated `tasks` WS channel carries full task-list
+// snapshots (server-side session.tasks). The reducer stores the list AND
+// enriches matching activeSubagent records: taskId / progressSummary /
+// lastToolName join by toolUseId, and an isBackgrounded flag flips a
+// 'running' record to 'background' (the SDK's backgrounding signal).
+// ---------------------------------------------------------------------------
+
+describe('reducer: TASKS_SNAPSHOT', () => {
+  const agentToolUse = (id: string, uuid: string): SdkMessage => ({
+    type: 'assistant',
+    uuid,
+    receivedAt: 0,
+    message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Agent', input: { description: 'do work' } }] },
+  }) as unknown as SdkMessage
+
+  const task = (overrides: Partial<TaskRecordUi> = {}): TaskRecordUi => ({
+    taskId: 't-1',
+    description: 'work',
+    status: 'running',
+    updatedAt: 0,
+    ...overrides,
+  })
+
+  it('sets mirror.tasks and enriches a matching running subagent to background (isBackgrounded)', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1') })
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('running')
+
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [task({ toolUseId: 'tu_a', isBackgrounded: true, progressSummary: 'reading files', lastToolName: 'Read' })],
+    })
+
+    expect(state.mirror.tasks).toHaveLength(1)
+    expect(state.mirror.tasks[0]).toMatchObject({ taskId: 't-1', progressSummary: 'reading files' })
+    expect(state.mirror.activeSubagents.get('tu_a')).toMatchObject({
+      taskId: 't-1',
+      progressSummary: 'reading files',
+      lastToolName: 'Read',
+      status: 'background', // flipped by the SDK's backgrounding signal
+    })
+  })
+
+  it('enriches without flipping a record that is not running (terminal / pending untouched)', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1') })
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: { type: 'result', subtype: 'success', uuid: 'r1', receivedAt: 1_000 } as unknown as SdkMessage,
+    })
+    // Result sweep: a still-'running' (no async ack) subagent when the parent
+    // turn ends → 'interrupted' by the sweep. Not 'running' anymore, so the
+    // snapshot must NOT flip it to background.
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('interrupted')
+
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [task({ toolUseId: 'tu_a', isBackgrounded: true, progressSummary: 'still going' })],
+    })
+    // interrupted stays interrupted (only 'running' flips to background).
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('interrupted')
+    expect(state.mirror.activeSubagents.get('tu_a')?.progressSummary).toBe('still going')
+  })
+
+  it('clears progressSummary/lastToolName on the enriched record when the task is terminal', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1') })
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [task({ toolUseId: 'tu_a', progressSummary: 'mid-run', lastToolName: 'Bash' })],
+    })
+    expect(state.mirror.activeSubagents.get('tu_a')?.progressSummary).toBe('mid-run')
+
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [task({ toolUseId: 'tu_a', status: 'completed', progressSummary: 'stale tail' })],
+    })
+    const rec = state.mirror.activeSubagents.get('tu_a')
+    expect(rec?.progressSummary).toBeUndefined()
+    expect(rec?.lastToolName).toBeUndefined()
+    expect(rec?.taskId).toBe('t-1') // identity joins survive the terminal clear
+  })
+
+  it('is identity-stable when the same snapshot arrives twice (no rerender churn)', () => {
+    let state = createInitialSessionState('s1')
+    const tasks = [task({ toolUseId: 'tu_none' })]
+    state = reduceSessionState(state, { type: 'TASKS_SNAPSHOT', tasks })
+    const again = reduceSessionState(state, { type: 'TASKS_SNAPSHOT', tasks })
+    expect(again).toBe(state) // same reference — nothing changed
+  })
+
+  it('CLEAR_TRANSCRIPT resets mirror.tasks to []', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'TASKS_SNAPSHOT', tasks: [task()] })
+    expect(state.mirror.tasks).toHaveLength(1)
+    state = reduceSessionState(state, { type: 'CLEAR_TRANSCRIPT' })
+    expect(state.mirror.tasks).toEqual([])
   })
 })

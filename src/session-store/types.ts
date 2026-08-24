@@ -1,4 +1,4 @@
-import type { PermissionRequest, SdkMessage } from '../types'
+import type { PermissionRequest, SdkMessage, TaskRecordUi } from '../types'
 import type { ContextUsage } from '../hooks/useChatStream'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 
@@ -98,6 +98,17 @@ export interface ActiveSubagent {
    *  returned output inline at the bottom of the card — same merge pattern
    *  as generic ToolCard, so the standalone orphan bubble is suppressed. */
   result?: ToolResultEntry
+  /** The matching TaskRecordUi.taskId, joined in when a tasks-snapshot
+   *  arrives carrying this record's tool_use_id. Enables the TasksPanel
+   *  stop button to target this subagent. Undefined for sync subagents
+   *  with no task record (or before the first snapshot). */
+  taskId?: string
+  /** Latest present-tense progress summary (agentProgressSummaries —
+   *  task_progress.summary, ~every 30s). Refreshed by TASKS_SNAPSHOT. */
+  progressSummary?: string
+  /** Name of the tool the subagent most recently ran (task_progress.
+   *  last_tool_name). Rendered as hover context on the WorkingBubble chip. */
+  lastToolName?: string
 }
 
 /** Lifecycle status for a Workflow orchestration. Mirrors SubagentStatus —
@@ -305,6 +316,12 @@ export interface ServerMirror {
   /** Predicted next-user-prompt from the SDK. Ephemeral — cleared when the
    *  user sends a new message or the transcript is cleared. */
   promptSuggestion: string | null
+  /** Full task list (background Bash commands, subagents, ambient
+   *  skip_transcript tasks), folded server-side from task_* system frames
+   * and pushed as whole-array snapshots. Ephemeral — like
+   * promptSuggestion it never enters the transcript; reset by
+   * CLEAR_TRANSCRIPT. */
+  tasks: TaskRecordUi[]
   lastMessageUuid: string | null
   /** Transient `api_retry` system frame (rate-limit retry indicator). Lives
    *  OUTSIDE items/messages/IDB — it is purely transient (only meaningful
@@ -426,6 +443,12 @@ export type SessionAction =
   | { type: 'CONTEXT_USAGE'; usage: ContextUsage }
   /** Predicted next-user-prompt from the SDK, or null to clear. */
   | { type: 'PROMPT_SUGGESTION'; suggestion: string | null }
+  /** Full task-list snapshot from the dedicated `tasks` WS channel
+   *  (server folds task_started/updated/progress/notification frames into
+   *  TaskRecordUi state and always pushes the whole array). Also enriches
+   *  matching activeSubagents (taskId / progressSummary / lastToolName,
+   *  and the running→background flip when the SDK backgrounds a task). */
+  | { type: 'TASKS_SNAPSHOT'; tasks: TaskRecordUi[] }
   /** The SDK read a queued user turn off its input queue. Flips the
    *  matching message's deliveryStatus from 'queued' to 'consumed'. */
   | { type: 'MESSAGE_CONSUMED'; uuid: string; consumedAt: number }
@@ -468,6 +491,8 @@ export interface SessionSnapshot {
   tokenRate: number | null
   contextUsage: ContextUsage | null
   promptSuggestion: string | null
+  /** Full task list — drives the TasksPanel and the header task-count chip. */
+  tasks: TaskRecordUi[]
   error: string | null
   permissionDecisions: ReadonlyMap<string, 'allow' | 'deny'>
   planStatus: ReadonlyMap<string, PlanStatus>
@@ -512,6 +537,7 @@ export function createInitialServerMirror(): ServerMirror {
     liveTurn: null,
     contextUsage: null,
     promptSuggestion: null,
+    tasks: [],
     lastMessageUuid: null,
     apiRetry: null,
     pendingConsumedMessages: new Map<string, number>(),

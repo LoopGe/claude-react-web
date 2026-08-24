@@ -37,7 +37,8 @@ import { execCommand, escapeXml } from './exec.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig } from './config.js'
 import { createAsyncSubscription } from './async-subscription.js'
-import { pump as pumpSession, getParentToolUseId, type PumpDeps } from './session-pump.js'
+import { pump as pumpSession, getParentToolUseId, applyTaskEvent, type PumpDeps } from './session-pump.js'
+import { isTerminalTaskStatus } from '../shared/tasks.js'
 import {
   type Subscriber,
   type PermissionEvent,
@@ -664,6 +665,30 @@ export class SessionManager {
       },
     })
     perSession.set(toolUseId, stop)
+    // Seed a TaskRecord for this watcher-tracked subagent. CLI versions that
+    // emit no task_* frames for background Agent dispatches (the watcher's
+    // reason to exist) would otherwise never surface in session.tasks /
+    // the TasksPanel. A real task_started arriving later overwrites the seed
+    // via applyTaskEvent's upsert; the watcher's own synthesized completion
+    // settles it otherwise.
+    const now = Date.now()
+    const seeded = session.tasks.get(agentId)
+    if (!seeded) {
+      session.tasks.set(agentId, {
+        taskId: agentId,
+        toolUseId,
+        description: 'Background subagent',
+        taskType: 'subagent',
+        status: 'running',
+        isBackgrounded: true,
+        startedAt: now,
+        updatedAt: now,
+      })
+      const snapshot = Array.from(session.tasks.values())
+      for (const sub of session.taskSubscribers) {
+        try { sub.push(snapshot) } catch { /* subscriber dead — skip */ }
+      }
+    }
     // A new background subagent just launched — broadcast the updated count
     // so the sidebar can switch this session away from a plain 'live' dot
     // (the parent turn is still running right now; the `result` frame that
@@ -671,6 +696,46 @@ export class SessionManager {
     if (this.sessions.has(session.id)) {
       this.broadcastGlobal({ kind: 'update', session: this.info(session) })
     }
+  }
+
+  /** Cancel the subagent watcher for a (session, toolUseId) when a REAL SDK
+   *  task_notification arrives for the same tool call — the true completion
+   *  already carries the result, so the watcher's synthesized notification
+   *  would be a duplicate (and its maxMs backstop could later flip a
+   *  legitimately-done record back to 'stopped'). No-op when no watcher is
+   *  armed. */
+  private cancelBackgroundWatcher(sessionId: string, toolUseId: string): void {
+    const perSession = this.backgroundWatchers.get(sessionId)
+    const stop = perSession?.get(toolUseId)
+    if (!stop) return
+    try { stop() } catch { /* ignore */ }
+    perSession!.delete(toolUseId)
+    const session = this.sessions.get(sessionId)
+    // The pump folds the REAL notification (keyed by its task_id) BEFORE
+    // calling this. Nothing ties that task_id to the agentId the launch ack
+    // carried, so when they differ the watcher's seed record is a duplicate
+    // still stuck on 'running' — the real record under the frame's task_id is
+    // the authoritative one, so drop the seed (a matched task_id means the
+    // fold already settled the seed itself and it is left intact).
+    if (session) {
+      let removed = false
+      for (const [taskId, rec] of session.tasks) {
+        if (rec.toolUseId === toolUseId && !isTerminalTaskStatus(rec.status)) {
+          session.tasks.delete(taskId)
+          removed = true
+        }
+      }
+      if (removed) {
+        const snapshot = Array.from(session.tasks.values())
+        for (const sub of session.taskSubscribers) {
+          try { sub.push(snapshot) } catch { /* subscriber dead — skip */ }
+        }
+      }
+      // The watcher count feeds the sidebar's 'waiting' dot; re-broadcast so
+      // it reflects the cancelled watcher immediately.
+      this.broadcastGlobal({ kind: 'update', session: this.info(session) })
+    }
+    log.info(`[session ${sessionId}] real task_notification for toolUseId=${toolUseId} — watcher cancelled`)
   }
 
   /** Synthesize a `system`/`task_notification` frame for a completed
@@ -707,6 +772,11 @@ export class SessionManager {
     for (const sub of session.subscribers.values()) {
       try { sub.push(msg) } catch { /* subscriber dead — skip */ }
     }
+    // Fold the same notification into the task-state cache so the seeded
+    // watcher record settles to a terminal status in the TasksPanel. The
+    // synthesized frame never passes through the pump (it bypasses the SDK
+    // stream), so the normal fold path doesn't see it — fold it here.
+    applyTaskEvent(session, msg)
   }
 
   /** Stop all background-subagent watchers for a session (called on unload
@@ -1907,6 +1977,8 @@ export class SessionManager {
       lastContextUsage: undefined,
       promptSuggestionSubscribers: new Set(),
       lastPromptSuggestion: undefined,
+      tasks: new Map(),
+      taskSubscribers: new Set(),
       gitStatusSubscribers: new Set(),
       messageStatusSubscribers: new Set(),
       commandSubscribers: new Set(),
@@ -2283,6 +2355,38 @@ export class SessionManager {
       log.error(`[session ${id}] interrupt() threw after ${Date.now() - startedAt}ms:`, err)
       throw err
     }
+    s.lastActivityAt = Date.now()
+    this.persist(s)
+  }
+
+  /** Background in-flight foreground tasks (Bash commands + subagents) —
+   *  the CLI's Ctrl+B semantics. Resolves false when the SDK reports there
+   *  was nothing to background. */
+  async backgroundTasks(id: string, toolUseId?: string): Promise<boolean> {
+    const s = this.requireLive(id)
+    log.info(`[session ${id}] background tasks requested — toolUseId=${toolUseId ?? '(all)'}`)
+    const result = await this.requireHandleMethod<(toolUseId?: string) => Promise<boolean>>(
+      s,
+      'backgroundTasks',
+      'background tasks',
+      'supportsTaskControl',
+    )(toolUseId)
+    s.lastActivityAt = Date.now()
+    this.persist(s)
+    return result
+  }
+
+  /** Stop a running background task by id. The SDK emits a
+   *  task_notification (status 'stopped') that folds the task state. */
+  async stopTask(id: string, taskId: string): Promise<void> {
+    const s = this.requireLive(id)
+    log.info(`[session ${id}] stop task requested — taskId=${taskId}`)
+    await this.requireHandleMethod<(taskId: string) => Promise<void>>(
+      s,
+      'stopTask',
+      'task stop',
+      'supportsTaskControl',
+    )(taskId)
     s.lastActivityAt = Date.now()
     this.persist(s)
   }
@@ -3469,6 +3573,18 @@ export class SessionManager {
     return { iterable: sub.iterable, snapshot: s.lastPromptSuggestion, unsubscribe: sub.unsubscribe }
   }
 
+  /** AsyncIterable of full task-list snapshots for one session. Mirrors
+   *  subscribeContextUsage. The snapshot is ALWAYS present (empty array
+   *  when no tasks) so a freshly subscribed tab can initialize its
+   *  TasksPanel unconditionally. Returns null when the session is
+   *  unknown. */
+  subscribeTasks(id: string): { iterable: AsyncIterable<unknown>; snapshot: import('../shared/tasks.js').TaskRecordUi[]; unsubscribe: () => void } | null {
+    const s = this.sessions.get(id)
+    if (!s) return null
+    const sub = this.subscribePushableSet(s, s.taskSubscribers, 'tasks', 20)
+    return { iterable: sub.iterable, snapshot: Array.from(s.tasks.values()), unsubscribe: sub.unsubscribe }
+  }
+
   /** AsyncIterable of `git-status-changed` signal frames for one session.
    *  Mirrors subscribeContextUsage; returns null when the session is
    *  unknown so callers can short-circuit gracefully. */
@@ -4334,6 +4450,8 @@ export class SessionManager {
         recordHookRun: (id, event) => this.recordHookRun(id, event),
         onBackgroundSubagentLaunched: (sessionId, toolUseId, agentId) =>
           this.startBackgroundSubagentWatcher(sessionId, toolUseId, agentId),
+        onTaskNotification: (sessionId, toolUseId) =>
+          this.cancelBackgroundWatcher(sessionId, toolUseId),
         onPromptEcho: (s, echoUuid) => {
           if (this.sessions.has(s.id)) this.onPromptEcho(s, echoUuid)
         },

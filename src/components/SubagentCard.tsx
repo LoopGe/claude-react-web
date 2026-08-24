@@ -105,6 +105,15 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
           <span className="subagent-card-open" aria-hidden><IconExternalLink size={12} /></span>
         </span>
       </button>
+      {/* Present-tense progress summary (agentProgressSummaries —
+          task_progress.summary, ~every 30s). Only shown while the subagent
+          is live; the record clears it when the task reaches a terminal
+          state, so a finished card doesn't show stale progress text. */}
+      {record?.progressSummary && isRunning && (
+        <div className="subagent-card-progress" title={record.progressSummary}>
+          {record.progressSummary}
+        </div>
+      )}
       {result && <SubagentCardResult result={result} />}
     </div>
   )

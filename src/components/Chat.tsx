@@ -17,6 +17,7 @@ import { useDebouncedValue } from '../hooks/useDebouncedValue'
 // gate its first mount on `settingsEverOpened` rather than `settingsOpen`.
 const SettingsPanel = lazy(() => import('./SettingsPanel').then((m) => ({ default: m.SettingsPanel })))
 const GitPanel = lazy(() => import('./GitPanel').then((m) => ({ default: m.GitPanel })))
+const TasksPanel = lazy(() => import('./TasksPanel').then((m) => ({ default: m.TasksPanel })))
 // ResumeSessionDialog is also a per-panel overlay (its 'panel' variant,
 // rendered here) — lazy so the picker code stays out of the main bundle for
 // sessions that never resume via the keyboard shortcut / `/resume`.
@@ -160,6 +161,11 @@ interface Props {
   gitLoading?: boolean
   gitError?: string | null
   onGitRefresh?: () => void
+  /** When true, render the Tasks overlay (background-task list) on top of
+   *  this chat panel. Data comes from the session store's `tasks` mirror —
+   *  TasksPanel subscribes itself, no prop drilling of the list. */
+  tasksPanelOpen?: boolean
+  onCloseTasksPanel?: () => void
   /** When true, render the floating Recap window at the top of the chat
    *  area. Owned by ChatPanel (which also renders the reopen button in the
    *  header); Chat just renders the window and calls onCloseRecap when the
@@ -277,6 +283,7 @@ export const Chat = memo(function Chat({
   clearing: clearingProp,
   settingsOpen, onCloseSettings,
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
+  tasksPanelOpen, onCloseTasksPanel,
   recapOpen, onCloseRecap,
   onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, composerFocusSignal: externalComposerFocusSignal, globalPrefs, onRegisterInterrupt, onRegisterRecap, historyOpen, onCloseHistory,
   onResume, onForkFromLastCompleted,
@@ -1309,6 +1316,18 @@ export const Chat = memo(function Chat({
     }
   }, [session.id])
 
+  /** Background every in-flight foreground task (Ctrl+B semantics) — the
+   *  turn continues while the running command/subagent detaches to the
+   *  background task list. The server's `backgrounded: false` response
+   *  (nothing to background) is benign; no error surface needed. */
+  const backgroundTasks = useCallback(async () => {
+    try {
+      await api.post(`/sessions/${session.id}/tasks/background`, {})
+    } catch (e) {
+      setLocalError((e as Error).message)
+    }
+  }, [session.id])
+
   /** Force-stop the current in-flight `!`/`!!` command (SIGKILL the child),
    *  like Ctrl+C. The server then completes execInSession with
    *  interrupted:true and injects the result as a normal bash message, so no
@@ -1378,6 +1397,7 @@ export const Chat = memo(function Chat({
   // Stable wrappers so Composer's React.memo isn't defeated by inline arrows.
   const handleSend = useCallback(() => void send(), [send])
   const handleInterrupt = useCallback(() => void interrupt(), [interrupt])
+  const handleBackground = useCallback(() => void backgroundTasks(), [backgroundTasks])
 
   return (
     <div className="chat">
@@ -1694,6 +1714,7 @@ export const Chat = memo(function Chat({
       onSend={handleSend}
       onInterrupt={handleInterrupt}
       canInterrupt={session.working}
+      onBackground={handleBackground}
       focusSignal={effectiveComposerFocusSignal}
       onRecap={recap.refresh}
       canRecap={!!session.lastTurnAt}
@@ -1840,6 +1861,24 @@ export const Chat = memo(function Chat({
             error={gitError ?? null}
             onRefresh={() => onGitRefresh?.()}
             onClose={() => onCloseGitPanel?.()}
+          />
+        </Suspense>
+      </Overlay>
+
+      <Overlay
+        variant="tasks"
+        ariaLabel="Tasks"
+        open={tasksPanelOpen}
+        onClose={() => onCloseTasksPanel?.()}
+        renderCard={false}
+        trapRefTarget="backdrop"
+        focusEscapeSelector=".chat-panel"
+      >
+        <Suspense fallback={null}>
+          <TasksPanel
+            key={session.id}
+            sessionId={session.id}
+            onClose={() => onCloseTasksPanel?.()}
           />
         </Suspense>
       </Overlay>

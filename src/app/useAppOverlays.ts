@@ -13,6 +13,7 @@ export function useAppOverlays() {
     nonce: number
   } | null>(null)
   const [gitPanelOpenFor, setGitPanelOpenFor] = useState<string | null>(null)
+  const [tasksPanelOpenFor, setTasksPanelOpenFor] = useState<string | null>(null)
   const [helpOpen, setHelpOpen] = useState(false)
   const [helpCommands, setHelpCommands] = useState<SlashCommand[]>([])
 
@@ -20,11 +21,19 @@ export function useAppOverlays() {
   const handleOpenSettings = useCallback((id: string) => {
     setSettingsOpenFor(id)
     setGitPanelOpenFor(null)
+    setTasksPanelOpenFor(null)
   }, [])
   const handleCloseGitPanel = useCallback(() => setGitPanelOpenFor(null), [])
   const handleOpenGitPanel = useCallback((id: string) => {
     setGitPanelOpenFor(id)
     setSettingsOpenFor(null)
+    setTasksPanelOpenFor(null)
+  }, [])
+  const handleCloseTasksPanel = useCallback(() => setTasksPanelOpenFor(null), [])
+  const handleOpenTasksPanel = useCallback((id: string) => {
+    setTasksPanelOpenFor(id)
+    setSettingsOpenFor(null)
+    setGitPanelOpenFor(null)
   }, [])
 
   const settingsTabNonceRef = useRef(0)
@@ -51,6 +60,9 @@ export function useAppOverlays() {
     settingsTabRequest,
     gitPanelOpenFor,
     setGitPanelOpenFor,
+    tasksPanelOpenFor,
+    handleCloseTasksPanel,
+    handleOpenTasksPanel,
     helpOpen,
     setHelpOpen,
     helpCommands,

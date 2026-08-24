@@ -35,6 +35,7 @@ import {
   type WsServerFrame,
 } from './ws-protocol.js'
 import type { HookRunRecord, HookRuntimeEvent } from '../shared/hooks.js'
+import type { TaskRecordUi } from '../shared/tasks.js'
 
 const log = createLogger('ws')
 
@@ -352,6 +353,8 @@ export function attachWebSocket(
       let hookIter: AsyncIterator<unknown> | null = null
       let psugSub: { iterable: AsyncIterable<unknown>; snapshot?: string | null; unsubscribe: () => void } | null = null
       let psugIter: AsyncIterator<unknown> | null = null
+      let taskSub: { iterable: AsyncIterable<unknown>; snapshot: unknown; unsubscribe: () => void } | null = null
+      let taskIter: AsyncIterator<unknown> | null = null
       let step = ''
       try {
         step = 'subscribe'
@@ -390,6 +393,9 @@ export function attachWebSocket(
         step = 'subscribePromptSuggestion'
         psugSub = sm.subscribePromptSuggestion(sessionId)
         psugIter = psugSub?.iterable[Symbol.asyncIterator]() ?? null
+        step = 'subscribeTasks'
+        taskSub = sm.subscribeTasks(sessionId)
+        taskIter = taskSub?.iterable[Symbol.asyncIterator]() ?? null
 
         // 1) Send replay. If the client supplied `sinceUuid`, try to
         //    send only messages after that point (incremental sync).
@@ -475,6 +481,13 @@ export function attachWebSocket(
           queue.enqueue({ kind: 'prompt-suggestion', sessionId, suggestion: psugSub.snapshot })
         }
 
+        // 2.8) Always send the task-list snapshot — even when empty — so a
+        //      newly subscribed tab initializes its TasksPanel cleanly
+        //      (stale rows from a previous session view are wiped).
+        if (taskSub) {
+          queue.enqueue({ kind: 'tasks-snapshot', sessionId, tasks: taskSub.snapshot as TaskRecordUi[] })
+        }
+
         for (const run of hookSub?.snapshot ?? []) {
           queue.enqueue({ kind: 'hook-run', sessionId, event: hookSnapshotEvent(run as HookRunRecord) as never })
         }
@@ -483,12 +496,12 @@ export function attachWebSocket(
         //    pattern as the SSE route — each iterator tagged so the loop
         //    knows which frame to emit.
         let stopped = false
-        const _iterCleanup: AsyncIterator<unknown>[] = [ctxIter, gitIter, msgStatIter, recapIter, clearedIter, cmdIter, hookIter, psugIter]
+        const _iterCleanup: AsyncIterator<unknown>[] = [ctxIter, gitIter, msgStatIter, recapIter, clearedIter, cmdIter, hookIter, psugIter, taskIter]
           .filter((it): it is AsyncIterator<unknown> => !!it)
         const stop = () => {
           if (stopped) return
           stopped = true
-          for (const sub of [msgSub, permSub, elicitSub, dialogSub, ctxSub, gitSub, msgStatSub, recapSub, clearedSub, cmdSub, hookSub, psugSub]) sub?.unsubscribe()
+          for (const sub of [msgSub, permSub, elicitSub, dialogSub, ctxSub, gitSub, msgStatSub, recapSub, clearedSub, cmdSub, hookSub, psugSub, taskSub]) sub?.unsubscribe()
           for (const iter of _iterCleanup) void iter.return?.()
         }
 
@@ -511,6 +524,7 @@ export function attachWebSocket(
             | { kind: 'cmd'; result: IteratorResult<unknown> }
             | { kind: 'hook'; result: IteratorResult<unknown> }
             | { kind: 'psug'; result: IteratorResult<unknown> }
+            | { kind: 'task'; result: IteratorResult<unknown> }
 
           const tag = async (kind: Tagged['kind'], it: AsyncIterator<unknown>): Promise<Tagged> =>
             ({ kind, result: await it.next() })
@@ -534,6 +548,7 @@ export function attachWebSocket(
             ...(cmdIter ? [{ kind: 'cmd' as const, iter: cmdIter, promise: tag('cmd', cmdIter) }] : []),
             ...(hookIter ? [{ kind: 'hook' as const, iter: hookIter, promise: tag('hook', hookIter) }] : []),
             ...(psugIter ? [{ kind: 'psug' as const, iter: psugIter, promise: tag('psug', psugIter) }] : []),
+            ...(taskIter ? [{ kind: 'task' as const, iter: taskIter, promise: tag('task', taskIter) }] : []),
           ]
 
           try {
@@ -634,6 +649,9 @@ export function attachWebSocket(
                 case 'psug':
                   queue.enqueue({ kind: 'prompt-suggestion', sessionId, suggestion: winner.result.value as string })
                   break
+                case 'task':
+                  queue.enqueue({ kind: 'tasks-snapshot', sessionId, tasks: winner.result.value as TaskRecordUi[] })
+                  break
               }
               ch.promise = tag(ch.kind, ch.iter)
             }
@@ -669,6 +687,7 @@ export function attachWebSocket(
         cmdSub?.unsubscribe()
         hookSub?.unsubscribe()
         psugSub?.unsubscribe()
+        taskSub?.unsubscribe()
         queue.enqueue({ kind: 'error', sessionId, message: (err as Error).message })
         // Always send replay-done so the client's replay state machine
         // terminates — without this, replayReady stays false forever and

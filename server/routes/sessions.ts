@@ -372,6 +372,23 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     return c.json({ ok: true })
   })
 
+  // Background in-flight foreground tasks (the CLI's Ctrl+B semantics).
+  // Optional `toolUseId` restricts the call to that single task; without it
+  // every foreground task (Bash commands and subagents) is backgrounded.
+  app.post('/sessions/:id/tasks/background', async (c) => {
+    const body = await safeJson<{ toolUseId?: string }>(c.req)
+    const toolUseId = typeof body.toolUseId === 'string' && body.toolUseId ? body.toolUseId : undefined
+    const backgrounded = await sm.backgroundTasks(c.req.param('id'), toolUseId)
+    return c.json({ ok: true, backgrounded })
+  })
+
+  // Stop a running task by id. The SDK emits a task_notification with status
+  // 'stopped' afterwards, which folds the task to its terminal state.
+  app.post('/sessions/:id/tasks/:taskId/stop', async (c) => {
+    await sm.stopTask(c.req.param('id'), c.req.param('taskId'))
+    return c.json({ ok: true })
+  })
+
   // Clear conversation context without rendering `/clear` as a user bubble.
   app.post('/sessions/:id/clear', async (c) => {
     const session = await sm.clear(c.req.param('id'))

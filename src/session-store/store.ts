@@ -930,6 +930,7 @@ export class SessionStore {
       tokenRate: mirror.liveTurn?.tokenRate ?? null,
       contextUsage: mirror.contextUsage,
       promptSuggestion: mirror.promptSuggestion ?? null,
+      tasks: mirror.tasks,
       apiRetry: mirror.apiRetry,
       error: intent.error,
       permissionDecisions: mirror.permissionDecisions,

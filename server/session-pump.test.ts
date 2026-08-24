@@ -1,17 +1,22 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
+  applyTaskEvent,
   backgroundSubagentLaunches,
   fastModeStateOf,
   hookLifecycleMessage,
   isTaskNotificationUserMessage,
   liteContextUsageFromAssistant,
   liteContextUsageFromResult,
+  pump,
   toolResultIds,
   trimLargeToolResults,
   userMessageHasToolResult,
+  type PumpDeps,
 } from './session-pump.js'
 import type { LiteContextUsage } from './session-pump.js'
+import type { Session } from './session-types.js'
+import type { TaskRecordUi } from '../shared/tasks.js'
 import { isTranscriptMessage, shouldBroadcastMessage } from './history-utils.js'
 
 // ---------------------------------------------------------------------------
@@ -979,5 +984,322 @@ describe('trimLargeToolResults', () => {
     const content = (msg as { message: { content: unknown[] } }).message.content
     const block = content[0] as { input: { data: string } }
     expect(block.input.data).toBe(big)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// applyTaskEvent — fold one SDK task_* system frame into `session.tasks`
+// and push a full snapshot to the session's taskSubscribers.
+//
+// Upsert semantics are the core contract: task_updated / task_progress /
+// task_notification may arrive WITHOUT a prior task_started (frame loss,
+// late subscribe, CLI quirks), so a missing record must be created as a
+// stub from whatever the frame carries — the TasksPanel shows partial
+// state rather than a hole.
+// ---------------------------------------------------------------------------
+
+function makeTaskSession(): { session: Session; snapshots: TaskRecordUi[][] } {
+  const snapshots: TaskRecordUi[][] = []
+  const session = {
+    tasks: new Map<string, TaskRecordUi>(),
+    taskSubscribers: new Set([{ push: (t: TaskRecordUi[]) => snapshots.push(t) }]),
+  } as unknown as Session
+  return { session, snapshots }
+}
+
+function sysFrame(subtype: string, extra: Record<string, unknown> = {}): SDKMessage {
+  return { type: 'system', subtype, ...extra } as unknown as SDKMessage
+}
+
+describe('applyTaskEvent', () => {
+  it('task_started creates a running record with the frame fields narrowed', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', {
+      task_id: 't1',
+      tool_use_id: 'tu1',
+      description: 'run sleep 300',
+      subagent_type: 'Explore',
+      task_type: 'shell',
+      workflow_name: 'wf',
+      skip_transcript: true,
+      receivedAt: 111,
+    }))
+    expect(session.tasks.get('t1')).toMatchObject({
+      taskId: 't1',
+      toolUseId: 'tu1',
+      description: 'run sleep 300',
+      subagentType: 'Explore',
+      taskType: 'shell',
+      workflowName: 'wf',
+      status: 'running',
+      skipTranscript: true,
+      startedAt: 111,
+      endedAt: undefined,
+    })
+  })
+
+  it('ignores non-system frames, non-task subtypes, and frames without a task_id', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, { type: 'assistant' } as unknown as SDKMessage)
+    applyTaskEvent(session, sysFrame('init'))
+    applyTaskEvent(session, sysFrame('task_started', { task_id: '' }))
+    applyTaskEvent(session, sysFrame('task_progress', { task_id: 42 }))
+    expect(session.tasks.size).toBe(0)
+  })
+
+  it('upserts a stub when task_updated arrives before task_started (frame loss)', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_updated', {
+      task_id: 't1',
+      tool_use_id: 'tu9',
+      patch: {
+        status: 'completed',
+        description: 'late description',
+        is_backgrounded: true,
+        end_time: 123,
+      },
+    }))
+    expect(session.tasks.get('t1')).toMatchObject({
+      taskId: 't1',
+      toolUseId: 'tu9',
+      description: 'late description',
+      status: 'completed',
+      isBackgrounded: true,
+      endedAt: 123,
+    })
+  })
+
+  it('upserts a stub when task_progress arrives first, carrying summary + last_tool_name', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_progress', {
+      task_id: 't1',
+      tool_use_id: 'tu1',
+      description: 'd',
+      subagent_type: 'Explore',
+      summary: 'reading files',
+      last_tool_name: 'Read',
+    }))
+    expect(session.tasks.get('t1')).toMatchObject({
+      taskId: 't1',
+      toolUseId: 'tu1',
+      description: 'd',
+      subagentType: 'Explore',
+      progressSummary: 'reading files',
+      lastToolName: 'Read',
+      status: 'running',
+    })
+  })
+
+  it('task_updated merges the patch over an existing record; invalid status keeps the old one', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 't1', description: 'orig' }))
+    applyTaskEvent(session, sysFrame('task_updated', {
+      task_id: 't1',
+      patch: { is_backgrounded: true, status: 'bogus' },
+    }))
+    expect(session.tasks.get('t1')).toMatchObject({
+      description: 'orig', // patch carried no description — preserved
+      status: 'running', // invalid patch status ignored
+      isBackgrounded: true,
+    })
+  })
+
+  it('a late task_started preserves state earlier frames established (upsert, not replace)', () => {
+    const { session } = makeTaskSession()
+    // task_updated + task_progress land FIRST (upsert stubs — frame loss or
+    // the watcher-seed path), then a task_started arrives for the same
+    // task_id: it must not erase isBackgrounded / progressSummary /
+    // lastToolName an earlier frame already established.
+    applyTaskEvent(session, sysFrame('task_updated', {
+      task_id: 't1',
+      patch: { is_backgrounded: true },
+    }))
+    applyTaskEvent(session, sysFrame('task_progress', {
+      task_id: 't1',
+      summary: 'halfway',
+      last_tool_name: 'Grep',
+    }))
+    applyTaskEvent(session, sysFrame('task_started', {
+      task_id: 't1',
+      description: 'sleep',
+      receivedAt: 500,
+    }))
+    expect(session.tasks.get('t1')).toMatchObject({
+      description: 'sleep',
+      status: 'running',
+      isBackgrounded: true,
+      progressSummary: 'halfway',
+      lastToolName: 'Grep',
+    })
+  })
+
+  it('task_notification settles a terminal status and stamps endedAt from the frame receivedAt', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 't1', receivedAt: 100 }))
+    applyTaskEvent(session, sysFrame('task_notification', {
+      task_id: 't1',
+      status: 'failed',
+      summary: 'boom',
+      receivedAt: 999,
+    }))
+    expect(session.tasks.get('t1')).toMatchObject({
+      status: 'failed',
+      progressSummary: 'boom',
+      endedAt: 999,
+    })
+  })
+
+  it('task_notification with a non-terminal status keeps the record status', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 't1' }))
+    applyTaskEvent(session, sysFrame('task_notification', { task_id: 't1', status: 'running' }))
+    expect(session.tasks.get('t1')?.status).toBe('running')
+  })
+
+  it('pushes a full snapshot to every taskSubscriber on each fold', () => {
+    const { session, snapshots } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 't1' }))
+    applyTaskEvent(session, sysFrame('task_progress', { task_id: 't1', summary: 's' }))
+    expect(snapshots).toHaveLength(2)
+    expect(snapshots[0]).toHaveLength(1)
+    expect(snapshots[1][0]).toMatchObject({ taskId: 't1', progressSummary: 's' })
+  })
+
+  it('evicts the oldest terminal records beyond 50; active tasks are never evicted', () => {
+    const { session } = makeTaskSession()
+    for (let i = 0; i < 52; i++) {
+      applyTaskEvent(session, sysFrame('task_started', { task_id: `t${i}` }))
+      applyTaskEvent(session, sysFrame('task_updated', { task_id: `t${i}`, patch: { status: 'completed' } }))
+    }
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 'active-1' }))
+    // 52 terminals → capped at 50, oldest evicted; the active record survives.
+    expect(session.tasks.size).toBe(51)
+    expect(session.tasks.has('t0')).toBe(false)
+    expect(session.tasks.has('t1')).toBe(false)
+    expect(session.tasks.has('t2')).toBe(true)
+    expect(session.tasks.has('t51')).toBe(true)
+    expect(session.tasks.has('active-1')).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// pump: task lifecycle frames
+//
+// task_started / task_updated / task_progress are EPHEMERAL — they fold into
+// session.tasks and ride the dedicated `tasks` snapshot channel, but must
+// NEVER enter the history ring or the message broadcast (ring slots are for
+// durable transcript content; task_progress fires ~every 30s per subagent).
+// task_notification folds the SAME task state but keeps flowing through the
+// ring + broadcast path (the client reducer's async-subagent completion
+// branch matches on it) and notifies the manager so the subagent watcher
+// can be cancelled (real frame beats the synthesized backstop).
+// ---------------------------------------------------------------------------
+
+function makePumpSession(msgs: SDKMessage[]): {
+  session: Session
+  broadcasts: SDKMessage[]
+  taskSnapshots: TaskRecordUi[][]
+} {
+  let i = 0
+  const messages = {
+    [Symbol.asyncIterator]() {
+      return {
+        next: () => Promise.resolve(
+          i < msgs.length
+            ? { value: msgs[i++], done: false as const }
+            : { value: undefined, done: true as const },
+        ),
+      }
+    },
+  }
+  const broadcasts: SDKMessage[] = []
+  const taskSnapshots: TaskRecordUi[][] = []
+  const session = {
+    id: 's-pump',
+    handle: { messages, abortSignal: new AbortController().signal, queueDepth: 0 },
+    subscribers: new Map([['c1', { push: (m: SDKMessage) => broadcasts.push(m) }]]),
+    taskSubscribers: new Set([{ push: (t: TaskRecordUi[]) => taskSnapshots.push(t) }]),
+    promptSuggestionSubscribers: new Set(),
+    contextUsageSubscribers: new Set(),
+    tasks: new Map(),
+    history: [],
+    subagentHistory: [],
+    pending: new Map(),
+    hookRuns: [],
+    pendingTurns: 0,
+    lastActivityAt: 0,
+    lastPromptSuggestion: undefined,
+    lastContextUsage: undefined,
+    lastAssistantUuid: undefined,
+    lastSafeResumeUuid: undefined,
+    lastTurnAt: undefined,
+    lastCrash: undefined,
+    fastModeState: undefined,
+    autoInterruptedAt: undefined,
+    error: undefined,
+    clearing: false,
+    terminated: false,
+    terminatedReason: undefined,
+    running: true,
+    exiting: false,
+    recovering: false,
+  } as unknown as Session
+  return { session, broadcasts, taskSnapshots }
+}
+
+function makePumpDeps(overrides: Partial<PumpDeps> = {}): PumpDeps {
+  return {
+    historyCap: 100,
+    subagentHistoryCap: 100,
+    persist: () => {},
+    denyPendingPermissions: () => {},
+    isLive: () => true,
+    broadcastCommandsChanged: () => {},
+    ...overrides,
+  }
+}
+
+describe('pump: task lifecycle frames', () => {
+  it('early-continues task_started/updated/progress: folds state + snapshot, skips ring + broadcast', async () => {
+    const { session, broadcasts, taskSnapshots } = makePumpSession([
+      sysFrame('task_started', { task_id: 't1', tool_use_id: 'tu1', description: 'sleep', task_type: 'shell' }),
+      sysFrame('task_progress', { task_id: 't1', summary: 'sleeping', last_tool_name: 'Bash' }),
+      sysFrame('task_updated', { task_id: 't1', patch: { is_backgrounded: true } }),
+      sysFrame('task_notification', { task_id: 't1', tool_use_id: 'tu1', status: 'completed' }),
+      { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage,
+    ])
+    const onTaskNotification = vi.fn()
+    await pump(session, makePumpDeps({ onTaskNotification }))
+
+    // Ephemeral frames never entered the ring; notification + result did.
+    const ringSubtypes = session.history.map((m) => (m as { subtype?: string }).subtype)
+    expect(ringSubtypes).toEqual(['task_notification', 'success'])
+    // Only the notification + the result turn were broadcast on the message
+    // channel (the three ephemeral frames never reached it).
+    expect(broadcasts.map((m) => (m as { subtype?: string }).subtype)).toEqual(['task_notification', 'success'])
+    // All four frames folded task state and each pushed a full snapshot.
+    expect(taskSnapshots).toHaveLength(4)
+    expect(session.tasks.get('t1')).toMatchObject({
+      status: 'completed',
+      isBackgrounded: true,
+      progressSummary: 'sleeping',
+      lastToolName: 'Bash',
+      description: 'sleep',
+      taskType: 'shell',
+    })
+    // The real notification reached the manager (cancels the subagent watcher).
+    expect(onTaskNotification).toHaveBeenCalledTimes(1)
+    expect(onTaskNotification).toHaveBeenCalledWith('s-pump', 'tu1')
+  })
+
+  it('skips the onTaskNotification dep when the notification carries no tool_use_id', async () => {
+    const { session } = makePumpSession([
+      sysFrame('task_notification', { task_id: 't1', status: 'completed' }),
+    ])
+    const onTaskNotification = vi.fn()
+    await pump(session, makePumpDeps({ onTaskNotification }))
+    expect(onTaskNotification).not.toHaveBeenCalled()
+    // The frame itself still folded + broadcast as usual.
+    expect(session.tasks.get('t1')?.status).toBe('completed')
   })
 })

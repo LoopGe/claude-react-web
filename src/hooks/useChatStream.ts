@@ -8,7 +8,7 @@ import { useWsHub, useWsHubStatus } from './useWsHub'
 import { api } from './useApi'
 import { randomId } from '../utils/uuid'
 import type { WsServerFrame } from '../ws-types'
-import type { ElicitationRequestUi, ElicitationResolved, PermissionRequest, PermissionResolved, SdkMessage, SkillFrontmatter, UserDialogRequestUi, DialogResolved } from '../types'
+import type { ElicitationRequestUi, ElicitationResolved, PermissionRequest, PermissionResolved, SdkMessage, SkillFrontmatter, TaskRecordUi, UserDialogRequestUi, DialogResolved } from '../types'
 import { extractMessagePlainText } from '../../shared/search/extract'
 
 /** The disk-stable uuid of a message, or null. A message whose uuid matches
@@ -72,6 +72,10 @@ export interface ChatStream {
   contextUsage: ContextUsage | null
   /** Predicted next-user-prompt from the SDK. Cleared on new user message. */
   promptSuggestion: string | null
+  /** Full task list (background commands, subagents, ambient tasks) from
+   *  the dedicated `tasks` WS channel. Drives the TasksPanel and the
+   *  header task-count chip. */
+  tasks: TaskRecordUi[]
   /** Transient `api_retry` frame (rate-limit retry indicator), or null when
    *  no retry is in flight. Routed to a dedicated slot (not items/messages) —
    *  MessageList renders it as a tail divider. */
@@ -165,6 +169,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   const tokenRate = useSessionField(sessionId, 'tokenRate')
   const contextUsage = useSessionField(sessionId, 'contextUsage')
   const promptSuggestion = useSessionField(sessionId, 'promptSuggestion')
+  const tasks = useSessionField(sessionId, 'tasks')
   const apiRetry = useSessionField(sessionId, 'apiRetry')
   const error = useSessionField(sessionId, 'error')
   const permissionDecisions = useSessionField(sessionId, 'permissionDecisions')
@@ -353,6 +358,13 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
         }
         case 'prompt-suggestion': {
           store.dispatch({ type: 'PROMPT_SUGGESTION', suggestion: (frame as { suggestion: string }).suggestion })
+          break
+        }
+        case 'tasks-snapshot': {
+          // Full task-list snapshot from the dedicated `tasks` channel.
+          // The reducer also enriches matching activeSubagent records
+          // (taskId / progressSummary / lastToolName / background flip).
+          store.dispatch({ type: 'TASKS_SNAPSHOT', tasks: (frame as { tasks: TaskRecordUi[] }).tasks ?? [] })
           break
         }
         case 'message-consumed': {
@@ -572,6 +584,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       error: displayedError,
       contextUsage,
       promptSuggestion,
+      tasks,
       apiRetry,
       tokenRate,
       streamingContent,
@@ -596,6 +609,6 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       hasOlder,
       loadingOlder,
     }),
-    [items, messages, displayedError, contextUsage, promptSuggestion, apiRetry, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, replayReady, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder],
+    [items, messages, displayedError, contextUsage, promptSuggestion, tasks, apiRetry, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, replayReady, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder],
   )
 }

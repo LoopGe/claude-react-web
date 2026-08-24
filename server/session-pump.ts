@@ -22,6 +22,7 @@ import { parseAckAgentId } from './subagent-watcher.js'
 const LAUNCH_ACK_RE = /^async agent launched successfully/i
 import { createLogger } from './log.js'
 import type { HookRunRecord, HookRuntimeEvent, HookRunStatus } from '../shared/hooks.js'
+import { isTerminalTaskStatus } from '../shared/tasks.js'
 
 const MAX_HOOK_OUTPUT_CHARS = 20_000
 
@@ -190,6 +191,156 @@ export function backgroundSubagentLaunches(
   return out
 }
 
+/** Cap on terminal (completed/failed/killed/stopped) task records kept in
+ *  `session.tasks`. Terminal records linger so the TasksPanel can show
+ *  recent completions, but an unbounded map would grow forever in a long
+ *  session — oldest terminals are evicted beyond this many. */
+const MAX_TERMINAL_TASKS = 50
+
+/** System subtypes folded into `session.tasks` by applyTaskEvent. The
+ *  first three are EPHEMERAL task-state events — the pump early-continues
+ *  on them (never history ring, never the message channel). The fourth
+ *  (`task_notification`) additionally flows through the normal
+ *  ring+broadcast path because the client reducer's async-subagent
+ *  completion branch depends on it. */
+export const TASK_EVENT_SUBTYPES = new Set(['task_started', 'task_updated', 'task_progress', 'task_notification'])
+
+function isTaskRecordStatus(v: unknown): v is import('../shared/tasks.js').TaskStatus {
+  return v === 'pending' || v === 'running' || v === 'completed' || v === 'failed'
+    || v === 'killed' || v === 'stopped' || v === 'paused'
+}
+
+/** Fold one SDK task_* system frame into `session.tasks` and push a full
+ *  snapshot to the session's taskSubscribers. Upsert semantics: a
+ *  task_updated / task_progress / task_notification may arrive without a
+ *  prior task_started (frame loss / late subscribe / CLI quirks), so a
+ *  missing record is created as a stub from whatever the frame carries —
+ *  the UI shows partial state rather than a hole. Pure w.r.t. the frame —
+ *  never throws on malformed input. Exported for unit tests.
+ *
+ *  Also used by the SessionManager's watcher path: a synthesized
+ *  task_notification (subagent-watcher backstop) is folded through the same
+ *  helper so the seeded record settles consistently. */
+export function applyTaskEvent(session: Session, msg: SDKMessage): void {
+  if (msg.type !== 'system') return
+  const raw = msg as {
+    subtype?: unknown
+    task_id?: unknown
+    tool_use_id?: unknown
+    description?: unknown
+    subagent_type?: unknown
+    task_type?: unknown
+    workflow_name?: unknown
+    skip_transcript?: unknown
+    patch?: unknown
+    summary?: unknown
+    last_tool_name?: unknown
+    status?: unknown
+    receivedAt?: unknown
+  }
+  if (raw.subtype !== 'task_started' && raw.subtype !== 'task_updated'
+    && raw.subtype !== 'task_progress' && raw.subtype !== 'task_notification') return
+  if (typeof raw.task_id !== 'string' || raw.task_id === '') return
+
+  const str = (v: unknown): string | undefined => (typeof v === 'string' && v !== '' ? v : undefined)
+  const now = Date.now()
+  const frameTime = typeof raw.receivedAt === 'number' ? raw.receivedAt : undefined
+
+  const existing = session.tasks.get(raw.task_id)
+  if (raw.subtype === 'task_started') {
+    // Spread the existing record first (upsert, not replace): a duplicate /
+    // out-of-order task_started — e.g. a real frame arriving AFTER the
+    // watcher's seed, or a re-emission on task restart — must not erase
+    // state an earlier frame already established (isBackgrounded from a
+    // task_updated patch, progressSummary/lastToolName from task_progress).
+    // SDKTaskStartedMessage carries none of those fields, so the fallbacks
+    // below keep the prior values; endedAt clears because the task is
+    // (re)running.
+    session.tasks.set(raw.task_id, {
+      ...existing,
+      taskId: raw.task_id,
+      toolUseId: str(raw.tool_use_id) ?? existing?.toolUseId,
+      description: str(raw.description) ?? existing?.description ?? '',
+      subagentType: str(raw.subagent_type) ?? existing?.subagentType,
+      taskType: str(raw.task_type) ?? existing?.taskType,
+      workflowName: str(raw.workflow_name) ?? existing?.workflowName,
+      status: 'running',
+      skipTranscript: raw.skip_transcript === true ? true : existing?.skipTranscript,
+      startedAt: frameTime ?? existing?.startedAt,
+      endedAt: undefined,
+      updatedAt: now,
+    })
+  } else if (raw.subtype === 'task_updated') {
+    // patch: { status?, description?, end_time?, error?, is_backgrounded? }
+    const patch = (raw.patch && typeof raw.patch === 'object' ? raw.patch : {}) as {
+      status?: unknown; description?: unknown; end_time?: unknown; is_backgrounded?: unknown
+    }
+    const rec = existing ?? {
+      taskId: raw.task_id, description: '', status: 'running' as const, updatedAt: now,
+    }
+    session.tasks.set(raw.task_id, {
+      ...rec,
+      toolUseId: str(raw.tool_use_id) ?? rec.toolUseId,
+      description: str(patch.description) ?? str(raw.description) ?? rec.description,
+      status: isTaskRecordStatus(patch.status) ? patch.status : rec.status,
+      isBackgrounded: typeof patch.is_backgrounded === 'boolean' ? patch.is_backgrounded : rec.isBackgrounded,
+      endedAt: typeof patch.end_time === 'number' ? patch.end_time : rec.endedAt,
+      updatedAt: now,
+    })
+  } else if (raw.subtype === 'task_progress') {
+    const rec = existing ?? {
+      taskId: raw.task_id, toolUseId: str(raw.tool_use_id), description: '', status: 'running' as const, updatedAt: now,
+    }
+    session.tasks.set(raw.task_id, {
+      ...rec,
+      description: str(raw.description) ?? rec.description,
+      subagentType: str(raw.subagent_type) ?? rec.subagentType,
+      progressSummary: str(raw.summary) ?? rec.progressSummary,
+      lastToolName: str(raw.last_tool_name) ?? rec.lastToolName,
+      updatedAt: now,
+    })
+  } else {
+    // task_notification — terminal completion signal (completed/failed/stopped)
+    const rec = existing ?? {
+      taskId: raw.task_id, description: '', status: 'running' as const, updatedAt: now,
+    }
+    const status = raw.status === 'completed' || raw.status === 'failed' || raw.status === 'stopped'
+      ? raw.status
+      : rec.status
+    session.tasks.set(raw.task_id, {
+      ...rec,
+      toolUseId: str(raw.tool_use_id) ?? rec.toolUseId,
+      description: str(raw.description) ?? rec.description,
+      status,
+      progressSummary: str(raw.summary) ?? rec.progressSummary,
+      endedAt: frameTime ?? rec.endedAt,
+      updatedAt: now,
+    })
+  }
+
+  // Evict oldest terminal records beyond the cap. Active tasks are never
+  // evicted; insertion order tracks start order, so the first terminal hit
+  // is the oldest.
+  let terminals = 0
+  for (const rec of session.tasks.values()) {
+    if (isTerminalTaskStatus(rec.status)) terminals++
+  }
+  if (terminals > MAX_TERMINAL_TASKS) {
+    for (const [taskId, rec] of session.tasks) {
+      if (terminals <= MAX_TERMINAL_TASKS) break
+      if (isTerminalTaskStatus(rec.status)) {
+        session.tasks.delete(taskId)
+        terminals--
+      }
+    }
+  }
+
+  const snapshot = Array.from(session.tasks.values())
+  for (const sub of session.taskSubscribers) {
+    try { sub.push(snapshot) } catch { /* subscriber dead — skip */ }
+  }
+}
+
 /** Extract the SDK-reported `fast_mode_state` from a message, if present.
  *  The field rides on `system/init` and `result` (success + error) messages
  *  (see sdk.d.ts: SDKSystemMessage, SDKResultSuccess, SDKResultError). We
@@ -269,6 +420,12 @@ export interface PumpDeps {
    *  the CLI doesn't reliably emit task_notification for Agent-launched
    *  background subagents. Optional so test fixtures can omit it. */
   onBackgroundSubagentLaunched?: (sessionId: string, toolUseId: string, agentId: string) => void
+  /** Called when a REAL SDK task_notification frame arrives (as opposed to
+   *  the watcher's synthesized one, which never passes through the pump).
+   *  The SessionManager uses it to cancel the matching subagent watcher so
+   *  the real completion isn't double-reported. Optional so test fixtures
+   *  can omit it. */
+  onTaskNotification?: (sessionId: string, toolUseId: string) => void
   /** Called when the pump is about to drop the SDK's echo of a top-level user
    *  prompt (the SDK replays persisted user input through the Query stream).
    *  `echoUuid` is the SDK's on-disk uuid for that prompt. The SessionManager
@@ -577,6 +734,28 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             }
           }
           continue
+        }
+        // Task lifecycle events fold into the dedicated task-state cache and
+        // ride the `tasks` channel as full snapshots. task_started /
+        // task_updated / task_progress are EPHEMERAL (high-frequency update
+        // stream — ring slots would crowd durable content) and early-continue;
+        // task_notification ALSO folds task state but keeps flowing through
+        // the normal ring+broadcast path — the client reducer's async-subagent
+        // completion branch matches on it (see shouldBroadcastMessage).
+        if (msg.type === 'system') {
+          const subtype = (msg as { subtype?: string }).subtype
+          if (subtype === 'task_started' || subtype === 'task_updated' || subtype === 'task_progress') {
+            applyTaskEvent(session, msg)
+            continue
+          }
+          if (subtype === 'task_notification') {
+            applyTaskEvent(session, msg)
+            const toolUseId = (msg as { tool_use_id?: string }).tool_use_id
+            if (toolUseId) {
+              try { deps.onTaskNotification?.(session.id, toolUseId) }
+              catch (err) { log.warn(`[session ${session.id}] onTaskNotification threw: ${err}`) }
+            }
+          }
         }
         // Only durable transcript messages enter the bounded history ring
         // (the WS full-replay surface). Ephemeral `stream_event` deltas are

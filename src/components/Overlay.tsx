@@ -42,6 +42,7 @@ const VARIANT_CLASSES = {
   panel: { backdrop: 'panel-overlay', card: 'panel-overlay-card', roleOn: 'card', ariaModal: 'true' },
   settings: { backdrop: 'settings-overlay', card: null, roleOn: 'backdrop', ariaModal: 'true' },
   git: { backdrop: 'git-overlay', card: null, roleOn: 'backdrop', ariaModal: 'true' },
+  tasks: { backdrop: 'tasks-overlay', card: null, roleOn: 'backdrop', ariaModal: 'true' },
   palette: { backdrop: 'palette-backdrop', card: 'palette', roleOn: 'card', ariaModal: 'true' },
   marketplace: { backdrop: 'marketplace-overlay', card: 'marketplace-card', roleOn: 'card', ariaModal: 'true' },
   globalSettings: { backdrop: 'modal-backdrop', card: 'global-settings-modal', roleOn: 'card', ariaModal: 'true' },

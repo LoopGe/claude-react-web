@@ -19,6 +19,8 @@ interface MockQueryHandle {
   finish: () => void
   throwError: (err: unknown) => void
   interrupt: ReturnType<typeof vi.fn>
+  backgroundTasks: ReturnType<typeof vi.fn>
+  stopTask: ReturnType<typeof vi.fn>
   setModel: ReturnType<typeof vi.fn>
   setPermissionMode: ReturnType<typeof vi.fn>
   applyFlagSettings: ReturnType<typeof vi.fn>
@@ -122,6 +124,8 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
           pushResolved({ value: undefined, done: true })
         },
         interrupt: vi.fn(async () => {}),
+        backgroundTasks: vi.fn(async () => false),
+        stopTask: vi.fn(async () => {}),
         setModel: vi.fn(async () => {}),
         setPermissionMode: vi.fn(async () => {}),
         applyFlagSettings: vi.fn(async () => {}),
@@ -162,6 +166,8 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
           }
         },
         interrupt: handle.interrupt,
+        backgroundTasks: handle.backgroundTasks,
+        stopTask: handle.stopTask,
         setModel: handle.setModel,
         setPermissionMode: handle.setPermissionMode,
         applyFlagSettings: handle.applyFlagSettings,
@@ -222,6 +228,7 @@ const tick = () => new Promise((r) => setImmediate(r))
 
 // Import AFTER vi.mock so the SessionManager picks up the mocked SDK.
 import { SessionManager } from './session-manager.js'
+import { ClaudeSessionHandle } from './providers/claude/claude-session.js'
 import { SessionStore } from './persistence.js'
 import { config as defaultConfig } from './config.js'
 import { McpConfigStore } from './mcp-config.js'
@@ -480,6 +487,195 @@ describe('SessionManager', () => {
     }
     // Force-terminate so unload() clears the still-armed watcher's interval.
     await sm.delete(info.id)
+  })
+
+  // -------------------------------------------------------------------------
+  // Background-task control (SDK gap #1): backgroundTasks()/stopTask() are
+  // delegated through the provider handle (capability-gated), and the
+  // subagent watcher seeds/folds `session.tasks` so TasksPanel sees
+  // watcher-tracked subagents the CLI never emits task_* frames for.
+  // -------------------------------------------------------------------------
+
+  it('backgroundTasks() forwards to the Query and returns the SDK boolean', async () => {
+    const info = sm.create({})
+    mockHandles[0].backgroundTasks.mockResolvedValueOnce(true)
+    const result = await sm.backgroundTasks(info.id, 'tu_1')
+    expect(result).toBe(true)
+    expect(mockHandles[0].backgroundTasks).toHaveBeenCalledWith('tu_1')
+    // No toolUseId → forwards undefined (CLI's Ctrl+B "all tasks" semantics).
+    await sm.backgroundTasks(info.id)
+    expect(mockHandles[0].backgroundTasks).toHaveBeenLastCalledWith(undefined)
+  })
+
+  it('stopTask() forwards the taskId to the Query', async () => {
+    const info = sm.create({})
+    await sm.stopTask(info.id, 'task-7')
+    expect(mockHandles[0].stopTask).toHaveBeenCalledWith('task-7')
+  })
+
+  it('backgroundTasks() 501s when the provider handle lacks the method', async () => {
+    // requireHandleMethod's guard: a handle without backgroundTasks must
+    // surface a clean HttpError 501, not a TypeError from calling undefined.
+    const info = sm.create({})
+    const proto = ClaudeSessionHandle.prototype as unknown as Record<string, unknown>
+    const desc = Object.getOwnPropertyDescriptor(ClaudeSessionHandle.prototype, 'backgroundTasks')!
+    delete proto.backgroundTasks
+    try {
+      await expect(sm.backgroundTasks(info.id)).rejects.toThrow('does not support background tasks')
+    } finally {
+      Object.defineProperty(ClaudeSessionHandle.prototype, 'backgroundTasks', desc)
+    }
+  })
+
+  it('a background launch ack seeds a running TaskRecord; a real task_notification cancels the watcher and settles it', async () => {
+    const info = sm.create({ cwd: '/tmp/workspace' })
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    try {
+      // Arm the watcher via the pump's launch-ack path (no transcript on
+      // disk, so it stays polling).
+      mockHandles[0].emit({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'tu_bg_tasks',
+            content: 'Async agent launched successfully.\nagentId: agent-tasks\n',
+          }],
+        },
+      })
+      await tick()
+
+      expect(sm.get(info.id)!.backgroundSubagentCount).toBe(1)
+      // The watcher seeded a running TaskRecord (taskId = agentId) so the
+      // TasksPanel sees subagents the CLI emits no task_* frames for.
+      const seeded = sm.subscribeTasks(info.id)!.snapshot
+      expect(seeded.find((t) => t.taskId === 'agent-tasks')).toMatchObject({
+        toolUseId: 'tu_bg_tasks',
+        taskType: 'subagent',
+        status: 'running',
+        isBackgrounded: true,
+      })
+
+      // A REAL task_notification for the same tool call: the watcher must be
+      // cancelled (no synthesized duplicate later) and the seeded record
+      // folded to terminal via the pump's applyTaskEvent.
+      mockHandles[0].emit({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'agent-tasks',
+        tool_use_id: 'tu_bg_tasks',
+        status: 'completed',
+        summary: 'all done',
+      })
+      await tick()
+
+      expect(sm.get(info.id)!.backgroundSubagentCount).toBe(0)
+      const settled = sm.subscribeTasks(info.id)!.snapshot
+      expect(settled.find((t) => t.taskId === 'agent-tasks')).toMatchObject({
+        status: 'completed',
+        progressSummary: 'all done',
+      })
+    } finally {
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+    await sm.delete(info.id)
+  })
+
+  it('a real task_notification whose task_id differs from the agentId drops the phantom seed', async () => {
+    const info = sm.create({ cwd: '/tmp/workspace' })
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    try {
+      mockHandles[0].emit({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'tu_bg_mm',
+            content: 'Async agent launched successfully.\nagentId: agent-mismatch\n',
+          }],
+        },
+      })
+      await tick()
+      expect(sm.get(info.id)!.backgroundSubagentCount).toBe(1)
+      expect(
+        sm.subscribeTasks(info.id)!.snapshot.find((t) => t.taskId === 'agent-mismatch'),
+      ).toMatchObject({ toolUseId: 'tu_bg_mm', status: 'running' })
+
+      // The SDK's task_id need not equal the launch-ack's agentId. The pump
+      // folds the REAL record under the frame's task_id first; the watcher
+      // cancel then drops the still-running seed keyed by the agentId — it
+      // would otherwise linger as a duplicate 'running' row in TasksPanel.
+      mockHandles[0].emit({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'sdk-task-9',
+        tool_use_id: 'tu_bg_mm',
+        status: 'completed',
+        summary: 'real record',
+      })
+      await tick()
+
+      expect(sm.get(info.id)!.backgroundSubagentCount).toBe(0)
+      const snapshot = sm.subscribeTasks(info.id)!.snapshot
+      expect(snapshot.find((t) => t.taskId === 'sdk-task-9')).toMatchObject({
+        status: 'completed',
+        progressSummary: 'real record',
+      })
+      expect(snapshot.find((t) => t.taskId === 'agent-mismatch')).toBeUndefined()
+    } finally {
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+    await sm.delete(info.id)
+  })
+
+  it('the watcher\'s synthesized notification settles the seeded TaskRecord to terminal', async () => {
+    const info = sm.create({ cwd: '/tmp/workspace' })
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    try {
+      // Pre-write a terminal assistant frame so the watcher's immediate
+      // first poll sees the subagent completed and synthesizes the
+      // notification (which folds the seed record — it never passes through
+      // the pump).
+      const txnPath = subagentTranscriptPath('/tmp/workspace', info.id, 'agent-seed')
+      mkdirSync(dirname(txnPath), { recursive: true })
+      writeFileSync(
+        txnPath,
+        JSON.stringify({
+          type: 'assistant',
+          message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'done' }] },
+        }) + '\n',
+      )
+
+      mockHandles[0].emit({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'tu_bg_seed',
+            content: 'Async agent launched successfully.\nagentId: agent-seed\n',
+          }],
+        },
+      })
+      await tick()
+      await tick()
+
+      const snapshot = sm.subscribeTasks(info.id)!.snapshot
+      expect(snapshot.find((t) => t.taskId === 'agent-seed')).toMatchObject({
+        toolUseId: 'tu_bg_seed',
+        status: 'completed',
+      })
+    } finally {
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
   })
 
   it('carries a user turn sent during the autoResume window to the resumed handle (parked SDK waiter detached on abort)', async () => {

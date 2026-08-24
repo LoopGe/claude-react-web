@@ -201,6 +201,9 @@ export function App() {
     settingsOpenFor,
     settingsTabRequest,
     gitPanelOpenFor,
+    tasksPanelOpenFor,
+    handleCloseTasksPanel,
+    handleOpenTasksPanel,
     helpOpen,
     setHelpOpen,
     helpCommands,
@@ -3734,6 +3737,9 @@ export function App() {
                       gitPanelOpen={gitPanelOpenFor === s.id}
                       onOpenGitPanel={handleOpenGitPanel}
                       onCloseGitPanel={handleCloseGitPanel}
+                      tasksPanelOpen={tasksPanelOpenFor === s.id}
+                      onOpenTasksPanel={handleOpenTasksPanel}
+                      onCloseTasksPanel={handleCloseTasksPanel}
                       onSwap={swapPanels}
                       onRegisterInterrupt={registerInterrupt}
                       onRegisterRecap={registerRecap}

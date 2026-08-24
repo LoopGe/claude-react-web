@@ -184,6 +184,10 @@ export type { ElicitationRequestUi, ElicitationDecision }
 import type { UserDialogDecision, UserDialogRequestUi } from '../shared/user-dialog.js'
 export type { UserDialogRequestUi, UserDialogDecision }
 
+// Re-export the canonical task-record shape from shared. Used by the
+// TasksPanel and the session-store mirror; browser-safe (no SDK dependency).
+export type { TaskRecordUi } from '../shared/tasks.js'
+
 // Structured /usage data (session cost/token totals + claude.ai plan
 // rate-limit windows) — loose shapes shared with the server. EXPERIMENTAL
 // SDK API; every field optional, render defensively.

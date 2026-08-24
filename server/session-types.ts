@@ -348,6 +348,19 @@ export interface Session {
    *  subscribed tab gets the current suggestion immediately. Cleared on
    *  /clear. Not persisted. */
   lastPromptSuggestion?: string | null
+  /** Folded background-task state (task_started / task_updated /
+   *  task_progress / task_notification frames), keyed by taskId. The SDK
+   *  exposes no task-list query API, so this map IS the list. Seeded both
+   *  by SDK frames (applyTaskEvent in session-pump) and by the subagent
+   *  watcher (watcher-tracked agents on CLI versions that emit no task_*
+   *  frames would otherwise never appear). Cleared on /clear. Not
+   *  persisted — task state is in-memory only, lost on unload/dormancy
+   *  (same trade-off as backgroundSubagentCount). */
+  tasks: Map<string, import('../shared/tasks.js').TaskRecordUi>
+  /** Per-subscriber pushables receiving FULL task-list snapshots (the
+   *  Map's values as an array) on every task-state change. Same shape as
+   *  contextUsageSubscribers; snapshot semantics make reconnects trivial. */
+  taskSubscribers: Set<Pushable<import('../shared/tasks.js').TaskRecordUi[]>>
   /** Per-subscriber pushables for `git-status-changed` signal frames.
    *  Same shape as contextUsageSubscribers but carries a signal-only
    *  payload (no GitStatus snapshot — clients refetch). Driven by
@@ -466,6 +479,7 @@ export function endAllSubscribers(s: Session): void {
   endAndClear(s.dialogSubscribers)
   endAndClear(s.contextUsageSubscribers)
   endAndClear(s.promptSuggestionSubscribers)
+  endAndClear(s.taskSubscribers)
   endAndClear(s.gitStatusSubscribers)
   endAndClear(s.messageStatusSubscribers)
   endAndClear(s.commandSubscribers)
@@ -582,6 +596,7 @@ export interface SessionBroadcaster {
   }
   subscribeContextUsage(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot?: import('./session-pump.js').LiteContextUsage | undefined; unsubscribe: () => void } | null
   subscribePromptSuggestion(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot?: string | null; unsubscribe: () => void } | null
+  subscribeTasks(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot: import('../shared/tasks.js').TaskRecordUi[]; unsubscribe: () => void } | null
   subscribeGitStatus(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null
   /** Per-session subscription for `message-consumed` signal frames.
    *  Returns null when the session is unknown (callers short-circuit).

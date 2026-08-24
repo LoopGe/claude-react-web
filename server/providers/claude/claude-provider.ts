@@ -58,6 +58,7 @@ export class ClaudeProvider implements AgentProvider {
     supportsAgents: true,
     supportsContextUsage: true,
     supportsUsage: true,
+    supportsTaskControl: true,
   }
 
   private readonly processMonitor: ProcessMonitor
@@ -86,6 +87,10 @@ export class ClaudeProvider implements AgentProvider {
     // Enable prompt suggestions by default — nearly free (piggybacks on
     // prompt cache) and provides a useful UX affordance.
     sdkOptions.promptSuggestions = opts.promptSuggestions ?? true
+    // Enable subagent progress summaries by default — served from the
+    // prompt cache (~free, ~every 30s per subagent) and it feeds the
+    // task_progress.summary the TasksPanel and subagent chips render.
+    sdkOptions.agentProgressSummaries = opts.agentProgressSummaries ?? true
 
     const requestedMode = (opts.permissionMode ?? sdkOptions.permissionMode) as PermissionMode | undefined
     this.applyStandardQueryOpts(sdkOptions, opts.env, opts.enabledPlugins)

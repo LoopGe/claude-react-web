@@ -84,6 +84,14 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     return this.query.interrupt()
   }
 
+  backgroundTasks(toolUseId?: string): Promise<boolean> {
+    return this.query.backgroundTasks(toolUseId)
+  }
+
+  stopTask(taskId: string): Promise<void> {
+    return this.query.stopTask(taskId)
+  }
+
   setModel(model?: string): Promise<void> {
     return this.query.setModel(model)
   }

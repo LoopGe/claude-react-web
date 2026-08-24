@@ -53,6 +53,11 @@ export interface CreateSessionOptions {
   /** Enable predicted next-user-prompt suggestions (SDK Options.promptSuggestions).
    *  When true, the SDK emits a prompt_suggestion message after each turn. */
   promptSuggestions?: boolean
+  /** Enable periodic present-tense subagent progress summaries (SDK
+   *  Options.agentProgressSummaries). When true, the SDK emits
+   *  task_progress frames whose `summary` field carries the progress text
+   *  (~every 30s per subagent, served from the prompt cache — cheap). */
+  agentProgressSummaries?: boolean
   providerExtras?: Record<string, unknown>
 }
 
@@ -90,6 +95,15 @@ export interface ProviderSessionHandle {
   abort(): void
   destroy(reason?: string): Promise<void> | void
   interrupt?(): Promise<void>
+  /** Background in-flight foreground tasks (Bash commands and subagents) —
+   *  the CLI's Ctrl+B semantics. With `toolUseId`, only that task; without,
+   *  every foreground task. The model immediately receives a "running in
+   *  background" tool_result and the turn continues. Resolves false when
+   *  there was nothing to background. */
+  backgroundTasks?(toolUseId?: string): Promise<boolean>
+  /** Stop a running task by id. The SDK emits a task_notification with
+   *  status 'stopped' afterwards. */
+  stopTask?(taskId: string): Promise<void>
   setModel?(model?: string): Promise<void>
   setPermissionMode?(mode: string): Promise<void>
   applyFlagSettings?(settings: Record<string, unknown>): Promise<void>
@@ -120,6 +134,7 @@ export interface ProviderCapabilities {
   supportsAgents: boolean
   supportsContextUsage: boolean
   supportsUsage: boolean
+  supportsTaskControl: boolean
 }
 
 export interface ListResumableOptions {

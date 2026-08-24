@@ -221,6 +221,19 @@ export interface WsPromptSuggestion {
   suggestion: string
 }
 
+/** Full snapshot of a session's background-task list, pushed on the
+ *  dedicated `tasks` channel whenever the server's folded task state
+ *  changes (task_started / task_updated / task_progress /
+ *  task_notification). Full snapshot rather than incremental patches: task
+ *  lists are tiny, snapshots are idempotent, and the subscribe-time
+ *  snapshot doubles as the reconnect seed. Ephemeral like prompt-suggestion
+ *  — task events never enter the history ring. */
+export interface WsTasksSnapshot {
+  kind: 'tasks-snapshot'
+  sessionId: string
+  tasks: import('./tasks.js').TaskRecordUi[]
+}
+
 /** Signal-only frame: "git status for this session changed, please
  *  refetch". The server intentionally does NOT pack the GitStatus
  *  payload here so the WS protocol stays decoupled from git-types and
@@ -353,6 +366,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsDialogResolved
   | WsContextUsage
   | WsPromptSuggestion
+  | WsTasksSnapshot
   | WsGitStatusChanged
   | WsMessageConsumed
   | WsSessionRecapUpdate<Recap>

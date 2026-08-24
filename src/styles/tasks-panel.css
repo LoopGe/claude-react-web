@@ -1,0 +1,254 @@
+/* Tasks overlay — mirrors .git-overlay / .git-panel (git-panel.css).
+   Every color goes through a theme token defined in both :root and
+   [data-theme="light"] (tokens.css). */
+
+.tasks-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--bg) 65%, transparent);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  z-index: 5;
+  overflow-y: auto;
+}
+
+.tasks-overlay[data-state='open'] {
+  animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both;
+}
+.tasks-overlay[data-state='closing'] {
+  pointer-events: none;
+  animation: overlay-backdrop-out var(--motion-duration-fast) var(--motion-ease-exit) both;
+}
+
+.tasks-overlay > .tasks-panel {
+  width: min(520px, 100%);
+  max-height: 100%;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--overlay-shadow);
+  display: flex;
+  flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.tasks-overlay[data-state='open'] > .tasks-panel {
+  animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both;
+}
+.tasks-overlay[data-state='closing'] > .tasks-panel {
+  animation: overlay-panel-out var(--motion-duration-base) var(--motion-ease-exit) both;
+}
+
+.tasks-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-elev);
+}
+
+.tasks-panel-title {
+  font-family: var(--mono);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.tasks-panel-count {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.tasks-panel-spacer { flex: 1; }
+
+.tasks-panel-icon-btn {
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.tasks-panel-icon-btn:hover:not(:disabled) { background: var(--btn-hover-bg); }
+
+.tasks-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 14px;
+}
+
+.tasks-panel-empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.tasks-panel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tasks-panel-section-title {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+  padding: 4px 2px;
+}
+
+/* --- task row ---------------------------------------------------------- */
+
+.tasks-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+.tasks-row-terminal { opacity: 0.7; }
+.tasks-row-error .tasks-row-icon { color: var(--danger); }
+.tasks-icon-ok { color: var(--ok); }
+.tasks-icon-err { color: var(--danger); }
+.tasks-icon-muted { color: var(--fg-muted); }
+.tasks-row-spin { animation: tasks-row-spin 1s linear infinite; }
+@keyframes tasks-row-spin { to { transform: rotate(360deg); } }
+
+.tasks-row-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  flex-shrink: 0;
+  padding-top: 1px;
+  color: var(--fg-muted);
+}
+
+.tasks-row-type {
+  display: inline-flex;
+  align-items: center;
+  color: var(--fg-muted);
+  padding-top: 1px;
+  flex-shrink: 0;
+}
+
+.tasks-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.tasks-row-desc {
+  font-size: 12.5px;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tasks-row-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tasks-row-summary {
+  font-size: 12px;
+  color: var(--fg-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.tasks-row-timer-wrap { flex-shrink: 0; padding-top: 1px; }
+.tasks-row-timer {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+.tasks-row-timer-final { color: var(--fg-muted); }
+
+.tasks-row-stop {
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.tasks-row-stop:hover:not(:disabled) {
+  background: var(--danger);
+  color: var(--bg);
+}
+.tasks-row-stop:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* --- header chip (ChatPanel row 2) -------------------------------------- */
+
+.chat-panel-tasks-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  cursor: pointer;
+  max-width: 200px;
+}
+.chat-panel-tasks-badge:hover { background: var(--btn-hover-bg); }
+.chat-panel-tasks-badge .chat-panel-git-badge-value { color: var(--fg-muted); }
+
+/* --- subagent card / overlay progress line ------------------------------ */
+
+.subagent-card-progress {
+  font-size: 12px;
+  color: var(--fg-muted);
+  padding: 4px 10px 6px 26px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-overlay-progress {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}

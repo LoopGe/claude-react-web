@@ -23,7 +23,8 @@ import { AnimatePresence } from 'motion/react'
 import { ModelPicker } from './ModelPicker'
 import { EffortSlider } from './EffortSlider'
 import { shortenPath } from '../utils/paths'
-import { IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconZap } from './icons/ToolIcons'
+import { IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconZap, IconListTodo } from './icons/ToolIcons'
+import { useSessionField } from '../session-store/selectors'
 import { PermissionModeIcon, permissionModeLabel } from './permission-mode-display'
 import type { EffortLevel, PermissionMode, SessionInfo, SlashCommand } from '../types'
 import type { Skin } from '../utils/theme'
@@ -207,6 +208,11 @@ export interface ChatPanelProps {
   gitPanelOpen?: boolean
   onOpenGitPanel: (sessionId: string) => void
   onCloseGitPanel: () => void
+  /** When true, render the Tasks overlay on top of this panel. Mutually
+   *  exclusive with `settingsOpen` / `gitPanelOpen` (parent App enforces). */
+  tasksPanelOpen?: boolean
+  onOpenTasksPanel: (sessionId: string) => void
+  onCloseTasksPanel: () => void
   /** Forwarded to <Chat> so it can register its interrupt callback with
    *  the parent App. Enables ESC shortcut to trigger the same code-path
    *  as the Composer's interrupt button. */
@@ -273,6 +279,9 @@ export const ChatPanel = memo(function ChatPanel({
   gitPanelOpen,
   onOpenGitPanel,
   onCloseGitPanel,
+  tasksPanelOpen,
+  onOpenTasksPanel,
+  onCloseTasksPanel,
   onRegisterInterrupt,
   onRegisterRecap,
   isResuming,
@@ -358,6 +367,13 @@ export const ChatPanel = memo(function ChatPanel({
   // vanish (and never return) the moment a session went idle, because the
   // hook resets data to null when disabled. Only the cwd matters here.
   const gitStatus = useGitStatus(session.cwd, session.id, { enabled: !!session.cwd })
+  // Live task list from the session store's `tasks` channel mirror. Feeds
+  // the header chip's running-count (the TasksPanel reads the same store
+  // field itself). Reference-stable across unrelated store updates.
+  const tasks = useSessionField(session.id, 'tasks')
+  const runningTaskCount = tasks.filter(
+    (t) => t.status !== 'completed' && t.status !== 'failed' && t.status !== 'killed' && t.status !== 'stopped',
+  ).length
 
   // Side Chat stream — always subscribed so the drawer can mount without
   // replay cost and the collapsed badge gets live permission data.
@@ -773,7 +789,7 @@ export const ChatPanel = memo(function ChatPanel({
         )}
         {/* Second header row — secondary metadata. Muted colour, smaller
             font, skipped when there's literally nothing to show. */}
-        {(session.cwd || gitStatus.data?.isRepo === true) && (
+        {(session.cwd || gitStatus.data?.isRepo === true || runningTaskCount > 0) && (
           <div className="chat-panel-header-row2">
             {session.cwd && (
               <Tooltip label={session.cwd} placement="bottom">
@@ -805,6 +821,26 @@ export const ChatPanel = memo(function ChatPanel({
                 >
                   <span className="chat-panel-git-badge-icon" aria-hidden>Git</span>
                   <span className="chat-panel-git-badge-value">{gitChipText(gitStatus.data)}</span>
+                </button>
+              </Tooltip>
+            )}
+            {/* Tasks chip — running background-task count. Hidden at zero
+                so the row stays quiet in the common no-tasks state. Click
+                opens the TasksPanel overlay (mutually exclusive with the
+                Settings/Git overlays via the App dispatch). */}
+            {runningTaskCount > 0 && (
+              <Tooltip label={`${runningTaskCount} background task${runningTaskCount === 1 ? '' : 's'} running — click to open Tasks`} placement="bottom">
+                <button
+                  type="button"
+                  className="chat-panel-tasks-badge"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onOpenTasksPanel(session.id)
+                  }}
+                >
+                  <IconListTodo size={12} aria-hidden />
+                  <span className="chat-panel-git-badge-value">{runningTaskCount}</span>
                 </button>
               </Tooltip>
             )}
@@ -842,6 +878,8 @@ export const ChatPanel = memo(function ChatPanel({
             onCloseSettings={onCloseSettings}
             gitPanelOpen={gitPanelOpen}
             onCloseGitPanel={onCloseGitPanel}
+            tasksPanelOpen={tasksPanelOpen}
+            onCloseTasksPanel={onCloseTasksPanel}
             gitStatus={gitStatus.data}
             gitLoading={gitStatus.loading}
             gitError={gitStatus.error}

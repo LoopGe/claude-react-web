@@ -2997,7 +2997,10 @@ export const WorkingBubble = memo(function WorkingBubble({
             key={a.toolUseId}
             type={clickable ? 'button' : undefined}
             className={`subagent-chip${clickable ? ' subagent-chip-clickable' : ''}${a.status === 'pending' ? ' subagent-chip-pending' : ''}`}
-            title={clickable ? `Open subagent details - ${a.label}` : a.label}
+            title={
+              (clickable ? `Open subagent details - ${a.label}` : a.label) +
+              (a.progressSummary ? ` — ${a.progressSummary}` : '')
+            }
             onClick={clickable ? () => onOpenSubagent(a.toolUseId) : undefined}
           >
             <span className="subagent-chip-dots" aria-hidden>

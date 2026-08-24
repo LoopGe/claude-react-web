@@ -58,6 +58,8 @@ function makeFakeSession(overrides: Partial<Session> = {}): Session {
     subagentHistory: [],
     contextUsageSubscribers: new Set(),
     promptSuggestionSubscribers: new Set(),
+    tasks: new Map(),
+    taskSubscribers: new Set(),
     gitStatusSubscribers: new Set(),
     messageStatusSubscribers: new Set(),
     commandSubscribers: new Set(),

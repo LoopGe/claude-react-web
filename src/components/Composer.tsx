@@ -17,7 +17,7 @@ import { CommandPicker } from './CommandPicker'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { Markdown } from './Markdown'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
-import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconSendInterruptToggle, IconLoader, IconFileText } from './icons/ToolIcons'
+import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconSendInterruptToggle, IconLoader, IconFileText, IconArrowDown } from './icons/ToolIcons'
 
 interface Props {
   input: string
@@ -65,6 +65,11 @@ interface Props {
    *  When no turn is in flight, Interrupt is a no-op, and leaving the
    *  button active just confuses users. */
   canInterrupt: boolean
+  /** Background every in-flight foreground task (the CLI's Ctrl+B
+   *  semantics): the model immediately receives a "running in background"
+   *  tool_result and the turn continues. Shown only while canInterrupt —
+   *  there's nothing to background without an in-flight turn. */
+  onBackground?: () => void
   /** Bump this number whenever the parent wants the textarea refocused
    *  (e.g. after a successful send, where the click on the Send button
    *  would otherwise leave focus on the button). */
@@ -120,6 +125,7 @@ export const Composer = memo(function Composer({
   onSend,
   onInterrupt,
   canInterrupt,
+  onBackground,
   focusSignal,
   onRecap,
   canRecap,
@@ -739,6 +745,21 @@ export const Composer = memo(function Composer({
         >
           <IconPaperclip size={18} />
         </button>
+        {/* Background in-flight tasks (Ctrl+B semantics) — only while a turn
+            is running and the parent wired the handler. Distinct from
+            Interrupt: the turn continues, the running command/subagent just
+            detaches to the background task list. */}
+        {canInterrupt && onBackground && (
+          <button
+            className="btn btn-icon"
+            type="button"
+            onClick={onBackground}
+            title="Background current tasks"
+            aria-label="Background current tasks"
+          >
+            <IconArrowDown size={18} />
+          </button>
+        )}
         {/* Send / Interrupt share one stable control; the SVG morphs between
             arrow and stop-square so the state change reads as an in-icon
             transition instead of a whole-button swap. */}
