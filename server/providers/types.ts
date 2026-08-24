@@ -127,6 +127,10 @@ export interface ProviderSessionHandle {
   reloadSkills(): Promise<unknown>
   getContextUsage?(): Promise<unknown>
   getUsage?(): Promise<unknown>
+  /** Authenticated-account info (SDK Query.accountInfo): email /
+   *  organization / subscriptionType / tokenSource / apiKeySource /
+   *  apiProvider. Read-only control request; needs a live session. */
+  accountInfo?(): Promise<unknown>
 }
 
 export interface ProviderCapabilities {
@@ -144,6 +148,7 @@ export interface ProviderCapabilities {
   supportsAgents: boolean
   supportsContextUsage: boolean
   supportsUsage: boolean
+  supportsAccountInfo: boolean
   supportsTaskControl: boolean
 }
 

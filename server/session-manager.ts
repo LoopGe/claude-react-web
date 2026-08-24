@@ -62,6 +62,7 @@ import { HttpError } from './errors.js'
 import { effortLevelsForModel, supportsThinkingForModel } from './effort-capability.js'
 import type { ModelInfo } from '../shared/model-info.js'
 import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting } from '../shared/session-info.js'
+import { coerceAccountInfo, type AccountInfoData } from '../shared/account-info.js'
 import { PermissionBroker } from './permission-broker.js'
 import { ElicitationBroker } from './elicitation-broker.js'
 import { DialogBroker } from './user-dialog-broker.js'
@@ -3480,6 +3481,22 @@ export class SessionManager {
       'supportsUsage',
     )
     return this.timeSdkControl(id, 'getUsage', fn)
+  }
+
+  /** Authenticated-account info for the session's CLI subprocess (email,
+   *  organization, subscription type, auth backend). Live-Query-only control
+   *  read like /usage; narrowed to the clean wire shape so the client never
+   *  renders a raw SDK response. Undefined when the SDK reports nothing. */
+  async accountInfo(id: string): Promise<AccountInfoData | undefined> {
+    const s = this.requireLive(id)
+    const fn = this.requireHandleMethod<() => Promise<unknown>>(
+      s,
+      'accountInfo',
+      'account info',
+      'supportsAccountInfo',
+    )
+    const raw = await this.timeSdkControl(id, 'accountInfo', fn)
+    return coerceAccountInfo(raw)
   }
 
   /** List pending tool-permission requests for a session. */

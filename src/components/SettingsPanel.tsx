@@ -1148,6 +1148,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
         <UsagePanel
           sessionId={session.id}
           data={sessionUsage.data}
+          account={sessionUsage.account}
           loading={sessionUsage.loading}
           error={sessionUsage.error}
           onRefresh={sessionUsage.refresh}

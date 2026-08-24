@@ -3,13 +3,21 @@
 // rate-limit windows). Pull-only by design: the rate-limit windows move on
 // hour scales, so there is no WS channel and no polling; the UsagePanel
 // refreshes when opened and on explicit click.
+//
+// The same refresh also fetches GET /sessions/:id/account (the SDK's
+// accountInfo control request: email / organization / subscription /
+// auth backend) so the Usage tab renders the account header and the usage
+// numbers from one refresh click. The account read is supplementary: a
+// failure there (capability missing on a non-claude provider, transient
+// control error) is swallowed rather than poisoning the usage display.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './useApi'
-import type { SessionUsageData } from '../types'
+import type { AccountInfoData, SessionUsageData } from '../types'
 
 export interface UseSessionUsageApi {
   data: SessionUsageData | null
+  account: AccountInfoData | null
   loading: boolean
   error: string | null
   /** Fetch (or re-fetch) usage. No-op while a fetch is in flight or when
@@ -19,6 +27,7 @@ export interface UseSessionUsageApi {
 
 export function useSessionUsage(sessionId: string | undefined): UseSessionUsageApi {
   const [data, setData] = useState<SessionUsageData | null>(null)
+  const [account, setAccount] = useState<AccountInfoData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -32,6 +41,7 @@ export function useSessionUsage(sessionId: string | undefined): UseSessionUsageA
   if (prevSessionId !== sessionId) {
     setPrevSessionId(sessionId)
     setData(null)
+    setAccount(null)
     setError(null)
   }
 
@@ -54,6 +64,17 @@ export function useSessionUsage(sessionId: string | undefined): UseSessionUsageA
     abortRef.current = controller
     setLoading(true)
     setError(null)
+    // Supplementary read: settled independently so an account failure
+    // never fails the usage fetch (account === null on error).
+    api
+      .get<{ account: AccountInfoData | null }>(`/sessions/${sessionId}/account`, { signal: controller.signal })
+      .then((res) => {
+        if (!mountedRef.current || controller.signal.aborted) return
+        setAccount(res?.account ?? null)
+      })
+      .catch(() => {
+        /* account is optional — leave the previous value in place */
+      })
     api
       .get<{ usage: SessionUsageData }>(`/sessions/${sessionId}/usage`, { signal: controller.signal })
       .then((res) => {
@@ -74,5 +95,5 @@ export function useSessionUsage(sessionId: string | undefined): UseSessionUsageA
       })
   }, [sessionId])
 
-  return { data, loading, error, refresh }
+  return { data, account, loading, error, refresh }
 }

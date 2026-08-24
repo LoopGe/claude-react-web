@@ -568,6 +568,14 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     return c.json({ usage })
   })
 
+  // Authenticated-account info (email / organization / subscription type /
+  // auth backend) via the SDK's accountInfo control request. Live sessions
+  // only; `{ account: null }` when the SDK reports nothing.
+  app.get('/sessions/:id/account', async (c) => {
+    const account = await sm.accountInfo(c.req.param('id'))
+    return c.json({ account: account ?? null })
+  })
+
   // Supported models — the manager translates the SDK's camelCase ModelInfo
   // to the snake_case wire `ModelInfo` (shared/model-info.ts) and filters
   // entries with no identifier, so the route is a passthrough.

@@ -202,6 +202,10 @@ export type {
   UsageWindowKey,
 } from '../shared/usage'
 
+// Authenticated-account info (SDK accountInfo control request) — the
+// server narrows the raw response, so the client shape is clean already.
+export type { AccountInfoData } from '../shared/account-info'
+
 /** Broadcast envelope for a resolved elicitation. */
 export interface ElicitationResolved {
   id: string

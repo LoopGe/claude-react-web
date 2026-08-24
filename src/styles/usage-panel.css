@@ -65,6 +65,39 @@
   background: var(--bg-elev-2);
 }
 
+/* Account rows (SDK accountInfo): email / org / plan / auth backend */
+.usage-account-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.usage-account-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.usage-account-label {
+  flex-shrink: 0;
+  width: 44px;
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+
+.usage-account-value {
+  font-family: var(--mono);
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Per-model token/cost table */
 .usage-model-table {
   width: 100%;

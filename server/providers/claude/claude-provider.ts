@@ -59,6 +59,7 @@ export class ClaudeProvider implements AgentProvider {
     supportsAgents: true,
     supportsContextUsage: true,
     supportsUsage: true,
+    supportsAccountInfo: true,
     supportsTaskControl: true,
   }
 

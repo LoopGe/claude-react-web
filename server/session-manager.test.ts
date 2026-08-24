@@ -31,6 +31,7 @@ interface MockQueryHandle {
   mcpServerStatus: ReturnType<typeof vi.fn>
   setMcpServers: ReturnType<typeof vi.fn>
   getContextUsage: ReturnType<typeof vi.fn>
+  accountInfo: ReturnType<typeof vi.fn>
 }
 
 const mockHandles: MockQueryHandle[] = []
@@ -141,6 +142,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
           errors: {},
         })),
         getContextUsage: vi.fn(async () => ({})),
+        accountInfo: vi.fn(async () => ({})),
       }
       mockHandles.push(handle)
 
@@ -180,6 +182,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         mcpServerStatus: handle.mcpServerStatus,
         setMcpServers: handle.setMcpServers,
         getContextUsage: handle.getContextUsage,
+        accountInfo: handle.accountInfo,
       }
       return q
     },
@@ -2008,6 +2011,42 @@ describe('SessionManager', () => {
     expect(updated.thinkingSupported).toBe(false)
     await sm.setModel(info.id, 'claude-sonnet-4-6')
     expect(sm.get(info.id).thinkingSupported).toBe(true)
+  })
+
+  // --- accountInfo (SDK accountInfo control read) ---
+
+  it('accountInfo() forwards the control request and narrows the raw response', async () => {
+    const info = sm.create({})
+    mockHandles[0].accountInfo.mockResolvedValueOnce({
+      email: 'user@example.com',
+      organization: 'Acme',
+      subscriptionType: 'max',
+      tokenSource: 'oauth',
+      apiKeySource: '',
+      apiProvider: 'firstParty',
+      junk: 'dropped',
+    })
+    const account = await sm.accountInfo(info.id)
+    expect(mockHandles[0].accountInfo).toHaveBeenCalled()
+    expect(account).toEqual({
+      email: 'user@example.com',
+      organization: 'Acme',
+      subscriptionType: 'max',
+      tokenSource: 'oauth',
+      apiProvider: 'firstParty',
+    })
+  })
+
+  it('accountInfo() collapses a malformed / empty response to undefined', async () => {
+    const info = sm.create({})
+    mockHandles[0].accountInfo.mockResolvedValueOnce({ email: '  ', apiProvider: 'not-a-provider' })
+    expect(await sm.accountInfo(info.id)).toBeUndefined()
+    mockHandles[0].accountInfo.mockResolvedValueOnce(null)
+    expect(await sm.accountInfo(info.id)).toBeUndefined()
+  })
+
+  it('accountInfo() 404s for an unknown session', async () => {
+    await expect(sm.accountInfo('nope')).rejects.toThrow()
   })
 
   it('setMemorySettings() forwards only present keys and records them on the session', async () => {

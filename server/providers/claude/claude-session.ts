@@ -152,6 +152,13 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     return this.query.getContextUsage()
   }
 
+  /** Authenticated-account info (email / organization / subscription /
+   *  auth backend). Read-only; the manager narrows the raw response via
+   *  coerceAccountInfo before it reaches the wire. */
+  accountInfo(): Promise<unknown> {
+    return this.query.accountInfo()
+  }
+
   /** Structured /usage data (session cost/usage totals + claude.ai plan
    *  rate-limit windows). The SDK method is EXPERIMENTAL and its name will
    *  change when stabilized — this wrapper is the single call site, so the

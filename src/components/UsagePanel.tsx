@@ -16,10 +16,14 @@ import {
   type SessionUsageData,
   type UsageRateLimitWindow,
 } from '../../shared/usage'
+import { ACCOUNT_PROVIDER_LABELS, type AccountInfoData } from '../../shared/account-info'
 
 interface Props {
   sessionId: string
   data: SessionUsageData | null
+  /** Authenticated-account info (fetched by the same refresh as `data`;
+   *  null when unavailable — it's supplementary and never blocks usage). */
+  account?: AccountInfoData | null
   loading: boolean
   error: string | null
   onRefresh: () => void
@@ -84,6 +88,7 @@ function WindowMeter({ label, window }: { label: string; window: UsageRateLimitW
 export const UsagePanel = memo(function UsagePanel({
   sessionId,
   data,
+  account,
   loading,
   error,
   onRefresh,
@@ -109,6 +114,31 @@ export const UsagePanel = memo(function UsagePanel({
   const modelEntries = Object.entries(totals?.model_usage ?? {}) as [string, Record<string, unknown>][]
   const extra = rateLimits?.extra_usage
 
+  // Account rows — every value is already narrowed server-side, so anything
+  // present is displayable. Rows render only when their value exists; a
+  // third-party / gateway session typically shows just the backend row.
+  const accountSub = account?.subscriptionType
+    ? SUBSCRIPTION_LABELS[account.subscriptionType] ?? account.subscriptionType
+    : null
+  const accountRows: { label: string; value: string; title?: string }[] = []
+  if (account?.email) accountRows.push({ label: 'email', value: account.email })
+  if (account?.organization) accountRows.push({ label: 'org', value: account.organization })
+  if (accountSub) accountRows.push({ label: 'plan', value: accountSub })
+  if (account?.apiProvider) {
+    const authBits = [account.tokenSource, account.apiKeySource].filter(Boolean).join(' · ')
+    accountRows.push({
+      label: 'auth',
+      value: ACCOUNT_PROVIDER_LABELS[account.apiProvider],
+      title: authBits || undefined,
+    })
+  } else if (account?.tokenSource || account?.apiKeySource) {
+    // No known provider enum, but a source is reported — still useful.
+    accountRows.push({
+      label: 'auth',
+      value: [account.tokenSource, account.apiKeySource].filter(Boolean).join(' · '),
+    })
+  }
+
   const content = (
     <>
       {!available && !data ? (
@@ -131,6 +161,20 @@ export const UsagePanel = memo(function UsagePanel({
             <div className="usage-empty">
               <p>{loading ? 'Loading usage…' : 'No usage data yet.'}</p>
             </div>
+          )}
+
+          {accountRows.length > 0 && (
+            <section className="usage-section usage-account">
+              <h3 className="usage-section-title">Account</h3>
+              <div className="usage-account-rows">
+                {accountRows.map((row) => (
+                  <div className="usage-account-row" key={row.label} title={row.title ?? row.value}>
+                    <span className="usage-account-label">{row.label}</span>
+                    <span className="usage-account-value">{row.value}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
           )}
 
           {data && (
